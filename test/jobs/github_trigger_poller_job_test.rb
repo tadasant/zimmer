@@ -998,6 +998,34 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
     assert_not_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
   end
 
+  test "a 504 during a search that ends incomplete pages, rather than skipping quietly" do
+    # The suppression a retry could have introduced, asserted where it would have bitten:
+    # #skip_incomplete_search deliberately does NOT page (the index recovers by itself), so
+    # a search that failed outright must not arrive there wearing IncompleteResultsError.
+    only_label_condition!
+    GithubSearchService.stubs(:sleep)
+    incomplete = JSON.generate({ "total_count" => 2, "incomplete_results" => true, "items" => [] })
+    failed = [ "", "gh: We couldn't respond to your request in time … (HTTP 504)", fake_process_status(exitstatus: 1) ]
+    ok = [ incomplete, "", fake_process_status(exitstatus: 0) ]
+    BoundedSubprocess.stubs(:run).returns(failed, ok, failed, ok, ok)
+
+    alerted = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerted << [ title, kwargs[:error]&.message ]
+      true
+    end
+
+    GithubTriggerPollerJob.perform_now
+
+    assert_equal 1, alerted.length, "a hard failure must page, not be absorbed as an index blip"
+    assert_equal "GitHub trigger poller error", alerted.first.first
+    assert_includes alerted.first.last, "failed outright"
+    # Not the incomplete-search escalation, whose alert would have blamed the query.
+    assert_nil Rails.cache.read(
+      GithubTriggerPollerJob.incomplete_search_streak_key(@label_condition.id)
+    ), "this is not an incomplete-index tick and must not be counted into that streak"
+  end
+
   test "a 401 that never clears still pages, on this tick and every tick after" do
     # The half of the fix that must not regress. A revoked credential that somehow reaches
     # the search (rather than being caught by the `configured?` preflight) is a real
