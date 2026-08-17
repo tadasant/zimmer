@@ -684,26 +684,30 @@ not silently disarm its watchdog. And it is a **converge**, not a one-off instal
 persistent and cloud-init only ever runs at first boot, so re-running is how a changed script
 reaches a box that already exists. Same shape as `Clear forced root-password expiry (converge)`.
 
-### The worker watchdog is converged on every deploy
+#### Calling it from a deploy that is not this one
 
-Every assertion above proves the deploy is healthy *at that moment*. `Install the worker watchdog
-(converge)` installs the thing that keeps asking: `scripts/install-worker-watchdog.sh` drops
-`scripts/worker-watchdog.sh` onto the host as `/usr/local/sbin/zimmer-worker-watchdog` and drives it
-from a 60-second systemd timer.
+Production's deploy lives in the private companion repo, and it does not reach its droplet the way
+the step above does: it goes over the tailnet with a generated ssh config, because its runner
+hygiene check forbids the key and the `Host *` stanza in the shared runner `$HOME` that a bare `ssh
+root@host` depends on. Two environment variables are the whole interface for that, and both are
+inert when unset — staging's `bash scripts/install-worker-watchdog.sh "$STAGING_HOST"` above is
+unaffected by their existence.
 
-It probes the worker with a real `docker exec` rather than reading container state, because the
-failure it exists for ([#502](https://github.com/tadasant/zimmer/issues/502)) is a container that
-reports `running` with `Restarts=0` while exec is permanently broken — a shape every check on this
-page passes. See [When the worker wedges](/operate/nested-docker/#when-the-worker-wedges).
+| Variable | What it does |
+| --- | --- |
+| `ZIMMER_WATCHDOG_SSH_EXTRA` | Extra arguments for every `ssh` the installer runs, split on whitespace. `-F <config>` is the motivating case. They go *first*, ahead of the installer's own options, because ssh takes the first value it obtains for an option — so a caller can override `ConnectTimeout` or the host-key policy and cannot be overridden by them. |
+| `ZIMMER_WATCHDOG_RECOVER` | `0` or `1`, rewritten into `/etc/default/zimmer-worker-watchdog` on **every** run. Unset — staging, and any host nobody has declared a value for — keeps the old behaviour: seed the commented template if the file is absent, then never touch it again, so an operator's edit survives a deploy. |
 
-Two properties worth knowing. It runs **unconditionally**, not only when `nested_docker` is checked:
-an unexecable worker is worth catching under plain `runc` too, and a deploy that disarms sysbox
-should not silently drop its watchdog. And it is a **converge**, for the same reason
-`clear-root-password-expiry.sh` is — the droplet is persistent and cloud-init only ever runs at first
-boot, so anything that must exist on an already-running host has to be re-applied by the deploy.
+Recovery is the setting production cares about. It restarts the worker container, and on a host
+running real agent sessions that kills every one of them, so production runs detect-and-alert only.
+A value that merely *starts* right is not enough — it has to be re-asserted, including on a droplet
+rebuilt from scratch and on one somebody edited by hand:
 
-Production has no deploy workflow in this repository, so there the same script is run out of band:
-`bash scripts/install-worker-watchdog.sh <prod-tailnet-host>`.
+```bash
+ZIMMER_WATCHDOG_SSH_EXTRA="-F ${SSH_CONFIG}" \
+  ZIMMER_WATCHDOG_RECOVER=0 \
+  bash scripts/install-worker-watchdog.sh "$PROD_HOST"
+```
 
 ### What changed, and why
 

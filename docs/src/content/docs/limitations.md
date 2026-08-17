@@ -2981,10 +2981,12 @@ turn a wedged worker into no worker.
 namespace becomes unusable after the OOM, only that it does and that every documented
 Docker recovery path fails. The watchdog treats a symptom.
 
-**Detection has to be installed, and on production that is by hand.** `Deploy staging`
-converges the timer on every deploy. This repository has no production deploy workflow, so
-on production `scripts/install-worker-watchdog.sh` is run out of band — and a host where
-nobody ran it has no detection at all, silently.
+**Detection has to be installed, and on production nothing in this repository installs it.**
+`Deploy staging` converges the timer on every deploy. The installer now takes the two knobs a
+different deploy path needs — `ZIMMER_WATCHDOG_SSH_EXTRA` for how to reach the host and
+`ZIMMER_WATCHDOG_RECOVER` for whether recovery is armed — but the production deploy workflow
+that would call it lives in the private companion repo, and until it does, production has no
+detection at all, silently.
 
 **Delivery depends on the web container.** The alert reaches Slack by running
 `bin/rails zimmer:worker_wedge_alert` inside the *web* container, because the worker is the
