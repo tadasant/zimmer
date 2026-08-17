@@ -2258,14 +2258,27 @@ Also:
   dropped during the window are gone — the page catches up on its next reload, not retroactively.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
 - Push notifications don't work on anything without the Push API (iOS Safari outside standalone PWA).
-- Reopening the installed PWA reloads the page, and Zimmer cannot stop it. iOS discards a
-  backgrounded standalone PWA's web view under memory pressure, so reopening is a fresh navigation;
-  Zimmer additionally reloads a session screen that comes back visible with a dead ActionCable
-  connection, because a stale `<turbo-cable-stream-source>` otherwise leaves the page silently
-  frozen. What survives the reload is the follow-up composer's text: it autosaves to `localStorage`
-  as you type (a 300ms debounce, flushed immediately on `visibilitychange`/`pagehide`) and is
-  restored on load. Scroll position, expanded panels and the other text fields on the page are not
-  preserved — the composer draft is the only state carried across.
+- Reopening the installed PWA no longer reloads the page — Zimmer backfills the regions broadcasts
+  target instead of navigating (see [Lifecycle](/sessions/lifecycle/#the-reopen-backfill)) — but
+  there is a case Zimmer genuinely cannot stop. iOS discards a backgrounded standalone PWA's web
+  view under memory pressure, and that relaunch is a cold start: a fresh navigation before any of
+  Zimmer's JavaScript exists to intervene. So a reopen after a *short* absence keeps your place,
+  and a reopen after iOS has reclaimed the web view does not. What survives either way is the
+  follow-up composer's text: it autosaves to `localStorage` as you type (a 300ms debounce, flushed
+  immediately on `visibilitychange`/`pagehide`) and is restored on load. Scroll position and
+  expanded panels survive the backfill but not the cold start.
+- The backfill recovers what broadcasts target and nothing else, and three surfaces are knowingly
+  outside it. A session detail loaded into the dashboard's drawer is not in a fresh render of the
+  dashboard, so its regions are not backfilled — `cable-reconnect` restores live updates there, but
+  content broadcast into the drawer during the gap is only recovered by reopening it. Subagent
+  accordions are replace targets nested inside timeline rows, and the backfill treats a row it
+  already has as already current, so subagent progress stays as it was until a real navigation. And
+  the notification badge is a lazily-loaded `<turbo-frame>`: replacing it with the server's copy
+  would blank it and re-fetch, so it is left alone and its count is stale until the next broadcast.
+- A `sync` region that has been paged inside its own `<turbo-frame>` is skipped rather than
+  reconciled, because the URL the backfill re-fetches does not carry that page. So a dashboard
+  category you have paged forward in keeps the cards it had, and does not pick up sessions added or
+  removed while you were away, until you page it again.
 - A composer draft sits in `localStorage` for up to 7 days with no UI to clear it, and nothing
   removes it when the session is archived or you sign out. On a shared browser that is a prompt
   someone else can read. If `localStorage` is full the write fails silently and the previously
@@ -2661,14 +2674,17 @@ re-render it.
 The page does not freeze: ActionCable's own connection monitor treats the connection as stale
 after ~6s without a ping and reopens it, and `cable-reconnect` re-subscribes any stream source
 that stays dark, so live updates resume on their own. What is lost is the backfill — anything
-broadcast while the page was away is not recovered until the next reload or navigation.
+broadcast while the page was away is not recovered until the next navigation.
 
-The obvious tightening, adding `connection.monitor.connectionIsStale()` to the check, does not
-work: a frozen page receives no pings while it is backgrounded, so the connection reads as stale
-on *every* reopen and the controller would reload every time, which is the bug it was written to
-fix ([#389](https://github.com/tadasant/zimmer/pull/389) is the earlier attempt in that area).
-Distinguishing "stale because we were asleep" from "stale because the socket is dead" needs a
-liveness probe after the page wakes, not a reading taken at the moment it wakes.
+This is much smaller than it was. When the dead-socket branch ended in a full page reload, a
+false *positive* was the expensive mistake and the check had to be conservative:
+`connection.monitor.connectionIsStale()` reads stale on every reopen (a frozen page receives no
+pings), so adding it would have reloaded every time — the bug the check was written to avoid.
+Now that the branch backfills in place, a false positive costs one GET and a few DOM swaps, so
+that trade is worth revisiting. It has not been, because on the case that actually matters — iOS
+suspending the app — `isOpen()` already reports the socket as closed. A bfcache repro measured
+exactly that: socket closed at the moment of restore, every time. The zombie socket is the
+residual case, not the common one.
 
 ---
 

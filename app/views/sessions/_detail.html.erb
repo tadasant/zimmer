@@ -24,15 +24,16 @@
     - The page was hidden (backgrounded PWA, bfcache restore) and came back with
       a dead socket. Everything broadcast while it was away is gone — a
       subscription alone would not bring it back — so stream-visibility-recovery
-      reopens the consumer and then reloads.
+      reopens the consumer and then backfills the regions marked
+      `data-live-region` below from a fresh render of this page.
     - The socket died while the page stayed visible. No content was missed, so
       cable-reconnect re-subscribes that source in place.
 
-    What changed is that the first path now *checks* whether the socket is dead
-    (`connection.isOpen()`) instead of inferring it from the `pageshow` event.
-    iOS fires that event on every PWA reopen, so inferring meant reloading every
-    time the user opened the app. A socket that survived the hide missed nothing
-    and is now left alone entirely. %>
+    iOS suspends a backgrounded standalone PWA, so the socket is dead on every
+    single reopen and the first path runs every time. Answering it with a
+    navigation is what makes an installed PWA appear to reload on each reopen;
+    the backfill recovers the same content without touching scroll position,
+    open disclosures or the drawer. %>
 <% detail_controllers = "session-scroll auto-scroll log-level-filter page-header-offset cable-reconnect" %>
 <% detail_controllers += " pull-to-refresh stream-visibility-recovery" unless in_drawer %>
 <div class="<%= in_drawer ? "min-h-full pb-32" : "min-h-screen" %> bg-gray-50" data-controller="<%= detail_controllers %>"
@@ -271,7 +272,12 @@
          data-infinite-scroll-filter-level-value="<%= @filter_level %>">
       <div class="divide-y divide-gray-200" data-auto-scroll-target="timelineContainer" data-log-level-filter-target="timeline">
         <!-- Always render the timeline target div for Turbo Streams -->
-        <div id="session_<%= @session.id %>_timeline" data-controller="timeline" data-infinite-scroll-target="timelineContent">
+        <%# data-live-region="append": broadcasts only ever append here, so a
+            reopen after a dead socket backfills the items it missed rather than
+            re-rendering the page. Older pages pulled in by infinite scroll are
+            not in the server's tail render and are deliberately left alone. %>
+        <div id="session_<%= @session.id %>_timeline" data-controller="timeline" data-infinite-scroll-target="timelineContent"
+             data-live-region="append">
           <%# Load more indicator at the top - shown when there are more items to load %>
           <% if @has_more_items %>
             <div data-infinite-scroll-target="loadMoreTrigger" class="px-6 py-3 text-center border-b border-gray-100">
@@ -299,7 +305,10 @@
 
           <% if @timeline_items.empty? %>
             <!-- Empty state message inside timeline div so Turbo Streams can replace it -->
-            <div id="empty-timeline-message" class="px-6 py-12 text-center">
+            <%# data-live-transient: a broadcast removes this the moment the
+                first item lands, so a backfill that appends items has to drop it
+                too or it sits above them. %>
+            <div id="empty-timeline-message" class="px-6 py-12 text-center" data-live-transient>
               <% if @session.running? %>
                 <svg class="animate-spin mx-auto h-12 w-12 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -332,7 +341,10 @@
             needs_input says why instead of looking merely idle. %>
         <%= render "elicitations/lost_elicitation_banner", session: @session %>
 
-        <div id="session_<%= @session.id %>_elicitations" class="space-y-2">
+        <%# data-live-region="sync": banners are appended when raised AND removed when
+            answered, so a reopen has to drop the ones resolved while the app was away
+            rather than leave a dead approval prompt on screen. %>
+        <div id="session_<%= @session.id %>_elicitations" class="space-y-2" data-live-region="sync">
           <% @session.elicitations.active.each do |elicitation| %>
             <%= render "elicitations/elicitation_banner", elicitation: elicitation, session: @session %>
           <% end %>

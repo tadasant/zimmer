@@ -112,6 +112,46 @@ module SessionsHelper
   # than decoding per-runtime content blocks, so both runtimes render through
   # one path.
 
+  # A stable DOM id for one timeline row.
+  #
+  # Timeline items are not records — a row is a Log, an MCP log, or one of the
+  # several OpenTranscripts events a single transcript line fans out into — so
+  # there is no primary key to name them by. The id is therefore derived from
+  # what the row *is*. That supports the one thing it has to: telling whether a
+  # row the server just rendered is already on screen — the reopen backfill in
+  # lib/live_region_backfill.js appends by id, and a row it cannot identify is a
+  # row it would either duplicate or drop.
+  #
+  # The same partial renders the broadcast append and the full-page render, and
+  # the two have to agree. That is what dictates the inputs, and it rules out
+  # `transcript_index` in particular: BroadcastService normalizes without one (it
+  # applies to page-load rendering and fork-from-here, not to a live event), so
+  # including it gives every live-streamed row a different id from its own
+  # re-render — and the backfill then appends a second copy of everything that
+  # arrived over the socket. `id` and `event_order` come off the normalizer
+  # identically on both paths and already separate the several events one
+  # transcript line fans out into. Logs carry neither, and are keyed by their
+  # level, content and time.
+  #
+  # test/helpers/sessions_helper_test.rb is the guard: it normalizes one entry
+  # both ways and asserts the ids match.
+  #
+  # Two rows genuinely identical in every input collide, and are then treated as
+  # one. They are also indistinguishable to a reader, so that is the right answer
+  # rather than a compromise.
+  def timeline_item_dom_id(item)
+    fingerprint = [
+      item[:type],
+      item[:id],
+      item[:event_order],
+      item[:sort_time].try(:iso8601, 6) || item[:sort_time],
+      item[:level],
+      item[:content]
+    ].map(&:to_s).join(" ")
+
+    "timeline-item-#{Digest::SHA256.hexdigest(fingerprint).first(20)}"
+  end
+
   # Human-readable label for an event's header.
   def ot_event_label(item)
     case item[:type]

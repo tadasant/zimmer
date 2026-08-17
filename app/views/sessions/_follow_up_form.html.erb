@@ -5,7 +5,14 @@
   <% pending_sent_message = (!agent_session.running? && agent_session.metadata&.dig("sent_message").present?) ? agent_session.metadata["sent_message"] : nil %>
   <%# session_skills is passed in from the controller via locals, or we fetch it here for backwards compatibility %>
   <% session_skills ||= ClaudeSkillsCacheService.get_for_session(agent_session) %>
+  <%# data-live-region="replace": the composer changes shape with the session's
+      status (running indicator, queue-vs-submit wording), and a reopen after a
+      dead socket missed the broadcast that said so. The backfill skips this
+      region entirely whenever anything in it is focused or holds a value the
+      server did not render — a half-typed follow-up or a staged attachment —
+      so a stale label is the worst it can cost. %>
   <div id="session_<%= agent_session.id %>_follow_up_form"
+       data-live-region="replace"
        class="fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-gray-200 shadow-lg"
        data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer image-attachment file-attachment slash-command"
        data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>"

@@ -108,7 +108,12 @@
     <%# The id is the stream target SessionsController#restored_card_stream
         prepends an undone trash into, so an Undo lands the card back in its own
         category rather than the Uncategorized bucket. %>
-    <div id="category_grid_<%= category.id %>"
+    <%# data-live-page: paging this section navigates its <turbo-frame>, which does
+        not change window.location. The reopen backfill re-fetches that URL, so it
+        would get page 1 back and sync away the page the reader had paged to. It
+        compares this value first and leaves the section alone when they differ. %>
+    <div id="category_grid_<%= category.id %>" data-live-region="sync"
+         data-live-page="<%= sessions.respond_to?(:current_page) ? sessions.current_page : 1 %>"
          class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
          data-category-dnd-target="list"
          data-category-id="<%= category.id %>">
