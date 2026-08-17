@@ -75,14 +75,17 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     # same SearchError every other failure raises, so the poller's rescue handles it.
     #
     # It is also retried on the way there — a child reaped before its waiter is a lost
-    # race, not a verdict — so what this pins is the terminal case: still a SearchError
-    # once the retries are spent.
-    BoundedSubprocess.stubs(:run).returns([ "out", "", nil ])
-    GithubSearchService.stubs(:sleep)
+    # race, not a verdict — so the delays are asserted too. Without that the terminal
+    # SearchError would pass against a classifier that had dropped the unknown? branch.
+    attempts = GithubSearchService::TRANSIENT_REQUEST_RETRY_DELAYS.length + 1
+    BoundedSubprocess.expects(:run).times(attempts).returns([ "out", "", nil ])
+    delays = []
+    GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
 
     error = assert_raises(GithubSearchService::SearchError) do
       GithubSearchService.search_issues("is:open is:pr repo:owner/a")
     end
+    assert_equal GithubSearchService::TRANSIENT_REQUEST_RETRY_DELAYS.to_a, delays
     assert_includes error.message, "gh api search/issues failed"
     assert_includes error.message, SubprocessStatus::REAPED_DESCRIPTION
   end
@@ -338,16 +341,100 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "a 403 that is rate limiting is retried, unlike a 403 that is a permission denial" do
-    # GitHub returns both primary and secondary rate limiting as 403. Those clear on their
-    # own; the permission denial above never will.
-    BoundedSubprocess.expects(:run).twice.returns(
-      [ "", "gh: API rate limit exceeded for user ID 1. (HTTP 403)", status(false) ],
-      [ search_payload(numbers: [ 4 ]), "", status(true) ]
+  test "rate limiting fails fast, because a retry would spend the quota that caused it" do
+    # Transient in every other sense, and deliberately not retried: the search endpoint
+    # allows 30 requests a minute and a secondary limit's Retry-After is usually 60s+, so
+    # no retry inside this budget can succeed — and since a retry re-runs the whole search,
+    # it would spend more of the very quota that produced the failure.
+    [ "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+      "gh: You have exceeded a secondary rate limit (HTTP 403)",
+      "gh: API rate limit exceeded (HTTP 429)" ].each do |stderr|
+      BoundedSubprocess.expects(:run).once.returns([ "", stderr, status(false) ])
+      GithubSearchService.expects(:sleep).never
+
+      error = assert_raises(GithubSearchService::SearchError) do
+        GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+      end
+      assert_not_kind_of GithubSearchService::TransientRequestError, error, "#{stderr} must not retry"
+    end
+  end
+
+  test "a hard failure during a search that ends incomplete raises SearchError, so it still pages" do
+    # The subtle way a retry could have swallowed a page. IncompleteResultsError is the
+    # poller's signal to skip the tick QUIETLY; a search that also failed outright is a
+    # degradation it must page for. Raising the narrower class here would have turned a
+    # 504 into five silent ticks.
+    incomplete = search_payload(numbers: [ 1 ], total: 2, incomplete: true)
+    BoundedSubprocess.stubs(:run).returns(
+      [ "", PRODUCTION_504, status(false) ],
+      [ incomplete, "", status(true) ],
+      [ "", PRODUCTION_504, status(false) ],
+      [ incomplete, "", status(true) ],
+      [ incomplete, "", status(true) ]
     )
     GithubSearchService.stubs(:sleep)
 
-    assert_equal [ 4 ], GithubSearchService.search_issues("is:open is:pr repo:owner/a").map { |i| i["number"] }
+    error = assert_raises(GithubSearchService::SearchError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+
+    assert_not_kind_of GithubSearchService::IncompleteResultsError, error,
+                       "the poller would have skipped this quietly instead of paging"
+    assert_includes error.message, "failed outright"
+  end
+
+  test "an injected HTTP status in the query cannot make a permanent failure retryable" do
+    # Repo and label names reach `q=` from the trigger's configuration, and `gh` echoes the
+    # query back in its error. Classification requires EVERY status it finds to be
+    # retryable, so a label named "x (HTTP 503)" can only ever make us fail faster.
+    BoundedSubprocess.expects(:run).once.returns(
+      [ "", %{gh: Validation Failed (HTTP 422): q=label:"x (HTTP 503)"}, status(false) ]
+    )
+    GithubSearchService.expects(:sleep).never
+
+    assert_raises(GithubSearchService::SearchError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+  end
+
+  test "a non-zero exit with no stderr at all is retried" do
+    # The most likely unclassified shape: `gh` fails and says nothing. Nothing identifies
+    # it as ours, so the deny-list retries it — and pages if it persists.
+    BoundedSubprocess.expects(:run).twice.returns(
+      [ "", "", status(false) ],
+      [ search_payload(numbers: [ 5 ]), "", status(true) ]
+    )
+    GithubSearchService.stubs(:sleep)
+
+    assert_equal [ 5 ], GithubSearchService.search_issues("is:open is:pr repo:owner/a").map { |i| i["number"] }
+  end
+
+  test "a status outside 4xx is retried, not just 5xx" do
+    # `return true unless 4xx` is the rule; pin it with a redirect nobody expects to see.
+    BoundedSubprocess.expects(:run).twice.returns(
+      [ "", "gh: Moved Permanently (HTTP 301)", status(false) ],
+      [ search_payload(numbers: [ 6 ]), "", status(true) ]
+    )
+    GithubSearchService.stubs(:sleep)
+
+    assert_equal [ 6 ], GithubSearchService.search_issues("is:open is:pr repo:owner/a").map { |i| i["number"] }
+  end
+
+  test "a slow search stops retrying on the wall clock, not just on the attempt count" do
+    # The delay list bounds only the sleeping; a restart re-issues every page. A search
+    # already past TRANSIENT_RETRY_DEADLINE starts no new attempt, so one condition cannot
+    # spend the tick every other condition shares.
+    BoundedSubprocess.expects(:run).once.returns([ "", PRODUCTION_504, status(false) ])
+    GithubSearchService.expects(:sleep).never
+    # First reading sets the deadline; the second is the check, by which point the search
+    # has been running longer than the deadline allows.
+    GithubSearchService.stubs(:monotonic_now)
+                       .returns(1000.0, 1000.0 + GithubSearchService::TRANSIENT_RETRY_DEADLINE + 1)
+
+    error = assert_raises(GithubSearchService::SearchError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+    assert_includes error.message, "giving up after #{GithubSearchService::TRANSIENT_RETRY_DEADLINE}s"
   end
 
   test "a failed page restarts the whole search rather than resuming mid-pagination" do
@@ -385,7 +472,9 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     delays = []
     GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
 
-    assert_raises(GithubSearchService::IncompleteResultsError) do
+    # SearchError rather than IncompleteResultsError, because the request also failed
+    # outright — see the dedicated test above for why that distinction is what pages.
+    assert_raises(GithubSearchService::SearchError) do
       GithubSearchService.search_issues("is:open is:pr repo:owner/a")
     end
 

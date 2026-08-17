@@ -2138,10 +2138,13 @@ should fail fast gets retried instead: it waits ~4 seconds and then pages anyway
 every tick after. The classification can therefore make a page *late*; it cannot make one *vanish*,
 which is the direction the deny-list was chosen to be wrong in.
 
-The one failure with no second chance is a hang. A `gh` call killed at `REQUEST_TIMEOUT` (15s) raises
-on the first attempt, because retrying it would spend most of a one-minute tick on the failure least
-likely to clear. So a GitHub incident that stalls connections rather than refusing them still pages
-per tick, exactly as before.
+Three failures get no second chance, and only the first is about classification at all. A 4xx GitHub
+attributes to the request (422, 404, a permission denial) and a `gh` usage error raise immediately,
+as does a **rate limit** — transient, but never inside a 4-second budget, and retrying it would
+spend more of the quota that caused it. So does a **hang**: a `gh` call killed at `REQUEST_TIMEOUT`
+(15s) raises on the first attempt, because retrying would spend most of a one-minute tick on the
+failure least likely to clear. A GitHub incident that stalls connections rather than refusing them
+therefore still pages per tick, exactly as before.
 
 ### `BoundedSubprocess` can still return a nil `Process::Status`, and every caller has to remember
 
