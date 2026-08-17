@@ -2212,4 +2212,152 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
       SlackTriggerPollerJob.new.send(:process_condition, @condition)
     end
   end
+
+  # --- Severity of a recovered rate limit (#509) ------------------------------
+  #
+  # A 429 the deferral absorbs used to log at ERROR, and a single ERROR line trips
+  # the "any Zimmer ERROR → critical" Grafana rule. A 111-second rate-limit burst
+  # across nine threads therefore paged the on-call about an incident in which
+  # nothing was lost: every thread was re-read on the deferred poll. Twice.
+  #
+  # So the two directions below are one fix, and the second half is the half that
+  # matters — a change that also silenced the real failure would be worse than the
+  # bug it fixed.
+
+  # Verbatim from production (2026-08-17T09:46:07Z onward), so these tests fail if
+  # the shape of what Slack hands us changes.
+  PRODUCTION_429 = "Slack rate limit exceeded: Retry after 10 seconds"
+
+  def production_rate_limit
+    SlackService::RateLimitedError.new(PRODUCTION_429, retry_after: 10)
+  end
+
+  # Swap Rails.logger for a StringIO-backed logger whose formatter keeps the
+  # severity, so a test can assert the LEVEL a line was written at rather than
+  # merely that it was written. StringIO-backed rather than a mocha expectation on
+  # the shared logger, so a concurrent writer cannot invalidate the assertion.
+  def capture_log_lines
+    original_logger = Rails.logger
+    buffer = StringIO.new
+    logger = ActiveSupport::Logger.new(buffer)
+    logger.formatter = proc { |severity, _time, _progname, msg| "#{severity} #{msg}\n" }
+    Rails.logger = logger
+
+    yield
+
+    buffer.string.lines.map(&:chomp).grep(/SlackTriggerPollerJob/)
+  ensure
+    Rails.logger = original_logger
+  end
+
+  # The bot_mention half of the burst: "Error checking thread <ts> in <channel>".
+  #
+  # Driven through the whole job — real sweep, real thread scan, real deferral — so
+  # this is evidence about the poll's behaviour and not about one method's.
+  test "a rate-limited thread check logs below ERROR and defers the poll" do
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:bot_user_id).returns("U_BOT_123")
+    SlackService.stubs(:list_dm_channels).returns([])
+
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    thread_ts = "1704067000.000000"
+    thread_key = "#{condition.channel_id}:#{thread_ts}"
+    condition.configuration["thread_timestamps"] = { thread_key => "1704067400.000000" }
+    condition.save!
+    # Leave this condition as the only one the sweep will visit, so the assertions
+    # below are about it and nothing else.
+    Trigger.where.not(id: condition.trigger_id).update_all(status: "disabled")
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(condition.channel_id, limit: 50).returns([
+      OpenStruct.new(ts: thread_ts, text: "Original", reply_count: 2,
+                     latest_reply: "1704067500.000000", bot_id: nil, thread_ts: nil, user: "U222")
+    ])
+    SlackService.stubs(:get_thread_replies).raises(production_rate_limit)
+
+    job = SlackTriggerPollerJob.new
+    # Slack is throttling us, not misbehaving: no alert, and the poll comes back in
+    # 30s (the backoff floor, which outlives Slack's own 10s Retry-After).
+    AlertService.expects(:raise_alert).never
+    job.expects(:retry_job).with(wait: 30)
+
+    lines = capture_log_lines { job.perform_now }
+
+    assert_empty lines.grep(/^ERROR/),
+      "a rate limit the deferral absorbs must not log at ERROR — that is the line that pages"
+    assert_equal 1, lines.grep(/^WARN.*checking thread #{Regexp.escape(thread_ts)} in #{condition.channel_id}/).size,
+      "the per-thread line must survive at WARN, message content intact"
+    assert lines.any? { |line| line.start_with?("WARN") && line.include?(PRODUCTION_429) },
+      "Slack's own words must still be in the log — only the severity was wrong"
+
+    # And nothing was lost: the thread's cursor never moved, so the deferred poll
+    # re-reads exactly the replies this one failed to read.
+    assert_equal "1704067400.000000", condition.reload.thread_timestamps[thread_key]
+  end
+
+  # The passive half of the same burst: "Error passively checking thread <ts> in
+  # <channel>". Same rescue shape, separate code path, separately regressible.
+  test "a rate-limited passive thread check logs below ERROR and defers the poll" do
+    condition = stub_passive_listening(event_type: "passive_listen_thread")
+    parent_ts = passive_ts(5.hours)
+    thread_key = "#{PASSIVE_CHANNEL}:#{parent_ts}"
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 2, latest_reply: passive_ts(1.minute),
+                     user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+    SlackService.stubs(:get_thread_replies).raises(production_rate_limit)
+
+    job = SlackTriggerPollerJob.new
+    lines = capture_log_lines { job.send(:process_condition, condition) }
+
+    assert_empty lines.grep(/^ERROR/),
+      "a rate limit the deferral absorbs must not log at ERROR — that is the line that pages"
+    assert_equal 1, lines.grep(/^WARN.*passively checking thread #{Regexp.escape(parent_ts)} in #{PASSIVE_CHANNEL}/).size,
+      "the per-thread line must survive at WARN, message content intact"
+
+    # The failure is still on the record, so the end of the poll defers it.
+    assert_instance_of SlackService::RateLimitedError, job.instance_variable_get(:@transient_error)
+    assert_nil condition.reload.thread_timestamps[thread_key],
+      "an unread thread must not get a cursor — the deferred poll has to re-read it"
+  end
+
+  # The half that matters. A 429 that OUTLIVES its deferrals has stopped being
+  # recovered: the retry budget is spent, Slack has been unavailable for roughly a
+  # quarter of an hour, and polling really has failed. That still logs at ERROR, so
+  # it still pages.
+  test "a rate limit that survives its deferrals logs at ERROR so it still pages" do
+    job = SlackTriggerPollerJob.new
+    job.instance_variable_set(:@deferrals, SlackTriggerPollerJob::MAX_DEFERRALS)
+
+    job.expects(:retry_job).never
+    AlertService.expects(:raise_alert).once
+
+    lines = capture_log_lines { job.send(:defer_poll, production_rate_limit) }
+
+    errors = lines.grep(/^ERROR/)
+    assert_equal 1, errors.size, "the give-up line is the one ERROR this job may emit"
+    assert_match(/after #{SlackTriggerPollerJob::MAX_DEFERRALS} deferrals/, errors.first)
+    assert_includes errors.first, PRODUCTION_429
+  end
+
+  # Nor is this blanket suppression: only a transient Slack failure is demoted. A
+  # per-unit defect the deferral cannot fix — a renamed channel, a bad cursor, a bug
+  # in this file — is still a defect, and still pages.
+  test "a per-unit failure that is not transient keeps its ERROR" do
+    job = SlackTriggerPollerJob.new
+
+    lines = capture_log_lines do
+      job.send(:note_unit_failure, SlackService::ApiError.new("channel_not_found"), "checking thread 1.0 in C1")
+      job.send(:note_unit_failure, StandardError.new("undefined method for nil"), "polling DMs for user U1")
+    end
+
+    assert_equal 2, lines.grep(/^ERROR/).size, "a real per-unit failure must still page"
+    assert_empty lines.grep(/^WARN/)
+    assert_nil job.instance_variable_get(:@transient_error),
+      "a non-transient failure must not be mistaken for a reason to defer"
+  end
 end
