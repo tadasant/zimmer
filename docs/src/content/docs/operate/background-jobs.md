@@ -345,9 +345,10 @@ re-reads the unit from a cursor that never moved, so the work is not lost — wh
 pages the on-call. Logging a recovered 429 at ERROR meant a 111-second rate-limit burst across nine
 threads paged a human about an incident in which nothing broke, twice
 ([#509](https://github.com/tadasant/zimmer/issues/509)). ERROR is reserved for the failures that
-earn it: the give-up line above, a failure past the point of no return (the `#process_message`
-rescue, where the cursor has advanced regardless, so the message really is lost), and anything that
-is not transient in the first place. See
+earn it: the give-up line above, the rescues where a transient failure loses work the deferral
+cannot bring back (`#process_message`, whose caller advances the cursor past that message either
+way, and `#fetch_recent_history`, which degrades to an empty slice its callers finish the sweep
+trusting), and anything that is not transient in the first place. See
 [observability](/operate/observability/#a-failure-the-code-recovered-from-is-logged-at-warn-not-error).
 
 ## Queue recovery mode
