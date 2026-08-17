@@ -2127,6 +2127,22 @@ would page only if it were broad enough to stall the poller's heartbeat too. Tha
 deliberate — inventing a streak from a failed cache read would page for a Redis blip on the first
 index timeout, which is the noise this exists to remove.
 
+### Whether a failed GitHub search is retried is decided by reading `gh`'s error text
+
+`GithubSearchService` re-runs a search whose request failed, so a transient GitHub blip stops paging
+`#alerts` for a system that heals a second later. Whether a given failure qualifies is decided by
+parsing the `gh` subprocess's stderr — the `(HTTP nnn)` suffix it appends to an API error, and the
+wording of a 403 (rate limit, which clears, versus permission denial, which does not). None of that
+is an API contract. If `gh` rewords its errors or stops printing the status code, a failure that
+should fail fast gets retried instead: it waits ~4 seconds and then pages anyway, on that tick and
+every tick after. The classification can therefore make a page *late*; it cannot make one *vanish*,
+which is the direction the deny-list was chosen to be wrong in.
+
+The one failure with no second chance is a hang. A `gh` call killed at `REQUEST_TIMEOUT` (15s) raises
+on the first attempt, because retrying it would spend most of a one-minute tick on the failure least
+likely to clear. So a GitHub incident that stalls connections rather than refusing them still pages
+per tick, exactly as before.
+
 ### `BoundedSubprocess` can still return a nil `Process::Status`, and every caller has to remember
 
 `BoundedSubprocess.run` returns Open3's `wait_thr.value`, which is a `Process.detach` thread whose

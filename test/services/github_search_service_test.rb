@@ -54,12 +54,15 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
   end
 
   test "search_issues raises SearchError on a non-zero gh exit" do
-    BoundedSubprocess.stubs(:run).returns([ "", "API rate limit exceeded", status(false) ])
+    # A 422 is GitHub rejecting the query itself, so this is the fail-fast path: one
+    # attempt, no backoff, straight to the SearchError the poller pages on.
+    BoundedSubprocess.expects(:run).once.returns([ "", "gh: Validation Failed (HTTP 422)", status(false) ])
+    GithubSearchService.expects(:sleep).never
 
     error = assert_raises(GithubSearchService::SearchError) do
       GithubSearchService.search_issues("is:open is:pr repo:owner/a")
     end
-    assert_includes error.message, "API rate limit exceeded"
+    assert_includes error.message, "Validation Failed"
   end
 
   test "search_issues raises SearchError (not NoMethodError) when gh returns a nil status" do
@@ -70,7 +73,12 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     # unguarded `status.success?` then blew up with `undefined method 'success?' for nil`
     # and crashed the poll tick. A nil status is a failed gh call and must surface as the
     # same SearchError every other failure raises, so the poller's rescue handles it.
+    #
+    # It is also retried on the way there — a child reaped before its waiter is a lost
+    # race, not a verdict — so what this pins is the terminal case: still a SearchError
+    # once the retries are spent.
     BoundedSubprocess.stubs(:run).returns([ "out", "", nil ])
+    GithubSearchService.stubs(:sleep)
 
     error = assert_raises(GithubSearchService::SearchError) do
       GithubSearchService.search_issues("is:open is:pr repo:owner/a")
@@ -189,7 +197,7 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "only the incomplete case retries — a hung request still fails on the first attempt" do
+  test "a hung request still fails on the first attempt, alone among the transient failures" do
     # A timeout has already spent REQUEST_TIMEOUT and is no likelier to succeed on an
     # immediate repeat; retrying it would spend three timeouts inside a one-minute tick.
     BoundedSubprocess.expects(:run).once
@@ -200,6 +208,191 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
       GithubSearchService.search_issues("is:open is:pr repo:owner/a")
     end
     assert_not_kind_of GithubSearchService::IncompleteResultsError, error
+  end
+
+  # ── a failed request: retry the blip, still page for the outage ────────────
+  #
+  # #436. Any non-zero `gh` exit raised on the first attempt, and GithubTriggerPollerJob's
+  # per-condition rescue turns that straight into ERROR + AlertService — a page. Production
+  # produced four distinct upstream failures in seven days (an incomplete index, a 401, a
+  # truncated body, two 504s), every one of them cleared by the next tick, so every page
+  # arrived at a system that had already healed. These pin the two halves of the fix: a
+  # blip is absorbed silently, and a failure that does not clear is exactly as loud as it
+  # was before.
+
+  # Rails.logger swapped for a StringIO-backed logger whose formatter keeps the severity,
+  # so a test can assert the LEVEL a line was written at rather than merely that it was
+  # written — the whole point being that an intermediate retry must not write ERROR, which
+  # is what pages.
+  def capture_log_lines
+    original_logger = Rails.logger
+    buffer = StringIO.new
+    logger = ActiveSupport::Logger.new(buffer)
+    logger.formatter = proc { |severity, _time, _progname, msg| "#{severity} #{msg}\n" }
+    Rails.logger = logger
+
+    yield
+
+    buffer.string.lines.map(&:chomp).grep(/GithubSearchService/)
+  ensure
+    Rails.logger = original_logger
+  end
+
+  # The verbatim stderr of each mode production actually logged, so these tests fail if
+  # the classifier stops recognising the strings it was written against.
+  PRODUCTION_401 = "gh: Bad credentials (HTTP 401)"
+  PRODUCTION_504 = "gh: We couldn't respond to your request in time. Sorry about that. " \
+                   "Please try resubmitting your request and contact us if the problem persists. (HTTP 504)"
+  PRODUCTION_TRUNCATED_BODY = "unexpected end of JSON input"
+
+  test "a 401 that clears on retry returns the recovered result, silently" do
+    # 2026-08-14T08:00:05Z, both live conditions, 0.35s apart — the incident that filed the
+    # issue. Nothing was broken by the time anyone read the page.
+    BoundedSubprocess.expects(:run).twice.returns(
+      [ "", PRODUCTION_401, status(false) ],
+      [ search_payload(numbers: [ 1 ]), "", status(true) ]
+    )
+    delays = []
+    GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
+    AlertService.expects(:raise_alert).never
+
+    lines = capture_log_lines do
+      items = GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+      assert_equal [ 1 ], items.map { |item| item["number"] }
+    end
+
+    assert_equal [ GithubSearchService::TRANSIENT_REQUEST_RETRY_DELAYS.first ], delays
+    assert_empty lines.grep(/\AERROR/), "a recovered blip must not write the ERROR line that pages"
+    assert_equal 1, lines.grep(/\AINFO/).length
+    # GitHub's own words survive into the log, so the retry is diagnosable rather than mute.
+    assert_includes lines.first, "Bad credentials"
+  end
+
+  test "a 504 and a truncated body are retried too — the mode is not read off a status code" do
+    # 2026-08-17T14:10:32Z and 13:31:03Z. The truncated body is the one that matters for the
+    # design: `gh` exits non-zero having written a partial response and there is no HTTP
+    # status anywhere in stderr to key off.
+    [ PRODUCTION_504, PRODUCTION_TRUNCATED_BODY ].each do |stderr|
+      BoundedSubprocess.expects(:run).twice.returns(
+        [ "", stderr, status(false) ],
+        [ search_payload(numbers: [ 2 ]), "", status(true) ]
+      )
+      GithubSearchService.stubs(:sleep)
+
+      items = GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+      assert_equal [ 2 ], items.map { |item| item["number"] }, "#{stderr} should have been retried"
+    end
+  end
+
+  test "a body that arrives cut short is retried, even when gh exits 0" do
+    # The zero-exit twin of `unexpected end of JSON input`: gh is happy, the JSON is not.
+    BoundedSubprocess.expects(:run).twice.returns(
+      [ '{"total_count": 1, "items": [{"num', "", status(true) ],
+      [ search_payload(numbers: [ 3 ]), "", status(true) ]
+    )
+    GithubSearchService.stubs(:sleep)
+
+    assert_equal [ 3 ], GithubSearchService.search_issues("is:open is:pr repo:owner/a").map { |i| i["number"] }
+  end
+
+  test "a 401 that does not clear still raises, so a dead credential is exactly as loud as before" do
+    # The half that must not regress. Retrying cannot make a sustained failure quieter,
+    # only ~4s later: the poller's per-condition rescue still logs ERROR and pages, on this
+    # tick and every tick after.
+    attempts = GithubSearchService::TRANSIENT_REQUEST_RETRY_DELAYS.length + 1
+    BoundedSubprocess.expects(:run).times(attempts).returns([ "", PRODUCTION_401, status(false) ])
+    delays = []
+    GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
+
+    error = assert_raises(GithubSearchService::SearchError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+
+    assert_equal GithubSearchService::TRANSIENT_REQUEST_RETRY_DELAYS.to_a, delays
+    assert_includes error.message, "Bad credentials"
+    # The page says GitHub kept failing, not that it failed once.
+    assert_includes error.message, "still failing after #{attempts} attempts"
+    # A plain SearchError: the poller's `rescue IncompleteResultsError` must not swallow
+    # this into a quiet skip.
+    assert_not_kind_of GithubSearchService::IncompleteResultsError, error
+    assert_not_kind_of GithubSearchService::TransientRequestError, error
+  end
+
+  test "a failure GitHub attributes to the request fails fast, without spending the tick" do
+    # Waiting cannot fix a query GitHub rejected, a repo the token cannot see, a permission
+    # it does not have, or a flag this file passed that `gh` does not know. Each must page
+    # on the first attempt rather than three seconds and two retries later.
+    {
+      "gh: Validation Failed (HTTP 422)" => "malformed query",
+      "gh: Not Found (HTTP 404)" => "invisible repo",
+      "gh: Resource not accessible by integration (HTTP 403)" => "permission denial",
+      "unknown flag: --raw-field" => "argument error"
+    }.each do |stderr, description|
+      BoundedSubprocess.expects(:run).once.returns([ "", stderr, status(false) ])
+      GithubSearchService.expects(:sleep).never
+
+      error = assert_raises(GithubSearchService::SearchError) do
+        GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+      end
+      assert_not_kind_of GithubSearchService::TransientRequestError, error, "#{description} must not retry"
+    end
+  end
+
+  test "a 403 that is rate limiting is retried, unlike a 403 that is a permission denial" do
+    # GitHub returns both primary and secondary rate limiting as 403. Those clear on their
+    # own; the permission denial above never will.
+    BoundedSubprocess.expects(:run).twice.returns(
+      [ "", "gh: API rate limit exceeded for user ID 1. (HTTP 403)", status(false) ],
+      [ search_payload(numbers: [ 4 ]), "", status(true) ]
+    )
+    GithubSearchService.stubs(:sleep)
+
+    assert_equal [ 4 ], GithubSearchService.search_issues("is:open is:pr repo:owner/a").map { |i| i["number"] }
+  end
+
+  test "a failed page restarts the whole search rather than resuming mid-pagination" do
+    # Same invariant the incomplete path defends: pages read before the failure came from
+    # an API that is now visibly unwell, and splicing them onto a page fetched seconds
+    # later can drop an item whose page boundary moved.
+    first_page = search_payload(numbers: (1..GithubSearchService::PER_PAGE).to_a, total: 101)
+    last_page = search_payload(numbers: [ 101 ], total: 101)
+
+    BoundedSubprocess.expects(:run).times(4).returns(
+      [ first_page, "", status(true) ],          # attempt 1, page 1
+      [ "", PRODUCTION_504, status(false) ],     # attempt 1, page 2 — GitHub times out
+      [ first_page, "", status(true) ],          # attempt 2 starts over at page 1
+      [ last_page, "", status(true) ]            # attempt 2, page 2
+    )
+    GithubSearchService.stubs(:sleep)
+
+    numbers = GithubSearchService.search_issues("is:open is:pr repo:owner/a").map { |item| item["number"] }
+
+    assert_equal (1..101).to_a, numbers
+    assert_equal numbers.uniq, numbers, "restarting must not double-count the pages already read"
+  end
+
+  test "the two retry budgets are separate, and both are bounded" do
+    # A search unlucky enough to hit both modes gets both allowances and no more — the
+    # ceiling on what one condition can spend sleeping inside a one-minute tick.
+    incomplete = search_payload(numbers: [ 1 ], total: 2, incomplete: true)
+    BoundedSubprocess.stubs(:run).returns(
+      [ "", PRODUCTION_504, status(false) ],
+      [ incomplete, "", status(true) ],
+      [ "", PRODUCTION_504, status(false) ],
+      [ incomplete, "", status(true) ],
+      [ incomplete, "", status(true) ]
+    )
+    delays = []
+    GithubSearchService.stubs(:sleep).with { |seconds| delays << seconds; true }
+
+    assert_raises(GithubSearchService::IncompleteResultsError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+
+    both_budgets = GithubSearchService::TRANSIENT_REQUEST_RETRY_DELAYS +
+                   GithubSearchService::INCOMPLETE_RESULT_RETRY_DELAYS
+    assert_equal both_budgets.sort, delays.sort
+    assert_operator delays.sum, :<=, 6, "one condition must not sleep away the tick it shares"
   end
 
   test "repo_group ORs the repos" do
