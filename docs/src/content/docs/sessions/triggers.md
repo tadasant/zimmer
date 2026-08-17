@@ -784,8 +784,9 @@ thread. The cron ticks in between are still no-ops, but they are no longer landi
 in a `sleep`.
 
 Nothing is lost — `last_message_ts` is a cursor, so the next successful poll still sees the messages
-— but a trigger can fire minutes after the message that should have fired it. After five deferrals
-the job alerts and the ordinary once-a-minute cadence takes over.
+— but a trigger can fire minutes after the message that should have fired it. A throttle absorbed
+this way logs at WARN, precisely because nothing was lost. After five deferrals the job logs at
+ERROR, alerts, and the ordinary once-a-minute cadence takes over.
 :::
 
 :::note[Triggers have no input validation — this is a known design gap]

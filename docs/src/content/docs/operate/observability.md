@@ -80,6 +80,28 @@ else. Grafana still shows the context-free WARN Rails logs from inside
 container. See [limitations](/limitations/#a-csrf-failure-still-ships-a-context-free-warn-and-is-still-counted-per-record).
 :::
 
+### A failure the code recovered from is logged at WARN, not ERROR
+
+The same convention on the job side. A poller that hits a Slack 429, defers itself, and
+re-reads the same work on the retry has not failed at anything — but if it logs the 429 at
+ERROR, one rate-limit burst pages the on-call about an incident in which nothing was lost.
+`SlackTriggerPollerJob` did exactly that twice ([#509](https://github.com/tadasant/zimmer/issues/509));
+the ERROR line was the only artifact of the second one.
+
+So the rule for a retryable external failure is: **log it at the level that matches what
+actually happened to the work.**
+
+| What happened to the work | Level | In `SlackTriggerPollerJob` |
+| --- | --- | --- |
+| Slack throttled a fetch, the cursor never moved, the deferred poll re-reads it | WARN | the per-channel / per-thread / per-DM rescues, and each deferral |
+| The retry budget is spent — five deferrals, ~15 minutes of unavailability | ERROR | the give-up line, alongside its `AlertService` alert |
+| The work is already past the point of no return, so the failure loses a message | ERROR | the `#process_message` rescue, where the cursor has advanced regardless |
+| Not transient at all — a renamed channel, a bad cursor, a bug in the job | ERROR | every non-`TransientError` in those same rescues |
+
+Nothing is suppressed and no message content is dropped: Slack's own words, the channel, and
+the thread stay in the line. Only the severity changes, which is what makes the ERROR that
+does appear worth reading.
+
 ## How environments are told apart
 
 Every batch carries two resource attributes:
