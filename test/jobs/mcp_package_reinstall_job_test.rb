@@ -34,7 +34,7 @@ class McpPackageReinstallJobTest < ActiveJob::TestCase
 
   test "runs the preinstall script under a wall-clock timeout" do
     script_path = Rails.root.join("bin", "preinstall-mcp-packages")
-    File.stubs(:exist?).with(script_path).returns(true)
+    assert File.exist?(script_path), "the preinstall script this job runs is missing from the repo"
 
     BoundedSubprocess.expects(:run)
       .with([ script_path.to_s ], timeout: McpPackageReinstallJob::PREINSTALL_TIMEOUT)
@@ -47,9 +47,6 @@ class McpPackageReinstallJobTest < ActiveJob::TestCase
   # 4 of them and this job runs 10s after every worker boot, so an unbounded install
   # starves the queue exactly when a deploy is watching it drain.
   test "a timed-out preinstall is contained rather than raised" do
-    script_path = Rails.root.join("bin", "preinstall-mcp-packages")
-    File.stubs(:exist?).with(script_path).returns(true)
-
     BoundedSubprocess.stubs(:run).raises(
       BoundedSubprocess::TimeoutError, "command timed out after 900s"
     )
