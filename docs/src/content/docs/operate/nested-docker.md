@@ -424,8 +424,13 @@ detection needs no Rails and delivery needs no secret on the host.
 | `/var/lib/zimmer-worker-watchdog/incidents/` | one JSON record per incident, for forensics |
 | `journalctl -u zimmer-worker-watchdog` | every probe, healthy or not |
 
-Production has no deploy workflow in this repository, so there it is installed by hand or
-from the companion repo: `bash scripts/install-worker-watchdog.sh <prod-tailnet-host>`.
+Production's deploy lives in the private companion repo and reaches its droplet differently.
+The installer takes what that path needs — `ZIMMER_WATCHDOG_SSH_EXTRA="-F <config>"` to reach
+the host, and `ZIMMER_WATCHDOG_RECOVER=0` for detect-and-alert only, because restarting the
+worker there would kill every in-flight agent session — so it converges the same script rather
+than reimplementing it. That step has not landed in the companion repo yet, so production has
+no watchdog today. Both variables are inert when unset. See
+[Calling it from a deploy that is not this one](/operate/deploying/#calling-it-from-a-deploy-that-is-not-this-one).
 
 ### What it will and will not do on its own
 
