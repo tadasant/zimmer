@@ -2,20 +2,27 @@ require "application_system_test_case"
 
 # Reopening the installed PWA must not reload the session screen.
 #
-# iOS fires `pageshow` with `persisted: true` every time a backgrounded
-# standalone PWA is restored from bfcache — which is to say, every time the user
-# reopens the app. stream_visibility_recovery_controller.js used to treat that
-# event alone as proof of a dead ActionCable socket and reload, so every reopen
-# rebuilt the document and threw away scroll position, collapsed panels, and
-# everything else the user had accumulated on screen.
+# iOS suspends a backgrounded standalone PWA. The process stops, the ActionCable
+# WebSocket dies with it, and the page comes back through the back/forward cache
+# — `pageshow` with `persisted: true`. So on a real reopen the socket is *always*
+# dead, and any recovery keyed on "is the socket dead?" runs its dead-socket
+# branch every single time the user switches back to the app.
 #
-# It now checks whether the socket is actually dead first. These tests pin both
-# sides of that check, and — because the reload exists to protect against a
-# silently frozen page — that a genuinely dead socket still gets the page back to
-# a live, current state.
+# That branch used to be a full replacing `Turbo.visit`, which is why the PWA
+# reloaded on every reopen, throwing away scroll position, open disclosures, and
+# everything else the reader had accumulated. Checking `isOpen()` first did not
+# help: it only made the never-happens case (socket survived) free.
 #
-# Turbo's own events are the discriminator: `turbo:visit` fires when a visit is
-# issued at all, so an empty event log is proof that nothing navigated.
+# It is now a backfill — fetch the page the server would render and reconcile the
+# regions broadcasts target, in place. These tests pin the dead-socket case in
+# particular, because that is the one a phone actually performs:
+#
+#   - nothing navigates (`turbo:visit` never fires, and the document is the same
+#     document — a sentinel written onto <body> survives),
+#   - what the server broadcast while the socket was dead is on screen,
+#   - and the page is live again afterwards.
+#
+# The socket-alive branch is still pinned below, but it is the cheap case.
 class PwaReopenRecoveryTest < ApplicationSystemTestCase
   def create_session(status: :running)
     Session.create!(
@@ -33,11 +40,27 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
       for (const name of ["turbo:visit", "turbo:render"]) {
         document.addEventListener(name, () => window.__zimmerEvents.push(name))
       }
+      window.__zimmerRecovered = []
+      document.addEventListener("stream-visibility-recovery:recovered", (event) => {
+        window.__zimmerRecovered.push(event.detail)
+      })
+      // A replacing Turbo visit swaps <body>, so an attribute set on it here is
+      // gone if — and only if — the page navigated. This is what distinguishes a
+      // backfill from a re-render that happens to produce the same content.
+      document.body.setAttribute("data-reopen-sentinel", "alive")
     JS
   end
 
   def recorded_events
     page.evaluate_script("window.__zimmerEvents || []")
+  end
+
+  def recoveries
+    page.evaluate_script("window.__zimmerRecovered || []")
+  end
+
+  def same_document?
+    page.evaluate_script("document.body.getAttribute('data-reopen-sentinel') === 'alive'")
   end
 
   # Stimulus reads values off the attribute each time, so a test can shorten the
@@ -51,6 +74,11 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   end
 
   # The bfcache restore iOS performs when a standalone PWA is reopened.
+  #
+  # Selenium cannot drive a real back/forward-cache restore, so the event is
+  # dispatched by hand. What matters for this suite is the state the controller
+  # finds when it runs — a genuinely closed socket, killed below — not which
+  # listener woke it; the genuine-bfcache proof is in the PR's Playwright run.
   def reopen_from_bfcache
     page.execute_script(<<~JS)
       window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }))
@@ -71,8 +99,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   end
 
   # Count calls to the consumer's own reopen(), which is what actually restores
-  # live updates. Without this the reopen step is untested: a Turbo visit rebuilds
-  # the stream sources anyway, so the page would come back live either way.
+  # live updates.
   def spy_on_reopen
     page.execute_script(<<~JS)
       const connection = document.querySelector("turbo-cable-stream-source").subscription.consumer.connection
@@ -87,10 +114,13 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   end
 
   # Close the WebSocket out from under ActionCable the way a suspended OS does,
-  # so `connection.isOpen()` reports what it reports on a real reopen.
+  # and forbid the reconnect its own monitor would otherwise perform — on a real
+  # reopen the socket is dead for the whole time the app was away.
   def kill_cable_socket
     page.execute_script(<<~JS)
-      document.querySelector("turbo-cable-stream-source").subscription.consumer.connection.webSocket.close()
+      document.querySelectorAll("turbo-cable-stream-source").forEach((source) => {
+        source.subscription.consumer.connection.close({ allowReconnect: false })
+      })
     JS
   end
 
@@ -103,21 +133,109 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     true
   end
 
-  # After the recovery re-renders, the page's subscriptions are torn down and
-  # rebuilt. Broadcasting before that has settled races the handshake and the
-  # message is dropped — ActionCable does not queue for late subscribers — so
-  # wait for the render, let the new sources mount, then wait on them.
-  def wait_for_reloaded_page_to_go_live
-    assert wait_for_event("turbo:render"), "the recovery never finished re-rendering"
-    sleep 1
-    wait_for_turbo_streams_connected(timeout: 15)
+  def wait_for_recovery(timeout: 10)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    while recoveries.empty?
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      sleep 0.05
+    end
+    true
   end
 
-  test "reopening the PWA with a live socket does not navigate at all" do
-    # The regression itself. Before the fix this produced a turbo:visit every
-    # single time, which is what made the PWA reload on every reopen.
+  # Settle on whichever answer the reopen produced — a backfill that reported
+  # itself, or a navigation. Waiting only for the former would report a reload as
+  # a timeout, which reads as a flaky test rather than as the regression it is.
+  def wait_for_reopen_to_settle(timeout: 10)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    while recoveries.empty? && recorded_events.empty?
+      break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      sleep 0.05
+    end
+  end
+
+  # THE REGRESSION. On `main` this fails on the very first assertion: the
+  # dead-socket branch issues `Turbo.visit(href, { action: "replace" })`, so
+  # `turbo:visit` fires and the <body> sentinel is gone.
+  test "reopening the PWA with a dead socket recovers in place instead of reloading" do
     session = create_session
-    visit session_path(session)
+    visit session_path(session, filter: "verbose")
+    wait_for_turbo_streams_connected
+
+    # Something the reader accumulated on screen, which a reload would destroy.
+    page.execute_script("document.querySelector('details[data-controller~=\"transcript-panel\"]').open = true")
+
+    tune_recovery(stale_after: 0)
+    instrument_page
+    spy_on_reopen
+
+    kill_cable_socket
+
+    # Broadcast into a socket that is not there. This is the content the reopen
+    # has to recover: re-subscribing cannot replay it.
+    Log.create!(session: session, level: "info", content: "MISSED WHILE BACKGROUNDED")
+    session.update!(status: :needs_input)
+
+    reopen_from_bfcache
+    wait_for_reopen_to_settle
+
+    assert same_document?,
+      "reopening the PWA reloaded the page — the document the reader was looking at was replaced"
+    assert_empty recorded_events,
+      "reopening the PWA navigated (#{recorded_events.inspect}) instead of backfilling in place"
+
+    # The disclosure the reader opened is still open, which is the whole point.
+    assert page.evaluate_script("document.querySelector('details[data-controller~=\"transcript-panel\"]').open"),
+      "the recovery collapsed a panel the reader had opened"
+
+    # And the content that was broadcast into the dead socket is on screen.
+    assert_selector "#session_#{session.id}_timeline", text: "MISSED WHILE BACKGROUNDED", wait: 5
+    assert_selector "#session_#{session.id}_status_badge", text: "Needs Input", wait: 5
+
+    # Live updates are restored too, or the next broadcast is missed as well.
+    assert_equal 1, reopen_calls,
+      "the controller did not reopen the consumer, so the page came back stale-but-quiet"
+  end
+
+  test "a page recovered in place is live again afterwards" do
+    session = create_session
+    visit session_path(session, filter: "verbose")
+    wait_for_turbo_streams_connected
+
+    tune_recovery(stale_after: 0)
+    instrument_page
+
+    kill_cable_socket
+    reopen_from_bfcache
+
+    assert wait_for_recovery, "the controller never finished recovering"
+    wait_for_turbo_streams_connected(timeout: 15)
+
+    session.update!(status: :needs_input)
+    assert_selector "#session_#{session.id}_status_badge", text: "Needs Input", wait: 15
+  end
+
+  test "a socket found dead on becoming visible is recovered the same way" do
+    session = create_session
+    visit session_path(session, filter: "verbose")
+    wait_for_turbo_streams_connected
+
+    tune_recovery(stale_after: 0)
+    instrument_page
+
+    kill_cable_socket
+    Log.create!(session: session, level: "info", content: "MISSED WHILE HIDDEN")
+
+    hide_then_show
+
+    assert wait_for_recovery, "the controller never finished recovering"
+    assert same_document?, "a stale visibility return reloaded the page"
+    assert_empty recorded_events, "a stale visibility return navigated instead of backfilling"
+    assert_selector "#session_#{session.id}_timeline", text: "MISSED WHILE HIDDEN", wait: 5
+  end
+
+  test "reopening the PWA with a live socket does nothing at all" do
+    session = create_session
+    visit session_path(session, filter: "verbose")
     wait_for_turbo_streams_connected
 
     tune_recovery(stale_after: 0)
@@ -125,20 +243,20 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
 
     reopen_from_bfcache
 
-    # Long enough that a reload would have been issued and rendered.
-    sleep 1.5
-
+    assert wait_for_recovery, "the controller never reported on the reopen"
+    assert_equal [ true ], recoveries.map { |r| r["socketWasOpen"] },
+      "a live socket was treated as dead"
     assert_empty recorded_events,
-      "reopening the PWA reloaded the page even though the cable was still connected"
+      "reopening the PWA navigated even though the cable was still connected"
+    assert same_document?
 
-    # The reload existed to keep the page live. It has to still be live.
     session.update!(status: :needs_input)
-    assert_selector "[id='session_#{session.id}_status_badge']", text: "Needs Input", wait: 5
+    assert_selector "#session_#{session.id}_status_badge", text: "Needs Input", wait: 5
   end
 
   test "a brief hide is ignored" do
     session = create_session
-    visit session_path(session)
+    visit session_path(session, filter: "verbose")
     wait_for_turbo_streams_connected
 
     # The real 5s window. Kill the socket first so this pins the duration gate
@@ -151,68 +269,8 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     hide_then_show
     sleep 1.5
 
-    assert_empty recorded_events,
-      "a hide shorter than staleAfter reloaded the page"
-  end
-
-  test "returning visible with a live socket does not navigate either" do
-    session = create_session
-    visit session_path(session)
-    wait_for_turbo_streams_connected
-
-    tune_recovery(stale_after: 0)
-    instrument_page
-
-    hide_then_show
-    sleep 1.5
-
-    assert_empty recorded_events,
-      "a long hide reloaded the page even though the cable survived it"
-  end
-
-  test "a socket that really died is reloaded and comes back live" do
-    session = create_session
-    visit session_path(session)
-    wait_for_turbo_streams_connected
-
-    tune_recovery(stale_after: 0)
-    instrument_page
-    spy_on_reopen
-
-    kill_cable_socket
-    reopen_from_bfcache
-
-    assert wait_for_event("turbo:visit"),
-      "a reopen with a dead cable left the page stale instead of re-rendering it"
-
-    # `pageshow` alone does not trip ActionCable's own visibility monitor, so
-    # this call can only have come from the controller.
-    assert_equal 1, reopen_calls,
-      "the controller did not reopen the consumer, so live updates depended entirely on the re-render"
-
-    # And the point of all of it: updates broadcast from the server land in the
-    # DOM again afterwards.
-    wait_for_reloaded_page_to_go_live
-    session.update!(status: :needs_input)
-    assert_selector "[id='session_#{session.id}_status_badge']", text: "Needs Input", wait: 15
-  end
-
-  test "a socket found dead on becoming visible is recovered the same way" do
-    session = create_session
-    visit session_path(session)
-    wait_for_turbo_streams_connected
-
-    tune_recovery(stale_after: 0)
-    instrument_page
-
-    kill_cable_socket
-    hide_then_show
-
-    assert wait_for_event("turbo:visit"),
-      "a stale visibility return left the page stale instead of re-rendering it"
-
-    wait_for_reloaded_page_to_go_live
-    session.update!(status: :needs_input)
-    assert_selector "[id='session_#{session.id}_status_badge']", text: "Needs Input", wait: 15
+    assert_empty recoveries, "a hide shorter than staleAfter recovered anyway"
+    assert_empty recorded_events, "a hide shorter than staleAfter reloaded the page"
+    assert same_document?
   end
 end

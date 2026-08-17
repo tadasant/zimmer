@@ -108,7 +108,7 @@
     <%# The id is the stream target SessionsController#restored_card_stream
         prepends an undone trash into, so an Undo lands the card back in its own
         category rather than the Uncategorized bucket. %>
-    <div id="category_grid_<%= category.id %>"
+    <div id="category_grid_<%= category.id %>" data-live-region="sync"
          class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
          data-category-dnd-target="list"
          data-category-id="<%= category.id %>">
