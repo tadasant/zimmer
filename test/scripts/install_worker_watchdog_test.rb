@@ -122,7 +122,10 @@ class InstallWorkerWatchdogTest < ActiveSupport::TestCase
       assert_match(/Watchdog armed on testhost/, out)
 
       option_lists = host.ssh_option_lists
-      assert_operator option_lists.length, :>=, 5, "expected the installer to talk to the host"
+      # An exact count, not a lower bound: dropping one of these -- the first run that
+      # proves the probe can execute, the timer's is-active check -- is a regression the
+      # converge would otherwise report as success.
+      assert_equal 8, option_lists.length, "the installer's conversation with the host changed"
       option_lists.each do |opts|
         # `run_q` closes stdin with -n; everything else is the pinned list, unchanged.
         assert_equal BASE_SSH_OPTS, opts.reject { |arg| arg == "-n" }
@@ -182,12 +185,14 @@ class InstallWorkerWatchdogTest < ActiveSupport::TestCase
     end
   end
 
-  test "an empty ZIMMER_WATCHDOG_SSH_EXTRA is inert" do
-    with_host do |host|
-      code, out = host.converge(env: { "ZIMMER_WATCHDOG_SSH_EXTRA" => "" })
+  test "an empty or whitespace-only ZIMMER_WATCHDOG_SSH_EXTRA is inert" do
+    [ "", "   " ].each do |value|
+      with_host do |host|
+        code, out = host.converge(env: { "ZIMMER_WATCHDOG_SSH_EXTRA" => value })
 
-      assert_equal 0, code, out
-      host.ssh_option_lists.each { |opts| assert_equal BASE_SSH_OPTS, opts.reject { |a| a == "-n" } }
+        assert_equal 0, code, out
+        host.ssh_option_lists.each { |opts| assert_equal BASE_SSH_OPTS, opts.reject { |a| a == "-n" } }
+      end
     end
   end
 
@@ -248,6 +253,7 @@ class InstallWorkerWatchdogTest < ActiveSupport::TestCase
 
       assert_equal 0, host.converge(env: { "ZIMMER_WATCHDOG_RECOVER" => "1" }).first
       assert_match(/^ZIMMER_WATCHDOG_RECOVER=1$/, host.read(DEFAULTS_PATH))
+      assert_match(/MANAGED BY THE DEPLOY/, host.read(DEFAULTS_PATH))
     end
   end
 
