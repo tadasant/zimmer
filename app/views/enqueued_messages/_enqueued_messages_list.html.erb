@@ -1,7 +1,7 @@
 <%# Enqueued messages list - shown above follow-up form %>
 <% messages = agent_session.enqueued_messages.pending.ordered %>
 <% if messages.any? %>
-  <div id="session_<%= agent_session.id %>_enqueued_messages"
+  <div id="session_<%= agent_session.id %>_enqueued_messages" data-live-region="replace"
        class="bg-white border-t border-gray-200 shadow-sm"
        data-controller="enqueued-messages-panel"
        data-enqueued-messages-panel-session-id-value="<%= agent_session.id %>">
@@ -47,5 +47,5 @@
   </div>
 <% else %>
   <!-- Empty state - no enqueued messages -->
-  <div id="session_<%= agent_session.id %>_enqueued_messages" class="hidden"></div>
+  <div id="session_<%= agent_session.id %>_enqueued_messages" class="hidden" data-live-region="replace"></div>
 <% end %>
