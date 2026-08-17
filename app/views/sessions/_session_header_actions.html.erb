@@ -1,6 +1,6 @@
 <%# Action buttons section - broadcast target for real-time updates %>
 <%# This partial contains all action buttons that depend on session state %>
-<div id="session_<%= agent_session.id %>_header_actions" class="flex flex-wrap gap-2 items-center ml-auto">
+<div id="session_<%= agent_session.id %>_header_actions" data-live-region="replace" class="flex flex-wrap gap-2 items-center ml-auto">
   <!-- Favorite Star Button -->
   <%= link_to toggle_favorite_session_path(agent_session), data: { turbo_method: :patch }, class: "inline-flex items-center justify-center w-10 h-10 rounded-full hover:bg-gray-100 transition-colors #{agent_session.favorited? ? 'text-yellow-500' : 'text-gray-300 hover:text-yellow-500'}", title: agent_session.favorited? ? "Remove from favorites" : "Add to favorites", "aria-label" => agent_session.favorited? ? "Remove from favorites" : "Add to favorites", "aria-pressed" => agent_session.favorited?.to_s do %>
     <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
