@@ -171,12 +171,13 @@ alone matches staging records identically to production ones. Zimmer emits the l
 cannot enforce that the alert rules on the other side filter by it. Those rules live in a separate
 repository.
 
-### Every agent-session clone carries the Slack bot token and the alert channel id
+### Every agent-session clone carries the Slack bot token, the alert channel id, and the operator's user id
 
 `AgentSessionJob#inject_secrets_to_env_file` writes `SecretsLoader.all` — the whole credential bundle
-— into each clone's `.env`, and that bundle includes `SLACK_BOT_TOKEN` and
-`ENG_ALERTS_SLACK_CHANNEL_ID`. Anything an agent runs inside its clone can therefore post to the real
-alert channel as the real bot. An agent's shell also has no `RAILS_ENV`, so a clone that boots Zimmer
+— into each clone's `.env`, and that bundle includes `SLACK_BOT_TOKEN`,
+`ENG_ALERTS_SLACK_CHANNEL_ID` and `OPERATOR_SLACK_USER_ID`. Anything an agent runs inside its clone
+can therefore post to the real alert channel as the real bot, and — since the operator's user id
+travels with the token that can DM them — DM the operator directly. An agent's shell also has no `RAILS_ENV`, so a clone that boots Zimmer
 boots it as `development`.
 
 That combination is what fired in [#272](https://github.com/tadasant/zimmer/issues/272): a clone

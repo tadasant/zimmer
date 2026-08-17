@@ -30,6 +30,17 @@ Rails.application.config.after_initialize do
     next
   end
 
+  # Separate from the channel check below: an instance can be perfectly able to
+  # page #eng-alerts and still have no operator to DM, and the DM path is the
+  # only signal for a needs_reauth account. Silence there looks identical to
+  # "no account has died yet", so say it at boot.
+  if AlertService.operator_user_id.blank?
+    Rails.logger.warn(
+      "[AlertServiceHealthCheck] #{AlertService::OPERATOR_USER_ID_KEY} is not set — operator DMs " \
+      "(e.g. an account falling into needs_reauth) will be logged and dropped."
+    )
+  end
+
   unless AlertService.configured?
     details = AlertService.missing_configuration_details
 

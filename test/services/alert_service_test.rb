@@ -493,6 +493,148 @@ class AlertServiceTest < ActiveSupport::TestCase
     result = AlertService.raise_alert("Test alert")
     assert_not result
   end
+
+  # === dm_operator ===
+
+  def stub_operator_dm
+    SlackService.stubs(:configured?).returns(true)
+    SecretsLoader.stubs(:get).with("OPERATOR_SLACK_USER_ID").returns("U_TADAS")
+  end
+
+  test "dm_operator opens a DM with the configured operator and posts there" do
+    stub_operator_dm
+    SlackService.expects(:send_dm).with { |args|
+      args[:user_id] == "U_TADAS" &&
+        args[:text].include?("Account is dead") &&
+        args[:text].include?("go re-auth") &&
+        args[:blocks].is_a?(Array)
+    }.returns(true)
+
+    assert AlertService.dm_operator(
+      "Account is dead",
+      details: "go re-auth",
+      source: "ClaudeAccount",
+      dedup_key: "acct:1"
+    )
+  end
+
+  test "dm_operator tags the environment onto the DM like a channel alert" do
+    stub_operator_dm
+    SlackService.expects(:send_dm).with { |args|
+      header = args[:blocks].first
+      header[:type] == "header" && header[:text][:text].include?("[test]")
+    }.returns(true)
+
+    AlertService.dm_operator("Account is dead", details: "d", dedup_key: "acct:1")
+  end
+
+  test "dm_operator suppresses a repeat for the same dedup key" do
+    stub_operator_dm
+    SlackService.expects(:send_dm).once.returns(true)
+
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+    assert_not AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "dm_operator does not collapse two different subjects" do
+    stub_operator_dm
+    SlackService.expects(:send_dm).twice.returns(true)
+
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:2")
+  end
+
+  test "the operator DM window is far longer than the channel alert window" do
+    # A DM is a nag at one person about something only they can fix, so it must
+    # not re-fire on the hourly clock the channel feed uses.
+    assert_operator AlertService::OPERATOR_DM_DEDUP_WINDOW, :>, AlertService::DEDUP_WINDOW
+  end
+
+  test "dm_operator writes its suppression with the DM window, not the channel one" do
+    stub_operator_dm
+    SlackService.stubs(:send_dm).returns(true)
+    Rails.cache.expects(:write)
+      .with("alert_service:dedup:acct:1", true, expires_in: AlertService::OPERATOR_DM_DEDUP_WINDOW)
+      .returns(true)
+
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "dm_operator honours a caller-supplied dedup window" do
+    stub_operator_dm
+    SlackService.stubs(:send_dm).returns(true)
+    Rails.cache.expects(:write)
+      .with("alert_service:dedup:acct:1", true, expires_in: 30.minutes)
+      .returns(true)
+
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:1", dedup_window: 30.minutes)
+  end
+
+  test "clear_dm_suppression lets the next occurrence through immediately" do
+    stub_operator_dm
+    SlackService.expects(:send_dm).twice.returns(true)
+
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+    AlertService.clear_dm_suppression("acct:1")
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "clear_dm_suppression survives a broken cache" do
+    Rails.cache.stubs(:delete).raises(StandardError.new("redis down"))
+
+    assert_nothing_raised { AlertService.clear_dm_suppression("acct:1") }
+  end
+
+  test "dm_operator returns false when no operator user ID is configured" do
+    SlackService.stubs(:configured?).returns(true)
+    SecretsLoader.stubs(:get).with("OPERATOR_SLACK_USER_ID").returns(nil)
+    ENV.stubs(:[]).with("OPERATOR_SLACK_USER_ID").returns(nil)
+    SlackService.expects(:send_dm).never
+
+    assert_not AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "dm_operator returns false when Slack is not configured" do
+    SlackService.stubs(:configured?).returns(false)
+    SecretsLoader.stubs(:get).with("OPERATOR_SLACK_USER_ID").returns("U_TADAS")
+    SlackService.expects(:send_dm).never
+
+    assert_not AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "dm_operator swallows a Slack failure rather than raising into the caller" do
+    stub_operator_dm
+    SlackService.stubs(:send_dm).raises(SlackService::ApiError, "channel_not_found")
+
+    assert_not AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "a failed DM records no suppression, so the next attempt still goes out" do
+    stub_operator_dm
+    SlackService.stubs(:send_dm).raises(SlackService::ApiError, "channel_not_found")
+    assert_not AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+
+    SlackService.unstub(:send_dm)
+    SlackService.expects(:send_dm).once.returns(true)
+    assert AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "dm_operator does not send when this instance may not page" do
+    AlertService.stubs(:enabled?).returns(false)
+    SlackService.expects(:send_dm).never
+
+    assert_not AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+  end
+
+  test "dm_operator is not collapsed by an open AlertBatcher" do
+    stub_operator_dm
+    SlackService.expects(:send_dm).twice.returns(true)
+
+    AlertBatcher.with_batch do
+      AlertService.dm_operator("t", details: "d", dedup_key: "acct:1")
+      AlertService.dm_operator("t", details: "d", dedup_key: "acct:2")
+    end
+  end
 end
 
 # The environment gate: which instances are allowed to page the alert channel.

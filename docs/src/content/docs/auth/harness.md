@@ -317,6 +317,77 @@ the sweep is the thing that has stopped. Only the account — the sessions parke
 the sweep's `wake_parked_sessions!` or their own timer, because resuming sessions is not something a
 page render should do.
 
+### A dead account tells you so
+
+`needs_reauth` is the one account failure Zimmer cannot recover from. The refresh token is
+permanently invalid, the pool quietly stops drawing on the account, and everything keeps working —
+with a smaller pool. Nothing surfaces it: the failure is logged at `.warn` precisely so it does *not*
+page `#eng-alerts` (a channel alert for a condition only a human can clear is noise), and
+`recover_needs_reauth` re-probes it forever without ever succeeding. The account just sits dead on
+`/quotas` until somebody happens to open the page.
+
+So Zimmer DMs you. When a `ClaudeAccount` crosses **into** `needs_reauth`, an
+`after_update_commit` callback enqueues `AccountReauthAlertJob`, which calls
+`AccountReauthNotifier` → `AlertService.dm_operator`. The DM names the account and the runtime and
+links to `/quotas`. It goes to `OPERATOR_SLACK_USER_ID`; unset, the DM is logged and dropped and
+nothing else changes.
+
+The transition is **latched during the save** (`after_update`) and only acted on after the commit,
+which is not ceremony. `reload` nils `@mutations_before_last_save`, so a commit-time
+`saved_change_to_status?` answers "nothing changed" whenever anything reloaded the record between the
+write and the commit. `RefreshRuntimeAuthTokensJob` does exactly that: it wraps the refresh in an
+outer `account.with_lock`, and `ClaudeAuthProvider#refresh!` reloads on its failure branch to decide
+whether the error is `:needs_reauth` or `:transient`. `with_lock` opens a transaction without
+`requires_new`, so `refresh_token!`'s inner lock joins it and the commit callback does not run until
+that outer transaction commits — long after the reload. Asking at commit time meant the
+every-5-minutes sweep, the likeliest discoverer of a dead refresh token, never DM'd at all. A plain
+ivar survives `reload`; the dirty state does not.
+
+A model callback rather than instrumentation at the sites that condemn an account, so no path can
+forget to alert — including the Administrate admin form, which no service-level hook would see. Two
+writes deliberately do *not* alert, and both fall out of that placement:
+
+- **Creation.** `after_update_commit` does not fire on insert, so the credential-less account
+  `/quotas` seeds directly into `needs_reauth` stays silent. The human is on the page adding it.
+- **Recovery restores.** `recover_needs_reauth` flips an already-dead account to `active` so
+  `refresh_token!` is not status-blocked, then writes `needs_reauth` back with `update_columns` when
+  the probe fails. `update_columns` skips callbacks, so that no-op round trip is silent — and the
+  probe itself cannot condemn the account either, since `recovery_probe: true` returns before the
+  permanent-failure branch. Without both, every recovery sweep would look like a fresh failure.
+
+On top of that, `AlertService` suppresses a repeat DM about the same account for
+`OPERATOR_DM_DEDUP_WINDOW` (12 hours) — much longer than the hourly window the channel feed uses,
+because a DM is a nag at one person about something that stays broken until they act.
+
+**Only a human re-authenticating drops that suppression**, from `ClaudeLoginDriver#capture!` and its
+Codex twin — not from the status callback. That looks like the more obvious place and is a trap:
+`sync_from_filesystem!` resurrects the on-disk credential owner to `active` with a plain `update!`,
+including a `needs_reauth` row whose dead-but-complete tokens are still sitting in the credentials
+file, and `ensure_active_account!` runs that before every session spawn. Clearing there would drop
+the backstop moments before `usable_candidate?` re-condemns the same account — one DM per spawn
+attempt on a drained pool, which is the exact flood the window exists to prevent. The cost of the
+narrower rule is that an account the recovery sweep fixes automatically, which then dies again
+inside 12 hours, waits out the window before it can DM again.
+
+A failed DM can never take down the auth path: `dm_operator` swallows its own errors and returns
+`false`, the job does no work worth retrying, and the callback rescues anything the enqueue itself
+raises.
+
+```mermaid
+flowchart LR
+    R[refresh_token! hits a<br/>permanent failure] -->|update!| S[status = needs_reauth]
+    S --> L[after_update:<br/>latch the transition]
+    L -.->|a reload here would erase<br/>the dirty state; the ivar survives| L
+    L --> C[after_update_commit]
+    C --> J[AccountReauthAlertJob]
+    J --> N[AccountReauthNotifier]
+    N --> D{suppressed<br/>&lt;12h?}
+    D -->|yes| X[drop]
+    D -->|no| DM[Slack DM → OPERATOR_SLACK_USER_ID]
+    RC[recover_needs_reauth<br/>restore] -.->|update_columns:<br/>skips callbacks| S
+    H[human re-auths<br/>LoginDriver#capture!] -->|clear_dm_suppression| D
+```
+
 ### An account can be capped without ever having been current
 
 `mark_quota_exceeded!` used to fire only on the account that was current when a session hit a wall.
