@@ -98,6 +98,38 @@ class AuthOutageParkService
   # had a chance to flip the accounts back to active.
   RESET_BUFFER = 2.minutes
 
+  # Consecutive quota parks a session has spent, and the rolling window they are
+  # counted over.
+  #
+  # A quota park's retry time is only as good as the pool's estimate of when it
+  # will recover, and that estimate can be wrong in the one direction that hurts:
+  # too soon. When it is, the session wakes into the same exhausted pool, parks
+  # again on the same estimate, and repeats — and each turn of that loop costs an
+  # AgentSessionJob on the 16-thread `agents` queue, a SendPushNotificationJob on
+  # the 4-thread `default` queue, and a Trigger. One session doing this is noise;
+  # the whole parked population doing it in lockstep, because one outage parked
+  # them all within seconds of each other, is a queue backlog.
+  #
+  # So each consecutive park inside the window doubles the floor under the retry:
+  # 5m, 10m, 20m, 40m, and on up to MAX_RETRY_DELAY. A pool that really is about
+  # to recover still gets its fast first retry; one that is not stops being
+  # probed every five minutes by every session at once.
+  #
+  # Deliberately NOT in OUTAGE_METADATA_KEYS, for the same reason
+  # EARLY_WAKE_LOG_KEY is not: the log has to survive the resume it throttles, or
+  # every park would start from a clean slate and the backoff would bound nothing.
+  QUOTA_PARK_LOG_KEY = "auth_outage_quota_parks"
+  QUOTA_PARK_WINDOW = 6.hours
+  MAX_QUOTA_PARK_BACKOFF_STEPS = 6
+
+  # Sessions parked by a single outage are parked within seconds of each other
+  # and, without this, compute retry times within seconds of each other — so they
+  # wake as a herd onto a queue sized for 16 concurrent agents. A bounded random
+  # offset spreads the wake-ups across a few minutes, which costs no session
+  # anything it would notice and costs the queue the difference between a spike
+  # and a ramp.
+  RETRY_JITTER = 3.minutes
+
   attr_reader :session, :log_buffer
 
   def initialize(session, log_buffer: nil, logger: nil)
@@ -242,6 +274,18 @@ class AuthOutageParkService
     end
   end
 
+  # This session's quota parks still inside the rolling window, oldest first.
+  # Doubles as the pruner: what it returns is what gets written back, so a park
+  # that has aged out of QUOTA_PARK_WINDOW stops counting against the floor.
+  def self.recent_quota_parks(session)
+    cutoff = QUOTA_PARK_WINDOW.ago
+
+    Array(session.metadata&.dig(QUOTA_PARK_LOG_KEY)).filter_map do |stamp|
+      at = Time.zone.parse(stamp.to_s) rescue nil
+      at if at && at > cutoff
+    end
+  end
+
   # A digest of the credentials that can serve this runtime right now: every
   # available account's id paired with a digest of its stored oauth_config.
   #
@@ -355,7 +399,26 @@ class AuthOutageParkService
     known = (reason == QUOTA_EXHAUSTED) ? earliest_pool_reset : nil
     target = known ? known + RESET_BUFFER : DEFAULT_RETRY_DELAY.from_now
 
-    target.clamp(MIN_RETRY_DELAY.from_now, MAX_RETRY_DELAY.from_now)
+    floor = (reason == QUOTA_EXHAUSTED) ? quota_retry_floor : MIN_RETRY_DELAY
+    target = target.clamp(floor.from_now, MAX_RETRY_DELAY.from_now)
+
+    # Jitter lands after the clamp on purpose. Applied before it, the floor would
+    # swallow it whole in exactly the case that most needs the spread: a whole
+    # population parked together and pinned to the same minimum.
+    (target + rand(RETRY_JITTER.to_i)).clamp(floor.from_now, MAX_RETRY_DELAY.from_now)
+  end
+
+  # The floor under a quota park's retry, widened by one doubling for each
+  # consecutive park this session has already spent inside QUOTA_PARK_WINDOW.
+  #
+  # Held at or below the ceiling: `clamp` raises when its low bound is above its
+  # high one, and the caller's rescue would turn that into a session parked with
+  # no retry at all. The two constants leave room today, so this is a guard
+  # against a later change to either, not a live condition.
+  def quota_retry_floor
+    steps = [ self.class.recent_quota_parks(session).size, MAX_QUOTA_PARK_BACKOFF_STEPS ].min
+
+    [ MIN_RETRY_DELAY * (2**steps), MAX_RETRY_DELAY ].min
   end
 
   def earliest_pool_reset
@@ -366,10 +429,23 @@ class AuthOutageParkService
       snapshot = account.latest_snapshot
       next unless snapshot
 
-      # An account whose resets are both in the past is the one the next
-      # QuotaResetCheckerJob tick will restore, so it clears at "now" — dropping
-      # it would compute the retry from some other account hours out.
-      [ snapshot.reset_5h, snapshot.reset_7d ].compact.select { |t| t > Time.current }.max || Time.current
+      future = [ snapshot.reset_5h, snapshot.reset_7d ].compact.select { |t| t > Time.current }.max
+      next future if future
+
+      # No future reset stamp. That reads as "clears now" only if the healer
+      # agrees, because the healer is what would make it true: QuotaResetCheckerJob
+      # restores an account when its snapshot is #windows_clear?.
+      #
+      # For a stamp that has genuinely passed the two agree — the sliding window
+      # turned over, ClaudeAccountQuotaSnapshot.effective_utilization discounts
+      # the counter to zero, and the next tick restores the account. They part
+      # company on a snapshot carrying NO stamps at all, which is a real reading:
+      # with no reset time to have passed, the weekly counter still stands, so
+      # #seven_day_window_spent? holds and the account stays exceeded. Calling
+      # that "now" pins every parked session to the retry floor and wakes them
+      # all back into the same exhausted pool five minutes later. Its reset time
+      # is simply unknown, and DEFAULT_RETRY_DELAY is what unknown means here.
+      Time.current if snapshot.windows_clear?
     end
 
     per_account.min
@@ -399,7 +475,21 @@ class AuthOutageParkService
       # would clobber it — and pending_sleep is the whole mechanism by which a
       # parked session actually goes dormant.
       session.reload
-      session.update!(metadata: (session.metadata || {}).merge(outage))
+      metadata = (session.metadata || {}).merge(outage)
+
+      # Charge this park to the backoff log, reading the reloaded row so the
+      # count is the parks spent BEFORE this one — which is what
+      # #quota_retry_floor already priced the retry on. Trimmed to the number of
+      # doublings the floor can actually use, so the list cannot grow with a
+      # session that parks its way through a long outage.
+      if reason == QUOTA_EXHAUSTED
+        metadata[QUOTA_PARK_LOG_KEY] =
+          (self.class.recent_quota_parks(session) + [ Time.current ])
+            .last(MAX_QUOTA_PARK_BACKOFF_STEPS)
+            .map { |at| at.utc.iso8601 }
+      end
+
+      session.update!(metadata: metadata)
     end
   end
 

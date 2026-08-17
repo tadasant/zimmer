@@ -27,18 +27,28 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     AuthOutageParkService.new(@session).park!(reason: reason, detail: detail)
   end
 
-  def create_account(email:, status:, reset_5h: nil, reset_7d: nil)
+  def create_account(email:, status:, reset_5h: nil, reset_7d: nil,
+    utilization_5h: 1.0, utilization_7d: 1.0, snapshot: nil)
     account = ClaudeAccount.create!(
       email: email,
       status: status,
       runtime: "claude_code",
       oauth_config: { "credentials_json" => { "claudeAiOauth" => { "accessToken" => "tok" } } }
     )
-    if reset_5h || reset_7d
+    # A snapshot with no reset stamps at all is a real reading, and the one this
+    # service used to misread, so it has to be constructible here.
+    snapshot = reset_5h.present? || reset_7d.present? if snapshot.nil?
+    if snapshot
       account.quota_snapshots.create!(reset_5h: reset_5h, reset_7d: reset_7d,
-        utilization_5h: 1.0, utilization_7d: 1.0)
+        utilization_5h: utilization_5h, utilization_7d: utilization_7d)
     end
     account
+  end
+
+  # RETRY_JITTER is added after the clamp, so every retry assertion has to
+  # tolerate it. Bundled here so the number appears once.
+  def jitter_delta(base = 60)
+    base + AuthOutageParkService::RETRY_JITTER.to_i
   end
 
   # ===========================================================================
@@ -128,7 +138,8 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     retry_at = park!
 
-    assert_in_delta (3.hours.from_now + AuthOutageParkService::RESET_BUFFER).to_i, retry_at.to_i, 60
+    assert_in_delta (3.hours.from_now + AuthOutageParkService::RESET_BUFFER).to_i, retry_at.to_i,
+      jitter_delta
   end
 
   test "falls back to the default delay when no snapshot carries a reset time" do
@@ -136,7 +147,8 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     retry_at = park!
 
-    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i, 60
+    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i,
+      jitter_delta
   end
 
   test "clamps a reset time that has effectively already passed up to the floor" do
@@ -165,7 +177,137 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     retry_at = park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
 
-    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i, 60
+    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i,
+      jitter_delta
+  end
+
+  # =========================================================================
+  # Retry backoff — the 2026-08-17 queue backlog
+  # =========================================================================
+  #
+  # A snapshot carrying NO reset stamps is the shape that broke this. Its weekly
+  # counter still reads as spent — .effective_utilization only discounts a
+  # counter once a reset time has actually passed, and there is no time here to
+  # pass — so #windows_clear? is false and QuotaResetCheckerJob correctly leaves
+  # the account exceeded. Reading the absent stamps as "clears now" pinned every
+  # parked session to the 5-minute floor, so the whole parked population woke
+  # into the same exhausted pool and re-parked, every five minutes, indefinitely.
+  # On 2026-08-17 that put 148 sessions through 368 parks in 40 minutes and 377
+  # jobs into the ready queue.
+  test "an exceeded account the healer will not restore does not read as clearing now" do
+    account = create_account(email: "nostamps@example.com", status: :quota_exceeded,
+      reset_5h: nil, reset_7d: nil, utilization_7d: 1.0, snapshot: true)
+    assert_not account.latest_snapshot.windows_clear?,
+      "fixture must be an account the healer would decline to restore"
+
+    retry_at = park!
+
+    assert retry_at > 30.minutes.from_now,
+      "An account the next QuotaResetCheckerJob tick will leave exceeded must not " \
+      "produce a five-minute retry — that is the re-park loop"
+    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i,
+      jitter_delta
+  end
+
+  # The counterpart the fix must not break: a stamp that really has passed means
+  # the sliding window turned over, so the healer will restore this account on
+  # its next tick and "now" is the honest answer.
+  test "an exceeded account the healer would restore still clears at now" do
+    account = create_account(email: "clearing@example.com", status: :quota_exceeded,
+      reset_5h: 1.hour.ago, reset_7d: 1.hour.ago)
+    assert account.latest_snapshot.windows_clear?,
+      "fixture must be an account the healer would restore on its next tick"
+
+    retry_at = park!
+
+    assert retry_at <= jitter_delta(AuthOutageParkService::MIN_RETRY_DELAY.to_i).seconds.from_now,
+      "A pool about to recover keeps its fast first retry"
+  end
+
+  test "each consecutive quota park doubles the floor under the retry" do
+    create_account(email: "nosnap@example.com", status: :quota_exceeded)
+
+    floors = 3.times.map do |i|
+      @session.update!(metadata: (@session.metadata || {}).merge(
+        AuthOutageParkService::QUOTA_PARK_LOG_KEY => Array.new(i) { |n| (n + 1).minutes.ago.utc.iso8601 }
+      ))
+      AuthOutageParkService.new(@session).send(:quota_retry_floor)
+    end
+
+    assert_equal [ 5.minutes, 10.minutes, 20.minutes ], floors
+  end
+
+  test "the backoff floor stops doubling at MAX_QUOTA_PARK_BACKOFF_STEPS" do
+    stamps = Array.new(50) { |n| (n + 1).minutes.ago.utc.iso8601 }
+    @session.update!(metadata: (@session.metadata || {}).merge(
+      AuthOutageParkService::QUOTA_PARK_LOG_KEY => stamps
+    ))
+
+    expected = AuthOutageParkService::MIN_RETRY_DELAY *
+      (2**AuthOutageParkService::MAX_QUOTA_PARK_BACKOFF_STEPS)
+    assert_equal expected, AuthOutageParkService.new(@session).send(:quota_retry_floor)
+  end
+
+  test "parks outside the rolling window stop counting against the floor" do
+    @session.update!(metadata: (@session.metadata || {}).merge(
+      AuthOutageParkService::QUOTA_PARK_LOG_KEY => [
+        (AuthOutageParkService::QUOTA_PARK_WINDOW + 1.hour).ago.utc.iso8601,
+        (AuthOutageParkService::QUOTA_PARK_WINDOW + 2.hours).ago.utc.iso8601
+      ]
+    ))
+
+    assert_equal AuthOutageParkService::MIN_RETRY_DELAY,
+      AuthOutageParkService.new(@session).send(:quota_retry_floor)
+  end
+
+  test "a quota park records itself in the backoff log, trimmed to the steps the floor uses" do
+    create_account(email: "nosnap@example.com", status: :quota_exceeded)
+    cap = AuthOutageParkService::MAX_QUOTA_PARK_BACKOFF_STEPS
+    @session.update!(metadata: (@session.metadata || {}).merge(
+      AuthOutageParkService::QUOTA_PARK_LOG_KEY => Array.new(cap + 3) { |n| (n + 1).minutes.ago.utc.iso8601 }
+    ))
+
+    park!
+
+    log = @session.reload.metadata[AuthOutageParkService::QUOTA_PARK_LOG_KEY]
+    assert_equal cap, log.size
+  end
+
+  # The backoff log is what throttles the resume, so a resume that cleared it
+  # would hand every re-park a clean slate and bound nothing.
+  test "the backoff log survives the resume it throttles" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!
+    assert @session.reload.metadata[AuthOutageParkService::QUOTA_PARK_LOG_KEY].present?
+
+    AuthOutageParkService.wake_parked_sessions!
+
+    assert @session.reload.metadata[AuthOutageParkService::QUOTA_PARK_LOG_KEY].present?,
+      "clearing the log on resume would let a session re-park at the floor forever"
+    assert_not_includes AuthOutageParkService::OUTAGE_METADATA_KEYS,
+      AuthOutageParkService::QUOTA_PARK_LOG_KEY
+    assert_not_includes Session::STALE_RETRY_METADATA_KEYS,
+      AuthOutageParkService::QUOTA_PARK_LOG_KEY
+  end
+
+  # 148 sessions parked within seconds of each other must not wake within seconds
+  # of each other onto a queue sized for 16 concurrent agents.
+  test "retry times are jittered so a parked population does not wake as a herd" do
+    create_account(email: "nosnap@example.com", status: :quota_exceeded)
+
+    retries = 25.times.map do
+      session = Session.create!(
+        prompt: "Test prompt", agent_runtime: "claude_code", status: :running,
+        git_root: "https://github.com/test/repo.git", branch: "main",
+        execution_provider: "local_filesystem", session_id: SecureRandom.uuid,
+        metadata: { "clone_path" => "/tmp/c", "working_directory" => "/tmp/c" }
+      )
+      AuthOutageParkService.new(session).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    end.compact
+
+    assert retries.map(&:to_i).uniq.size > 1,
+      "every session computing the same retry second is the thundering herd"
   end
 
   # ===========================================================================
@@ -503,7 +645,8 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     retry_at = park!
 
-    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i, 60
+    assert_in_delta AuthOutageParkService::DEFAULT_RETRY_DELAY.from_now.to_i, retry_at.to_i,
+      jitter_delta
     assert_match(/Codex/, @session.logs.where(level: "error").last.content)
   end
 end
