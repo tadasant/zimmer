@@ -604,6 +604,35 @@ cleared by any clean poll). Every condition stuck on it stamps no heartbeat at a
 [background jobs](/operate/background-jobs/#trigger-poll-liveness).
 :::
 
+:::note[A request that fails is retried before it pages — and pages just as loudly if it keeps failing]
+The same nuance, for the request that does not come back at all. GitHub's API has bad minutes: over
+one week in August 2026 a single condition's search failed with `Bad credentials (HTTP 401)`, with
+`HTTP 504`, and with a body that stopped mid-stream (`unexpected end of JSON input`) — every one of
+them cleared on the very next tick, and every one of them paged `#alerts` first. A page that arrives
+at a system which has already healed carries no action.
+
+So `GithubSearchService` re-runs the whole search on a failure that reads as GitHub's rather than
+Zimmer's (`TRANSIENT_REQUEST_RETRY_DELAYS`, 1s then 3s), logging each intermediate attempt at INFO.
+Only when the third attempt fails does a `SearchError` leave the service, and the poller then logs
+ERROR and pages exactly as it always has. **Nothing is suppressed** — a revoked credential, an
+unreachable API, a query GitHub will never answer all still page, about four seconds later than
+before, on that tick and every tick after.
+
+What is *not* retried is as deliberate:
+
+- **A failure GitHub attributes to the request.** A 4xx that is not 401, 403-as-rate-limit, 408 or
+  429 — a malformed query (422), a repo the token cannot see (404), a real permission denial — fails
+  fast, because waiting cannot change the answer. So does `gh` rejecting the command line itself.
+- **A hang.** A request killed at `REQUEST_TIMEOUT` has already spent 15s of a 60-second tick, and a
+  repeat would spend another 15s before reaching its backoff. The next tick is a better time to ask.
+
+The classification is a deny-list — retry unless the failure is recognisably Zimmer's — because two
+of the four modes production produced carry no HTTP status at all, so an allow-list of known
+signatures would keep paging for the next mode nobody has seen yet. Both retry budgets are sized
+against the tick: at most 4s here plus 2s for an incomplete index, spent per search attempt however
+many pages the search spans, so one condition cannot sleep away a minute other conditions share.
+:::
+
 ## Firing a trigger by hand
 
 A trigger does not have to wait for a condition. All three surfaces can fire one now:
