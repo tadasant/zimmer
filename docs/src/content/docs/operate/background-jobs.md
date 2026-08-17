@@ -424,6 +424,13 @@ merge gate) quietly stop firing. Two mechanisms close that:
   exit, and a **nil `Process::Status`** (`BoundedSubprocess` returns Open3's `wait_thr.value`, which is
   `nil` when the child was reaped elsewhere before its own `waitpid` — a race in the multi-threaded
   worker) both raise `SearchError` rather than crashing the tick with `undefined method 'success?' for nil`.
+  A failure that reads as *GitHub's* rather than Zimmer's — a 5xx, a 401, a body that arrived cut
+  short, an exit code we never got to read — is re-run twice first
+  (`TRANSIENT_REQUEST_RETRY_DELAYS`, 1s then 3s, logged at INFO), so a blip that clears within the
+  tick never reaches the alerting rescue at all. A hang and a rate limit are the exceptions: the
+  first has already spent `REQUEST_TIMEOUT`, the second cannot clear inside the budget and would
+  spend the quota that caused it, so both raise on the first attempt. What survives three attempts
+  raises and pages exactly as one failure used to, with the attempt count in the message.
 - **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
   (`HEARTBEAT_CACHE_KEY`) on every sweep that processes at least one condition successfully.
   `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#eng-alerts` when it is older

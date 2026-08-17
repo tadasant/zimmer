@@ -604,6 +604,49 @@ cleared by any clean poll). Every condition stuck on it stamps no heartbeat at a
 [background jobs](/operate/background-jobs/#trigger-poll-liveness).
 :::
 
+:::note[A request that fails is retried before it pages — and pages just as loudly if it keeps failing]
+The same nuance, for the request that does not come back at all. GitHub's API has bad minutes: over
+one week in August 2026 the label poller's searches failed with `Bad credentials (HTTP 401)` (both
+enabled conditions at once, 0.35s apart), with `HTTP 504`, and with a body that stopped mid-stream
+(`unexpected end of JSON input`) — every one of them cleared on the very next tick, and every one of
+them paged `#alerts` first. A page that arrives at a system which has already healed carries no
+action.
+
+So `GithubSearchService` re-runs the whole search on a failure that reads as GitHub's rather than
+Zimmer's (`TRANSIENT_REQUEST_RETRY_DELAYS`, 1s then 3s), logging each intermediate attempt at INFO.
+Only when the third attempt fails does a `SearchError` leave the service, and the poller then logs
+ERROR and pages exactly as it always has. **Nothing is suppressed** — a revoked credential, an
+unreachable API, a query GitHub will never answer all still page, about four seconds later than
+before, on that tick and every tick after. A search that fails outright *and* ends on an incomplete
+index raises the pageable `SearchError` too, not the quiet `IncompleteResultsError`: the quiet skip
+is a promise that a slow index was all that happened.
+
+What is *not* retried is as deliberate:
+
+- **A failure GitHub attributes to the request.** A 4xx other than 401 and 408 — a malformed query
+  (422), a repo the token cannot see (404), a permission denial (403) — fails fast, because waiting
+  cannot change the answer. So does `gh` rejecting the command line itself.
+- **A rate limit**, though it is transient in every other sense. The search endpoint allows 30
+  requests a minute and a secondary limit's `Retry-After` is usually 60s or more, so no retry inside
+  this budget can succeed — and since a retry re-runs the whole search, it would spend more of the
+  very quota that produced the failure. The next tick is the retry.
+- **A hang.** A request killed at `REQUEST_TIMEOUT` has already spent 15s of a 60-second tick, and a
+  repeat would spend another 15s before reaching its backoff. The next tick is a better time to ask.
+
+The classification is a deny-list — retry unless the failure is recognisably Zimmer's — because two
+of the four modes production produced carry no HTTP status at all, so an allow-list of known
+signatures would keep paging for the next mode nobody has seen yet. Where `gh` prints more than one
+status, *every* one has to be retryable: repo and label names reach the query from the trigger's
+configuration and `gh` echoes the query back in its error, so a label named `x (HTTP 503)` must not
+be able to talk a permanent 422 into a retry.
+
+Two things bound what a retry can cost. The delay lists cap the *sleeping* at 4s here plus 2s for an
+incomplete index, spent per search attempt however many pages the search spans. They say nothing
+about the requests a restart re-issues, so `TRANSIENT_RETRY_DEADLINE` (20s) caps that separately: no
+new attempt starts once a search has been running that long. Against a healthy API — these searches
+return in well under a second — neither bound is ever reached.
+:::
+
 ## Firing a trigger by hand
 
 A trigger does not have to wait for a condition. All three surfaces can fire one now:

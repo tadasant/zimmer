@@ -943,4 +943,113 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
       GithubTriggerPollerJob.incomplete_search_streak_key(trigger_conditions(:github_issue_condition).id)
     ), "the condition that polled cleanly must carry no streak at all"
   end
+
+  # ── a transient `gh` failure, end to end ──────────────────────────────────
+  #
+  # #436, driven through the whole job rather than through GithubSearchService alone,
+  # because the defect was never in one method: it was that a single non-zero exit reached
+  # perform's per-condition rescue, which pages. These two go through the real service and
+  # the real subprocess boundary, stubbing only BoundedSubprocess.
+
+  # Reduce the sweep to the label condition, so the assertions below are about it and the
+  # `gh` calls are the ones this test set up.
+  def only_label_condition!
+    Trigger.where.not(id: @label_condition.trigger_id).update_all(status: "disabled")
+  end
+
+  # A search response as `gh api` prints it, carrying one labelled PR.
+  def gh_payload(numbers)
+    items = numbers.map do |n|
+      {
+        "number" => n,
+        "title" => "Item #{n}",
+        "html_url" => "https://github.com/tadasant/zimmer/pull/#{n}",
+        "repository_url" => "https://api.github.com/repos/tadasant/zimmer",
+        "user" => { "login" => "someone" },
+        "body" => "body of #{n}",
+        "labels" => [ { "name" => "ready to merge" } ],
+        "created_at" => "2026-07-10T12:00:00Z",
+        "pull_request" => { "url" => "x" }
+      }
+    end
+
+    JSON.generate({ "total_count" => items.length, "incomplete_results" => false, "items" => items })
+  end
+
+  test "a 401 that clears on retry fires the trigger without paging anyone" do
+    # 2026-08-14T08:00:05Z in production: `gh: Bad credentials (HTTP 401)` against a
+    # credential that was valid before and after. It paged, and the condition polled
+    # cleanly on the very next tick — so the page arrived at a healed system.
+    only_label_condition!
+    GithubSearchService.stubs(:sleep)
+    BoundedSubprocess.expects(:run).twice.returns(
+      [ "", "gh: Bad credentials (HTTP 401)", fake_process_status(exitstatus: 1) ],
+      [ gh_payload([ 7 ]), "", fake_process_status(exitstatus: 0) ]
+    )
+    AlertService.expects(:raise_alert).never
+
+    assert_difference "Session.count", 1 do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    # The tick did real work: the item is in the seen-set and the heartbeat is stamped,
+    # so the health check reads this as a living poller rather than a stalled one.
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
+    assert_not_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+  end
+
+  test "a 504 during a search that ends incomplete pages, rather than skipping quietly" do
+    # The suppression a retry could have introduced, asserted where it would have bitten:
+    # #skip_incomplete_search deliberately does NOT page (the index recovers by itself), so
+    # a search that failed outright must not arrive there wearing IncompleteResultsError.
+    only_label_condition!
+    GithubSearchService.stubs(:sleep)
+    incomplete = JSON.generate({ "total_count" => 2, "incomplete_results" => true, "items" => [] })
+    failed = [ "", "gh: We couldn't respond to your request in time … (HTTP 504)", fake_process_status(exitstatus: 1) ]
+    ok = [ incomplete, "", fake_process_status(exitstatus: 0) ]
+    BoundedSubprocess.stubs(:run).returns(failed, ok, failed, ok, ok)
+
+    alerted = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerted << [ title, kwargs[:error]&.message ]
+      true
+    end
+
+    GithubTriggerPollerJob.perform_now
+
+    assert_equal 1, alerted.length, "a hard failure must page, not be absorbed as an index blip"
+    assert_equal "GitHub trigger poller error", alerted.first.first
+    assert_includes alerted.first.last, "failed outright"
+    # Not the incomplete-search escalation, whose alert would have blamed the query.
+    assert_nil Rails.cache.read(
+      GithubTriggerPollerJob.incomplete_search_streak_key(@label_condition.id)
+    ), "this is not an incomplete-index tick and must not be counted into that streak"
+  end
+
+  test "a 401 that never clears still pages, on this tick and every tick after" do
+    # The half of the fix that must not regress. A revoked credential that somehow reaches
+    # the search (rather than being caught by the `configured?` preflight) is a real
+    # failure, and retrying must delay the page by seconds — not remove it.
+    only_label_condition!
+    GithubSearchService.stubs(:sleep)
+    BoundedSubprocess.stubs(:run).returns([ "", "gh: Bad credentials (HTTP 401)", fake_process_status(exitstatus: 1) ])
+
+    alerted = []
+    AlertService.stubs(:raise_alert).with do |title, **kwargs|
+      alerted << [ title, kwargs[:error]&.message ]
+      true
+    end
+
+    assert_no_difference "Session.count" do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    assert_equal 1, alerted.length
+    assert_equal "GitHub trigger poller error", alerted.first.first
+    assert_includes alerted.first.last, "Bad credentials"
+    assert_includes alerted.first.last, "still failing after 3 attempts"
+    # No condition polled cleanly, so this sweep is not liveness either — the stale
+    # heartbeat is what escalates a total outage, per GithubTriggerHealthCheckJob.
+    assert_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+  end
 end
