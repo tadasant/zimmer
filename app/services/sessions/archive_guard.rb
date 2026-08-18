@@ -4,12 +4,14 @@ module Sessions
   # Whether a session may be archived over the messages still queued for it, and
   # what to say to the caller when it may not.
   #
-  # Archiving ends every path by which a queued message could be delivered:
-  # EnqueuedMessageProcessorService claims `pending` rows only, and the only
-  # thing that claims them for a live session is AgentSessionJob's end-of-turn
-  # drain, which an archived session never reaches. So an archive over a
-  # non-empty queue is a discard, and `Session#strand_pending_enqueued_messages`
-  # retires the rows to `undelivered` to record it.
+  # Archiving ends every path by which a queued message could be delivered.
+  # EnqueuedMessageProcessorService claims `pending` rows only, and every caller
+  # that claims them runs off a live session's turn — AgentSessionJob's
+  # end-of-turn drain, SessionRecoveryService, SessionContinuation,
+  # Sessions::InterruptService. An archived session reaches none of them. So an
+  # archive over a non-empty queue is a discard, and
+  # `Session#strand_pending_enqueued_messages` retires the rows to `undelivered`
+  # to record it.
   #
   # Recording the discard is not the same as intending it. An agent
   # self-archives because it believes its work is done, and a message that
@@ -37,10 +39,16 @@ module Sessions
       session.enqueued_messages.pending.ordered.to_a
     end
 
+    # Whether archiving would discard anything.
+    #
+    # Deliberately not `pending_messages(session).any?`: content is validated up
+    # to Session::PROMPT_MAX_LENGTH, and the bulk paths ask this per session
+    # without ever reading a body.
+    #
     # @param session [Session]
-    # @return [Boolean] whether archiving would discard anything
+    # @return [Boolean]
     def blocked?(session)
-      pending_messages(session).any?
+      session.enqueued_messages.pending.exists?
     end
 
     # The refusal an agent or API caller reads.
@@ -53,8 +61,12 @@ module Sessions
     #
     # @param session [Session]
     # @param messages [Array<EnqueuedMessage>]
+    # @param batch [Boolean] whether the caller is archiving a batch, in which
+    #   case `force` would apply to every session in it rather than this one.
+    #   A caller that reads a per-session error and does what it says would
+    #   otherwise discard queues it was never shown.
     # @return [String]
-    def refusal_message(session, messages)
+    def refusal_message(session, messages, batch: false)
       previews = messages.map { |message| "  #{message.position}. #{message.content.to_s.truncate(160)}" }
 
       [
@@ -69,7 +81,9 @@ module Sessions
         "",
         "Only if you have read the message above and are deliberately discarding it: re-call with " \
         "\"force\": true. That is not the recommended path — the message was accepted from someone who was " \
-        "told it would be delivered, and forcing throws it away."
+        "told it would be delivered, and forcing throws it away." +
+          (batch ? " On a batch archive that flag applies to every session in the batch, including ones whose " \
+                   "queued messages you have not been shown." : "")
       ].join("\n")
     end
 
@@ -87,5 +101,6 @@ module Sessions
     def message_count(messages)
       messages.one? ? "1 queued message" : "#{messages.size} queued messages"
     end
+    private_class_method :message_count
   end
 end

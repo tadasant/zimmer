@@ -451,19 +451,17 @@ module Mcp
       # queued. That records the discard; it does not make it intended.
       #
       # Every state that can archive is covered, `needs_input` and `failed`
-      # included. An earlier version exempted them on the grounds that nothing
-      # would ever drain their queues, so refusing would leave them permanently
-      # un-archivable — a real objection, and one `force` dissolves: with an
-      # opt-in override the refusal is a speed bump rather than a trap, so it
-      # can be applied wherever the discard is real rather than only where it is
-      # recoverable.
-      def refuse_archive_over_queued_messages(session, args)
+      # included. Nothing drains their queues, which makes the discard there
+      # certain rather than merely likely — and `force` is what keeps a certain
+      # discard from being a trap, so the refusal can apply wherever the loss is
+      # real rather than only where it is recoverable.
+      def refuse_archive_over_queued_messages(session, args, batch: false)
         return if boolean(args["force"])
 
         queued = Sessions::ArchiveGuard.pending_messages(session)
         return if queued.empty?
 
-        raise ToolError, Sessions::ArchiveGuard.refusal_message(session, queued)
+        raise ToolError, Sessions::ArchiveGuard.refusal_message(session, queued, batch: batch)
       end
 
       def unarchive(session)
@@ -1012,7 +1010,7 @@ module Mcp
               # discarded is no less discarded for being archived in a batch.
               # Reported per session rather than aborting the batch, and `force`
               # applies to the whole batch because the argument is one flag.
-              refuse_archive_over_queued_messages(session, args)
+              refuse_archive_over_queued_messages(session, args, batch: true)
             rescue ToolError => e
               errors << { id: session.id, error: e.message }
               next

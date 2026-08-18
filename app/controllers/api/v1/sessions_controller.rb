@@ -145,8 +145,10 @@ class Api::V1::SessionsController < Api::BaseController
   # deliberately discarding them. See Sessions::ArchiveGuard.
   def archive
     if @session.may_archive?
-      queued = Sessions::ArchiveGuard.pending_messages(@session) unless ActiveModel::Type::Boolean.new.cast(params[:force])
-      if queued.present?
+      force = ActiveModel::Type::Boolean.new.cast(params[:force])
+      queued = force ? [] : Sessions::ArchiveGuard.pending_messages(@session)
+
+      if queued.any?
         render_api_error(
           "Queued messages would be discarded",
           Sessions::ArchiveGuard.refusal_message(@session, queued),
@@ -1004,7 +1006,7 @@ class Api::V1::SessionsController < Api::BaseController
       if queued.any?
         # Reported and skipped rather than aborting the batch, matching the MCP
         # twin. `force` applies to the whole batch, not one member of it.
-        errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued) }
+        errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued, batch: true) }
       elsif session.may_archive?
         session.archive_actor = "the REST API (bulk)"
         session.archive!

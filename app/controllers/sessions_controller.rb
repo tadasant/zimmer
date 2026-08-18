@@ -780,16 +780,21 @@ class SessionsController < ApplicationController
     #
     # This is the human twin of the MCP and REST refusals; see
     # Sessions::ArchiveGuard for why the discard is worth a speed bump.
-    unless ActiveModel::Type::Boolean.new.cast(params[:force])
-      queued = Sessions::ArchiveGuard.pending_messages(@session)
-      if queued.any?
-        alert = "#{Sessions::ArchiveGuard.summary(queued)}|force_archive|#{@session.id}"
-        respond_to do |format|
-          format.turbo_stream { render turbo_stream: flash_stream(alert: alert) }
-          format.html { redirect_to @session, alert: alert }
-        end
-        return
+    refused = with_db_retry do
+      if ActiveModel::Type::Boolean.new.cast(params[:force])
+        nil
+      else
+        Sessions::ArchiveGuard.pending_messages(@session).presence
       end
+    end
+    return if refused == false
+
+    if refused
+      respond_with_flash(
+        alert: "#{Sessions::ArchiveGuard.summary(refused)}|force_archive|#{@session.id}",
+        location: @session
+      )
+      return
     end
 
     # The block returns a sentinel rather than the transition's own value: AASM's
@@ -1028,6 +1033,12 @@ class SessionsController < ApplicationController
 
     # Wrap in transaction for atomicity with retry logic
     result = with_db_retry do
+      # Reset per attempt: with_db_retry re-runs this whole block, and the
+      # transaction rolls the archives back with it, so counters carried over
+      # from a failed attempt would report work that did not happen.
+      archived_count = 0
+      skipped_with_queue = 0
+
       ActiveRecord::Base.transaction do
         sessions.each do |session|
           next if session.archived?
