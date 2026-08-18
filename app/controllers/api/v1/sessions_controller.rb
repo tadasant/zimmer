@@ -138,8 +138,25 @@ class Api::V1::SessionsController < Api::BaseController
 
   # POST /api/v1/sessions/:id/archive
   # Archive a session.
+  #
+  # Refused with 422 when messages are still queued for the session — archiving
+  # discards them, and nothing delivers a queued message once the session is in
+  # the trash. `force: true` overrides it for a caller that has read them and is
+  # deliberately discarding them. See Sessions::ArchiveGuard.
   def archive
     if @session.may_archive?
+      force = ActiveModel::Type::Boolean.new.cast(params[:force])
+      queued = force ? [] : Sessions::ArchiveGuard.pending_messages(@session)
+
+      if queued.any?
+        render_api_error(
+          "Queued messages would be discarded",
+          Sessions::ArchiveGuard.refusal_message(@session, queued),
+          status: :unprocessable_entity
+        )
+        return
+      end
+
       @session.archive_actor = "the REST API"
       @session.archive!
       render json: {
@@ -981,8 +998,16 @@ class Api::V1::SessionsController < Api::BaseController
     archived_count = 0
     errors = []
 
+    force = ActiveModel::Type::Boolean.new.cast(params[:force])
+
     sessions.each do |session|
-      if session.may_archive?
+      queued = force ? [] : Sessions::ArchiveGuard.pending_messages(session)
+
+      if queued.any?
+        # Reported and skipped rather than aborting the batch, matching the MCP
+        # twin. `force` applies to the whole batch, not one member of it.
+        errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued, batch: true) }
+      elsif session.may_archive?
         session.archive_actor = "the REST API (bulk)"
         session.archive!
         archived_count += 1

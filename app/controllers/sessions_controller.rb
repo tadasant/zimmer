@@ -772,6 +772,31 @@ class SessionsController < ApplicationController
       return
     end
 
+    # Archiving discards whatever is still queued for the session, so the first
+    # click over a non-empty queue does not archive — it says what would be lost
+    # and offers an explicit "Archive anyway", which re-posts here with `force`.
+    # Every Trash affordance (the session header, the session card, the mobile
+    # joystick) posts to this one action, so the two-step lands on all of them.
+    #
+    # This is the human twin of the MCP and REST refusals; see
+    # Sessions::ArchiveGuard for why the discard is worth a speed bump.
+    refused = with_db_retry do
+      if ActiveModel::Type::Boolean.new.cast(params[:force])
+        nil
+      else
+        Sessions::ArchiveGuard.pending_messages(@session).presence
+      end
+    end
+    return if refused == false
+
+    if refused
+      respond_with_flash(
+        alert: "#{Sessions::ArchiveGuard.summary(refused)}|force_archive|#{@session.id}",
+        location: @session
+      )
+      return
+    end
+
     # The block returns a sentinel rather than the transition's own value: AASM's
     # bang event answers `false` when the underlying save fails, which `with_db_retry`
     # also uses to mean "gave up retrying". Without the sentinel those two are one
@@ -1004,16 +1029,32 @@ class SessionsController < ApplicationController
     # Eager load logs to avoid N+1 queries
     sessions = Session.includes(:logs).where(id: session_ids)
     archived_count = 0
+    skipped_with_queue = 0
 
     # Wrap in transaction for atomicity with retry logic
     result = with_db_retry do
+      # Reset per attempt: with_db_retry re-runs this whole block, and the
+      # transaction rolls the archives back with it, so counters carried over
+      # from a failed attempt would report work that did not happen.
+      archived_count = 0
+      skipped_with_queue = 0
+
       ActiveRecord::Base.transaction do
         sessions.each do |session|
-          unless session.archived?
-            session.archive_actor = "a user in the web UI (bulk action)"
-            session.archive! if session.may_archive?
-            archived_count += 1
+          next if session.archived?
+
+          # Skipped rather than forced: a bulk selection is not a claim to have
+          # read each session's queue, and there is no per-session confirmation
+          # to hang a force on. The count is reported so the skip is not silent,
+          # and archiving one of them individually offers the "Archive anyway".
+          if Sessions::ArchiveGuard.blocked?(session)
+            skipped_with_queue += 1
+            next
           end
+
+          session.archive_actor = "a user in the web UI (bulk action)"
+          session.archive! if session.may_archive?
+          archived_count += 1
         end
       end
     end
@@ -1023,7 +1064,12 @@ class SessionsController < ApplicationController
 
     # Each archived session broadcasts its own card removal
     # (broadcast_remove_from_sessions_index), so the stream only owes the count.
-    respond_with_flash(notice: "#{archived_count} session(s) moved to trash.", location: root_path)
+    notice = "#{archived_count} session(s) moved to trash."
+    if skipped_with_queue.positive?
+      notice += " #{skipped_with_queue} skipped — they have queued messages that archiving would discard; " \
+                "archive those individually to confirm."
+    end
+    respond_with_flash(notice: notice, location: root_path)
   end
 
   # Maximum number of sessions to restart in a single bulk operation

@@ -6,27 +6,32 @@
 
     `messages` is a hash of type => message. The layout passes the real `flash`;
     a stream passes the one message it wants to show. A message may carry an
-    inline action in the form "text|action|resource_id" — currently only
-    "undo_archive", which renders the Undo button next to the text. %>
+    inline action in the form "text|action|resource_id": "undo_archive" renders
+    the Undo button, and "force_archive" renders the "Archive anyway" button
+    that re-posts the archive the queued-message guard just refused. %>
 <div id="flash" class="fixed top-4 right-4 z-50 space-y-2">
   <% messages.each do |type, message| %>
     <%
-      # Parsed from the right, and only honored when the tail is the one action
-      # that exists with a numeric id behind it. Splitting from the left would
-      # truncate any message whose own prose contains a "|" — a category named
-      # "Design|Research" would show up as "Moved to "Design".
+      # Parsed from the right, and only honored when the tail is one of the
+      # actions that exist with a numeric id behind it. Splitting from the left
+      # would truncate any message whose own prose contains a "|" — a category
+      # named "Design|Research" would show up as "Moved to "Design".
       raw_message = message.to_s
       head, _, resource_id = raw_message.rpartition("|")
       display_message, _, action = head.rpartition("|")
 
-      unless action == "undo_archive" && resource_id.match?(/\A\d+\z/)
+      unless %w[undo_archive force_archive].include?(action) && resource_id.match?(/\A\d+\z/)
         display_message = raw_message
         action = nil
         resource_id = nil
       end
     %>
+    <%# A flash carrying an action holds an affordance the reader has to decide
+        about, so it does not vanish on the 5-second timer a bare notice uses:
+        "Archive anyway" behind a confirm dialog is not a five-second decision,
+        and "Undo" reads better with room to spare too. %>
     <div data-controller="flash"
-         data-flash-duration-value="5000"
+         data-flash-duration-value="<%= action ? 30_000 : 5000 %>"
          class="bg-white shadow-lg rounded-lg px-6 py-4 max-w-md transform transition-all duration-300 ease-in-out <%= type.to_s == 'notice' ? 'border-l-4 border-green-500' : 'border-l-4 border-red-500' %>">
       <div class="flex items-start">
         <div class="flex-1">
@@ -41,6 +46,16 @@
               <%= button_to "Undo", undo_archive_session_path(resource_id),
                   method: :post,
                   class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+            </div>
+          <% end %>
+          <%# The deliberate discard. Red rather than indigo, and worded as the
+              throwing-away it is, because the first click already declined it. %>
+          <% if action == "force_archive" && resource_id.present? %>
+            <div class="mt-3">
+              <%= button_to "Archive anyway", archive_session_path(resource_id, force: 1),
+                  method: :post,
+                  form: { data: { turbo_confirm: "Discard the queued message(s) and move this session to trash?" } },
+                  class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500" %>
             </div>
           <% end %>
         </div>
