@@ -741,9 +741,21 @@ module SessionStateMachine
     return unless needs_input?
     return unless enqueued_messages.pending.exists?
 
+    # Enqueued after commit, not inline. The job re-reads the session, so it
+    # must not run against a transition the transaction has not committed yet —
+    # and on the paths where `pause!` is nested inside a caller's own
+    # transaction (Sessions::InterruptService holds one across the whole
+    # interrupt), inline would mean enqueueing work against a state that may
+    # still roll back.
+    #
+    # The rescue is INSIDE the block as well as around the method, and both are
+    # load-bearing: the block runs after this method has returned, so an outer
+    # rescue alone cannot see it. Same shape as alert_on_stranded_enqueued_messages.
     session_id = id
     ActiveRecord.after_all_transactions_commit do
       EnqueuedMessageDrainJob.set(wait: EnqueuedMessageDrainJob::DELAY).perform_later(session_id)
+    rescue => e
+      report_swallowed_side_effect(__method__, e, alert: true)
     end
   rescue => e
     # Alerting: a swallowed failure here puts the session back in exactly the
