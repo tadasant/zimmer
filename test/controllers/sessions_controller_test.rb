@@ -1030,6 +1030,110 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
   end
 
+  # The human twin of the MCP/REST refusal. The first click does not archive: it
+  # says what would be lost and offers "Archive anyway", which re-posts with
+  # `force`. Every Trash affordance posts to this one action, so the two-step
+  # covers the session header, the session card and the mobile joystick alike.
+  test "archive refuses a session with a queued message and offers Archive anyway" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_not session.reload.archived?, "the first click must not archive"
+    assert_equal "pending", session.enqueued_messages.sole.status
+    assert_match(/1 queued message that has not been delivered/, response.body)
+    assert_match(/Archive anyway/, response.body)
+    # Pin the generated action, not just the word: this is what breaks if the
+    # button stops carrying force, or the id parsed out of the flash regresses.
+    assert_match(%r{action="/sessions/#{session.id}/archive\?force=1"}, response.body)
+  end
+
+  # The refusal holds an affordance the reader has to decide about behind a
+  # confirm dialog, so it must not vanish on the bare-notice timer.
+  test "the Archive anyway flash outlives the five-second notice timer" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_match(/data-flash-duration-value="30000"/, response.body)
+  end
+
+  test "archive refusal works on the non-turbo path too" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+
+    post archive_session_url(session)
+
+    assert_redirected_to session_path(session)
+    assert_not session.reload.archived?
+    assert_match(/force_archive/, flash[:alert].to_s)
+  end
+
+  test "archive ignores a force that is not truthy" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+
+    post archive_session_url(session, force: "0"), as: :turbo_stream
+
+    assert_not session.reload.archived?
+  end
+
+  test "archive with force discards the queue and archives" do
+    session = sessions(:failed)
+    queued = session.enqueued_messages.create!(content: "discarded", position: 1, status: "pending")
+
+    post archive_session_url(session, force: 1), as: :turbo_stream
+
+    assert_response :success
+    assert session.reload.archived?
+    assert_equal "undelivered", queued.reload.status
+    # Forcing chooses the discard; it must not hide it.
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "1 queued message was never delivered"
+    assert_includes line, "discarded"
+  end
+
+  # The whitelist gates a destructive affordance on a string convention, so a
+  # message that is not one of the two known actions must render verbatim.
+  test "an unknown flash action renders as text with no button" do
+    # Driven directly: no controller emits an unknown action, and the point is
+    # the partial's whitelist rather than any one caller.
+    rendered = ApplicationController.render(
+      partial: "shared/flash",
+      locals: { messages: { "alert" => "something|not_an_action|1" } }
+    )
+
+    assert_includes rendered, "something|not_an_action|1"
+    assert_not_includes rendered, "Archive anyway"
+    assert_not_includes rendered, "Undo"
+  end
+
+  test "archive still works normally when nothing is queued" do
+    session = sessions(:failed)
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert session.reload.archived?
+  end
+
+  # A bulk selection is not a claim to have read each session's queue, so those
+  # are skipped rather than forced — and the count says so.
+  test "bulk_archive skips sessions with queued messages and says how many" do
+    blocked = sessions(:failed)
+    blocked.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+    archivable = sessions(:needs_input)
+
+    post bulk_archive_sessions_url, params: { session_ids: [ blocked.id, archivable.id ] }
+
+    assert_not blocked.reload.archived?
+    assert archivable.reload.archived?
+    assert_match(/1 skipped/, flash[:notice].to_s)
+  end
+
   # Undo archive action tests
   test "should undo archive within 5-second window" do
     session = sessions(:failed)
