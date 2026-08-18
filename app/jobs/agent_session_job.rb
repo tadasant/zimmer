@@ -1852,9 +1852,9 @@ class AgentSessionJob < ApplicationJob
     # A turn that ends normally transitions running → needs_input and, in the same
     # callback chain, clears `running_job_id`. The agent process has already exited;
     # nothing was interrupted. GoodJob can still re-pick this job's row afterwards, and
-    # in production that race is not rare — 44% of interrupt events land within five
-    # seconds of the session's own turn-completion pause. The ownership check above
-    # cannot catch it, because the normal pause is precisely what cleared the
+    # in production that race is not rare — a large fraction of interrupt events land
+    # within seconds of the session's own turn-completion pause. The ownership check
+    # above cannot catch it, because the normal pause is precisely what cleared the
     # `running_job_id` it reads.
     #
     # Recovering here resumes a session nobody interrupted and delivers SYSTEM_RECOVERY
@@ -1862,19 +1862,29 @@ class AgentSessionJob < ApplicationJob
     # human, and putting an "interrupted by a system event" message in front of a human
     # for whom no such event happened.
     #
-    # `paused_by` separates the cases: a normal turn-completion pause leaves it absent,
-    # a deliberate pause writes "user", and only the recovery system writes "recovery".
-    # So a needs_input session without the recovery marker is at rest on purpose, and
-    # the right move is to leave it alone. A session still `running`, or one an earlier
-    # recovery pass parked, falls through to the recovery below exactly as before.
-    if session.needs_input? && session.metadata&.dig("paused_by") != "recovery"
-      at_rest = session.metadata&.dig("paused_by") == "user" ? "paused by the user" : "finished its turn"
+    # The test is deliberately POSITIVE: stand down only for the two ways a session
+    # reaches `needs_input` and is genuinely done being driven. Everything else falls
+    # through and recovers as before. A negative test ("anything but `recovery`") would
+    # silently swallow the other `paused_by` markers — `mcp_retry` is one, and its only
+    # route back to running is a delayed retry job, so standing down on it strands the
+    # session where no sweep looks (both sweeps match `paused_by = 'recovery'` exactly).
+    #
+    # `blocked_on_elicitation` is excluded for the opposite reason: it reaches
+    # `needs_input` from `running` without clearing `running_job_id` and without any
+    # `paused_by`, precisely because the agent process is still alive mid-turn waiting
+    # on an approval. That is not a session at rest, and it still needs recovery.
+    paused_by = session.metadata&.dig("paused_by")
+    at_rest = session.needs_input? && !session.blocked_on_elicitation? &&
+      (paused_by.blank? || paused_by == "user")
+
+    if at_rest
+      rest_reason = paused_by == "user" ? "paused by the user" : "finished its turn"
       Rails.logger.info(
         "[AgentSessionJob] Skipping InterruptError recovery for session #{session_id}: " \
-        "session already at rest (#{at_rest})"
+        "session already at rest (#{rest_reason})"
       )
       session.logs.create!(
-        content: "Job row re-picked after the session had already #{at_rest} — no recovery needed",
+        content: "Job row re-picked after the session had already #{rest_reason} — no recovery needed",
         level: "info"
       )
       return

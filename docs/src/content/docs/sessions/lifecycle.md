@@ -124,14 +124,25 @@ re-pick sees nothing to defer to, and the recovery path resumes a session that w
 waiting for its human. Over one representative production week that race accounted for 44% of
 interrupt events and 39% of all recovery nudges sent.
 
-So the handler stands down when the session is already in `needs_input` without the recovery
-marker. `metadata["paused_by"]` is what distinguishes the cases:
+So the handler stands down when the session is already at rest. The test is deliberately
+**positive** — it names the states that are genuinely done being driven, and everything else
+falls through and recovers as before. `metadata["paused_by"]` carries most of that:
 
 | `paused_by` | Reached `needs_input` by | On `InterruptError` |
 | --- | --- | --- |
 | absent | the agent finishing its turn | stand down — nothing was interrupted |
 | `"user"` | somebody pausing it by hand | stand down — the pause was deliberate |
-| `"recovery"` | an earlier recovery pass parking it | auto-continue, as before |
+| `"recovery"` | an earlier recovery pass parking it | recover, as before |
+| `"mcp_retry"` | `schedule_mcp_retry` parking it for a delayed retry | recover, as before |
+
+A negative test ("anything but `recovery`") would have been wrong: `mcp_retry`'s only route
+back to `running` is its delayed retry job, and both recovery sweeps match `paused_by =
+'recovery'` exactly — so standing down on it would strand the session where nothing looks.
+
+`paused_by` is not the whole story either. **`blocked_on_elicitation` reaches `needs_input`
+from `running` carrying no `paused_by` at all**, and keeps its `running_job_id`, because the
+agent process is still alive mid-turn waiting on an approval. That is not a session at rest,
+so it is excluded from the stand-down and still recovers.
 
 A session still `running` when the interrupt lands is unaffected and recovers exactly as before.
 
@@ -148,6 +159,15 @@ instructions, so the prompt's meaning is unchanged for an agent that ignores it.
 `AutomatedPrompts.system_recovery?` is the matching predicate — compare with it rather than `==`
 against the constant, or a reasoned nudge will be mistaken for an ordinary follow-up and consume
 the wake-ups the next section exists to preserve.
+
+**Three producers name themselves today**, and between them they account for the large majority
+of nudges by volume: the `InterruptError` auto-continue, `SessionContinuation` (which covers both
+the orphan sweep and deployment recovery, via `continuation_source`), and `AuthOutageParkService`
+resuming a session whose login pool refilled. The rest — the SIGTERM retry, the API-error retry,
+the auth-recovery resume, the health monitor, the manual restarts from the web UI, the REST API
+and the MCP tool, and the `ProcessLifecycleManager` continuations — still send the bare constant.
+`system_recovery(reason: nil)` returns it unchanged, so converting one is a one-line change; the
+gap is unfinished work, not a designed-in default.
 
 #### A system-recovery resume keeps the wake-ups
 
