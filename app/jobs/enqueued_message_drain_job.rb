@@ -64,36 +64,50 @@ class EnqueuedMessageDrainJob < ApplicationJob
   # so a session that gets going again by any route starts fresh.
   ATTEMPTS_KEY = "enqueued_drain_attempts"
 
+  # Deliberately runs in NO transaction of its own, and takes no advisory lock.
+  #
+  # EnqueuedMessageProcessorService#process_next_message opens its own
+  # transaction and rescues everything inside it, and a Rails `transaction`
+  # block JOINS an open one rather than nesting under a savepoint. So wrapping
+  # this call — in Session.with_session_lock, or in anything else — converts the
+  # service's rescue from "roll the claim back and report false" into "swallow
+  # the error and let the outer transaction commit whatever got as far as being
+  # written". A message claimed and destroyed with no AgentSessionJob behind it
+  # is exactly the silent loss this whole invariant exists to stop.
+  #
+  # Left unwrapped, the service's transaction is the outermost one: a failure
+  # mid-delivery rolls the message back to `pending` and returns false, which is
+  # what handle_failed_attempt is written against.
+  #
+  # Concurrency is the service's job and it already does it — the claim is a
+  # `FOR UPDATE SKIP LOCKED` on the row plus a `lock!` on the session, so at
+  # most one caller can take a given message. AgentSessionJob's end-of-turn
+  # drain calls it bare for the same reason. What an advisory lock would have
+  # bought is only that Sessions::InterruptService never has to report a
+  # 409 because we took the message it was about to deliver, and DELAY is the
+  # cheaper way to buy that.
   def perform(session_id)
     session = Session.find_by(id: session_id)
     return unless session
 
-    # The same lock Sessions::InterruptService holds across its whole operation.
-    # Taking it here is what makes "did someone else already deliver this?" a
-    # question with an answer rather than a guess: we read the session's state
-    # after any in-flight interrupt has finished, not in the middle of one.
-    Session.with_session_lock(session_id) do
-      session.reload
-
-      skip = skip_reason(session)
-      if skip
-        Rails.logger.info("[EnqueuedMessageDrainJob] Session #{session_id}: nothing to do (#{skip})")
-        next
-      end
-
-      attempt = record_attempt(session)
-
-      if EnqueuedMessageProcessorService.new(session, broadcast_service: BroadcastService.new).process_next_message
-        session.logs.create!(
-          content: "Queued message delivered — session resumed rather than idling with it undelivered",
-          level: "info"
-        )
-        Rails.logger.info("[EnqueuedMessageDrainJob] Session #{session_id}: delivered a queued message")
-        next
-      end
-
-      handle_failed_attempt(session, attempt)
+    skip = skip_reason(session)
+    if skip
+      Rails.logger.info("[EnqueuedMessageDrainJob] Session #{session_id}: nothing to do (#{skip})")
+      return
     end
+
+    attempt = record_attempt(session)
+
+    if EnqueuedMessageProcessorService.new(session, broadcast_service: BroadcastService.new).process_next_message
+      session.logs.create!(
+        content: "Queued message delivered — session resumed rather than idling with it undelivered",
+        level: "info"
+      )
+      Rails.logger.info("[EnqueuedMessageDrainJob] Session #{session_id}: delivered a queued message")
+      return
+    end
+
+    handle_failed_attempt(session, attempt)
   end
 
   private
@@ -129,6 +143,16 @@ class EnqueuedMessageDrainJob < ApplicationJob
       return "waiting on a scheduled MCP connection retry"
     end
 
+    # `paused_by: "user"` is deliberately NOT on this list, and the omission is
+    # the one judgement call in here worth stating out loud.
+    #
+    # The recovery sweeps do exempt it — `refresh_all` will not auto-continue a
+    # session a human paused — but they are answering a different question.
+    # There, resuming means Zimmer deciding on its own to restart work the human
+    # stopped. Here there is queued input: someone was told their message would
+    # be delivered, and pausing the current turn is not the same as withdrawing
+    # the next one. The invariant was stated without an exception, so this has
+    # none; a caller who wants the message gone deletes it.
     nil
   end
 

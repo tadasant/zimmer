@@ -139,8 +139,18 @@ Both entry points schedule an `EnqueuedMessageDrainJob` rather than draining inl
 session — a second AASM event nested in the first, plus an `AgentSessionJob` enqueue — from
 whatever thread called `pause!`, including a web request. The job runs once the transition is
 committed, after a 10-second delay that lets the callers which pause-then-immediately-deliver
-(`Sessions::InterruptService`, `SessionContinuation`'s auto-continue) finish first, and takes the
-same per-session advisory lock `Sessions::InterruptService` holds.
+(`Sessions::InterruptService`, `SessionContinuation`'s auto-continue) finish first.
+
+The job itself opens **no** transaction and takes no advisory lock, which is load-bearing rather
+than an omission. `EnqueuedMessageProcessorService#process_next_message` opens its own transaction
+and rescues everything inside it, and a Rails `transaction` block *joins* an open one instead of
+nesting under a savepoint — so wrapping the call would turn the service's rescue from "roll the
+claim back and return false" into "swallow the error and let the outer transaction commit whatever
+got written", which can mean a message claimed and destroyed with no `AgentSessionJob` behind it.
+Unwrapped, the service's transaction is the outermost one and a mid-delivery failure rolls the
+message back to `pending`. Concurrency is already the service's job: the claim is a `FOR UPDATE
+SKIP LOCKED` on the row plus a `lock!` on the session, and `AgentSessionJob`'s end-of-turn drain
+calls it bare for the same reason.
 
 The job refuses to deliver in three states, because in each the session genuinely cannot take a
 message and delivering would make things worse:
