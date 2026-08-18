@@ -380,7 +380,9 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
   test "sends automated recovery prompt when no message is queued" do
     session = create_recoverable_session(status: :needs_input, paused_by: "recovery")
 
-    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, AutomatedPrompts::SYSTEM_RECOVERY ]) do
+    expected_prompt = AutomatedPrompts.system_recovery(reason: "Zimmer's deployment recovery resumed this session")
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, expected_prompt ]) do
       DeploymentRecoveryJob.perform_now
     end
 
@@ -398,7 +400,9 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     session.update!(metadata: session.metadata.merge("exception_class" => "GoodJob::InterruptError"))
     session.enqueued_messages.create!(content: "Held for next turn", position: 1)
 
-    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, AutomatedPrompts::SYSTEM_RECOVERY ]) do
+    expected_prompt = AutomatedPrompts.system_recovery(reason: "Zimmer's deployment recovery resumed this session")
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, expected_prompt ]) do
       DeploymentRecoveryJob.perform_now
     end
 

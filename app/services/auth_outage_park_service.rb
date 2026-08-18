@@ -501,7 +501,13 @@ class AuthOutageParkService
     discard_retry_triggers!(session, reason: "resumed by the recovery sweep", logger: logger)
 
     session.logs.create!(level: "warning", content: resume_message(reason))
-    AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
+    AgentSessionJob.enqueue_with_prompt(
+      session.id,
+      AutomatedPrompts.system_recovery(
+        reason: "this session was parked because the login pool was exhausted (#{reason.tr('_', ' ')}), " \
+                "and the pool has recovered"
+      )
+    )
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)
     true
   rescue => e
