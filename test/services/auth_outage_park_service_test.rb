@@ -27,12 +27,27 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     AuthOutageParkService.new(@session).park!(reason: reason, detail: detail)
   end
 
+  # Another session caught by the same outage. `needs_input` so parking it lands
+  # it straight in `waiting` rather than deferring the sleep to its next pause.
+  def parked_peer(runtime: "claude_code")
+    Session.create!(
+      prompt: "Peer",
+      agent_runtime: runtime,
+      status: :needs_input,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid,
+      metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
+    )
+  end
+
   def create_account(email:, status:, reset_5h: nil, reset_7d: nil,
-    utilization_5h: 1.0, utilization_7d: 1.0, snapshot: nil)
+    utilization_5h: 1.0, utilization_7d: 1.0, snapshot: nil, runtime: "claude_code")
     account = ClaudeAccount.create!(
       email: email,
       status: status,
-      runtime: "claude_code",
+      runtime: runtime,
       oauth_config: { "credentials_json" => { "claudeAiOauth" => { "accessToken" => "tok" } } }
     )
     # A snapshot with no reset stamps at all is a real reading, and the one this
@@ -168,6 +183,47 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     retry_at = park!
 
     assert retry_at <= AuthOutageParkService::MAX_RETRY_DELAY.from_now + 5.seconds
+  end
+
+  # The ceiling swallows jitter the same way the floor does, and this is the case
+  # the observed trigger waves came from: a weekly reset or a sentinel expiry far
+  # enough out that every session in the outage pins to MAX_RETRY_DELAY. Jitter
+  # added on top of the ceiling clamps straight back down onto it, so the whole
+  # cohort lands on one instant twelve hours out.
+  test "a cohort pinned to the ceiling still spreads, and still respects the ceiling" do
+    create_account(email: "sentinel@example.com", status: :quota_exceeded,
+      reset_5h: 40.days.from_now, reset_7d: 40.days.from_now)
+
+    started_at = Time.current
+    retries = Array.new(12) do
+      AuthOutageParkService.new(parked_peer).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    end
+
+    assert_operator retries.uniq.size, :>, 1,
+      "every session pinned to the ceiling must not wake at the same instant"
+    assert_operator retries.max - retries.min, :>, 30.seconds,
+      "the cohort must occupy a window, not a point"
+    assert_operator retries.max, :<=, started_at + AuthOutageParkService::MAX_RETRY_DELAY + 60.seconds
+    assert_operator retries.min, :>=, started_at + AuthOutageParkService::MAX_RETRY_DELAY -
+      AuthOutageParkService::RETRY_JITTER - 60.seconds
+  end
+
+  # compute_retry_at clamps into [floor, ceiling] before adding jitter. Ruby's
+  # `clamp` raises when the low bound exceeds the high one, and park!'s rescue
+  # would turn that into a session parked with no retry at all — so the ceiling
+  # is held at or above the floor even when the backoff has run all the way up.
+  test "a fully backed-off quota park still computes a retry" do
+    create_account(email: "still-out@example.com", status: :quota_exceeded,
+      reset_5h: 40.days.from_now, reset_7d: 40.days.from_now)
+    @session.update!(metadata: @session.metadata.merge(
+      AuthOutageParkService::QUOTA_PARK_LOG_KEY =>
+        Array.new(AuthOutageParkService::MAX_QUOTA_PARK_BACKOFF_STEPS) { 1.minute.ago.utc.iso8601 }
+    ))
+
+    retry_at = park!
+
+    assert_not_nil retry_at
+    assert_operator retry_at, :<=, AuthOutageParkService::MAX_RETRY_DELAY.from_now + 5.seconds
   end
 
   # An auth outage has no published reset clock, so snapshots must be ignored.
@@ -344,16 +400,181 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
   # resume! consumes the session's pending one-time wake conditions, so the timer
   # backstop cannot fire again on an already-running session.
-  test "waking a parked session consumes its pending wake-up trigger" do
+  # A consumed condition leaves the trigger row inert but enabled, having fired
+  # nothing, so the sweep drops the row too — otherwise every park/resume cycle
+  # adds a line to the trigger list that nothing reaps until an hour after a
+  # scheduled_at up to 12 hours out.
+  test "waking a parked session consumes and then discards its wake-up trigger" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!
+    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count
+
+    AuthOutageParkService.wake_parked_sessions!
+
+    assert_equal 0, AuthOutageParkService.retry_triggers_for(@session).count,
+      "A spent retry trigger must not outlive the resume it delivered"
+  end
+
+  # A user's own wake for the same session has the identical reuse_session +
+  # last_session_id shape. Only the name tells them apart, so only the name may
+  # decide what gets destroyed.
+  test "discarding retry triggers leaves the session's other wake-ups alone" do
     create_account(email: "restored@example.com", status: :active)
     @session.update!(status: :needs_input)
     park!
 
+    mine = Trigger.create!(
+      name: "Wake me up later for session ##{@session.id}",
+      agent_root_name: @session.agent_runtime,
+      prompt_template: "check on the deploy",
+      reuse_session: true,
+      last_session_id: @session.id,
+      trigger_conditions_attributes: [ {
+        condition_type: "schedule",
+        configuration: { "scheduled_at" => 3.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                         "timezone" => "UTC" }
+      } ]
+    )
+
     AuthOutageParkService.wake_parked_sessions!
 
-    condition = Trigger.find_by(last_session_id: @session.id).trigger_conditions.first
-    assert_not_nil condition.reload.last_triggered_at,
-      "The pending wake-up must be consumed so it cannot double-fire"
+    assert Trigger.exists?(mine.id), "Only Zimmer's own retry triggers are Zimmer's to destroy"
+  end
+
+  # The successor is created before the predecessors are destroyed, so a create
+  # that fails leaves the session the backstop it already had rather than none.
+  test "a park whose trigger cannot be created keeps the previous one" do
+    @session.update!(status: :needs_input)
+    park!
+    surviving = AuthOutageParkService.retry_triggers_for(@session).first
+    assert_not_nil surviving
+
+    Trigger.stubs(:create!).raises(ActiveRecord::RecordInvalid.new(Trigger.new))
+    assert_nil park!
+
+    assert Trigger.exists?(surviving.id),
+      "A failed re-park must not take the retry the session already had"
+  end
+
+  # ScheduleTriggerJob parks a trigger it could not fire as `failed` on purpose,
+  # so the operator can see the wake did not happen and re-arm it.
+  # CleanupStaleTriggersJob exempts those; so does this.
+  test "a failed retry trigger is left for the operator, not destroyed" do
+    @session.update!(status: :needs_input)
+    park!
+    tombstone = AuthOutageParkService.retry_triggers_for(@session).first
+    tombstone.update!(status: "failed")
+
+    park!
+
+    assert Trigger.exists?(tombstone.id), "Only the operator clears a failed trigger"
+  end
+
+  test "a re-park supersedes the previous retry trigger instead of stacking one" do
+    3.times do
+      @session.update!(status: :needs_input)
+      park!
+    end
+
+    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count,
+      "Three parks must leave one armed retry, not a column of them"
+
+    scheduled = AuthOutageParkService.retry_triggers_for(@session).first
+      .trigger_conditions.first.configuration["scheduled_at"]
+    assert_equal @session.reload.metadata["auth_outage_retry_at"],
+      Time.zone.parse(scheduled).utc.iso8601,
+      "the surviving trigger is the current one, not the first"
+  end
+
+  # One restored account makes "the pool has an account again" true for every
+  # parked session at once. Resuming all of them in one sweep is what spends the
+  # recovered window in seconds and re-parks the whole cohort minutes later.
+  test "one sweep wakes at most MAX_WAKES_PER_SWEEP parked sessions" do
+    create_account(email: "restored@example.com", status: :active)
+    cohort = Array.new(AuthOutageParkService::MAX_WAKES_PER_SWEEP + 3) do |i|
+      session = parked_peer
+      AuthOutageParkService.new(session).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+      # Second-resolution stamps would otherwise tie, leaving the order the cap
+      # depends on up to the database.
+      session.reload.update!(metadata: session.metadata.merge(
+        "auth_outage_parked_at" => (30 - i).minutes.ago.utc.iso8601
+      ))
+      session
+    end
+
+    assert_equal AuthOutageParkService::MAX_WAKES_PER_SWEEP,
+      AuthOutageParkService.wake_parked_sessions!
+    assert_equal 3, AuthOutageParkService.parked_sessions.count,
+      "the rest keep their timer and their place in the queue"
+
+    # Oldest park first, so the sessions held back are the ones parked most
+    # recently — nothing starves across sweeps.
+    assert_equal cohort.first(AuthOutageParkService::MAX_WAKES_PER_SWEEP).map(&:id).sort,
+      cohort.select { |s| s.reload.running? }.map(&:id).sort
+
+    assert_equal 3, AuthOutageParkService.wake_parked_sessions!,
+      "the next sweep takes the ones that were held"
+  end
+
+  # The cap guards one POOL against being re-drained by everything parked on it,
+  # so it is counted per runtime. A fleet of claude_code parks must not hold back
+  # the codex sessions whose own pool just recovered.
+  test "the per-sweep cap is counted per runtime" do
+    create_account(email: "claude@example.com", status: :active)
+    create_account(email: "codex@example.com", status: :active, runtime: "codex")
+
+    Array.new(AuthOutageParkService::MAX_WAKES_PER_SWEEP + 2) do |i|
+      session = parked_peer
+      AuthOutageParkService.new(session).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+      # Older than the codex park below, so a global cap would spend itself here.
+      session.reload.update!(metadata: session.metadata.merge(
+        "auth_outage_parked_at" => (60 - i).minutes.ago.utc.iso8601
+      ))
+    end
+
+    codex = parked_peer(runtime: "codex")
+    AuthOutageParkService.new(codex).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+
+    AuthOutageParkService.wake_parked_sessions!
+
+    assert codex.reload.running?,
+      "a codex park must not be held by a claude_code pool's batch"
+  end
+
+  # parked_sessions sorts the stamp lexicographically, which only agrees with
+  # chronological order while every stamp is written in the same zone.
+  # The sweep is not the only way a parked session wakes: a user follow-up, a
+  # poller, the trigger firing. Every one of them consumes the condition and used
+  # to leave the enabled row behind, so the discard hangs off the resume itself.
+  test "an ordinary resume discards the retry trigger too" do
+    @session.update!(status: :needs_input)
+    park!
+    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count
+
+    @session.reload.update!(metadata: @session.metadata.except(*Session::STALE_RETRY_METADATA_KEYS))
+    @session.resume!
+
+    assert_equal 0, AuthOutageParkService.retry_triggers_for(@session).count,
+      "a hand-nudged session must not keep the dead row either"
+  end
+
+  # A system-recovery resume deliberately preserves its wake-ups — the session
+  # did not choose to wake, so its retry is not moot and must survive.
+  test "a system-recovery resume keeps the retry trigger" do
+    @session.update!(status: :needs_input)
+    park!
+
+    @session.reload.resume_for_system_recovery!
+
+    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count,
+      "the wake a recovered session still needs must not be swept up"
+  end
+
+  test "the park stamp is recorded in UTC" do
+    park!
+
+    assert_match(/Z\z/, @session.reload.metadata["auth_outage_parked_at"])
   end
 
   test "does not touch sessions that were never parked" do
