@@ -258,6 +258,10 @@ class AuthOutageParkService
     # judged against different pools.
     available = {}
     fingerprints = {}
+    # Per runtime, not global: the hazard the cap guards is one POOL being
+    # re-drained by everything parked on it, so a fleet of claude_code parks
+    # must not hold back the codex sessions whose own pool just recovered.
+    woken_per_runtime = Hash.new(0)
     held = 0
 
     # `.each`, not `find_each`: find_each imposes its own primary-key order and
@@ -277,12 +281,15 @@ class AuthOutageParkService
       # sweep that resumed 5 of 40 eligible sessions must not read as "5 were
       # eligible". The check sits AFTER the eligibility gates so an auth park held
       # here spends none of its early-wake budget.
-      if resumed >= MAX_WAKES_PER_SWEEP
+      if woken_per_runtime[runtime] >= MAX_WAKES_PER_SWEEP
         held += 1
         next
       end
 
-      resumed += 1 if resume_parked!(session, logger)
+      next unless resume_parked!(session, logger)
+
+      resumed += 1
+      woken_per_runtime[runtime] += 1
     end
 
     if held.positive?
@@ -383,9 +390,15 @@ class AuthOutageParkService
   # reuse_session + last_session_id shape — is never swept up with them. The
   # prefix carries no LIKE metacharacters and the id it embeds is an integer, so
   # "… #1 at %" cannot reach "#12 at …"; keep it that way.
+  #
+  # `failed` is excluded for the reason CleanupStaleTriggersJob excludes it: a
+  # trigger ScheduleTriggerJob parked there is a deliberate tombstone, left in
+  # place so the operator can see a wake did not fire and re-arm it. Only they
+  # clear it.
   def self.retry_triggers_for(session)
     Trigger
       .where(last_session_id: session.id, reuse_session: true)
+      .where.not(status: "failed")
       .where("name LIKE ?", "#{RETRY_TRIGGER_NAME_PREFIX} ##{session.id} at %")
   end
 
@@ -404,11 +417,16 @@ class AuthOutageParkService
   # Best-effort: a park whose cleanup fails is still a park, and a resume whose
   # cleanup fails is still a resume.
   #
+  # @param except [Trigger, nil] a trigger to keep — the successor, when this is
+  #   called to clear the ones it replaces
   # @return [Integer] number of triggers destroyed
-  def self.discard_retry_triggers!(session, reason:, logger: nil)
+  def self.discard_retry_triggers!(session, reason:, logger: nil, except: nil)
     destroyed = 0
 
-    retry_triggers_for(session).find_each do |trigger|
+    scope = retry_triggers_for(session)
+    scope = scope.where.not(id: except.id) if except&.id
+
+    scope.find_each do |trigger|
       trigger.destroy!
       destroyed += 1
     end
@@ -587,9 +605,11 @@ class AuthOutageParkService
   def record_outage!(reason, retry_at)
     outage = {
       "auth_outage_reason" => reason,
-      # UTC, not zone-local: .parked_sessions orders on this value as a STRING,
-      # and an embedded offset would make that lexicographic sort disagree with
-      # chronological order — quietly costing the sweep's cap its fairness.
+      # UTC explicitly: .parked_sessions orders on this value as a STRING, and an
+      # embedded offset would make that lexicographic sort disagree with
+      # chronological order, quietly costing the sweep's cap its fairness. With
+      # config.time_zone left at its default this already emitted `…Z`, so this
+      # is a guard against setting that, not a fix for a live defect.
       "auth_outage_parked_at" => Time.current.utc.iso8601,
       "auth_outage_retry_at" => retry_at.utc.iso8601
     }
@@ -631,15 +651,15 @@ class AuthOutageParkService
   # rather than spawning a new one, and Trigger#sleep_target_session_if_applicable
   # is what actually puts the session to sleep.
   #
-  # A session gets at most one of these at a time: the previous park's trigger is
-  # destroyed first, whether it is still armed (a re-park that raced its own
-  # backstop) or already spent. See .discard_retry_triggers!.
+  # A session gets at most one of these at a time. The successor is created
+  # first and the predecessors destroyed after, for the same reason park! writes
+  # the metadata only once this method has returned: if the create fails, the
+  # session keeps whatever backstop it already had rather than being left with a
+  # promise and nothing to keep it. See .discard_retry_triggers!.
   def schedule_wake!(reason, retry_at)
     scheduled_at = retry_at.utc.strftime("%Y-%m-%dT%H:%M:%S")
 
-    self.class.discard_retry_triggers!(session, reason: "superseded by a new park", logger: @logger)
-
-    Trigger.create!(
+    trigger = Trigger.create!(
       name: "#{RETRY_TRIGGER_NAME_PREFIX} ##{session.id} at #{scheduled_at}Z",
       agent_root_name: session.agent_root_key.presence || session.agent_runtime,
       prompt_template: wake_prompt(reason),
@@ -652,6 +672,11 @@ class AuthOutageParkService
         }
       ]
     )
+
+    self.class.discard_retry_triggers!(session, reason: "superseded by a new park",
+      logger: @logger, except: trigger)
+
+    trigger
   end
 
   def notify!(reason, retry_at)
