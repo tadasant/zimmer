@@ -1712,8 +1712,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil @session.running_job_id unless @session.running?
 
     warning_logs = @session.logs.where(level: "warning")
-    assert warning_logs.any? { |log| log.content.include?("interrupted by worker shutdown") },
-      "Expected warning log about worker shutdown interruption"
+    assert warning_logs.any? { |log| log.content.include?("Job interrupted before it finished") },
+      "Expected warning log about the job being interrupted"
   end
 
   test "handle_interrupt_error stands down when another job has taken ownership" do
@@ -1742,8 +1742,139 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal successor_job_id, @session.running_job_id, "ownership must stay with the successor"
     assert @session.logs.any? { |log| log.content.include?("superseded by job #{successor_job_id}") },
       "expected a log recording that recovery stood down"
-    assert_not @session.logs.any? { |log| log.content.include?("interrupted by worker shutdown") },
+    assert_not @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
       "the recovery path should not have run at all"
+  end
+
+  # The dominant source of spurious SYSTEM_RECOVERY nudges in production: 44% of
+  # interrupt events land within five seconds of the session's own turn-completion
+  # pause. The turn finished, the agent exited, the session is waiting for its human —
+  # and then GoodJob re-picks the row and the recovery path resurrects it.
+  test "handle_interrupt_error stands down when the session already finished its turn" do
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+
+    # A normal turn completion: running -> needs_input, and the pause callback clears
+    # running_job_id. No paused_by marker is written.
+    @session.pause!
+    @session.reload
+    assert @session.needs_input?
+    assert_nil @session.metadata["paused_by"]
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.needs_input?, "a session at rest must stay at rest, got #{@session.status}"
+    assert_nil @session.metadata["paused_by"],
+      "standing down must not stamp the session as recovery-paused"
+    assert @session.logs.any? { |log| log.content.include?("no recovery needed") },
+      "expected a log recording that recovery stood down"
+    assert_not @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
+      "the recovery path should not have run at all"
+  end
+
+  test "handle_interrupt_error stands down when the user deliberately paused the session" do
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.pause!
+    @session.update!(metadata: @session.reload.metadata.merge("paused_by" => "user"))
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.needs_input?, "a user-paused session must not be resumed by recovery"
+    assert_equal "user", @session.metadata["paused_by"], "the user's pause marker must survive"
+  end
+
+  test "handle_interrupt_error still recovers a session an earlier recovery pass parked" do
+    # needs_input WITH the recovery marker is the case the auto-continue exists for:
+    # a previous interrupt parked it and it has not been resumed yet. The stand-down
+    # guard must not swallow this one.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.pause!
+    @session.update!(metadata: @session.reload.metadata.merge("paused_by" => "recovery"))
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+    job.send(:handle_interrupt_error, error)
+
+    @session.reload
+    assert @session.running?, "a recovery-parked session must still be auto-continued, got #{@session.status}"
+    assert @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
+      "the recovery path should have run"
+  end
+
+  test "handle_interrupt_error still recovers a session blocked on an MCP elicitation" do
+    # block_on_elicitation reaches needs_input from running WITHOUT clearing
+    # running_job_id and WITHOUT any paused_by, precisely because the agent process is
+    # still alive mid-turn waiting on an approval. That is not a session at rest, and
+    # a stand-down here would strand it: no sweep matches a needs_input session that
+    # carries no "recovery" marker.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.block_on_elicitation!
+    @session.reload
+    assert @session.needs_input?
+    assert @session.blocked_on_elicitation?
+    assert_nil @session.metadata["paused_by"], "the elicitation block writes no paused_by"
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+    job.send(:handle_interrupt_error, error)
+
+    @session.reload
+    assert @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
+      "an elicitation-blocked session must still be recovered, not stood down"
+  end
+
+  test "handle_interrupt_error still recovers a session parked for an MCP retry" do
+    # paused_by is not a two-value field: schedule_mcp_retry writes "mcp_retry", and its
+    # only route back to running is a delayed retry job. Standing down on it would leave
+    # the session in needs_input where neither recovery sweep looks, since both match
+    # paused_by = 'recovery' exactly.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.pause!
+    @session.update!(metadata: @session.reload.metadata.merge("paused_by" => "mcp_retry"))
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+    job.send(:handle_interrupt_error, error)
+
+    @session.reload
+    assert @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
+      "an mcp_retry-parked session must still be recovered, not stood down"
   end
 
   test "handle_interrupt_error falls back to needs_input when auto-continue cannot proceed" do
@@ -1806,7 +1937,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
         @session.resume! if @session.may_resume?
         AgentSessionJob.enqueue_with_prompt(@session.id, AutomatedPrompts::SYSTEM_RECOVERY)
         @session.logs.create!(
-          content: "Session automatically continued after deploy interruption",
+          content: "Session automatically continued after job interruption",
           level: "info"
         )
       end
@@ -1816,7 +1947,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert @session.running?, "Expected session to be running after auto-continue, got #{@session.status}"
 
     info_logs = @session.logs.where(level: "info")
-    assert info_logs.any? { |log| log.content.include?("automatically continued after deploy") },
+    assert info_logs.any? { |log| log.content.include?("automatically continued after job") },
       "Expected info log about auto-continuation"
   end
 
@@ -9350,6 +9481,29 @@ class AgentSessionJobTest < ActiveJob::TestCase
     conditions.each do |condition|
       assert_nil condition.reload.last_triggered_at,
         "the recovery prompt's re-resume must not consume wake condition #{condition.id}"
+    end
+  end
+
+  # The bare constant matches on identity, so it alone would keep passing even if the
+  # reason suffix or `system_recovery?` regressed. Every recovery path that names its
+  # path now sends a REASONED prompt, and it must be recognised as a recovery nudge too
+  # — otherwise re-resuming it would silently consume the wake set recovery preserved.
+  test "re-resuming to deliver a REASONED recovery prompt preserves the wake set" do
+    @session.update!(status: :needs_input)
+    conditions = arm_wake_set(@session)
+
+    reasoned = AutomatedPrompts.system_recovery(
+      reason: "Zimmer's orphan cleanup resumed this session"
+    )
+    assert_not_equal AutomatedPrompts::SYSTEM_RECOVERY, reasoned,
+      "this test is only meaningful if the reasoned prompt differs from the bare constant"
+
+    AgentSessionJob.new.send(:resume_for_recovery_prompt, @session.reload, reasoned)
+
+    assert @session.reload.running?
+    conditions.each do |condition|
+      assert_nil condition.reload.last_triggered_at,
+        "a reasoned recovery prompt must not consume wake condition #{condition.id}"
     end
   end
 

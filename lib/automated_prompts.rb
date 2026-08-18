@@ -34,6 +34,36 @@ module AutomatedPrompts
     If you had completed your work and were waiting for human input, please wait - the human will respond when ready.
   PROMPT
 
+  # Build a SYSTEM_RECOVERY nudge that names the path that sent it.
+  #
+  # A dozen different code paths enqueue this one constant — a deploy, an orphan sweep,
+  # a SIGTERM retry, an API-error retry, an auth blip, a quota park lifting, a manual
+  # restart. Sending all of them the same undifferentiated string means neither the agent
+  # reading it nor the human reading the transcript over its shoulder can tell which
+  # happened, and "I would only expect this on a deploy" is the reasonable conclusion it
+  # invites. The reason is one line, appended after the standing instructions so the
+  # meaning of the prompt is unchanged for an agent that ignores it.
+  #
+  # @param reason [String, nil] short phrase naming the emitting path; omit for the bare prompt
+  # @return [String]
+  def self.system_recovery(reason: nil)
+    return SYSTEM_RECOVERY if reason.blank?
+
+    "#{SYSTEM_RECOVERY}\n\n(What triggered this nudge: #{reason}. No human sent it.)"
+  end
+
+  # Whether `prompt` is a SYSTEM_RECOVERY nudge, with or without a reason suffix.
+  #
+  # Compare with this rather than `==` against the constant: a reasoned variant is still
+  # a recovery nudge, and treating it as an ordinary follow-up would, for example,
+  # consume the scheduled wake-ups that `resume_for_system_recovery!` exists to preserve.
+  #
+  # @param prompt [Object]
+  # @return [Boolean]
+  def self.system_recovery?(prompt)
+    prompt.is_a?(String) && prompt.start_with?(SYSTEM_RECOVERY)
+  end
+
   # Prompt sent when the merge conflict poller detects that a session's PR
   # has merge conflicts with the base branch.
   #
