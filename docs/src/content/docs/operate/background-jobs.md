@@ -37,7 +37,7 @@ From `config.good_job.cron`:
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
-| 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts, then resume the sessions parked on them |
+| 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts, then resume the sessions parked on them — at most 5 per sweep, oldest park first, so a recovered pool is not re-drained by the whole cohort at once. See [The Claude Code harness](/auth/harness/). |
 | 15m | `ClaudeUsageSamplerJob` | Read the serving Claude account's quota, so the spot gate decides on a fresh number — `QuotaResetCheckerJob` samples only *exceeded* accounts, and a healthy one is otherwise read only when somebody opens /quotas. See [Spot and priority](/sessions/spot-and-priority/). |
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
