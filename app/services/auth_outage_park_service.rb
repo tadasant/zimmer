@@ -503,10 +503,7 @@ class AuthOutageParkService
     session.logs.create!(level: "warning", content: resume_message(reason))
     AgentSessionJob.enqueue_with_prompt(
       session.id,
-      AutomatedPrompts.system_recovery(
-        reason: "this session was parked because the login pool was exhausted (#{reason.tr('_', ' ')}), " \
-                "and the pool has recovered"
-      )
+      AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
     )
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)
     true
@@ -525,6 +522,21 @@ class AuthOutageParkService
         "resuming automatically to try the new credentials."
     else
       "Login pool recovered (#{reason.tr('_', ' ')}) — resuming this session automatically."
+    end
+  end
+
+  # The same distinction as {.resume_message}, phrased for the agent rather than for the
+  # session log. The two park reasons resumed on different evidence and must not be
+  # collapsed: a quota park waited for the pool to refill, an auth park waited for the
+  # credentials in it to change, and telling an agent its pool was exhausted when the
+  # real story was a bad credential sends it looking for the wrong thing.
+  def self.resume_prompt_reason(reason)
+    if reason == AUTH_UNRECOVERABLE
+      "this session was parked because its login credentials were not usable, " \
+        "and the login pool has since changed"
+    else
+      "this session was parked because the login pool was exhausted (#{reason.tr('_', ' ')}), " \
+        "and the pool has recovered"
     end
   end
 

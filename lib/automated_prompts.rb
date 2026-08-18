@@ -54,10 +54,9 @@ module AutomatedPrompts
 
   # Whether `prompt` is a SYSTEM_RECOVERY nudge, with or without a reason suffix.
   #
-  # Call sites that used to compare against the constant with `==` must use this instead:
-  # a reasoned variant is still a recovery nudge, and treating it as an ordinary
-  # follow-up would, for example, consume the scheduled wake-ups that
-  # `resume_for_system_recovery!` exists to preserve.
+  # Compare with this rather than `==` against the constant: a reasoned variant is still
+  # a recovery nudge, and treating it as an ordinary follow-up would, for example,
+  # consume the scheduled wake-ups that `resume_for_system_recovery!` exists to preserve.
   #
   # @param prompt [Object]
   # @return [Boolean]
