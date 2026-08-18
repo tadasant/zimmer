@@ -111,6 +111,44 @@ Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
 cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
 doesn't fire on a session you already resumed by hand.
 
+#### A finished turn is not an interruption
+
+`GoodJob::InterruptError` is raised when GoodJob re-picks a job row it considers interrupted —
+started, never finished, no lock. `AgentSessionJob#handle_interrupt_error` treats that as "the
+deploy killed us mid-turn" and resumes the session with `AutomatedPrompts::SYSTEM_RECOVERY`.
+
+That is right when the session was still `running`. It is wrong when the turn had already
+finished. A normal completion transitions `running → needs_input` and, in the same callback
+chain, clears `running_job_id` — so the ownership check that would otherwise catch a stale
+re-pick sees nothing to defer to, and the recovery path resumes a session that was correctly
+waiting for its human. Over one representative production week that race accounted for 44% of
+interrupt events and 39% of all recovery nudges sent.
+
+So the handler stands down when the session is already in `needs_input` without the recovery
+marker. `metadata["paused_by"]` is what distinguishes the cases:
+
+| `paused_by` | Reached `needs_input` by | On `InterruptError` |
+| --- | --- | --- |
+| absent | the agent finishing its turn | stand down — nothing was interrupted |
+| `"user"` | somebody pausing it by hand | stand down — the pause was deliberate |
+| `"recovery"` | an earlier recovery pass parking it | auto-continue, as before |
+
+A session still `running` when the interrupt lands is unaffected and recovers exactly as before.
+
+#### The nudge names the path that sent it
+
+A dozen paths enqueue the same `SYSTEM_RECOVERY` constant — a deploy, an orphan sweep, a SIGTERM
+retry, an API-error retry, a quota park lifting, a manual restart. Sending one undifferentiated
+string means neither the agent nor the human reading over its shoulder can tell which fired, and
+"this should only happen on a deploy" is the reasonable conclusion it invites — in that same
+week, fewer than a third of these nudges were within ten minutes of a deploy.
+
+`AutomatedPrompts.system_recovery(reason:)` appends one line naming the path, after the standing
+instructions, so the prompt's meaning is unchanged for an agent that ignores it.
+`AutomatedPrompts.system_recovery?` is the matching predicate — compare with it rather than `==`
+against the constant, or a reasoned nudge will be mistaken for an ordinary follow-up and consume
+the wake-ups the next section exists to preserve.
+
 #### A system-recovery resume keeps the wake-ups
 
 That cancellation is right for a *deliberate* resume and wrong for a recovery one. When Zimmer
