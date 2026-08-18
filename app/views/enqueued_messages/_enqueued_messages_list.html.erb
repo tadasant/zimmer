@@ -1,6 +1,10 @@
 <%# Enqueued messages list - shown above follow-up form %>
 <% messages = agent_session.enqueued_messages.pending.ordered %>
-<% if messages.any? %>
+<%# Messages the archive stranded. Listed read-only below the live queue: they
+    are not going to be sent, but they were accepted, so hiding them here would
+    be the same silence the terminal status exists to end. %>
+<% undelivered = agent_session.enqueued_messages.undelivered.ordered %>
+<% if messages.any? || undelivered.any? %>
   <div id="session_<%= agent_session.id %>_enqueued_messages" data-live-region="replace"
        class="bg-white border-t border-gray-200 shadow-sm"
        data-controller="enqueued-messages-panel"
@@ -25,6 +29,11 @@
             <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800">
               <%= messages.count %>
             </span>
+            <% if undelivered.any? %>
+              <span class="ml-1 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
+                <%= undelivered.count %> undelivered
+              </span>
+            <% end %>
           </h3>
         </button>
         <p class="text-xs text-gray-500" data-enqueued-messages-panel-target="helpText">
@@ -41,6 +50,19 @@
         <%= turbo_stream_from "session_#{agent_session.id}_enqueued_messages" %>
         <% messages.each do |message| %>
           <%= render "enqueued_messages/enqueued_message", message: message %>
+        <% end %>
+
+        <% if undelivered.any? %>
+          <div class="mt-2 rounded-md border border-amber-200 bg-amber-50 p-3">
+            <p class="text-xs font-medium text-amber-900">
+              Never delivered — the session was archived before these were sent.
+            </p>
+            <ul class="mt-2 space-y-1">
+              <% undelivered.each do |message| %>
+                <li class="text-sm text-amber-900 whitespace-pre-wrap break-words"><%= truncate(message.content, length: 300) %></li>
+              <% end %>
+            </ul>
+          </div>
         <% end %>
       </div>
     </div>

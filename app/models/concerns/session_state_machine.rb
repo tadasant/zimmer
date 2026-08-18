@@ -237,10 +237,13 @@ module SessionStateMachine
         transitions from: [ :waiting, :running, :needs_input, :failed ], to: :archived
         after do
           set_archived_at
+          # Before the log line, which names what was stranded.
+          @stranded_enqueued_messages = strand_pending_enqueued_messages
           log_state_change(archive_log_message)
           # Consumed by the line above, and single-use: an instance archived,
           # unarchived and archived again must not reuse the first actor.
           self.archive_actor = nil
+          @stranded_enqueued_messages = nil
           cleanup_running_job
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
@@ -693,11 +696,106 @@ module SessionStateMachine
   # the trash bookkeeping, so a bad metadata shape here must not be able to take
   # the transition down with it — the plain line is always available.
   def archive_log_message
-    [ "Session moved to trash by #{archive_actor.presence || ARCHIVE_ACTOR_UNRECORDED}", unresolved_pr_clause ]
-      .compact.join(" — ")
+    [
+      "Session moved to trash by #{archive_actor.presence || ARCHIVE_ACTOR_UNRECORDED}",
+      stranded_enqueued_messages_clause,
+      unresolved_pr_clause
+    ].compact.join(" — ")
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to describe the archive of session #{id}: #{e.message}"
     "Session moved to trash"
+  end
+
+  # Retire every message still queued for this session, because archiving has
+  # just ended the only path by which one could be delivered.
+  #
+  # That path is narrow and worth naming: EnqueuedMessageProcessorService claims
+  # `pending` rows only, and for a live session the only thing that calls it is
+  # AgentSessionJob's end-of-turn drain — which an archived session never
+  # reaches, because the monitoring loop sees `archived?` and terminates the
+  # process instead of pausing.
+  #
+  # Leaving those rows `pending` is what made the loss silent. `follow_up`
+  # without `force_immediate` auto-queues onto a running session and answers
+  # "Message queued (session is running). It will be sent when the agent
+  # completes its current task" — a promise, not a receipt. When the turn it
+  # queued behind is the session's last (goals routinely tell an agent to
+  # self-archive once its work is done), the promise is already false when it is
+  # made, and every later reader of the queue still sees `pending` and reads it
+  # as "on its way". Production session 6073: a user's second Slack message
+  # queued behind their first, the session archived at the end of that same
+  # turn, and the message sat `pending` in a queue nobody would ever drain.
+  #
+  # `undelivered` is terminal, so the queue can no longer misreport itself. The
+  # archive line names what was lost and an alert fires, so the sender's belief
+  # that delivery was coming is corrected rather than left standing.
+  #
+  # @return [Array<EnqueuedMessage>] the messages retired, for the archive line
+  def strand_pending_enqueued_messages
+    stranded = enqueued_messages.pending.ordered.to_a
+    return [] if stranded.empty?
+
+    stranded.each(&:mark_undelivered!)
+    alert_on_stranded_enqueued_messages(stranded)
+    stranded
+  rescue => e
+    # Alerting: this is the callback whose whole job is to stop a dropped
+    # message being silent, so it failing silently is the original defect again.
+    report_swallowed_side_effect(__method__, e, alert: true)
+    []
+  end
+
+  # The stranded-queue clause of the archive line.
+  #
+  # Rides on that line for the same reason unresolved_pr_clause does: someone
+  # asking "where did my message go?" is already reading this session's
+  # timeline. The previews are bounded — the full content stays on the row,
+  # readable through the REST index and the MCP list, which now report it as
+  # `undelivered` rather than `pending`.
+  def stranded_enqueued_messages_clause
+    stranded = @stranded_enqueued_messages
+    return nil if stranded.blank?
+
+    subject = stranded.one? ? "1 queued message was" : "#{stranded.size} queued messages were"
+    previews = stranded.map { |message| message.content.to_s.truncate(120).inspect }.join(", ")
+    "#{subject} never delivered and #{stranded.one? ? 'is' : 'are'} now marked undelivered: #{previews}"
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to describe stranded messages for session #{id}: #{e.message}"
+    nil
+  end
+
+  # Page on a stranded queue.
+  #
+  # Deliberately not filtered down to the mid-turn shape that caused #6073. A
+  # human trashing a session they had queued a message onto is a quieter case,
+  # but it is still a message that was accepted and never delivered, and one
+  # alert per session per dedup window is a cheap price for never having to
+  # discover the next one from a user noticing. Deduped by session so a bulk
+  # archive of many stranded sessions cannot become a page storm.
+  #
+  # Posted after commit, for the reason report_swallowed_side_effect explains:
+  # AlertService talks to Slack synchronously, and an AASM `after` callback runs
+  # inside the transition's own transaction.
+  def alert_on_stranded_enqueued_messages(stranded)
+    session_id = id
+    previews = stranded.map { |message| "- #{message.content.to_s.truncate(200)}" }.join("\n")
+    count = stranded.size
+
+    ActiveRecord.after_all_transactions_commit do
+      AlertService.raise_alert(
+        "Queued messages stranded by an archive",
+        details: "Session #{session_id} was archived with #{count} message(s) still queued. They were " \
+                 "never delivered and are now marked `undelivered`; whoever queued them was told they " \
+                 "would be sent.\n\n#{previews}\n\n" \
+                 "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
+        source: "SessionStateMachine#strand_pending_enqueued_messages",
+        dedup_key: "stranded_enqueued_messages_#{session_id}"
+      )
+    rescue => e
+      Rails.logger.error(
+        "[SessionStateMachine] Failed to alert on stranded messages for session #{session_id}: #{e.message}"
+      )
+    end
   end
 
   # The pull requests this session opened that Zimmer never saw reach a terminal
