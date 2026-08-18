@@ -259,6 +259,61 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/cannot be trashed/, error.message)
   end
 
+  # The incident this refusal exists for: an agent finishes a task, self-archives,
+  # and the message that arrived mid-turn is dropped by the archive itself —
+  # AgentSessionJob terminates the process instead of pausing and draining the
+  # queue (production session 6073).
+  test "archive refuses a running session that still has messages queued" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "archive", "session_id" => session.id) }
+
+    assert_match(/Cannot archive session #{session.id}/, error.message)
+    assert_match(/1 message\(s\) arrived while it was working/, error.message)
+    assert_includes error.message, "add the onion back"
+    assert_includes error.message, "manage_enqueued_messages"
+    assert_equal "running", session.reload.status, "the refusal must not half-archive"
+    assert_equal "pending", session.enqueued_messages.sole.status,
+      "the message is still going to be delivered, so it stays pending"
+  end
+
+  test "archive goes through once the queue has drained" do
+    session = sessions(:running)
+    message = session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+    assert_raises(Mcp::ToolError) { @tool.call("action" => "archive", "session_id" => session.id) }
+
+    message.destroy!
+
+    @tool.call("action" => "archive", "session_id" => session.id)
+    assert_equal "archived", session.reload.status
+  end
+
+  # Scoped to running on purpose: an idle session has no drain ahead of it, so
+  # refusing there would leave it permanently un-archivable.
+  test "archive proceeds on an idle session and retires what was queued for it" do
+    session = sessions(:needs_input)
+    queued = session.enqueued_messages.create!(content: "never sent", position: 1, status: "pending")
+
+    @tool.call("action" => "archive", "session_id" => session.id)
+
+    assert_equal "archived", session.reload.status
+    assert_equal "undelivered", queued.reload.status
+  end
+
+  test "bulk_archive reports the sessions it skipped for an undrained queue" do
+    running_with_queue = sessions(:running)
+    running_with_queue.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+    archivable = sessions(:needs_input)
+
+    result = @tool.call("action" => "bulk_archive", "session_ids" => [ running_with_queue.id, archivable.id ])
+
+    assert_includes result, "- **Archived:** 1"
+    assert_includes result, "Session #{running_with_queue.id}: Cannot archive session #{running_with_queue.id}"
+    assert_equal "running", running_with_queue.reload.status
+    assert_equal "archived", archivable.reload.status
+  end
+
   test "change_mcp_servers replaces the session's servers" do
     session = sessions(:needs_input)
 

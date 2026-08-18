@@ -380,4 +380,33 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
       end
     end
   end
+
+  test "undelivered is a valid status and is not pending" do
+    session = sessions(:running)
+    message = session.enqueued_messages.create!(content: "never sent", position: 1)
+
+    message.mark_undelivered!
+
+    assert_equal "undelivered", message.reload.status
+    assert_empty session.enqueued_messages.pending
+    assert_equal [ message ], session.enqueued_messages.undelivered.to_a
+  end
+
+  # `undelivered` is terminal: the claim query only ever takes `pending` rows, so
+  # a retired message cannot resurface as a surprise turn if the session is
+  # unarchived weeks later.
+  test "an undelivered message is never claimed for delivery" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "never sent", position: 1, status: "undelivered")
+
+    assert_nil session.process_next_enqueued_message!
+  end
+
+  test "an unknown status is still rejected" do
+    session = sessions(:running)
+    message = session.enqueued_messages.new(content: "x", position: 1, status: "dropped")
+
+    assert_not message.valid?
+    assert_includes message.errors[:status], "dropped is not a valid status"
+  end
 end

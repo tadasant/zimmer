@@ -206,9 +206,9 @@ would be recorded nowhere at all ([#313](https://github.com/tadasant/zimmer/issu
 
 ### `archive` — any state → `archived`
 
-Sets `archived_at`, dismisses notifications, fires `session_archived` triggers, cleans up
-triggers watching this session, sets a trash expiry, and — last, for the same reason as on
-`fail` — runs `warn_if_pr_goal_captured_no_url`. A session trashed straight from `needs_input`
+Sets `archived_at`, retires any messages still queued for the session, dismisses notifications,
+fires `session_archived` triggers, cleans up triggers watching this session, sets a trash expiry,
+and — last, for the same reason as on `fail` — runs `warn_if_pr_goal_captured_no_url`. A session trashed straight from `needs_input`
 is one nobody is coming back to, so this is where a PR opened and never recorded gets said out
 loud.
 
@@ -249,6 +249,74 @@ about the request identifies the caller. An archive that declares nothing is log
 human archiving a session does it from the web UI. The injected self-session server names itself
 separately (`via the self-session MCP server`), since its tool group narrows the *actions* a
 session may take, not the `session_id` it may aim them at.
+
+#### Archiving retires the message queue
+
+Archiving ends every path by which a queued message could still be delivered.
+`EnqueuedMessageProcessorService` claims `pending` rows only, and for a live session the only
+thing that calls it is `AgentSessionJob`'s end-of-turn drain — which an archived session never
+reaches, because the monitoring loop sees `archived?` and terminates the process instead of
+pausing.
+
+Those rows used to stay `pending` anyway, and that is what made a dropped message silent. Every
+reader of the queue — the panel on the session page, `GET /api/v1/sessions/:id/enqueued_messages`,
+the MCP `manage_enqueued_messages` list — treats `pending` as *still going to be sent*. So did the
+sender: `follow_up` without `force_immediate` auto-queues onto a running session and answers
+*"Message queued (session is running). It will be sent when the agent completes its current
+task"*, which is a promise rather than a receipt.
+
+The window is not exotic. Goals routinely tell an agent to archive itself once its work is done,
+so a session that is `running` when you queue a message may legitimately never become idle again:
+it goes `running` → `archived` and the queue never drains. Any two messages arriving inside one
+agent turn can hit it. Production session 6073 did — a user's second Slack message queued behind
+their first, the session archived at the end of that same turn, and the message sat `pending` in a
+queue nobody would ever drain.
+
+So `archive` moves them to `undelivered`, a fourth, terminal status alongside
+`pending`/`processing`/`sent`. Three things follow from that:
+
+- The queue can no longer misreport itself. `undelivered` is not `pending`, so the claim query
+  cannot take it — including after an `unarchive_to_*`, where a weeks-old message would otherwise
+  arrive as if it had just been sent.
+- The archive line names what was lost, next to the unresolved-PR clause and for the same reason:
+
+  ```
+  [State Machine] Session moved to trash by session #5225 via the MCP API — 1 queued message was
+  never delivered and is now marked undelivered: "What do you mean I pulled yellow onion?..."
+  ```
+
+- An alert fires, deduped per session. Unlike the unresolved-PR clause this *is* an anomaly: a
+  message was accepted and never delivered, and the only reason to find that out from a user
+  noticing is that nothing else said it.
+
+The row itself is kept, not destroyed — its content is the thing the sender was promised delivery
+of — and the session page lists it under the live queue, marked as never delivered.
+
+#### A running session will not archive over an undrained queue
+
+Retiring the messages records the loss; it does not undo it. The MCP `archive` action therefore
+refuses outright when the target is `running` and has messages queued:
+
+```
+Cannot archive session 6073: 1 message(s) arrived while it was working and have not been
+delivered yet. Archiving now would drop them.
+  1. What do you mean I pulled yellow onion? I didn't do that, add it back
+End this turn without archiving. The queued message is delivered as the next turn, and archiving
+after that succeeds. If a message genuinely should not be acted on, delete it with
+manage_enqueued_messages first — then the archive goes through.
+```
+
+Those messages are usually the reason not to archive. An agent self-archives because it believes
+its work is finished, and a message that landed mid-turn is exactly the evidence that the belief
+is stale. Refusing costs the caller nothing durable: it ends its turn, the pause drains the queue,
+the message arrives as the next turn, and the archive succeeds then because the queue is empty.
+It cannot loop, because each refusal is followed by a delivery that shortens the queue.
+
+It is scoped to `running` deliberately. An idle session has no drain ahead of it, so refusing
+there would leave it permanently un-archivable — worse than the bug being fixed. Those archives
+proceed, and retire the queue loudly instead. `bulk_archive` applies the same rule and reports the
+sessions it skipped rather than aborting the batch. The web UI's **Trash** button does not refuse:
+a human clicking it is the sender, and they can see what they are discarding.
 
 #### …and what the archive cost
 
