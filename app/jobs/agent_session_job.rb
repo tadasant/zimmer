@@ -1847,10 +1847,57 @@ class AgentSessionJob < ApplicationJob
       return
     end
 
+    # Stand down if the session already came to rest under its own power.
+    #
+    # A turn that ends normally transitions running → needs_input and, in the same
+    # callback chain, clears `running_job_id`. The agent process has already exited;
+    # nothing was interrupted. GoodJob can still re-pick this job's row afterwards, and
+    # in production that race is not rare — a large fraction of interrupt events land
+    # within seconds of the session's own turn-completion pause. The ownership check
+    # above cannot catch it, because the normal pause is precisely what cleared the
+    # `running_job_id` it reads.
+    #
+    # Recovering here resumes a session nobody interrupted and delivers SYSTEM_RECOVERY
+    # on top of a finished turn — waking an agent that had correctly handed back to its
+    # human, and putting an "interrupted by a system event" message in front of a human
+    # for whom no such event happened.
+    #
+    # The test is deliberately POSITIVE: stand down only for the two ways a session
+    # reaches `needs_input` and is genuinely done being driven. Everything else falls
+    # through and recovers as before. A negative test ("anything but `recovery`") would
+    # silently swallow the other `paused_by` markers — `mcp_retry` is one, and its only
+    # route back to running is a delayed retry job, so standing down on it strands the
+    # session where no sweep looks (both sweeps match `paused_by = 'recovery'` exactly).
+    #
+    # `blocked_on_elicitation` is excluded for the opposite reason: it reaches
+    # `needs_input` from `running` without clearing `running_job_id` and without any
+    # `paused_by`, precisely because the agent process is still alive mid-turn waiting
+    # on an approval. That is not a session at rest, and it still needs recovery.
+    paused_by = session.metadata&.dig("paused_by")
+    at_rest = session.needs_input? && !session.blocked_on_elicitation? &&
+      (paused_by.blank? || paused_by == "user")
+
+    if at_rest
+      rest_reason = paused_by == "user" ? "paused by the user" : "finished its turn"
+      Rails.logger.info(
+        "[AgentSessionJob] Skipping InterruptError recovery for session #{session_id}: " \
+        "session already at rest (#{rest_reason})"
+      )
+      session.logs.create!(
+        content: "Job row re-picked after the session had already #{rest_reason} — no recovery needed",
+        level: "info"
+      )
+      return
+    end
+
     Rails.logger.info "[AgentSessionJob] Handling InterruptError for session #{session_id}: #{error.message}"
 
+    # Deliberately not worded as "deploy". This fires whenever GoodJob re-picks a row it
+    # considers interrupted, which in production is a deploy less than a third of the
+    # time; calling every one of them a deploy is what made this class of wake-up
+    # impossible to reason about from the session's own log.
     session.logs.create!(
-      content: "Job interrupted by worker shutdown (deploy): #{error.message}",
+      content: "Job interrupted before it finished (worker shutdown, or its row was re-picked): #{error.message}",
       level: "warning"
     )
 
@@ -1892,7 +1939,7 @@ class AgentSessionJob < ApplicationJob
   # @param prompt [String, nil] the follow-up prompt this job is delivering
   # @return [Boolean] true when the session was resumed
   def resume_for_recovery_prompt(session, prompt)
-    return session.resume_for_system_recovery! if prompt == AutomatedPrompts::SYSTEM_RECOVERY
+    return session.resume_for_system_recovery! if AutomatedPrompts.system_recovery?(prompt)
 
     session.resume!
     true
@@ -1931,15 +1978,21 @@ class AgentSessionJob < ApplicationJob
 
       session.resume_for_system_recovery!
 
-      AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
+      AgentSessionJob.enqueue_with_prompt(
+        session.id,
+        AutomatedPrompts.system_recovery(
+          reason: "the Zimmer job monitoring this session was interrupted before it finished, " \
+                  "so the session was resumed on a fresh one"
+        )
+      )
 
       session.logs.create!(
-        content: "Session automatically continued after deploy interruption",
+        content: "Session automatically continued after job interruption",
         level: "info"
       )
     end
 
-    Rails.logger.info "[AgentSessionJob] Session #{session.id} auto-continued after deploy interruption"
+    Rails.logger.info "[AgentSessionJob] Session #{session.id} auto-continued after job interruption"
   rescue => e
     Rails.logger.error "[AgentSessionJob] Failed to auto-continue session #{session.id}: #{e.message}. " \
                         "Session remains in needs_input for cron-based recovery."

@@ -59,8 +59,13 @@ module SessionContinuation
 
       session.resume_for_system_recovery!
 
-      # Enqueue a job with the automated recovery prompt
-      AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
+      # Enqueue a job with the automated recovery prompt, naming the sweep that sent it
+      # so the agent (and whoever reads the transcript) can tell this apart from the
+      # other paths that share the constant.
+      AgentSessionJob.enqueue_with_prompt(
+        session.id,
+        AutomatedPrompts.system_recovery(reason: "Zimmer's #{continuation_source} resumed this session")
+      )
 
       session.logs.create!(
         content: "Session automatically continued after #{continuation_source}",

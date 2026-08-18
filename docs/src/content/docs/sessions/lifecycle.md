@@ -111,6 +111,64 @@ Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
 cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
 doesn't fire on a session you already resumed by hand.
 
+#### A finished turn is not an interruption
+
+`GoodJob::InterruptError` is raised when GoodJob re-picks a job row it considers interrupted —
+started, never finished, no lock. `AgentSessionJob#handle_interrupt_error` treats that as "the
+deploy killed us mid-turn" and resumes the session with `AutomatedPrompts::SYSTEM_RECOVERY`.
+
+That is right when the session was still `running`. It is wrong when the turn had already
+finished. A normal completion transitions `running → needs_input` and, in the same callback
+chain, clears `running_job_id` — so the ownership check that would otherwise catch a stale
+re-pick sees nothing to defer to, and the recovery path resumes a session that was correctly
+waiting for its human. Over one representative production week that race accounted for 44% of
+interrupt events and 39% of all recovery nudges sent.
+
+So the handler stands down when the session is already at rest. The test is deliberately
+**positive** — it names the states that are genuinely done being driven, and everything else
+falls through and recovers as before. `metadata["paused_by"]` carries most of that:
+
+| `paused_by` | Reached `needs_input` by | On `InterruptError` |
+| --- | --- | --- |
+| absent | the agent finishing its turn | stand down — nothing was interrupted |
+| `"user"` | somebody pausing it by hand | stand down — the pause was deliberate |
+| `"recovery"` | an earlier recovery pass parking it | recover, as before |
+| `"mcp_retry"` | `schedule_mcp_retry` parking it for a delayed retry | recover, as before |
+
+A negative test ("anything but `recovery`") would have been wrong: `mcp_retry`'s only route
+back to `running` is its delayed retry job, and both recovery sweeps match `paused_by =
+'recovery'` exactly — so standing down on it would strand the session where nothing looks.
+
+`paused_by` is not the whole story either. **`blocked_on_elicitation` reaches `needs_input`
+from `running` carrying no `paused_by` at all**, and keeps its `running_job_id`, because the
+agent process is still alive mid-turn waiting on an approval. That is not a session at rest,
+so it is excluded from the stand-down and still recovers.
+
+A session still `running` when the interrupt lands is unaffected and recovers exactly as before.
+
+#### The nudge names the path that sent it
+
+A dozen paths enqueue the same `SYSTEM_RECOVERY` constant — a deploy, an orphan sweep, a SIGTERM
+retry, an API-error retry, a quota park lifting, a manual restart. Sending one undifferentiated
+string means neither the agent nor the human reading over its shoulder can tell which fired, and
+"this should only happen on a deploy" is the reasonable conclusion it invites — in that same
+week, fewer than a third of these nudges were within ten minutes of a deploy.
+
+`AutomatedPrompts.system_recovery(reason:)` appends one line naming the path, after the standing
+instructions, so the prompt's meaning is unchanged for an agent that ignores it.
+`AutomatedPrompts.system_recovery?` is the matching predicate — compare with it rather than `==`
+against the constant, or a reasoned nudge will be mistaken for an ordinary follow-up and consume
+the wake-ups the next section exists to preserve.
+
+**Three producers name themselves today**, and between them they account for the large majority
+of nudges by volume: the `InterruptError` auto-continue, `SessionContinuation` (which covers both
+the orphan sweep and deployment recovery, via `continuation_source`), and `AuthOutageParkService`
+resuming a session whose login pool refilled. The rest — the SIGTERM retry, the API-error retry,
+the auth-recovery resume, the health monitor, the manual restarts from the web UI, the REST API
+and the MCP tool, and the `ProcessLifecycleManager` continuations — still send the bare constant.
+`system_recovery(reason: nil)` returns it unchanged, so converting one is a one-line change; the
+gap is unfinished work, not a designed-in default.
+
 #### A system-recovery resume keeps the wake-ups
 
 That cancellation is right for a *deliberate* resume and wrong for a recovery one. When Zimmer
