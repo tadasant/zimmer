@@ -90,4 +90,35 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     # Nothing leaked through.
     assert_equal [ "sync-docs" ], session.reload.catalog_skills
   end
+
+  # The self-archiving session is the caller that meets the queued-message
+  # refusal most often, so it is the one caller that must not be trapped by it.
+  test "self archive refuses a session with a queued message" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "archive", "session_id" => session.id) }
+
+    assert_includes error.message, "1 queued message has not been delivered"
+    assert_equal "running", session.reload.status
+  end
+
+  test "self archive takes force, so the narrowed schema is not a trap" do
+    session = sessions(:running)
+    queued = session.enqueued_messages.create!(content: "deliberately discarded", position: 1, status: "pending")
+
+    @tool.call("action" => "archive", "session_id" => session.id, "force" => true)
+
+    assert_equal "archived", session.reload.status
+    assert_equal "undelivered", queued.reload.status
+  end
+
+  test "force is declared on the self-session schema" do
+    properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.deep_symbolize_keys[:properties]
+
+    assert properties.key?(:force), "a self-archiving session cannot pass what the schema does not declare"
+    description = properties[:force][:description]
+    assert_includes description, "NOT archive", "the description has to talk the caller out of it first"
+    assert_not_includes description, "bulk_archive", "this surface has no bulk_archive action to describe"
+  end
 end

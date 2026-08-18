@@ -1030,6 +1030,58 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/<turbo-stream\s+action="remove"\s+target="session_#{session.id}"/, response.body)
   end
 
+  # The human twin of the MCP/REST refusal. The first click does not archive: it
+  # says what would be lost and offers "Archive anyway", which re-posts with
+  # `force`. Every Trash affordance posts to this one action, so the two-step
+  # covers the session header, the session card and the mobile joystick alike.
+  test "archive refuses a session with a queued message and offers Archive anyway" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_not session.reload.archived?, "the first click must not archive"
+    assert_equal "pending", session.enqueued_messages.sole.status
+    assert_match(/1 queued message that has not been delivered/, response.body)
+    assert_match(/Archive anyway/, response.body)
+    assert_match(/force/, response.body)
+  end
+
+  test "archive with force discards the queue and archives" do
+    session = sessions(:failed)
+    queued = session.enqueued_messages.create!(content: "discarded", position: 1, status: "pending")
+
+    post archive_session_url(session, force: 1), as: :turbo_stream
+
+    assert_response :success
+    assert session.reload.archived?
+    assert_equal "undelivered", queued.reload.status
+  end
+
+  test "archive still works normally when nothing is queued" do
+    session = sessions(:failed)
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert session.reload.archived?
+  end
+
+  # A bulk selection is not a claim to have read each session's queue, so those
+  # are skipped rather than forced — and the count says so.
+  test "bulk_archive skips sessions with queued messages and says how many" do
+    blocked = sessions(:failed)
+    blocked.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+    archivable = sessions(:needs_input)
+
+    post bulk_archive_sessions_url, params: { session_ids: [ blocked.id, archivable.id ] }
+
+    assert_not blocked.reload.archived?
+    assert archivable.reload.archived?
+    assert_match(/1 skipped/, flash[:notice].to_s)
+  end
+
   # Undo archive action tests
   test "should undo archive within 5-second window" do
     session = sessions(:failed)

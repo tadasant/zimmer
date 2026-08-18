@@ -294,39 +294,69 @@ of — and the session page lists it, marked as never delivered. That listing si
 follow-up form rather than inside the live queue panel, because the form is hidden once a session
 is archived, which is the state these rows exist in.
 
-#### A session with a turn ahead of it will not archive over an undrained queue
+#### Archiving over a queued message is refused, and `force` is the way through
 
-Retiring the messages records the loss; it does not undo it. The MCP `archive` action therefore
-refuses outright when the target still has a drain coming and has messages queued:
+Retiring the messages records the loss; it does not undo it, and recording a discard is not the
+same as intending one. So an archive over a non-empty queue is **refused**, on every surface — the
+MCP `archive` and `bulk_archive` actions, `POST /api/v1/sessions/:id/archive`, and the web UI's
+**Trash** button:
 
 ```
-Cannot archive session 6073: 1 message(s) arrived while it was working and have not been
-delivered yet. Archiving now would drop them.
+Cannot archive session 6073: 1 queued message has not been delivered. Archiving discards it.
+
   1. What do you mean I pulled yellow onion? I didn't do that, add it back
-End this turn without archiving. The queued message is delivered as the next turn, and archiving
-after that succeeds. If a message genuinely should not be acted on, delete it with
-manage_enqueued_messages first — then the archive goes through.
+
+Do not archive. If you are this session, end your turn instead — the queued message is delivered
+as your next turn, and archiving after that succeeds because the queue is empty. If you are
+archiving another session, leave it alone and let it consume what you sent it.
+
+Only if you have read the message above and are deliberately discarding it: re-call with
+"force": true. That is not the recommended path — the message was accepted from someone who was
+told it would be delivered, and forcing throws it away.
 ```
 
-Those messages are usually the reason not to archive. An agent self-archives because it believes
-its work is finished, and a message that landed mid-turn is exactly the evidence that the belief
-is stale. Refusing costs the caller nothing durable: it ends its turn, the pause drains the queue,
-the message arrives as the next turn, and the archive succeeds then because the queue is empty.
-It cannot loop, because each refusal is followed by a delivery that shortens the queue.
+The refusal leads with what not to do, because for the caller that meets it most — a session
+archiving itself at the end of a turn — not archiving is free and correct. An agent self-archives
+because it believes its work is finished, and a message that landed mid-turn is exactly the
+evidence that the belief is stale. It ends its turn instead, the pause drains the queue, the
+message arrives as the next turn, and the archive succeeds after that because the queue is empty.
 
-`running` and `waiting` both qualify, because `EnqueuedMessageProcessorService#process_next_message`
-accepts both — a `waiting` session starts, runs, pauses and drains exactly as a running one does, so
-exempting it would lose messages that were going to arrive. `needs_input` and `failed` do not:
-nothing is coming to drain them, and refusing there would leave a session permanently
-un-archivable, which is worse than the bug being fixed. Those archives proceed and retire the queue
-loudly instead. `bulk_archive` applies the same rule and reports the sessions it skipped rather
-than aborting the batch. The web UI's **Trash** button does not refuse: a human clicking it is the
-sender, and they can see what they are discarding.
+**`force` is the deliberate override**, off by default, for a caller that has read the message and
+is choosing to discard it. It is named last in the error and hedged in its own schema description,
+because it exists for the exception rather than the rule. Forcing does not make the discard
+invisible: the messages are still retired to `undelivered`, the archive line still names them, and
+the alert still fires — so what was thrown away stays readable afterwards.
 
-The refusal is not unconditionally self-clearing, and the error message says so. A session whose
-process is already dead — the force-archive-a-stuck-session case — never ends a turn, so its queue
-never drains and the MCP action keeps refusing. Deleting the message, or trashing the session from
-the web UI, is the way out.
+Every state that can archive is covered, `needs_input` and `failed` included. An earlier version
+exempted them on the grounds that nothing would ever drain their queues, so refusing would leave
+them permanently un-archivable. That was a real objection, and `force` dissolves it: with an opt-in
+override the refusal is a speed bump rather than a trap, so it applies wherever the discard is real
+rather than only where it is recoverable. The same reasoning is why `force` is declared on the
+narrowed `self_session` schema too — a session archiving itself is the caller that meets the
+refusal most, and would otherwise be the one caller with no way past it.
+
+The surfaces differ only in how `force` is expressed, not in whether the discard is refused:
+
+| Surface | Refusal | Override |
+| --- | --- | --- |
+| MCP `archive` | `ToolError` naming the messages | `"force": true` |
+| MCP `bulk_archive` | per-session error, batch continues | `"force": true`, applied to the whole batch |
+| `POST /api/v1/sessions/:id/archive` | 422 with the same text | `force: true` |
+| `POST /api/v1/sessions/bulk_archive` | per-session entry in `errors`, batch continues | `force: true`, whole batch |
+| Web **Trash** | flash naming what would be lost | an **Archive anyway** button that re-posts with `force` |
+| Web bulk archive | skipped, and the count is reported | none — archive those individually to confirm |
+
+The web bulk action deliberately has no force: a bulk selection is not a claim to have read each
+session's queue, and there is no per-session confirmation to hang an override on. Every Trash
+affordance — the session header, the session card, the mobile joystick — posts to the same
+controller action, so the two-step covers all of them without touching any of them.
+
+**System-initiated archives do not consult the guard at all.** `HealthMonitorService`'s stale
+sweep, status-summary fork cleanup, and `SessionStatusSummaryHarvestJob` archive unconditionally.
+That asymmetry is deliberate: a refusal those callers could hit would be a fleet-wide stuck state
+with no human in the loop to clear it, and none of them is a caller that could reconsider and let
+the message land. Their discards are still recorded, because the retirement runs on the transition
+itself rather than at the call site.
 
 #### …and what the archive cost
 
