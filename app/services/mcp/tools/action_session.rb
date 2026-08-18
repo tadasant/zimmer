@@ -20,6 +20,7 @@ module Mcp
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
+      FORCE_DESC = 'Optional for the "archive" and "bulk_archive" actions. Archiving a session discards any message still queued for it — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Set this to true ONLY when you have read those messages and are deliberately throwing them away. It is not the recommended path: the usual reason a message is sitting in the queue is that it arrived while the session was working and the session has not seen it yet, in which case the right move is to NOT archive, let the turn end, and let the message be delivered as the next turn. On "bulk_archive" it applies to every session in the batch, not one of them.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session (replaces the existing set — this is not a merge).'
       MODEL_DESC = 'Required for "change_model" action. The model identifier to use (e.g., "opus", "sonnet", "fable", "gpt-5.6-sol"). Must be valid for the session runtime.'
@@ -100,7 +101,7 @@ module Mcp
         - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
         - **restart**: Restart an idle or failed session without providing new input
-        - **archive**: Archive a session (marks as completed)
+        - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately.
         - **unarchive**: Restore an archived session to idle "needs_input" status
         - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set)
         - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet", "fable", "gpt-5.6-sol")
@@ -120,7 +121,7 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **toggle_favorite**: Toggle favorite status on a session
-        - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed)
+        - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages are reported as errors and left alone unless "force" is set for the batch.
 
         **Interrupting vs queuing a follow_up.** Interrupting is opt-in, and worth reaching for more often than the default suggests. Send with "force_immediate": true whenever the prompt would redirect the agent: a correction, a constraint it does not know about, information that makes its current approach wrong. An agent twenty minutes into the wrong approach cannot see a queued message until it finishes, so the message that would have saved the work arrives after the work is wasted. The cost of interrupting is bounded: the in-flight turn is terminated (an uncommitted tool call is lost, files already written stay written) and the agent picks up from the same conversation with your prompt as the next turn. Queue when the prompt only adds to what the agent is already doing.
 
@@ -144,6 +145,7 @@ module Mcp
           action: { type: "string", enum: ACTIONS, description: ACTION_DESC },
           prompt: { type: "string", description: PROMPT_DESC },
           force_immediate: { type: "boolean", description: FORCE_IMMEDIATE_DESC },
+          force: { type: "boolean", description: FORCE_DESC },
           mcp_servers: { type: "array", items: { type: "string" }, description: MCP_SERVERS_DESC },
           model: { type: "string", description: MODEL_DESC },
           skills: { type: "array", items: { type: "string" }, description: SKILLS_DESC },
@@ -423,7 +425,7 @@ module Mcp
           raise ToolError, "Session cannot be trashed from current status: #{session.status}"
         end
 
-        refuse_archive_with_undrained_queue(session)
+        refuse_archive_over_queued_messages(session, args)
 
         session.archive_actor = archive_actor_phrase(args)
         session.archive!
@@ -439,60 +441,29 @@ module Mcp
         ].join("\n")
       end
 
-      # Refuse to archive a session that has a turn ahead of it and messages
-      # queued for that turn.
+      # Refuse to archive a session that still has messages queued for it,
+      # unless the caller explicitly forced it.
       #
-      # Such a session has an end-of-turn queue drain coming, and archiving is
-      # precisely what cancels it: AgentSessionJob's monitoring loop sees
-      # `archived?` and terminates the process instead of pausing and calling
-      # EnqueuedMessageProcessorService. Session#strand_pending_enqueued_messages
-      # then retires whatever was queued — which records the loss, but does not
-      # undo it.
+      # Archiving is what cancels the delivery: AgentSessionJob's monitoring loop
+      # sees `archived?` and terminates the process instead of pausing and
+      # calling EnqueuedMessageProcessorService, and
+      # Session#strand_pending_enqueued_messages then retires whatever was
+      # queued. That records the discard; it does not make it intended.
       #
-      # Those messages are usually the reason not to archive. An agent
-      # self-archives because it believes its work is finished, and a message
-      # that landed mid-turn is exactly the evidence that the belief is stale
-      # (production session 6073: the user's follow-up queued behind the task in
-      # flight, and the session archived at the end of that same turn). Refusing
-      # costs a live caller nothing durable — it ends its turn, the pause drains
-      # the queue, the message arrives as the next turn, and the archive succeeds
-      # then because the queue is empty.
-      #
-      # `running` and `waiting` both qualify, because
-      # EnqueuedMessageProcessorService#process_next_message accepts both: a
-      # `waiting` session starts, runs, pauses and drains exactly as a running
-      # one does, so exempting it would lose messages that were going to arrive.
-      # `needs_input` and `failed` do not: nothing is coming to drain them, and
-      # refusing there would leave a session permanently un-archivable — worse
-      # than the bug being fixed. Those archives proceed and retire loudly.
-      #
-      # The refusal is not unconditionally self-clearing. A session whose process
-      # is already dead — the force-archive-a-stuck-session case the `archive`
-      # event's own comment names — never ends a turn, so its queue never drains
-      # and this keeps refusing. That is why the message names a way out that
-      # does not require the agent to be alive, and why the web UI's Trash button
-      # and `session.archive!` deliberately do not consult this.
-      def refuse_archive_with_undrained_queue(session)
-        return unless session.running? || session.waiting?
+      # Every state that can archive is covered, `needs_input` and `failed`
+      # included. An earlier version exempted them on the grounds that nothing
+      # would ever drain their queues, so refusing would leave them permanently
+      # un-archivable — a real objection, and one `force` dissolves: with an
+      # opt-in override the refusal is a speed bump rather than a trap, so it
+      # can be applied wherever the discard is real rather than only where it is
+      # recoverable.
+      def refuse_archive_over_queued_messages(session, args)
+        return if boolean(args["force"])
 
-        queued = session.enqueued_messages.pending.ordered.to_a
+        queued = Sessions::ArchiveGuard.pending_messages(session)
         return if queued.empty?
 
-        previews = queued.map { |message| "  #{message.position}. #{message.content.to_s.truncate(160)}" }
-
-        raise ToolError, ([
-          "Cannot archive session #{session.id}: #{queued.size} message(s) arrived while it was working and " \
-          "have not been delivered yet. Archiving now would drop them.",
-          "",
-          *previews,
-          "",
-          "If you are this session: end your turn without archiving. The queued message is delivered as your " \
-          "next turn, and archiving after that succeeds because the queue is empty.",
-          "",
-          "If the message should not be acted on at all, or the session is stuck and will never take another " \
-          "turn, delete it first — manage_enqueued_messages \"delete\" if you have that tool, otherwise the " \
-          "session page in Zimmer — and the archive goes through."
-        ].join("\n"))
+        raise ToolError, Sessions::ArchiveGuard.refusal_message(session, queued)
       end
 
       def unarchive(session)
@@ -1037,11 +1008,11 @@ module Mcp
         Session.where(id: session_ids).where.not(status: :archived).each do |session|
           if session.may_archive?
             begin
-              # Same refusal as the single-session action: a running session with
-              # an undrained queue is one whose messages are about to be lost, and
-              # a bulk call is no more entitled to lose them. Reported per session
-              # rather than aborting the batch.
-              refuse_archive_with_undrained_queue(session)
+              # Same refusal as the single-session action: a queue about to be
+              # discarded is no less discarded for being archived in a batch.
+              # Reported per session rather than aborting the batch, and `force`
+              # applies to the whole batch because the argument is one flag.
+              refuse_archive_over_queued_messages(session, args)
             rescue ToolError => e
               errors << { id: session.id, error: e.message }
               next

@@ -1378,12 +1378,17 @@ re-routes them. If the session is later unarchived, the retired messages stay re
 is terminal precisely so a weeks-old message cannot arrive as if it had just been sent. Getting the
 content acted on means someone re-sending it.
 
-The MCP `archive` action refuses when the target still has a turn ahead of it (`running` or
-`waiting`) and an undrained queue, which is the shape that produced the incident, so in practice the
-retirement path is the one that runs for a human clicking **Trash** or for a `needs_input` session —
-where the sender is present, or nothing was going to drain the queue anyway. The REST
-`DELETE /api/v1/sessions/:id` does not refuse either; nothing in the fleet archives through it, and
-adding a second refusal surface would buy a rule to keep in sync rather than coverage.
+Every caller-facing archive surface now refuses over a queued message in every state, and `force`
+is the deliberate override ([lifecycle](/sessions/lifecycle/)) — so the retirement path runs on a
+forced archive or a system-initiated one, and in both cases someone or something has already decided
+the message is going. What it does not do is re-route the content: getting it acted on still means a
+human re-sending it.
+
+System-initiated archives — `HealthMonitorService`'s stale sweep, status-summary fork cleanup,
+`SessionStatusSummaryHarvestJob` — do not consult the guard at all, so they discard silently apart
+from the record the retirement leaves. That is deliberate (a refusal they could hit would be a
+fleet-wide stuck state with no human to clear it), but it does mean a queue on a session the stale
+sweep reaches is discarded without anyone being asked.
 
 Nothing stops a *new* `pending` row being created for an already-archived session either — the three
 `create` surfaces have no session-status guard, unlike `follow_up` and `send_now`, which reject an

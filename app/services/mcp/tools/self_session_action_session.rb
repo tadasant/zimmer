@@ -13,6 +13,7 @@ module Mcp
 
       SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "archive"'
 
+      SELF_FORCE_DESC = 'Optional for "archive". Archiving discards any message still queued for this session — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Leave this alone in almost every case: a message sitting in the queue arrived while you were working and you have not seen it, so the right move is to NOT archive, end your turn, and let it be delivered as your next turn — archiving after that succeeds because the queue is empty. Set it to true ONLY when you have read the message in the error and are deliberately throwing it away.'
       SELF_ACTING_SESSION_ID_DESC = 'Optional for "archive": your own session ID, recorded as provenance on the archived session\'s timeline. Set it when you archive yourself, so the line reads as a self-archive rather than as an undeclared caller — that distinction is what lets a human later tell a session that finished its work from one that was archived out from under it by something else.'
 
       description <<~DESC
@@ -22,7 +23,7 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **set_heartbeat**: Toggle this session's own heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When the heartbeat is enabled and this session sits in needs_input, a recurring nudge prompts it to keep working toward its goal. If you are genuinely blocked or done, set "enabled" to false to stop the nudges.
-        - **archive**: Archive a session (marks as completed)
+        - **archive**: Archive a session (marks as completed). Refused when a message is still queued for the session — archiving discards it, and nothing delivers a queued message once the session is in the trash. The refusal is almost always right: a message that arrived while you were working is one you have not seen, so end your turn instead and it is delivered as your next turn, after which archiving succeeds. Set "force" to true only when you have read the message and are deliberately throwing it away.
 
         **Use cases:**
         - Update session notes to record progress or context
@@ -50,6 +51,10 @@ module Mcp
           title: { type: "string", description: TITLE_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
+          # Carried on this narrowed schema deliberately. A session archiving
+          # itself is the caller that meets the queued-message refusal most, and
+          # without `force` here it would be the one caller with no way past it.
+          force: { type: "boolean", description: SELF_FORCE_DESC },
           acting_session_id: { type: [ "number", "string" ], description: SELF_ACTING_SESSION_ID_DESC }
         },
         required: [ "session_id", "action" ]

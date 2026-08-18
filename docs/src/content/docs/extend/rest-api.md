@@ -132,7 +132,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `POST` | `/sessions` | → 201. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `custom_metadata` |
 | `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
-| `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}` |
+| `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}`. **422** while any message is still queued for the session, since archiving discards it; `force: true` overrides deliberately and the discarded messages are retired to `undelivered` — see [lifecycle](/sessions/lifecycle/) |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
 | `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal` (≤50,000), `force_immediate`, `acting_session_id`. 202 if the session is running (queued); 200 otherwise. `goal` takes effect on every path — see below |
 | `POST` | `/sessions/:id/pause` | running only → `needs_input` |
@@ -142,7 +142,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `POST` | `/sessions/:id/regenerate_status_summary` | → 202. Queues a forced rewrite of the [Status summary](/sessions/status-summary/); it forks the session and spends an agent turn, so it is asynchronous and must not be polled. 422 with the reason, rather than a 202 for work that cannot run, when there is nothing to summarize: no transcript, or a session that is itself a summary fork. An archived session is a normal candidate however long ago it was archived — the fork answers from the conversation, and gets an empty working directory when Zimmer has already reclaimed the clone |
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins |
 | `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. Sessions in a frozen category are parked and excluded |
-| `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors` |
+| `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors`. A session with a queued message lands in `errors` and is left alone; `force: true` applies to the whole batch, not one member of it |
 | `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#omitting-a-list-is-not-the-same-as-asking-for-an-empty-one) does not restore the root's defaults |
 | `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50 |
 | `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime |
@@ -500,7 +500,7 @@ curl -X POST "$BASE_URL/categories/reorder" \
 | --- | --- |
 | **Logs** | Full CRUD at `/sessions/:session_id/logs[/:id]`. `content` and `level` are required on create; `level` ∈ `info · error · debug · warning · verbose`, and doubles as the index filter |
 | **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]`. `agent_id` required on create; `PATCH` takes every field but `id` and `session_id`; index filters on `status` and `subagent_type`; `include_transcript=true` on show returns the full JSONL |
-| **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered` (archiving a session retires whatever is still `pending` to `undelivered` — see [lifecycle](/sessions/lifecycle/)). Deleting one re-numbers the positions behind it |
+| **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered`. Archiving a session is **refused** (422) while any row is `pending`, since the archive would discard it; `force: true` on the archive overrides that and retires the rows to `undelivered` — see [lifecycle](/sessions/lifecycle/). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status` |
 | **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
