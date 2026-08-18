@@ -237,13 +237,11 @@ module SessionStateMachine
         transitions from: [ :waiting, :running, :needs_input, :failed ], to: :archived
         after do
           set_archived_at
-          # Before the log line, which names what was stranded.
-          @stranded_enqueued_messages = strand_pending_enqueued_messages
-          log_state_change(archive_log_message)
+          # Retired before the log line, which names what was retired.
+          log_state_change(archive_log_message(strand_pending_enqueued_messages))
           # Consumed by the line above, and single-use: an instance archived,
           # unarchived and archived again must not reuse the first actor.
           self.archive_actor = nil
-          @stranded_enqueued_messages = nil
           cleanup_running_job
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
@@ -695,10 +693,10 @@ module SessionStateMachine
   # Never raises. It is computed inside the `archive` callback chain, ahead of
   # the trash bookkeeping, so a bad metadata shape here must not be able to take
   # the transition down with it — the plain line is always available.
-  def archive_log_message
+  def archive_log_message(stranded = [])
     [
       "Session moved to trash by #{archive_actor.presence || ARCHIVE_ACTOR_UNRECORDED}",
-      stranded_enqueued_messages_clause,
+      stranded_enqueued_messages_clause(stranded),
       unresolved_pr_clause
     ].compact.join(" — ")
   rescue => e
@@ -732,10 +730,24 @@ module SessionStateMachine
   #
   # @return [Array<EnqueuedMessage>] the messages retired, for the archive line
   def strand_pending_enqueued_messages
-    stranded = enqueued_messages.pending.ordered.to_a
+    candidate_ids = enqueued_messages.pending.ordered.pluck(:id)
+    return [] if candidate_ids.empty?
+
+    # One guarded statement rather than a loop of validating `update!`s. Two
+    # reasons, and both are about not lying on the archive line. A loop aborts
+    # part-way on the first row that fails validation — a legacy row longer than
+    # today's PROMPT_MAX_LENGTH is enough — leaving some rows retired and the
+    # line naming none of them. And a row the processor claims between the
+    # SELECT and the write would still be named as never delivered when it was
+    # in fact delivered; re-reading only the rows the `status: "pending"` guard
+    # actually moved is what makes the line describe what happened.
+    enqueued_messages
+      .where(id: candidate_ids, status: "pending")
+      .update_all(status: "undelivered", updated_at: Time.current)
+
+    stranded = enqueued_messages.where(id: candidate_ids, status: "undelivered").ordered.to_a
     return [] if stranded.empty?
 
-    stranded.each(&:mark_undelivered!)
     alert_on_stranded_enqueued_messages(stranded)
     stranded
   rescue => e
@@ -752,8 +764,7 @@ module SessionStateMachine
   # timeline. The previews are bounded — the full content stays on the row,
   # readable through the REST index and the MCP list, which now report it as
   # `undelivered` rather than `pending`.
-  def stranded_enqueued_messages_clause
-    stranded = @stranded_enqueued_messages
+  def stranded_enqueued_messages_clause(stranded)
     return nil if stranded.blank?
 
     subject = stranded.one? ? "1 queued message was" : "#{stranded.size} queued messages were"
@@ -764,14 +775,20 @@ module SessionStateMachine
     nil
   end
 
-  # Page on a stranded queue.
+  # Page on a retired queue.
   #
   # Deliberately not filtered down to the mid-turn shape that caused #6073. A
   # human trashing a session they had queued a message onto is a quieter case,
-  # but it is still a message that was accepted and never delivered, and one
-  # alert per session per dedup window is a cheap price for never having to
-  # discover the next one from a user noticing. Deduped by session so a bulk
-  # archive of many stranded sessions cannot become a page storm.
+  # but it is still a message that was accepted and never delivered, and the
+  # only alternative to paging is discovering the next one from a user noticing.
+  #
+  # The dedup key is per session, which bounds repeats for one session — an
+  # archive, unarchive and re-archive pages once — and deliberately does NOT
+  # collapse across sessions: a sweep that archives N sessions with queues has
+  # lost N distinct messages, and one alert standing in for all of them is the
+  # summary that hides the other N-1. HealthMonitorService#archive_old_sessions
+  # is the sweep that could make that plural; a queue on a session untouched for
+  # seven days is rare enough that the honest count is worth its noise.
   #
   # Posted after commit, for the reason report_swallowed_side_effect explains:
   # AlertService talks to Slack synchronously, and an AASM `after` callback runs

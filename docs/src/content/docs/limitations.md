@@ -1378,12 +1378,17 @@ re-routes them. If the session is later unarchived, the retired messages stay re
 is terminal precisely so a weeks-old message cannot arrive as if it had just been sent. Getting the
 content acted on means someone re-sending it.
 
-The MCP `archive` action refuses when the target is `running` with an undrained queue, which is the
-shape that produced the incident, so in practice the retirement path is the one that runs for a
-human clicking **Trash** or for an idle session — where the sender is present, or the message is
-already stale. The REST `DELETE /api/v1/sessions/:id` does not refuse either; nothing in the fleet
-archives through it, and adding a second refusal surface would buy a rule to keep in sync rather
-than coverage.
+The MCP `archive` action refuses when the target still has a turn ahead of it (`running` or
+`waiting`) and an undrained queue, which is the shape that produced the incident, so in practice the
+retirement path is the one that runs for a human clicking **Trash** or for a `needs_input` session —
+where the sender is present, or nothing was going to drain the queue anyway. The REST
+`DELETE /api/v1/sessions/:id` does not refuse either; nothing in the fleet archives through it, and
+adding a second refusal surface would buy a rule to keep in sync rather than coverage.
+
+Nothing stops a *new* `pending` row being created for an already-archived session either — the three
+`create` surfaces have no session-status guard, unlike `follow_up` and `send_now`, which reject an
+archived target. That re-creates the stranded state after the archive callback has already run.
+Tracked separately in [#549](https://github.com/tadasant/zimmer/issues/549).
 
 ### 🔴 Every turn a session finishes costs a second agent turn, for the Status summary
 

@@ -5,15 +5,15 @@
 # Archiving ends every path by which a queued message could be delivered:
 # EnqueuedMessageProcessorService claims `pending` rows only, and the only
 # caller that claims them for a live session is AgentSessionJob's end-of-turn
-# drain, which an archived session never reaches. Until now the rows stayed
-# `pending` anyway, so the queue kept reporting a delivery that was never
-# coming — the queue panel, the REST index and the MCP list all read `pending`
-# as "still going to be sent".
+# drain, which an archived session never reaches. Rows written before this
+# migration stayed `pending` regardless, so the queue kept reporting a delivery
+# that was never coming — the queue panel, the REST index and the MCP list all
+# read `pending` as "still going to be sent".
 #
-# `Session#strand_pending_enqueued_messages` retires them at archive time from
-# here on. This clears the ones already sitting in the fleet, which are exactly
-# the population that would otherwise keep misreporting itself: production
-# session 6073 is the one a user noticed, and nothing had ever swept the rest.
+# `Session#strand_pending_enqueued_messages` retires them at archive time. This
+# clears the ones already sitting in the fleet, which are exactly the population
+# that would otherwise keep misreporting itself: production session 6073 is the
+# one a user noticed, and no sweep covers the rest.
 #
 # Also matters for unarchive. A restored session's queue would hand the agent a
 # message from weeks earlier as if it had just arrived; `undelivered` is

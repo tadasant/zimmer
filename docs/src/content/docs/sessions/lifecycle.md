@@ -290,12 +290,14 @@ So `archive` moves them to `undelivered`, a fourth, terminal status alongside
   noticing is that nothing else said it.
 
 The row itself is kept, not destroyed — its content is the thing the sender was promised delivery
-of — and the session page lists it under the live queue, marked as never delivered.
+of — and the session page lists it, marked as never delivered. That listing sits outside the
+follow-up form rather than inside the live queue panel, because the form is hidden once a session
+is archived, which is the state these rows exist in.
 
-#### A running session will not archive over an undrained queue
+#### A session with a turn ahead of it will not archive over an undrained queue
 
 Retiring the messages records the loss; it does not undo it. The MCP `archive` action therefore
-refuses outright when the target is `running` and has messages queued:
+refuses outright when the target still has a drain coming and has messages queued:
 
 ```
 Cannot archive session 6073: 1 message(s) arrived while it was working and have not been
@@ -312,11 +314,19 @@ is stale. Refusing costs the caller nothing durable: it ends its turn, the pause
 the message arrives as the next turn, and the archive succeeds then because the queue is empty.
 It cannot loop, because each refusal is followed by a delivery that shortens the queue.
 
-It is scoped to `running` deliberately. An idle session has no drain ahead of it, so refusing
-there would leave it permanently un-archivable — worse than the bug being fixed. Those archives
-proceed, and retire the queue loudly instead. `bulk_archive` applies the same rule and reports the
-sessions it skipped rather than aborting the batch. The web UI's **Trash** button does not refuse:
-a human clicking it is the sender, and they can see what they are discarding.
+`running` and `waiting` both qualify, because `EnqueuedMessageProcessorService#process_next_message`
+accepts both — a `waiting` session starts, runs, pauses and drains exactly as a running one does, so
+exempting it would lose messages that were going to arrive. `needs_input` and `failed` do not:
+nothing is coming to drain them, and refusing there would leave a session permanently
+un-archivable, which is worse than the bug being fixed. Those archives proceed and retire the queue
+loudly instead. `bulk_archive` applies the same rule and reports the sessions it skipped rather
+than aborting the batch. The web UI's **Trash** button does not refuse: a human clicking it is the
+sender, and they can see what they are discarding.
+
+The refusal is not unconditionally self-clearing, and the error message says so. A session whose
+process is already dead — the force-archive-a-stuck-session case — never ends a turn, so its queue
+never drains and the MCP action keeps refusing. Deleting the message, or trashing the session from
+the web UI, is the way out.
 
 #### …and what the archive cost
 
