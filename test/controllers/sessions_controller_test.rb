@@ -1045,7 +1045,40 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "pending", session.enqueued_messages.sole.status
     assert_match(/1 queued message that has not been delivered/, response.body)
     assert_match(/Archive anyway/, response.body)
-    assert_match(/force/, response.body)
+    # Pin the generated action, not just the word: this is what breaks if the
+    # button stops carrying force, or the id parsed out of the flash regresses.
+    assert_match(%r{action="/sessions/#{session.id}/archive\?force=1"}, response.body)
+  end
+
+  # The refusal holds an affordance the reader has to decide about behind a
+  # confirm dialog, so it must not vanish on the bare-notice timer.
+  test "the Archive anyway flash outlives the five-second notice timer" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+
+    post archive_session_url(session), as: :turbo_stream
+
+    assert_match(/data-flash-duration-value="30000"/, response.body)
+  end
+
+  test "archive refusal works on the non-turbo path too" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+
+    post archive_session_url(session)
+
+    assert_redirected_to session_path(session)
+    assert_not session.reload.archived?
+    assert_match(/force_archive/, flash[:alert].to_s)
+  end
+
+  test "archive ignores a force that is not truthy" do
+    session = sessions(:failed)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+
+    post archive_session_url(session, force: "0"), as: :turbo_stream
+
+    assert_not session.reload.archived?
   end
 
   test "archive with force discards the queue and archives" do
@@ -1057,6 +1090,25 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert session.reload.archived?
     assert_equal "undelivered", queued.reload.status
+    # Forcing chooses the discard; it must not hide it.
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "1 queued message was never delivered"
+    assert_includes line, "discarded"
+  end
+
+  # The whitelist gates a destructive affordance on a string convention, so a
+  # message that is not one of the two known actions must render verbatim.
+  test "an unknown flash action renders as text with no button" do
+    # Driven directly: no controller emits an unknown action, and the point is
+    # the partial's whitelist rather than any one caller.
+    rendered = ApplicationController.render(
+      partial: "shared/flash",
+      locals: { messages: { "alert" => "something|not_an_action|1" } }
+    )
+
+    assert_includes rendered, "something|not_an_action|1"
+    assert_not_includes rendered, "Archive anyway"
+    assert_not_includes rendered, "Undo"
   end
 
   test "archive still works normally when nothing is queued" do

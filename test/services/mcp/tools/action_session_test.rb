@@ -330,10 +330,9 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "pending", session.enqueued_messages.sole.status
   end
 
-  # Every state that can archive is covered, needs_input included. An earlier
-  # version exempted it because nothing drains a needs_input queue, so refusing
-  # would have made the session permanently un-archivable — an objection `force`
-  # dissolves.
+  # Every state that can archive is covered, needs_input included. Nothing drains
+  # a needs_input queue, which makes the discard there certain rather than merely
+  # likely; `force` is what keeps a certain discard from being a trap.
   test "archive refuses a needs_input session that still has messages queued" do
     session = sessions(:needs_input)
     session.enqueued_messages.create!(content: "never sent", position: 1, status: "pending")

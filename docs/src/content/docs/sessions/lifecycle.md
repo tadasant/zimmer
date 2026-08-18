@@ -327,13 +327,12 @@ because it exists for the exception rather than the rule. Forcing does not make 
 invisible: the messages are still retired to `undelivered`, the archive line still names them, and
 the alert still fires — so what was thrown away stays readable afterwards.
 
-Every state that can archive is covered, `needs_input` and `failed` included. An earlier version
-exempted them on the grounds that nothing would ever drain their queues, so refusing would leave
-them permanently un-archivable. That was a real objection, and `force` dissolves it: with an opt-in
-override the refusal is a speed bump rather than a trap, so it applies wherever the discard is real
-rather than only where it is recoverable. The same reasoning is why `force` is declared on the
-narrowed `self_session` schema too — a session archiving itself is the caller that meets the
-refusal most, and would otherwise be the one caller with no way past it.
+Every state that can archive is covered, `needs_input` and `failed` included. Nothing drains their
+queues, which makes the discard there certain rather than merely likely — and a refusal without an
+override would leave those sessions permanently un-archivable, which is why `force` and the full
+coverage are one design rather than two. The same reasoning puts `force` on the narrowed
+`self_session` schema: a session archiving itself is the caller that meets the refusal most, and
+would otherwise be the one caller with no way past it.
 
 The surfaces differ only in how `force` is expressed, not in whether the discard is refused:
 

@@ -1378,11 +1378,17 @@ re-routes them. If the session is later unarchived, the retired messages stay re
 is terminal precisely so a weeks-old message cannot arrive as if it had just been sent. Getting the
 content acted on means someone re-sending it.
 
-Every caller-facing archive surface now refuses over a queued message in every state, and `force`
-is the deliberate override ([lifecycle](/sessions/lifecycle/)) — so the retirement path runs on a
-forced archive or a system-initiated one, and in both cases someone or something has already decided
-the message is going. What it does not do is re-route the content: getting it acted on still means a
+Every caller-facing archive surface refuses over a queued message in every state, and `force` is the
+deliberate override ([lifecycle](/sessions/lifecycle/)) — so the retirement path runs on a forced
+archive or a system-initiated one, and in both cases someone or something has already decided the
+message is going. What it does not do is re-route the content: getting it acted on still means a
 human re-sending it.
+
+**Deleting a session is the uncovered path, and it is worse than archiving one.** `DELETE
+/api/v1/sessions/:id` and its web twin consult nothing, and `Session has_many :enqueued_messages,
+dependent: :destroy` means the rows are destroyed outright rather than retired — so there is no
+`undelivered` record, no archive line naming what was lost, and no alert. Now that every archive
+surface refuses, delete is the only caller-facing way left to drop a queued message in silence.
 
 System-initiated archives — `HealthMonitorService`'s stale sweep, status-summary fork cleanup,
 `SessionStatusSummaryHarvestJob` — do not consult the guard at all, so they discard silently apart

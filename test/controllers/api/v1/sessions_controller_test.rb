@@ -749,6 +749,29 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "undelivered", queued.reload.status
   end
 
+  test "archive ignores a force that is not truthy" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+
+    post archive_api_v1_session_path(session.id), params: { force: "0" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_equal "running", session.reload.status
+  end
+
+  # Forcing chooses the discard; it must not hide it.
+  test "a forced archive still names the discarded messages on the archive line" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "thrown away deliberately", position: 1, status: "pending")
+
+    post archive_api_v1_session_path(session.id), params: { force: true }, headers: @headers
+
+    assert_response :success
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "1 queued message was never delivered"
+    assert_includes line, "thrown away deliberately"
+  end
+
   test "bulk_archive skips sessions with queued messages and reports them" do
     blocked = sessions(:running)
     blocked.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
@@ -762,6 +785,8 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)
     assert_equal 1, json["archived_count"]
     assert_equal [ blocked.id ], json["errors"].map { |e| e["id"] }
+    assert_includes json["errors"].sole["message"], "applies to every session in the batch",
+      "a per-session error inside a batch has to name force's batch-wide reach"
     assert_equal "running", blocked.reload.status
   end
 
