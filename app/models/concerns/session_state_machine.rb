@@ -129,6 +129,10 @@ module SessionStateMachine
             enqueue_status_summary_refresh
           end
           execute_pending_sleep
+          # Last, and after execute_pending_sleep: a session that just went
+          # dormant is not idling on its queue, it is asleep, and the check
+          # below reads the state the sleep left behind.
+          drain_enqueued_messages_after_pause
         end
       end
 
@@ -145,6 +149,7 @@ module SessionStateMachine
         after do
           clear_stale_mcp_failure_metadata
           clear_paused_by_metadata
+          clear_enqueued_drain_attempts
           clear_blocked_on_elicitation_marker
           clear_lost_elicitation_marker
           clear_pending_sleep
@@ -702,6 +707,65 @@ module SessionStateMachine
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to describe the archive of session #{id}: #{e.message}"
     "Session moved to trash"
+  end
+
+  # Come to rest in `needs_input` only with an empty queue.
+  #
+  # The `needs_input` counterpart of strand_pending_enqueued_messages below, and
+  # of Sessions::ArchiveGuard — the same invariant, "a session does not idle on
+  # top of a message queued for it", at the other resting state. It differs in
+  # what it can do about it. Archiving ends every delivery path, so the honest
+  # responses there are to refuse the transition or to record the discard.
+  # `needs_input` ends nothing: an idle session is precisely the condition a
+  # queued message is waiting for, so the response here is to deliver it.
+  #
+  # Most pauses never reach this with anything to do. AgentSessionJob drains the
+  # queue at each of its four turn-end paths and does it BEFORE `pause!`, so the
+  # session hands off while still `running` and never flaps through
+  # `needs_input`. That remains the hot path. What it cannot cover is a message
+  # enqueued between its read of the queue and this transition committing, and
+  # it does not run at all for the pauses that originate elsewhere — the MCP
+  # `pause` action, `POST /api/v1/sessions/:id/pause`, the web pause button,
+  # Sessions::InterruptService, SessionRecoveryService.
+  #
+  # Deferred to a job rather than drained inline. AASM runs `after` callbacks
+  # inside the transition's own transaction, and delivering means resuming the
+  # session — a second AASM event on this object, nested inside the first, plus
+  # an AgentSessionJob enqueue — from whatever thread happened to call `pause!`,
+  # including a web request. EnqueuedMessageDrainJob does it once the transition
+  # is committed and visible, under the same per-session advisory lock
+  # Sessions::InterruptService takes, and carries the bounded-retry and
+  # give-up-loudly logic that keeps a session which cannot take its message from
+  # bouncing between states forever.
+  def drain_enqueued_messages_after_pause
+    return unless needs_input?
+    return unless enqueued_messages.pending.exists?
+
+    session_id = id
+    ActiveRecord.after_all_transactions_commit do
+      EnqueuedMessageDrainJob.set(wait: EnqueuedMessageDrainJob::DELAY).perform_later(session_id)
+    end
+  rescue => e
+    # Alerting: a swallowed failure here puts the session back in exactly the
+    # state this callback exists to prevent — idle, with a message queued for
+    # it, and nothing coming.
+    report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Drop the drain attempt counter when the session gets going again.
+  #
+  # The counter bounds EnqueuedMessageDrainJob's retries within one idle spell.
+  # A session that resumes by any route — the drain itself succeeding, a human
+  # follow-up, a recovery sweep — has ended that spell, and a count left over
+  # from it would deny a later drain the attempts it is owed.
+  def clear_enqueued_drain_attempts
+    return unless metadata&.key?(EnqueuedMessageDrainJob::ATTEMPTS_KEY)
+
+    update_column(:metadata, metadata.except(EnqueuedMessageDrainJob::ATTEMPTS_KEY))
+  rescue => e
+    # Log-only: a stale counter costs a future drain its retries, and the
+    # give-up path alerts loudly when that happens.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Retire every message still queued for this session, because archiving has

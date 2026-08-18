@@ -1399,7 +1399,35 @@ sweep reaches is discarded without anyone being asked.
 Nothing stops a *new* `pending` row being created for an already-archived session either — the three
 `create` surfaces have no session-status guard, unlike `follow_up` and `send_now`, which reject an
 archived target. That re-creates the stranded state after the archive callback has already run.
-Tracked separately in [#549](https://github.com/tadasant/zimmer/issues/549).
+Tracked separately in [#549](https://github.com/tadasant/zimmer/issues/549). Those same surfaces are
+equally unguarded against a session in `needs_input`, but that case is now handled rather than
+refused: an `after_create_commit` hook schedules the delivery, because an idle session is exactly
+the condition the message is waiting for.
+
+### Three states still hold a queued message on an idle session
+
+A session no longer comes to rest in `needs_input` with a message queued for it — the `pause`
+transition schedules the delivery ([lifecycle](/sessions/lifecycle/)). The invariant has edges.
+
+`EnqueuedMessageDrainJob` refuses to deliver in three states, and in each the message waits for that
+state to clear rather than for anyone to notice: blocked on an MCP elicitation (the agent process is
+still alive), parked by `AuthOutageParkService` on a quota or auth wall, and `paused_by: "mcp_retry"`
+with a retry already scheduled. Each is the right call — delivering would spawn a second process
+against one clone, or burn the message on the wall that caused the park — and each ends in the
+message going out on the turn that follows. But a park that never clears holds the message
+indefinitely, and nothing says so.
+
+Only `needs_input` is covered. A session that pauses straight into a scheduled sleep goes dormant in
+`waiting` with its queue intact, which is correct — it has a wake armed, and that wake's turn drains
+the queue — but a session whose wake is later destroyed keeps the message with it. A session in
+`failed` holds its queue too; the recovery sweeps prefer a queued user message when they
+auto-continue one, so it usually goes out, but only if a sweep reaches the session.
+
+The terminal case is an alert, not a resolution. After three failed attempts the job stops and pages,
+leaving the messages `pending` — deliberately, because they are still deliverable and retiring them
+to `undelivered` would destroy a message to record that one job could not deliver it. What that means
+in practice is that the invariant is restored by a human giving the session a turn, and until then
+the session is idle with work queued for it.
 
 ### 🔴 Every turn a session finishes costs a second agent turn, for the Status summary
 
