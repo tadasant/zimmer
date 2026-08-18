@@ -648,11 +648,13 @@ the sweep resumed every one of them in a single pass. One restored account there
 parked population back onto a pool with one account in it, which they re-drained in seconds and
 re-parked together — a cohort that leaves the trigger list in waves.
 
-So a sweep resumes at most `MAX_WAKES_PER_SWEEP` (5), oldest park first, and logs how many it held.
-The throttle closes its own loop: the next sweep is 15 minutes away and re-reads the pool, so if the
-batch that went first drained it again, nobody else is woken. Held sessions lose nothing — each
-still carries its own jittered timer, and each leads the next sweep's queue. The ordering is a
-lexicographic sort over `auth_outage_parked_at`, which is why that stamp is written in UTC.
+So a sweep resumes at most `MAX_WAKES_PER_SWEEP` (5) **per runtime**, oldest park first, and logs
+how many it held. Per runtime because the hazard is per pool: a fleet of `claude_code` parks must
+not hold back the `codex` sessions whose own pool just recovered. The throttle closes its own loop —
+the next sweep is 15 minutes away and re-reads the pool, so if the batch that went first drained it
+again, nobody else is woken. Held sessions lose nothing: each still carries its own jittered timer,
+and each leads the next sweep's queue. The ordering is a lexicographic sort over
+`auth_outage_parked_at`, which is why that stamp is written explicitly in UTC.
 
 ### One retry trigger per session
 
@@ -663,11 +665,20 @@ these, and `CleanupStaleTriggersJob` reaps them an hour after a `scheduled_at` t
 hours out. Across a park/resume/re-park loop that is a column of identical dead rows, each surviving
 about thirteen hours, indistinguishable in the UI from armed ones.
 
-So the park path destroys the previous retry trigger before creating its successor, and the sweep
-destroys the one it just spent. Both match on the `Auth outage retry for session #N at …` name
-Zimmer itself writes, so a `wake_me_up_later` wake the *user* set up for the same session — an
-identical `reuse_session` + `last_session_id` shape — is never swept up with them. Both are
-best-effort: a park whose cleanup fails is still a park.
+So the row goes with the condition. `cancel_pending_one_time_wake_triggers` discards the session's
+auth-outage retries on **every** deliberate resume — the sweep, a user follow-up, a poller, the
+trigger firing — and a new park discards the ones it supersedes. A system-recovery resume is the
+exception on both counts, because it deliberately *preserves* its wake-ups: the session did not
+choose to wake, so its retry is not moot.
+
+Three things are deliberately out of scope of that sweep. A `wake_me_up_later` wake the *user* set
+up for the same session, which has an identical `reuse_session` + `last_session_id` shape and is
+told apart only by the `Auth outage retry for session #N at …` name Zimmer itself writes. A trigger
+in `failed`, which `ScheduleTriggerJob` parked there as a tombstone so the operator could see the
+wake did not fire and re-arm it — only they clear that. And the successor of a park in progress: the
+new trigger is created *before* the old ones are destroyed, so a create that fails leaves the
+session the backstop it already had rather than none at all. The cleanup itself is best-effort — a
+park whose cleanup fails is still a park.
 
 Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
 arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing

@@ -29,10 +29,10 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
   # Another session caught by the same outage. `needs_input` so parking it lands
   # it straight in `waiting` rather than deferring the sleep to its next pause.
-  def parked_peer
+  def parked_peer(runtime: "claude_code")
     Session.create!(
       prompt: "Peer",
-      agent_runtime: "claude_code",
+      agent_runtime: runtime,
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
@@ -43,11 +43,11 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
   end
 
   def create_account(email:, status:, reset_5h: nil, reset_7d: nil,
-    utilization_5h: 1.0, utilization_7d: 1.0, snapshot: nil)
+    utilization_5h: 1.0, utilization_7d: 1.0, snapshot: nil, runtime: "claude_code")
     account = ClaudeAccount.create!(
       email: email,
       status: status,
-      runtime: "claude_code",
+      runtime: runtime,
       oauth_config: { "credentials_json" => { "claudeAiOauth" => { "accessToken" => "tok" } } }
     )
     # A snapshot with no reset stamps at all is a real reading, and the one this
@@ -442,6 +442,35 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert Trigger.exists?(mine.id), "Only Zimmer's own retry triggers are Zimmer's to destroy"
   end
 
+  # The successor is created before the predecessors are destroyed, so a create
+  # that fails leaves the session the backstop it already had rather than none.
+  test "a park whose trigger cannot be created keeps the previous one" do
+    @session.update!(status: :needs_input)
+    park!
+    surviving = AuthOutageParkService.retry_triggers_for(@session).first
+    assert_not_nil surviving
+
+    Trigger.stubs(:create!).raises(ActiveRecord::RecordInvalid.new(Trigger.new))
+    assert_nil park!
+
+    assert Trigger.exists?(surviving.id),
+      "A failed re-park must not take the retry the session already had"
+  end
+
+  # ScheduleTriggerJob parks a trigger it could not fire as `failed` on purpose,
+  # so the operator can see the wake did not happen and re-arm it.
+  # CleanupStaleTriggersJob exempts those; so does this.
+  test "a failed retry trigger is left for the operator, not destroyed" do
+    @session.update!(status: :needs_input)
+    park!
+    tombstone = AuthOutageParkService.retry_triggers_for(@session).first
+    tombstone.update!(status: "failed")
+
+    park!
+
+    assert Trigger.exists?(tombstone.id), "Only the operator clears a failed trigger"
+  end
+
   test "a re-park supersedes the previous retry trigger instead of stacking one" do
     3.times do
       @session.update!(status: :needs_input)
@@ -488,8 +517,60 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
       "the next sweep takes the ones that were held"
   end
 
+  # The cap guards one POOL against being re-drained by everything parked on it,
+  # so it is counted per runtime. A fleet of claude_code parks must not hold back
+  # the codex sessions whose own pool just recovered.
+  test "the per-sweep cap is counted per runtime" do
+    create_account(email: "claude@example.com", status: :active)
+    create_account(email: "codex@example.com", status: :active, runtime: "codex")
+
+    Array.new(AuthOutageParkService::MAX_WAKES_PER_SWEEP + 2) do |i|
+      session = parked_peer
+      AuthOutageParkService.new(session).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+      # Older than the codex park below, so a global cap would spend itself here.
+      session.reload.update!(metadata: session.metadata.merge(
+        "auth_outage_parked_at" => (60 - i).minutes.ago.utc.iso8601
+      ))
+    end
+
+    codex = parked_peer(runtime: "codex")
+    AuthOutageParkService.new(codex).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+
+    AuthOutageParkService.wake_parked_sessions!
+
+    assert codex.reload.running?,
+      "a codex park must not be held by a claude_code pool's batch"
+  end
+
   # parked_sessions sorts the stamp lexicographically, which only agrees with
   # chronological order while every stamp is written in the same zone.
+  # The sweep is not the only way a parked session wakes: a user follow-up, a
+  # poller, the trigger firing. Every one of them consumes the condition and used
+  # to leave the enabled row behind, so the discard hangs off the resume itself.
+  test "an ordinary resume discards the retry trigger too" do
+    @session.update!(status: :needs_input)
+    park!
+    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count
+
+    @session.reload.update!(metadata: @session.metadata.except(*Session::STALE_RETRY_METADATA_KEYS))
+    @session.resume!
+
+    assert_equal 0, AuthOutageParkService.retry_triggers_for(@session).count,
+      "a hand-nudged session must not keep the dead row either"
+  end
+
+  # A system-recovery resume deliberately preserves its wake-ups — the session
+  # did not choose to wake, so its retry is not moot and must survive.
+  test "a system-recovery resume keeps the retry trigger" do
+    @session.update!(status: :needs_input)
+    park!
+
+    @session.reload.resume_for_system_recovery!
+
+    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count,
+      "the wake a recovered session still needs must not be swept up"
+  end
+
   test "the park stamp is recorded in UTC" do
     park!
 
