@@ -896,6 +896,15 @@ module SessionStateMachine
         "(trigger_condition #{condition.id}) for resumed session #{id}"
       )
     end
+
+    # Consuming the condition leaves the trigger ROW enabled, having fired
+    # nothing, until CleanupStaleTriggersJob reaps it an hour after a
+    # scheduled_at that may be twelve hours out. For a wake Zimmer created on the
+    # session's behalf that row is pure residue, and a session that parks and
+    # resumes repeatedly accumulates one per cycle — so the auth-outage retries
+    # go with the conditions they belonged to. A user's own `wake_me_up_later`
+    # trigger is left alone: it is theirs to see and to clear.
+    AuthOutageParkService.discard_retry_triggers!(self, reason: "resumed")
   rescue => e
     # Don't raise — trigger bookkeeping failures shouldn't block the resume. But
     # do alert: on the cancel branch an uncancelled one-time wake stays armed and
