@@ -1,0 +1,202 @@
+# frozen_string_literal: true
+
+# Delivers the message a session came to rest on top of.
+#
+# The invariant this enforces is the `needs_input` half of the one
+# Sessions::ArchiveGuard enforces for `archive`: a session must not idle with a
+# message still queued for it. Where the archive half refuses the transition —
+# archiving ends every delivery path, so the only honest answer is not to
+# archive — `needs_input` is recoverable. The session is idle, which is exactly
+# the condition under which a queued message is supposed to be delivered, so the
+# fix is to deliver it and let the session keep running.
+#
+# AgentSessionJob already drains the queue at its four turn-end paths, and does
+# it BEFORE `pause!` so the session never flaps running → needs_input → running.
+# That is still the hot path and this job is not a replacement for it. This job
+# covers what that ordering cannot:
+#
+#   - The race. The drain reads the queue, finds it empty, and then `pause!`
+#     commits. A message enqueued in that window lands `pending` on a session
+#     that is already `needs_input`, and nothing ever comes back for it.
+#   - Every other way into `needs_input`. The MCP `pause` action, `POST
+#     /api/v1/sessions/:id/pause`, the web pause button,
+#     Sessions::InterruptService and SessionRecoveryService all call `pause!`
+#     directly with no drain of their own.
+#   - A message queued onto a session that is already idle. The three `create`
+#     surfaces (web, REST, MCP `manage_enqueued_messages`) have no state guard,
+#     and they all tell the caller the message "will be delivered when the
+#     session becomes idle" — which it already is.
+#
+# Nothing else would pick these up. HeartbeatSweepJob, the one sweep that wakes
+# an idle session, explicitly skips a session with a pending message on the
+# assumption that something else is about to deliver it.
+class EnqueuedMessageDrainJob < ApplicationJob
+  queue_as :default
+
+  # Deliberately NOT good_job_control_concurrency_with. A `total_limit` counts
+  # the running job itself, so the retry this job schedules for itself would be
+  # the enqueue that gets dropped — silently turning the bounded retry into a
+  # single attempt. Duplicate drains are cheap and safe instead: they serialize
+  # on the advisory lock, and whichever gets there second finds the queue empty
+  # or the session running and returns.
+
+  # How long to let a synchronous caller finish before stepping in.
+  #
+  # The callers that pause a session and then immediately deliver something to
+  # it — Sessions::InterruptService, SessionContinuation's auto-continue,
+  # SessionsController#follow_up — are the ones whose intent is most specific,
+  # and a drain that beat them to the queue would take the message out from
+  # under them. Sessions::InterruptService reports that as a 409 to its caller
+  # and MCP's `send_now` then discards a message it was actually going to
+  # deliver. The delay costs nothing: this is the corrective path, not the hot
+  # one, and a session that is genuinely stuck was going to sit there forever.
+  DELAY = 10.seconds
+
+  # How many times to try before giving up and saying so out loud.
+  MAX_ATTEMPTS = 3
+
+  # Backoff between attempts. Bounded on purpose: the failure this guards
+  # against is a session that cannot take its message at all, and retrying that
+  # forever is a spin loop, not a recovery.
+  RETRY_DELAY = 30.seconds
+
+  # Where the attempt count lives while a drain is failing. Cleared by `resume`,
+  # so a session that gets going again by any route starts fresh.
+  ATTEMPTS_KEY = "enqueued_drain_attempts"
+
+  def perform(session_id)
+    session = Session.find_by(id: session_id)
+    return unless session
+
+    # The same lock Sessions::InterruptService holds across its whole operation.
+    # Taking it here is what makes "did someone else already deliver this?" a
+    # question with an answer rather than a guess: we read the session's state
+    # after any in-flight interrupt has finished, not in the middle of one.
+    Session.with_session_lock(session_id) do
+      session.reload
+
+      skip = skip_reason(session)
+      if skip
+        Rails.logger.info("[EnqueuedMessageDrainJob] Session #{session_id}: nothing to do (#{skip})")
+        next
+      end
+
+      attempt = record_attempt(session)
+
+      if EnqueuedMessageProcessorService.new(session, broadcast_service: BroadcastService.new).process_next_message
+        session.logs.create!(
+          content: "Queued message delivered — session resumed rather than idling with it undelivered",
+          level: "info"
+        )
+        Rails.logger.info("[EnqueuedMessageDrainJob] Session #{session_id}: delivered a queued message")
+        next
+      end
+
+      handle_failed_attempt(session, attempt)
+    end
+  end
+
+  private
+
+  # Why this session should be left alone, or nil to go ahead.
+  #
+  # Every one of these is a state in which the session genuinely cannot take a
+  # message right now, not a preference. Delivering anyway would either spawn a
+  # second agent process against one clone or re-run the session straight back
+  # into the wall it just hit.
+  def skip_reason(session)
+    return "no longer needs_input (#{session.status})" unless session.needs_input?
+    return "queue is empty" unless session.enqueued_messages.pending.exists?
+
+    # The agent process is STILL RUNNING and blocked on a synchronous MCP
+    # elicitation. Resuming would spawn a second process and orphan the
+    # round-trip. HeartbeatSweepJob refuses to nudge this state for the same
+    # reason; the message is delivered when the elicitation resolves and the
+    # resulting turn ends.
+    return "blocked on an MCP elicitation" if session.blocked_on_elicitation?
+
+    # Parked by AuthOutageParkService on a quota or auth wall. AgentSessionJob's
+    # own end-of-turn drain reads the same marker and skips the handoff for it:
+    # a fresh turn would hit the same wall, burn the message, and park again.
+    if session.metadata&.dig("auth_outage_reason").present?
+      return "parked on an auth or quota outage"
+    end
+
+    # AgentSessionJob has already scheduled a retry carrying the original
+    # prompt. Delivering the queued message now would race that retry into the
+    # same failing MCP server.
+    if session.metadata&.dig("paused_by") == "mcp_retry"
+      return "waiting on a scheduled MCP connection retry"
+    end
+
+    nil
+  end
+
+  # Record the attempt BEFORE trying, so an attempt that takes the worker down
+  # with it still counts. A counter that only advanced on a clean failure would
+  # not bound the case it exists to bound.
+  def record_attempt(session)
+    attempt = session.metadata&.dig(ATTEMPTS_KEY).to_i + 1
+    session.update_column(:metadata, (session.metadata || {}).merge(ATTEMPTS_KEY => attempt))
+    attempt
+  end
+
+  # EnqueuedMessageProcessorService returned false with the session still idle
+  # and the queue still non-empty — so this is a real failure, not a peer having
+  # got there first (skip_reason already ruled that out under the lock).
+  def handle_failed_attempt(session, attempt)
+    if attempt < MAX_ATTEMPTS
+      Rails.logger.warn(
+        "[EnqueuedMessageDrainJob] Session #{session.id}: drain attempt #{attempt}/#{MAX_ATTEMPTS} " \
+        "failed, retrying in #{RETRY_DELAY.to_i}s"
+      )
+      self.class.set(wait: RETRY_DELAY).perform_later(session.id)
+      return
+    end
+
+    give_up(session, attempt)
+  end
+
+  # The terminal case, and the reason this job is bounded at all.
+  #
+  # The messages are deliberately left `pending` rather than retired to
+  # `undelivered` the way an archive retires them. `undelivered` means "no path
+  # to delivery remains", which is true of an archived session and false of this
+  # one: it is idle and reachable, and the next turn anybody gives it drains the
+  # queue through AgentSessionJob's normal end-of-turn path. Retiring here would
+  # destroy a message that is still deliverable in order to record that we
+  # personally could not deliver it.
+  #
+  # So the loud part is the alert rather than a status change. Something is
+  # wrong with this session specifically — it is idle, it has work queued, and
+  # three attempts spread over a minute could not hand that work over.
+  def give_up(session, attempt)
+    count = session.enqueued_messages.pending.count
+    Rails.logger.error(
+      "[EnqueuedMessageDrainJob] Session #{session.id}: giving up after #{attempt} attempts with " \
+      "#{count} message(s) still queued"
+    )
+    session.logs.create!(
+      content: "Could not deliver #{count} queued message(s) after #{attempt} attempts — session is idle " \
+               "with them still queued. They stay queued and will be delivered on the next turn.",
+      level: "error"
+    )
+
+    AlertService.raise_alert(
+      "Session idle with an undeliverable queued message",
+      details: "Session #{session.id} is in `needs_input` with #{count} message(s) still queued. " \
+               "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
+               "it was given. The messages are still `pending` and will go out on the next turn the " \
+               "session takes — but nothing is going to give it one on its own.\n\n" \
+               "<#{AppUrl.base_url}/sessions/#{session.id}|View session in Zimmer>",
+      source: "EnqueuedMessageDrainJob",
+      dedup_key: "undeliverable_enqueued_messages_#{session.id}"
+    )
+  rescue => e
+    # This method IS the loud part. It failing silently is the defect again.
+    Rails.logger.error(
+      "[EnqueuedMessageDrainJob] Failed to report an undeliverable queue for session #{session.id}: " \
+      "#{e.class}: #{e.message}"
+    )
+  end
+end

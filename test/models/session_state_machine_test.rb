@@ -312,6 +312,63 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal "processing", claimed.reload.status
   end
 
+  # The `needs_input` half of the same invariant. AgentSessionJob drains the
+  # queue before it pauses, so this only fires for what that ordering cannot
+  # reach: a message enqueued between its read and this transition committing,
+  # and every pause that originates somewhere other than a turn ending — the MCP
+  # `pause` action, the REST pause endpoint, the web pause button,
+  # Sessions::InterruptService, SessionRecoveryService.
+  test "pause hands a still-queued message to the drain job" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "and now the other half", position: 1, status: "pending")
+
+    assert_enqueued_with(job: EnqueuedMessageDrainJob, args: [ session.id ]) do
+      session.pause!
+    end
+  end
+
+  test "pause with an empty queue schedules no drain" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+
+    assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) { session.pause! }
+  end
+
+  # A claimed row is already on its way to the agent; scheduling a drain for it
+  # would be a guaranteed no-op.
+  test "pause schedules no drain for an already-claimed message" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "in flight", position: 1, status: "processing")
+
+    assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) { session.pause! }
+  end
+
+  # A session that pauses straight into a scheduled sleep is dormant, not idling
+  # on its queue — it has a wake armed, and that wake's turn drains the queue.
+  # The check runs after execute_pending_sleep precisely so it reads this.
+  test "pause that goes straight to sleep schedules no drain" do
+    session = sessions(:waiting)
+    session.update!(status: :running, metadata: { "pending_sleep" => true })
+    session.enqueued_messages.create!(content: "later", position: 1, status: "pending")
+
+    assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) { session.pause! }
+    assert session.reload.waiting?
+  end
+
+  test "a broken drain scheduler cannot wedge the pause" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "and now the other half", position: 1, status: "pending")
+    EnqueuedMessageDrainJob.stubs(:set).raises(StandardError, "good_job is on fire")
+    AlertService.stubs(:raise_alert).returns(true)
+
+    session.pause!
+
+    assert session.reload.needs_input?, "a failed side effect must not block the transition"
+  end
+
   test "archive names pull requests it is leaving unresolved" do
     session = sessions(:waiting)
     session.update!(

@@ -69,7 +69,7 @@ Guarded on `git_root` being present. Resets the elapsed-time counter and logs.
 ### `pause` — `running → needs_input`
 
 Fired when the agent's turn ends (the process exits normally). This is the workhorse
-transition, and it does seven things beyond changing status:
+transition, and it does eight things beyond changing status:
 
 1. `warn_if_pr_goal_captured_no_url` — if the session's goal mentions a pull request and
    `custom_metadata["github_pull_request_urls"]` is still empty, write one `warning` log to the
@@ -87,6 +87,10 @@ transition, and it does seven things beyond changing status:
    not moved since the last one, so a transition that added no transcript costs nothing.
 7. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
    sleep was deferred to here; now it fires.
+8. `drain_enqueued_messages_after_pause` — if the session is coming to rest with a message still
+   queued for it, schedule the delivery. See [below](#a-session-does-not-idle-on-its-own-queue).
+   Runs last, and after `execute_pending_sleep`, so it reads the state the sleep left behind: a
+   session that just went dormant is asleep with a wake armed, not idling.
 
 Steps 3–6 are skipped for one kind of session: a **status-summary fork**, which is Zimmer's own
 throwaway (marked in metadata by `SessionStatusSummaryGenerator::FORK_MARKER`). Its pause means its
@@ -99,6 +103,76 @@ push job is enqueued with a 60-second delay (`NEEDS_INPUT_DEBOUNCE`) carrying a 
 marker from `custom_metadata["needs_input_count"]`. If the session churns during the window,
 the marker won't match and the deferred job no-ops.
 
+#### A session does not idle on its own queue
+
+`needs_input` and `archived` are the two states in which a session stops draining its queue, and
+the same invariant covers both: **a session must not come to rest with a message still queued for
+it.** What differs is what can be done about it. Archiving ends every delivery path, so the honest
+answers there are to refuse the transition and to record the discard —
+[below](#archiving-retires-the-message-queue). `needs_input` ends nothing. An idle session is
+precisely the condition a queued message is waiting for, so the answer here is to deliver it and
+keep running.
+
+Most of that already happened before this transition. `AgentSessionJob` drains the queue at each
+of its four turn-end paths and does it **before** calling `pause!`, so the session hands the turn
+over while still `running` and never flaps through `needs_input` — no spurious
+`session_needs_input` wake, no push notification. That is still the hot path. What that ordering
+cannot cover is:
+
+- **The race.** The drain reads the queue, finds it empty, and *then* `pause!` commits. A message
+  enqueued in that window lands `pending` on a session that is already idle.
+- **Every pause that isn't a turn ending.** The MCP `pause` action, `POST
+  /api/v1/sessions/:id/pause`, the web pause button, `Sessions::InterruptService` and
+  `SessionRecoveryService` all call `pause!` directly with no drain of their own.
+- **A message queued onto a session that is already idle.** None of the three create surfaces —
+  the web queue form, `POST /api/v1/sessions/:id/enqueued_messages`, MCP
+  `manage_enqueued_messages` — checks the session's state, and all three answer that the message
+  goes out *when the session becomes idle*. An `EnqueuedMessage` `after_create_commit` hook covers
+  this one.
+
+Nothing else would have picked any of them up. `HeartbeatSweepJob` is the only sweep that wakes an
+idle session, and it deliberately skips one holding a pending message — on the assumption,
+previously untrue, that something else was about to deliver it.
+
+Both entry points schedule an `EnqueuedMessageDrainJob` rather than draining inline. AASM runs
+`after` callbacks inside the transition's own transaction, and delivering means resuming the
+session — a second AASM event nested in the first, plus an `AgentSessionJob` enqueue — from
+whatever thread called `pause!`, including a web request. The job runs once the transition is
+committed, after a 10-second delay that lets the callers which pause-then-immediately-deliver
+(`Sessions::InterruptService`, `SessionContinuation`'s auto-continue) finish first, and takes the
+same per-session advisory lock `Sessions::InterruptService` holds.
+
+The job refuses to deliver in three states, because in each the session genuinely cannot take a
+message and delivering would make things worse:
+
+| State | Why not |
+| --- | --- |
+| Blocked on an MCP elicitation | The agent process is still alive. Resuming spawns a second process against one clone and orphans the round-trip. |
+| Parked by `AuthOutageParkService` (`auth_outage_reason`) | A fresh turn hits the same quota or auth wall, burns the message, and parks again. `AgentSessionJob`'s own drain reads the same marker. |
+| `paused_by: "mcp_retry"` | A retry carrying the original prompt is already scheduled; delivering now races it into the same failing MCP server. |
+
+**The dead-process case.** A drain does not need the old agent process — it enqueues a fresh
+`AgentSessionJob` that resumes the runtime session from `session_id` and the working directory,
+exactly as a human follow-up does. So a session whose process died still takes its message. What
+it cannot survive is a missing clone or `session_id`: there `AgentSessionJob` fails the session
+with a `failure_reason`, and the message stays `pending` on a `failed` session, where the recovery
+paths (`SessionContinuation#continue_with_queued_user_message`) already prefer a queued user
+message over the automated recovery prompt when they auto-continue it.
+
+**No spin loop.** Each successful delivery destroys a row, so the queue strictly shrinks. Failure
+is what needs bounding: three attempts, 30 seconds apart, counted in
+`metadata["enqueued_drain_attempts"]` and cleared by `resume` so each idle spell gets its own
+budget. After that the job stops and raises an alert, deduped per session. It deliberately does
+**not** retire the messages to `undelivered` the way an archive does: `undelivered` means no
+delivery path remains, which is true of an archived session and false of this one — the next turn
+anybody gives it drains the queue normally. Retiring here would destroy a still-deliverable message
+in order to record that this job could not deliver it.
+
+One consequence worth naming: a *user-initiated* pause on a session with a queued message resumes
+within seconds. That is the invariant working as stated rather than an oversight — the queued
+message is input the user was told would be delivered, and pausing the current turn is not the
+same as withdrawing it. To stop it, delete the queued message.
+
 ### `resume` — `waiting | needs_input | failed → running`
 
 Unguarded, deliberately. The preconditions for resuming — a clone on disk, a runtime
@@ -107,9 +181,10 @@ session id to resume into, a live process to reattach to — are established or 
 `failure_reason` when it cannot. The state machine does not re-check them, so a resume you
 ask for is a resume the job gets to attempt.
 Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
-`blocked_on_elicitation` and `lost_elicitation` markers, any `pending_sleep`, and, importantly, it
-cancels pending one-time wake-up triggers targeting this session, so a scheduled wake
-doesn't fire on a session you already resumed by hand.
+`blocked_on_elicitation` and `lost_elicitation` markers, any `pending_sleep`, the
+`enqueued_drain_attempts` counter (so each idle spell gets its own retry budget), and,
+importantly, it cancels pending one-time wake-up triggers targeting this session, so a scheduled
+wake doesn't fire on a session you already resumed by hand.
 
 #### A system-recovery resume keeps the wake-ups
 

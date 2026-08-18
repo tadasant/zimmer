@@ -1,6 +1,8 @@
 require "test_helper"
 
 class EnqueuedMessageTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   # Test associations
   test "should belong to session" do
     session = sessions(:running)
@@ -400,6 +402,38 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     session.enqueued_messages.create!(content: "never sent", position: 1, status: "undelivered")
 
     assert_nil session.process_next_enqueued_message!
+  end
+
+  # The `pause` callback catches a message that arrives before a session comes
+  # to rest. This catches one that arrives after it already has: none of the
+  # three create surfaces checks the session's state, and all three answer that
+  # the message will go out "when the session becomes idle" — which, for a
+  # session in needs_input, it already is. Nothing would have come back for it:
+  # HeartbeatSweepJob, the only sweep that wakes an idle session, skips one that
+  # has a pending message.
+  test "queueing onto an already-idle session schedules its delivery" do
+    session = sessions(:needs_input)
+
+    assert_enqueued_with(job: EnqueuedMessageDrainJob, args: [ session.id ]) do
+      session.enqueued_messages.create!(content: "you are already idle", position: 1)
+    end
+  end
+
+  test "queueing onto a running session schedules nothing" do
+    session = sessions(:running)
+
+    assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) do
+      session.enqueued_messages.create!(content: "wait your turn", position: 1)
+    end
+  end
+
+  # Only a message that is actually waiting to be delivered is worth a drain.
+  test "a message created already claimed schedules nothing" do
+    session = sessions(:needs_input)
+
+    assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) do
+      session.enqueued_messages.create!(content: "in flight", position: 1, status: "processing")
+    end
   end
 
   test "an unknown status is still rejected" do
