@@ -28,12 +28,26 @@ require "automated_prompts"
 # 1. Writes an unmistakable session log naming the outage and the retry time.
 # 2. Sends a push notification so the user learns about it away from the UI.
 # 3. Records the outage on the session (`auth_outage_*` metadata).
-# 4. Creates a one-time wake-up trigger at the retry time. Creating that trigger
-#    is what puts the session to sleep — Trigger's after_create callback sets
-#    `pending_sleep` on a still-running session, and the pause callback
-#    transitions it needs_input → waiting. A `waiting` session is dormant: the
-#    heartbeat sweep anchors its cadence instead of nudging it, so a parked
-#    session cannot be re-poked into the same wall.
+# 4. Creates a one-time wake-up trigger at the retry time, replacing the one the
+#    session's previous park left behind. Creating that trigger is what puts the
+#    session to sleep — Trigger's after_create callback sets `pending_sleep` on a
+#    still-running session, and the pause callback transitions it needs_input →
+#    waiting. A `waiting` session is dormant: the heartbeat sweep anchors its
+#    cadence instead of nudging it, so a parked session cannot be re-poked into
+#    the same wall.
+#
+# == One outage, one queue ==
+#
+# Everything a park knows is a fact about the POOL — the earliest account reset,
+# whether an account is available again — and one outage hands that same fact to
+# every session it stops, seconds apart. So the population has to be spread on
+# both of the paths that wake it: RETRY_JITTER and the backoff floor spread the
+# TIMER, and MAX_WAKES_PER_SWEEP holds .wake_parked_sessions! — which wakes on a
+# pool-wide predicate, not a per-session one — to a batch.
+#
+# And the trigger a park creates is destroyed when it stops being useful, rather
+# than left enabled for the twelve hours until its own scheduled_at lapses. See
+# .discard_retry_triggers!.
 #
 # QuotaResetCheckerJob calls .wake_parked_sessions! after it restores accounts,
 # so a session usually resumes as soon as the pool recovers rather than waiting
@@ -130,6 +144,26 @@ class AuthOutageParkService
   # and a ramp.
   RETRY_JITTER = 3.minutes
 
+  # How many parked sessions one sweep may resume.
+  #
+  # The jitter above spreads the TIMER. It does nothing for the other way a
+  # parked session wakes: .wake_parked_sessions! resumes on "the pool has an
+  # available account again", which becomes true for every session parked on that
+  # pool in the same instant, and resumed every one of them in one pass. One
+  # restored account therefore put the whole population back on a pool with one
+  # account in it, which they re-drained in seconds and re-parked together.
+  #
+  # A batch instead. The throttle closes its own loop: the next sweep is 15
+  # minutes away and re-reads the pool, so if the batch that went first drained
+  # it again, nobody else is woken. Held sessions lose nothing — each still
+  # carries its own timer, and each leads the next sweep's queue.
+  MAX_WAKES_PER_SWEEP = 5
+
+  # Prefix of the wake-up trigger's name. The park path writes it and the
+  # supersede path matches on it, so they cannot drift into a state where a new
+  # park stops recognising the trigger its predecessor left behind.
+  RETRY_TRIGGER_NAME_PREFIX = "Auth outage retry for session"
+
   attr_reader :session, :log_buffer
 
   def initialize(session, log_buffer: nil, logger: nil)
@@ -224,8 +258,12 @@ class AuthOutageParkService
     # judged against different pools.
     available = {}
     fingerprints = {}
+    held = 0
 
-    parked_sessions.find_each do |session|
+    # `.each`, not `find_each`: find_each imposes its own primary-key order and
+    # would discard the oldest-park-first ordering the cap below depends on. The
+    # set is bounded by how many sessions can be asleep at once.
+    parked_sessions.each do |session|
       runtime = session.agent_runtime
       next unless available.fetch(runtime) { available[runtime] = runtime_has_available_account?(runtime) }
 
@@ -234,7 +272,22 @@ class AuthOutageParkService
         next unless auth_park_wakeable?(session, current, logger)
       end
 
+      # Past the cap, and eligible: this session keeps its timer and its place at
+      # the front of the next sweep. Counted rather than dropped silently — a
+      # sweep that resumed 5 of 40 eligible sessions must not read as "5 were
+      # eligible". The check sits AFTER the eligibility gates so an auth park held
+      # here spends none of its early-wake budget.
+      if resumed >= MAX_WAKES_PER_SWEEP
+        held += 1
+        next
+      end
+
       resumed += 1 if resume_parked!(session, logger)
+    end
+
+    if held.positive?
+      logger.info("Held parked sessions past the per-sweep wake cap",
+        resumed: resumed, held: held, cap: MAX_WAKES_PER_SWEEP)
     end
 
     resumed
@@ -310,9 +363,70 @@ class AuthOutageParkService
     nil
   end
 
-  # Sessions currently dormant because of an auth outage.
+  # Sessions currently dormant because of an auth outage, oldest park first.
+  #
+  # The order is what makes MAX_WAKES_PER_SWEEP fair rather than arbitrary: the
+  # session asleep longest goes in the first batch, instead of the sweep
+  # re-picking whichever ids sort lowest every 15 minutes and starving the rest.
+  # A session that re-parks earns a newer stamp and goes to the back. Sorting is
+  # lexicographic over the stored string, which is why #record_outage! writes that
+  # stamp in UTC.
   def self.parked_sessions
-    Session.where(status: :waiting).where("metadata->>'auth_outage_reason' IS NOT NULL")
+    Session
+      .where(status: :waiting)
+      .where("metadata->>'auth_outage_reason' IS NOT NULL")
+      .order(Arel.sql("metadata->>'auth_outage_parked_at' ASC NULLS FIRST"))
+  end
+
+  # This session's auth-outage retry triggers. Matched on the name Zimmer wrote,
+  # so a `wake_me_up_later` wake the USER set up for the same session — identical
+  # reuse_session + last_session_id shape — is never swept up with them. The
+  # prefix carries no LIKE metacharacters and the id it embeds is an integer, so
+  # "… #1 at %" cannot reach "#12 at …"; keep it that way.
+  def self.retry_triggers_for(session)
+    Trigger
+      .where(last_session_id: session.id, reuse_session: true)
+      .where("name LIKE ?", "#{RETRY_TRIGGER_NAME_PREFIX} ##{session.id} at %")
+  end
+
+  # Destroy this session's retry triggers — at the two moments one stops being
+  # able to do anything: a new park supersedes it, and a sweep resume spends it.
+  #
+  # Without this they accumulate. A resume consumes the wake-up CONDITION
+  # (SessionStateMachine#cancel_pending_one_time_wake_triggers stamps
+  # last_triggered_at) but leaves the trigger row enabled, having created no
+  # session. ScheduleTriggerJob's auto-delete only runs on a trigger that actually
+  # FIRES, so it never sees these, and CleanupStaleTriggersJob reaps them an hour
+  # after a scheduled_at that can be twelve hours out. Across a park/resume/re-park
+  # loop that is a column of identical dead rows in the trigger list, each
+  # surviving ~13 hours.
+  #
+  # Best-effort: a park whose cleanup fails is still a park, and a resume whose
+  # cleanup fails is still a resume.
+  #
+  # @return [Integer] number of triggers destroyed
+  def self.discard_retry_triggers!(session, reason:, logger: nil)
+    destroyed = 0
+
+    retry_triggers_for(session).find_each do |trigger|
+      trigger.destroy!
+      destroyed += 1
+    end
+
+    if destroyed.positive?
+      (logger || Rails.logger).info(
+        "[AuthOutageParkService] Destroyed #{destroyed} auth-outage retry trigger(s) " \
+        "for session #{session.id} — #{reason}"
+      )
+    end
+
+    destroyed
+  rescue => e
+    # Names the class: the visible symptom of this failing is the trigger list
+    # stacking up again, which is the thing this method exists to prevent.
+    Rails.logger.warn "[AuthOutageParkService] Could not discard retry triggers for " \
+      "session #{session.id} (#{e.class}): #{e.message}"
+    destroyed
   end
 
   def self.runtime_has_available_account?(runtime)
@@ -363,6 +477,11 @@ class AuthOutageParkService
 
     return false if reason.blank? || !session.reload.running?
 
+    # The resume above consumed the retry trigger's condition; drop the row with
+    # it, so a session that parks and recovers repeatedly leaves one trigger
+    # behind at a time rather than one per park.
+    discard_retry_triggers!(session, reason: "resumed by the recovery sweep", logger: logger)
+
     session.logs.create!(level: "warning", content: resume_message(reason))
     AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)
@@ -400,11 +519,22 @@ class AuthOutageParkService
     target = known ? known + RESET_BUFFER : DEFAULT_RETRY_DELAY.from_now
 
     floor = (reason == QUOTA_EXHAUSTED) ? quota_retry_floor : MIN_RETRY_DELAY
-    target = target.clamp(floor.from_now, MAX_RETRY_DELAY.from_now)
 
     # Jitter lands after the clamp on purpose. Applied before it, the floor would
     # swallow it whole in exactly the case that most needs the spread: a whole
     # population parked together and pinned to the same minimum.
+    #
+    # The CEILING swallows it the same way, and that is the case the observed
+    # trigger waves came from — a weekly reset or a sentinel expiry sits far
+    # enough out that every session in the outage pins to MAX_RETRY_DELAY, and
+    # jitter added on top of the ceiling just clamps back down onto it. So the
+    # pre-jitter clamp stops one jitter window short of the ceiling, leaving the
+    # spread somewhere to go. `.max` with the floor keeps the low bound at or
+    # below the high one: `clamp` raises otherwise, and park!'s rescue would turn
+    # that into a session parked with no retry at all.
+    ceiling = [ MAX_RETRY_DELAY - RETRY_JITTER, floor ].max
+    target = target.clamp(floor.from_now, ceiling.from_now)
+
     (target + rand(RETRY_JITTER.to_i)).clamp(floor.from_now, MAX_RETRY_DELAY.from_now)
   end
 
@@ -457,7 +587,10 @@ class AuthOutageParkService
   def record_outage!(reason, retry_at)
     outage = {
       "auth_outage_reason" => reason,
-      "auth_outage_parked_at" => Time.current.iso8601,
+      # UTC, not zone-local: .parked_sessions orders on this value as a STRING,
+      # and an embedded offset would make that lexicographic sort disagree with
+      # chronological order — quietly costing the sweep's cap its fairness.
+      "auth_outage_parked_at" => Time.current.utc.iso8601,
       "auth_outage_retry_at" => retry_at.utc.iso8601
     }
 
@@ -497,11 +630,17 @@ class AuthOutageParkService
   # tool: `reuse_session` + `last_session_id` means firing resumes THIS session
   # rather than spawning a new one, and Trigger#sleep_target_session_if_applicable
   # is what actually puts the session to sleep.
+  #
+  # A session gets at most one of these at a time: the previous park's trigger is
+  # destroyed first, whether it is still armed (a re-park that raced its own
+  # backstop) or already spent. See .discard_retry_triggers!.
   def schedule_wake!(reason, retry_at)
     scheduled_at = retry_at.utc.strftime("%Y-%m-%dT%H:%M:%S")
 
+    self.class.discard_retry_triggers!(session, reason: "superseded by a new park", logger: @logger)
+
     Trigger.create!(
-      name: "Auth outage retry for session ##{session.id} at #{scheduled_at}Z",
+      name: "#{RETRY_TRIGGER_NAME_PREFIX} ##{session.id} at #{scheduled_at}Z",
       agent_root_name: session.agent_root_key.presence || session.agent_runtime,
       prompt_template: wake_prompt(reason),
       reuse_session: true,

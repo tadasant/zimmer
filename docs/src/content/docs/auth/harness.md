@@ -631,6 +631,44 @@ concurrent agents. On 2026-08-17 the un-jittered, un-backed-off version put 148 
 parks in 40 minutes and 377 jobs into the ready queue, which is what tripped the
 `SystemHealthMonitorJob` backlog page at 14:14 UTC.
 
+The jitter has to survive the **ceiling** as well as the floor, and that is a separate case. A
+weekly reset or a sentinel expiry sits far enough out that every session in the outage clamps onto
+`MAX_RETRY_DELAY`, and jitter added on top of the ceiling clamps straight back down onto it — so the
+whole cohort lands on one instant twelve hours away, which is exactly the shape the trigger list was
+carrying on 2026-08-17 (two waves at `02:08–02:15Z` and `02:20–02:25Z`, twelve hours after their
+parks). The pre-jitter clamp therefore stops one jitter window short of the ceiling, leaving the
+spread somewhere to go.
+
+### The sweep wakes a batch, not the fleet
+
+Spreading the timer does nothing for the other way a parked session wakes.
+`wake_parked_sessions!` resumes on "the runtime has an available account again", which is a fact
+about the **pool**: it becomes true for every session parked on that pool in the same instant, and
+the sweep resumed every one of them in a single pass. One restored account therefore put the whole
+parked population back onto a pool with one account in it, which they re-drained in seconds and
+re-parked together — a cohort that leaves the trigger list in waves.
+
+So a sweep resumes at most `MAX_WAKES_PER_SWEEP` (5), oldest park first, and logs how many it held.
+The throttle closes its own loop: the next sweep is 15 minutes away and re-reads the pool, so if the
+batch that went first drained it again, nobody else is woken. Held sessions lose nothing — each
+still carries its own jittered timer, and each leads the next sweep's queue. The ordering is a
+lexicographic sort over `auth_outage_parked_at`, which is why that stamp is written in UTC.
+
+### One retry trigger per session
+
+A resume consumes the wake-up **condition** — `SessionStateMachine#cancel_pending_one_time_wake_triggers`
+stamps `last_triggered_at` — but leaves the trigger row `enabled`, having created no session.
+`ScheduleTriggerJob`'s auto-delete only runs on a trigger that actually **fires**, so it never sees
+these, and `CleanupStaleTriggersJob` reaps them an hour after a `scheduled_at` that can be twelve
+hours out. Across a park/resume/re-park loop that is a column of identical dead rows, each surviving
+about thirteen hours, indistinguishable in the UI from armed ones.
+
+So the park path destroys the previous retry trigger before creating its successor, and the sweep
+destroys the one it just spent. Both match on the `Auth outage retry for session #N at …` name
+Zimmer itself writes, so a `wake_me_up_later` wake the *user* set up for the same session — an
+identical `reuse_session` + `last_session_id` shape — is never swept up with them. Both are
+best-effort: a park whose cleanup fails is still a park.
+
 Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
 arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing
 is available and at least one account is `quota_exceeded` (waiting genuinely helps), and
