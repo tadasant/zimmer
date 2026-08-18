@@ -1,0 +1,19 @@
+<%# Messages an archive retired. Rendered outside the follow-up form, which is
+    hidden for an archived session — the state in which these rows exist. They
+    were accepted and never delivered, so hiding them here would be the same
+    silence the terminal status exists to end. Read-only: there is nothing left
+    to send, reorder or edit. %>
+<% undelivered = agent_session.enqueued_messages.undelivered.ordered.to_a %>
+<% if undelivered.any? %>
+  <div class="rounded-md border border-amber-200 bg-amber-50 p-3 mb-3">
+    <p class="text-xs font-medium text-amber-900">
+      <%= undelivered.one? ? "1 message was" : "#{undelivered.size} messages were" %>
+      never delivered — the session was archived before <%= undelivered.one? ? "it" : "they" %> could be sent.
+    </p>
+    <ul class="mt-2 space-y-1">
+      <% undelivered.each do |message| %>
+        <li class="text-sm text-amber-900 whitespace-pre-wrap break-words"><%= truncate(message.content, length: 300) %></li>
+      <% end %>
+    </ul>
+  </div>
+<% end %>

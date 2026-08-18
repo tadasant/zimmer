@@ -423,6 +423,8 @@ module Mcp
           raise ToolError, "Session cannot be trashed from current status: #{session.status}"
         end
 
+        refuse_archive_with_undrained_queue(session)
+
         session.archive_actor = archive_actor_phrase(args)
         session.archive!
         session.reload
@@ -435,6 +437,62 @@ module Mcp
           "- **New Status:** #{session.status}",
           "- **Archived At:** #{session.archived_at&.iso8601}"
         ].join("\n")
+      end
+
+      # Refuse to archive a session that has a turn ahead of it and messages
+      # queued for that turn.
+      #
+      # Such a session has an end-of-turn queue drain coming, and archiving is
+      # precisely what cancels it: AgentSessionJob's monitoring loop sees
+      # `archived?` and terminates the process instead of pausing and calling
+      # EnqueuedMessageProcessorService. Session#strand_pending_enqueued_messages
+      # then retires whatever was queued — which records the loss, but does not
+      # undo it.
+      #
+      # Those messages are usually the reason not to archive. An agent
+      # self-archives because it believes its work is finished, and a message
+      # that landed mid-turn is exactly the evidence that the belief is stale
+      # (production session 6073: the user's follow-up queued behind the task in
+      # flight, and the session archived at the end of that same turn). Refusing
+      # costs a live caller nothing durable — it ends its turn, the pause drains
+      # the queue, the message arrives as the next turn, and the archive succeeds
+      # then because the queue is empty.
+      #
+      # `running` and `waiting` both qualify, because
+      # EnqueuedMessageProcessorService#process_next_message accepts both: a
+      # `waiting` session starts, runs, pauses and drains exactly as a running
+      # one does, so exempting it would lose messages that were going to arrive.
+      # `needs_input` and `failed` do not: nothing is coming to drain them, and
+      # refusing there would leave a session permanently un-archivable — worse
+      # than the bug being fixed. Those archives proceed and retire loudly.
+      #
+      # The refusal is not unconditionally self-clearing. A session whose process
+      # is already dead — the force-archive-a-stuck-session case the `archive`
+      # event's own comment names — never ends a turn, so its queue never drains
+      # and this keeps refusing. That is why the message names a way out that
+      # does not require the agent to be alive, and why the web UI's Trash button
+      # and `session.archive!` deliberately do not consult this.
+      def refuse_archive_with_undrained_queue(session)
+        return unless session.running? || session.waiting?
+
+        queued = session.enqueued_messages.pending.ordered.to_a
+        return if queued.empty?
+
+        previews = queued.map { |message| "  #{message.position}. #{message.content.to_s.truncate(160)}" }
+
+        raise ToolError, ([
+          "Cannot archive session #{session.id}: #{queued.size} message(s) arrived while it was working and " \
+          "have not been delivered yet. Archiving now would drop them.",
+          "",
+          *previews,
+          "",
+          "If you are this session: end your turn without archiving. The queued message is delivered as your " \
+          "next turn, and archiving after that succeeds because the queue is empty.",
+          "",
+          "If the message should not be acted on at all, or the session is stuck and will never take another " \
+          "turn, delete it first — manage_enqueued_messages \"delete\" if you have that tool, otherwise the " \
+          "session page in Zimmer — and the archive goes through."
+        ].join("\n"))
       end
 
       def unarchive(session)
@@ -978,6 +1036,17 @@ module Mcp
 
         Session.where(id: session_ids).where.not(status: :archived).each do |session|
           if session.may_archive?
+            begin
+              # Same refusal as the single-session action: a running session with
+              # an undrained queue is one whose messages are about to be lost, and
+              # a bulk call is no more entitled to lose them. Reported per session
+              # rather than aborting the batch.
+              refuse_archive_with_undrained_queue(session)
+            rescue ToolError => e
+              errors << { id: session.id, error: e.message }
+              next
+            end
+
             session.archive_actor = "#{archive_actor_phrase(args)} (bulk)"
             session.archive!
             archived_count += 1

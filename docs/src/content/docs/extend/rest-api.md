@@ -500,7 +500,7 @@ curl -X POST "$BASE_URL/categories/reorder" \
 | --- | --- |
 | **Logs** | Full CRUD at `/sessions/:session_id/logs[/:id]`. `content` and `level` are required on create; `level` ∈ `info · error · debug · warning · verbose`, and doubles as the index filter |
 | **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]`. `agent_id` required on create; `PATCH` takes every field but `id` and `session_id`; index filters on `status` and `subagent_type`; `include_transcript=true` on show returns the full JSONL |
-| **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent`. Deleting one re-numbers the positions behind it |
+| **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered` (archiving a session retires whatever is still `pending` to `undelivered` — see [lifecycle](/sessions/lifecycle/)). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status` |
 | **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
