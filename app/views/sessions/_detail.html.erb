@@ -351,6 +351,10 @@
         </div>
       </div>
 
+      <%# Rendered here rather than inside the follow-up form, which is hidden once
+          the session is archived — the state these rows exist in. %>
+      <%= render "enqueued_messages/undelivered_messages", agent_session: @session %>
+
       <!-- Follow-up Prompt Input (Sticky at bottom) -->
       <%= render "sessions/follow_up_form", agent_session: @session, session_skills: @session_skills %>
 

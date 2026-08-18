@@ -289,8 +289,23 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "archived", session.reload.status
   end
 
-  # Scoped to running on purpose: an idle session has no drain ahead of it, so
-  # refusing there would leave it permanently un-archivable.
+  # A waiting session has a turn ahead of it too — EnqueuedMessageProcessorService
+  # accepts `waiting` — so exempting it would lose messages that were going to
+  # be delivered.
+  test "archive refuses a waiting session that still has messages queued" do
+    session = sessions(:waiting)
+    session.enqueued_messages.create!(content: "queued before it started", position: 1, status: "pending")
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "archive", "session_id" => session.id) }
+
+    assert_match(/Cannot archive session #{session.id}/, error.message)
+    assert_equal "waiting", session.reload.status
+    assert_equal "pending", session.enqueued_messages.sole.status
+  end
+
+  # Scoped to states with a drain ahead of them: nothing is coming to drain a
+  # needs_input session, so refusing there would leave it permanently
+  # un-archivable.
   test "archive proceeds on an idle session and retires what was queued for it" do
     session = sessions(:needs_input)
     queued = session.enqueued_messages.create!(content: "never sent", position: 1, status: "pending")

@@ -276,15 +276,40 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.archive!
   end
 
+  # Deliberately an application-level failure rather than a StatementInvalid: a
+  # real SQL error inside the transition's own transaction poisons the connection,
+  # so the log insert that follows would fail too and the archive would roll back.
+  # Stubbing one would assert a resilience the code does not have.
   test "archive completes even if retiring the queue blows up" do
     session = sessions(:waiting)
     session.update!(status: :running)
     session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
-    EnqueuedMessage.any_instance.stubs(:mark_undelivered!).raises(ActiveRecord::StatementInvalid, "boom")
+    Session.any_instance.stubs(:alert_on_stranded_enqueued_messages).raises(RuntimeError, "boom")
 
     session.archive!
 
     assert session.reload.archived?, "a failed side effect must not block the transition"
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an unrecorded caller", line,
+      "the clause is dropped rather than half-written when the side effect fails"
+  end
+
+  # The clause describes what the write actually moved, not what was selected —
+  # so a queue holding a claimed row alongside pending ones names only the
+  # pending ones, and counts them correctly.
+  test "archive names only the retired rows when the queue is mixed" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    claimed = session.enqueued_messages.create!(content: "already claimed", position: 1, status: "processing")
+    session.enqueued_messages.create!(content: "genuinely stranded", position: 2, status: "pending")
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "1 queued message was never delivered"
+    assert_includes line, "genuinely stranded"
+    assert_not_includes line, "already claimed"
+    assert_equal "processing", claimed.reload.status
   end
 
   test "archive names pull requests it is leaving unresolved" do
