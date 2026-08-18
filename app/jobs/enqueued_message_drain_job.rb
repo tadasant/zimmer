@@ -182,21 +182,41 @@ class EnqueuedMessageDrainJob < ApplicationJob
       level: "error"
     )
 
-    AlertService.raise_alert(
-      "Session idle with an undeliverable queued message",
-      details: "Session #{session.id} is in `needs_input` with #{count} message(s) still queued. " \
-               "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
-               "it was given. The messages are still `pending` and will go out on the next turn the " \
-               "session takes — but nothing is going to give it one on its own.\n\n" \
-               "<#{AppUrl.base_url}/sessions/#{session.id}|View session in Zimmer>",
-      source: "EnqueuedMessageDrainJob",
-      dedup_key: "undeliverable_enqueued_messages_#{session.id}"
-    )
+    alert_on_undeliverable_queue(session.id, count)
   rescue => e
     # This method IS the loud part. It failing silently is the defect again.
     Rails.logger.error(
       "[EnqueuedMessageDrainJob] Failed to report an undeliverable queue for session #{session.id}: " \
       "#{e.class}: #{e.message}"
     )
+  end
+
+  # Posted AFTER the transaction commits, for a sharper version of the reason
+  # SessionStateMachine#report_swallowed_side_effect gives: AlertService talks to
+  # Slack synchronously (5s connect / 10s read), and everything in this job runs
+  # inside Session.with_session_lock — a transaction that also holds a
+  # per-session advisory lock. Alerting inline would pin both across a network
+  # round trip, blocking any concurrent interrupt on the one session already in
+  # trouble. after_all_transactions_commit runs the block immediately when no
+  # transaction is open, so nothing is deferred that does not need to be.
+  def alert_on_undeliverable_queue(session_id, count)
+    ActiveRecord.after_all_transactions_commit do
+      AlertService.raise_alert(
+        "Session idle with an undeliverable queued message",
+        details: "Session #{session_id} is in `needs_input` with #{count} message(s) still queued. " \
+                 "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
+                 "it was given. The messages are still `pending` and will go out on the next turn the " \
+                 "session takes — but nothing is going to give it one on its own.\n\n" \
+                 "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
+        source: "EnqueuedMessageDrainJob",
+        dedup_key: "undeliverable_enqueued_messages_#{session_id}"
+      )
+    rescue => e
+      # The block outlives give_up's own rescue, so it needs its own.
+      Rails.logger.error(
+        "[EnqueuedMessageDrainJob] Failed to alert on an undeliverable queue for session #{session_id}: " \
+        "#{e.class}: #{e.message}"
+      )
+    end
   end
 end
