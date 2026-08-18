@@ -196,6 +196,122 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal "[State Machine] Session moved to trash by an unrecorded caller", line
   end
 
+  # Archiving ends every path by which a queued message could be delivered, so a
+  # message still `pending` afterwards is one nobody will ever send. It used to
+  # stay `pending` regardless, which every reader of the queue takes to mean
+  # "still on its way" — production session 6073, where a user's second Slack
+  # message queued behind their first and the session archived at the end of
+  # that same turn.
+  test "archive retires the messages still queued for the session" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    queued = session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    session.archive!
+
+    assert_equal "undelivered", queued.reload.status
+    assert_empty session.enqueued_messages.pending
+  end
+
+  test "archive names the queued messages it strands on the trash line" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    session.archive_actor = "session #5225 via the MCP API"
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "Session moved to trash by session #5225 via the MCP API"
+    assert_includes line, "1 queued message was never delivered and is now marked undelivered"
+    assert_includes line, "add the onion back"
+  end
+
+  test "archive counts several stranded queued messages" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "first", position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "second", position: 2, status: "pending")
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "2 queued messages were never delivered and are now marked undelivered"
+    assert_includes line, "first"
+    assert_includes line, "second"
+  end
+
+  test "archive stays quiet when nothing was queued" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an unrecorded caller", line
+  end
+
+  test "archive leaves an already-claimed message alone" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    claimed = session.enqueued_messages.create!(content: "in flight", position: 1, status: "processing")
+
+    session.archive!
+
+    assert_equal "processing", claimed.reload.status,
+      "a message a worker has already claimed is being delivered, not stranded"
+  end
+
+  test "archive pages when it strands a queue" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+
+    AlertService.expects(:raise_alert).with do |title, options|
+      title == "Queued messages stranded by an archive" &&
+        options[:details].include?("add the onion back") &&
+        options[:dedup_key] == "stranded_enqueued_messages_#{session.id}"
+    end
+
+    session.archive!
+  end
+
+  # Deliberately an application-level failure rather than a StatementInvalid: a
+  # real SQL error inside the transition's own transaction poisons the connection,
+  # so the log insert that follows would fail too and the archive would roll back.
+  # Stubbing one would assert a resilience the code does not have.
+  test "archive completes even if retiring the queue blows up" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
+    Session.any_instance.stubs(:alert_on_stranded_enqueued_messages).raises(RuntimeError, "boom")
+
+    session.archive!
+
+    assert session.reload.archived?, "a failed side effect must not block the transition"
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_equal "[State Machine] Session moved to trash by an unrecorded caller", line,
+      "the clause is dropped rather than half-written when the side effect fails"
+  end
+
+  # The clause describes what the write actually moved, not what was selected —
+  # so a queue holding a claimed row alongside pending ones names only the
+  # pending ones, and counts them correctly.
+  test "archive names only the retired rows when the queue is mixed" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    claimed = session.enqueued_messages.create!(content: "already claimed", position: 1, status: "processing")
+    session.enqueued_messages.create!(content: "genuinely stranded", position: 2, status: "pending")
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "1 queued message was never delivered"
+    assert_includes line, "genuinely stranded"
+    assert_not_includes line, "already claimed"
+    assert_equal "processing", claimed.reload.status
+  end
+
   test "archive names pull requests it is leaving unresolved" do
     session = sessions(:waiting)
     session.update!(

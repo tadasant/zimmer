@@ -14,7 +14,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
   # List all enqueued messages for a session.
   #
   # Query parameters:
-  #   - status: Filter by status (pending, processing, sent)
+  #   - status: Filter by status (pending, processing, sent, undelivered)
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
