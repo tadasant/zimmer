@@ -1892,18 +1892,137 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "recovery", @session.metadata["paused_by"]
   end
 
-  test "handle_interrupt_error transitions waiting session to needs_input" do
-    # Session still in waiting state (interrupt arrived before process spawn)
+  test "handle_interrupt_error leaves a waiting session in waiting and re-queues its start job" do
+    # InterruptError is raised in GoodJob's around_perform, so perform() never ran:
+    # nothing was cloned, spawned or written. There is no process to recover and no
+    # conversation to resume — the repair is to run the job again.
     assert @session.waiting?
 
     job = AgentSessionJob.new(@session.id)
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
-    job.send(:handle_interrupt_error, error)
+
+    assert_enqueued_jobs 1, only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
 
     @session.reload
-    # Should have gone through waiting -> running -> needs_input (then possibly auto-continued)
-    assert @session.needs_input? || @session.running?,
-      "Expected session to be needs_input or running, got #{@session.status}"
+    assert @session.waiting?, "a never-started session must stay queued, got #{@session.status}"
+    assert_nil @session.metadata["paused_by"],
+      "a session that never started must not be stamped as recovery-paused"
+    assert_equal 1, @session.metadata[AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT]
+    assert_equal enqueued_jobs.last["job_id"], @session.running_job_id,
+      "the session must point at the replacement job"
+    assert @session.logs.any? { |log| log.content.include?("re-queued the same start job (attempt 1)") },
+      "expected a log recording the replay"
+  end
+
+  # The production failure this fixes: issue-work-gate session #5936 was held by the
+  # spot gate 120 times over 22 hours, then its re-check job was re-picked and the
+  # interrupt handler pushed it waiting -> running -> needs_input. Only the re-check job
+  # re-enqueues the next re-check, so pausing it broke the chain permanently: the session
+  # could never start, and it sat on the human action queue with an empty transcript.
+  test "handle_interrupt_error keeps a spot-held session in the spot queue" do
+    @session.update!(
+      scheduling_class: "spot",
+      metadata: (@session.metadata || {}).merge(
+        SpotSessionHold::HELD_AT => 1.hour.ago.iso8601,
+        SpotSessionHold::HELD_REASON => "at_utilization_limit",
+        SpotSessionHold::HELD_COUNT => 120
+      )
+    )
+
+    job = AgentSessionJob.new(@session.id)
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_enqueued_jobs 1, only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.waiting?, "a spot-held session must stay in the spot queue, got #{@session.status}"
+    assert_nil @session.metadata["paused_by"],
+      "recovery must not knock a spot-held session onto the human action queue"
+    assert_equal 120, @session.metadata[SpotSessionHold::HELD_COUNT],
+      "the hold record must survive so the session page still explains itself"
+  end
+
+  test "handle_interrupt_error replays the interrupted job's own arguments" do
+    # The replay must be the run that was interrupted, not a generic restart: the
+    # clone_only/resume flags and any images or files all ride in the options hash,
+    # carrying ActiveJob's ruby2_keywords markers. Round-trip through serialize/
+    # deserialize so this is the job object the worker actually holds when GoodJob
+    # raises InterruptError, not a hand-built one.
+    AgentSessionJob.enqueue_for_clone_only(@session.id)
+    serialized = enqueued_jobs.last
+    clear_enqueued_jobs
+
+    job = AgentSessionJob.new
+    job.deserialize(serialized)
+    job.send(:deserialize_arguments_if_needed)
+
+    job.send(:handle_interrupt_error, GoodJob::InterruptError.new("Interrupted"))
+
+    replay = enqueued_jobs.last
+    assert_equal "AgentSessionJob", replay["job_class"]
+    assert_equal serialized["arguments"], replay["arguments"],
+      "the replay must be the run that was interrupted, flags and all"
+  end
+
+  # The other way a session reaches `waiting`: wake_me_up_later runs it
+  # running -> needs_input -> waiting inside a single pause callback. An interrupt
+  # landing in that window used to drag the sleeper awake and burn a turn on a
+  # recovery nudge, cancelling the wake it had just scheduled (issue #553).
+  test "handle_interrupt_error leaves a sleeping session asleep" do
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge(
+        "working_directory" => @transcript_dir,
+        "runtime_started" => true,
+        "pending_sleep" => true
+      )
+    )
+    @session.pause!
+    @session.reload
+    assert @session.waiting?, "precondition: the pending sleep should have slept the session"
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.waiting?, "a sleeping session must stay asleep, got #{@session.status}"
+    assert_nil @session.metadata["paused_by"],
+      "standing down must not stamp a sleeping session as recovery-paused"
+    assert_nil @session.metadata[AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT],
+      "a session that has run must not be treated as an interrupted first start"
+    assert @session.logs.any? { |log| log.content.include?("already asleep") },
+      "expected a log recording that recovery stood down"
+  end
+
+  test "handle_interrupt_error fails a waiting session once the replay budget is spent" do
+    @session.update!(
+      metadata: (@session.metadata || {}).merge(
+        AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT => AgentSessionJob::MAX_INTERRUPTED_START_REQUEUES
+      )
+    )
+
+    job = AgentSessionJob.new(@session.id)
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.failed?, "a start job that can never survive must fail loudly, got #{@session.status}"
+    assert_includes @session.metadata["failure_reason"], "never started"
+    assert @session.logs.any? { |log| log.content.include?("giving up rather than re-queuing again") },
+      "expected a log recording that the replay budget was spent"
   end
 
   test "auto_continue_after_interrupt re-enqueues job and resumes session" do

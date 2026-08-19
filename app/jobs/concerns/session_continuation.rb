@@ -13,6 +13,30 @@ require "automated_prompts"
 module SessionContinuation
   extend ActiveSupport::Concern
 
+  # How many times a sweep will try to auto-continue one recovery-paused session
+  # before giving up on it.
+  #
+  # The validation below can fail for a reason that will never change: a session
+  # that was paused before it ever started has no runtime session_id and no clone
+  # on disk, and nothing about waiting longer will produce either. Both sweeps
+  # match `paused_by = 'recovery'`, so without a bound the cleanup cron re-reads
+  # the same session every five minutes forever — one session that never ran
+  # produced 500+ identical "auto-continue skipped" log lines over 20 hours.
+  #
+  # Giving up drops the `paused_by` marker, which is what both sweeps select on,
+  # so the session stops being swept. It stays in needs_input for a human, which
+  # is the honest state for a session Zimmer cannot restart on its own.
+  MAX_CONTINUE_ATTEMPTS = 5
+
+  # Counts failed auto-continue attempts. Cleared with the rest of
+  # Session::STALE_RETRY_METADATA_KEYS whenever the session is successfully resumed.
+  CONTINUE_ATTEMPTS_KEY = "recovery_continue_attempts"
+
+  # Records that this session was abandoned by auto-continue, and why. Read by
+  # nothing — it exists so the session page and a later reader can tell a session
+  # Zimmer gave up on apart from one it never looked at.
+  CONTINUE_ABANDONED_KEY = "recovery_continue_abandoned"
+
   private
 
   # Continue a session that was paused by recovery.
@@ -31,13 +55,7 @@ module SessionContinuation
   def continue_recovered_session(session)
     errors = validate_session_for_continue(session)
     if errors.any?
-      error_message = errors.join(", ")
-      Rails.logger.warn "[#{self.class.name}] Cannot continue session #{session.id}: #{error_message}"
-      session.logs.create!(
-        content: "Recovery auto-continue skipped: #{error_message}",
-        level: "warning"
-      )
-      return false
+      return abandon_or_retry_continue(session, errors.join(", "))
     end
 
     # Prefer delivering a queued user message over the automated recovery
@@ -125,6 +143,40 @@ module SessionContinuation
     )
     Rails.logger.info "[#{self.class.name}] Session #{session.id} continued via queued user message"
     true
+  end
+
+  # Record a failed auto-continue attempt, and stop sweeping the session once the
+  # attempt budget is spent.
+  #
+  # @param session [Session] the session that could not be continued
+  # @param error_message [String] why validation failed
+  # @return [Boolean] always false — the session was not continued
+  def abandon_or_retry_continue(session, error_message)
+    attempts = session.metadata&.dig(CONTINUE_ATTEMPTS_KEY).to_i + 1
+    Rails.logger.warn "[#{self.class.name}] Cannot continue session #{session.id}: #{error_message}"
+
+    if attempts >= MAX_CONTINUE_ATTEMPTS
+      # Drop paused_by so both sweeps stop selecting this session, and say so once
+      # rather than repeating the same skip line indefinitely.
+      session.update!(
+        metadata: (session.metadata || {})
+          .except("paused_by", CONTINUE_ATTEMPTS_KEY)
+          .merge(CONTINUE_ABANDONED_KEY => error_message)
+      )
+      session.logs.create!(
+        content: "Recovery auto-continue gave up after #{attempts} attempts: #{error_message}. " \
+                 "This session will not be retried again — restart it to try once more.",
+        level: "error"
+      )
+      return false
+    end
+
+    session.update!(metadata: (session.metadata || {}).merge(CONTINUE_ATTEMPTS_KEY => attempts))
+    session.logs.create!(
+      content: "Recovery auto-continue skipped (attempt #{attempts} of #{MAX_CONTINUE_ATTEMPTS}): #{error_message}",
+      level: "warning"
+    )
+    false
   end
 
   # Validate session has required fields for continue

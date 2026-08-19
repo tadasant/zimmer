@@ -204,6 +204,12 @@ A held session stays in `waiting` — the status Zimmer already uses for "create
 delayed job in Postgres, so the retry survives a worker restart or a deploy. When a slot frees, or
 utilization falls back under the target, the same job starts the session normally.
 
+A re-check job that a worker shutdown catches *mid-pickup* is re-enqueued verbatim rather than
+treated as an interrupted session — see [A session that never started has nothing to
+recover](/sessions/lifecycle/#a-session-that-never-started-has-nothing-to-recover). Only the
+re-check job schedules the next re-check, so anything that ends the chain strands the session for
+good.
+
 The jitter matters at a backlog: without it, sessions held in the same minute re-check in the same
 minute forever, every one of them reading the same fleet size before any of them has started.
 

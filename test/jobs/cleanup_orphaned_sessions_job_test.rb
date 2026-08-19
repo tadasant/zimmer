@@ -768,6 +768,45 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     assert @session.logs.any? { |log| log.content.include?("working directory") }
   end
 
+  # A session paused before it ever started has no session_id and no clone, and never
+  # will. Both sweeps select on paused_by = "recovery", so without a cap the 5-minute
+  # cron re-read the same session forever: one never-started session produced 500+
+  # identical "auto-continue skipped" lines over 20 hours.
+  test "auto-continue gives up after a bounded number of attempts and stops sweeping the session" do
+    @session.update!(
+      status: :needs_input,
+      running_job_id: nil,
+      session_id: nil,
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    # One short of the budget: every pass so far only counted the attempt.
+    (SessionContinuation::MAX_CONTINUE_ATTEMPTS - 1).times do |i|
+      CleanupOrphanedSessionsJob.perform_now
+      @session.reload
+      assert_equal i + 1, @session.metadata[SessionContinuation::CONTINUE_ATTEMPTS_KEY]
+      assert_equal "recovery", @session.metadata["paused_by"],
+        "the session must stay sweepable while it still has budget"
+    end
+
+    # The pass that spends the budget gives up for good.
+    CleanupOrphanedSessionsJob.perform_now
+    @session.reload
+    assert_nil @session.metadata["paused_by"],
+      "giving up must drop the marker both sweeps select on"
+    assert_equal "no session_id found", @session.metadata[SessionContinuation::CONTINUE_ABANDONED_KEY]
+    assert @session.logs.any? { |log| log.content.include?("gave up after") },
+      "expected one terminal log line explaining the session was abandoned"
+
+    # And a further pass is a genuine no-op: no new attempt, no new log line.
+    logs_before = @session.logs.count
+    CleanupOrphanedSessionsJob.perform_now
+    @session.reload
+    assert_equal "needs_input", @session.status
+    assert_equal logs_before, @session.logs.count,
+      "an abandoned session must stop generating log lines entirely"
+  end
+
   test "should not auto-continue session paused by user" do
     working_dir = Dir.mktmpdir
     @session.update!(
