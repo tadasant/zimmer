@@ -3078,25 +3078,11 @@ cgroup-scoped one — the incident is still written to
 
 ---
 
-## A sleeping session can still be dragged awake by an interrupt race
+## Two narrow gaps in the InterruptError stand-down
 
-`AgentSessionJob#handle_interrupt_error` stands down when a session has already come to rest in
-`needs_input`, so a job row re-picked after a normal turn completion no longer resurrects it. The
-equivalent race one state further along is **not** closed.
-
-A session whose agent called `wake_me_up_later` goes `running → needs_input → waiting` inside a
-single `pause` callback chain, via `execute_pending_sleep`. If the worker dies in that window, the
-re-pick lands on a `waiting` session, and the handler's `elsif session.waiting? && session.may_start?`
-branch — which exists for the genuinely different case of an interrupt arriving before the process
-ever spawned — drags it `waiting → running → needs_input` and nudges it. A session that explicitly
-asked to sleep is woken, and its scheduled wake is defeated.
-
-The two cases are distinguishable: `Session#armed_one_time_wake?` is true for the sleeper and false
-for the never-started session. It is private to the model today, so closing this means widening that
-surface as well as branching on it. Tracked in
-[#553](https://github.com/tadasant/zimmer/issues/553).
-
-Two narrower gaps in the same handler, both deliberate:
+`AgentSessionJob#handle_interrupt_error` stands down when a session has already come to rest — in
+`needs_input` after a normal turn completion, or in `waiting` after a deliberate sleep. Two narrower
+gaps remain, both deliberate:
 
 - The status is read once, before the guard. A session that pauses in the moment *between* that read
   and the guard falls through to the old behaviour. The window is small and the failure is the

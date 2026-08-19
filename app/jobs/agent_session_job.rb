@@ -144,6 +144,17 @@ class AgentSessionJob < ApplicationJob
   MAX_CLONE_JOB_RETRIES = 5
   CLONE_JOB_RETRY_DELAYS_SECONDS = [ 30, 60, 120, 300, 600 ].freeze
 
+  # Budget for replaying a start job that was interrupted before #perform ran.
+  # See #requeue_interrupted_start: the session never left `waiting`, so the fix
+  # is to run the job again rather than to "recover" a session that never started.
+  # The delay keeps the replay out of the shutdown window that killed the original,
+  # and the jitter stops a backlog interrupted by one deploy from re-landing in
+  # lockstep.
+  MAX_INTERRUPTED_START_REQUEUES = 20
+  INTERRUPTED_START_REQUEUE_DELAY = 30.seconds
+  INTERRUPTED_START_REQUEUE_JITTER = 30.seconds
+  INTERRUPTED_START_REQUEUE_COUNT = "interrupted_start_requeue_count"
+
   # Minimum successful run duration (seconds) before resetting SIGTERM retry counter.
   # When a process runs successfully for this duration after a SIGTERM retry,
   # the retry counter is reset to 0, allowing fresh retries for future SIGTERMs.
@@ -1901,20 +1912,41 @@ class AgentSessionJob < ApplicationJob
       level: "warning"
     )
 
+    # `waiting` is reached two unrelated ways, and neither of them wants the
+    # running-session recovery below. Forcing both through waiting → running →
+    # needs_input is what the branch here used to do, and it was wrong for each.
+    #
+    # 1. The session never started. #perform did not get as far as `start!`, so
+    #    nothing durable exists: no runtime session id, no process, nothing to
+    #    resume. The repair is to run the job again. Pausing it instead is what
+    #    stranded spot-held sessions — a spot hold lives entirely in `waiting`,
+    #    and only the re-check job schedules the next re-check, so pausing the
+    #    session severs that chain for good and leaves it on the human action
+    #    queue with an empty transcript and no session_id or working_directory
+    #    for any recovery sweep to continue from.
+    #
+    # 2. The session deliberately went to sleep. `wake_me_up_later` runs the
+    #    session `running → needs_input → waiting` inside a single pause callback
+    #    (execute_pending_sleep); an interrupt landing in that window used to drag
+    #    the sleeper back awake and burn a turn on a recovery nudge, defeating the
+    #    wake it had just scheduled. Nothing was interrupted here either — the
+    #    turn finished — so recovery stands down and leaves the wake to fire.
+    if session.waiting?
+      if never_started?(session)
+        requeue_interrupted_start(session)
+      else
+        stand_down_for_dormant_session(session)
+      end
+      return
+    end
+
     session.update_columns(
       running_job_id: nil,
       metadata: (session.metadata || {}).merge("paused_by" => "recovery")
     )
     session.reload
 
-    if session.may_pause?
-      session.pause!
-    elsif session.waiting? && session.may_start?
-      # Session was still in waiting state (interrupt arrived before process spawn).
-      # Transition through running to needs_input so recovery can pick it up.
-      session.start!
-      session.pause! if session.may_pause?
-    end
+    session.pause! if session.may_pause?
 
     Rails.logger.info "[AgentSessionJob] Session #{session_id} paused for deploy recovery (status: #{session.status})"
 
@@ -1925,6 +1957,93 @@ class AgentSessionJob < ApplicationJob
     # Don't let recovery errors prevent the job from being discarded.
     # DeploymentRecoveryJob/CleanupOrphanedSessionsJob will catch orphaned sessions as a safety net.
     Rails.logger.error "[AgentSessionJob] Error handling InterruptError for session #{session_id}: #{e.message}"
+  end
+
+  # Whether this session has never got a runtime going.
+  #
+  # A session that has run carries a runtime session id, and `runtime_started`
+  # once the CLI was actually spawned. A session in `waiting` with neither has
+  # never been anything but queued — which is what separates an interrupted first
+  # start from a session that ran, finished a turn, and went to sleep.
+  def never_started?(session)
+    session.session_id.blank? && session.metadata&.dig("runtime_started") != true
+  end
+
+  # Replay an interrupted job for a session that never got going.
+  #
+  # Re-enqueuing this job's own arguments verbatim is exactly the run that was
+  # interrupted: a first start goes back through the spot gate and re-holds or
+  # starts, a clone-only setup sets up its clone. Nothing is duplicated because
+  # the session never left `waiting` — #perform transitions it to `running` as
+  # soon as it has spawned anything, so a session still queued is one whose job
+  # established nothing. The session stays in `waiting`, which is where a queued
+  # session belongs: not on anybody's action queue, and not matched by either
+  # recovery sweep.
+  #
+  # Bounded so a session whose start job can never survive fails loudly instead of
+  # re-enqueuing forever. The counter only ever advances on a real interrupt of a
+  # not-yet-started job, which needs a worker shutdown inside this job's own
+  # execution window, so the cap is generous by design.
+  def requeue_interrupted_start(session)
+    count = session.metadata&.dig(INTERRUPTED_START_REQUEUE_COUNT).to_i + 1
+
+    if count > MAX_INTERRUPTED_START_REQUEUES
+      session.logs.create!(
+        content: "Start job interrupted #{count - 1} times without ever running — giving up rather than re-queuing again",
+        level: "error"
+      )
+      session.update_columns(
+        running_job_id: nil,
+        metadata: (session.metadata || {}).merge(
+          "failure_reason" => "Session never started: its start job was interrupted " \
+                              "#{count - 1} times before it could run"
+        )
+      )
+      session.reload
+      session.fail! if session.may_fail?
+      Rails.logger.error(
+        "[AgentSessionJob] Session #{session.id} failed after #{count - 1} interrupted start attempts"
+      )
+      return
+    end
+
+    delay = INTERRUPTED_START_REQUEUE_DELAY + rand(INTERRUPTED_START_REQUEUE_JITTER.to_i).seconds
+    retry_job = self.class.set(wait: delay).perform_later(*arguments)
+
+    session.update_columns(
+      # Point at the replacement so the concurrency guard and orphan detection
+      # both see the job that is now responsible for this session.
+      running_job_id: retry_job.job_id,
+      metadata: (session.metadata || {}).merge(INTERRUPTED_START_REQUEUE_COUNT => count)
+    )
+
+    session.logs.create!(
+      content: "Session had not started yet, so nothing needed recovering — " \
+               "re-queued the same start job (attempt #{count}), still waiting.",
+      level: "info"
+    )
+    Rails.logger.info(
+      "[AgentSessionJob] Re-queued interrupted start for waiting session #{session.id} (attempt #{count})"
+    )
+  end
+
+  # Stand down on a session that ran and then deliberately went dormant.
+  #
+  # The only route from `running` to `waiting` is `execute_pending_sleep`, which
+  # fires inside the pause callback of a turn that ended normally. So a session
+  # that has run and is now `waiting` asked to stop until a wall-clock time.
+  # Nothing was interrupted; waking it would cancel the sleep it just scheduled
+  # and spend a turn telling it about a system event that did not affect it.
+  def stand_down_for_dormant_session(session)
+    Rails.logger.info(
+      "[AgentSessionJob] Skipping InterruptError recovery for session #{session.id}: " \
+      "session is sleeping until a scheduled wake-up"
+    )
+    session.logs.create!(
+      content: "Session was already asleep waiting for a scheduled wake-up — nothing was interrupted, " \
+               "so recovery left it alone.",
+      level: "info"
+    )
   end
 
   # Re-transition a session to running for a prompt this job is already carrying.

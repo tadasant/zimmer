@@ -146,6 +146,49 @@ so it is excluded from the stand-down and still recovers.
 
 A session still `running` when the interrupt lands is unaffected and recovers exactly as before.
 
+#### `waiting` is two different situations, and neither is a recovery
+
+The handler used to push every `waiting` session through `waiting → running → needs_input` so a
+sweep could pick it up. `waiting` is reached two unrelated ways, and that was wrong for both.
+
+**The session never started.** `perform` did not get as far as `start!`, so nothing durable exists —
+no runtime session id, no process, nothing to resume. The repair is to **run the job again**, so the
+handler re-enqueues this job's own arguments verbatim and leaves the session in `waiting`.
+
+Pausing it instead is what stranded [spot-held](/sessions/spot-and-priority/) sessions. A spot hold
+lives entirely in `waiting`, and the only thing that ever schedules the next re-check is the
+re-check job itself — so severing that chain meant the session could never start again. One
+`issue-work-gate` session was held correctly 120 times over 22 hours, then had one re-check job
+re-picked and spent the next 20 hours in `needs_input` with an empty transcript on a human's action
+queue.
+
+The replay is bounded by `MAX_INTERRUPTED_START_REQUEUES`. Exhausting it fails the session with a
+`failure_reason` naming the cause, which is loud and visible — the one thing a queued session must
+never do is disappear quietly.
+
+**The session deliberately went to sleep.** `wake_me_up_later` runs a session `running → needs_input
+→ waiting` inside a single `pause` callback, via `execute_pending_sleep`. An interrupt landing in
+that window dragged the sleeper back awake and spent a turn on a recovery nudge, cancelling the wake
+it had just scheduled. Nothing was interrupted there either — the turn finished — so the handler
+stands down and lets the wake fire.
+
+The two are told apart by whether the session has ever got a runtime going: a session that has run
+carries a `session_id` (and `runtime_started` once the CLI was spawned), and one that has only ever
+been queued carries neither.
+
+#### Auto-continue gives up
+
+`SessionContinuation#continue_recovered_session` needs a `session_id` and a clone on disk. For a
+session paused before it ever started, neither will ever exist, and no amount of waiting produces
+them. Both sweeps select on `metadata["paused_by"] = "recovery"`, so an unbounded retry meant the
+5-minute orphan cron re-read the same session forever — 500+ identical "auto-continue skipped" log
+lines for one session that never ran.
+
+After `MAX_CONTINUE_ATTEMPTS` failures the sweep gives up: it drops the `paused_by` marker (which
+is what both sweeps select on, so the session stops being swept), records
+`metadata["recovery_continue_abandoned"]` with the reason, and logs it once at `error`. The session
+stays in `needs_input` for a human, which is the honest state for one Zimmer cannot restart itself.
+
 #### The nudge names the path that sent it
 
 A dozen paths enqueue the same `SYSTEM_RECOVERY` constant — a deploy, an orphan sweep, a SIGTERM
