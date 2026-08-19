@@ -442,6 +442,25 @@ unthrottled. `GET /health` is unaffected. See
 [the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 :::
 
+## Costs
+
+`GET /api/v1/costs` → rollups over a window: `totals`, `cost_breakdown` (by kind of token),
+`by_day`, `by_agent_root`, `by_model`, `by_thread_kind`, `by_adhoc_source`, `top_sessions`, and
+`unpriced_models`. Window is `days` (default 7, clamped 1–365) or explicit `from`/`to`.
+
+`GET /api/v1/costs/records` → the underlying rows, paginated. `kind` selects the table
+(`session`, the default, or `adhoc`); filter with `session_id`, `agent_root`, `model`, `subagent`,
+or `source`. This is the export path for cost-versus-performance analysis — the app deliberately
+does not try to do that analysis itself.
+
+Both responses carry a `pricing` object: the per-MTok rates and cache multipliers used to produce
+every dollar figure in that response. Volumes are stored, prices are applied on read, so a figure
+without its rate table is not reproducible — see [Token spend](/operate/costs/).
+
+Dollar amounts are **list price, not a bill**. These accounts are subscription-billed; the figures
+are a comparable unit across models. A model with no configured rate contributes zero and is named
+in `unpriced_models` rather than being silently folded into the total.
+
 ## Elicitations
 
 - `POST /elicitations` — **UNAUTHENTICATED**. Requires `_meta["com.pulsemcp/request-id"]` and

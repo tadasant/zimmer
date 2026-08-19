@@ -1,0 +1,173 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <!-- Header -->
+    <div class="mb-6">
+      <div class="flex items-center mb-4">
+        <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Costs</h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        Token spend from Zimmer's own ledger, priced at current Anthropic list rates.
+        <span class="text-gray-500">Volumes are stored; prices are applied on read, so this re-prices itself when rates change.</span>
+      </p>
+    </div>
+
+    <!-- Window picker -->
+    <div class="mb-6 border-b border-gray-200">
+      <nav class="-mb-px flex gap-4 sm:gap-6 overflow-x-auto" aria-label="Window">
+        <% { 1 => "24 hours", 7 => "7 days", 30 => "30 days", 90 => "90 days", 365 => "1 year" }.each do |days, label| %>
+          <% active = @days == days %>
+          <%= link_to costs_path(days: days),
+              class: "whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium #{active ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}",
+              "aria-current": (active ? "page" : nil) do %>
+            <%= label %>
+          <% end %>
+        <% end %>
+      </nav>
+    </div>
+
+    <% if @totals[:api_calls].zero? %>
+      <div class="bg-white shadow rounded-lg px-4 py-8 text-center">
+        <p class="text-sm text-gray-700 font-medium">No usage recorded in this window.</p>
+        <p class="mt-2 text-sm text-gray-500">
+          Usage is swept out of transcripts by <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">TokenUsageIngestionJob</code>.
+          To load history that predates it, run <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">rake token_usage:backfill</code>.
+        </p>
+      </div>
+    <% else %>
+      <!-- Headline -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+        <% [
+             [ "Total cost", number_to_currency(@totals[:cost_usd], precision: 2), "at list price" ],
+             [ "Tokens", number_to_human(@totals[:total_tokens], units: { thousand: "K", million: "M", billion: "B" }, precision: 3), "all buckets" ],
+             [ "API calls", number_with_delimiter(@totals[:api_calls]), "deduped by request" ],
+             [ "Ad hoc share", number_to_percentage(@totals[:cost_usd].positive? ? @totals[:adhoc_cost_usd] / @totals[:cost_usd] * 100 : 0, precision: 1), "Zimmer's own calls" ]
+           ].each do |label, value, hint| %>
+          <div class="bg-white shadow rounded-lg px-3 sm:px-4 py-3">
+            <div class="text-xs font-medium text-gray-500 uppercase tracking-wide"><%= label %></div>
+            <div class="mt-1 text-xl sm:text-2xl font-semibold text-gray-900 tabular-nums break-words"><%= value %></div>
+            <div class="text-xs text-gray-400 mt-0.5"><%= hint %></div>
+          </div>
+        <% end %>
+      </div>
+
+      <% if @unpriced_models.any? %>
+        <div class="mb-6 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+          <p class="text-sm text-amber-900">
+            <span class="font-semibold">Unpriced models in this window.</span>
+            <%= @unpriced_models.join(", ") %> —
+            these contribute <span class="font-medium">zero</span> to every figure above.
+            Add a rate in <code class="text-xs bg-amber-100 px-1 rounded">TokenPricing::RATES</code>.
+          </p>
+        </div>
+      <% end %>
+
+      <!-- Cost decomposition -->
+      <div class="bg-white shadow rounded-lg overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-gray-200">
+          <h2 class="text-sm font-semibold text-gray-900">Where the money goes</h2>
+          <p class="text-xs text-gray-500 mt-0.5">
+            By kind of token. Cache writes bill at 1.25&times; base input on the 5-minute TTL and 2&times; on the 1-hour one; cache reads at a tenth.
+          </p>
+        </div>
+        <ul class="divide-y divide-gray-100">
+          <% @cost_breakdown.each do |row| %>
+            <li class="px-4 py-3">
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="text-sm text-gray-900"><%= row[:component] %></span>
+                <span class="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
+                  <%= number_to_currency(row[:cost_usd], precision: 2) %>
+                  <span class="text-gray-400 font-normal"><%= number_to_percentage(row[:share] * 100, precision: 1) %></span>
+                </span>
+              </div>
+              <div class="mt-1.5 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div class="h-full bg-indigo-500 rounded-full" style="width: <%= (row[:share] * 100).round(1) %>%"></div>
+              </div>
+            </li>
+          <% end %>
+        </ul>
+      </div>
+
+      <!-- Daily trend -->
+      <% max_day = @by_day.map { |d| d[:cost_usd] }.max || 0 %>
+      <div class="bg-white shadow rounded-lg overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-gray-200">
+          <h2 class="text-sm font-semibold text-gray-900">Daily spend</h2>
+        </div>
+        <div class="px-4 py-4 overflow-x-auto">
+          <div class="flex items-end gap-1 h-32 min-w-max">
+            <% @by_day.each do |day| %>
+              <% height = max_day.positive? ? (day[:cost_usd] / max_day * 100).round(1) : 0 %>
+              <div class="flex flex-col items-center justify-end h-full w-6 sm:w-8 shrink-0"
+                   title="<%= day[:day] %>: <%= number_to_currency(day[:cost_usd], precision: 2) %>">
+                <div class="w-full bg-indigo-500 rounded-t" style="height: <%= [ height, 1 ].max %>%"></div>
+              </div>
+            <% end %>
+          </div>
+          <div class="flex justify-between mt-2 text-xs text-gray-400">
+            <span><%= @by_day.first&.dig(:day) %></span>
+            <span><%= @by_day.last&.dig(:day) %></span>
+          </div>
+        </div>
+      </div>
+
+      <% max_cost = ->(rows) { rows.map { |r| r[:cost_usd] }.max || 0 } %>
+
+      <%= render "bar_table", rows: @by_agent_root, label_key: :agent_root,
+            title: "By agent root", empty: "No session spend in this window.",
+            max: max_cost.call(@by_agent_root) %>
+
+      <%= render "bar_table", rows: @by_model, label_key: :model,
+            title: "By model", empty: "No spend in this window.",
+            max: max_cost.call(@by_model) %>
+
+      <%= render "bar_table", rows: @by_thread_kind, label_key: :kind,
+            title: "Main thread vs subagents", empty: "No session spend in this window.",
+            max: max_cost.call(@by_thread_kind) %>
+
+      <%= render "bar_table", rows: @by_adhoc_source, label_key: :source,
+            title: "Ad hoc calls from Zimmer's own code",
+            empty: "No ad hoc inference recorded in this window.",
+            max: max_cost.call(@by_adhoc_source) %>
+
+      <!-- Top sessions -->
+      <div class="bg-white shadow rounded-lg overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-gray-200">
+          <h2 class="text-sm font-semibold text-gray-900">Most expensive sessions</h2>
+        </div>
+        <% if @top_sessions.blank? %>
+          <p class="px-4 py-6 text-sm text-gray-500">No attributed session spend in this window.</p>
+        <% else %>
+          <ul class="divide-y divide-gray-100">
+            <% @top_sessions.each do |row| %>
+              <li class="px-4 py-3">
+                <div class="flex items-baseline justify-between gap-3">
+                  <%= link_to session_path(row[:session_id]), class: "text-sm text-indigo-600 hover:text-indigo-500 truncate min-w-0" do %>
+                    <%= row[:title].presence || "Session ##{row[:session_id]}" %>
+                  <% end %>
+                  <span class="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
+                    <%= number_to_currency(row[:cost_usd], precision: 2) %>
+                  </span>
+                </div>
+                <div class="text-xs text-gray-500 mt-0.5">
+                  #<%= row[:session_id] %> &middot; <%= number_with_delimiter(row[:api_calls]) %> calls &middot;
+                  <%= number_to_human(row[:tokens], units: { thousand: "K", million: "M", billion: "B" }, precision: 3) %> tokens
+                </div>
+              </li>
+            <% end %>
+          </ul>
+        <% end %>
+      </div>
+
+      <p class="text-xs text-gray-400">
+        Most recent call recorded: <%= @last_ingested_at ? "#{time_ago_in_words(@last_ingested_at)} ago" : "never" %>.
+        List price is not a bill — these accounts are subscription-billed, so treat this as a comparable
+        unit across models rather than money owed.
+      </p>
+    <% end %>
+  </div>
+</div>
