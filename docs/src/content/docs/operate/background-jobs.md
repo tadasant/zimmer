@@ -35,6 +35,7 @@ From `config.good_job.cron`:
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks (leaving a banner that says the round-trip was lost) |
 | 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint (production and staging only — see below) |
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
+| 5m | `StatusSummaryBackstopJob` | Re-run a Status-summary generation that never landed, for a session already at rest — capped at 5 repairs a sweep, each session examined at most once per 30 minutes, and stood down entirely while the runtime's login pool is exhausted. See [The Status summary](/sessions/status-summary/#the-repair-sweep-behind-it). |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
 | 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts, then resume the sessions parked on them — at most 5 per sweep, oldest park first, so a recovered pool is not re-drained by the whole cohort at once. See [The Claude Code harness](/auth/harness/). |

@@ -228,7 +228,8 @@ that failed, leaves it alone, so a failed attempt cannot make a stale summary lo
 ## The one automatic trigger
 
 Zimmer generates a summary automatically when a session **comes to rest**: the `pause` transition into
-`needs_input`, and the `fail` transition into `failed`. That is the whole list.
+`needs_input`, and the `fail` transition into `failed`. That is the whole list for a session whose
+summary is fine.
 
 Nothing else generates:
 
@@ -247,6 +248,45 @@ fork. An **automatic** generation additionally refuses a session in the trash an
 already been reclaimed: nothing enqueues one for an archived session on purpose, and standing a fork
 up for a session heading for deletion is waste. A **forced** generation refuses neither — see
 [The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
+
+## The repair sweep behind it
+
+A transition is the right trigger and a poor guarantee. A session sitting in `needs_input` has **no
+further transition**, so a generation that never landed leaves the panel describing an earlier point
+in the session for as long as the session sits in the user's action queue — which is exactly where an
+accurate "where things stand" matters most. Four things produce that:
+
+- the enqueued job discarded during a deploy, or lost while the queues were in recovery mode;
+- the fork **parked** out of quota before it ran its turn (see below);
+- the claim abandoned past `PENDING_TIMEOUT` because the fork died;
+- the fork's answer landing already behind the conversation, because the source moved while the fork
+  was copying and running.
+
+`StatusSummaryBackstopJob` is the repair path. Every five minutes it walks the sessions **at rest**
+(`needs_input` and `failed`, most recently active first), and re-enqueues a generation for the ones
+whose last one demonstrably did not land: no record, no summary text, a `failed` record, an abandoned
+claim, or a `ready` summary the transcript has moved past.
+
+It is a repair sweep, not polling, and the difference is enforced rather than asserted:
+
+- **It never forces.** A summary the generator considers current still costs nothing — the sweep
+  enqueues, and the generator returns "current" without forking.
+- **It stamps every session it examines** (`session_status_summaries.backstop_attempted_at`), so a
+  session is looked at once per `RETRY_INTERVAL` (30 minutes) rather than once per sweep. That is also
+  what stops a session that can never be summarized — one whose clone has been reclaimed — from
+  eating the sweep's budget ahead of one that could be repaired.
+- **It is capped at `MAX_PER_SWEEP` (5) repairs.** Each repair costs a fork of a repository and an
+  agent turn, so a fleet-wide outage that failed every generation at once cannot become a fleet-wide
+  re-fork.
+- **It stands down during an auth outage.** A runtime with no available account is skipped entirely
+  and *not* stamped, so nothing is spent forking into an empty pool and the first sweep after the pool
+  recovers picks the whole backlog up.
+- **A session mid-turn is not swept.** A `blocked_on_elicitation` session is `needs_input` with a live
+  process waiting on an approval; it is not at rest, and there is nothing final to say about it yet.
+  Neither are summary forks, which would fork the fork.
+
+Rendering the panel still generates nothing. The sweep is the only thing that starts a generation
+without either a transition or a person.
 
 ## Regenerating on demand
 
@@ -354,6 +394,37 @@ on either the success or the failure path:
 A fork that fails, or comes back with nothing usable, records the reason on the summary record and
 leaves the previous blurb in place — a stale-but-real summary beats an empty panel. The fork is
 archived either way; a fork left behind holds a full copy of a repository.
+
+### A pause is not proof that the fork answered
+
+`AuthOutageParkService` parks a session that has run out of login pool by scheduling a wake and
+letting it reach `pause!` — **the same transition a finished turn reaches**. A parked summary fork
+never ran its turn, so the last assistant text in its transcript is the runtime's own refusal:
+`You've hit your session limit · resets 10pm (UTC)`, `Not logged in · Please run /login`.
+
+Harvesting treated that as the answer. It was stored as the session's Status blurb, stamped `ready`
+at the requested line count — which is to say **marked current**, so `stale?` was false and no later
+generation, automatic or forced, would replace it. On this deployment 73 sessions ended up displaying
+a quota refusal as their status, two of them sitting in the user's action queue; in one id window, 91
+of the 92 summary forks carried the park marker.
+
+`SessionStatusSummaryHarvestJob` now refuses those two ways over:
+
+- **The park marker.** A fork carrying `auth_outage_reason` is treated exactly like a failed one — the
+  reason is recorded, nothing is stamped, and the displayed summary stays stale and therefore eligible
+  for the repair sweep to write over once the pool recovers.
+- **The text.** A runtime can also print its limit line and exit cleanly, before rotation has anything
+  left to rotate into and so before anything parks it. An answer that is a single line under 200
+  characters matching `ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN` or
+  `AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN` is rejected. Requiring one short line is what
+  keeps the patterns off a genuine blurb that happens to be *about* a session which hit a limit;
+  getting that judgement wrong costs a regeneration, never a wrong blurb.
+
+The fork is archived either way, so the copied clone is still reclaimed. The park's own wake trigger
+goes with it — one parked fork waiting hours for quota holds a full repository copy, and the repair
+sweep starting a fresh generation later is cheaper than keeping it. In the incident above the same
+source sessions were re-forked up to five times each, so the re-fork was happening regardless; the
+sweep at least rate-limits it.
 
 The recorded reason folds together the fork's `failure_reason`, `exit_status`, and
 `exception_message`, capped at `SessionStatusSummary::MAX_ERROR_CHARS`. All three are included

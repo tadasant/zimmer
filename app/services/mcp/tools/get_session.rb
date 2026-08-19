@@ -190,6 +190,11 @@ module Mcp
         else
           "- **Freshness:** STALE — #{behind} transcript event(s) since it was written, so it describes an earlier point in the session"
         end
+        # Why the blurb above is the one still showing. A failed generation leaves
+        # the last real summary in place rather than blanking the panel, so
+        # without this a caller sees stale text and no reason for it — which the
+        # web panel and `GET /api/v1/sessions/:id` both give.
+        lines << "- **Last regeneration failed:** #{record.error}" if record.failed? && record.error.present?
         lines
       end
 
