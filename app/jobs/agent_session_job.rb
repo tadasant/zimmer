@@ -1912,32 +1912,42 @@ class AgentSessionJob < ApplicationJob
       level: "warning"
     )
 
-    # `waiting` is reached two unrelated ways, and neither of them wants the
-    # running-session recovery below. Forcing both through waiting → running →
-    # needs_input is what the branch here used to do, and it was wrong for each.
+    # `waiting` is reached three different ways, and the branch here used to force
+    # all of them through waiting → running → needs_input.
     #
-    # 1. The session never started. #perform did not get as far as `start!`, so
-    #    nothing durable exists: no runtime session id, no process, nothing to
-    #    resume. The repair is to run the job again. Pausing it instead is what
-    #    stranded spot-held sessions — a spot hold lives entirely in `waiting`,
-    #    and only the re-check job schedules the next re-check, so pausing the
-    #    session severs that chain for good and leaves it on the human action
-    #    queue with an empty transcript and no session_id or working_directory
-    #    for any recovery sweep to continue from.
+    # 1. **No runtime session id yet.** #perform did not reach the point where it
+    #    issues one, so nothing durable exists and there is nothing to resume. The
+    #    repair is to run the job again. Pausing it instead is what stranded
+    #    spot-held sessions — a spot hold lives entirely in `waiting`, and only the
+    #    re-check job schedules the next re-check, so pausing the session severs
+    #    that chain for good and leaves it on the human action queue with an empty
+    #    transcript and nothing any recovery sweep can continue from.
     #
-    # 2. The session deliberately went to sleep. `wake_me_up_later` runs the
-    #    session `running → needs_input → waiting` inside a single pause callback
-    #    (execute_pending_sleep); an interrupt landing in that window used to drag
-    #    the sleeper back awake and burn a turn on a recovery nudge, defeating the
-    #    wake it had just scheduled. Nothing was interrupted here either — the
-    #    turn finished — so recovery stands down and leaves the wake to fire.
+    # 2. **Asleep on purpose.** `wake_me_up_later` runs the session `running →
+    #    needs_input → waiting` inside a single pause callback
+    #    (execute_pending_sleep). An interrupt landing in that window used to drag
+    #    the sleeper awake and burn a turn on a recovery nudge, defeating the wake
+    #    it had just scheduled. Nothing was interrupted — the turn finished — so
+    #    recovery stands down and lets the wake fire.
+    #
+    # 3. **Anything else in `waiting` that has run.** Chiefly the window between
+    #    the session id being issued and `start!` firing, which spans the clone,
+    #    the AIR prepare and the spawn. That session is genuinely stranded rather
+    #    than resting, and unlike case 1 it has a session id and a clone — so it
+    #    falls through to the recovery path below, which is what rescues it.
+    #
+    # `awaiting_scheduled_wake?` is the discriminator for case 2 rather than any
+    # metadata flag, because a session that slept successfully carries none:
+    # execute_pending_sleep clears `pending_sleep` once `sleep!` succeeds and
+    # writes no `paused_by`. The armed-wake query is the only signal there is.
     if session.waiting?
-      if never_started?(session)
+      if session.session_id.blank?
         requeue_interrupted_start(session)
-      else
+        return
+      elsif session.awaiting_scheduled_wake?
         stand_down_for_dormant_session(session)
+        return
       end
-      return
     end
 
     session.update_columns(
@@ -1946,6 +1956,12 @@ class AgentSessionJob < ApplicationJob
     )
     session.reload
 
+    # `pause` is running → needs_input, so a case-3 session stays in `waiting`
+    # carrying `paused_by: "recovery"`. That is deliberate and it is swept: both
+    # continuation queries match `[:needs_input, :waiting]` on that marker, and
+    # `resume` accepts `waiting` as well as `needs_input`. Forcing it through a
+    # cosmetic `start!` first, as this branch used to, only wrote a "Session
+    # started" line for a session that never started.
     session.pause! if session.may_pause?
 
     Rails.logger.info "[AgentSessionJob] Session #{session_id} paused for deploy recovery (status: #{session.status})"
@@ -1959,26 +1975,21 @@ class AgentSessionJob < ApplicationJob
     Rails.logger.error "[AgentSessionJob] Error handling InterruptError for session #{session_id}: #{e.message}"
   end
 
-  # Whether this session has never got a runtime going.
+  # Replay an interrupted job for a session that never got a runtime session id.
   #
-  # A session that has run carries a runtime session id, and `runtime_started`
-  # once the CLI was actually spawned. A session in `waiting` with neither has
-  # never been anything but queued — which is what separates an interrupted first
-  # start from a session that ran, finished a turn, and went to sleep.
-  def never_started?(session)
-    session.session_id.blank? && session.metadata&.dig("runtime_started") != true
-  end
-
-  # Replay an interrupted job for a session that never got going.
-  #
-  # Re-enqueuing this job's own arguments verbatim is exactly the run that was
+  # Re-enqueuing this job's own arguments verbatim is the run that was
   # interrupted: a first start goes back through the spot gate and re-holds or
-  # starts, a clone-only setup sets up its clone. Nothing is duplicated because
-  # the session never left `waiting` — #perform transitions it to `running` as
-  # soon as it has spawned anything, so a session still queued is one whose job
-  # established nothing. The session stays in `waiting`, which is where a queued
-  # session belongs: not on anybody's action queue, and not matched by either
-  # recovery sweep.
+  # starts, a clone-only setup sets up its clone. The session stays in `waiting`,
+  # which is where a queued session belongs — not on anybody's action queue, and
+  # not matched by either recovery sweep.
+  #
+  # One narrow overlap is possible and is accepted rather than papered over. A
+  # spot hold enqueues its next re-check from *inside* this execution and records
+  # no `running_job_id`, so a worker death between that enqueue and GoodJob
+  # writing `finished_at` leaves two chains running. They converge: the first job
+  # to get past the gate records its id before spawning, and the other stands down
+  # on the concurrency guard. The cost is a duplicated gate check, which is a
+  # read.
   #
   # Bounded so a session whose start job can never survive fails loudly instead of
   # re-enqueuing forever. The counter only ever advances on a real interrupt of a

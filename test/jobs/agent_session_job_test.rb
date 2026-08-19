@@ -2014,6 +2014,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.reload
     assert @session.waiting?, "precondition: the pending sleep should have slept the session"
 
+    # A session that slept successfully carries no distinguishing metadata —
+    # execute_pending_sleep clears pending_sleep and writes no paused_by — so the
+    # armed wake is the only signal, and the handler must read it.
+    Session.any_instance.stubs(:awaiting_scheduled_wake?).returns(true)
+
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
 
     assert_no_enqueued_jobs only: AgentSessionJob do
@@ -2028,6 +2033,38 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "a session that has run must not be treated as an interrupted first start"
     assert @session.logs.any? { |log| log.content.include?("already asleep") },
       "expected a log recording that recovery stood down"
+  end
+
+  # The window this nearly got wrong. #perform writes session_id well before it
+  # transitions the session to running: the clone, the AIR prepare and the spawn
+  # all run in between, which is seconds to minutes and exactly where a deploy
+  # lands. That session is stranded, not asleep — and standing down on it would
+  # leave it in bare `waiting`, which NO sweep selects, recreating the very
+  # failure this PR fixes.
+  test "handle_interrupt_error recovers a session interrupted between session_id and start" do
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    assert @session.waiting?, "precondition: start! has not fired yet"
+    assert_nil @session.metadata["runtime_started"], "precondition: the CLI never spawned"
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+    job.send(:handle_interrupt_error, error)
+
+    @session.reload
+    assert_not @session.logs.any? { |log| log.content.include?("already asleep") },
+      "a session mid-start is not asleep and must not be stood down"
+    assert_nil @session.metadata[AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT],
+      "a session that already has a session_id must not be replayed as a fresh start"
+    # It took the recovery path: either auto-continue already resumed it, or it is
+    # parked with the marker both sweeps select on. Both are recoverable states;
+    # bare `waiting` with no marker is the one that would strand it.
+    assert @session.running? || @session.metadata["paused_by"] == "recovery",
+      "expected recovery to claim the session, got status=#{@session.status} " \
+      "paused_by=#{@session.metadata['paused_by'].inspect}"
   end
 
   test "handle_interrupt_error fails a waiting session once the replay budget is spent" do

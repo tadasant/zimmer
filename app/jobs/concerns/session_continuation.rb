@@ -17,24 +17,32 @@ module SessionContinuation
   # before giving up on it.
   #
   # The validation below can fail for a reason that will never change: a session
-  # that was paused before it ever started has no runtime session_id and no clone
-  # on disk, and nothing about waiting longer will produce either. Both sweeps
-  # match `paused_by = 'recovery'`, so without a bound the cleanup cron re-reads
-  # the same session every five minutes forever — one session that never ran
-  # produced 500+ identical "auto-continue skipped" log lines over 20 hours.
+  # paused before it ever started has no runtime session_id and no clone on disk,
+  # and nothing about waiting longer will produce either. Both sweeps match
+  # `paused_by = 'recovery'`, so without a bound the cleanup cron re-reads the
+  # same session every five minutes forever — one session that never ran produced
+  # 500+ identical "auto-continue skipped" log lines over 20 hours.
+  #
+  # The other failure the validation reports — a working directory that is not
+  # there — can be transient: a volume not yet mounted after a boot, a clone being
+  # restored. The budget is sized for that rather than for the permanent case, at
+  # roughly an hour against the 5-minute cron, so a blip clears long before the
+  # sweep gives up.
   #
   # Giving up drops the `paused_by` marker, which is what both sweeps select on,
-  # so the session stops being swept. It stays in needs_input for a human, which
-  # is the honest state for a session Zimmer cannot restart on its own.
-  MAX_CONTINUE_ATTEMPTS = 5
+  # so the session stops being swept. It comes to rest wherever it already was —
+  # `needs_input` or `waiting` on the ordinary path, still `failed` when the
+  # caller was the InterruptError-failed branch — for a human to restart, which is
+  # the honest state for a session Zimmer cannot restart on its own.
+  MAX_CONTINUE_ATTEMPTS = 12
 
-  # Counts failed auto-continue attempts. Cleared with the rest of
-  # Session::STALE_RETRY_METADATA_KEYS whenever the session is successfully resumed.
+  # Counts failed auto-continue attempts. Listed in
+  # Session::STALE_RETRY_METADATA_KEYS, so it is cleared by the resume/restart
+  # paths that clear that set — including the successful continue below.
   CONTINUE_ATTEMPTS_KEY = "recovery_continue_attempts"
 
-  # Records that this session was abandoned by auto-continue, and why. Read by
-  # nothing — it exists so the session page and a later reader can tell a session
-  # Zimmer gave up on apart from one it never looked at.
+  # Records that this session was abandoned by auto-continue, and why, so a later
+  # reader can tell a session Zimmer gave up on from one it never looked at.
   CONTINUE_ABANDONED_KEY = "recovery_continue_abandoned"
 
   private
@@ -155,13 +163,18 @@ module SessionContinuation
     attempts = session.metadata&.dig(CONTINUE_ATTEMPTS_KEY).to_i + 1
     Rails.logger.warn "[#{self.class.name}] Cannot continue session #{session.id}: #{error_message}"
 
+    # merge_metadata!, not update!. A read-modify-write through update! would run
+    # Session's validations, and those include the agent-root/catalog check that
+    # fails globally when the artifact catalog cannot resolve. The RecordInvalid
+    # would be swallowed by the caller's per-session rescue and the counter would
+    # never advance — restoring the unbounded loop this bound exists to close, for
+    # exactly the sessions least likely to be recoverable.
     if attempts >= MAX_CONTINUE_ATTEMPTS
       # Drop paused_by so both sweeps stop selecting this session, and say so once
       # rather than repeating the same skip line indefinitely.
-      session.update!(
-        metadata: (session.metadata || {})
-          .except("paused_by", CONTINUE_ATTEMPTS_KEY)
-          .merge(CONTINUE_ABANDONED_KEY => error_message)
+      session.merge_metadata!(
+        { CONTINUE_ABANDONED_KEY => error_message },
+        [ "paused_by", CONTINUE_ATTEMPTS_KEY ]
       )
       session.logs.create!(
         content: "Recovery auto-continue gave up after #{attempts} attempts: #{error_message}. " \
@@ -171,7 +184,7 @@ module SessionContinuation
       return false
     end
 
-    session.update!(metadata: (session.metadata || {}).merge(CONTINUE_ATTEMPTS_KEY => attempts))
+    session.merge_metadata!(CONTINUE_ATTEMPTS_KEY => attempts)
     session.logs.create!(
       content: "Recovery auto-continue skipped (attempt #{attempts} of #{MAX_CONTINUE_ATTEMPTS}): #{error_message}",
       level: "warning"
