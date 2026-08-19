@@ -31,6 +31,9 @@
 #   - A URL in a user message. Zimmer's own trigger prompts carry PR URLs
 #     ("comment on your PR <url>"), so adopting them would let one misrouted
 #     notification bootstrap a permanent wrong association.
+#   - Anything at all in a status-summary fork's transcript, which is a copy of
+#     the source session's and therefore shows the *source* opening PRs. See the
+#     guard at the top of `#call`.
 #
 # Every rule above is a bet against the opposite failure — a session that opened a
 # PR and has nothing recorded, which silently switches off every GitHub
@@ -188,6 +191,26 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   end
 
   def call
+    # A status-summary fork opens nothing, and it is the one session whose
+    # transcript is not its own: SessionStatusSummaryGenerator forks the source
+    # session, so every `gh pr create` the source ever ran is sitting in the
+    # fork's copied transcript. Every rule below then reads as CREATED evidence
+    # and credits the fork with the source's pull requests.
+    #
+    # That is not a cosmetic misattribution. `Session.with_github_prs` is keyed
+    # on this list alone, so the credited fork joins the PR, comment and
+    # merge-conflict pollers — and the PR poller answers an open -> merged
+    # transition by queueing "your PR merged, you may archive" onto it. The fork
+    # is Zimmer's own throwaway: nobody reads it, and the harvest job archives it
+    # as soon as the blurb is out, which retires that message `undelivered` and
+    # pages. Production session 6335 was credited with all seven of session 684's
+    # pull requests 16 seconds after it was forked, and stranded the merge
+    # notification for one of them ~10 minutes later.
+    #
+    # `warn_if_pr_goal_captured_no_url` already declines to reason about a fork's
+    # empty list for the same reason; this is the writing half of that guard.
+    return if session.status_summary_fork?
+
     new_pr_urls = extract_pr_urls
     return if new_pr_urls.empty?
 
