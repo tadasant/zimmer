@@ -146,14 +146,14 @@ so it is excluded from the stand-down and still recovers.
 
 A session still `running` when the interrupt lands is unaffected and recovers exactly as before.
 
-#### `waiting` is two different situations, and neither is a recovery
+#### `waiting` is three different situations, and none of them is a recovery
 
 The handler used to push every `waiting` session through `waiting → running → needs_input` so a
-sweep could pick it up. `waiting` is reached two unrelated ways, and that was wrong for both.
+sweep could pick it up. `waiting` is reached three unrelated ways, and that was wrong for each.
 
-**The session never started.** `perform` did not get as far as `start!`, so nothing durable exists —
-no runtime session id, no process, nothing to resume. The repair is to **run the job again**, so the
-handler re-enqueues this job's own arguments verbatim and leaves the session in `waiting`.
+**No runtime session id yet.** `perform` did not reach the point where it issues one, so nothing
+durable exists and there is nothing to resume. The repair is to **run the job again**, so the handler
+re-enqueues this job's own arguments verbatim and leaves the session in `waiting`.
 
 Pausing it instead is what stranded [spot-held](/sessions/spot-and-priority/) sessions. A spot hold
 lives entirely in `waiting`, and the only thing that ever schedules the next re-check is the
@@ -166,15 +166,23 @@ The replay is bounded by `MAX_INTERRUPTED_START_REQUEUES`. Exhausting it fails t
 `failure_reason` naming the cause, which is loud and visible — the one thing a queued session must
 never do is disappear quietly.
 
-**The session deliberately went to sleep.** `wake_me_up_later` runs a session `running → needs_input
-→ waiting` inside a single `pause` callback, via `execute_pending_sleep`. An interrupt landing in
-that window dragged the sleeper back awake and spent a turn on a recovery nudge, cancelling the wake
-it had just scheduled. Nothing was interrupted there either — the turn finished — so the handler
-stands down and lets the wake fire.
+**Asleep on purpose.** `wake_me_up_later` runs a session `running → needs_input → waiting` inside a
+single `pause` callback, via `execute_pending_sleep`. An interrupt landing in that window dragged the
+sleeper back awake and spent a turn on a recovery nudge, cancelling the wake it had just scheduled.
+Nothing was interrupted there either — the turn finished — so the handler stands down and lets the
+wake fire.
 
-The two are told apart by whether the session has ever got a runtime going: a session that has run
-carries a `session_id` (and `runtime_started` once the CLI was spawned), and one that has only ever
-been queued carries neither.
+The discriminator is `Session#awaiting_scheduled_wake?`, not a metadata flag, because a session that
+slept successfully carries none: `execute_pending_sleep` clears `pending_sleep` once `sleep!`
+succeeds, and writes no `paused_by`. The armed-wake query is the only signal there is.
+
+**Anything else in `waiting` that has run.** Chiefly the window between the session id being issued
+and `start!` firing, which spans the clone, the AIR prepare and the spawn — seconds to minutes, and a
+deploy is exactly what lands in it. That session is stranded rather than resting, and unlike the
+first case it has a session id and a clone, so it takes the ordinary recovery path. `pause` is
+`running → needs_input`, so it stays in `waiting` carrying `paused_by: "recovery"` — which is swept,
+because both continuation queries match `[:needs_input, :waiting]` on that marker and `resume`
+accepts `waiting`.
 
 #### Auto-continue gives up
 
@@ -187,7 +195,17 @@ lines for one session that never ran.
 After `MAX_CONTINUE_ATTEMPTS` failures the sweep gives up: it drops the `paused_by` marker (which
 is what both sweeps select on, so the session stops being swept), records
 `metadata["recovery_continue_abandoned"]` with the reason, and logs it once at `error`. The session
-stays in `needs_input` for a human, which is the honest state for one Zimmer cannot restart itself.
+comes to rest wherever it already was — `needs_input` or `waiting` on the ordinary path, still
+`failed` when the caller was the InterruptError-failed branch — for a human to restart, which is the
+honest state for one Zimmer cannot restart itself.
+
+The budget is sized for the *other* thing the validation reports. A missing working directory can be
+transient — a volume not yet mounted after a boot, a clone being restored — so the count is set to
+roughly an hour against the 5-minute cron, long enough for a blip to clear and still bounded. The
+writes go through `merge_metadata!` rather than `update!`: a read-modify-write would run Session's
+validations, including the [globally coupled](/air/zimmer-integration/) agent-root and catalog-skill
+checks, and a `RecordInvalid` swallowed by the caller's per-session rescue would stop the counter
+advancing — restoring the unbounded loop for exactly the sessions least likely to be recoverable.
 
 #### The nudge names the path that sent it
 
