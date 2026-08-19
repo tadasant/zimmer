@@ -90,9 +90,9 @@ Two things are deliberately **not** evidence:
 One session is skipped outright, whatever its transcript shows: a
 [status-summary fork](/sessions/status-summary/#generation-runs-on-a-fork). Its transcript is a copy
 of the source session's, so the source's own successful `gh pr create` is sitting in it as Created
-evidence — the strongest kind, which no repo guard bounds. Crediting the fork put a throwaway session
-into all three pollers' scope, and the PR poller answered a merge by queueing "your PR merged, you
-may archive" onto it; the harvest job then archived the fork, which retires that message
+evidence — the strongest kind, which no repo guard bounds. Crediting the fork would put a throwaway
+session into all three pollers' scope, and the PR poller would answer a merge by queueing "your PR
+merged, you may archive" onto it; the harvest job then archives the fork, which retires that message
 `undelivered` and [pages](/sessions/lifecycle/). The hook records nothing for such a fork.
 
 Both runtimes are handled. Claude Code and Codex write different transcript shapes, so finding shell
