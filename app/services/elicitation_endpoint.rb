@@ -17,6 +17,16 @@ require "net/http"
 # denial: a silent, fail-closed gate that invites working around it. Naming the
 # endpoint explicitly, from the same AppUrl the session URLs come from, is the fix.
 #
+# A reachable address is necessary and not sufficient, because the client only
+# reaches for the address once it has decided the HTTP fallback is the tier to use.
+# Two defaults decided otherwise, and both produced the same silent redaction from a
+# fully-configured deployment: the fallback counts as available only when the poll
+# URL is named alongside the request URL, and the tier order prefers native MCP
+# elicitation whenever the client advertises it — which headless Claude Code does,
+# with no human attached to answer. So the approval request went to the agent, the
+# agent declined it in milliseconds, and Zimmer was never asked. spawn_env names
+# every variable that decision reads rather than only the address.
+#
 # The probe is the second half. A gate that breaks again must say so instead of
 # reverting to silent redaction, so ElicitationEndpointHealthCheckJob checks
 # reachability on a cron and OrchestratorSystemPromptBuilder tells the agent when
@@ -27,7 +37,13 @@ class ElicitationEndpoint
   # The variables an MCP server reads the endpoint from. Named here because two
   # injection paths (the agent process's env, each stdio server's own env table)
   # must agree on the set — including which names a clone's `.env` may override.
-  VARIABLES = %w[ELICITATION_REQUEST_URL ELICITATION_SESSION_ID].freeze
+  VARIABLES = %w[
+    ELICITATION_REQUEST_URL
+    ELICITATION_POLL_URL
+    ELICITATION_PREFER_HTTP_FALLBACK
+    ELICITATION_TTL_MS
+    ELICITATION_SESSION_ID
+  ].freeze
 
   # Shared (Redis) cache key holding the last probe result.
   CACHE_KEY = "elicitation_endpoint_health"
@@ -49,7 +65,7 @@ class ElicitationEndpoint
       "#{AppUrl.base_url.to_s.chomp('/')}#{PATH}"
     end
 
-    # The two variables an MCP server needs to reach the approval endpoint.
+    # What an MCP server needs to reach the approval endpoint, and to choose it.
     # Session-less callers get the URL but no session tag; the API logs a warning
     # when a request arrives without one.
     #
@@ -61,11 +77,32 @@ class ElicitationEndpoint
     # rebuilds a server's environment from HOME/LANG/PATH/PWD/SHELL plus the
     # entry's own tables, so nothing on the CLI process reaches it).
     #
-    # Two variables it deliberately does NOT set:
+    # ELICITATION_POLL_URL is the same collection URL, and naming it is not
+    # redundant. The create response does carry `_meta["com.pulsemcp/poll-url"]`,
+    # but @pulsemcp/mcp-elicitation decides whether the HTTP fallback exists at all
+    # before it has ever made that call — `Boolean(requestUrl && pollUrl)`. With the
+    # poll URL unset the whole fallback tier is invisible to the client, so a request
+    # URL on its own buys nothing. The client appends `/<request-id>` to it, which is
+    # exactly the `GET /api/v1/elicitations/:id` route.
     #
-    # ELICITATION_POLL_URL — the create response carries
-    # `_meta["com.pulsemcp/poll-url"]`, built by Rails from the request it just
-    # received, so the poll URL follows the request URL automatically.
+    # ELICITATION_PREFER_HTTP_FALLBACK is what puts the human back in the loop. The
+    # client's default tier order tries native MCP elicitation first and only falls
+    # back to HTTP, and headless Claude Code advertises the elicitation capability
+    # while having no one to show a prompt to — so the server asked the agent for
+    # approval, the agent auto-declined in milliseconds, and the operator saw a
+    # redacted value they were never given the chance to approve. The library
+    # documents this flag for precisely that case: a runtime that "falsely
+    # advertises elicitation capability but cannot actually surface the prompt to a
+    # user". Zimmer is that runtime, so it says so rather than leaving the default.
+    #
+    # ELICITATION_TTL_MS aligns the client's deadline with this instance's. The
+    # client sends its own `com.pulsemcp/expires-at`, which outranks Zimmer's default
+    # by design, and its built-in TTL is five minutes — a fuse measured in minutes,
+    # which fails exactly the away-from-the-desk case Elicitation::DEFAULT_EXPIRATION
+    # exists for. Derived from Elicitation.default_expiration so the operator's
+    # ELICITATION_EXPIRATION_MINUTES governs both halves of the round trip.
+    #
+    # One variable it deliberately does NOT set:
     #
     # ELICITATION_ENABLED — whether a server gates a given action stays that server's
     # decision. Session 867's server was already attempting the POST without it, so
@@ -75,7 +112,12 @@ class ElicitationEndpoint
     # @param session_id [Integer, String, nil]
     # @return [Hash{String=>String}]
     def spawn_env(session_id: nil)
-      env = { "ELICITATION_REQUEST_URL" => url }
+      env = {
+        "ELICITATION_REQUEST_URL" => url,
+        "ELICITATION_POLL_URL" => url,
+        "ELICITATION_PREFER_HTTP_FALLBACK" => "true",
+        "ELICITATION_TTL_MS" => (Elicitation.default_expiration.to_i * 1000).to_s
+      }
       env["ELICITATION_SESSION_ID"] = session_id.to_s if session_id.present?
       env
     end

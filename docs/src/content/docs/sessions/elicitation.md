@@ -24,7 +24,7 @@ sequenceDiagram
     participant S as Session
     participant U as You (browser)
 
-    Note over P,M: spawn: ELICITATION_REQUEST_URL + ELICITATION_SESSION_ID<br/>CliSpawnEnv (agent process) + the server's own env table<br/>in the generated MCP config (both runtimes)
+    Note over P,M: spawn: ELICITATION_REQUEST_URL + POLL_URL + PREFER_HTTP_FALLBACK<br/>+ TTL_MS + SESSION_ID — CliSpawnEnv (agent process) + the<br/>server's own env table in the generated MCP config (both runtimes)
     P->>M: tool call
     M->>Z: POST /api/v1/elicitations (UNAUTHENTICATED)<br/>_meta["com.pulsemcp/request-id"] + message
     Z->>S: create Elicitation (pending, expires per the configured window)
@@ -152,12 +152,35 @@ and showed `X-API-Key` in its request samples. That was wrong.
 
 ## Where the request goes, and what happens when it can't get there
 
-Two variables carry the address:
+Five variables carry the address and the decision to use it:
 
 | Variable | Value |
 | --- | --- |
 | `ELICITATION_REQUEST_URL` | `<AppUrl.base_url>/api/v1/elicitations` |
+| `ELICITATION_POLL_URL` | the same collection URL — the client appends `/<request-id>` |
+| `ELICITATION_PREFER_HTTP_FALLBACK` | `true` |
+| `ELICITATION_TTL_MS` | `Elicitation.default_expiration` in milliseconds |
 | `ELICITATION_SESSION_ID` | the Zimmer session id |
+
+The last three are not decoration, and leaving any of them to the client's default breaks the
+round trip in a way that looks exactly like a denial:
+
+- **`ELICITATION_POLL_URL`.** `@pulsemcp/mcp-elicitation` decides whether the HTTP fallback tier
+  exists at all with `Boolean(requestUrl && pollUrl)`, before it has made the POST that would have
+  told it the poll URL. A request URL on its own leaves the whole tier invisible.
+- **`ELICITATION_PREFER_HTTP_FALLBACK`.** The client's default order tries **native** MCP
+  elicitation first and only then the HTTP fallback. Headless Claude Code advertises the
+  elicitation capability with no human attached to answer, so the server asks the agent, the agent
+  declines in milliseconds, and Zimmer is never asked. The library documents this flag for exactly
+  that case — a runtime that "falsely advertises elicitation capability but cannot actually
+  surface the prompt to a user."
+- **`ELICITATION_TTL_MS`.** The client sends its own `com.pulsemcp/expires-at`, which
+  [outranks](#expiry) Zimmer's default by design, and its built-in TTL is five minutes. That is a
+  fuse measured in minutes, which fails precisely the away-from-the-desk case the hour-long
+  default exists for.
+
+All three failure modes end the same way: the MCP server returns `[REDACTED]` and the agent, quite
+reasonably, reports that the request was declined — when in fact nobody was ever asked.
 
 They are written in **two places**, because a stdio MCP server gets its environment two
 different ways:
@@ -175,17 +198,21 @@ different ways:
 A value already present in the session's `.env` wins in both places, so an operator can point a
 server at a different Zimmer.
 
-**Zimmer's value beats a catalog entry's own `env`** for these two keys, and only these two. The
+**Zimmer's value beats a catalog entry's own `env`** for these five keys, and only these five. The
 address of Zimmer's own endpoint is Zimmer's to know; a copy in `mcp.json` is a duplicate that
 goes stale without anything failing loudly — which is exactly what happened, a `http://zimmer`
 left in a catalog entry shadowing the injected URL for months. Everything else in the entry's
 `env` is merged around, never replaced: that table is where a server's credentials live.
 
-Two variables are deliberately *not* set. The poll URL, because the create response carries
-`_meta["com.pulsemcp/poll-url"]`, which Rails builds from the request it just received — so the poll
-URL follows the request URL automatically. And `ELICITATION_ENABLED`, because whether a server gates
-a given action is that server's decision: the reported failure was the address, not the enablement,
+One variable is deliberately *not* set: `ELICITATION_ENABLED`, because whether a server gates a
+given action is that server's decision. The reported failure was the address, not the enablement,
 and forcing it on would newly block sessions on approvals across every server at once.
+
+The poll URL used to be on that list, on the reasoning that the create response carries
+`_meta["com.pulsemcp/poll-url"]` and so the poll URL follows the request URL automatically. It does
+— but only for a client that has already chosen the HTTP tier, and the client tests `requestUrl &&
+pollUrl` to decide whether that tier is available in the first place. The response could never
+arrive to fix an absence that stopped the request being made.
 
 Naming the request URL is not cosmetic. With only `ELICITATION_SESSION_ID` set — which is all Zimmer
 used to set, and only for Claude — the `@pulsemcp/mcp-elicitation` client fell back to its built-in
