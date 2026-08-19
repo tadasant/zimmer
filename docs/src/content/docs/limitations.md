@@ -2495,7 +2495,8 @@ Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 ### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 
 `GithubPrUrlHook` decides which PRs belong to a session by reading its transcript for evidence that
-the session *opened* one: a successful `gh pr create`, a failed one that says the branch's PR already
+the session *opened* one: a successful create (`gh pr create`, or a POST to the REST
+`repos/OWNER/REPO/pulls` endpoint), a failed `gh pr create` that says the branch's PR already
 exists, or the agent's own prose claiming it opened a PR on this repo. Everything else — a PR read
 with `gh pr view`, a PR URL arriving in a user message or a Zimmer notification — is ignored on
 purpose, because recording it is how one session ends up receiving another session's review comments
@@ -2510,8 +2511,11 @@ Heuristics have two failure directions and neither announces itself:
   indistinguishable from a true one.
 - **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
   `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
-  opened through a path the hook can't see — an MCP GitHub tool, the web UI — and never mentioned in
-  the agent's prose lands here.
+  opened through a path the hook can't see — an MCP GitHub tool's `create_pull_request`, which is a
+  structured tool call rather than a shell command, or the web UI — and never mentioned in the
+  agent's prose lands here. The shell shapes are enumerated, so each new one costs a session before
+  it is recognised: the REST fallback agents reach for when GitHub's GraphQL API is down took
+  session [5679](https://zimmer.tadasant.com/sessions/5679) to discover.
 
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no
