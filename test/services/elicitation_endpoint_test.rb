@@ -39,6 +39,50 @@ class ElicitationEndpointTest < ActiveSupport::TestCase
     assert_not env.key?("ELICITATION_ENABLED"), "enablement stays the server's decision"
   end
 
+  # The client gates the whole HTTP fallback tier on `requestUrl && pollUrl`, so a
+  # request URL without a poll URL leaves the fallback invisible and the approval
+  # request never arrives.
+  test "spawn_env names the poll URL alongside the request URL" do
+    AppUrl.stubs(:base_url).returns("https://zimmer.example.com")
+
+    env = ElicitationEndpoint.spawn_env(session_id: 886)
+
+    assert_equal "https://zimmer.example.com/api/v1/elicitations", env["ELICITATION_POLL_URL"]
+    assert_equal env["ELICITATION_REQUEST_URL"], env["ELICITATION_POLL_URL"],
+      "the client appends /<request-id> to the collection URL, so both are the same address"
+  end
+
+  # Headless Claude Code advertises the native elicitation capability with no human
+  # attached, so the default tier order asks the agent instead of the operator.
+  test "spawn_env prefers the HTTP fallback over native elicitation" do
+    env = ElicitationEndpoint.spawn_env(session_id: 886)
+
+    assert_equal "true", env["ELICITATION_PREFER_HTTP_FALLBACK"]
+  end
+
+  # The client's own five-minute default would otherwise outrank this instance's
+  # window, since it travels as `com.pulsemcp/expires-at` and that takes precedence.
+  test "spawn_env carries this instance's expiry to the client's own deadline" do
+    env = ElicitationEndpoint.spawn_env(session_id: 886)
+
+    assert_equal (Elicitation::DEFAULT_EXPIRATION.to_i * 1000).to_s, env["ELICITATION_TTL_MS"]
+  end
+
+  test "spawn_env TTL follows the operator's expiration setting" do
+    Elicitation.stubs(:default_expiration).returns(120.minutes)
+
+    env = ElicitationEndpoint.spawn_env(session_id: 886)
+
+    assert_equal (120 * 60 * 1000).to_s, env["ELICITATION_TTL_MS"]
+  end
+
+  test "every spawn_env key is declared in VARIABLES" do
+    env = ElicitationEndpoint.spawn_env(session_id: 886)
+
+    assert_equal [], env.keys - ElicitationEndpoint::VARIABLES,
+      "both injection paths iterate VARIABLES, so a key missing from it is never written"
+  end
+
   test "spawn_env omits the session tag when there is no session" do
     env = ElicitationEndpoint.spawn_env(session_id: nil)
 
