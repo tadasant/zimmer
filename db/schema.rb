@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_18_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_19_130000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -28,6 +28,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_18_150000) do
     t.index ["created_at"], name: "index_account_rotation_events_on_created_at", order: :desc
     t.index ["runtime", "created_at"], name: "index_account_rotation_events_on_runtime_and_created_at"
     t.index ["source"], name: "index_account_rotation_events_on_source"
+  end
+
+  create_table "adhoc_token_usages", force: :cascade do |t|
+    t.bigint "cache_creation_1h_tokens", default: 0, null: false
+    t.bigint "cache_creation_5m_tokens", default: 0, null: false
+    t.bigint "cache_creation_tokens", default: 0, null: false
+    t.bigint "cache_read_tokens", default: 0, null: false
+    t.datetime "called_at", null: false
+    t.datetime "created_at", null: false
+    t.bigint "input_tokens", default: 0, null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.string "model", null: false
+    t.bigint "output_tokens", default: 0, null: false
+    t.string "request_id", null: false
+    t.string "service_tier"
+    t.string "source", default: "unknown", null: false
+    t.bigint "subject_session_id"
+    t.string "transcript_path"
+    t.datetime "updated_at", null: false
+    t.integer "web_fetch_requests", default: 0, null: false
+    t.integer "web_search_requests", default: 0, null: false
+    t.index ["called_at"], name: "index_adhoc_token_usages_on_called_at"
+    t.index ["request_id"], name: "index_adhoc_token_usages_on_request_id", unique: true
+    t.index ["source", "called_at"], name: "index_adhoc_token_usages_on_source_and_called_at"
+    t.index ["subject_session_id"], name: "index_adhoc_token_usages_on_subject_session_id"
   end
 
   create_table "agent_posted_github_comments", force: :cascade do |t|
@@ -376,6 +401,35 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_18_150000) do
     t.index ["session_id"], name: "index_session_status_summaries_on_session_id", unique: true
   end
 
+  create_table "session_token_usages", force: :cascade do |t|
+    t.string "agent_root"
+    t.string "agent_runtime", default: "claude_code", null: false
+    t.bigint "cache_creation_1h_tokens", default: 0, null: false
+    t.bigint "cache_creation_5m_tokens", default: 0, null: false
+    t.bigint "cache_creation_tokens", default: 0, null: false
+    t.bigint "cache_read_tokens", default: 0, null: false
+    t.datetime "called_at", null: false
+    t.datetime "created_at", null: false
+    t.bigint "input_tokens", default: 0, null: false
+    t.string "model", null: false
+    t.bigint "output_tokens", default: 0, null: false
+    t.string "request_id", null: false
+    t.string "runtime_session_id"
+    t.string "service_tier"
+    t.bigint "session_id"
+    t.boolean "subagent", default: false, null: false
+    t.string "transcript_path"
+    t.datetime "updated_at", null: false
+    t.integer "web_fetch_requests", default: 0, null: false
+    t.integer "web_search_requests", default: 0, null: false
+    t.index ["agent_root", "called_at"], name: "index_session_token_usages_on_agent_root_and_called_at"
+    t.index ["called_at"], name: "index_session_token_usages_on_called_at"
+    t.index ["model"], name: "index_session_token_usages_on_model"
+    t.index ["request_id"], name: "index_session_token_usages_on_request_id", unique: true
+    t.index ["session_id", "called_at"], name: "index_session_token_usages_on_session_id_and_called_at"
+    t.index ["session_id"], name: "index_session_token_usages_on_session_id"
+  end
+
   create_table "session_uncle_links", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "session_id", null: false
@@ -563,6 +617,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_18_150000) do
   add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
+  add_foreign_key "session_token_usages", "sessions", on_delete: :nullify
   add_foreign_key "session_uncle_links", "sessions", column: "uncle_session_id", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", on_delete: :cascade
   add_foreign_key "sessions", "categories", on_delete: :nullify

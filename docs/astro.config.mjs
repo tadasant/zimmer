@@ -128,6 +128,7 @@ export default defineConfig({
             { label: "The private companion repo", slug: "operate/companion-repo" },
             { label: "Background jobs", slug: "operate/background-jobs" },
             { label: "Observability", slug: "operate/observability" },
+            { label: "Token spend", slug: "operate/costs" },
             { label: "Testing philosophy", slug: "operate/testing" },
           ],
         },

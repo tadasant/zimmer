@@ -129,6 +129,11 @@ Rails.application.configure do
       class: "GitHubMergeConflictPollerJob",
       description: "Poll GitHub PRs for merge conflicts and notify sessions"
     },
+    token_usage_ingestion: {
+      cron: "*/10 * * * *", # Every 10 minutes
+      class: "TokenUsageIngestionJob",
+      description: "Sweep recent transcripts into the token-spend ledger"
+    },
     cli_status_refresh: {
       cron: "*/2 * * * *", # Every 2 minutes
       class: "CliStatusRefreshJob",

@@ -69,6 +69,10 @@ module Mcp
       # both tools are about the deployment's quota posture, not about one
       # session — and a self_session connection has no business rewriting the
       # global policy from inside a session it is being throttled by.
+      # Costs is the ledger half of the same posture question GetSpotPolicy asks:
+      # that one reads Anthropic's remaining headroom, this one reads what we
+      # spent. Read-only, and fleet-wide, so it stays out of self_session.
+      Definition.new(klass: "Mcp::Tools::GetCosts", group: "health", write: false),
       Definition.new(klass: "Mcp::Tools::GetSpotPolicy", group: "health", write: false),
       Definition.new(klass: "Mcp::Tools::ActionSpotPolicy", group: "health", write: true)
     ].freeze
