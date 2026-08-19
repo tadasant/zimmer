@@ -68,6 +68,15 @@ lost. The fork gets the real conversation at the real point it stopped.
 a goal is an instruction to act — a summarizer still carrying "open a PR and label it ready to merge"
 would go and do that.
 
+**The fork is never credited with the source's pull requests.** `GithubPrUrlHook` decides which PRs a
+session opened by reading its transcript, and a summary fork's transcript is a copy of the source's —
+so the source's own `gh pr create` output sits in it as the strongest evidence the hook recognises.
+Crediting the fork would enrol it in the three GitHub pollers, whose scope is that list for any
+session not archived or failed, and the
+PR poller answers a merge by queueing "your PR merged, you may archive" onto a session nobody reads
+and the harvest job archives moments later. The hook therefore records nothing at all for a summary
+fork — see [Transcript hooks](/extend/transcript-hooks/#githubprurlhook).
+
 ### Copying a clone that is still being written to
 
 The fork copies the source session's clone directory, and that clone is a **live working tree**. The
