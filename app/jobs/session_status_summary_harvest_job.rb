@@ -12,6 +12,19 @@
 #
 # The fork is archived even when nothing usable came back. A fork left behind
 # holds a full copy of a repository.
+#
+# **A pause is not proof that the fork answered.** AuthOutageParkService parks a
+# session that has run out of login pool by scheduling a wake and letting it
+# reach `pause!` — the same transition a finished turn reaches. A parked summary
+# fork never ran its turn, so the last assistant text in its transcript is the
+# runtime's own refusal ("You've hit your session limit · resets 10pm (UTC)",
+# "Not logged in · Please run /login"). Harvesting that as an answer published
+# it as the source session's Status blurb, stamped `ready` at the requested line
+# count — i.e. labelled CURRENT, so `stale?` was false and nothing would ever
+# replace it. 73 sessions in this deployment were showing a quota refusal as
+# their status when this was found; 91 of the 92 summary forks in one id window
+# carried the park marker. The park marker and #refused_answer? are what keep
+# a refusal out.
 class SessionStatusSummaryHarvestJob < ApplicationJob
   include DatabaseRetry
   queue_as :default
@@ -20,6 +33,23 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
   # the backstop for an agent that answered with an essay, so the panel cannot
   # push the rest of the page off screen.
   MAX_SUMMARY_CHARS = 1200
+
+  # The refusals a runtime writes into its own transcript instead of doing the
+  # work, borrowed from the services that already own each wording so there is
+  # one definition of each per codebase. ApiErrorRetryService's covers the usage
+  # limits ("You've hit your session limit · resets 10pm (UTC)");
+  # AuthRecoveryService's covers the logged-out signature.
+  REFUSAL_PATTERNS = [
+    ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN,
+    AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN
+  ].freeze
+
+  # A refusal is a single short line. A real answer is 2-3 sentences carrying
+  # markdown links, and is an order of magnitude longer — so requiring the whole
+  # answer to be one line under this length keeps the patterns off a genuine
+  # summary that happens to be ABOUT a session which hit a limit. Getting that
+  # judgement wrong costs a regeneration, never a wrong blurb.
+  MAX_REFUSAL_CHARS = 200
 
   # @param fork_session_id [Integer] the summary fork that just came to rest
   # @param failed [Boolean] true when the fork reached `failed` rather than `needs_input`
@@ -51,7 +81,11 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
       return
     end
 
-    text = failed ? nil : extracted_summary(fork)
+    # A parked fork is not a finished one. Reading the park marker rather than
+    # sniffing the transcript is the same test AgentSessionJob applies to decide
+    # whether an exit was a completed turn, so both paths agree on what a park is.
+    parked = park_reason(fork)
+    text = (failed || parked) ? nil : extracted_summary(fork)
 
     with_db_retry do
       if text.present?
@@ -63,10 +97,11 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
           error: nil
         )
       else
-        summary.update!(
-          state: "failed",
-          error: failed ? failure_reason(fork) : "The summary fork produced no answer."
-        )
+        # NOT a summary write: `summary`, `generated_at` and
+        # `transcript_line_count` are all left alone, so whatever was displayed
+        # stays displayed and stays STALE — which is what makes the session a
+        # candidate for StatusSummaryBackstopJob to retry once the pool recovers.
+        summary.update!(state: "failed", error: no_answer_reason(fork, failed: failed, parked: parked))
       end
     end
 
@@ -112,12 +147,40 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
 
   # Strips the wrapper an agent sometimes puts around a "reply with only X"
   # answer (a fenced block), then truncates.
+  #
+  # A refusal never becomes an answer. The park marker catches nearly every one
+  # of these, but the runtime can also print its limit line and exit cleanly
+  # before rotation has anything left to rotate into — in which case there is no
+  # park to read and the text is the only evidence.
   def normalize_text(text)
     return nil if text.blank?
 
     cleaned = text.strip
     cleaned = cleaned.sub(/\A```[a-z]*\n/i, "").sub(/\n?```\z/, "").strip
+    return nil if refused_answer?(cleaned)
+
     cleaned.truncate(MAX_SUMMARY_CHARS)
+  end
+
+  # Whether the fork wrote the runtime's refusal where its answer should be.
+  def refused_answer?(text)
+    return false if text.length > MAX_REFUSAL_CHARS || text.include?("\n")
+
+    REFUSAL_PATTERNS.any? { |pattern| text.match?(pattern) }
+  end
+
+  # The park this fork is sitting in, or nil if it is not parked.
+  def park_reason(fork) = fork.metadata&.dig("auth_outage_reason").presence
+
+  # Why no answer was stored, in terms the source session's reader can act on.
+  # A park is named as one, because "out of quota, parked until it resets" tells
+  # the reader the summary will come back on its own and the bare fork failure
+  # does not.
+  def no_answer_reason(fork, failed:, parked:)
+    return failure_reason(fork) if failed
+    return "The summary fork was parked before it could answer (#{parked}). It will be retried." if parked
+
+    "The summary fork produced no answer."
   end
 
   # Why the hidden summary fork died, in terms the source session's reader can act on.

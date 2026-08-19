@@ -212,6 +212,11 @@ Rails.application.configure do
       class: "ClaudeCodeUpdateJob",
       description: "Update Claude Code CLI to the latest version"
     },
+    status_summary_backstop: {
+      cron: "*/5 * * * *", # Every 5 minutes, capped at 5 sessions a sweep
+      class: "StatusSummaryBackstopJob",
+      description: "Re-run a status-summary generation that never landed, for sessions already at rest"
+    },
     quota_reset_checker: {
       cron: "*/15 * * * *", # Every 15 minutes
       class: "QuotaResetCheckerJob",

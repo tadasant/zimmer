@@ -1359,15 +1359,21 @@ module SessionStateMachine
     report_swallowed_side_effect(__method__, e, alert: false)
   end
 
-  # The ONE automatic trigger for the Status panel's blurb: the session coming
-  # to rest, at needs_input or failed. Those are the moments the summary is
-  # about — "where things stand" is a question you ask of a session that has
-  # stopped — and the moments the operator is most likely to read it next.
+  # The automatic trigger for the Status panel's blurb: the session coming to
+  # rest, at needs_input or failed. Those are the moments the summary is about —
+  # "where things stand" is a question you ask of a session that has stopped —
+  # and the moments the operator is most likely to read it next.
   #
-  # Nothing else generates: no polling, no generate-on-page-view, no
-  # generate-per-message. The generator itself still refuses when the session
-  # has not moved since the last summary, so a transition that adds no
-  # transcript costs nothing.
+  # Still no polling, no generate-on-page-view and no generate-per-message: this
+  # is the only place a generation is started for a session that is doing fine.
+  # StatusSummaryBackstopJob is the repair path behind it, and it only touches a
+  # session already at rest whose last generation demonstrably did not land — a
+  # job lost to a deploy, a fork parked out of quota, a claim abandoned past
+  # PENDING_TIMEOUT. Without it a session in the action queue has no further
+  # transition to try again on, so one lost generation is permanent.
+  #
+  # The generator itself still refuses when the session has not moved since the
+  # last summary, so a transition that adds no transcript costs nothing.
   def enqueue_status_summary_refresh
     return if transcript.blank?
 
