@@ -16,6 +16,22 @@ class EnqueuedMessage < ApplicationRecord
   validates :position, presence: true, numericality: { only_integer: true, greater_than: 0 }
   validates :status, inclusion: { in: STATUSES, message: "%{value} is not a valid status" }
 
+  # The other end of the invariant EnqueuedMessageDrainJob enforces on `pause`.
+  #
+  # That callback catches a message that arrives before the session comes to
+  # rest. This one catches a message that arrives after it already has. None of
+  # the three `create` surfaces — the web queue form, `POST
+  # /api/v1/sessions/:id/enqueued_messages`, MCP `manage_enqueued_messages` —
+  # checks the session's state, and all three tell the caller the message will
+  # be delivered "when the session becomes idle". A session in `needs_input`
+  # already is, and nothing was going to come back for the row: the only sweep
+  # that wakes an idle session, HeartbeatSweepJob, skips one that has a pending
+  # message.
+  #
+  # after_create_commit, not after_create: the job must not run against a row
+  # its own transaction has not committed yet.
+  after_create_commit :deliver_if_session_already_idle
+
   # Scopes
   scope :pending, -> { where(status: "pending") }
   scope :undelivered, -> { where(status: "undelivered") }
@@ -78,5 +94,25 @@ class EnqueuedMessage < ApplicationRecord
       # Move to final position
       update_column(:position, new_position)
     end
+  end
+
+  private
+
+  # See the callback declaration for why this exists. The job re-reads
+  # everything under the per-session advisory lock, so this only has to be
+  # cheap and roughly right — and it deliberately does not fire for a session in
+  # any other state, where the ordinary end-of-turn drain is already the answer.
+  def deliver_if_session_already_idle
+    return unless status == "pending"
+    return unless session&.needs_input?
+
+    EnqueuedMessageDrainJob.set(wait: EnqueuedMessageDrainJob::DELAY).perform_later(session_id)
+  rescue => e
+    # Log-only, and deliberately not fatal to the create: the caller queued a
+    # message and that succeeded. The `pause` callback picks the queue up at the
+    # session's next turn boundary either way — this only makes it sooner.
+    Rails.logger.error(
+      "[EnqueuedMessage] Failed to schedule a drain for idle session #{session_id}: #{e.class}: #{e.message}"
+    )
   end
 end
