@@ -32,8 +32,42 @@ From `mcp.json`:
 | `url` / `headers` | remote servers |
 | `oauth` | remote servers that need an OAuth flow |
 | `default_in_roots` | which roots get it by default |
+| `unavailable` | a standing declaration that this entry cannot work here, and why |
 
 `env` and `headers` values may contain `${VAR}` placeholders.
+
+### `unavailable`: the breakage Zimmer cannot detect
+
+Zimmer works out readiness for itself — see [Availability, and what an agent is
+offered](#availability-and-what-an-agent-is-offered) below. `unavailable` exists for the one class it
+cannot: an entry whose every `${VAR}` resolves and whose endpoint still cannot serve Zimmer. A server
+written for OAuth whose endpoint accepts only static bearer tokens and publishes no OAuth discovery
+passes every local check and is unusable anyway, and no amount of probing infers that.
+
+```json
+"strad-secrets-oauth": {
+  "title": "Strad Secrets (OAuth)",
+  "type": "streamable-http",
+  "url": "https://secrets.example.com/mcp",
+  "unavailable": "The endpoint accepts only static bearer tokens and exposes no OAuth discovery."
+}
+```
+
+- **Type:** string. Non-empty (after trimming) means unavailable, and the string **is** the reason —
+  reported on the Connectors page and in `get_configs`'s unavailable roster.
+- **It is normalized before it is shown.** Whitespace collapses to single spaces and the reason is
+  truncated at 200 characters, because it lands in a markdown list an agent reads as part of a tool
+  response: a newline would split the line it sits on, and a long one would crowd out the roster.
+  Write one sentence.
+- **Absent, `null`, blank, or a non-string** means nothing is declared. Note what that is *not*: it
+  is not a claim that the server works, only that the catalog is silent, so the ordinary readiness
+  checks decide. There is deliberately no `"unavailable": true` — requiring the reason by
+  construction is the whole point.
+- **Remove it when the server is fixed.** It is a fact about the world, not a permanent label.
+
+Do **not** encode availability in `description` instead. Prose like `⚠️ NOT USABLE YET` is invisible
+to every check, cannot be acted on, and goes stale silently — which is exactly what this field
+replaced.
 
 The formal schema is published by AIR at
 [`pulsemcp.github.io/air/schemas/mcp.schema.json`](https://pulsemcp.github.io/air/schemas/mcp.schema.json)
@@ -90,6 +124,36 @@ Zimmer synthesizes them rather than resolving them from the catalog, and retarge
 entry at the instance preparing the session so a staging session never orchestrates production.
 
 → [Zimmer's MCP server](/extend/mcp-server/) for the tool surface, the scoped variants, and auth.
+
+## Availability, and what an agent is offered
+
+A catalog entry that cannot start is not a soft failure. `SecretsInterpolator` raises
+`MissingVariableError` on an unresolved `${VAR}` at spawn, and nothing rescues it per entry — so
+attaching one such server fails the **whole session**, not just that server.
+
+`ConnectorStatusProbe` answers "could a session attach this right now?" from local signals only:
+whether each required `${VAR}` resolves, and the state of the stored OAuth credential. Four of its
+states block a spawn — `missing_configuration`, `needs_authorization`, `needs_reauth`, and
+`declared_unavailable` (the `unavailable` field above). `token_expired` does not, because
+`RefreshMcpOauthTokensJob` renews it unaided.
+
+Both surfaces read that one computation:
+
+- **[The Connectors page](/auth/mcp-oauth/#seeing-where-every-connector-stands)** renders every
+  server with its state and what to do about it.
+- **`get_configs`** — what an agent reads as "your options" — lists only the servers that can start,
+  then names the rest in a short **Unavailable** roster, one line each with a compact reason. The
+  roster is not a second catalog: it exists so an agent can tell *this server exists and is broken*
+  from *this server does not exist*, the latter being an invitation to go and register a duplicate.
+  A root default that is currently unavailable is marked `(unavailable)` in the root's own listing,
+  since that list is otherwise copied into `start_session` verbatim.
+
+Two signals are deliberately **not** on this path. Nothing here contacts an MCP server, so
+`get_configs` stays fast and deterministic on a routing session's critical path, and a Ready badge
+never claims the remote host answered. And a probe that could not determine an answer —
+`store_unavailable` when the Parameter Store did not respond, `probe_failed` for anything unexpected
+— leaves the server **listed**. Those are transient and hit every server at once; emptying the whole
+option list because Google was slow is a worse failure than offering a server that might not start.
 
 ## Remote servers and OAuth
 

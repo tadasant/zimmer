@@ -18,6 +18,12 @@
 #      not matched: the injector would not find it either, so counting it would
 #      report Ready for a server that cannot connect.
 #
+# Ahead of all three sits the one thing it cannot work out for itself: a catalog
+# entry carrying an `"unavailable": "<reason>"` declaration is reported
+# :declared_unavailable without any of the checks being run. That covers the
+# server whose configuration is impeccable and whose endpoint still cannot serve
+# Zimmer — a fact only the catalog's curator knows.
+#
 # It never contacts the MCP server itself. It reports what is configured and
 # stored, which is what determines whether a spawn succeeds; it does not claim
 # the remote host is up. It may talk to the Parameter Store, and a store that
@@ -39,9 +45,25 @@ class ConnectorStatusProbe
     token_expired
     needs_reauth
     missing_configuration
+    declared_unavailable
     store_unavailable
     probe_failed
   ].freeze
+
+  # The states in which attaching the server to a session cannot work, and no
+  # amount of waiting changes that. This is the definition both surfaces read:
+  # the Connectors page renders it per row, and `get_configs` omits these
+  # servers from the options it offers an agent.
+  #
+  # :token_expired is deliberately absent — that credential has a refresh token
+  # and RefreshMcpOauthTokensJob renews it without anyone's help.
+  #
+  # :store_unavailable and :probe_failed are absent for a different reason:
+  # they mean Zimmer could not find out, not that the answer is no. Both are
+  # transient and both hit every server at once — a store blip would empty the
+  # whole option list and send an agent off to register servers that already
+  # exist. Reporting an indeterminate server as usable is the cheaper mistake.
+  BLOCKING_STATES = %i[missing_configuration needs_authorization needs_reauth declared_unavailable].freeze
 
   # One required `${VAR}` and the provider that ACTUALLY resolved it.
   #
@@ -75,6 +97,33 @@ class ConnectorStatusProbe
 
     def ready? = state == :ready
     def missing_configuration? = state == :missing_configuration
+    def declared_unavailable? = state == :declared_unavailable
+
+    # Can a session attach this server right now? See BLOCKING_STATES.
+    def available? = !BLOCKING_STATES.include?(state)
+
+    # Why not, in a few words — for a roster that names unusable servers without
+    # re-describing them. Terse on purpose: it has to fit on one line next to
+    # the server name, and its job is to let a reader tell "exists but cannot be
+    # used" from "does not exist". nil when the server is available.
+    #
+    # Markdown, because its reader is `get_configs` and its output is markdown.
+    # The Connectors page renders #summary instead — same states, a sentence
+    # each, addressed to someone who can go and fix them.
+    #
+    # @return [String, nil]
+    def unavailable_reason
+      case state
+      when :missing_configuration
+        "#{missing_variables.map { |name| "`#{name}`" }.join(', ')} unresolved"
+      when :needs_authorization
+        "OAuth authorization not completed"
+      when :needs_reauth
+        "OAuth token expired and cannot be refreshed"
+      when :declared_unavailable
+        server.unavailable_reason
+      end
+    end
 
     def actionable?
       %i[needs_authorization token_expired needs_reauth missing_configuration store_unavailable
@@ -100,6 +149,7 @@ class ConnectorStatusProbe
       when :token_expired then "Token expired"
       when :needs_reauth then "Needs re-auth"
       when :missing_configuration then "Missing configuration"
+      when :declared_unavailable then "Unavailable"
       when :store_unavailable then "Secret store unreachable"
       when :probe_failed then "Probe failed"
       end
@@ -119,6 +169,9 @@ class ConnectorStatusProbe
         "The stored access token has expired and carries no refresh token. Authorize it again to replace it."
       when :missing_configuration
         "#{'Variable'.pluralize(missing_variables.size)} #{missing_variables.to_sentence} #{missing_variables.one? ? 'has' : 'have'} no value, so this server cannot start."
+      when :declared_unavailable
+        "The catalog declares this server unavailable, so nothing on this page will fix it — " \
+        "the catalog entry has to change. Reason given: #{server.unavailable_reason}"
       when :store_unavailable
         "#{missing_variables.to_sentence} could not be checked: #{error_message}. " \
         "This is not the same as the variable being unset — the store did not answer."
@@ -185,6 +238,31 @@ class ConnectorStatusProbe
     new(server).call
   end
 
+  # Every catalog server's status, in catalog order.
+  #
+  # For callers that need the whole picture at once rather than one row at a
+  # time — `get_configs`, which has to split the catalog into what an agent may
+  # attach and what it may not. It is the same probe per server, so the two
+  # surfaces cannot drift.
+  #
+  # What this costs, stated honestly, because a routing session calls it on its
+  # critical path: one indexed credential lookup per OAuth-capable server, and
+  # secret resolution through SecretProviders' chain. When the Parameter Store
+  # link is configured that chain CAN go to Google — it holds a 60-second
+  # namespace snapshot, and a variable missing from the snapshot forces one
+  # re-read (rate-limited to once per 10s across the process). That is the same
+  # read the spawn itself would do, seconds later, and it is bounded.
+  #
+  # What it never does is probe an MCP server. There is no per-server network
+  # call here and no request whose count grows with the catalog, which is what
+  # keeps this deterministic enough to sit in front of a routing decision.
+  #
+  # @return [Array<Status>]
+  def self.all
+    interpolator = SecretsInterpolator.new
+    ServersConfig.all.map { |server| new(server, interpolator: interpolator).call }
+  end
+
   # @param server [ServersConfig::Server]
   def initialize(server, interpolator: SecretsInterpolator.new)
     @server = server
@@ -193,6 +271,8 @@ class ConnectorStatusProbe
 
   # @return [Status]
   def call
+    return status(:declared_unavailable) if server.declared_unavailable?
+
     absent, unreachable, reason, sources = classify_variables
     @variable_sources = sources
     if unreachable.any?
