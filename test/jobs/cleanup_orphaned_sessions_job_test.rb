@@ -794,7 +794,8 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     @session.reload
     assert_nil @session.metadata["paused_by"],
       "giving up must drop the marker both sweeps select on"
-    assert_equal "no session_id found", @session.metadata[SessionContinuation::CONTINUE_ABANDONED_KEY]
+    assert_equal "no session_id found, working directory not found or invalid",
+      @session.metadata[SessionContinuation::CONTINUE_ABANDONED_KEY]
     assert @session.logs.any? { |log| log.content.include?("gave up after") },
       "expected one terminal log line explaining the session was abandoned"
 
