@@ -659,6 +659,88 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/owner/repo/pull/88" ], tracked_urls
   end
 
+  # === Status-summary forks (never recorded) ==================================
+
+  # A summary fork is the one session whose transcript is not its own: it is a
+  # copy of the source's, so the source's own `gh pr create` is sitting in it as
+  # the strongest evidence the hook recognizes.
+
+  def make_summary_fork(source_id: 42)
+    @session.update!(
+      metadata: @session.metadata.to_h.merge(SessionStatusSummaryGenerator::FORK_MARKER => source_id)
+    )
+    assert @session.status_summary_fork?, "the fixture must actually be a summary fork"
+  end
+
+  test "records nothing for a status-summary fork, whose gh pr create is the source's" do
+    make_summary_fork
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_nil tracked_urls
+  end
+
+  test "records nothing for a status-summary fork on any other evidence either" do
+    make_summary_fork
+
+    run_hook(
+      claude_pr_create("a pull request for branch feat already exists:\n" \
+                       "https://github.com/owner/repo/pull/7", is_error: true),
+      claude_assistant_text("Opened PR: https://github.com/owner/repo/pull/8")
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "an uncredited summary fork stays out of the GitHub pollers' scope" do
+    # This is the consequence the guard exists for. `with_github_prs` is keyed on
+    # the URL list alone, so crediting the fork enrolls it in the PR, comment and
+    # merge-conflict pollers — and the PR poller answers an open -> merged
+    # transition by queueing "your PR merged, you may archive" onto a session the
+    # harvest job archives as soon as the blurb is out. That retires the message
+    # `undelivered` and pages (production session 6335).
+    make_summary_fork
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_not Session.with_github_prs.exists?(id: @session.id)
+  end
+
+  test "does not stamp tracking timestamps on a status-summary fork" do
+    make_summary_fork
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_nil @session.reload.custom_metadata["github_pr_tracking_started_at"]
+  end
+
+  test "leaves a summary fork's inherited URL list untouched rather than extending it" do
+    # Nothing writes this list onto a fork today, but a fork created before this
+    # guard shipped can still carry one. The guard must not top it up with the
+    # source's newer PRs on the next transcript scan.
+    @session.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/1" ] })
+    make_summary_fork
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_equal [ "https://github.com/owner/repo/pull/1" ], tracked_urls
+  end
+
+  test "the guard keys on the summary-fork marker, so an ordinary fork is unaffected" do
+    # Deliberately the same source-copied `gh pr create` the tests above feed a
+    # summary fork, so what this pins is narrow and worth stating plainly: a
+    # user-initiated fork goes on being credited with everything in its copied
+    # transcript, including PRs the SOURCE opened. That is unchanged behaviour and
+    # is not fixed here — a user fork is a live session, so nothing is stranded,
+    # but both sessions do match `with_github_prs` and both receive that PR's
+    # comments. Tracked separately in issue #556.
+    @session.update!(metadata: @session.metadata.to_h.merge("forked_from_session_id" => 42))
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_equal [ "https://github.com/owner/repo/pull/123" ], tracked_urls
+  end
+
   # === The missing-PR warning (#89) ===========================================
 
   test "warns once when a session with a PR goal pauses having recorded nothing" do
