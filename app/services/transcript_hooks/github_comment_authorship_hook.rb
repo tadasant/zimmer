@@ -30,6 +30,10 @@
 #
 # Registered by default via config/initializers/transcript_hooks.rb.
 class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
+  # A tool call's command is a whole shell script; a post has to be read out of the
+  # one command that ran it (see GH_API_PATTERN).
+  include TranscriptHooks::ShellSegments
+
   # Shell commands that post a comment to GitHub. Matched anywhere in the command
   # so `cd x && gh pr comment ...` and Codex's joined argv both hit.
   #
@@ -60,17 +64,11 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   GH_API_COMMENTS_PATTERN = %r{/(?:issues|pulls)/(?:\d+/)?comments\b}
   GH_API_WRITE_PATTERN = /(?:--method[\s=]+POST|-X\s*POST|(?:\A|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=))/
 
-  # Shell separators a command is split on before classification. Crude — it does not
-  # understand quoting — but it errs toward *more* segments, and a segment only ever
-  # gains meaning by starting with `gh api`, so a mis-split can lose a recording
-  # (recoverable: the comment is treated as the human's, as it was before this hook)
-  # rather than manufacture one (not recoverable: a human's comment goes unanswered).
-  SEGMENT_SEPARATOR = /(?:&&|\|\||[;|\n])/
-
-  # Environment assignments and `cd x &&`-style prefixes are already handled by the
-  # split; this strips leading whitespace and `FOO=bar` prefixes so a segment like
-  # `GH_TOKEN=x gh api ...` still starts with `gh api`.
-  ENV_PREFIX_PATTERN = /\A(?:\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/
+  # Segmentation — the split itself, and why it errs toward more segments — lives in
+  # TranscriptHooks::ShellSegments, shared with GithubPrUrlHook. A mis-split can
+  # lose a recording here (recoverable: the comment is treated as the human's, as
+  # it was before this hook) rather than manufacture one (not recoverable: a
+  # human's comment goes unanswered).
 
   # The two fragment shapes GitHub uses for a comment permalink. `gh pr comment`
   # prints the first as its only output; `gh api` prints a JSON body whose `html_url`
@@ -205,7 +203,7 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   def posting_kind(command)
     return nil if command.blank?
 
-    segments = command.split(SEGMENT_SEPARATOR).map { |segment| segment.sub(ENV_PREFIX_PATTERN, "").strip }
+    segments = shell_segments(command)
 
     return :direct if segments.any? { |segment| DIRECT_POST_PATTERNS.any? { |pattern| segment.match?(pattern) } }
     return :api if segments.any? { |segment| gh_api_post?(segment) }

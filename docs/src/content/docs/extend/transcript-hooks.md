@@ -68,15 +68,24 @@ of evidence count:
 | Evidence | What it looks like | Repo guard |
 | --- | --- | --- |
 | **Created** | The URL is in the output of a *successful* create — `gh pr create`, or a POST to the REST endpoint (`gh api repos/OWNER/REPO/pulls -X POST`) | Any repo — bounded by the repo the command names, in `--repo` or in the endpoint path |
-| **Re-created** | The URL is in a *failed* `gh pr create`, next to "already exists" (the PR for the branch we just pushed) | Must match `git_root` |
+| **Re-created** | The URL is in a *failed* create, next to "already exists" (the PR for the branch we just pushed) | Must match `git_root` |
 | **Claimed** | The agent's own prose says it opened the PR — "Opened PR: `<url>`" | Must match `git_root` |
 
 `gh pr create` goes through GitHub's GraphQL API, so a GraphQL outage sends agents to the REST
 endpoint instead — which is how [#89](https://github.com/tadasant/zimmer/issues/89) happened again on
 2026-08-17, with a PR opened by a retry loop around `gh api ... -X POST` recorded nowhere. What makes
-a REST call a create is the method: a POST to a repo's `/pulls` collection opens a pull request,
-while the same endpoint with no method *lists* them. The endpoint also names the repo, so it bounds
-what that result can vouch for the same way `--repo` does.
+a REST call a create is that it POSTs to a repo's `/pulls` collection; the same endpoint read with a
+GET *lists* the repo's open PRs. An explicit `-X`/`--method` is authoritative, and without one a
+field flag (`-f`, `-F`, `--input`) is a POST too, because that is when `gh api` switches from GET.
+Nothing nested under the collection counts: a POST to `.../pulls/7/reviews` writes *about* a PR
+rather than opening one. The endpoint also names the repo, so it bounds what that result can vouch
+for the same way `--repo` does.
+
+All of that is read **per command segment**, never across the whole shell script — a tool call's
+command is routinely several commands (`gh api .../pulls --jq '.[]' && gh api .../comments -X POST`,
+a retry loop, `out=$(...)`, Codex's `bash -lc` wrapper). Reading them together would let a list
+borrow the POST beside it and adopt every PR it printed. `TranscriptHooks::ShellSegments` does the
+split, and `GithubCommentAuthorshipHook` classifies its own `gh api` writes through the same seam.
 
 The claimed path is what catches creation routes that are not a shell command at all: a wrapper
 script, an MCP tool, the GitHub web UI. It requires a creation phrase adjacent to the URL — an inflected verb
@@ -90,9 +99,9 @@ Three things are deliberately **not** evidence:
   session that merely ran `gh pr view` — a merge gate, a reviewer, anything reading the repo's PR
   list — was handed someone else's PR as its own, and then received that PR's comments and
   merge-conflict notifications ([#214](https://github.com/tadasant/zimmer/issues/214)).
-- **`gh api repos/OWNER/REPO/pulls` with no POST method.** Same endpoint as a REST create, opposite
-  meaning: without a method it is a list of the repo's open PRs, so recording it would be #214 again
-  by another route.
+- **`gh api repos/OWNER/REPO/pulls` that does not POST.** Same endpoint as a REST create, opposite
+  meaning: a GET is a list of the repo's open PRs, so recording it would be #214 again by another
+  route. A POST elsewhere in the same shell script does not change that.
 - **A URL in a user message.** Zimmer's own trigger prompts carry PR URLs ("comments on your PR
   `<url>`"), so adopting them would let one misrouted notification bootstrap a permanent wrong
   association.
