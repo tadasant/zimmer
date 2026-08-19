@@ -198,7 +198,8 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     # and credits the fork with the source's pull requests.
     #
     # That is not a cosmetic misattribution. `Session.with_github_prs` is keyed
-    # on this list alone, so the credited fork joins the PR, comment and
+    # on this list for any session that is not archived or failed, so the
+    # credited fork joins the PR, comment and
     # merge-conflict pollers — and the PR poller answers an open -> merged
     # transition by queueing "your PR merged, you may archive" onto it. The fork
     # is Zimmer's own throwaway: nobody reads it, and the harvest job archives it

@@ -665,7 +665,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   # copy of the source's, so the source's own `gh pr create` is sitting in it as
   # the strongest evidence the hook recognizes.
 
-  def make_summary_fork(source_id: 684)
+  def make_summary_fork(source_id: 42)
     @session.update!(
       metadata: @session.metadata.to_h.merge(SessionStatusSummaryGenerator::FORK_MARKER => source_id)
     )
@@ -726,10 +726,15 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/owner/repo/pull/1" ], tracked_urls
   end
 
-  test "an ordinary fork is still credited with the PRs it opens" do
-    # The guard keys on the summary-fork marker, not on being forked. A session a
-    # user forked to keep working is an ordinary session and opens its own PRs.
-    @session.update!(metadata: @session.metadata.to_h.merge("forked_from_session_id" => 684))
+  test "the guard keys on the summary-fork marker, so an ordinary fork is unaffected" do
+    # Deliberately the same source-copied `gh pr create` the tests above feed a
+    # summary fork, so what this pins is narrow and worth stating plainly: a
+    # user-initiated fork goes on being credited with everything in its copied
+    # transcript, including PRs the SOURCE opened. That is unchanged behaviour and
+    # is not fixed here — a user fork is a live session, so nothing is stranded,
+    # but both sessions do match `with_github_prs` and both receive that PR's
+    # comments. Tracked separately in issue #556.
+    @session.update!(metadata: @session.metadata.to_h.merge("forked_from_session_id" => 42))
 
     run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
 
