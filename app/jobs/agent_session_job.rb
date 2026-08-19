@@ -144,9 +144,9 @@ class AgentSessionJob < ApplicationJob
   MAX_CLONE_JOB_RETRIES = 5
   CLONE_JOB_RETRY_DELAYS_SECONDS = [ 30, 60, 120, 300, 600 ].freeze
 
-  # Budget for replaying a start job that was interrupted before #perform ran.
-  # See #requeue_interrupted_start: the session never left `waiting`, so the fix
-  # is to run the job again rather than to "recover" a session that never started.
+  # Budget for replaying a start job that was interrupted while its session was
+  # still queued. See #requeue_interrupted_start: the session never left `waiting`,
+  # so the fix is to run the job again rather than to "recover" one that never started.
   # The delay keeps the replay out of the shutdown window that killed the original,
   # and the jitter stops a backlog interrupted by one deploy from re-landing in
   # lockstep.
@@ -2010,12 +2010,20 @@ class AgentSessionJob < ApplicationJob
     delay = INTERRUPTED_START_REQUEUE_DELAY + rand(INTERRUPTED_START_REQUEUE_JITTER.to_i).seconds
     retry_job = self.class.set(wait: delay).perform_later(*arguments)
 
-    session.update_columns(
-      # Point at the replacement so the concurrency guard and orphan detection
-      # both see the job that is now responsible for this session.
-      running_job_id: retry_job.job_id,
-      metadata: (session.metadata || {}).merge(INTERRUPTED_START_REQUEUE_COUNT => count)
-    )
+    updates = { metadata: (session.metadata || {}).merge(INTERRUPTED_START_REQUEUE_COUNT => count) }
+
+    # Hand ownership to the replacement only if this job held it. A spot-held
+    # session carries no `running_job_id` at all — SpotSessionHold re-enqueues
+    # without claiming one, and #perform only records the id after the gate — so
+    # writing one here would leave a pointer at a finished job that outlives this
+    # replay. The ownership check at the top of handle_interrupt_error asks only
+    # whether the recorded id differs from this job's, not whether that job is
+    # still alive, so a stale pointer would make the *next* interrupt stand down
+    # in favour of a job that finished long ago — severing the re-check chain
+    # exactly as the bug this method fixes did.
+    updates[:running_job_id] = retry_job.job_id if session.running_job_id == job_id
+
+    session.update_columns(**updates)
 
     session.logs.create!(
       content: "Session had not started yet, so nothing needed recovering — " \
