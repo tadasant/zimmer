@@ -1910,10 +1910,36 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil @session.metadata["paused_by"],
       "a session that never started must not be stamped as recovery-paused"
     assert_equal 1, @session.metadata[AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT]
-    assert_equal enqueued_jobs.last["job_id"], @session.running_job_id,
-      "the session must point at the replacement job"
     assert @session.logs.any? { |log| log.content.include?("re-queued the same start job (attempt 1)") },
       "expected a log recording the replay"
+  end
+
+  test "handle_interrupt_error hands running_job_id to the replacement only when this job held it" do
+    # A spot-held session carries no running_job_id: SpotSessionHold re-enqueues
+    # without claiming one and #perform records the id only after the gate. Writing
+    # one here would leave a pointer at a job that finishes moments later, and the
+    # ownership check reads only "is the recorded id different from mine" — so the
+    # NEXT interrupt would stand down in favour of a long-finished job, severing the
+    # re-check chain exactly as the original bug did.
+    unowned = AgentSessionJob.new(@session.id)
+    assert_nil @session.running_job_id, "precondition: a spot-held session records no owner"
+
+    unowned.send(:handle_interrupt_error, GoodJob::InterruptError.new("Interrupted"))
+
+    @session.reload
+    assert_nil @session.running_job_id, "an unowned session must not be given a stale owner"
+
+    # When this job *is* the recorded owner, the replacement inherits it, so the
+    # session is never left pointing at the dead job.
+    owner = AgentSessionJob.new(@session.id)
+    @session.update!(running_job_id: owner.job_id)
+    clear_enqueued_jobs
+
+    owner.send(:handle_interrupt_error, GoodJob::InterruptError.new("Interrupted"))
+
+    @session.reload
+    assert_equal enqueued_jobs.last["job_id"], @session.running_job_id,
+      "the replacement must inherit ownership it actually had"
   end
 
   # The production failure this fixes: issue-work-gate session #5936 was held by the
