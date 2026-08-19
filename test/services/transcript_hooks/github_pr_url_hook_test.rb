@@ -213,6 +213,65 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/other/proj/pull/10" ], tracked_urls
   end
 
+  test "records a PR opened by a REST API create that supplies fields and no method flag" do
+    # `gh api` sends GET until a parameter is supplied and POST from then on, so
+    # this opens a PR with no -X anywhere.
+    run_hook(
+      claude_shell_call(id: "toolu_rest", command: "gh api repos/owner/repo/pulls -f title=T -f head=feat -f base=main"),
+      claude_tool_result(id: "toolu_rest", content: '{"html_url":"https://github.com/owner/repo/pull/34"}')
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/34" ], tracked_urls
+  end
+
+  test "records a PR opened by a REST API create whose endpoint is built from a shell variable" do
+    # A retry script hoists the slug into a variable, so the repo cannot be read
+    # out of the text; `gh` resolves it against the clone, and so does the hook.
+    run_hook(
+      claude_shell_call(id: "toolu_rest", command: 'gh api "repos/$SLUG/pulls" -X POST -f title=T'),
+      claude_tool_result(id: "toolu_rest", content: "https://github.com/owner/repo/pull/35")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/35" ], tracked_urls
+  end
+
+  test "records a PR opened by a REST API create wrapped in a command substitution" do
+    # `out=$(gh api ...)` is how the outage fallback captured the URL to test it.
+    run_hook(
+      claude_shell_call(id: "toolu_rest", command: "out=$(gh api repos/owner/repo/pulls -X POST -f title=T --jq .html_url)"),
+      claude_tool_result(id: "toolu_rest", content: "https://github.com/owner/repo/pull/36")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/36" ], tracked_urls
+  end
+
+  test "records the PR of a gh pr create that follows a failed REST create against another repo" do
+    # The REST endpoint bounds the REST create, not the `gh pr create` after it:
+    # both creates count, so the URL either of them produced is recorded.
+    run_hook(
+      claude_shell_call(
+        id: "toolu_both",
+        command: "gh api repos/upstream/proj/pulls -X POST -f title=T\ngh pr create --repo fork-target/proj --head fork:b"
+      ),
+      claude_tool_result(id: "toolu_both", content: "HTTP 503\nhttps://github.com/fork-target/proj/pull/12")
+    )
+
+    assert_equal [ "https://github.com/fork-target/proj/pull/12" ], tracked_urls
+  end
+
+  test "records a same-repo PR when a REST create fails because the branch already has one" do
+    run_hook(
+      claude_shell_call(id: "toolu_rest", command: "gh api repos/owner/repo/pulls -X POST -f title=T"),
+      claude_tool_result(
+        id: "toolu_rest",
+        content: "gh: A pull request already exists for owner:feat.\nhttps://github.com/owner/repo/pull/37",
+        is_error: true
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/37" ], tracked_urls
+  end
+
   test "records a same-repo PR when gh pr create fails because the branch already has one" do
     # Re-running the open-pr flow on a branch that already has a PR: gh exits
     # non-zero and names the PR for OUR branch, which is ours to track.
@@ -345,6 +404,44 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     run_hook(
       claude_shell_call(id: "toolu_rest", command: "gh api repos/{owner}/{repo}/pulls -X POST -f title=T"),
       claude_tool_result(id: "toolu_rest", content: "https://github.com/other/proj/pull/9")
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores same-repo PRs listed by a gh api call chained with a POST on the same line" do
+    # A shell line holds several commands. Reading the line as one would let the
+    # comment POST vouch for the list beside it — #214 through a new door.
+    run_hook(
+      claude_shell_call(
+        id: "toolu_list",
+        command: "gh api repos/owner/repo/pulls --jq '.[].html_url' && gh api repos/owner/repo/issues/7/comments -X POST -f body=ack"
+      ),
+      claude_tool_result(id: "toolu_list", content: "https://github.com/owner/repo/pull/1\nhttps://github.com/owner/repo/pull/2")
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores the PR list a failed REST create falls back to reading" do
+    # `POST || list` is the retry shape: the list's output is every open PR on the
+    # repo, and only the create's own output is evidence.
+    run_hook(
+      claude_shell_call(
+        id: "toolu_retry",
+        command: "gh api repos/owner/repo/pulls -X POST -f title=T || gh api repos/owner/repo/pulls --jq '.[].html_url'"
+      ),
+      claude_tool_result(id: "toolu_retry", content: "HTTP 503\nhttps://github.com/owner/repo/pull/1\nhttps://github.com/owner/repo/pull/2", is_error: true)
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores same-repo PRs listed by a gh api call that asks for GET explicitly" do
+    # An explicit method outranks the field flag that would otherwise imply POST.
+    run_hook(
+      claude_shell_call(id: "toolu_list", command: "gh api repos/owner/repo/pulls -X GET -f state=open --jq '.[].html_url'"),
+      claude_tool_result(id: "toolu_list", content: "https://github.com/owner/repo/pull/1")
     )
 
     assert_nil tracked_urls

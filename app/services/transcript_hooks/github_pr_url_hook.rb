@@ -18,8 +18,8 @@
 #      `owner/repo` that opens a PR against `other-org/other-repo` is tracked,
 #      bounded only by the repo the command itself names — which a REST create
 #      always does, in the endpoint path.
-#   2. RE-CREATED — the URL appears in a *failed* `gh pr create` next to an
-#      "already exists" message, i.e. the PR for the branch we just tried to push.
+#   2. RE-CREATED — the URL appears in a *failed* create next to an "already
+#      exists" message, i.e. the PR for the branch we just tried to push.
 #      Weaker (the failure text is not ours), so it is held to the same-repo guard.
 #   3. CLAIMED — the agent's own prose says it opened the PR ("Opened PR: <url>").
 #      This is what catches creation paths that are not `gh pr create` — a wrapper
@@ -33,9 +33,11 @@
 #     reviewer, anything reading the repo's PR list) someone else's PR as its
 #     own — and with it that PR's comments and merge-conflict notifications
 #     (#214).
-#   - The output of `gh api repos/OWNER/REPO/pulls` with no POST method. Same
-#     endpoint as the REST create above, opposite meaning: without a method it
-#     is a *list* of the repo's open PRs, which is the #214 shape again.
+#   - The output of a `gh api repos/OWNER/REPO/pulls` that does not POST. Same
+#     endpoint as the REST create above, opposite meaning: a GET is a *list* of
+#     the repo's open PRs, which is the #214 shape again. Nor does a POST
+#     somewhere else on the line make one: creates are read per command segment,
+#     never across the whole script.
 #   - A URL in a user message. Zimmer's own trigger prompts carry PR URLs
 #     ("comment on your PR <url>"), so adopting them would let one misrouted
 #     notification bootstrap a permanent wrong association.
@@ -60,6 +62,10 @@
 # This hook is registered by default via the transcript hooks initializer.
 #
 class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
+  # A tool call's command is a whole shell script, and a create has to be read out
+  # of the one command that ran it rather than the line it shares.
+  include TranscriptHooks::ShellSegments
+
   # Regex pattern to match GitHub PR URLs
   # Captures URLs like: https://github.com/owner/repo/pull/123
   # Uses explicit character classes to prevent subdomain spoofing attacks
@@ -82,26 +88,42 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # recorded nowhere: #89's failure arriving through a creation path this hook
   # did not know about.
   #
-  # What makes it a *create* rather than a read is the method. A POST to a
-  # repo's `/pulls` collection opens a pull request; the same endpoint with no
-  # method is how `gh` *lists* a repo's PRs, which is the #214 shape — a session
-  # adopting PRs it merely read. Both halves are therefore required, and both
-  # have to sit on the same command line, so that a list call on one line cannot
-  # borrow a POST from another.
-  GH_API_PATTERN = /\bgh\s+api\b/
+  # A REST create is recognised from three things holding in ONE command segment
+  # (TranscriptHooks::ShellSegments): the segment runs `gh api`, it addresses a
+  # repo's `/pulls` collection, and it POSTs. Segment, not shell line, because
+  # `gh api repos/o/r/pulls --jq '.[]' && gh api repos/o/r/issues/1/comments -X POST`
+  # is a *list* next to an unrelated write, and reading the two together adopts
+  # every PR the list printed — #214 through a new door.
+  GH_API_PATTERN = /\Agh\s+api\b/
 
-  # The method flag, in each of the spellings `gh api` accepts: `-X POST`,
-  # `-XPOST`, `--method POST`, `--method=POST`.
-  HTTP_POST_METHOD_PATTERN = /(?:-X|--method)[=\s]*["']?POST\b/i
+  # An explicit method flag, whatever it names: `-X POST`, `-XPOST`,
+  # `--method POST`, `--method=POST` — and equally `-X GET`, which is what makes
+  # this a capture rather than a POST test. An explicit method is authoritative,
+  # so `gh api repos/o/r/pulls -X GET -f state=open` stays a list.
+  HTTP_METHOD_FLAG_PATTERN = /(?<![\w-])(?:-X|--method)[=\s]*["']?([A-Za-z]+)/
 
-  # The `repos/OWNER/REPO/pulls` collection, and nothing nested under it: a POST
-  # to `.../pulls/7/reviews` or `.../pulls/7/comments` writes *about* a pull
-  # request rather than opening one. The endpoint may be given bare or as a full
-  # `https://api.github.com/...` URL; both contain this path. `gh api` also
-  # accepts the `{owner}`/`{repo}` placeholders it fills in from the clone's
-  # remote, which is why the capture allows braces — resolving them is
-  # `rest_pr_create_repo`'s job.
-  GH_API_PULLS_ENDPOINT_PATTERN = %r{\brepos/([A-Za-z0-9_.{}-]+/[A-Za-z0-9_.{}-]+)/pulls(?![\w/])}
+  # `gh api` sends GET until a parameter is supplied and POST from then on, so a
+  # bare field flag is as much a create as an explicit method — and it is the
+  # shorter spelling an agent is likely to reach for. (The sibling hook,
+  # GithubCommentAuthorshipHook, reads `gh api` writes the same way.)
+  GH_API_FIELD_FLAG_PATTERN = /(?<![\w-])(?:-f|-F|--field|--raw-field|--input)[=\s]/
+
+  # The `repos/<slug>/pulls` collection, and nothing nested under it: a POST to
+  # `.../pulls/7/reviews` or `.../pulls/7/comments` writes *about* a pull request
+  # rather than opening one. The endpoint may be bare or a full
+  # `https://api.github.com/...` URL; both carry this path.
+  GH_API_PULLS_ENDPOINT_PATTERN = %r{\brepos/([^\s"';|&]+)/pulls(?![\w/])}
+
+  # A slug that names its repo outright. An endpoint can also carry `gh`'s own
+  # `{owner}/{repo}` placeholders or a shell variable the script expanded
+  # (`repos/$SLUG/pulls`) — both of which resolve, in practice, to the clone the
+  # command runs in, and neither of which can be read out of the text.
+  STATIC_OWNER_REPO_PATTERN = %r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z}
+
+  # Cheap precheck before a command is segmented: most shell calls in a transcript
+  # are neither kind of create, and segmenting every one of them (commands include
+  # whole heredoc bodies) to find that out is wasted work.
+  GH_CREATE_INVOCATION_PATTERN = /\bgh\s+(?:pr\s+create|api)\b/
 
   # The `--repo owner/name` (or `-R owner/name`) a `gh` command targets.
   REPO_FLAG_PATTERN = /(?:--repo|-R)[=\s]+["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/
@@ -168,9 +190,9 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # custom_metadata flag keeps this path out of the way of the hook's own
   # concurrent writes to that column.
   MISSING_PR_URL_WARNING = "[GitHub] This session's goal asks for a pull request, and no PR URL has been captured " \
-                           "for it yet. Zimmer records only a PR it can see the session open (a `gh pr create` " \
-                           "result, or the agent saying it opened one), so GitHub comment and merge-conflict " \
-                           "notifications are not running here."
+                           "for it yet. Zimmer records only a PR it can see the session open (the result of a " \
+                           "`gh pr create` or a REST create, or the agent saying it opened one), so GitHub " \
+                           "comment and merge-conflict notifications are not running here."
   MISSING_PR_URL_WARNING_MARKER = "[GitHub] This session's goal asks for a pull request"
 
   # Warn — once, in the session's own timeline — when a session whose goal is
@@ -289,11 +311,12 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # A successful create vouches for any repo; a failed one vouches only for an
   # "already exists" URL on the session's own repo.
   #
-  # When the command names its target — with `--repo`, or in the endpoint a REST
-  # create posts to — that name bounds what the result can vouch for. A command
-  # is a whole shell line — `gh pr create --repo a/b && gh pr list --repo c/d`
-  # puts both repos' URLs in one result — and without the bound the second repo's
-  # PRs would be adopted on the strength of the first repo's create.
+  # What the creates in the command name — a `--repo` flag, or the endpoint a REST
+  # create posts to — bounds what the result can vouch for. A command is a whole
+  # shell script, so one result can hold URLs its create had nothing to do with:
+  # `gh pr create --repo a/b && gh pr list --repo c/d` puts both repos' URLs in
+  # one result, and without the bound the second repo's PRs would be adopted on
+  # the strength of the first repo's create.
   #
   # For Claude the failure flag is the result's own is_error; for Codex it is
   # derived from the shell's exit code (see TranscriptHooks::CodexToolCallParser).
@@ -304,12 +327,12 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
       command = pr_create_commands[result[:id]]
       next [] if command.nil? || result[:text].blank?
 
-      target_repo = repo_named_by(command)
+      target_repos = unbounded_create?(command) ? nil : create_repos(command)
 
       pr_urls_with_context(result[:text]).filter_map do |url, preceding|
         if result[:is_error]
           url if preceding.match?(PR_ALREADY_EXISTS_PATTERN) && same_repo?(url)
-        elsif target_repo.nil? || same_repo?(url) || url_owner_repo(url) == target_repo
+        elsif target_repos.nil? || same_repo?(url) || target_repos.include?(url_owner_repo(url))
           url
         end
       end
@@ -380,57 +403,90 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # @return [Hash{String => String}] tool-call id => shell command
   def pr_create_commands
     @pr_create_commands ||= parser.shell_calls.each_with_object({}) do |call, commands|
-      next unless call[:command].match?(GH_PR_CREATE_PATTERN) || rest_pr_create_repo(call[:command])
+      next unless creates_pr?(call[:command])
 
       commands[call[:id]] = call[:command]
     end
   end
 
-  # The `owner/repo` a command targets explicitly — named by a `--repo` flag, or
-  # by the endpoint a REST create POSTs to — or nil when it targets the clone it
-  # runs in (the fork-and-upstream case, where the PR lands on a repo the command
-  # never names).
-  #
-  # A REST endpoint wins over a `--repo` flag, because the endpoint belongs to
-  # the create itself while the flag may belong to any other `gh` subcommand
-  # chained onto the same line (`gh api repos/a/b/pulls -X POST && gh pr list
-  # --repo c/d`).
-  def repo_named_by(command)
-    rest_repo = rest_pr_create_repo(command)
-    return rest_repo if rest_repo
-
-    match = command.match(REPO_FLAG_PATTERN)
-    match && match[1].downcase.delete_suffix(".git")
+  # Whether +command+ opens a pull request at all, by either route.
+  def creates_pr?(command)
+    unbounded_create?(command) || create_repos(command).any?
   end
 
-  # The `owner/repo` a REST create in +command+ opens a pull request against, or
-  # nil when the command holds no such create.
-  #
-  # A command is a whole shell script — the outage fallback that motivated this
-  # wrapped its `gh api` call in a six-attempt retry loop — so each line is
-  # considered on its own, with backslash continuations folded back into the line
-  # they belong to first. Requiring the endpoint and the POST on one line is what
-  # keeps a list call from borrowing an unrelated line's method flag.
-  #
-  # @param command [String]
-  # @return [String, nil]
-  def rest_pr_create_repo(command)
-    command.gsub(/\\\n/, " ").each_line do |line|
-      next unless line.match?(GH_API_PATTERN) && line.match?(HTTP_POST_METHOD_PATTERN)
+  # Whether any segment of +command+ opens a pull request without naming the repo
+  # it lands on. `gh pr create` from a fork clone does exactly that — the PR lands
+  # on the parent repo, which the command never mentions — so such a create keeps
+  # vouching for any repo, as it always has. A REST create is never unbounded: its
+  # endpoint names the repo.
+  def unbounded_create?(command)
+    return false unless command.match?(GH_CREATE_INVOCATION_PATTERN)
 
-      match = line.match(GH_API_PULLS_ENDPOINT_PATTERN)
-      next if match.nil?
-
-      repo = match[1].downcase.delete_suffix(".git")
-      # A `{owner}/{repo}` placeholder is `gh`'s stand-in for the clone's own
-      # remote, so that is what it resolves to. When the clone is not a GitHub
-      # repo there is nothing to resolve it to and nothing to bound the result
-      # with, so the command is not evidence at all — better than letting it
-      # vouch for every PR URL in its output.
-      return repo.include?("{") ? target_owner_repo : repo
+    segments_of(command).any? do |segment|
+      segment.match?(GH_PR_CREATE_PATTERN) && !segment.match?(REPO_FLAG_PATTERN)
     end
+  end
 
-    nil
+  # Every repo the creates in +command+ name: the `--repo` of a `gh pr create`
+  # segment, and the `/pulls` endpoint of a REST create segment. Read per segment,
+  # so a `--repo` belonging to some other subcommand on the line cannot bound a
+  # create, and a create in one segment cannot vouch for a list in another.
+  #
+  # @return [Array<String>] downcased `owner/repo`, possibly empty
+  def create_repos(command)
+    return [] unless command.match?(GH_CREATE_INVOCATION_PATTERN)
+
+    segments_of(command).flat_map do |segment|
+      if segment.match?(GH_PR_CREATE_PATTERN)
+        segment.scan(REPO_FLAG_PATTERN).flatten.map { |repo| normalize_repo(repo) }
+      elsif rest_pr_create?(segment)
+        rest_create_repos(segment)
+      else
+        []
+      end
+    end.uniq
+  end
+
+  # Whether one command segment opens a pull request through the REST API: it runs
+  # `gh api`, it addresses a repo's `/pulls` collection, and it POSTs. An explicit
+  # method flag is authoritative — `-X GET` on that endpoint is a list, fields or
+  # no fields — and without one, a field flag is what turns `gh api` into a POST.
+  def rest_pr_create?(segment)
+    return false unless segment.match?(GH_API_PATTERN)
+    return false unless segment.match?(GH_API_PULLS_ENDPOINT_PATTERN)
+
+    method = segment[HTTP_METHOD_FLAG_PATTERN, 1]
+    return method.casecmp?("POST") if method
+
+    segment.match?(GH_API_FIELD_FLAG_PATTERN)
+  end
+
+  # The repos a REST create segment names. Every `/pulls` endpoint in the segment
+  # counts, because the first one is not reliably the one being posted to (a
+  # `-f body="see repos/c/d/pulls"` puts another repo's path in front of it).
+  #
+  # A slug the text cannot resolve — `gh`'s `{owner}/{repo}` placeholders, or a
+  # shell variable — is `gh`'s stand-in for the clone's own remote, so that is what
+  # it resolves to. When the clone is not a GitHub repo there is nothing to resolve
+  # it to and nothing to bound the result with; the segment then names no repo,
+  # which leaves it as no evidence at all rather than as evidence for every URL in
+  # its output.
+  def rest_create_repos(segment)
+    segment.scan(GH_API_PULLS_ENDPOINT_PATTERN).flatten.filter_map do |slug|
+      slug.match?(STATIC_OWNER_REPO_PATTERN) ? normalize_repo(slug) : target_owner_repo
+    end.uniq
+  end
+
+  # The commands inside one shell command, memoized: a transcript is rescanned on
+  # every broadcast, and each of `creates_pr?`, `unbounded_create?` and
+  # `create_repos` asks for the same split.
+  def segments_of(command)
+    @segments_of ||= {}
+    @segments_of[command] ||= shell_segments(command)
+  end
+
+  def normalize_repo(repo)
+    repo.downcase.delete_suffix(".git")
   end
 
   # The `owner/repo` a PR URL belongs to.
