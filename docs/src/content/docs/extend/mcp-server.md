@@ -207,6 +207,13 @@ frozen. An agent session only gets these if its connection was given the `health
 curated `self_session` set does not include it. See
 [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
 
+`get_system_health` also names the backlogged queues and job classes whenever ready work is waiting,
+matching what the `Queue backlog critical` Slack page carries. This is the parity that matters for
+triage: the GoodJob dashboard at `/jobs` needs a browser session on the production host, which an
+agent session does not have, so the split has to reach the agent-facing surface too. It is silent
+when nothing is waiting. See
+[The page says which queue, and of what](/operate/background-jobs/#the-page-says-which-queue-and-of-what).
+
 The action tools are verb-multiplexers: `action_session` takes an `action` enum (`follow_up`,
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
 `create` / `update` / `delete` / `toggle` / `invoke`, and so on. `tools/list` carries the full schema for each —
