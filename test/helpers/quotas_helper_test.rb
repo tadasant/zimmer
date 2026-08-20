@@ -378,7 +378,7 @@ class QuotasHelperTest < ActionView::TestCase
 
     assert_match "Next 7-day reset", line
     assert_match(/in 1d 23h|in 2d/, line)
-    assert_match "3 accounts whose 7-day window is spent", line
+    assert_match "the soonest recorded among 3 accounts whose 7-day window is spent", line
   end
 
   test "pool_weekly_reset_line says nothing is waiting when no week is spent" do
@@ -402,6 +402,46 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match "Aug 20, 06:58 UTC", tag
     assert_match 'datetime="2026-08-20T06:58:00Z"', tag
     assert_match 'title="Aug 20, 06:58 UTC"', tag
+  end
+
+  # The 5-hour note points at the 7-day one, so it may only do that when there is
+  # a 7-day time to point at.
+  test "pool_five_hour_reset_line does not promise a 7-day reset that was never recorded" do
+    line = pool_five_hour_reset_line(
+      measure(next_five_hour_reset: nil, next_weekly_reset: nil, read_count: 2, weekly_spent_count: 2)
+    )
+
+    assert_match "No 5-hour reset frees capacity", line
+    assert_match "No 7-day reset time is recorded either", line
+    assert_no_match(/blocked until the 7-day reset below/, line)
+  end
+
+  test "pool_five_hour_reset_line points at the 7-day reset when there is one" do
+    line = pool_five_hour_reset_line(
+      measure(next_five_hour_reset: nil, next_weekly_reset: 2.days.from_now,
+              read_count: 2, weekly_spent_count: 2)
+    )
+
+    assert_match "blocked until the 7-day reset below", line
+  end
+
+  # Nothing read means nothing is known, which is not the same as everything
+  # being spent — the red note would say the pool is blocked on no evidence.
+  test "pool_five_hour_reset_line does not call an unread pool blocked" do
+    line = pool_five_hour_reset_line(measure(next_five_hour_reset: nil, read_count: 0, weekly_spent_count: 0))
+
+    assert_match "No 5-hour reset pending", line
+    assert_no_match(/blocked/, line)
+  end
+
+  # The measure is taken before the view renders, so a reset can cross now in
+  # between. time_until_reset answers that with "Window reset", which would read
+  # as "(in Window reset)" inside the sentence.
+  test "the countdown is dropped for a reset that passed between measure and render" do
+    line = pool_five_hour_reset_line(measure(next_five_hour_reset: 1.second.ago))
+
+    assert_match "Next usable 5-hour reset", line
+    assert_no_match(/\(in /, line)
   end
 
   private

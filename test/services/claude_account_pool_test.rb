@@ -214,4 +214,36 @@ class ClaudeAccountPoolTest < ActiveSupport::TestCase
     assert_equal 1, measure.weekly_spent_count
     assert_nil measure.next_weekly_reset
   end
+
+  # The count and the time describe different sets when a spent window carries no
+  # reset timestamp: three accounts are spent, two of them can say when.
+  test "the next 7-day reset is the soonest of the spent accounts that recorded one" do
+    seed(account("timed@example.com"), five_hour: 0.20, weekly: 1.0, reset_7d: 3.days.from_now)
+    seed(account("later@example.com"), five_hour: 0.20, weekly: 1.0, reset_7d: 5.days.from_now)
+    blind = seed(account("blind@example.com"), five_hour: 0.20, weekly: nil, reset_7d: nil)
+    blind.update!(status_7d: "rejected")
+
+    measure = ClaudeAccountPool.measure
+
+    assert_equal 3, measure.weekly_spent_count
+    assert_in_delta 3.days.from_now.to_f, measure.next_weekly_reset.to_f, 5
+  end
+
+  test "an account with no recorded 5-hour reset contributes no 5-hour reset time" do
+    seed(account("no-time@example.com"), five_hour: 0.90, weekly: 0.30, reset_5h: nil)
+
+    measure = ClaudeAccountPool.measure
+
+    assert_nil measure.next_five_hour_reset
+    assert_equal 1, measure.weekly_available_count
+  end
+
+  test "an empty pool reports no reset times and nothing available" do
+    measure = ClaudeAccountPool.measure
+
+    assert_nil measure.next_five_hour_reset
+    assert_nil measure.next_weekly_reset
+    assert_equal 0, measure.weekly_available_count
+    assert_not measure.any_readings?
+  end
 end

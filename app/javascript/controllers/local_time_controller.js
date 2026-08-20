@@ -7,6 +7,10 @@ import { Controller } from "@hotwired/stimulus"
 // — which does know — has it. If this never runs the note is still correct, just
 // in UTC. The title attribute keeps the UTC reading available on hover either way.
 //
+// The rewrite names its zone too ("Aug 19, 9:12 PM CDT"). A bare wall-clock time
+// beside a UTC one elsewhere on the page is ambiguous exactly where it matters,
+// and the title attribute is hover-only — no help on a phone.
+//
 // Usage: <time datetime="2026-08-20T02:12:00Z" data-controller="local-time">
 export default class extends Controller {
   connect() {
@@ -20,7 +24,8 @@ export default class extends Controller {
       month: "short",
       day: "numeric",
       hour: "numeric",
-      minute: "2-digit"
+      minute: "2-digit",
+      timeZoneName: "short"
     })
   }
 }
