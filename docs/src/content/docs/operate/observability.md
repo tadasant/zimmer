@@ -95,7 +95,7 @@ actually happened to the work.**
 | --- | --- | --- |
 | Slack threw a fetch away before its cursor moved, so the deferred poll re-reads it | WARN | the per-channel / per-thread / per-DM rescues, and each deferral |
 | The retry budget is spent — five deferrals, ~15 minutes of unavailability | ERROR | the give-up line, alongside its `AlertService` alert |
-| The failure loses work the deferral cannot bring back | ERROR | `#process_message`, whose caller advances the cursor past that message either way, and `#fetch_recent_history`, which degrades to an empty slice its callers finish the sweep trusting |
+| The failure loses work the deferral cannot bring back | ERROR | `#process_message`, whose caller advances the cursor past that message either way |
 | Not transient at all — a renamed channel, a bad cursor, a bug in the job | ERROR | every non-`TransientError` in those same rescues |
 
 The third row is why this is a property of the **call site** rather than of the exception. The
