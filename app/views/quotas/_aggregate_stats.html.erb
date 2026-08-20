@@ -66,6 +66,10 @@
                   <%= weekly_spent_count > 0 ? "#{pluralize(weekly_spent_count, 'account')} counted that way now." : "None right now." %>
                 </p>
               <% end %>
+              <%# "We're blocked until when?" for this window. Measured over the
+                  accounts a 5-hour reset can actually hand capacity back to —
+                  see ClaudeAccountPool. %>
+              <%= pool_five_hour_reset_line(pool) %>
             </div>
 
             <div>
@@ -80,6 +84,7 @@
               <% if max_7d %>
                 <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_7d) %></p>
               <% end %>
+              <%= pool_weekly_reset_line(pool) %>
             </div>
           </div>
         <% else %>
