@@ -235,11 +235,11 @@ class TokenUsageIngestionService
     end
   end
 
-  # HeadlessInferenceService has two call sites and the transcript does not say
-  # which one it was. Both run Haiku-class one-shots; distinguishing them needs
-  # instrumentation at the call site, which is a separate change. Until then they
-  # share a source rather than being guessed at.
-  def headless_source(_path) = "session_title"
+  # HeadlessInferenceService has two call sites — SessionTitleJob and the push
+  # notification summary — and the transcript does not say which one ran. They
+  # share one honest label rather than being guessed at; splitting them needs
+  # instrumentation at the call site, which is a separate change.
+  def headless_source(_path) = "headless_inference"
 
   # `.../-artifacts-agent-roots-<root>` is an agent root; a clone with no
   # subdirectory is the repository itself.
@@ -255,9 +255,17 @@ class TokenUsageIngestionService
 
   def session_row(record, attribution, path)
     record.merge(
-      session_id: attribution[:session_id],
+      # The LINE's own session id wins over the file's. Forking copies the source
+      # session's transcript verbatim into the fork's clone directory under a new
+      # filename (ForkSessionService#write_transcript_file), and those copied lines
+      # keep the ORIGINAL `requestId` and `sessionId`. Attributing by file would
+      # credit the parent's whole pre-fork spend to the fork — and then, because
+      # `request_id` is unique and first writer wins, silently drop those same rows
+      # when the parent's own file is scanned. Keying on the line says which runtime
+      # session actually made the call, which is the thing we mean.
+      session_id: session_id_for(record[:runtime_session_id]) || attribution[:session_id],
       agent_root: attribution[:agent_root],
-      transcript_path: path,
+      transcript_path: real_path(path),
       created_at: Time.current,
       updated_at: Time.current
     )
@@ -266,7 +274,7 @@ class TokenUsageIngestionService
   def adhoc_row(record, attribution, path)
     record.except(:runtime_session_id, :subagent).merge(
       source: attribution[:source],
-      transcript_path: path,
+      transcript_path: real_path(path),
       created_at: Time.current,
       updated_at: Time.current
     )
@@ -292,8 +300,15 @@ class TokenUsageIngestionService
     # spend rather than lines re-read. On a steady-state run most of a file is
     # already stored and the honest answer is usually zero.
     klass.insert_all(rows, unique_by: :request_id, returning: [ :id ]).rows.size
-  rescue ActiveRecord::ActiveRecordError => e
-    @logger.error("[TokenUsageIngestion] #{klass.name} insert failed: #{e.message}")
-    0
+  end
+
+  # The backfill reads through a directory of symlinks so it can control how much
+  # the scanner sees at a time, and that scratch directory is gone by the time
+  # anyone reads the row. Store where the transcript actually lives — first writer
+  # wins on `request_id`, so a row written with a dead pointer never gets corrected.
+  def real_path(path)
+    File.realpath(path)
+  rescue SystemCallError
+    path
   end
 end
