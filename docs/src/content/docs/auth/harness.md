@@ -113,8 +113,10 @@ sequenceDiagram
             V-->>P: new access + NEW refresh token
             P->>DB: persist BOTH atomically
             P->>FS: write to disk IF this account is current
-        else 401 / invalid_grant
+        else the credential is dead<br/>(401, 404, expired, revoked)
             P->>DB: status = needs_reauth
+        else the VALUE is stale<br/>(invalid_grant "not found or invalid",<br/>refresh_token_reused)
+            P->>DB: count a strike; condemn only<br/>on the third, spread over 15+ min
         else transient
             P->>C: re-enqueue with backoff (2/4/8 min, max 3)
         end
@@ -265,12 +267,46 @@ in that one method rather than at each of them:
    failure the method re-syncs from disk and compares: if the token of record has moved on from the
    one it presented, this was a lost race, and the account stays `active` instead of going
    `needs_reauth`.
+3. **Strikes, for the failures that check cannot see.** The disk holds one account's credentials at a
+   time, so the lost-race check has evidence only for the account that owns them — for the other five
+   in the pool it answers "not a race" because it has nothing to compare, not because nothing raced.
+   Condemning on that answer condemns on nothing, so it no longer does: see below.
 
-That second one is what makes re-authentication stick. Before it, a re-authed account rejoined the
-pool and the next stampede condemned it again within minutes.
-
-Both are runtime-agnostic — the Codex path has the same single-use semantics and gets the same two
+Both are runtime-agnostic — the Codex path has the same single-use semantics and gets the same
 protections. API-key Codex accounts skip the lock entirely: nothing to rotate, no race to lose.
+
+### A rejected value is not a dead credential
+
+An `invalid_grant` means one of two unrelated things, and the HTTP status cannot tell them apart. The
+**description** can:
+
+| Vendor says | Means | Zimmer does |
+| --- | --- | --- |
+| `invalid_grant` + `Refresh token expired` (or *revoked*), `401`, `404`, `invalid_client`, `unauthorized_client` | the credential is finished | mark `needs_reauth` immediately |
+| `invalid_grant` + `Refresh token not found or invalid`, or OpenAI's `refresh_token_reused` | the **value** we sent is not the current one; the chain behind it is usually alive | count a strike, leave the account `active` |
+| anything else (5xx, an unparseable body) | the refresh path may be broken | log at `.error`, change nothing |
+
+Three strikes condemn the account, and only if they are spread out: a second strike within 15 minutes
+of the last is the sweep's own retry ladder (2 + 4 + 8 minutes) hitting the same spent value, so it
+counts once. Strikes older than six hours are forgotten, and any new refresh token — from a
+successful refresh, a filesystem sync, or a human re-authenticating on `/quotas` — resets the count,
+because a new token is a new chain. They live on `claude_accounts.stale_refresh_failures` and
+`last_stale_refresh_failure_at`.
+
+A genuinely dead credential still reaches a human, roughly half an hour later than it used to. A
+healthy account that lost a race no longer reaches one at all — which is the whole point, because
+that was 14 of the 15 accounts condemned over an eleven-day window in production
+([#530](https://github.com/tadasant/zimmer/issues/530)).
+
+### Never lose a token you just minted
+
+The vendor spends the presented token the moment it answers, so between the 200 and the commit, the
+row holds the **only** copy of the credential chain. Persisting it is therefore the step that must not
+fail — and the filesystem write that follows is the step that can (a credential-store lock timeout, a
+full disk). It used to run inside the same transaction, where a raise would roll the new pair back and
+orphan the chain: an account whose stored token is spent forever, which every later refresh reads as
+`invalid_grant` and which no recovery probe can revive. It is now rescued and logged. Disk gets
+reconciled on the next sweep; a lost refresh token never does.
 
 The lock is re-entrant with the outer `account.with_lock` in
 `RuntimeAuthProvider#recover_needs_reauth` and in the sweep, so nesting is safe.

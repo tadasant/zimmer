@@ -756,20 +756,36 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert_equal secondary.id, event.rotated_to_id
   end
 
-  # permanent_refresh_failure? tests
+  # Refresh-failure classification tests
 
-  test "refresh_token! marks needs_reauth on 400 with standard OAuth error format" do
+  test "refresh_token! marks needs_reauth on 400 invalid_grant that says the credential expired" do
     account = claude_accounts(:expired_token)
 
     failed_response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
     failed_response.stubs(:code).returns("400")
-    failed_response.stubs(:body).returns({ error: "invalid_grant" }.to_json)
+    failed_response.stubs(:body).returns({
+      error: "invalid_grant", error_description: "Refresh token expired"
+    }.to_json)
 
     Net::HTTP.any_instance.stubs(:request).returns(failed_response)
     assert_not account.refresh_token!
 
     account.reload
     assert account.needs_reauth?
+  end
+
+  test "refresh_token! marks needs_reauth on 400 invalid_client" do
+    account = claude_accounts(:expired_token)
+
+    failed_response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    failed_response.stubs(:code).returns("400")
+    failed_response.stubs(:body).returns({ error: "invalid_client" }.to_json)
+
+    Net::HTTP.any_instance.stubs(:request).returns(failed_response)
+    assert_not account.refresh_token!
+
+    account.reload
+    assert account.needs_reauth?, "A verdict on the client is not something retrying can change"
   end
 
   test "refresh_token! marks needs_reauth on 400 with Anthropic nested error format" do
@@ -892,19 +908,202 @@ class ClaudeAccountTest < ActiveSupport::TestCase
 
   # The guard must not become a blanket amnesty: a genuinely dead credential is
   # still dead, and the pool still needs it marked so a human is asked to fix it.
-  test "refresh_token! still marks needs_reauth when the token did not move" do
+  test "refresh_token! still marks needs_reauth when the token did not move and the credential is expired" do
     account = claude_accounts(:primary)
 
     invalid_grant = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
     invalid_grant.stubs(:code).returns("400")
-    invalid_grant.stubs(:body).returns({ error: "invalid_grant" }.to_json)
+    invalid_grant.stubs(:body).returns({
+      error: "invalid_grant", error_description: "Refresh token expired"
+    }.to_json)
     Net::HTTP.any_instance.stubs(:request).returns(invalid_grant)
     account.stubs(:sync_tokens_from_filesystem!)
 
     assert_not account.refresh_token!
 
     assert account.reload.needs_reauth?,
-      "No concurrent rotation happened, so invalid_grant means what it says"
+      "No concurrent rotation happened and the credential is aged out, so this is a dead credential"
+  end
+
+  # ===========================================================================
+  # A stale token value is not a dead credential (#530)
+  #
+  # lost_refresh_race? can only see a rotation that landed on the shared
+  # credentials file, and that file holds one account's tokens at a time. For
+  # every account that is NOT the current credentials owner the check therefore
+  # has no evidence at all, answers "not a race", and used to hand the caller a
+  # licence to condemn. Production bore that out: over eleven days, 14 of the 15
+  # accounts marked needs_reauth carried "Refresh token not found or invalid" —
+  # a spent value — and exactly one carried "Refresh token expired".
+  # ===========================================================================
+
+  test "refresh_token! does not condemn a non-serving account whose token value is merely stale" do
+    with_claude_fs do
+      # The shared credentials belong to somebody else, which is the normal state
+      # for five of the six accounts in the pool. sync_tokens_from_filesystem! is
+      # a documented no-op here, so the race check has nothing to compare.
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      presented = account.claude_refresh_token
+      Net::HTTP.any_instance.stubs(:request).returns(stale_invalid_grant)
+
+      assert_not account.refresh_token!, "The refresh itself did fail"
+
+      account.reload
+      assert_not account.needs_reauth?,
+        "Nothing in this response proves the credential is dead, and the race check had no evidence either way"
+      assert account.active?
+      assert_equal presented, account.claude_refresh_token, "The no-op sync must not have grafted the owner's token on"
+      assert_equal 1, account.stale_refresh_failures
+    end
+  end
+
+  test "refresh_token! condemns a non-serving account once the stale rejections form a pattern" do
+    with_claude_fs do
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      Net::HTTP.any_instance.stubs(:request).returns(stale_invalid_grant)
+
+      travel_to Time.current do
+        assert_not account.refresh_token!
+        assert_not account.reload.needs_reauth?
+      end
+
+      travel_to 20.minutes.from_now do
+        assert_not account.refresh_token!
+        assert_not account.reload.needs_reauth?, "Two rejections are a pattern of two, which is not yet a pattern"
+        assert_equal 2, account.stale_refresh_failures
+      end
+
+      travel_to 40.minutes.from_now do
+        assert_not account.refresh_token!
+        assert account.reload.needs_reauth?,
+          "A value rejected three times over three quarters of an hour is no longer explained by a live chain"
+      end
+    end
+  end
+
+  test "refresh_token! counts one retry burst as a single stale strike" do
+    with_claude_fs do
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      Net::HTTP.any_instance.stubs(:request).returns(stale_invalid_grant)
+
+      # The sweep retries a non-permanent failure three times with backoff. Four
+      # attempts at one spent value are one piece of evidence, not four.
+      travel_to Time.current do
+        4.times { assert_not account.refresh_token! }
+      end
+
+      account.reload
+      assert_not account.needs_reauth?
+      assert_equal 1, account.stale_refresh_failures
+    end
+  end
+
+  test "refresh_token! forgets stale strikes older than the window" do
+    with_claude_fs do
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      account.update_columns(stale_refresh_failures: 2, last_stale_refresh_failure_at: 7.hours.ago)
+      Net::HTTP.any_instance.stubs(:request).returns(stale_invalid_grant)
+
+      assert_not account.refresh_token!
+
+      account.reload
+      assert_not account.needs_reauth?, "Two strikes from yesterday are two unrelated races, not a failing credential"
+      assert_equal 1, account.stale_refresh_failures
+    end
+  end
+
+  test "refresh_token! condemns a non-serving account immediately when the credential has expired" do
+    with_claude_fs do
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      expired = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+      expired.stubs(:code).returns("400")
+      expired.stubs(:body).returns({ error: "invalid_grant", error_description: "Refresh token expired" }.to_json)
+      Net::HTTP.any_instance.stubs(:request).returns(expired)
+
+      assert_not account.refresh_token!
+      assert account.reload.needs_reauth?, "Expiry is the one description that does prove the credential is finished"
+    end
+  end
+
+  test "a successful refresh clears the stale strikes behind it" do
+    account = claude_accounts(:primary)
+    account.update_columns(stale_refresh_failures: 2, last_stale_refresh_failure_at: 5.minutes.ago)
+    account.stubs(:sync_tokens_from_filesystem!)
+    account.stubs(:is_current?).returns(false)
+
+    ok = Net::HTTPOK.new("1.1", "200", "OK")
+    ok.stubs(:code).returns("200")
+    ok.stubs(:body).returns({ access_token: "fresh", refresh_token: "fresh-refresh", expires_in: 3600 }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(ok)
+
+    assert account.refresh_token!
+
+    account.reload
+    assert_equal 0, account.stale_refresh_failures
+    assert_nil account.last_stale_refresh_failure_at
+  end
+
+  test "adopting a different refresh token clears the stale strikes" do
+    account = claude_accounts(:primary)
+    account.update_columns(stale_refresh_failures: 2, last_stale_refresh_failure_at: 5.minutes.ago)
+
+    # What a human re-authenticating through /quotas does, and what a filesystem
+    # sync does. Neither goes through the refresh path, and both start a new chain.
+    reauthed = account.oauth_config.deep_dup
+    reauthed["credentials_json"]["claudeAiOauth"]["refreshToken"] = "token-from-a-fresh-login"
+    account.update!(oauth_config: reauthed)
+
+    assert_equal 0, account.reload.stale_refresh_failures
+    assert_nil account.last_stale_refresh_failure_at
+  end
+
+  # The other half of the staleness story: a token Zimmer minted but failed to
+  # keep. Anthropic spends the presented token the moment it answers, so if the
+  # new pair is rolled back the account's whole chain is orphaned — permanently
+  # stale, "not found or invalid" forever, and unrecoverable by any probe.
+  test "refresh_token! keeps the new token pair even when the filesystem write fails" do
+    account = claude_accounts(:primary)
+    account.stubs(:sync_tokens_from_filesystem!)
+    account.stubs(:is_current?).returns(true)
+    account.stubs(:write_credentials_to_filesystem!).raises(Errno::EACCES.new("credentials lock"))
+
+    ok = Net::HTTPOK.new("1.1", "200", "OK")
+    ok.stubs(:code).returns("200")
+    ok.stubs(:body).returns({ access_token: "fresh", refresh_token: "the-only-live-token", expires_in: 3600 }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(ok)
+
+    assert account.refresh_token!, "The refresh succeeded; a disk problem afterwards does not unsucceed it"
+    assert_equal "the-only-live-token", account.reload.claude_refresh_token
+  end
+
+  # Tadas's own hypothesis about why one account flaps: his Codex account carries
+  # the same email as his Claude Code one. The shared credentials-owner marker
+  # records an email and nothing else, so the tie is real — the runtime check is
+  # what breaks it.
+  test "a Codex account never owns the shared Claude credentials, even on an email tie" do
+    with_claude_fs do
+      claude = claude_accounts(:primary)
+      codex = ClaudeAccount.create!(email: claude.email, runtime: CodexAuthProvider::RUNTIME,
+        oauth_config: codex_oauth_config(last_refresh: 1.hour.ago.utc.iso8601), priority: 9)
+      write_shared_claude_credentials(owner: claude.email, refresh_token: "claude-only-token")
+
+      codex.send(:sync_tokens_from_filesystem!)
+
+      assert_nil codex.reload.oauth_config["credentials_json"],
+        "Claude's credentials file must not be grafted onto a Codex row that shares its email"
+      assert_not codex.send(:filesystem_credentials_owned_by_self?)
+      assert claude.send(:filesystem_credentials_owned_by_self?)
+    end
   end
 
   # Mocha replaces with_lock and never yields, so the whole body is dead — which
@@ -996,12 +1195,14 @@ class ClaudeAccountTest < ActiveSupport::TestCase
   test "refresh_token! permanent failure logs at .warn, not .error" do
     account = claude_accounts(:expired_token)
 
-    # 400 invalid_grant is a known-permanent failure: the account is gracefully
-    # marked needs_reauth and rotated out, so this must NOT trip the production
-    # ERROR alert. It logs a single .warn instead.
+    # An expired refresh token is a known-permanent failure: the account is
+    # gracefully marked needs_reauth and rotated out, so this must NOT trip the
+    # production ERROR alert. It logs a single .warn instead.
     failed_response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
     failed_response.stubs(:code).returns("400")
-    failed_response.stubs(:body).returns({ error: "invalid_grant" }.to_json)
+    failed_response.stubs(:body).returns({
+      error: "invalid_grant", error_description: "Refresh token expired"
+    }.to_json)
     Net::HTTP.any_instance.stubs(:request).returns(failed_response)
 
     Rails.logger.stubs(:info)
@@ -1333,7 +1534,21 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert account.reload.needs_reauth?
   end
 
-  test "codex refresh_token! marks needs_reauth on refresh_token_reused" do
+  test "codex refresh_token! marks needs_reauth on refresh_token_expired" do
+    account = claude_accounts(:codex_primary)
+
+    response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    response.stubs(:code).returns("400")
+    response.stubs(:body).returns({ error: { code: "refresh_token_expired" } }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(response)
+
+    assert_not account.refresh_token!
+    assert account.reload.needs_reauth?
+  end
+
+  # refresh_token_reused says another holder of the same chain got there first.
+  # That is a statement about the value, not about the credential.
+  test "codex refresh_token! does not condemn on the first refresh_token_reused" do
     account = claude_accounts(:codex_primary)
 
     response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
@@ -1342,7 +1557,8 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     Net::HTTP.any_instance.stubs(:request).returns(response)
 
     assert_not account.refresh_token!
-    assert account.reload.needs_reauth?
+    assert_not account.reload.needs_reauth?
+    assert_equal 1, account.stale_refresh_failures
   end
 
   test "codex refresh_token! treats a 503 as transient and does not mark needs_reauth" do
@@ -1597,6 +1813,52 @@ class ClaudeAccountTest < ActiveSupport::TestCase
         "last_refresh" => last_refresh
       }
     }
+  end
+
+  # A 400 that rejects the VALUE we presented without saying anything about the
+  # credential behind it — the response 14 of the 15 production condemnations
+  # carried. See https://github.com/tadasant/zimmer/issues/530.
+  def stale_invalid_grant
+    response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    response.stubs(:code).returns("400")
+    response.stubs(:body).returns({
+      error: "invalid_grant", error_description: "Refresh token not found or invalid"
+    }.to_json)
+    response
+  end
+
+  # Redirects ~/.claude/.credentials.json (and the owner marker beside it) to a
+  # temp dir for the duration of the block, so filesystem reads never touch the
+  # real home directory.
+  def with_claude_fs
+    tmpdir = Dir.mktmpdir
+    original_cred_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+    original_json_path = ClaudeAuthProvider::CLAUDE_JSON_PATH
+    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(tmpdir, ".credentials.json"))
+    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, File.join(tmpdir, "claude.json"))
+    yield tmpdir
+  ensure
+    FileUtils.rm_rf(tmpdir)
+    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, original_cred_path)
+    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, original_json_path)
+  end
+
+  # Put one account's credentials on the shared filesystem and stamp the marker
+  # to match — the state every account in the pool but one is looking at.
+  def write_shared_claude_credentials(owner:, refresh_token:)
+    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate("oauthAccount" => { "emailAddress" => owner }))
+    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(
+      "claudeAiOauth" => {
+        "accessToken" => "access-for-#{refresh_token}",
+        "refreshToken" => refresh_token,
+        "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
+      }
+    ))
+    ClaudeAccount.write_credentials_owner_marker!(owner)
   end
 
   # Redirects ~/.codex/auth.json to a temp dir for the duration of the block so
