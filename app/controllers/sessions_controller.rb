@@ -803,6 +803,7 @@ class SessionsController < ApplicationController
     # value, and the failed-save case would fall through to an implicit render.
     result = with_db_retry do
       @session.archive_actor = "a user in the web UI"
+      @session.archive_forced = ActiveModel::Type::Boolean.new.cast(params[:force])
       @session.archive! if @session.may_archive?
       :archived
     end

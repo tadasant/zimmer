@@ -174,6 +174,11 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       goal: message.goal,
       position: message.position,
       status: message.status,
+      # Who wrote it. `caller` for anything queued on someone's behalf; an
+      # `automated_*` origin for a notice Zimmer addressed to the session
+      # itself. It is what explains an archive that retired a message without
+      # paging — see EnqueuedMessage::ARCHIVE_SATISFIED_ORIGINS.
+      origin: message.origin,
       created_at: message.created_at.iso8601,
       updated_at: message.updated_at.iso8601
     }

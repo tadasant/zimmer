@@ -13,10 +13,14 @@
 # archive that discards it is compliance rather than loss, and paging a human
 # about it is noise.
 #
-# `caller` is the default and covers every pre-existing row: the three create
-# surfaces (the web queue form, the REST endpoint, MCP
-# `manage_enqueued_messages`) all write on someone's behalf, and only
-# AutomatedSessionMessage writes a notice of Zimmer's own.
+# `caller` is the default and covers every pre-existing row. It is the wider
+# bucket of the two and deliberately so: the queue is written from eight
+# places — the web form, two REST endpoints, MCP `manage_enqueued_messages`
+# and `action_session`, a trigger's follow-up, the comment poller — and all of
+# them are relaying something somebody else said, which is exactly the case the
+# strand alert exists for. Only AutomatedSessionMessage writes a notice Zimmer
+# addressed to a session on its own behalf, and only the merged-PR one of those
+# is a notice an archive answers.
 class AddOriginToEnqueuedMessages < ActiveRecord::Migration[8.0]
   def up
     add_column :enqueued_messages, :origin, :string, null: false, default: "caller"
@@ -25,8 +29,8 @@ class AddOriginToEnqueuedMessages < ActiveRecord::Migration[8.0]
     # only here, and only because these two templates have been stable text
     # since they were written — from now on the column carries the answer and
     # nothing has to read the body to find it.
-    backfill("automated_pr_merged", ", associated with this session, has been merged.")
-    backfill("automated_merge_conflict", "There are merge conflicts on your PR (")
+    backfill("automated_pr_merged", "PR %, associated with this session, has been merged. This is Zimmer reporting a state change%")
+    backfill("automated_merge_conflict", "There are merge conflicts on your PR (%")
   end
 
   def down
@@ -35,12 +39,18 @@ class AddOriginToEnqueuedMessages < ActiveRecord::Migration[8.0]
 
   private
 
-  def backfill(origin, marker)
+  # Anchored at the start of the body and matched across a long run of the
+  # template, not on a short phrase anywhere in it. A caller could in principle
+  # paste text that satisfies a loose match, and mis-stamping a caller's message
+  # would exempt it from the strand alert permanently. Bounded to the two
+  # statuses any reader consults, so a `sent`/`processing` row in flight is left
+  # alone.
+  def backfill(origin, body_pattern)
     execute(<<~SQL.squish)
       UPDATE enqueued_messages
       SET origin = #{connection.quote(origin)}, updated_at = NOW()
-      WHERE content LIKE #{connection.quote("%#{marker}%")}
-        AND content LIKE '[AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]%'
+      WHERE status IN ('pending', 'undelivered')
+        AND content LIKE #{connection.quote("[AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]%#{body_pattern}")}
     SQL
   end
 end

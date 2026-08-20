@@ -10,9 +10,11 @@ class EnqueuedMessage < ApplicationRecord
 
   # Who wrote the message.
   #
-  # `caller` is everything queued on someone's behalf — the web queue form, the
-  # REST endpoint, MCP `manage_enqueued_messages`, a trigger's payload. The
-  # `automated_*` origins are Zimmer's own notices, written by
+  # `caller` is everything queued on someone's behalf, and that is most of the
+  # queue: the web form, the two REST endpoints, MCP `manage_enqueued_messages`
+  # and `action_session`, a trigger's follow-up, the GitHub comment poller. All
+  # of them relay something somebody else said. The `automated_*` origins are
+  # the notices Zimmer addresses to a session on its own behalf, written by
   # AutomatedSessionMessage when a poller sees GitHub move.
   #
   # The distinction is not bookkeeping. It is what lets the archive path tell a
