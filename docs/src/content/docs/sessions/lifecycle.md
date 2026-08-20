@@ -491,7 +491,8 @@ So `archive` moves them to `undelivered`, a fourth, terminal status alongside
 
 - An alert fires, deduped per session. Unlike the unresolved-PR clause this *is* an anomaly: a
   message was accepted and never delivered, and the only reason to find that out from a user
-  noticing is that nothing else said it.
+  noticing is that nothing else said it — with [one exemption](#the-pr-merged-notice-does-not-page),
+  for the message that has no such user.
 
 The row itself is kept, not destroyed — its content is the thing the sender was promised delivery
 of — and the session page lists it, marked as never delivered. That listing sits outside the
@@ -530,6 +531,39 @@ is choosing to discard it. It is named last in the error and hedged in its own s
 because it exists for the exception rather than the rule. Forcing does not make the discard
 invisible: the messages are still retired to `undelivered`, the archive line still names them, and
 the alert still fires — so what was thrown away stays readable afterwards.
+
+#### The PR-merged notice does not page
+
+Every queued message records who wrote it, in `enqueued_messages.origin`: `caller` for anything
+queued on someone's behalf — the web queue form, the REST endpoint, MCP
+`manage_enqueued_messages`, a trigger's payload — and an `automated_*` origin for the notices
+Zimmer writes itself when a poller sees GitHub move.
+
+One of those origins, `automated_pr_merged`, is **exempt from the alert**. That notice says a
+single thing: the PR merged, so archive if nothing is left in this session's scope. A session
+that archives has done what it asks. There is no third party who was promised the delivery — the
+PR poller marks the PR notified when it queues the row, and nobody but the session can read it —
+so there is nobody to find out from, which is the entire premise of the alert.
+
+Production session 6377 is the case. Its PR merged while it was mid-turn, so the notice queued
+rather than being delivered; the session later woke, judged its work finished, and archived. The
+guard refused the first archive and showed it the notice, it read it and re-called with `force`,
+and Zimmer paged a human about discarding a message it had written to itself telling it to do
+exactly what it had just done.
+
+Three things this exemption is *not*:
+
+- **Not a hole in the guard.** `Sessions::ArchiveGuard` still refuses over a PR-merged notice, and
+  that refusal is load-bearing: it is what puts the message in front of an agent that has not seen
+  it, so the agent can act on the notice's *other* branch — "you were waiting on this merge to
+  keep going" — instead of archiving past it. Session 6377's agent read it and chose correctly.
+  Only the page is dropped.
+- **Not silence.** The row still retires to `undelivered` and the archive line still names it.
+- **Not "automated messages don't page".** `automated_merge_conflict` keeps alerting, and the
+  contrast is the point: an unresolved merge conflict is still true after the archive, and nothing
+  else reports it. The exemption is about one message's *meaning*, not about who typed it.
+
+A queue holding both still pages, and pages about the caller's message alone.
 
 Every state that can archive is covered, `needs_input` and `failed` included. Nothing drains their
 queues, which makes the discard there certain rather than merely likely — and a refusal without an
