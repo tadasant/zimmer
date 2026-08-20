@@ -359,7 +359,10 @@ class QuotasHelperTest < ActionView::TestCase
   # while every account's week is gone, and the note has to say that rather than
   # go quiet.
   test "pool_five_hour_reset_line says so when every account's 7-day window is spent" do
-    line = pool_five_hour_reset_line(measure(next_five_hour_reset: nil, read_count: 3, weekly_spent_count: 3))
+    line = pool_five_hour_reset_line(
+      measure(next_five_hour_reset: nil, next_weekly_reset: 2.days.from_now,
+              read_count: 3, weekly_spent_count: 3)
+    )
 
     assert_match "No 5-hour reset frees capacity", line
     assert_match "blocked until the 7-day reset", line
@@ -414,15 +417,6 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match "No 5-hour reset frees capacity", line
     assert_match "No 7-day reset time is recorded either", line
     assert_no_match(/blocked until the 7-day reset below/, line)
-  end
-
-  test "pool_five_hour_reset_line points at the 7-day reset when there is one" do
-    line = pool_five_hour_reset_line(
-      measure(next_five_hour_reset: nil, next_weekly_reset: 2.days.from_now,
-              read_count: 2, weekly_spent_count: 2)
-    )
-
-    assert_match "blocked until the 7-day reset below", line
   end
 
   # Nothing read means nothing is known, which is not the same as everything
