@@ -158,6 +158,7 @@ class Api::V1::SessionsController < Api::BaseController
       end
 
       @session.archive_actor = "the REST API"
+      @session.archive_forced = force
       @session.archive!
       render json: {
         session: session_json(@session.reload),
@@ -1009,6 +1010,7 @@ class Api::V1::SessionsController < Api::BaseController
         errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued, batch: true) }
       elsif session.may_archive?
         session.archive_actor = "the REST API (bulk)"
+        session.archive_forced = force
         session.archive!
         archived_count += 1
       else

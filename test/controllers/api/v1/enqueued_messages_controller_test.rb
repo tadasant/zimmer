@@ -81,10 +81,28 @@ class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     json = JSON.parse(response.body)["enqueued_message"]
-    %w[id session_id content goal position status created_at updated_at].each do |field|
+    %w[id session_id content goal position status origin created_at updated_at].each do |field|
       assert json.key?(field), "Expected field '#{field}' to be present"
     end
     assert_equal "PR merged", json["goal"]
+    assert_equal "caller", json["origin"]
+  end
+
+  # The whole security property of `origin` is that no request can set it: a
+  # caller who could stamp their own message `automated_pr_merged` would exempt
+  # it from the strand alert, which is the one alert that reports their message
+  # being thrown away. It holds today because every create site names its
+  # attributes explicitly rather than permitting params — this pins that against
+  # a future refactor to `permit`.
+  test "a caller cannot stamp its own message with an automated origin" do
+    post api_v1_session_enqueued_messages_path(@session), params: {
+      content: "queued by a human", origin: "automated_pr_merged"
+    }, headers: @headers
+    assert_response :created
+
+    created = @session.enqueued_messages.order(:position).last
+    assert_equal "caller", created.origin
+    assert_not created.archive_satisfied?
   end
 
   test "should return 404 for message in different session" do

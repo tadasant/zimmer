@@ -121,6 +121,7 @@ module Mcp
         messages.each do |message|
           lines << "### Position #{message.position} (ID: #{message.id})"
           lines << "- **Status:** #{message.status}"
+          lines << "- **Origin:** #{message.origin}"
           lines << "- **Content:** #{preview(message.content)}"
           lines << "- **Goal:** #{message.goal}" if message.goal.present?
           lines << ""
@@ -137,6 +138,7 @@ module Mcp
           "- **Session ID:** #{message.session_id}",
           "- **Position:** #{message.position}",
           "- **Status:** #{message.status}",
+          "- **Origin:** #{message.origin}",
           "- **Content:** #{message.content}"
         ]
         lines << "- **Goal:** #{message.goal}" if message.goal.present?

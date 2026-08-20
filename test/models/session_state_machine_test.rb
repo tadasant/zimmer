@@ -294,6 +294,30 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     AlertService.expects(:raise_alert).never
 
+    session.archive_forced = true
+    session.archive!
+  end
+
+  # The other half of the condition, and the one that keeps the exemption from
+  # silencing its own smoke detector. HealthMonitorService's sweep, the harvest
+  # job and the fork cleanup all archive without consulting Sessions::ArchiveGuard,
+  # so nobody has read the notice — which is exactly how the mis-credited-PR bug
+  # behind #555 surfaced, on a status-summary fork the harvest job archived.
+  test "archive still pages when a system sweep strands a PR-merged notice unread" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/560"),
+      position: 1,
+      status: "pending",
+      origin: "automated_pr_merged"
+    )
+
+    AlertService.expects(:raise_alert).with do |title, options|
+      title == "Queued messages stranded by an archive" && options[:details].include?("has been merged")
+    end
+
+    session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
     session.archive!
   end
 
@@ -310,6 +334,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     )
     AlertService.stubs(:raise_alert)
 
+    session.archive_forced = true
     session.archive!
 
     assert_equal "undelivered", notice.reload.status
@@ -356,9 +381,11 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       title == "Queued messages stranded by an archive" &&
         options[:details].include?("add the onion back") &&
         options[:details].include?("1 message(s) still queued") &&
-        !options[:details].include?("has been merged")
+        !options[:details].include?("has been merged") &&
+        options[:details].include?("1 automated PR-merged notice was also retired")
     end
 
+    session.archive_forced = true
     session.archive!
 
     line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
