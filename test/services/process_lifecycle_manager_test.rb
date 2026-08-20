@@ -401,6 +401,36 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal :idle, manager.current_state
   end
 
+  # zimmer#6597: `running?` is signal 0, which answers "some process holds this
+  # number". A recovery job adopted a pid that had been SIGKILLed nine seconds
+  # earlier, logged "recovery confirmed", and then read that absence as the
+  # session's turn completing. The recorded identity is what distinguishes the
+  # process we spawned from a stranger wearing its number.
+  test "resume_monitoring refuses a pid the recorded identity disowns" do
+    @mock_process_manager.running_hook = ->(pid) { pid == 54321 }
+    AgentProcessLiveness.stubs(:adoptable?).with(@session, 54321).returns(false)
+
+    manager = create_manager
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log")
+
+    assert_not result.success?,
+      "A recovery must not adopt a process it cannot prove is the one it spawned"
+    assert_match(/not the process this session spawned/, result.error)
+    assert_equal :idle, manager.current_state,
+      "A refused adoption must leave the manager free to spawn instead"
+  end
+
+  test "resume_monitoring adopts a pid the recorded identity confirms" do
+    @mock_process_manager.running_hook = ->(pid) { pid == 54321 }
+    AgentProcessLiveness.stubs(:adoptable?).with(@session, 54321).returns(true)
+
+    manager = create_manager
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log")
+
+    assert result.success?
+    assert_equal :running, manager.current_state
+  end
+
   test "resume_monitoring fails when not in idle state" do
     @mock_cli_adapter.execute_hook = ->(opts) do
       { pid: 12345, stderr_log_path: "/tmp/stderr.log" }

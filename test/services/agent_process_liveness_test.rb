@@ -239,4 +239,71 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
       assert_equal :error, AgentProcessLiveness.ensure_no_live_process!(@session)
     end
   end
+  # === Adoption (the recovery path) ========================================
+  #
+  # zimmer#6597: a recovery job reconnected to a pid that had been SIGKILLed nine
+  # seconds earlier, logged "recovery confirmed", and then read that stranger's
+  # absence as the session's turn completing. These pin the direction of the answer:
+  # adoption refuses unless the identity fails to disprove ownership.
+
+  test "adoptable? refuses a pid whose process is gone" do
+    require_procfs
+    pid = spawn_real_process
+    record(pid)
+    Process.kill("KILL", pid)
+    Process.wait(pid)
+
+    assert_equal :dead, AgentProcessLiveness.status(@session)
+    assert_not AgentProcessLiveness.adoptable?(@session, pid),
+      "A recovery must not adopt a process that has exited"
+  end
+
+  test "adoptable? refuses a pid that has been recycled by another process" do
+    require_procfs
+    pid = spawn_real_process
+    record(pid)
+    identity = @session.metadata[AgentProcessLiveness::IDENTITY_KEY].merge("started_at_ticks" => "1")
+    @session.merge_metadata!(AgentProcessLiveness::IDENTITY_KEY => identity)
+
+    assert_equal :recycled, AgentProcessLiveness.status(@session.reload)
+    assert_not AgentProcessLiveness.adoptable?(@session, pid),
+      "A recovery must not adopt a process that merely inherited the number"
+  end
+
+  test "adoptable? allows the process the session actually spawned" do
+    require_procfs
+    pid = spawn_real_process
+    record(pid)
+
+    assert_equal :alive, AgentProcessLiveness.status(@session)
+    assert AgentProcessLiveness.adoptable?(@session, pid)
+  end
+
+  # Where the identity cannot decide, the caller's own liveness check stands —
+  # the behaviour that predates this guard. Anything else would break recovery
+  # on macOS development, where every probe returns nil.
+  test "adoptable? stands down when no identity was recorded" do
+    assert_equal :none, AgentProcessLiveness.status(@session)
+    assert AgentProcessLiveness.adoptable?(@session, 4242)
+  end
+
+  test "adoptable? stands down when the identity describes a different pid" do
+    require_procfs
+    pid = spawn_real_process
+    record(pid)
+
+    assert AgentProcessLiveness.adoptable?(@session, pid + 1),
+      "An identity recorded for another pid says nothing about this one"
+  end
+
+  test "adoptable? stands down for an identity from another boot" do
+    require_procfs
+    pid = spawn_real_process
+    record(pid)
+    identity = @session.metadata[AgentProcessLiveness::IDENTITY_KEY].merge("boot_id" => SecureRandom.uuid)
+    @session.merge_metadata!(AgentProcessLiveness::IDENTITY_KEY => identity)
+
+    assert_equal :unknown, AgentProcessLiveness.status(@session.reload)
+    assert AgentProcessLiveness.adoptable?(@session, pid)
+  end
 end
