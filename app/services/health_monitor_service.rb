@@ -433,6 +433,32 @@ class HealthMonitorService
     results
   end
 
+  # The backlog split by queue and by job class.
+  #
+  # `queue_statistics` answers "how deep", which is what the thresholds need. It
+  # does not answer "deep with WHAT", and that is the question every triage of a
+  # backlog page actually opens with: a ready count alone cannot distinguish a
+  # starved queue from a busy one, and Zimmer runs four queues with very different
+  # thread counts and job durations.
+  #
+  # Deliberately NOT folded into `queue_statistics`. That runs on every /health
+  # render; these are two more grouped scans of `good_jobs` and are only worth
+  # paying for when something is about to page. Cardinality is small either way —
+  # four queues, and job classes bounded by the app's job count — so the grouping
+  # is done in SQL and the ordering in Ruby, which keeps this free of adapter
+  # differences in how a grouped COUNT may be ordered.
+  #
+  # @param limit [Integer] how many entries to keep from each breakdown
+  # @return [Hash] :by_queue and :by_job_class, each an ordered Hash of name => count
+  def ready_backlog_breakdown(limit: READY_BREAKDOWN_LIMIT)
+    ready = ready_scope(GoodJob::Job.where(finished_at: nil, locked_by_id: nil))
+
+    {
+      by_queue: top_counts(ready.group(:queue_name).count, limit),
+      by_job_class: top_counts(ready.group(:job_class).count, limit)
+    }
+  end
+
   private
 
   # Find all active Claude CLI processes on the system
@@ -481,32 +507,6 @@ class HealthMonitorService
     active_processes.select do |process|
       process[:running] && !session_pids.include?(process[:pid])
     end
-  end
-
-  # The backlog split by queue and by job class.
-  #
-  # `queue_statistics` answers "how deep", which is what the thresholds need. It
-  # does not answer "deep with WHAT", and that is the question every triage of a
-  # backlog page actually opens with: a ready count alone cannot distinguish a
-  # starved queue from a busy one, and Zimmer runs four queues with very different
-  # thread counts and job durations.
-  #
-  # Deliberately NOT folded into `queue_statistics`. That runs on every /health
-  # render; these are two more grouped scans of `good_jobs` and are only worth
-  # paying for when something is about to page. Cardinality is small either way —
-  # four queues, and job classes bounded by the app's job count — so the grouping
-  # is done in SQL and the ordering in Ruby, which keeps this free of adapter
-  # differences in how a grouped COUNT may be ordered.
-  #
-  # @param limit [Integer] how many entries to keep from each breakdown
-  # @return [Hash] :by_queue and :by_job_class, each an ordered Hash of name => count
-  def ready_backlog_breakdown(limit: READY_BREAKDOWN_LIMIT)
-    ready = ready_scope(GoodJob::Job.where(finished_at: nil, locked_by_id: nil))
-
-    {
-      by_queue: top_counts(ready.group(:queue_name).count, limit),
-      by_job_class: top_counts(ready.group(:job_class).count, limit)
-    }
   end
 
   # Calculate queue statistics using GoodJob

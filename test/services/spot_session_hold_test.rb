@@ -107,9 +107,9 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       Array.new(3) { hold_and_measure(session) }
     end
 
-    assert_in_delta base, delays[0], slack, "the first hold takes the plain interval"
-    assert_in_delta base * 2, delays[1], slack, "the second hold doubles it"
-    assert_in_delta base * 4, delays[2], slack, "the third hold doubles again"
+    assert_delay_band base, delays[0], "the first hold takes the plain interval"
+    assert_delay_band base * 2, delays[1], "the second hold doubles it"
+    assert_delay_band base * 4, delays[2], "the third hold doubles again"
   end
 
   # A utilization hold waits on a quota window coming back down, which takes
@@ -123,7 +123,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       hold_and_measure(session)
     end
 
-    assert_in_delta SpotSessionHold::UTILIZATION_MAX_RETRY_DELAY, delay, slack
+    assert_delay_band SpotSessionHold::UTILIZATION_MAX_RETRY_DELAY, delay
   end
 
   # A fleet-cap hold waits on any running session finishing, which can happen at
@@ -138,7 +138,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       hold_and_measure(session)
     end
 
-    assert_in_delta SpotSessionHold::FLEET_CAP_MAX_RETRY_DELAY, delay, slack
+    assert_delay_band SpotSessionHold::FLEET_CAP_MAX_RETRY_DELAY, delay
     assert_operator SpotSessionHold::FLEET_CAP_MAX_RETRY_DELAY, :<,
                     SpotSessionHold::UTILIZATION_MAX_RETRY_DELAY
   end
@@ -176,7 +176,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     SpotGateService.stub(:evaluate, allowed_decision) { SpotSessionHold.hold_if_needed(session.reload) }
 
     delay = SpotGateService.stub(:evaluate, held_decision) { hold_and_measure(session) }
-    assert_in_delta SpotGateService::RETRY_DELAY, delay, slack
+    assert_delay_band SpotGateService::RETRY_DELAY, delay
   end
 
   test "a hold is cleared once the session is allowed through" do
@@ -201,10 +201,15 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
   private
 
-  # Jitter (0..RETRY_JITTER) plus a little test-clock drift. Every delay assertion
-  # is against the floor of its band, so the tolerance is one-sided in practice.
-  def slack
-    SpotSessionHold::RETRY_JITTER + 5.seconds
+  # A delay is correct when it sits in [expected, expected + RETRY_JITTER]: the
+  # ladder sets the floor and the jitter is added on top of it. Asserted as a
+  # one-sided band rather than a symmetric tolerance, so a rung that came out too
+  # SHORT — the failure that would put the arrival rate back where it was — cannot
+  # pass by landing inside a delta wide enough to swallow the jitter.
+  def assert_delay_band(expected, actual, message = nil)
+    drift = 5.seconds
+    assert_operator actual, :>=, expected - drift, message
+    assert_operator actual, :<=, expected + SpotSessionHold::RETRY_JITTER + drift, message
   end
 
   # Record one hold and return how far out it scheduled the re-check. Measured
