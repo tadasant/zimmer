@@ -44,11 +44,10 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
     AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN
   ].freeze
 
-  # A refusal is a single short line. A real answer is 2-3 sentences carrying
-  # markdown links, and is an order of magnitude longer — so requiring the whole
-  # answer to be one line under this length keeps the patterns off a genuine
-  # summary that happens to be ABOUT a session which hit a limit. Getting that
-  # judgement wrong costs a regeneration, never a wrong blurb.
+  # A refusal is one short line. A real answer is 2-3 sentences carrying markdown
+  # links, and is an order of magnitude longer — so length is what keeps the
+  # patterns off a genuine summary that happens to be ABOUT a session which hit a
+  # limit. Getting that judgement wrong costs a regeneration, never a wrong blurb.
   MAX_REFUSAL_CHARS = 200
 
   # @param fork_session_id [Integer] the summary fork that just came to rest
@@ -163,10 +162,17 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
   end
 
   # Whether the fork wrote the runtime's refusal where its answer should be.
+  #
+  # Squished before it is measured or matched. A refusal can arrive wrapped over
+  # two lines, or assembled from two content parts that #text_content_from_parts
+  # joined with a blank line — and the patterns are single-line
+  # (`.` does not cross a newline), so testing the raw text would let exactly
+  # those through.
   def refused_answer?(text)
-    return false if text.length > MAX_REFUSAL_CHARS || text.include?("\n")
+    probe = text.squish
+    return false if probe.length > MAX_REFUSAL_CHARS
 
-    REFUSAL_PATTERNS.any? { |pattern| text.match?(pattern) }
+    REFUSAL_PATTERNS.any? { |pattern| probe.match?(pattern) }
   end
 
   # The park this fork is sitting in, or nil if it is not parked.

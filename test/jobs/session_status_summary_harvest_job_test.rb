@@ -306,6 +306,20 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     end
   end
 
+  # The refusal can arrive wrapped, or assembled from two content parts joined
+  # with a blank line. The patterns are single-line, so the text is squished
+  # before it is matched.
+  test "a refusal split over two lines is still rejected" do
+    fork = build_fork(answer: "You've hit your session limit\n· resets 10pm (UTC)")
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    record = @source.reload.status_summary
+    assert_equal "failed", record.state
+    assert_nil record.summary
+  end
+
   # The guard is a single short line matching a refusal, not the words anywhere:
   # a real blurb about a session that ran out of quota is a real blurb.
   test "a genuine summary that talks about hitting a limit is still stored" do

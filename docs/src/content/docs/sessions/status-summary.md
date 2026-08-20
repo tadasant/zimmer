@@ -264,8 +264,12 @@ accurate "where things stand" matters most. Four things produce that:
 
 `StatusSummaryBackstopJob` is the repair path. Every five minutes it walks the sessions **at rest**
 (`needs_input` and `failed`, most recently active first), and re-enqueues a generation for the ones
-whose last one demonstrably did not land: no record, no summary text, a `failed` record, an abandoned
-claim, or a `ready` summary the transcript has moved past.
+whose summary is no longer current — no record, no summary text, or a summary the transcript has
+moved past. Staleness is the whole test, and a `failed` state is deliberately not a second one: a
+failure that matters leaves the summary stale anyway, while a `failed` record whose summary *is*
+current is exactly the case that must not be retried, since the generator would answer an unforced
+retry with "Summary is current" and the session would be re-enqueued forever. A session with no
+transcript is skipped, for the same reason the transition hook skips it.
 
 It is a repair sweep, not polling, and the difference is enforced rather than asserted:
 
@@ -274,7 +278,10 @@ It is a repair sweep, not polling, and the difference is enforced rather than as
 - **It stamps every session it examines** (`session_status_summaries.backstop_attempted_at`), so a
   session is looked at once per `RETRY_INTERVAL` (30 minutes) rather than once per sweep. That is also
   what stops a session that can never be summarized — one whose clone has been reclaimed — from
-  eating the sweep's budget ahead of one that could be repaired.
+  eating the sweep's budget ahead of one that could be repaired. The stamp is a `WHERE`, not a filter
+  in Ruby, so the steady state — every session at rest already stamped — returns no rows at all
+  rather than the whole action queue. A `SCAN_LIMIT` of 200 bounds the pathological case, and a sweep
+  that reaches it logs that it did.
 - **It is capped at `MAX_PER_SWEEP` (5) repairs.** Each repair costs a fork of a repository and an
   agent turn, so a fleet-wide outage that failed every generation at once cannot become a fleet-wide
   re-fork.

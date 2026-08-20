@@ -43,15 +43,29 @@ class StatusSummaryBackstopJob < ApplicationJob
   # per half hour rather than one per sweep.
   RETRY_INTERVAL = 30.minutes
 
+  # Backstop on the candidate scan itself. #candidates already filters to rows
+  # that are due, so in steady state this is nowhere near reached — it is here so
+  # that a pathological fleet (thousands of sessions at rest, all due at once
+  # after a long outage) cannot turn one sweep into an unbounded scan. A sweep
+  # that hits it says so, because a silently truncated sweep reads as "nothing
+  # left to repair".
+  SCAN_LIMIT = 200
+
   def perform
     repaired = 0
     held_for_outage = 0
 
-    candidates.each do |session|
+    scanned = candidates.to_a
+
+    scanned.each do |session|
       break if repaired >= MAX_PER_SWEEP
+      # Nothing this sweep can do while the pool is empty, and #pool_exhausted?
+      # is memoized per runtime — so once a whole batch is standing down, stop
+      # walking it rather than confirming the same outage row by row.
+      break if held_for_outage >= MAX_PER_SWEEP
       next if session.blocked_on_elicitation?
 
-      record = SessionStatusSummary.find_by(session_id: session.id)
+      record = session.status_summary
       next unless due?(record)
 
       # An outage is checked BEFORE the session is stamped, so a sweep that
@@ -67,6 +81,13 @@ class StatusSummaryBackstopJob < ApplicationJob
 
       SessionStatusSummaryJob.perform_later(session.id)
       repaired += 1
+    end
+
+    if scanned.length >= SCAN_LIMIT
+      Rails.logger.warn(
+        "[StatusSummaryBackstopJob] candidate scan hit SCAN_LIMIT=#{SCAN_LIMIT}; " \
+        "sessions beyond it wait for a later sweep"
+      )
     end
 
     return if repaired.zero? && held_for_outage.zero?
@@ -87,17 +108,37 @@ class StatusSummaryBackstopJob < ApplicationJob
   # which is not a session at rest and not a conversation there is anything final
   # to say about yet.
   #
-  # `transcript` is left out of the SELECT. It is by far the largest column in
-  # the schema — megabytes on a long session — and this scan runs every five
-  # minutes over every session in the action queue. Only #needs_repair? needs it,
-  # and only for a session that is due to be examined at all, which the stamp
-  # holds to once per RETRY_INTERVAL.
+  # Two things keep this cheap enough to run every five minutes.
+  #
+  # **Due-ness is a WHERE, not a filter in Ruby.** A session examined inside
+  # RETRY_INTERVAL is excluded by the database, so the steady state — every
+  # session at rest already carrying a fresh stamp — returns no rows at all
+  # rather than the whole action queue. #due? still has the final say (it also
+  # refuses a generation that is in flight, which is a two-column predicate not
+  # worth expressing here), but it is now deciding over a handful of rows.
+  #
+  # **`transcript` is left out of the SELECT**, because it is by far the largest
+  # column in the schema — megabytes on a long session. Only #needs_repair? needs
+  # it, and it fetches it one row at a time. The columns are qualified because the
+  # join puts a second `id`, `created_at` and `updated_at` in scope.
+  #
+  # `preload` rather than a second query per row: the record each candidate needs
+  # is fetched once for the whole batch.
   def candidates
     Session
       .excluding_status_summary_forks
       .where(status: [ :needs_input, :failed ])
-      .select(Session.column_names - [ "transcript" ])
-      .order(updated_at: :desc)
+      .left_joins(:status_summary)
+      .where(
+        "session_status_summaries.id IS NULL " \
+        "OR session_status_summaries.backstop_attempted_at IS NULL " \
+        "OR session_status_summaries.backstop_attempted_at < ?",
+        RETRY_INTERVAL.ago
+      )
+      .preload(:status_summary)
+      .select((Session.column_names - [ "transcript" ]).map { |column| "sessions.#{column}" })
+      .order("sessions.updated_at DESC")
+      .limit(SCAN_LIMIT)
   end
 
   # Whether this session is due to be looked at again. A record that does not
@@ -110,7 +151,17 @@ class StatusSummaryBackstopJob < ApplicationJob
     record.backstop_attempted_at.nil? || record.backstop_attempted_at < RETRY_INTERVAL.ago
   end
 
-  # Whether the last generation failed to leave a current summary behind.
+  # Whether the last generation failed to leave a CURRENT summary behind.
+  #
+  # Staleness is the whole test, and `failed` is deliberately not a second one.
+  # `SessionStatusSummary#stale?` is already true for a blank summary, so every
+  # failure that matters — a fork that answered nothing, a claim abandoned before
+  # it wrote — is covered. A `failed` record whose summary is nonetheless CURRENT
+  # is the case that must not be repaired: it is what a forced Regenerate that
+  # then failed leaves behind, the generator would answer an unforced retry with
+  # "Summary is current" without clearing the state, and the session would be
+  # re-enqueued every RETRY_INTERVAL forever, spending a slot the sessions that
+  # can be repaired need.
   #
   # A session with no transcript is refused first, for the same reason
   # SessionStateMachine#enqueue_status_summary_refresh refuses it: there is
@@ -119,8 +170,7 @@ class StatusSummaryBackstopJob < ApplicationJob
   def needs_repair?(session, record)
     line_count = Session.transcript_line_count(transcript_of(session))
     return false if line_count.zero?
-    return true if record.nil? || record.summary.blank?
-    return true if record.failed? || record.abandoned?
+    return true if record.nil?
 
     record.stale?(line_count)
   end
@@ -149,9 +199,11 @@ class StatusSummaryBackstopJob < ApplicationJob
   # it — including reading its transcript — is paid once per RETRY_INTERVAL
   # whatever the answer turns out to be.
   #
-  # `update_columns` rather than `update!`: a bookkeeping stamp is not a change
-  # to what the panel says, and SessionStatusSummary broadcasts a panel
-  # re-render on every committed update.
+  # `update_columns` rather than `update!`: a bookkeeping stamp is not a change to
+  # what the panel says, and SessionStatusSummary broadcasts a panel re-render on
+  # every committed update. Creating the row when there is none does broadcast —
+  # `after_commit … on: [:create, :update]` — but that happens once per session
+  # ever, and the panel it renders is the one the reader is about to want.
   def stamp_examined(session, record)
     (record || SessionStatusSummary.create_or_find_by!(session_id: session.id))
       .update_columns(backstop_attempted_at: Time.current, updated_at: Time.current)
