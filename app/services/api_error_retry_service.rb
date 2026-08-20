@@ -124,6 +124,12 @@ class ApiErrorRetryService
   # Combined error types for detection (server errors + rate limits)
   RETRYABLE_ERROR_TYPES = (API_SERVER_ERROR_TYPES + RATE_LIMIT_ERROR_TYPES).freeze
 
+  # Transcript entry types that are the conversation itself. Everything else the
+  # runtime writes into the same file — +queue-operation+, +attachment+,
+  # +atis-latch+, +last-prompt+ — is bookkeeping, and routinely lands AFTER the
+  # final message of a turn. See #unrecognized_terminal_api_error_text.
+  CONVERSATIONAL_ENTRY_TYPES = %w[user assistant].freeze
+
   attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :file_system, :rate_limit_tracker
 
   def initialize(session, cli_adapter:, process_manager:, log_buffer:, file_system: nil, rate_limit_tracker: nil)
@@ -320,7 +326,7 @@ class ApiErrorRetryService
       error_type = entry["error"].to_s
       message_text = extract_message_text(entry)
       next if retryable_error?(error_type, message_text)
-      next if classified_elsewhere?(message_text)
+      next if classified_elsewhere?(error_type, message_text)
 
       unmatched = [ error_type.presence, message_text.presence ].compact.join(": ")
     end
@@ -331,14 +337,84 @@ class ApiErrorRetryService
     nil
   end
 
+  # The API error this turn DIED on, when no classifier recognizes it.
+  #
+  # A stronger question than #unclassified_api_error_text asks. That one answers
+  # "is there an unrecognized API error anywhere in the transcript"; this one
+  # answers "is an unrecognized API error the LAST thing the conversation
+  # contains" — which is only ever true of a turn that stopped because of it.
+  #
+  # That distinction is what makes this safe to act on from the NORMAL-COMPLETION
+  # path in ProcessLifecycleManager, where a stale unrecognized entry further back
+  # must not be allowed to condemn a turn that really did finish. It is also why
+  # this reader ignores +api_error_last_checked_line+: the marker exists to stop a
+  # handled error being retried twice, and a terminal error is by definition the
+  # one that just ended this turn. Skipping it because some earlier pass moved the
+  # marker is exactly how a dead turn goes quiet.
+  #
+  # Only +user+ and +assistant+ entries count, on both sides of the question. The
+  # runtime writes bookkeeping entries (+last-prompt+, +atis-latch+, +attachment+,
+  # +queue-operation+) after the final message, and those are not the conversation
+  # making progress. Sidechain (subagent) entries are skipped for the mirror-image
+  # reason: a subagent's API error does not end the main turn.
+  #
+  # @param working_directory [String] Working directory for locating the transcript
+  # @return [String, nil] the unmatched error text, or nil when the turn ended on
+  #   real output, on a recognized error, or on nothing at all
+  def unrecognized_terminal_api_error_text(working_directory)
+    return nil unless working_directory
+
+    transcript_path = find_transcript_path(working_directory)
+    return nil unless transcript_path
+    return nil unless file_system.exists?(transcript_path)
+
+    content = file_system.read(transcript_path)
+    return nil if content.blank?
+
+    terminal = nil
+
+    content.lines.each do |line|
+      next if line.strip.blank?
+
+      begin
+        entry = JSON.parse(line)
+      rescue JSON::ParserError
+        next
+      end
+
+      next unless CONVERSATIONAL_ENTRY_TYPES.include?(entry["type"])
+      next if entry["isSidechain"] == true
+
+      # A conversational entry that is NOT an API error is the turn making
+      # progress, which clears any error before it.
+      terminal = entry["isApiErrorMessage"] == true ? entry : nil
+    end
+
+    return nil unless terminal
+
+    error_type = terminal["error"].to_s
+    message_text = extract_message_text(terminal)
+    return nil if retryable_error?(error_type, message_text)
+    return nil if classified_elsewhere?(error_type, message_text)
+
+    [ error_type.presence, message_text.presence ].compact.join(": ").presence
+  rescue => e
+    @logger.error("Error checking transcript for a terminal API error", error: e.message)
+    nil
+  end
+
   private
 
-  # Whether this error text belongs to a classifier other than this service.
-  # Keeps the "unclassified" signal honest — an ordinary compact recovery or
-  # auth recovery must never be reported as an unknown failure mode.
-  def classified_elsewhere?(message_text)
+  # Whether this error belongs to a classifier other than this service. Keeps the
+  # "unclassified" signal honest — an ordinary compact recovery or auth recovery
+  # must never be reported as an unknown failure mode.
+  #
+  # Asked with the error TYPE as well as the text, because that is how
+  # AuthRecoveryService recognizes an authentication failure whose prose it has
+  # never seen.
+  def classified_elsewhere?(error_type, message_text)
     return true if ContextLengthRetryService::CONTEXT_LENGTH_ERROR_PATTERNS.any? { |p| message_text.match?(p) }
-    return true if message_text.match?(AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN)
+    return true if AuthRecoveryService.auth_error?(error_type, message_text)
 
     false
   end

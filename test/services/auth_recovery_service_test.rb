@@ -172,6 +172,45 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
       "When the most recent API error is 'Not logged in', auth recovery must fire"
   end
 
+  # === The 2026-08-20 incident (production session 6412) ===
+  #
+  # Claude Code 2.1.237 records a dead OAuth session as an API error with a
+  # MACHINE-READABLE type and prose that the old /not logged in|please run
+  # \/login/i pattern never matched. Nothing classified it, so the turn was
+  # parked as `needs_input` with a human's message unanswered.
+  test "detects a dead OAuth session recorded with the authentication_failed error type" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Failed to authenticate: OAuth session expired and could not be refreshed", error_type: "authentication_failed")}
+    JSONL
+
+    service = create_service
+    assert service.auth_error_detected?("/tmp/test-clone"),
+      "The exact entry that silently ended production session 6412 must route to auth recovery"
+  end
+
+  # The error type alone is enough — the prose is the half that moves.
+  test "detects an authentication_failed entry whose prose Zimmer has never seen" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Some wording nobody has written yet", error_type: "authentication_failed")}
+    JSONL
+
+    service = create_service
+    assert service.auth_error_detected?("/tmp/test-clone"),
+      "The structured error type must classify the failure even when the message text is unrecognizable"
+  end
+
+  # ...and so is the prose, for the entries the runtime records with an empty type.
+  test "detects 'Failed to authenticate' prose on an entry with no error type" do
+    setup_transcript_with_auth_error("Failed to authenticate: OAuth session expired and could not be refreshed")
+
+    service = create_service
+    assert service.auth_error_detected?("/tmp/test-clone")
+  end
+
   test "skips already-checked lines using auth_error_last_checked_line" do
     setup_transcript_with_auth_error
 

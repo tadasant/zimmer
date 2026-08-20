@@ -24,8 +24,9 @@ require "automated_prompts"
 #
 # == How recovery works ==
 #
-# 1. Detect the "Not logged in / Please run /login" signature as the most recent
-#    API-error entry in the transcript (auth_error_detected?).
+# 1. Detect an authentication failure as the most recent API-error entry in the
+#    transcript (auth_error_detected?) — by the entry's structured `error` type
+#    first, and by its prose second. See AUTH_ERROR_TYPES.
 # 2. Ask AuthRecoveryCoordinator what to do about it. Recovery used to mean
 #    "re-inject the current active account" unconditionally, which re-spawned
 #    into the identical wall whenever that account was itself the problem. The
@@ -109,11 +110,52 @@ class AuthRecoveryService
   # recovery is considered successful.
   SUCCESS_THRESHOLD = 5
 
-  # Pattern identifying the rotation-induced auth failure. Claude Code renders the
-  # CLI's "Not logged in" state as a synthetic API error; the message text is a
-  # moving target, so match either half of the signature independently:
-  #   "Not logged in · Please run /login"
-  AUTH_RECOVERABLE_ERROR_PATTERN = /not logged in|please run\s*\/login/i
+  # The error TYPES Claude Code stamps on a transcript entry when a turn dies for
+  # an authentication reason. This is the machine-readable half of the signature,
+  # and the half that does not move when the prose does.
+  #
+  # Reading it is the fix for the 2026-08-20 incident (session 6412): the runtime
+  # recorded
+  #
+  #   {"isApiErrorMessage":true,"error":"authentication_failed",
+  #    "message":{"content":[{"type":"text",
+  #      "text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]}}
+  #
+  # whose text matched none of the prose below, so no classifier claimed it, and
+  # the turn — a human's unanswered message — was parked as if it had completed.
+  AUTH_ERROR_TYPES = %w[authentication_failed oauth_error].freeze
+
+  # Prose fallback, for entries the runtime records with an EMPTY error type —
+  # which is how it recorded "Not logged in · Please run /login" for years. Each
+  # alternative is one half of a known signature rather than a whole sentence,
+  # because the wording around it is a moving target.
+  #
+  # This net is deliberately secondary: a pattern over Anthropic's prose is the
+  # thing that went stale here, and #unrecognized_terminal_api_error_text is the
+  # backstop for the next time it does.
+  AUTH_RECOVERABLE_ERROR_PATTERN = Regexp.union(
+    /not logged in/i,
+    /please run\s*\/login/i,
+    /failed to authenticate/i,
+    /authentication[ _]failed/i,
+    /(?:oauth|refresh|access|session)[ _](?:session|token)\b.{0,40}\b(?:expired|invalid|revoked)/i,
+    /invalid_grant/i
+  ).freeze
+
+  # Whether a transcript API-error entry is an authentication failure this service
+  # can act on.
+  #
+  # Takes the entry's error TYPE and its TEXT separately so a caller cannot ask
+  # with only the half that moves. Also used by ApiErrorRetryService to answer
+  # "is this accounted for by a sibling classifier?".
+  #
+  # @param error_type [String, nil] the entry's `error` field
+  # @param message_text [String, nil] the entry's rendered text content
+  def self.auth_error?(error_type, message_text)
+    return true if AUTH_ERROR_TYPES.include?(error_type.to_s.strip.downcase)
+
+    "#{error_type} #{message_text}".match?(AUTH_RECOVERABLE_ERROR_PATTERN)
+  end
 
   attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :file_system
 
@@ -169,7 +211,7 @@ class AuthRecoveryService
 
     last_checked_line = session.metadata&.dig("auth_error_last_checked_line") || 0
     current_line_number = 0
-    last_api_error_text = nil
+    last_api_error = nil
 
     content.lines.each do |line|
       current_line_number += 1
@@ -180,19 +222,20 @@ class AuthRecoveryService
         entry = JSON.parse(line)
         next unless entry["isApiErrorMessage"] == true
 
-        # Track the most recent API error's text (regardless of kind) so a later
-        # non-auth error correctly shadows an earlier auth one.
-        last_api_error_text = "#{entry["error"]} #{extract_message_text(entry)}"
+        # Track the most recent API error (regardless of kind) so a later
+        # non-auth error correctly shadows an earlier auth one. Type and text are
+        # kept apart because the type is the durable half of the signature.
+        last_api_error = { type: entry["error"].to_s, text: extract_message_text(entry) }
       rescue JSON::ParserError
         next
       end
     end
 
-    return false if last_api_error_text.nil?
+    return false if last_api_error.nil?
 
-    if last_api_error_text.match?(AUTH_RECOVERABLE_ERROR_PATTERN)
+    if self.class.auth_error?(last_api_error[:type], last_api_error[:text])
       @logger.info("Recoverable auth error detected in transcript (most recent API error)",
-        line_number: current_line_number)
+        line_number: current_line_number, error_type: last_api_error[:type].presence)
       return true
     end
 

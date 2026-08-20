@@ -2522,6 +2522,177 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "Most-recent-error-wins: a fresh auth error after a 5xx routes to auth recovery, not API retry")
   end
 
+  # ===========================================================================
+  # The 2026-08-20 incident: a turn that dies on an auth error must never be
+  # indistinguishable from a turn that completed (production session 6412).
+  # ===========================================================================
+
+  # Reproduce-and-fix. Before this change every classifier said "not mine" for
+  # the entry below, so handle_exit fell through to `Process exited successfully`
+  # → needs_input, and a human's message sat unanswered with nothing in the logs.
+  test "handle_exit routes a dead OAuth session to auth recovery instead of parking it as a completed turn" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_oauth_expiry_error
+    stub_auth_provider_returning(fake_account("rotated@example.com"))
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 54321, stderr_log_path: "/tmp/stderr2.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    # Exit 1 — Claude's "turn finished, awaiting input" convention, which is what
+    # made the failure look like an ordinary completion.
+    status = MockProcessManager::MockStatus.new(1)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action,
+      "A dead OAuth session must rotate and resume, not park as if the turn had finished"
+    assert_equal 1, @mock_cli_adapter.resumed_sessions.length
+
+    @log_buffer.flush
+    log_contents = @session.logs.pluck(:content).join("\n")
+    assert_match(/Not logged in detected on successful exit/, log_contents)
+    assert_no_match(/Process exited successfully/, log_contents,
+      "The turn did not complete, so nothing may report that it did")
+  end
+
+  # The structural backstop, and the half that matters more: even for an error
+  # NO classifier knows, a turn that ends on one can never be reported as done.
+  test "handle_exit fails loudly when a turn ends on an API error no classifier recognizes" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_ending_with_api_error(
+      "Your quantum entitlement has decohered",
+      error_type: "wording_nobody_has_written_yet"
+    )
+
+    reported = nil
+    UnclassifiedFailureReporter.stubs(:report).with do |*args, **kwargs|
+      reported = kwargs.presence || args.first
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    status = MockProcessManager::MockStatus.new(1)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action,
+      "A turn that ended on an unrecognized API error must fail loudly, not park as needs_input"
+    assert_match(/Your quantum entitlement has decohered/, decision.error_message)
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length
+
+    @log_buffer.flush
+    log_contents = @session.logs.pluck(:content).join("\n")
+    assert_match(/Turn ended on an unrecognized API error/, log_contents)
+
+    assert_equal "terminal API error", reported[:kind], "The unknown must announce itself"
+    assert_match(/Your quantum entitlement has decohered/, reported[:output],
+      "The alert must carry the prose no pattern matched, so the next wording change is a Slack message"
+    )
+    assert_no_match(/#{@session.id}/, reported[:summary],
+      "The summary is the dedup key — a fleet-wide wave must collapse into one alert"
+    )
+  end
+
+  # The runtime writes bookkeeping entries (last-prompt, atis-latch) AFTER the
+  # final message of a turn. Reading "the last line" rather than "the last
+  # message" would let those hide the error the turn died on — which is exactly
+  # how the real session 6412 transcript is shaped.
+  test "handle_exit still sees a terminal API error behind the runtime's trailing bookkeeping entries" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Unrecognized meltdown", error_type: "novel_failure")}
+      {"type": "last-prompt", "prompt": "Hello"}
+      {"type": "atis-latch", "value": 1}
+    JSONL
+
+    UnclassifiedFailureReporter.stubs(:report).returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action,
+      "Trailing bookkeeping entries must not be mistaken for the turn making progress"
+  end
+
+  # The guard on the guard: an unrecognized error the turn RECOVERED from is not
+  # a terminal error, and must still park normally.
+  test "handle_exit still returns needs_input when real output follows an unrecognized API error" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Unrecognized hiccup", error_type: "novel_failure")}
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Recovered and finished the work."}]}}
+    JSONL
+
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "An error the turn recovered from must not fail a turn that really did complete"
+  end
+
+  # A subagent's API error does not end the main turn.
+  test "handle_exit ignores a sidechain API error when deciding whether the turn died" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    sidechain_error = JSON.parse(api_error_json("Subagent blew up", error_type: "novel_failure"))
+      .merge("isSidechain" => true)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "All done."}]}}
+      #{JSON.generate(sidechain_error)}
+    JSONL
+
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "A subagent's failure must not be read as the main turn dying"
+  end
+
+  # Exactly the entry Claude Code 2.1.237 wrote into production session 6412.
+  def setup_transcript_with_oauth_expiry_error
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "btw i think you misunderstood my ask"}]}}
+      #{api_error_json("Failed to authenticate: OAuth session expired and could not be refreshed", error_type: "authentication_failed")}
+    JSONL
+  end
+
+  def setup_transcript_ending_with_api_error(message, error_type:)
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json(message, error_type: error_type)}
+    JSONL
+  end
+
   # Auth-error transcript entry, recorded exactly as Claude Code writes the
   # rotation-induced "Not logged in" state (isApiErrorMessage with empty error type).
   def auth_error_json(message)

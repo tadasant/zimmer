@@ -442,6 +442,23 @@ class ProcessLifecycleManager
           return handle_empty_turn(working_dir)
         end
 
+        # The invariant that makes a silently-absorbed turn impossible: a turn
+        # whose LAST conversational entry is an API error did not complete, no
+        # matter how the runtime worded that error. Every branch above is a
+        # *specific* diagnosis matched against the runtime's prose, and every one
+        # of them can go stale. This one asks a structural question instead, so
+        # the next wording change costs an alert rather than a lost message.
+        #
+        # This is the 2026-08-20 incident (session 6412): Claude Code recorded
+        # `"error":"authentication_failed"` / "Failed to authenticate: OAuth
+        # session expired and could not be refreshed", exited 1 — its
+        # turn-finished convention — and Zimmer parked the session as `needs_input`
+        # with "Process exited successfully", leaving a human's message unanswered
+        # and nothing in the logs to find it by.
+        if (terminal_error = terminal_runtime_error_text(working_dir))
+          return handle_terminal_api_error(terminal_error)
+        end
+
         add_log("Process exited successfully", level: "info")
 
         @mutex.synchronize { @state = :idle }
@@ -1310,6 +1327,59 @@ class ProcessLifecycleManager
     )
   rescue => e
     @logger.error("Failed to report unclassified process exit", error: e.message)
+  end
+
+  # A turn that ended on an API error nobody recognized. Fails the session and
+  # alerts, rather than parking it as a completed turn.
+  #
+  # Failing is the honest verdict: the turn is over, the work in it did not
+  # happen, and the human's prompt is sitting unanswered in the transcript. A
+  # failed session says all three on the homepage and stays resumable, where
+  # `needs_input` said the opposite of all three. The alert is what turns the
+  # next stale classifier into a Slack message instead of an archaeology dig.
+  def handle_terminal_api_error(error_text)
+    add_log(
+      "Turn ended on an unrecognized API error, so it did not complete — failing loudly rather " \
+        "than parking it as finished. The runtime said: #{error_text}",
+      level: "error"
+    )
+    @log_buffer&.flush
+    @logger.error("Turn ended on an unrecognized API error", unmatched_output: error_text)
+
+    report_terminal_api_error(error_text)
+
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :failed, error_message: "Turn ended on an unrecognized API error: #{error_text}")
+  end
+
+  def report_terminal_api_error(error_text)
+    return unless runtime_classifies_exits?
+
+    UnclassifiedFailureReporter.report(
+      kind: "terminal API error",
+      # Low-cardinality by construction: the summary IS the dedup key, so it
+      # carries the runtime and not the error text, session id, or timestamp.
+      summary: "#{session&.agent_runtime.presence || "unknown runtime"} turn ended on an API error no classifier matched",
+      source: "ProcessLifecycleManager#handle_exit",
+      session: session,
+      output: error_text,
+      logger: @logger
+    )
+  rescue => e
+    @logger.error("Failed to report a terminal API error", error: e.message)
+  end
+
+  # The unrecognized API error this turn died on, or nil. Runtimes whose strategy
+  # does not answer the question never route here.
+  def terminal_runtime_error_text(working_dir)
+    return nil unless retry_strategy.respond_to?(:terminal_api_error_text)
+
+    retry_strategy.terminal_api_error_text(working_dir: working_dir)
+  rescue => e
+    # A backstop that cannot answer must not become the thing that breaks exit
+    # handling; fall through to the pre-existing park.
+    @logger.error("Failed to check for a terminal API error", error: e.message)
+    nil
   end
 
   # Whether this runtime's strategy answers real questions about an exit, so that
