@@ -35,6 +35,7 @@ From `config.good_job.cron`:
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks (leaving a banner that says the round-trip was lost) |
 | 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint (production and staging only — see below) |
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
+| 5m | `StatusSummaryBackstopJob` | Re-run a Status-summary generation that never landed, for a session already at rest — capped at 5 repairs a sweep, each session examined at most once per 30 minutes, and stood down entirely while the runtime's login pool is exhausted. See [The Status summary](/sessions/status-summary/#the-repair-sweep-behind-it). |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
 | 10m | `TokenUsageIngestionJob` | Sweep recent transcripts into the token-spend ledger. Scans only files touched in the last two hours; the lookback overlaps the interval generously because ingestion is idempotent on `request_id`, so a missed run closes itself on the next pass. History that predates the job is loaded once by `rake token_usage:backfill`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |

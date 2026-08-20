@@ -675,8 +675,11 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       env_vars = ["ACME_HOST_REGION"]
       [mcp_servers.acme-server.env]
       ACME_API_KEY = "sk-acme-123"
+      ELICITATION_POLL_URL = "#{ElicitationEndpoint.url}"
+      ELICITATION_PREFER_HTTP_FALLBACK = "true"
       ELICITATION_REQUEST_URL = "#{ElicitationEndpoint.url}"
       ELICITATION_SESSION_ID = "#{@session.id}"
+      ELICITATION_TTL_MS = "#{Elicitation::DEFAULT_EXPIRATION.to_i * 1000}"
       [mcp_servers.zimmer]
       url = "http://localhost:3000/mcp"
       [mcp_servers.zimmer.http_headers]

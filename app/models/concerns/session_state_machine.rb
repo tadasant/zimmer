@@ -129,6 +129,10 @@ module SessionStateMachine
             enqueue_status_summary_refresh
           end
           execute_pending_sleep
+          # Last, and after execute_pending_sleep: a session that just went
+          # dormant is not idling on its queue, it is asleep, and the check
+          # below reads the state the sleep left behind.
+          drain_enqueued_messages_after_pause
         end
       end
 
@@ -145,6 +149,7 @@ module SessionStateMachine
         after do
           clear_stale_mcp_failure_metadata
           clear_paused_by_metadata
+          clear_enqueued_drain_attempts
           clear_blocked_on_elicitation_marker
           clear_lost_elicitation_marker
           clear_pending_sleep
@@ -702,6 +707,77 @@ module SessionStateMachine
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to describe the archive of session #{id}: #{e.message}"
     "Session moved to trash"
+  end
+
+  # Come to rest in `needs_input` only with an empty queue.
+  #
+  # The `needs_input` counterpart of strand_pending_enqueued_messages below, and
+  # of Sessions::ArchiveGuard — the same invariant, "a session does not idle on
+  # top of a message queued for it", at the other resting state. It differs in
+  # what it can do about it. Archiving ends every delivery path, so the honest
+  # responses there are to refuse the transition or to record the discard.
+  # `needs_input` ends nothing: an idle session is precisely the condition a
+  # queued message is waiting for, so the response here is to deliver it.
+  #
+  # Most pauses never reach this with anything to do. AgentSessionJob drains the
+  # queue at each of its four turn-end paths and does it BEFORE `pause!`, so the
+  # session hands off while still `running` and never flaps through
+  # `needs_input`. That remains the hot path. What it cannot cover is a message
+  # enqueued between its read of the queue and this transition committing, and
+  # it does not run at all for the pauses that originate elsewhere — the MCP
+  # `pause` action, `POST /api/v1/sessions/:id/pause`, the web pause button,
+  # Sessions::InterruptService, SessionRecoveryService.
+  #
+  # Deferred to a job rather than drained inline. AASM runs `after` callbacks
+  # inside the transition's own transaction, and delivering means resuming the
+  # session — a second AASM event on this object, nested inside the first, plus
+  # an AgentSessionJob enqueue — from whatever thread happened to call `pause!`,
+  # including a web request. EnqueuedMessageDrainJob does it once the transition
+  # is committed and visible, under the same per-session advisory lock
+  # Sessions::InterruptService takes, and carries the bounded-retry and
+  # give-up-loudly logic that keeps a session which cannot take its message from
+  # bouncing between states forever.
+  def drain_enqueued_messages_after_pause
+    return unless needs_input?
+    return unless enqueued_messages.pending.exists?
+
+    # Enqueued after commit, not inline. The job re-reads the session, so it
+    # must not run against a transition the transaction has not committed yet —
+    # and on the paths where `pause!` is nested inside a caller's own
+    # transaction (Sessions::InterruptService holds one across the whole
+    # interrupt), inline would mean enqueueing work against a state that may
+    # still roll back.
+    #
+    # The rescue is INSIDE the block as well as around the method, and both are
+    # load-bearing: the block runs after this method has returned, so an outer
+    # rescue alone cannot see it. Same shape as alert_on_stranded_enqueued_messages.
+    session_id = id
+    ActiveRecord.after_all_transactions_commit do
+      EnqueuedMessageDrainJob.set(wait: EnqueuedMessageDrainJob::DELAY).perform_later(session_id)
+    rescue => e
+      report_swallowed_side_effect(__method__, e, alert: true)
+    end
+  rescue => e
+    # Alerting: a swallowed failure here puts the session back in exactly the
+    # state this callback exists to prevent — idle, with a message queued for
+    # it, and nothing coming.
+    report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Drop the drain attempt counter when the session gets going again.
+  #
+  # The counter bounds EnqueuedMessageDrainJob's retries within one idle spell.
+  # A session that resumes by any route — the drain itself succeeding, a human
+  # follow-up, a recovery sweep — has ended that spell, and a count left over
+  # from it would deny a later drain the attempts it is owed.
+  def clear_enqueued_drain_attempts
+    return unless metadata&.key?(EnqueuedMessageDrainJob::ATTEMPTS_KEY)
+
+    update_column(:metadata, metadata.except(EnqueuedMessageDrainJob::ATTEMPTS_KEY))
+  rescue => e
+    # Log-only: a stale counter costs a future drain its retries, and the
+    # give-up path alerts loudly when that happens.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Retire every message still queued for this session, because archiving has
@@ -1359,15 +1435,21 @@ module SessionStateMachine
     report_swallowed_side_effect(__method__, e, alert: false)
   end
 
-  # The ONE automatic trigger for the Status panel's blurb: the session coming
-  # to rest, at needs_input or failed. Those are the moments the summary is
-  # about — "where things stand" is a question you ask of a session that has
-  # stopped — and the moments the operator is most likely to read it next.
+  # The automatic trigger for the Status panel's blurb: the session coming to
+  # rest, at needs_input or failed. Those are the moments the summary is about —
+  # "where things stand" is a question you ask of a session that has stopped —
+  # and the moments the operator is most likely to read it next.
   #
-  # Nothing else generates: no polling, no generate-on-page-view, no
-  # generate-per-message. The generator itself still refuses when the session
-  # has not moved since the last summary, so a transition that adds no
-  # transcript costs nothing.
+  # Still no polling, no generate-on-page-view and no generate-per-message: this
+  # is the only place a generation is started for a session that is doing fine.
+  # StatusSummaryBackstopJob is the repair path behind it, and it only touches a
+  # session already at rest whose last generation demonstrably did not land — a
+  # job lost to a deploy, a fork parked out of quota, a claim abandoned past
+  # PENDING_TIMEOUT. Without it a session in the action queue has no further
+  # transition to try again on, so one lost generation is permanent.
+  #
+  # The generator itself still refuses when the session has not moved since the
+  # last summary, so a transition that adds no transcript costs nothing.
   def enqueue_status_summary_refresh
     return if transcript.blank?
 
