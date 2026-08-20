@@ -104,6 +104,24 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
     end
   end
 
+  # A forced Regenerate that then failed leaves the record `failed` with the last
+  # real summary still in place and still CURRENT. An unforced retry would be
+  # answered "Summary is current" without clearing the state, so treating
+  # `failed` as its own repair trigger would re-enqueue this session every
+  # interval forever, spending a slot the repairable sessions need.
+  test "a failed record whose summary is still current is not retried" do
+    session = at_rest
+    SessionStatusSummary.create!(
+      session: session, state: "failed", summary: "Where things stand.",
+      transcript_line_count: 2, generated_at: 1.minute.ago,
+      error: "The summary fork failed: process_failed"
+    )
+
+    assert_no_enqueued_jobs only: SessionStatusSummaryJob do
+      StatusSummaryBackstopJob.perform_now
+    end
+  end
+
   test "a running session is not swept — it has a transition of its own coming" do
     at_rest(status: :running)
 
