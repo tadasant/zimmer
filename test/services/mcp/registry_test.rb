@@ -39,13 +39,13 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   test "groups compose" do
     names = Mcp::Registry.tools_for([ "health", "notifications_readonly" ]).map(&:tool_name)
 
-    assert_equal %w[get_notifications get_system_health action_health get_spot_policy action_spot_policy].sort, names.sort
+    assert_equal %w[get_notifications get_system_health action_health get_spot_policy action_spot_policy get_costs].sort, names.sort
   end
 
   test "every registered tool class exists and declares a unique name" do
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 20, names.size
+    assert_equal 21, names.size
   end
 end

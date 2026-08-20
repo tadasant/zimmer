@@ -1,6 +1,10 @@
 Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
+    # Read-only: both tables are measurements of API calls that already happened,
+    # written by TokenUsageIngestionService from transcripts. There is nothing to
+    # hand-author, and a corrected row comes from re-running ingestion.
+    resources :adhoc_token_usages, only: [ :index, :show ]
     # Read-only plus destroy: rows are written by TranscriptHooks::GithubCommentAuthorshipHook
     # from what a session actually did, so there is nothing to hand-author — but a row
     # recorded in error must be removable, since it suppresses a comment fleet-wide.
@@ -22,6 +26,7 @@ Rails.application.routes.draw do
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     resources :runtime_login_attempts
+    resources :session_token_usages, only: [ :index, :show ]
     resources :sessions
     # No create: a summary row exists because a session asked for one. Edit is
     # limited to `state` (the dashboard's FORM_ATTRIBUTES), which is how an
@@ -75,6 +80,11 @@ Rails.application.routes.draw do
       resources :configs, only: [ :index ]
       resources :mcp_servers, only: [ :index ]
       resources :skills, only: [ :index ]
+
+      # Token-spend ledger. `index` is the rollups the Costs page renders;
+      # `records` is the row-level export the cost-vs-performance analysis needs.
+      get "costs", to: "costs#index"
+      get "costs/records", to: "costs#records"
 
       # Organizational categories for the sessions dashboard.
       resources :categories, only: [ :index, :create, :update, :destroy ] do
@@ -220,6 +230,9 @@ Rails.application.routes.draw do
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
 
   # Quotas page (per-runtime via ?runtime=claude_code|codex)
+  # Costs sits beside Quotas: same posture question, different source. Quotas
+  # reads Anthropic's rate-limit headers; Costs reads our own token ledger.
+  get "costs", to: "costs#show", as: :costs
   get "quotas", to: "quotas#show", as: :quotas
   post "quotas/refresh_all", to: "quotas#refresh_all", as: :refresh_all_quotas
   post "quotas/refresh_account/:id", to: "quotas#refresh_account", as: :refresh_account_quotas

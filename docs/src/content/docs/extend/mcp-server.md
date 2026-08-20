@@ -152,14 +152,14 @@ production.
 
 ## The tool surface
 
-18 tools, four domains.
+21 tools, four domains.
 
 | Group | Tools |
 | --- | --- |
 | `sessions` | `quick_search_sessions`, `get_session`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
-| `health` | `get_system_health`, `action_health` |
+| `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |
 
 `get_session` always includes a `### Session Hierarchy` section (the spawn tree this session belongs
 to — an edge means "spawned", not "most recently talked to") and a `### Human Messages` section (the
@@ -278,6 +278,21 @@ The two wake-up tools are the ones worth knowing by name. `wake_me_up_later` sle
 session and creates a one-time trigger that resumes it at a wall-clock time; `wake_me_up_when_session_changes_state`
 resumes it when *another* session hits `needs_input`, `failed`, or `archived`. Together they are how
 a session waits on CI, on a deploy, or on a session it spawned, without burning a process on `sleep`.
+
+### `get_costs`
+
+Reads Zimmer's token-spend ledger: what inference cost, by agent root, model, session, and kind of
+token. Fleet-wide by default; pass `agent_root` or `session_id` to scope it, `days` to set the
+window.
+
+It lives in `health` rather than `sessions` for the same reason `get_spot_policy` does — this is the
+deployment's posture, not one session's business — and it is therefore **not** in the `self_session`
+set injected into every session. A session has no reason to read the whole fleet's bill.
+
+The usual caution applies to anything it returns: the dollar figures are list price on
+subscription-billed accounts, so they are a comparable unit across models rather than money owed,
+and a model with no configured rate contributes zero and is named explicitly rather than being
+folded silently into a total. See [Token spend](/operate/costs/).
 
 ## Protocol
 
