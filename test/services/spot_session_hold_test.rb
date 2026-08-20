@@ -95,6 +95,90 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     end
   end
 
+  # The backoff is a queue-stability property, not politeness. A flat interval
+  # means N held sessions put a FIXED N/interval jobs per minute onto `agents`
+  # forever — an arrival rate that cannot fall when the system is struggling,
+  # which is what produced the 2026-08-20 backlog page.
+  test "consecutive utilization holds double the re-check interval" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    base = SpotGateService::RETRY_DELAY
+
+    delays = SpotGateService.stub(:evaluate, held_decision) do
+      Array.new(3) { hold_and_measure(session) }
+    end
+
+    assert_delay_band base, delays[0], "the first hold takes the plain interval"
+    assert_delay_band base * 2, delays[1], "the second hold doubles it"
+    assert_delay_band base * 4, delays[2], "the third hold doubles again"
+  end
+
+  # A utilization hold waits on a quota window coming back down, which takes
+  # hours — so it may back off a long way, but not without bound.
+  test "a utilization hold stops doubling at its ceiling" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    delay = SpotGateService.stub(:evaluate, held_decision) do
+      # Four prior holds would put an unclamped delay at 10m * 2**4 = 160m.
+      4.times { SpotSessionHold.hold_if_needed(session.reload) }
+      hold_and_measure(session)
+    end
+
+    assert_delay_band SpotSessionHold::UTILIZATION_MAX_RETRY_DELAY, delay
+  end
+
+  # A fleet-cap hold waits on any running session finishing, which can happen at
+  # any moment, so it gets a much shorter ceiling: the backoff exists to stop a
+  # STUCK population spinning, not to make a session that could start in five
+  # minutes wait an hour.
+  test "a fleet-cap hold caps well below the utilization ceiling" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    delay = SpotGateService.stub(:evaluate, fleet_cap_decision) do
+      4.times { SpotSessionHold.hold_if_needed(session.reload) }
+      hold_and_measure(session)
+    end
+
+    assert_delay_band SpotSessionHold::FLEET_CAP_MAX_RETRY_DELAY, delay
+    assert_operator SpotSessionHold::FLEET_CAP_MAX_RETRY_DELAY, :<,
+                    SpotSessionHold::UTILIZATION_MAX_RETRY_DELAY
+  end
+
+  # The delay must reach the job as well as the metadata: a HELD_RETRY_AT that
+  # says "in an hour" over a job GoodJob will run in ten minutes is a lie the
+  # session page would tell, and the re-check load would never actually fall.
+  test "the backed-off delay is what the re-check job is scheduled with" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      4.times { SpotSessionHold.hold_if_needed(session.reload) }
+
+      assert_enqueued_with(job: AgentSessionJob) do
+        SpotSessionHold.hold_if_needed(session.reload)
+      end
+    end
+
+    enqueued = enqueued_jobs.last
+    scheduled_at = Time.zone.at(enqueued["at"] || enqueued[:at])
+    retry_at = Time.zone.parse(session.reload.metadata[SpotSessionHold::HELD_RETRY_AT])
+
+    assert_in_delta retry_at.to_f, scheduled_at.to_f, 5
+    assert_operator scheduled_at - Time.current, :>, SpotGateService::RETRY_DELAY
+  end
+
+  # Getting through resets the ladder: the next time this session is held it must
+  # start at the plain interval, not resume from wherever the last outage left it.
+  test "starting resets the backoff for the next hold" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      3.times { SpotSessionHold.hold_if_needed(session.reload) }
+    end
+    SpotGateService.stub(:evaluate, allowed_decision) { SpotSessionHold.hold_if_needed(session.reload) }
+
+    delay = SpotGateService.stub(:evaluate, held_decision) { hold_and_measure(session) }
+    assert_delay_band SpotGateService::RETRY_DELAY, delay
+  end
+
   test "a hold is cleared once the session is allowed through" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
     SpotGateService.stub(:evaluate, held_decision) { SpotSessionHold.hold_if_needed(session) }
@@ -116,6 +200,34 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   end
 
   private
+
+  # A delay is correct when it sits in [expected, expected + RETRY_JITTER]: the
+  # ladder sets the floor and the jitter is added on top of it. Asserted as a
+  # one-sided band rather than a symmetric tolerance, so a rung that came out too
+  # SHORT — the failure that would put the arrival rate back where it was — cannot
+  # pass by landing inside a delta wide enough to swallow the jitter.
+  def assert_delay_band(expected, actual, message = nil)
+    drift = 5.seconds
+    assert_operator actual, :>=, expected - drift, message
+    assert_operator actual, :<=, expected + SpotSessionHold::RETRY_JITTER + drift, message
+  end
+
+  # Record one hold and return how far out it scheduled the re-check. Measured
+  # from HELD_RETRY_AT because that is the value both the session page and the
+  # enqueue are built from.
+  def hold_and_measure(session)
+    SpotSessionHold.hold_if_needed(session.reload)
+    Time.zone.parse(session.reload.metadata[SpotSessionHold::HELD_RETRY_AT]) - Time.current
+  end
+
+  def fleet_cap_decision
+    SpotGateService::Decision.new(
+      allowed: false, reason: "fleet_at_cap",
+      detail: "Holding spot sessions: 10 of 10 session slots taken.",
+      five_hour: nil, weekly: nil, active_sessions: 10, fleet_cap: 10,
+      accounts_read: 2, pool_size: 2
+    )
+  end
 
   def held_decision
     SpotGateService::Decision.new(

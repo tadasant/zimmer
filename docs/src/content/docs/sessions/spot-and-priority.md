@@ -243,6 +243,35 @@ session for good.
 The jitter matters at a backlog: without it, sessions held in the same minute re-check in the same
 minute forever, every one of them reading the same fleet size before any of them has started.
 
+#### Consecutive holds back off
+
+Jitter spreads a held population out. It does not make it smaller — and the size is what matters to
+the queue. A flat ten-minute interval means *N* held sessions put a fixed *N* / 10 min of
+`AgentSessionJob` work onto the `agents` queue for as long as the hold lasts, an arrival rate that
+cannot fall when the deployment is struggling. That is what it is for: on 2026-08-20, ~80
+quota-held sessions re-checking every ~11 minutes held a standing ~8 jobs/min against sixteen
+`agents` threads, eleven of them occupied for hours by live sessions. When a host-latency episode
+pushed each re-check into the tens of seconds, arrivals outran service and the GoodJob ready queue
+grew without draining until `SystemHealthMonitorJob` paged.
+
+So each *consecutive* hold doubles the interval — 10m, 20m, 40m — up to a ceiling that depends on
+why the session is held, because the two reasons clear on very different timescales:
+
+| Hold reason | Ceiling | Why |
+| --- | --- | --- |
+| `at_utilization_limit` | 1 hour | A pool window comes back down over hours. Re-checking more often than this cannot learn anything new, and this is the reason that produces the long-lived holds. |
+| `fleet_at_cap` | 30 minutes | A slot frees whenever any running session ends, which is unpredictable and often soon. |
+
+Jitter is added *after* the ceiling, so a population pinned at the ceiling still spreads out. The
+ladder resets when the session gets through: `spot_hold_count` is one of the metadata keys cleared
+on start, so the next outage starts again at ten minutes rather than resuming where the last one
+left off.
+
+The cost is real and is not hidden: a session can now sleep longer than it strictly had to, up to
+its ceiling, if the condition clears early. That is bounded, visible as `spot_hold_retry_at` on the
+session's detail page, and a human who wants it now can make the one session priority — which is
+what the hold banner already says.
+
 Refusing instead would mean the gate silently deletes work: a `github_issue` trigger that fires once
 during a busy afternoon would never run at all.
 
