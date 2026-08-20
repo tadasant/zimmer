@@ -344,7 +344,77 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match "Needs Reauth", account_status_badge_tag("needs_reauth")
   end
 
+  # The Account Pool's "we're blocked until X" notes.
+
+  test "pool_five_hour_reset_line names the reset and the wait" do
+    line = pool_five_hour_reset_line(measure(next_five_hour_reset: 90.minutes.from_now))
+
+    assert_match "Next usable 5-hour reset", line
+    assert_match(/in 1h \d+m/, line)
+    assert_match "UTC", line
+    assert_match(/data-controller="local-time"/, line)
+  end
+
+  # The case the whole distinction exists for: no 5-hour reset frees anything
+  # while every account's week is gone, and the note has to say that rather than
+  # go quiet.
+  test "pool_five_hour_reset_line says so when every account's 7-day window is spent" do
+    line = pool_five_hour_reset_line(measure(next_five_hour_reset: nil, read_count: 3, weekly_spent_count: 3))
+
+    assert_match "No 5-hour reset frees capacity", line
+    assert_match "blocked until the 7-day reset", line
+    assert_no_match(/Next usable 5-hour reset/, line)
+  end
+
+  test "pool_five_hour_reset_line reads calmly when nobody is waiting on a 5-hour reset" do
+    line = pool_five_hour_reset_line(measure(next_five_hour_reset: nil, read_count: 2, weekly_spent_count: 0))
+
+    assert_match "No 5-hour reset pending", line
+    assert_no_match(/blocked/, line)
+  end
+
+  test "pool_weekly_reset_line names the reset, the wait, and how many accounts are waiting on it" do
+    line = pool_weekly_reset_line(measure(next_weekly_reset: 2.days.from_now, read_count: 4, weekly_spent_count: 3))
+
+    assert_match "Next 7-day reset", line
+    assert_match(/in 1d 23h|in 2d/, line)
+    assert_match "3 accounts whose 7-day window is spent", line
+  end
+
+  test "pool_weekly_reset_line says nothing is waiting when no week is spent" do
+    line = pool_weekly_reset_line(measure(next_weekly_reset: nil, read_count: 2, weekly_spent_count: 0))
+
+    assert_match "No account&#39;s 7-day window is spent", line
+  end
+
+  test "pool_weekly_reset_line owns up to a spent week with no recorded reset time" do
+    line = pool_weekly_reset_line(measure(next_weekly_reset: nil, read_count: 1, weekly_spent_count: 1))
+
+    assert_match "1 account with a spent 7-day window", line
+    assert_match "no reset time recorded for it", line
+  end
+
+  test "pool_reset_time carries the UTC reading in the text, the datetime, and the title" do
+    at = Time.utc(2026, 8, 20, 6, 58)
+
+    tag = pool_reset_time(at)
+
+    assert_match "Aug 20, 06:58 UTC", tag
+    assert_match 'datetime="2026-08-20T06:58:00Z"', tag
+    assert_match 'title="Aug 20, 06:58 UTC"', tag
+  end
+
   private
+
+  # A pool measure with only the fields these notes read set to anything
+  # interesting.
+  def measure(**overrides)
+    ClaudeAccountPool::Measure.new(**{
+      five_hour: 0.5, weekly: 0.5, worst_five_hour: 0.5, worst_weekly: 0.5,
+      account_count: 2, read_count: 2, weekly_spent_count: 0,
+      next_five_hour_reset: nil, next_weekly_reset: nil
+    }.merge(overrides))
+  end
 
   def snapshot(**attributes)
     ClaudeAccountQuotaSnapshot.new(**attributes)
