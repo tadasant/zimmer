@@ -509,7 +509,25 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     assert_not codex.reload.needs_reauth?, "transient failure must not mark needs_reauth"
   end
 
-  test "permanent codex failure (refresh_token_reused) marks needs_reauth without retry" do
+  test "permanent codex failure (refresh_token_expired) marks needs_reauth without retry" do
+    codex = claude_accounts(:codex_primary)
+    set_codex_last_refresh!(codex, 25.hours.ago)
+
+    failed_response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    failed_response.stubs(:code).returns("400")
+    failed_response.stubs(:body).returns({ error: { code: "refresh_token_expired" } }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(failed_response)
+
+    assert_no_enqueued_jobs(only: RefreshRuntimeAuthTokensJob) do
+      RefreshRuntimeAuthTokensJob.perform_now
+    end
+
+    assert codex.reload.needs_reauth?
+  end
+
+  # refresh_token_reused says somebody else spent the value, which is a reason to
+  # try again rather than a reason to summon a human (#530).
+  test "codex refresh_token_reused is retried rather than marked needs_reauth" do
     codex = claude_accounts(:codex_primary)
     set_codex_last_refresh!(codex, 25.hours.ago)
 
@@ -518,11 +536,11 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     failed_response.stubs(:body).returns({ error: { code: "refresh_token_reused" } }.to_json)
     Net::HTTP.any_instance.stubs(:request).returns(failed_response)
 
-    assert_no_enqueued_jobs(only: RefreshRuntimeAuthTokensJob) do
+    assert_enqueued_with(job: RefreshRuntimeAuthTokensJob) do
       RefreshRuntimeAuthTokensJob.perform_now
     end
 
-    assert codex.reload.needs_reauth?
+    assert_not codex.reload.needs_reauth?
   end
 
   private

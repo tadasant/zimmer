@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_20_043000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_20_140000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -135,10 +135,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_043000) do
     t.string "email", null: false
     t.boolean "is_current", default: false, null: false
     t.datetime "last_rotated_to_at"
+    t.datetime "last_stale_refresh_failure_at"
     t.jsonb "oauth_config", default: {}
     t.integer "priority", default: 0, null: false
     t.integer "quota_hit_count", default: 0, null: false
     t.string "runtime", default: "claude_code", null: false
+    t.integer "stale_refresh_failures", default: 0, null: false
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
     t.index ["email", "runtime"], name: "index_claude_accounts_on_email_and_runtime", unique: true
