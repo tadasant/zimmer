@@ -46,6 +46,6 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 21, names.size
+    assert_equal 22, names.size
   end
 end

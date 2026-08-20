@@ -79,11 +79,6 @@ Rails.application.configure do
   config.good_job.poll_interval = 5
   config.good_job.enable_cron = true
   config.good_job.cron = {
-    outcome_analysis_batch_pump: {
-      cron: "* * * * *", # Every minute — the engine behind "Analyze All" concurrency
-      class: "OutcomeAnalysisBatchPumpJob",
-      description: "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
-    },
     cleanup_orphaned_sessions: {
       cron: "*/5 * * * *", # Every 5 minutes
       class: "CleanupOrphanedSessionsJob",
