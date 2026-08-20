@@ -103,25 +103,59 @@ class SystemHealthMonitorJob < ApplicationJob
     )
   end
 
-  # Compact, actionable alert body: how deep, whether it is draining, and whether
-  # there is enough worker capacity to drain it.
+  # Compact, actionable alert body: how deep, what the depth is made of, whether
+  # it is draining, and whether there is enough worker capacity to drain it.
+  #
+  # The breakdown lines are the difference between a page that can be triaged and
+  # one that cannot. Zimmer's queues have very different shapes — `agents` holds a
+  # thread for the whole life of a session, `default` and `pollers` turn jobs over
+  # in milliseconds — so a bare ready count is compatible with both "one starved
+  # queue" and "everything is busy", and those want opposite responses. Naming the
+  # queue and the job classes in the page itself is what makes the next firing
+  # readable without a database the responder may have no route to: agent triage
+  # sessions have no shell on the production host and no way to open /jobs, so an
+  # alert that says "check the dashboard" is a dead end for the reader most likely
+  # to be reading it.
   def build_details(system_health)
     stats = system_health[:queue_stats]
     workers = system_health[:worker_stats]
+    breakdown = ready_backlog_breakdown
 
     [
       "GoodJob backlog is critical.",
       "",
       "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
         "oldest waiting #{HealthMonitorService.format_wait(stats[:oldest_ready_age_seconds])}",
+      "• Ready by queue: #{format_breakdown(breakdown[:by_queue])}",
+      "• Ready by job class: #{format_breakdown(breakdown[:by_job_class])}",
       "• Not backlog: #{stats[:claimed_count]} claimed (executing now), " \
         "#{stats[:scheduled_count]} scheduled (future-dated)",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
       "",
-      "Check the GoodJob dashboard (/jobs) for the backed-up queue and job classes. " \
-        "A backlog that is not draining usually means a queue's worker threads are " \
-        "blocked (e.g. long external-API waits) or a worker is down."
+      "A backlog concentrated in ONE queue is that queue starving: its threads are " \
+        "all held (an `agents` thread lasts as long as its session) or blocked on a " \
+        "long external wait, and the other queues will still look healthy — including " \
+        "the processing rate, which is a trailing hour and lags a stall by many minutes. " \
+        "A backlog spread across every queue is the worker itself: down, restarting, or " \
+        "starved of database round-trips."
     ].join("\n")
+  end
+
+  # Never let the diagnostic detail be the reason the page does not go out. The
+  # breakdown is two extra grouped scans of `good_jobs` at exactly the moment the
+  # database may be the thing going wrong, and a depth number that reaches a human
+  # beats a richer one that raises on the way.
+  def ready_backlog_breakdown
+    HealthMonitorService.new.ready_backlog_breakdown
+  rescue StandardError => e
+    Rails.logger.warn("[SystemHealthMonitorJob] Could not read the backlog breakdown: #{e.message}")
+    { by_queue: {}, by_job_class: {} }
+  end
+
+  def format_breakdown(counts)
+    return "unavailable" if counts.blank?
+
+    counts.map { |name, count| "#{name} #{count}" }.join(", ")
   end
 end

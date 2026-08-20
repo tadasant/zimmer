@@ -509,6 +509,41 @@ future-dated rows, so a locked row dated in the future is counted once, as claim
 otherwise, so a wake-up trigger enqueued yesterday starts accruing wait when it comes due rather
 than looking like a day-old stall the moment it becomes runnable.
 
+### The page says which queue, and of what
+
+A ready count on its own is not triageable. Zimmer runs four queues with very different shapes — an
+`agents` thread is held for the entire life of a session, while `default` and `pollers` turn jobs
+over in milliseconds — so the same number is equally consistent with "one queue is starved" and
+"everything is busy", and those want opposite responses. Worse, the healthy-looking signals stay
+healthy in the starved case: the other queues keep draining, and `processing_rate_per_hour` is a
+*trailing* hour, so it lags a stall by many minutes.
+
+So the alert body carries two more lines, from `HealthMonitorService#ready_backlog_breakdown`:
+
+```
+• Ready by queue: agents 231, default 18, pollers 2
+• Ready by job class: AgentSessionJob 231, SessionTitleJob 12, HeartbeatSweepJob 6
+```
+
+Both are taken over the same population as `ready_count`, biggest first, capped at
+`READY_BREAKDOWN_LIMIT` (5) entries each. Read them this way:
+
+- **Concentrated in one queue** — that queue is starving. Its threads are all held, or blocked on a
+  long external wait.
+- **Spread across every queue** — the worker itself: down, restarting, or starved of database
+  round-trips.
+
+This is deliberately *not* folded into `queue_statistics`, which runs on every `/health` render;
+these are two extra grouped scans of `good_jobs` and are only worth paying for when something is
+about to page. And if they raise — plausible, since the database may be the thing going wrong — the
+lines degrade to `unavailable` and the page still goes out. A depth number that reaches a human
+beats a richer one that raises on the way.
+
+The alert used to end by telling the reader to check the GoodJob dashboard at `/jobs` for exactly
+this. That is a dead end for the reader most likely to be reading it: an agent triage session has no
+shell on the production host and no way to open the dashboard, so the breakdown has to be *in* the
+page.
+
 ### "N active / M registered" workers
 
 The worker line in the queue-backlog alert (and on `/health`) comes from

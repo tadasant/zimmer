@@ -13,6 +13,34 @@
 # fleet size before any of them has started — so the whole queue either stampedes
 # past the cap together or waits together.
 #
+# It also BACKS OFF, and that is a queue-stability property rather than a
+# politeness one. Jitter spreads a population out; it does not make it smaller.
+# A flat re-check interval means a held population of N sessions puts a FIXED
+# N / interval jobs per minute onto `agents` for as long as the hold lasts — an
+# arrival rate that cannot fall when the system is struggling, which is exactly
+# when it needs to. On 2026-08-20 that was ~80 quota-held sessions re-checking
+# every ~11 minutes: a standing ~8 jobs/min against 16 `agents` threads, 11 of
+# them occupied for hours by live sessions. When a host-latency episode pushed
+# per-re-check service time into the tens of seconds, arrivals outran service and
+# the GoodJob ready queue grew monotonically (152 -> 251 jobs, head of queue
+# unmoved for 23 minutes) until `SystemHealthMonitorJob` paged. Every one of
+# those re-checks was refused, because the pool was quota-exhausted the whole
+# time. Doubling the interval on consecutive holds turns that fixed arrival rate
+# into a decaying one.
+#
+# The ceiling depends on WHY the session is held, because the two reasons clear
+# on very different timescales. A utilization hold waits on a quota window coming
+# back down, which takes hours; a fleet-cap hold waits on any running session
+# finishing, which can happen at any moment. Backing both off to the same ceiling
+# would either leave the utilization case re-checking pointlessly or make the
+# fleet-cap case sluggish, so they get different ones.
+#
+# The cost is disclosed rather than hidden: a session can now sleep longer than
+# it strictly had to — up to its ceiling — if the condition clears early. That is
+# bounded (an hour at worst), visible on the session page via HELD_RETRY_AT, and
+# a human who wants it now can make the one session priority, which the hold
+# message already says.
+#
 # The hold is recorded in `metadata` so the session detail page can explain
 # itself rather than looking mysteriously stuck, and a log line lands in the
 # session's own log for the same reason.
@@ -34,6 +62,28 @@ class SpotSessionHold
   # Spread over which held sessions re-check, so a backlog does not re-evaluate
   # in lockstep.
   RETRY_JITTER = 2.minutes
+
+  # Consecutive holds double the re-check interval from SpotGateService::RETRY_DELAY:
+  # 10m, 20m, 40m, and on up to the ceiling for the hold's reason. Clamped so a
+  # session held for days cannot turn `2 ** steps` into a number no ceiling has to
+  # reason about; the ceilings below are what actually bound the delay.
+  MAX_BACKOFF_STEPS = 5
+
+  # Ceiling for a utilization hold. The pool's windows come back down over hours,
+  # so re-checking more often than this cannot learn anything new — and this is
+  # the reason that produces long-lived holds, and therefore the standing load.
+  UTILIZATION_MAX_RETRY_DELAY = 1.hour
+
+  # Ceiling for a fleet-cap hold. A slot frees whenever any running session ends,
+  # which is unpredictable and often soon, so this stays short: the point of the
+  # backoff is to stop a *stuck* population spinning, not to make a session that
+  # could start in five minutes wait half an hour.
+  FLEET_CAP_MAX_RETRY_DELAY = 30.minutes
+
+  # The gate reasons this service backs off differently. Anything else — a reason
+  # added later, or one of the fail-open reasons that never reaches a hold at all
+  # — falls to the shorter ceiling, which is the safe direction to be wrong in.
+  UTILIZATION_REASON = "at_utilization_limit"
 
   class << self
     # True when the session was held and the caller should stop. False means
@@ -71,10 +121,10 @@ class SpotSessionHold
     private
 
     def hold!(session, decision, log_buffer:, images:, files:)
-      delay = SpotGateService::RETRY_DELAY + rand(RETRY_JITTER.to_i).seconds
-      retry_at = Time.current + delay
       metadata = session.metadata || {}
       count = metadata[HELD_COUNT].to_i + 1
+      delay = retry_delay(decision, count)
+      retry_at = Time.current + delay
 
       session.update_columns(
         metadata: metadata.merge(
@@ -99,6 +149,24 @@ class SpotSessionHold
         files: files.presence,
         delay: delay
       )
+    end
+
+    # How long this hold waits before re-checking.
+    #
+    # `count` is 1-based — the hold being recorded right now — so the first hold
+    # takes no doubling and keeps the plain SpotGateService::RETRY_DELAY. The
+    # jitter is added AFTER the ceiling so that a population pinned at the ceiling
+    # still spreads out rather than re-checking in lockstep, which is the failure
+    # the jitter existed for in the first place.
+    def retry_delay(decision, count)
+      steps = [ count - 1, MAX_BACKOFF_STEPS ].min
+      base = SpotGateService::RETRY_DELAY * (2**steps)
+
+      [ base, ceiling_for(decision) ].min + rand(RETRY_JITTER.to_i).seconds
+    end
+
+    def ceiling_for(decision)
+      decision.reason == UTILIZATION_REASON ? UTILIZATION_MAX_RETRY_DELAY : FLEET_CAP_MAX_RETRY_DELAY
     end
   end
 end
