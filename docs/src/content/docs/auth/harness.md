@@ -668,12 +668,25 @@ eight seconds — parked correctly at 04:19, and back in `needs_input` by 09:00:
    still empty (two status-summary forks parked `quota_exhausted` three and eleven minutes later).
    `AuthOutageParkService.park_undelivered_turn!` now guards those exits: an undelivered turn plus a
    pool with no available account is the outage, so it parks into `waiting` with a scheduled retry
-   instead. Both conditions are required — parking a session that genuinely finished would sleep it
-   and then nudge an agent with nothing left to do.
+   instead.
 
-`active_follow_up_prompt` is the evidence for "undelivered" because `AgentSessionJob` writes it
-while handing a turn to the runtime and *removes* it on the clean-completion path. Its presence at
-stop time means the turn never ran.
+The tempting test for "undelivered" is that `active_follow_up_prompt` is still set, and it is the
+wrong one. `AgentSessionJob` removes that key in exactly **one** place — the `:needs_input` branch of
+the exit decision — and the paths this guard protects are the *fallbacks*, which never clear it. So a
+turn that ran to completion and exited through one of them still carries the marker; on the
+`end_turn`-plus-dead-process fallback that marker sits next to the strongest evidence available that
+the turn *did* complete. Parking on it would sleep a finished session and then nudge an agent with
+nothing left to do.
+
+`park_undelivered_turn!` therefore asks for positive evidence, and refuses on every one of these:
+
+| It declines when… | Because |
+| --- | --- |
+| the prompt appears in the persisted transcript | the turn ran — the same comparison `TranscriptPollerService` makes to decide a follow-up landed. 6597's transcript never grew past the 115 messages it held before the park |
+| the session is not `running` | a user pause terminates the process *before* transitioning, so these exits are reachable for a session a human already stopped |
+| `paused_by` is `"user"` | same reason, stated directly — re-arming a wake trigger would undo their decision |
+| `auth_outage_reason` is already set | two of the three call sites can be reached in one pass through the monitoring loop, and a double park charges one stop twice against the consecutive-park backoff |
+| the pool could not be *read* | an unreadable pool is not an empty one. `.runtime_has_available_account?` rescues to `false` meaning "do not wake", which is conservative; the same `false` here would mean "park", which is not — and a runtime with no accounts at all would then park, time out, finish and park again for as long as it lived |
 
 ### The sweep wakes a batch, not the fleet
 

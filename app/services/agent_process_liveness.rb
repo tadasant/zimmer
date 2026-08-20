@@ -234,7 +234,8 @@ class AgentProcessLiveness
     #   * an identity recorded for a DIFFERENT pid than the one being adopted — the two
     #     have drifted, so the identity says nothing about this pid.
     #   * `:unknown` — another boot, another PID namespace, or no `/proc` at all (macOS
-    #     development). `docs/limitations.md` records that the guard is inert there.
+    #     development), where every probe returns nil and this guard is inert exactly as the
+    #     spawn-side one is.
     #
     # @param session [Session, nil]
     # @param pid [Integer, nil] the pid the caller is about to start monitoring

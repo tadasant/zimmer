@@ -478,7 +478,8 @@ class AgentSessionJob < ApplicationJob
         # Use lifecycle_manager to resume monitoring
         resume_result = lifecycle_manager.resume_monitoring(
           pid: process_pid,
-          stderr_log_path: stderr_log_path
+          stderr_log_path: stderr_log_path,
+          verify_identity: true
         )
 
         if resume_result.success?
@@ -519,10 +520,6 @@ class AgentSessionJob < ApplicationJob
             @broadcast_service.session_status(session)
             return
           end
-          # park! reloads and rewrites metadata when it gets that far, so re-read before
-          # merging into it — otherwise a park that failed part-way would have its
-          # pending_sleep clobbered by this in-memory copy.
-          session.reload
           # Mark as recovery-initiated pause so CleanupOrphanedSessionsJob and
           # DeploymentRecoveryJob can auto-continue this session. Without this marker,
           # the session gets stuck at needs_input because no recovery path picks it up.

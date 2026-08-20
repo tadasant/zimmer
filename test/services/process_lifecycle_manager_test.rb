@@ -411,7 +411,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     AgentProcessLiveness.stubs(:adoptable?).with(@session, 54321).returns(false)
 
     manager = create_manager
-    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log")
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log", verify_identity: true)
 
     assert_not result.success?,
       "A recovery must not adopt a process it cannot prove is the one it spawned"
@@ -425,10 +425,23 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     AgentProcessLiveness.stubs(:adoptable?).with(@session, 54321).returns(true)
 
     manager = create_manager
-    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log")
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log", verify_identity: true)
 
     assert result.success?
     assert_equal :running, manager.current_state
+  end
+
+  # SessionsController calls resume_monitoring purely to load the manager with a pid so
+  # #terminate can kill it. A refusal there would skip the kill and orphan a live agent, so
+  # the guard is opt-in and off by default.
+  test "resume_monitoring does not check identity unless the caller asks" do
+    @mock_process_manager.running_hook = ->(pid) { pid == 54321 }
+    AgentProcessLiveness.expects(:adoptable?).never
+
+    manager = create_manager
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log")
+
+    assert result.success?, "The termination path must still be able to load a pid"
   end
 
   test "resume_monitoring fails when not in idle state" do
