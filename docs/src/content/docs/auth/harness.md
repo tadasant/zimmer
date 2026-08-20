@@ -116,7 +116,7 @@ sequenceDiagram
         else the credential is dead<br/>(401, 404, expired, revoked)
             P->>DB: status = needs_reauth
         else the VALUE is stale<br/>(invalid_grant "not found or invalid",<br/>refresh_token_reused)
-            P->>DB: count a strike; condemn only<br/>on the third, spread over 15+ min
+            P->>DB: count a strike; condemn only on the<br/>third, spread over 30+ min. No retry —<br/>the same value would be rejected again
         else transient
             P->>C: re-enqueue with backoff (2/4/8 min, max 3)
         end
@@ -282,16 +282,25 @@ An `invalid_grant` means one of two unrelated things, and the HTTP status cannot
 
 | Vendor says | Means | Zimmer does |
 | --- | --- | --- |
-| `invalid_grant` + `Refresh token expired` (or *revoked*), `401`, `404`, `invalid_client`, `unauthorized_client` | the credential is finished | mark `needs_reauth` immediately |
+| `invalid_grant` + `Refresh token expired` (or *revoked*), `401`, `404`, `invalid_client`, `unauthorized_client` | the credential is finished | mark `needs_reauth` at once — unless the lost-race check can prove the token moved on disk, which still spares it |
 | `invalid_grant` + `Refresh token not found or invalid`, or OpenAI's `refresh_token_reused` | the **value** we sent is not the current one; the chain behind it is usually alive | count a strike, leave the account `active` |
 | anything else (5xx, an unparseable body) | the refresh path may be broken | log at `.error`, change nothing |
 
-Three strikes condemn the account, and only if they are spread out: a second strike within 15 minutes
-of the last is the sweep's own retry ladder (2 + 4 + 8 minutes) hitting the same spent value, so it
-counts once. Strikes older than six hours are forgotten, and any new refresh token — from a
-successful refresh, a filesystem sync, or a human re-authenticating on `/quotas` — resets the count,
-because a new token is a new chain. They live on `claude_accounts.stale_refresh_failures` and
-`last_stale_refresh_failure_at`.
+Three strikes condemn the account, and only if they are spread out: `refresh_token!` has nine call
+sites and several of them can present the same spent value within minutes of each other, so a second
+rejection within 15 minutes of the last is the same episode and counts once. Three strikes therefore
+take at least half an hour. A streak expires six hours after its *most recent* strike, and any new
+refresh token — from a successful refresh, a filesystem sync, or a human re-authenticating on
+`/quotas` — resets the count, because a new token is a new chain. The count lives on
+`claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at` and is shown on the
+account's Administrate record page.
+
+A `:stale` rejection is also **not** retried. The 5-minute sweep's retry ladder (2 + 4 + 8 minutes)
+exists for network blips; replaying a value the vendor has already rejected just spends three more
+requests to be told the same thing, and the ladder ends in an `.error` nobody can act on. The
+provider reports `:stale` as its own `Result` error kind and `RefreshRuntimeAuthTokensJob` logs it at
+`.warn` and waits for the next sweep, by which time a filesystem sync or another caller's refresh may
+have moved the row on.
 
 A genuinely dead credential still reaches a human, roughly half an hour later than it used to. A
 healthy account that lost a race no longer reaches one at all — which is the whole point, because
@@ -305,8 +314,18 @@ row holds the **only** copy of the credential chain. Persisting it is therefore 
 fail — and the filesystem write that follows is the step that can (a credential-store lock timeout, a
 full disk). It used to run inside the same transaction, where a raise would roll the new pair back and
 orphan the chain: an account whose stored token is spent forever, which every later refresh reads as
-`invalid_grant` and which no recovery probe can revive. It is now rescued and logged. Disk gets
-reconciled on the next sweep; a lost refresh token never does.
+`invalid_grant` and which no recovery probe can revive. It is now rescued and logged.
+
+Rescuing alone would not be enough, because the file left on disk is the pair Zimmer just spent and
+the owner marker still vouches for it — so the next `sync_tokens_from_filesystem!` would adopt it and
+overwrite the live token with the dead one, arriving at the same orphaned chain by a slower route. So
+the rescue also **disowns the marker**, stamping it with `ClaudeAccount::UNOWNED_CREDENTIALS_MARKER`,
+an address no account can match. Every marker-gated read of the credentials file then declines until a
+successful write re-stamps a real owner, which `ensure_active_account!` does on the next session
+spawn. Codex has no marker, so its sync answers the same question from `auth.json`'s `last_refresh`
+and refuses tokens older than the ones it already holds.
+
+Disk gets reconciled on the next spawn; a lost refresh token never does.
 
 The lock is re-entrant with the outer `account.with_lock` in
 `RuntimeAuthProvider#recover_needs_reauth` and in the sweep, so nesting is safe.

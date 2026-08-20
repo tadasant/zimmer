@@ -628,7 +628,10 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     post switch_account_path(secondary)
 
     assert_redirected_to quotas_path(runtime: "claude_code")
-    assert_match "token validation failed", flash[:alert]
+    # The probe rejected the stored value without proving the credential is dead,
+    # so the account is still active and the message says so rather than sending
+    # the human off to re-authenticate something that probably works (#530).
+    assert_match "rejected as out of date", flash[:alert]
     assert_not secondary.reload.is_current?, "Switch must not succeed when probe rejects the tokens"
     assert claude_accounts(:primary).reload.is_current?
   end
@@ -967,7 +970,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     post switch_account_path(oauth_account)
 
     assert_redirected_to quotas_path(runtime: "codex")
-    assert_match "token validation failed", flash[:alert]
+    assert_match "rejected as out of date", flash[:alert]
     assert_not oauth_account.reload.is_current?
     assert claude_accounts(:codex_primary).reload.is_current?
   end

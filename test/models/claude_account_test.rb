@@ -1086,6 +1086,186 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert_equal "the-only-live-token", account.reload.claude_refresh_token
   end
 
+  test "refresh_token! treats an invalid_grant with no description at all as a stale value" do
+    with_claude_fs do
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      bare = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+      bare.stubs(:code).returns("400")
+      bare.stubs(:body).returns({ error: "invalid_grant" }.to_json)
+      Net::HTTP.any_instance.stubs(:request).returns(bare)
+
+      assert_not account.refresh_token!
+      assert_not account.reload.needs_reauth?,
+        "With no description there is nothing to prove the credential is dead, so the safe reading is stale"
+      assert_equal 1, account.stale_refresh_failures
+      assert_equal :stale, account.last_refresh_failure_reason
+    end
+  end
+
+  # The debounce must not slide its own anchor forward, or a steady stream of
+  # failures inside the window would keep resetting the clock and never strike.
+  test "a debounced stale rejection leaves the strike clock where it was" do
+    with_claude_fs do
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      Net::HTTP.any_instance.stubs(:request).returns(stale_invalid_grant)
+
+      first_at = nil
+      travel_to Time.current do
+        assert_not account.refresh_token!
+        first_at = account.reload.last_stale_refresh_failure_at
+      end
+
+      travel_to 5.minutes.from_now do
+        assert_not account.refresh_token!
+        assert_equal first_at.to_i, account.reload.last_stale_refresh_failure_at.to_i
+        assert_equal 1, account.stale_refresh_failures
+      end
+    end
+  end
+
+  test "condemning an account on strikes clears the strikes behind it" do
+    with_claude_fs do
+      write_shared_claude_credentials(owner: claude_accounts(:secondary).email, refresh_token: "someone-elses-token")
+
+      account = claude_accounts(:primary)
+      account.update_columns(stale_refresh_failures: 2, last_stale_refresh_failure_at: 30.minutes.ago)
+      Net::HTTP.any_instance.stubs(:request).returns(stale_invalid_grant)
+
+      assert_not account.refresh_token!
+
+      account.reload
+      assert account.needs_reauth?
+      assert_equal 0, account.stale_refresh_failures,
+        "A re-authed or admin-revived account must start over with a full three chances"
+      assert_nil account.last_stale_refresh_failure_at
+    end
+  end
+
+  test "an oauth_config save that keeps the same refresh token leaves the strikes alone" do
+    account = claude_accounts(:primary)
+    account.update_columns(stale_refresh_failures: 2, last_stale_refresh_failure_at: 10.minutes.ago)
+
+    # A metadata-only rewrite — the CLI's own state, not a new credential.
+    same_token = account.oauth_config.deep_dup
+    same_token["claude_json"] = { "oauthAccount" => account.email, "someCliState" => true }
+    account.update!(oauth_config: same_token)
+
+    assert_equal 2, account.reload.stale_refresh_failures
+  end
+
+  test "a Codex account's strikes reset only when its own refresh token changes" do
+    account = claude_accounts(:codex_primary)
+    account.update_columns(stale_refresh_failures: 2, last_stale_refresh_failure_at: 10.minutes.ago)
+
+    untouched = account.oauth_config.deep_dup
+    untouched["auth_json"]["last_refresh"] = 1.minute.ago.utc.iso8601
+    account.update!(oauth_config: untouched)
+    assert_equal 2, account.reload.stale_refresh_failures
+
+    rotated = account.oauth_config.deep_dup
+    rotated["auth_json"]["tokens"]["refresh_token"] = "a-brand-new-codex-chain"
+    account.update!(oauth_config: rotated)
+    assert_equal 0, account.reload.stale_refresh_failures
+  end
+
+  test "codex refresh_token! condemns once the reuse rejections form a pattern" do
+    with_codex_fs do
+      account = claude_accounts(:codex_primary)
+      response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+      response.stubs(:code).returns("400")
+      response.stubs(:body).returns({ error: { code: "refresh_token_reused" } }.to_json)
+      Net::HTTP.any_instance.stubs(:request).returns(response)
+
+      travel_to(Time.current) { assert_not account.refresh_token! }
+      travel_to(20.minutes.from_now) { assert_not account.refresh_token! }
+      assert_not account.reload.needs_reauth?
+
+      travel_to(40.minutes.from_now) { assert_not account.refresh_token! }
+      assert account.reload.needs_reauth?
+    end
+  end
+
+  test "codex refresh_token! keeps the new tokens even when the filesystem write fails" do
+    account = claude_accounts(:codex_primary)
+    account.stubs(:sync_codex_tokens_from_filesystem!)
+    account.stubs(:is_current?).returns(true)
+    account.stubs(:write_codex_auth_to_filesystem!).raises(Errno::EACCES.new("auth.json"))
+
+    ok = Net::HTTPOK.new("1.1", "200", "OK")
+    ok.stubs(:code).returns("200")
+    ok.stubs(:body).returns({ access_token: "fresh", refresh_token: "the-only-live-codex-token" }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(ok)
+
+    assert account.refresh_token!
+    assert_equal "the-only-live-codex-token", account.reload.send(:codex_refresh_token)
+  end
+
+  # The other half of the "never lose a minted token" story. A rescued filesystem
+  # write leaves the pair we just spent sitting on disk under a marker that still
+  # vouches for it — so the very next sync would adopt it and overwrite the live
+  # token with the dead one. Disowning the marker is what stops that.
+  test "a failed filesystem write disowns the credentials marker so the spent pair is never synced back" do
+    with_claude_fs do
+      account = claude_accounts(:primary)
+      write_shared_claude_credentials(owner: account.email, refresh_token: "the-token-we-already-spent")
+      account.stubs(:is_current?).returns(true)
+      account.stubs(:write_credentials_to_filesystem!).raises(Errno::EACCES.new("credentials lock"))
+
+      ok = Net::HTTPOK.new("1.1", "200", "OK")
+      ok.stubs(:code).returns("200")
+      ok.stubs(:body).returns({ access_token: "fresh", refresh_token: "the-only-live-token", expires_in: 3600 }.to_json)
+      Net::HTTP.any_instance.stubs(:request).returns(ok)
+
+      assert account.refresh_token!
+      assert_equal ClaudeAccount::UNOWNED_CREDENTIALS_MARKER, ClaudeAccount.credentials_owner_email
+
+      # The state that used to orphan the chain: a sweep syncing from disk before
+      # the next refresh. It must decline, because nobody owns that file now.
+      account.send(:sync_tokens_from_filesystem!)
+      assert_equal "the-only-live-token", account.reload.claude_refresh_token
+    end
+  end
+
+  test "sync_tokens_from_filesystem! still adopts a pair the CLI rotated on disk" do
+    with_claude_fs do
+      account = claude_accounts(:primary)
+      write_shared_claude_credentials(owner: account.email, refresh_token: "cli-rotated-this")
+
+      account.send(:sync_tokens_from_filesystem!)
+
+      assert_equal "cli-rotated-this", account.reload.claude_refresh_token
+    end
+  end
+
+  # The Codex half. auth.json has no owner marker, so the "do not move backwards"
+  # rule is answered from last_refresh instead.
+  test "sync_codex_tokens_from_filesystem! refuses tokens older than the ones it holds" do
+    with_codex_fs do
+      account = claude_accounts(:codex_primary)
+      fresh = account.oauth_config.deep_dup
+      fresh["auth_json"]["tokens"]["refresh_token"] = "the-only-live-codex-token"
+      fresh["auth_json"]["last_refresh"] = Time.current.utc.iso8601
+      account.update!(oauth_config: fresh)
+
+      File.write(CodexAuthProvider::AUTH_JSON_PATH, JSON.generate(
+        "tokens" => {
+          "access_token" => "spent-access",
+          "refresh_token" => "the-codex-token-we-already-spent",
+          "account_id" => account.codex_account_id
+        },
+        "last_refresh" => 2.hours.ago.utc.iso8601
+      ))
+
+      account.send(:sync_codex_tokens_from_filesystem!)
+
+      assert_equal "the-only-live-codex-token", account.reload.send(:codex_refresh_token)
+    end
+  end
+
   # Tadas's own hypothesis about why one account flaps: his Codex account carries
   # the same email as his Claude Code one. The shared credentials-owner marker
   # records an email and nothing else, so the tie is real — the runtime check is

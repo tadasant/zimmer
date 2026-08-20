@@ -8,6 +8,8 @@ class ClaudeAccountDashboard < Administrate::BaseDashboard
     is_current: Field::Boolean,
     priority: Field::Number,
     quota_hit_count: Field::Number,
+    stale_refresh_failures: Field::Number,
+    last_stale_refresh_failure_at: Field::DateTime,
     last_rotated_to_at: Field::DateTime,
     quota_snapshots: Field::HasMany,
     created_at: Field::DateTime,
@@ -30,6 +32,8 @@ class ClaudeAccountDashboard < Administrate::BaseDashboard
     is_current
     priority
     quota_hit_count
+    stale_refresh_failures
+    last_stale_refresh_failure_at
     last_rotated_to_at
     quota_snapshots
     created_at
