@@ -434,4 +434,20 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
       nil
     end
   end
+
+  # Stamped like the merged-PR notice, and deliberately NOT archive-satisfied:
+  # a PR left unmergeable stays unmergeable after the archive, and the strand
+  # alert is the only thing that says so.
+  test "a queued merge-conflict notice is stamped with its origin and still alerts" do
+    session = sessions(:with_pr_url)
+    session.update!(status: :running)
+
+    GitHubMergeConflictPollerJob.new.send(
+      :enqueue_merge_conflict_message, session, "https://github.com/owner/repo/pull/1"
+    )
+
+    message = session.enqueued_messages.sole
+    assert_equal "automated_merge_conflict", message.origin
+    assert_not message.archive_satisfied?
+  end
 end

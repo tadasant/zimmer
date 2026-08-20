@@ -71,6 +71,25 @@ module SessionStateMachine
   # What the archive line says when the caller set no actor.
   ARCHIVE_ACTOR_UNRECORDED = "an unrecorded caller"
 
+  # Whether this archive was a caller overriding Sessions::ArchiveGuard.
+  #
+  # Only the caller-facing surfaces set it — the MCP `archive` and
+  # `bulk_archive` actions, `POST /api/v1/sessions/:id/archive` and its bulk
+  # twin, and the web Trash button. Those are exactly the surfaces that consult
+  # the guard, so `true` means the caller was refused, shown the queued
+  # messages, and re-called anyway.
+  #
+  # System-initiated archives never set it, and that asymmetry is what it is
+  # for. HealthMonitorService's stale sweep, SessionStatusSummaryHarvestJob and
+  # the status-summary fork cleanup archive unconditionally without consulting
+  # the guard, so nobody has read the queue on those paths — which is why the
+  # PR-merged exemption in strand_pending_enqueued_messages does not apply to
+  # them. It is deliberately NOT `archive_actor.present?`: those sweeps set an
+  # actor too.
+  #
+  # Set by the caller immediately before `archive!`. Transient, never persisted.
+  attr_accessor :archive_forced
+
   # PR statuses GitHubPullRequestPollerJob treats as the end of the story. Any
   # other recorded status means Zimmer still expected the PR to move.
   TERMINAL_PR_STATUSES = %w[merged closed].freeze
@@ -245,8 +264,10 @@ module SessionStateMachine
           # Retired before the log line, which names what was retired.
           log_state_change(archive_log_message(strand_pending_enqueued_messages))
           # Consumed by the line above, and single-use: an instance archived,
-          # unarchived and archived again must not reuse the first actor.
+          # unarchived and archived again must not reuse the first actor — or
+          # the first caller's override.
           self.archive_actor = nil
+          self.archive_forced = nil
           cleanup_running_job
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
@@ -824,7 +845,25 @@ module SessionStateMachine
     stranded = enqueued_messages.where(id: candidate_ids, status: "undelivered").ordered.to_a
     return [] if stranded.empty?
 
-    alert_on_stranded_enqueued_messages(stranded)
+    # Every retired row is returned for the archive line; only the ones an
+    # archive genuinely discards are worth waking someone for.
+    #
+    # A PR-merged notice discarded by a caller who FORCED past the guard is not
+    # one of them. That caller was refused, shown the message, and re-called
+    # anyway — so the notice whose whole instruction is "the PR merged, archive
+    # if nothing is left" was read by the one party it was addressed to, and
+    # acted on. No third party is waiting on it either: the poller recorded the
+    # PR as notified when it queued the row. Paging there is paging on Zimmer
+    # obeying itself.
+    #
+    # `archive_forced` is load-bearing rather than decoration. A system sweep
+    # archives without consulting the guard, so on those paths nobody has read
+    # the notice and this alert is the only thing that reports it — which is how
+    # the mis-credited-PR bug behind #555 was found, via a status-summary fork
+    # that inherited its source's PR and was archived by the harvest job. Keyed
+    # on origin alone this would have silenced that.
+    alertable = archive_forced ? stranded.reject(&:archive_satisfied?) : stranded
+    alert_on_stranded_enqueued_messages(alertable, suppressed: stranded.size - alertable.size)
     stranded
   rescue => e
     # Alerting: this is the callback whose whole job is to stop a dropped
@@ -858,6 +897,14 @@ module SessionStateMachine
   # but it is still a message that was accepted and never delivered, and the
   # only alternative to paging is discovering the next one from a user noticing.
   #
+  # The one exclusion the caller does make is the mirror of that sentence
+  # rather than an exception to it: an archive-satisfied message discarded by a
+  # caller who forced past the guard has no user who could notice, because
+  # Zimmer wrote it to itself and the only party it addressed read it. See
+  # EnqueuedMessage::ARCHIVE_SATISFIED_ORIGINS. Those rows are still counted to
+  # the reader as `suppressed`, so the page and the archive line agree on how
+  # many rows were retired.
+  #
   # The dedup key is per session, which bounds repeats for one session — an
   # archive, unarchive and re-archive pages once — and deliberately does NOT
   # collapse across sessions: a sweep that archives N sessions with queues has
@@ -869,17 +916,30 @@ module SessionStateMachine
   # Posted after commit, for the reason report_swallowed_side_effect explains:
   # AlertService talks to Slack synchronously, and an AASM `after` callback runs
   # inside the transition's own transaction.
-  def alert_on_stranded_enqueued_messages(stranded)
+  def alert_on_stranded_enqueued_messages(stranded, suppressed: 0)
+    # Guarded here rather than at the call site, so nothing can build a
+    # zero-count page — the same self-guarding shape stranded_enqueued_messages_clause has.
+    return if stranded.blank?
+
     session_id = id
     previews = stranded.map { |message| "- #{message.content.to_s.truncate(200)}" }.join("\n")
     count = stranded.size
+    # Named so the page and the session's archive line cannot disagree about how
+    # many rows were retired.
+    also = if suppressed.zero?
+      ""
+    else
+      "\n\n(#{suppressed} automated PR-merged notice#{'s' unless suppressed == 1} " \
+      "#{suppressed == 1 ? 'was' : 'were'} also retired by this archive and #{suppressed == 1 ? 'is' : 'are'} " \
+      "not counted above: the caller was shown #{suppressed == 1 ? 'it' : 'them'} and archived anyway.)"
+    end
 
     ActiveRecord.after_all_transactions_commit do
       AlertService.raise_alert(
         "Queued messages stranded by an archive",
         details: "Session #{session_id} was archived with #{count} message(s) still queued. They were " \
                  "never delivered and are now marked `undelivered`; whoever queued them was told they " \
-                 "would be sent.\n\n#{previews}\n\n" \
+                 "would be sent.\n\n#{previews}#{also}\n\n" \
                  "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
         source: "SessionStateMachine#strand_pending_enqueued_messages",
         dedup_key: "stranded_enqueued_messages_#{session_id}"

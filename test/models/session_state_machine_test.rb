@@ -276,6 +276,123 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.archive!
   end
 
+  # Production session 6377: the PR poller queued the merged-PR notice while the
+  # session was mid-turn, the session woke, decided its work was done and
+  # archived — refused once by Sessions::ArchiveGuard, then forced after reading
+  # the notice in the refusal. Everything there behaved correctly, and Zimmer
+  # paged a human at 04:05 UTC about discarding a message it had written to
+  # itself telling it to do exactly what it did.
+  test "archive does not page when the only thing it strands is the PR-merged notice" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/560"),
+      position: 1,
+      status: "pending",
+      origin: "automated_pr_merged"
+    )
+
+    AlertService.expects(:raise_alert).never
+
+    session.archive_forced = true
+    session.archive!
+  end
+
+  # The other half of the condition, and the one that keeps the exemption from
+  # silencing its own smoke detector. HealthMonitorService's sweep, the harvest
+  # job and the fork cleanup all archive without consulting Sessions::ArchiveGuard,
+  # so nobody has read the notice — which is exactly how the mis-credited-PR bug
+  # behind #555 surfaced, on a status-summary fork the harvest job archived.
+  test "archive still pages when a system sweep strands a PR-merged notice unread" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/560"),
+      position: 1,
+      status: "pending",
+      origin: "automated_pr_merged"
+    )
+
+    AlertService.expects(:raise_alert).with do |title, options|
+      title == "Queued messages stranded by an archive" && options[:details].include?("has been merged")
+    end
+
+    session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
+    session.archive!
+  end
+
+  # Not paging is not the same as not recording. The row still retires and the
+  # archive line still names it, so the discard stays readable afterwards.
+  test "archive still retires and names a stranded PR-merged notice" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    notice = session.enqueued_messages.create!(
+      content: AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/560"),
+      position: 1,
+      status: "pending",
+      origin: "automated_pr_merged"
+    )
+    AlertService.stubs(:raise_alert)
+
+    session.archive_forced = true
+    session.archive!
+
+    assert_equal "undelivered", notice.reload.status
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "1 queued message was never delivered and is now marked undelivered"
+    assert_includes line, "pull/560", "the preview is truncated, but it still identifies the notice"
+  end
+
+  # The exemption is about one message's meaning, not about automation. A merge
+  # conflict left unresolved is still true after the archive, and nothing else
+  # says it — so it keeps paging.
+  test "archive still pages when it strands a merge-conflict notice" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.merge_conflict_message("https://github.com/tadasant/zimmer/pull/560"),
+      position: 1,
+      status: "pending",
+      origin: "automated_merge_conflict"
+    )
+
+    AlertService.expects(:raise_alert).with do |title, options|
+      title == "Queued messages stranded by an archive" &&
+        options[:details].include?("merge conflicts on your PR")
+    end
+
+    session.archive!
+  end
+
+  # A queue holding both must still page, and the page must be about the message
+  # somebody is actually waiting on.
+  test "archive pages for the caller's message and leaves the PR-merged notice out of it" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/560"),
+      position: 1,
+      status: "pending",
+      origin: "automated_pr_merged"
+    )
+    session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
+
+    AlertService.expects(:raise_alert).with do |title, options|
+      title == "Queued messages stranded by an archive" &&
+        options[:details].include?("add the onion back") &&
+        options[:details].include?("1 message(s) still queued") &&
+        !options[:details].include?("has been merged") &&
+        options[:details].include?("1 automated PR-merged notice was also retired")
+    end
+
+    session.archive_forced = true
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "2 queued messages were never delivered",
+      "the archive line records both; only the page is narrowed"
+  end
+
   # Deliberately an application-level failure rather than a StatementInvalid: a
   # real SQL error inside the transition's own transaction poisons the connection,
   # so the log insert that follows would fail too and the archive would roll back.

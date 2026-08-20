@@ -428,6 +428,7 @@ module Mcp
         refuse_archive_over_queued_messages(session, args)
 
         session.archive_actor = archive_actor_phrase(args)
+        session.archive_forced = boolean(args["force"])
         session.archive!
         session.reload
 
@@ -1017,6 +1018,7 @@ module Mcp
             end
 
             session.archive_actor = "#{archive_actor_phrase(args)} (bulk)"
+            session.archive_forced = boolean(args["force"])
             session.archive!
             archived_count += 1
           else
