@@ -508,10 +508,58 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 ## Mid-run auth loss
 
-`AuthRecoveryService` watches the transcript for `"Not logged in · Please run /login"` (matched by
-`/not logged in|please run\s*\/login/i`) and, on the **first** match, hands the decision to
-`AuthRecoveryCoordinator` rather than re-spawning. Bounded by `MAX_RECOVERY_ATTEMPTS` attempts
-within `CONSECUTIVE_WINDOW` (15 minutes).
+`AuthRecoveryService` watches the transcript for an authentication failure and, on the **first**
+match, hands the decision to `AuthRecoveryCoordinator` rather than re-spawning. Bounded by
+`MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUTIVE_WINDOW` (15 minutes).
+
+It recognizes the failure two ways, and the order matters:
+
+1. **The error type.** `AUTH_ERROR_TYPES` — `authentication_failed`, `oauth_error` — matched against
+   the transcript entry's `error` field. This is the machine-readable half of the signature and the
+   half that does not move when the prose does.
+2. **The prose.** `AUTH_RECOVERABLE_ERROR_PATTERN` — `not logged in`, `please run /login`, `failed to
+   authenticate`, `oauth/refresh/access token … expired|invalid|revoked`, `invalid_grant` — for the
+   entries the runtime records with an *empty* error type, which is how it recorded
+   `"Not logged in · Please run /login"` for years.
+
+:::caution[Why the type is read first]
+On 2026-08-20, Claude Code 2.1.237 ended a turn in production session 6412 with
+
+```json
+{"isApiErrorMessage":true,"error":"authentication_failed",
+ "message":{"content":[{"type":"text",
+   "text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]}}
+```
+
+and exited **1** — its "turn finished, awaiting input" convention. The prose matched neither half of
+the pattern Zimmer had, no classifier claimed the entry, and `handle_exit` logged *"Process exited
+successfully"* and parked the session as `needs_input`. A human's message sat unanswered, and the
+only trace was in the transcript. The account pool had already done its job: the refresh token for
+the identity that session was holding had been rejected with `invalid_grant` seven minutes earlier
+and the account marked `needs_reauth`. What failed was recognizing the *runtime's* report of it.
+:::
+
+### A turn that dies on an API error can never look finished
+
+Reading the error type makes *this* wording classifiable. It does nothing about the next one, so
+`handle_exit` also asks a question that has no prose in it at all.
+
+`ApiErrorRetryService#unrecognized_terminal_api_error_text` answers *did this turn die on an API
+error?* — is the **last conversational entry** in the transcript an `isApiErrorMessage` that no
+classifier recognized. Only `user` and `assistant` entries count on either side of the question: the
+runtime writes `last-prompt`, `atis-latch`, `attachment` and `queue-operation` bookkeeping after the
+final message, and `isSidechain` entries belong to a subagent whose failure does not end the main
+turn. Unlike every other transcript reader it ignores `api_error_last_checked_line` — that cursor
+exists to stop a *handled* error being retried twice, and a terminal error is by definition the one
+that just ended this turn.
+
+When it answers yes, the session **fails**, loudly: the unmatched prose goes into the session log and
+into `UnclassifiedFailureReporter` (deduped per runtime, so a fleet-wide wave is one Slack message).
+Failing is the honest verdict — the turn is over, its work did not happen, and the prompt is sitting
+unanswered — where `needs_input` said the opposite of all three.
+
+So the next time Anthropic rewords an error, the cost is an alert naming the new wording, not a lost
+message someone finds by reading a transcript.
 
 ### The recovery decision tree
 
