@@ -45,6 +45,11 @@ class HealthMonitorService
   # instance is not something to wake anyone for, and paging on it would rebuild the
   # noise this threshold exists to remove. Depth is what makes a stall an incident.
   QUEUE_STALL_CRITICAL_AGE = 10.minutes
+
+  # How many entries `ready_backlog_breakdown` keeps from each breakdown. Enough
+  # to cover every Zimmer queue and still name the job classes that matter, short
+  # enough that the alert body stays readable in Slack.
+  READY_BREAKDOWN_LIMIT = 5
   FAILURE_RATE_WARNING_THRESHOLD = 0.1
   FAILURE_RATE_CRITICAL_THRESHOLD = 0.25
 
@@ -478,6 +483,32 @@ class HealthMonitorService
     end
   end
 
+  # The backlog split by queue and by job class.
+  #
+  # `queue_statistics` answers "how deep", which is what the thresholds need. It
+  # does not answer "deep with WHAT", and that is the question every triage of a
+  # backlog page actually opens with: a ready count alone cannot distinguish a
+  # starved queue from a busy one, and Zimmer runs four queues with very different
+  # thread counts and job durations.
+  #
+  # Deliberately NOT folded into `queue_statistics`. That runs on every /health
+  # render; these are two more grouped scans of `good_jobs` and are only worth
+  # paying for when something is about to page. Cardinality is small either way —
+  # four queues, and job classes bounded by the app's job count — so the grouping
+  # is done in SQL and the ordering in Ruby, which keeps this free of adapter
+  # differences in how a grouped COUNT may be ordered.
+  #
+  # @param limit [Integer] how many entries to keep from each breakdown
+  # @return [Hash] :by_queue and :by_job_class, each an ordered Hash of name => count
+  def ready_backlog_breakdown(limit: READY_BREAKDOWN_LIMIT)
+    ready = ready_scope(GoodJob::Job.where(finished_at: nil, locked_by_id: nil))
+
+    {
+      by_queue: top_counts(ready.group(:queue_name).count, limit),
+      by_job_class: top_counts(ready.group(:job_class).count, limit)
+    }
+  end
+
   # Calculate queue statistics using GoodJob
   #
   # `pending_count` is every unfinished row and is reported for continuity, but it is
@@ -488,7 +519,7 @@ class HealthMonitorService
     # GoodJob stores jobs in good_jobs table
     pending_jobs = GoodJob::Job.where(finished_at: nil)
     unclaimed_jobs = pending_jobs.where(locked_by_id: nil)
-    ready_jobs = unclaimed_jobs.where("scheduled_at <= ? OR scheduled_at IS NULL", Time.current)
+    ready_jobs = ready_scope(unclaimed_jobs)
     # Unclaimed, so the three populations partition `pending_count` exactly rather
     # than counting a locked future-dated row as both claimed and scheduled.
     scheduled_jobs = unclaimed_jobs.where("scheduled_at > ?", Time.current)
@@ -529,6 +560,23 @@ class HealthMonitorService
     return nil if waiting_since.nil?
 
     [ (Time.current - waiting_since).round, 0 ].max
+  end
+
+  # Unclaimed work whose time has come — the population every "backlog" number
+  # here is taken over. A row with no `scheduled_at` was ready the moment it was
+  # created; a future-dated one is not backlog until its time arrives.
+  def ready_scope(unclaimed_jobs)
+    unclaimed_jobs.where("scheduled_at <= ? OR scheduled_at IS NULL", Time.current)
+  end
+
+  # Biggest first, keeping at most `limit`. A nil key (a row GoodJob wrote with no
+  # job_class, which ADAPTER-enqueued rows can have) is labelled rather than
+  # dropped, so the counts in the breakdown still add up against `ready_count`.
+  def top_counts(counts, limit)
+    counts.transform_keys { |key| key.presence || "(unknown)" }
+          .sort_by { |_name, count| -count }
+          .first(limit)
+          .to_h
   end
 
   # Calculate worker statistics using GoodJob
