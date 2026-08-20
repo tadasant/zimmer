@@ -2725,8 +2725,34 @@ a worker restart or a deploy — but if it is discarded (retries exhausted on an
 a manual queue purge, a failed deserialization), the session sits in `waiting` indefinitely with a
 banner whose "next check" time is permanently in the past. `DeploymentRecoveryJob` will not pick it
 up: that only claims sessions carrying `metadata["paused_by"] == "recovery"`, which a held session
-does not have. `spot_hold_count` is recorded but nothing acts on it. A sweep for `waiting` sessions
-whose `spot_hold_retry_at` is well past would close this.
+does not have. A sweep for `waiting` sessions whose `spot_hold_retry_at` is well past would close
+this.
+
+The backoff on consecutive holds widens the window in which this can go unnoticed: a session pinned
+at the one-hour ceiling has an hour, rather than ten minutes, between the moment its chain breaks
+and the moment anyone could tell from `spot_hold_retry_at` that it has.
+
+---
+
+## A backed-off hold can sleep past the moment it could have started
+
+`SpotSessionHold` doubles the re-check interval on consecutive holds, up to an hour for a
+utilization hold and half an hour for a fleet-cap one. The gate is only ever consulted at a
+re-check, so a condition that clears early is not noticed until the next one: a session pinned at
+the ceiling can sit `waiting` for up to an hour after the pool came back under its target, or up to
+half an hour after a slot freed.
+
+This is the deliberate cost of the fix, not an oversight. A flat interval makes the held population
+an arrival rate that cannot fall when the deployment is struggling, and on 2026-08-20 that rate —
+~80 held sessions re-checking every ~11 minutes — outran the `agents` queue's ability to service it
+and grew a GoodJob backlog until it paged. The ceilings are chosen against how fast each condition
+can actually clear (a pool window comes down over hours; a slot frees unpredictably, hence the
+shorter one), the delay is visible as `spot_hold_retry_at` on the session's detail page, and a human
+who wants a specific session now can make it priority.
+
+What would close it properly is waking held sessions on the event rather than polling for it —
+publishing a signal when a session ends or a window resets — which is a larger change than the
+backoff and is not built.
 
 ---
 

@@ -44,6 +44,30 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   # A pending-job count means something completely different when the queues are
   # deliberately halted, so the report says which it is — in both directions, so
   # "no" is distinguishable from "this report doesn't say".
+  # Parity with the Slack backlog page. A bare ready count cannot tell a starved
+  # queue from a busy one, and this tool is what an agent triaging that page
+  # actually has — the GoodJob dashboard needs a browser session on the production
+  # host, which an agent session does not have.
+  test "names the backlogged queues and job classes when work is waiting" do
+    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown).returns(
+      { by_queue: { "agents" => 231, "default" => 18 },
+        by_job_class: { "AgentSessionJob" => 231, "SessionTitleJob" => 18 } }
+    )
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Ready backlog by queue:** agents 231, default 18"
+    assert_includes result, "- **Ready backlog by job class:** AgentSessionJob 231, SessionTitleJob 18"
+  end
+
+  # A breakdown of an empty queue is a line of noise on every healthy call.
+  test "says nothing about the backlog when nothing is waiting" do
+    result = @tool.call({})
+
+    refute_includes result, "Ready backlog by queue"
+    refute_includes result, "Ready backlog by job class"
+  end
+
   test "reports queue recovery mode as off when it is off" do
     assert_includes @tool.call({}), "**Queue Recovery Mode:** Off"
   end

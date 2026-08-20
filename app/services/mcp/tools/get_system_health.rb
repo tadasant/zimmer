@@ -42,6 +42,7 @@ module Mcp
           "- **Environment:** #{Rails.env}",
           "- **Ruby Version:** #{RUBY_VERSION}",
           *queue_recovery_mode_lines,
+          *ready_backlog_lines,
           "",
           "### Health Details",
           "```json",
@@ -55,6 +56,37 @@ module Mcp
       end
 
       private
+
+      # What the backlog is MADE OF, not just how deep it is.
+      #
+      # `system_health` below already carries `ready_count`, and a bare count
+      # cannot tell a starved queue from a busy one — Zimmer's four queues have
+      # very different thread counts and job durations. The Slack backlog page
+      # carries this same split for exactly that reason, and this is the tool an
+      # agent triaging that page actually has: the GoodJob dashboard needs a
+      # browser session on the production host, which an agent session does not
+      # have. Leaving it out here would reproduce, on the agent-facing surface,
+      # the gap the alert change closes on the human-facing one.
+      #
+      # Read from `ready_backlog_breakdown` directly rather than folded into
+      # `full_health_report`: that report also serves GET /api/v1/health and the
+      # /health page, which render far more often than anyone asks this question.
+      #
+      # Silent when nothing is waiting — a breakdown of an empty queue is a line
+      # of noise on every healthy call.
+      def ready_backlog_lines
+        breakdown = HealthMonitorService.new.ready_backlog_breakdown
+        return [] if breakdown[:by_queue].blank?
+
+        [
+          "- **Ready backlog by queue:** #{format_counts(breakdown[:by_queue])}",
+          "- **Ready backlog by job class:** #{format_counts(breakdown[:by_job_class])}"
+        ]
+      end
+
+      def format_counts(counts)
+        counts.map { |name, count| "#{name} #{count}" }.join(", ")
+      end
 
       # Stated up front, and stated in BOTH directions. A pending queue depth means
       # something completely different depending on whether the queues are
