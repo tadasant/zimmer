@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_20_030000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_20_043000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -175,6 +175,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_030000) do
     t.jsonb "files", default: [], null: false
     t.text "goal"
     t.jsonb "images", default: [], null: false
+    t.string "origin", default: "caller", null: false
     t.integer "position", null: false
     t.bigint "session_id", null: false
     t.string "status", default: "pending", null: false

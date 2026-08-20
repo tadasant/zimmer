@@ -8,6 +8,30 @@ class EnqueuedMessage < ApplicationRecord
   # which it could have been delivered.
   STATUSES = %w[pending processing sent undelivered].freeze
 
+  # Who wrote the message.
+  #
+  # `caller` is everything queued on someone's behalf — the web queue form, the
+  # REST endpoint, MCP `manage_enqueued_messages`, a trigger's payload. The
+  # `automated_*` origins are Zimmer's own notices, written by
+  # AutomatedSessionMessage when a poller sees GitHub move.
+  #
+  # The distinction is not bookkeeping. It is what lets the archive path tell a
+  # message somebody is waiting on from one Zimmer wrote to itself.
+  ORIGINS = %w[caller automated_pr_merged automated_merge_conflict].freeze
+
+  # Origins an archive *satisfies* rather than discards.
+  #
+  # The PR-merged notice says one thing: the PR merged, so archive if nothing
+  # is left in scope. A session that archives has done what it asks, and there
+  # is no third party who was promised the delivery — the poller marks the PR
+  # notified when it queues the row, and nobody else can read it. So retiring
+  # it to `undelivered` records the fact and nothing is owed to anyone.
+  #
+  # The merge-conflict notice is deliberately NOT here, and the difference is
+  # the point: it reports a PR left unmergeable, which stays true after the
+  # archive and which nothing else will say.
+  ARCHIVE_SATISFIED_ORIGINS = %w[automated_pr_merged].freeze
+
   belongs_to :session
 
   # Validations
@@ -15,6 +39,7 @@ class EnqueuedMessage < ApplicationRecord
   validates :goal, length: { maximum: Session::GOAL_MAX_LENGTH, message: "is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
   validates :position, presence: true, numericality: { only_integer: true, greater_than: 0 }
   validates :status, inclusion: { in: STATUSES, message: "%{value} is not a valid status" }
+  validates :origin, inclusion: { in: ORIGINS, message: "%{value} is not a valid origin" }
 
   # The other end of the invariant EnqueuedMessageDrainJob enforces on `pause`.
   #
@@ -36,6 +61,12 @@ class EnqueuedMessage < ApplicationRecord
   scope :pending, -> { where(status: "pending") }
   scope :undelivered, -> { where(status: "undelivered") }
   scope :ordered, -> { order(position: :asc) }
+
+  # Whether archiving this message's session complies with it rather than
+  # discarding it. See ARCHIVE_SATISFIED_ORIGINS.
+  def archive_satisfied?
+    ARCHIVE_SATISFIED_ORIGINS.include?(origin)
+  end
 
   # Mark message as sent
   def mark_as_sent!

@@ -174,7 +174,8 @@ class GitHubPullRequestPollerJob < ApplicationJob
       deliver_automated_message(
         session,
         AutomatedPrompts.pr_merged_message(pr_url),
-        event_description: "PR merged: #{pr_url}"
+        event_description: "PR merged: #{pr_url}",
+        origin: "automated_pr_merged"
       )
     end
   end

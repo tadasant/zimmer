@@ -824,7 +824,14 @@ module SessionStateMachine
     stranded = enqueued_messages.where(id: candidate_ids, status: "undelivered").ordered.to_a
     return [] if stranded.empty?
 
-    alert_on_stranded_enqueued_messages(stranded)
+    # Every retired row is returned for the archive line; only the ones an
+    # archive genuinely discards are worth waking someone for. A PR-merged
+    # notice is the message that says "the PR merged, archive if nothing is
+    # left" — the archive complies with it, no third party is waiting on it,
+    # and the poller already recorded the PR as notified when it queued the
+    # row. Paging on that is paging on Zimmer obeying itself.
+    alertable = stranded.reject(&:archive_satisfied?)
+    alert_on_stranded_enqueued_messages(alertable) if alertable.any?
     stranded
   rescue => e
     # Alerting: this is the callback whose whole job is to stop a dropped
@@ -857,6 +864,11 @@ module SessionStateMachine
   # human trashing a session they had queued a message onto is a quieter case,
   # but it is still a message that was accepted and never delivered, and the
   # only alternative to paging is discovering the next one from a user noticing.
+  #
+  # The one exclusion the caller does make is the mirror of that sentence
+  # rather than an exception to it: an archive-satisfied message has no user
+  # who could notice, because Zimmer wrote it to itself. See
+  # EnqueuedMessage::ARCHIVE_SATISFIED_ORIGINS.
   #
   # The dedup key is per session, which bounds repeats for one session — an
   # archive, unarchive and re-archive pages once — and deliberately does NOT
