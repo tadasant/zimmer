@@ -61,6 +61,22 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
     assert_includes output, "**Freshness:** STALE — 3 transcript event(s) since it was written"
   end
 
+  # A failed generation leaves the last real summary in place, so the blurb alone
+  # does not say why it is the one still showing. The web panel and
+  # `GET /api/v1/sessions/:id` both carry the reason; this is the MCP half.
+  test "get_session gives the reason a stale summary is still the one showing" do
+    SessionStatusSummary.create!(
+      session: @session, state: "failed", generated_at: 1.hour.ago,
+      transcript_line_count: 1, summary: "Working on it.",
+      error: "The summary fork was parked before it could answer (quota_exhausted). It will be retried."
+    )
+
+    output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
+
+    assert_includes output, "**Freshness:** STALE"
+    assert_includes output, "**Last regeneration failed:** The summary fork was parked"
+  end
+
   test "get_session says plainly when no summary exists rather than omitting the section" do
     output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
 

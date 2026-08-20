@@ -249,4 +249,100 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     assert_equal 0, record.transcript_line_count, "no stale blurb stamped with the newer line count"
     assert old_fork.reload.archived?, "the fork is still cleaned up"
   end
+  # The failure mode this deployment actually hit. AuthOutageParkService parks a
+  # session that has run out of login pool by letting it reach `pause!` — the
+  # same transition a finished turn reaches — so the fork's pause looked like a
+  # completed turn, and the last assistant text in its transcript was the CLI's
+  # own refusal. 73 sessions ended up displaying one as their status.
+  test "a parked fork's transcript is not harvested as an answer" do
+    fork = build_fork(answer: "You've hit your session limit · resets 10pm (UTC)")
+    fork.update_column(:metadata, fork.metadata.merge("auth_outage_reason" => "quota_exhausted"))
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    record = @source.reload.status_summary
+    assert_equal "failed", record.state
+    assert_nil record.summary, "the runtime's refusal must never be stored as the summary"
+    assert_nil record.generated_at
+    assert_match(/parked/i, record.error)
+  end
+
+  # The stamp is what made this permanent rather than merely wrong: a refusal
+  # stored at the requested line count reads as CURRENT, so `stale?` is false and
+  # no later generation — automatic, forced or swept — would replace it.
+  test "a parked fork leaves the displayed summary stale rather than stamping it current" do
+    fork = build_fork(answer: "You've hit your weekly limit · resets Aug 22, 11am (UTC)")
+    fork.update_column(:metadata, fork.metadata.merge("auth_outage_reason" => "quota_exhausted"))
+    @source.update_column(:transcript, transcript_of("a", "b", "c", "d"))
+    record = pending_record(fork, line_count: 4)
+    record.update!(summary: "An older, real summary.", transcript_line_count: 2)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    record.reload
+    assert_equal "An older, real summary.", record.summary, "the last real summary is kept"
+    assert_equal 2, record.transcript_line_count, "not restamped at the requested count"
+    assert record.stale?(@source.transcript_line_count), "so a repair can still write over it"
+  end
+
+  # A fork can also print the limit line and exit cleanly, before the pool has
+  # anything left to rotate into and therefore before anything parks it. Then the
+  # text is the only evidence there is.
+  test "a refusal answer is rejected even with no park marker on the fork" do
+    [
+      "You've hit your session limit · resets 10pm (UTC)",
+      "Not logged in · Please run /login"
+    ].each do |refusal|
+      fork = build_fork(answer: refusal)
+      pending_record(fork)
+
+      SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+      record = @source.reload.status_summary
+      assert_equal "failed", record.state, "#{refusal.inspect} was accepted as a summary"
+      assert_nil record.summary
+      record.destroy!
+    end
+  end
+
+  # The refusal can arrive wrapped, or assembled from two content parts joined
+  # with a blank line. The patterns are single-line, so the text is squished
+  # before it is matched.
+  test "a refusal split over two lines is still rejected" do
+    fork = build_fork(answer: "You've hit your session limit\n· resets 10pm (UTC)")
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    record = @source.reload.status_summary
+    assert_equal "failed", record.state
+    assert_nil record.summary
+  end
+
+  # The guard is a single short line matching a refusal, not the words anywhere:
+  # a real blurb about a session that ran out of quota is a real blurb.
+  test "a genuine summary that talks about hitting a limit is still stored" do
+    answer = "A background subagent checking the backstop warning died when the account " \
+             "hit your weekly limit, so that question resets to open — see " \
+             "[message 12](https://zimmer.example.com/sessions/1#message-12). Nothing needs a human."
+    fork = build_fork(answer: answer)
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    record = @source.reload.status_summary
+    assert_equal "ready", record.state
+    assert_equal answer, record.summary
+  end
+
+  test "a parked fork is still archived, so its clone copy is reclaimed" do
+    fork = build_fork(answer: "You've hit your session limit · resets 10pm (UTC)")
+    fork.update_column(:metadata, fork.metadata.merge("auth_outage_reason" => "quota_exhausted"))
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    assert fork.reload.archived?
+  end
 end

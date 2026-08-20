@@ -9,10 +9,11 @@
   the transcript message, PR, or session where it lives.
 
   Rendering this NEVER generates. A stale summary shows the cached text plus how
-  many messages have landed since, and waits for the operator to press
-  Regenerate. `unavailable_reason` reads the session; it starts nothing. The only
-  automatic trigger is the session changing status — see
-  SessionStateMachine#enqueue_status_summary_refresh.
+  many messages have landed since, and waits. `unavailable_reason` reads the
+  session; it starts nothing. Generation is triggered by the session changing
+  status (SessionStateMachine#enqueue_status_summary_refresh), by the operator
+  pressing Regenerate, and — for a session already at rest whose generation never
+  landed — by StatusSummaryBackstopJob.
 
   Local variables:
     agent_session: Session
@@ -97,7 +98,7 @@
       <p class="text-sm text-gray-700">No summary yet — the last attempt failed.</p>
       <p class="mt-1 text-xs text-red-700"><%= summary.error.presence || "No reason recorded." %></p>
     <% elsif summary&.abandoned? %>
-      <p class="text-sm text-gray-700">A summary was started but never came back. Press Regenerate to try again.</p>
+      <p class="text-sm text-gray-700">A summary was started but never came back. It is retried automatically, or press Regenerate now.</p>
     <% elsif line_count.zero? %>
       <p class="text-sm text-gray-500">Nothing to summarize yet — this session has no transcript.</p>
     <% elsif unavailable.present? %>
@@ -105,7 +106,7 @@
       <p class="mt-1 text-xs text-gray-500"><%= unavailable %></p>
     <% else %>
       <p class="text-sm text-gray-500">
-        No summary yet. One is written automatically when this session next changes status, or press Regenerate now.
+        No summary yet. One is written automatically when this session next changes status — or, for a session already at rest, by the next repair sweep. Press Regenerate to write one now.
       </p>
     <% end %>
   </div>

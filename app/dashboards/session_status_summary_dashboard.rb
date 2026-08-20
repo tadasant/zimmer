@@ -14,6 +14,7 @@ class SessionStatusSummaryDashboard < Administrate::BaseDashboard
     transcript_line_count: Field::Number,
     requested_at: Field::DateTime,
     requested_line_count: Field::Number,
+    backstop_attempted_at: Field::DateTime,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze
@@ -40,6 +41,7 @@ class SessionStatusSummaryDashboard < Administrate::BaseDashboard
     fork_session
     requested_at
     requested_line_count
+    backstop_attempted_at
     created_at
     updated_at
   ].freeze
