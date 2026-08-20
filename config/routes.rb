@@ -1,6 +1,10 @@
 Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
+    # Read-only: both tables are measurements of API calls that already happened,
+    # written by TokenUsageIngestionService from transcripts. There is nothing to
+    # hand-author, and a corrected row comes from re-running ingestion.
+    resources :adhoc_token_usages, only: [ :index, :show ]
     # Read-only plus destroy: rows are written by TranscriptHooks::GithubCommentAuthorshipHook
     # from what a session actually did, so there is nothing to hand-author — but a row
     # recorded in error must be removable, since it suppresses a comment fleet-wide.
@@ -22,6 +26,7 @@ Rails.application.routes.draw do
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     resources :runtime_login_attempts
+    resources :session_token_usages, only: [ :index, :show ]
     resources :sessions
     # No create: a summary row exists because a session asked for one. Edit is
     # limited to `state` (the dashboard's FORM_ATTRIBUTES), which is how an
