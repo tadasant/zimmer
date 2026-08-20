@@ -1,0 +1,13 @@
+<%# A percentage and the bar that makes a column of them scannable without
+    reading every number. Nil means "no denominator", which is not 0%. %>
+<% if rate.nil? %>
+  <span class="text-gray-300">—</span>
+<% else %>
+  <div class="flex items-center justify-end gap-1.5">
+    <div class="w-14 h-1.5 bg-gray-200 rounded-full overflow-hidden hidden sm:block">
+      <div class="h-full <%= rate >= 0.9 ? 'bg-emerald-500' : rate >= 0.7 ? 'bg-amber-400' : 'bg-red-500' %>"
+           style="width: <%= (rate * 100).round(2) %>%"></div>
+    </div>
+    <span class="text-gray-700 w-12 text-right"><%= number_to_percentage(rate * 100, precision: 1) %></span>
+  </div>
+<% end %>

@@ -1,0 +1,5 @@
+<%# The one place Success/Failure gets a color, so the ledger, the flamegraph,
+    and the stats view never disagree about what green means. %>
+<% failure = outcome == OutcomeAnalyses::SegmentTree::FAILURE %>
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold <%=
+  failure ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800' %>"><%= outcome %></span>

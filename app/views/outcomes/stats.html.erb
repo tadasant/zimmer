@@ -1,0 +1,131 @@
+<% content_for :title, "Outcome stats" %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-[100rem] mx-auto px-3 sm:px-6 py-6">
+    <%= render "page_header", title: "Outcome stats", filters: @filters, current: :stats %>
+
+    <p class="text-sm text-gray-600 mb-4">
+      Across every analyzed transcript, windowed on the analyzed session's created-at.
+      Transcript-level rates and segment-level rates are different questions — a transcript that
+      succeeded overall usually contains several failed segments, and that gap is what this page is for.
+    </p>
+
+    <%= render "filters", url: outcomes_stats_path, filters: @filters,
+        agent_root_options: @agent_root_options, runtime_options: @runtime_options,
+        model_options: @model_options, show_analyzed_filter: false %>
+
+    <% if !@stats.any? %>
+      <div class="bg-white border border-gray-200 rounded-lg p-10 text-center text-sm text-gray-500">
+        No analyses match these filters yet. Analyze some transcripts from the
+        <%= link_to "ledger", outcomes_path(@filters.to_query_params), class: "text-indigo-600 hover:text-indigo-800" %>.
+      </div>
+    <% else %>
+      <% totals = @stats.totals %>
+      <div class="grid grid-cols-2 lg:grid-cols-6 gap-2 mb-4">
+        <% [
+             [ "Transcripts", number_with_delimiter(totals.transcripts), "text-gray-900" ],
+             [ "Transcript success", number_to_percentage((totals.transcript_success_rate || 0) * 100, precision: 1), "text-emerald-700" ],
+             [ "Failed transcripts", number_with_delimiter(totals.failures), totals.failures.positive? ? "text-red-700" : "text-gray-400" ],
+             [ "Segments", number_with_delimiter(totals.segments), "text-gray-900" ],
+             [ "Segment success", number_to_percentage((totals.segment_success_rate || 0) * 100, precision: 1), "text-emerald-700" ],
+             [ "Failed segments", number_with_delimiter(totals.failed_segments), totals.failed_segments.positive? ? "text-red-700" : "text-gray-400" ]
+           ].each do |label, value, color| %>
+          <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+            <div class="text-xl font-bold tabular-nums <%= color %>"><%= value %></div>
+            <div class="text-[11px] text-gray-500 uppercase tracking-wide"><%= label %></div>
+          </div>
+        <% end %>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="xl:col-span-2 bg-white border border-gray-200 rounded-lg overflow-hidden">
+          <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-900">By <%= @stats.grouping_label.downcase %></h2>
+            <nav class="flex rounded-md border border-gray-300 overflow-hidden text-xs">
+              <% OutcomeAnalyses::Stats::GROUPINGS.each_with_index do |(key, config), index| %>
+                <%= link_to config[:label], outcomes_stats_path(@filters.to_query_params.merge(group_by: key)),
+                    class: "px-2.5 py-1 #{index.positive? ? 'border-l border-gray-300' : ''} #{@stats.grouping == key ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}" %>
+              <% end %>
+            </nav>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="min-w-full text-sm">
+              <thead class="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th class="px-3 py-2 text-left font-medium"><%= @stats.grouping_label %></th>
+                  <th class="px-3 py-2 text-right font-medium">Transcripts</th>
+                  <th class="px-3 py-2 text-right font-medium" title="Share of transcripts whose ROOT segment was a Success">Success</th>
+                  <th class="px-3 py-2 text-right font-medium">Segments</th>
+                  <th class="px-3 py-2 text-right font-medium" title="Share of ALL segments that were a Success">Seg success</th>
+                  <th class="px-3 py-2 text-right font-medium" title="Average failed segments per transcript">Fails/txn</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                <% @stats.rows.each do |row| %>
+                  <tr class="hover:bg-gray-50">
+                    <td class="px-3 py-1.5 text-gray-900 font-medium truncate max-w-[16rem]" title="<%= row.label %>"><%= row.label %></td>
+                    <td class="px-3 py-1.5 text-right tabular-nums text-gray-700"><%= number_with_delimiter(row.transcripts) %></td>
+                    <td class="px-3 py-1.5 text-right tabular-nums">
+                      <%= render "rate_bar", rate: row.transcript_success_rate %>
+                    </td>
+                    <td class="px-3 py-1.5 text-right tabular-nums text-gray-700"><%= number_with_delimiter(row.segments) %></td>
+                    <td class="px-3 py-1.5 text-right tabular-nums">
+                      <%= render "rate_bar", rate: row.segment_success_rate %>
+                    </td>
+                    <td class="px-3 py-1.5 text-right tabular-nums <%= row.avg_failed_segments > 0 ? 'text-red-700' : 'text-gray-400' %>"><%= number_with_precision(row.avg_failed_segments, precision: 1) %></td>
+                  </tr>
+                <% end %>
+              </tbody>
+              <tfoot class="bg-gray-50 border-t border-gray-200 text-sm">
+                <tr>
+                  <td class="px-3 py-1.5 font-semibold text-gray-900">All</td>
+                  <td class="px-3 py-1.5 text-right tabular-nums font-semibold"><%= number_with_delimiter(totals.transcripts) %></td>
+                  <td class="px-3 py-1.5 text-right tabular-nums"><%= render "rate_bar", rate: totals.transcript_success_rate %></td>
+                  <td class="px-3 py-1.5 text-right tabular-nums font-semibold"><%= number_with_delimiter(totals.segments) %></td>
+                  <td class="px-3 py-1.5 text-right tabular-nums"><%= render "rate_bar", rate: totals.segment_success_rate %></td>
+                  <td class="px-3 py-1.5 text-right tabular-nums font-semibold"><%= number_with_precision(totals.avg_failed_segments, precision: 1) %></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+        <div class="space-y-4">
+          <%# How many failed segments a transcript typically carries. The
+              interesting reading is the shape, not any single bar: a population
+              piled at 0 means the analyzer is not finding the failures. %>
+          <div class="bg-white border border-gray-200 rounded-lg p-3">
+            <h2 class="text-sm font-semibold text-gray-900 mb-2">Failed segments per transcript</h2>
+            <% max = @stats.failure_distribution.map { |b| b[:count] }.max.to_i %>
+            <div class="space-y-1">
+              <% @stats.failure_distribution.each do |bucket| %>
+                <div class="flex items-center gap-2">
+                  <span class="w-10 text-right text-[11px] text-gray-500 tabular-nums shrink-0"><%= bucket[:label] %></span>
+                  <div class="flex-1 h-4 bg-gray-100 rounded-sm overflow-hidden">
+                    <div class="h-full <%= bucket[:label] == "0" ? "bg-emerald-400" : "bg-red-400" %>"
+                         style="width: <%= max.zero? ? 0 : (bucket[:count] * 100.0 / max).round(2) %>%"></div>
+                  </div>
+                  <span class="w-12 text-right text-[11px] text-gray-600 tabular-nums shrink-0"><%= number_with_delimiter(bucket[:count]) %></span>
+                </div>
+              <% end %>
+            </div>
+          </div>
+
+          <div class="bg-white border border-gray-200 rounded-lg p-3">
+            <h2 class="text-sm font-semibold text-gray-900 mb-2">Most failure-heavy transcripts</h2>
+            <ul class="divide-y divide-gray-100 text-xs">
+              <% @stats.worst_transcripts.each do |analysis| %>
+                <li class="py-1 flex items-center gap-2">
+                  <%= link_to outcome_path(analysis.session_id), class: "text-indigo-600 hover:text-indigo-800 truncate flex-1" do %>
+                    <%= analysis.session&.title.presence || "Session ##{analysis.session_id}" %>
+                  <% end %>
+                  <span class="tabular-nums shrink-0 text-red-700 font-semibold"><%= analysis.failure_segment_count %></span>
+                  <span class="tabular-nums shrink-0 text-gray-400">/ <%= analysis.segment_count %></span>
+                </li>
+              <% end %>
+            </ul>
+          </div>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>
