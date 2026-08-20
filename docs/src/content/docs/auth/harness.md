@@ -639,6 +639,42 @@ carrying on 2026-08-17 (two waves at `02:08–02:15Z` and `02:20–02:25Z`, twel
 parks). The pre-jitter clamp therefore stops one jitter window short of the ceiling, leaving the
 spread somewhere to go.
 
+### The park has to survive the paths that do not know about it
+
+Everything above assumes the code that stops a session knows the pool is what stopped it. Three
+paths did not, and on 2026-08-20 a `pr-merge-gate` session (#6597) escaped through all three in
+eight seconds — parked correctly at 04:19, and back in `needs_input` by 09:00:42.
+
+1. **The resume left a window for the orphan sweep.** `resume_parked!` transitioned the session to
+   `running` and *then* enqueued its job, so for a moment it was running with a blank
+   `running_job_id` — which `CleanupOrphanedSessionsJob` calls "DEFINITELY orphaned" with no grace
+   period. The sweep landed in that window, reaped the resume, and replaced it with a
+   resume-monitoring job pointed at a stale pid. The resume now stamps `pending_follow_up_prompt`
+   inside the same transaction as the transition (the marker that sweep already honours) and
+   records `running_job_id` as soon as the job exists — the same ordering
+   `Session#deliver_follow_up!` uses, and for the same reason.
+
+2. **The reconnect could not tell our process from a stranger.** `ProcessLifecycleManager#resume_monitoring`
+   adopted a pid on `Process.kill(0, pid)`, which answers "some process holds this number", not
+   "the process we spawned is still there". It confirmed a recovery onto a pid that had been
+   SIGKILLed nine seconds earlier. `AgentProcessLiveness` already recorded the boot id, PID
+   namespace and start-time ticks needed to tell those apart, but was wired only into the spawn
+   guard; `.adoptable?` is the read-only half, and refuses `:dead` and `:recycled` while standing
+   down on `:unknown` so macOS development still reconnects.
+
+3. **The exit paths read a dead process as a finished turn.** With the adopted process gone, the
+   monitoring loop's fallbacks answered with `pause!` — `needs_input` — while
+   `active_follow_up_prompt` still held the recovery turn Zimmer never delivered and the pool was
+   still empty (two status-summary forks parked `quota_exhausted` three and eleven minutes later).
+   `AuthOutageParkService.park_undelivered_turn!` now guards those exits: an undelivered turn plus a
+   pool with no available account is the outage, so it parks into `waiting` with a scheduled retry
+   instead. Both conditions are required — parking a session that genuinely finished would sleep it
+   and then nudge an agent with nothing left to do.
+
+`active_follow_up_prompt` is the evidence for "undelivered" because `AgentSessionJob` writes it
+while handing a turn to the runtime and *removes* it on the clean-completion path. Its presence at
+stop time means the turn never ran.
+
 ### The sweep wakes a batch, not the fleet
 
 Spreading the timer does nothing for the other way a parked session wakes.

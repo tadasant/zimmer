@@ -366,6 +366,13 @@ behalf: `AuthOutageParkService` parks a session here when the login pool runs dr
 keeps a quota-blocked session out of the heartbeat sweep's reach. See
 [Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
 
+The same service also guards the *exit* paths, not just the moment the wall is hit. A session whose
+turn was never delivered — `active_follow_up_prompt` still set, because `AgentSessionJob` removes it
+only on clean completion — stopping while its runtime's pool has no available account is the outage,
+not a finished turn. `AuthOutageParkService.park_undelivered_turn!` parks it here rather than letting
+the loop's "the process is gone" fallbacks pause it onto somebody's action queue. See
+[The park has to survive the paths that do not know about it](/auth/harness/#the-park-has-to-survive-the-paths-that-do-not-know-about-it).
+
 ### `block_on_elicitation` / `unblock_from_elicitation` — `running ⇄ needs_input`
 
 This pair exists because an elicitation is *not* a turn ending. An MCP server made a

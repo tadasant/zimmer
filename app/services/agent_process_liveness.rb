@@ -216,6 +216,46 @@ class AgentProcessLiveness
       :error
     end
 
+    # May the recovery path ADOPT `pid` as this session's agent process?
+    #
+    # {.ensure_no_live_process!} asks the opposite question — "is anything still alive
+    # that I must kill" — and treats every uncertain status as inert, because the cost of
+    # guessing wrong there is a terminated process. Adoption's costs run the other way. A
+    # job that reconnects to a pid which is not ours reports a recovery that did not
+    # happen, and the monitoring loop then reads the foreign process's death (or its own
+    # first liveness poll) as this session's turn completing — which is how a session
+    # whose turn was never delivered lands on the human's action queue looking finished.
+    #
+    # So `:dead` and `:recycled` are refusals; that is the whole point. `:alive` is the
+    # only affirmative answer. Everything else means the identity cannot decide and the
+    # caller's own liveness check stands, which is the behaviour that predates this guard:
+    #
+    #   * `:none` / a blank identity — nothing was recorded to compare against.
+    #   * an identity recorded for a DIFFERENT pid than the one being adopted — the two
+    #     have drifted, so the identity says nothing about this pid.
+    #   * `:unknown` — another boot, another PID namespace, or no `/proc` at all (macOS
+    #     development). `docs/limitations.md` records that the guard is inert there.
+    #
+    # @param session [Session, nil]
+    # @param pid [Integer, nil] the pid the caller is about to start monitoring
+    # @return [Boolean] false only when the recorded identity PROVES this is not our process
+    def adoptable?(session, pid)
+      return true if pid.blank?
+
+      identity = recorded_identity(session)
+      return true if identity.blank?
+      return true unless identity["pid"].to_i == pid.to_i
+
+      !%i[dead recycled].include?(classify(identity))
+    rescue StandardError => e
+      # Same posture as the spawn guard: a bug in the check must not be the reason a
+      # recovery cannot reconnect to a process that is genuinely still running.
+      Rails.logger.error(
+        "[AgentProcessLiveness] Adoption check failed for session #{session&.id}: #{e.class}: #{e.message}"
+      )
+      true
+    end
+
     # The kernel's boot id: a random UUID regenerated on every boot of every machine.
     # @return [String, nil] nil where `/proc` is unavailable
     def boot_id

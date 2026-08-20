@@ -164,6 +164,11 @@ class AuthOutageParkService
   # park stops recognising the trigger its predecessor left behind.
   RETRY_TRIGGER_NAME_PREFIX = "Auth outage retry for session"
 
+  # What the park log says when the stop was a turn that never reached the runtime,
+  # rather than a quota error the runtime itself reported.
+  UNDELIVERED_TURN_DETAIL =
+    "the turn was never delivered to the runtime and the login pool is still empty"
+
   attr_reader :session, :log_buffer
 
   def initialize(session, log_buffer: nil, logger: nil)
@@ -209,6 +214,51 @@ class AuthOutageParkService
     # needs_input — it just doesn't auto-retry.
     @logger.error("Failed to park session for auth outage", reason: reason, error: e.message)
     nil
+  end
+
+  # A session that stops with its turn still undelivered, while its runtime's login pool
+  # has nothing left to serve it, has not finished anything — it has hit the outage. Park
+  # it into `waiting` with a scheduled retry instead of letting the caller pause it onto
+  # the human's action queue.
+  #
+  # This is the guard the resume-failure and turn-completion exit paths were missing. They
+  # answer "the process is gone" with `pause!`, which is right for a turn that ran and
+  # ended and wrong for one that never started: the session lands in needs_input claiming
+  # to want a human, while the prompt Zimmer meant to deliver sits unconsumed in metadata
+  # and the pool it was blocked on is still empty.
+  #
+  # Two conditions, both required, because parking a session that genuinely finished would
+  # be its own bug — it would sleep, wake on a reset, and nudge an agent that had nothing
+  # left to do:
+  #
+  #   * `active_follow_up_prompt` is still set. AgentSessionJob writes it while handing a
+  #     turn to the runtime and REMOVES it on the clean-completion path, so its presence
+  #     at stop time is the durable evidence that this turn never ran.
+  #   * the runtime's pool has no available account — the same predicate
+  #     .wake_parked_sessions! resumes on, so a session parked here is woken by exactly the
+  #     evidence that would have let it run.
+  #
+  # The caller still performs its own `pause!`. #park! schedules the wake trigger, whose
+  # after_create marks the running session `pending_sleep`, and the pause callback is what
+  # carries it needs_input → waiting. So: park first, pause second.
+  #
+  # @param session [Session, nil]
+  # @return [Boolean] true when the session was parked, and the caller must not also mark
+  #   this stop as a recovery-continuable pause
+  def self.park_undelivered_turn!(session, log_buffer: nil, logger: nil, detail: nil)
+    return false unless session
+    return false if session.metadata&.dig("active_follow_up_prompt").blank?
+    return false if runtime_has_available_account?(session.agent_runtime)
+
+    new(session, log_buffer: log_buffer, logger: logger)
+      .park!(reason: QUOTA_EXHAUSTED, detail: detail || UNDELIVERED_TURN_DETAIL)
+      .present?
+  rescue => e
+    # Same posture as #park!: this is an improvement on top of the exit decision the
+    # caller already made, never a reason that decision cannot be carried out.
+    Rails.logger.warn "[AuthOutageParkService] Could not park undelivered turn for session " \
+      "#{session&.id} (#{e.class}): #{e.message}"
+    false
   end
 
   # Resume every parked session whose runtime can plausibly serve it again.
@@ -475,6 +525,7 @@ class AuthOutageParkService
   # (so the cap bounding nothing) if that second write failed.
   def self.resume_parked!(session, logger)
     reason = nil
+    prompt = nil
 
     ActiveRecord::Base.transaction do
       session.lock!
@@ -482,6 +533,8 @@ class AuthOutageParkService
 
       reason = session.metadata&.dig("auth_outage_reason")
       raise ActiveRecord::Rollback if reason.blank?
+
+      prompt = AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
 
       metadata = (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
       if reason == AUTH_UNRECOVERABLE
@@ -491,6 +544,21 @@ class AuthOutageParkService
 
       session.update!(running_job_id: nil, metadata: metadata)
       session.resume!
+
+      # Stamp the prompt BEFORE leaving the transaction, and after `resume!` so a reader
+      # that sees the marker is guaranteed to also see `running` (the same ordering, and
+      # the same reason, as Session#deliver_follow_up!).
+      #
+      # Without it this method resumes a session to `running` while its job does not yet
+      # exist and `running_job_id` is nil — and CleanupOrphanedSessionsJob calls a running
+      # session with a blank running_job_id "DEFINITELY orphaned" with no grace period. A
+      # sweep landing in that window reaps the resume, hijacks the session with a
+      # resume-monitoring job pointed at a stale pid, and the recovery turn never runs.
+      # `pending_follow_up_prompt` is the marker that sweep already honours.
+      session.merge_metadata!(
+        "pending_follow_up_prompt" => prompt,
+        "pending_follow_up_sent_at" => Time.current.utc.iso8601
+      )
     end
 
     return false if reason.blank? || !session.reload.running?
@@ -501,10 +569,16 @@ class AuthOutageParkService
     discard_retry_triggers!(session, reason: "resumed by the recovery sweep", logger: logger)
 
     session.logs.create!(level: "warning", content: resume_message(reason))
-    AgentSessionJob.enqueue_with_prompt(
-      session.id,
-      AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
-    )
+
+    # Record running_job_id as soon as the job exists, closing the rest of the same
+    # window: past this point the sweep has a live job to look at rather than a blank.
+    job = AgentSessionJob.enqueue_with_prompt(session.id, prompt)
+    job_id = job.try(:job_id)
+    if job_id.present?
+      session.update!(running_job_id: job_id)
+    else
+      logger.warn("Resumed parked session but no job id was returned", session_id: session.id)
+    end
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)
     true
   rescue => e

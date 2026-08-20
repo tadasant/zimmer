@@ -272,6 +272,23 @@ class ProcessLifecycleManager
         return SpawnResult.new(success: false, error: "Process #{pid} is not running")
       end
 
+      # `running?` is signal 0, which answers "some process holds this number", not "the
+      # process we spawned is still there". In a container whose pids recycle quickly the
+      # difference is the whole ballgame: a turn terminated seconds ago can have its
+      # number reissued, and adopting it reports a recovery that did not happen. The
+      # monitoring loop then reads that stranger's exit as this session's turn completing
+      # and pauses to needs_input, discarding the turn Zimmer never actually delivered.
+      #
+      # #spawn's guard deliberately skips this path so it does not kill the process the
+      # path exists to adopt. This is the read-only half of the same question: it refuses
+      # to adopt, and never signals anything.
+      unless AgentProcessLiveness.adoptable?(session, pid)
+        return SpawnResult.new(
+          success: false,
+          error: "Process #{pid} is not the process this session spawned (exited, or its pid was recycled)"
+        )
+      end
+
       @current_pid = pid
       @stderr_log_path = stderr_log_path
       @state = :running
