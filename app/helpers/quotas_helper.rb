@@ -155,6 +155,68 @@ module QuotasHelper
     parts.join(" ")
   end
 
+  # An absolute reset time for the Account Pool notes.
+  #
+  # Rendered as UTC on the server and rewritten to the viewer's wall clock by the
+  # local-time Stimulus controller. The point of these notes is "we're blocked
+  # until X" — a time the reader has to convert in their head is half an answer —
+  # but the server has no timezone for them, so the UTC text is what ships and
+  # what remains if JavaScript never runs. The title keeps UTC reachable either
+  # way.
+  def pool_reset_time(reset_time)
+    tag.time(reset_time.utc.strftime("%b %-d, %H:%M UTC"),
+      datetime: reset_time.utc.iso8601,
+      title: reset_time.utc.strftime("%b %-d, %H:%M UTC"),
+      class: "font-medium text-gray-700",
+      data: { controller: "local-time" })
+  end
+
+  # When the pool next regains 5-hour capacity it can actually serve.
+  #
+  # The measure already excludes accounts whose week is spent, because their
+  # 5-hour reset hands back headroom nobody can spend — see ClaudeAccountPool.
+  # Both empty cases say which emptiness it is: a pool with nothing left to wait
+  # for reads very differently from one whose whole week is gone.
+  def pool_five_hour_reset_line(measure)
+    reset = measure.next_five_hour_reset
+
+    if reset
+      tag.p(safe_join([
+        "Next usable 5-hour reset: ", pool_reset_time(reset),
+        " (in #{time_until_reset(reset)}) — the soonest among accounts with weekly allowance left."
+      ]), class: "mt-1 text-xs text-gray-500")
+    elsif measure.weekly_available_count.zero?
+      tag.p("No 5-hour reset frees capacity: every account with a reading has spent its 7-day window. " \
+            "The pool is blocked until the 7-day reset below.",
+        class: "mt-1 text-xs text-red-500")
+    else
+      tag.p("No 5-hour reset pending — the accounts with weekly allowance left aren't waiting on one.",
+        class: "mt-1 text-xs text-gray-500")
+    end
+  end
+
+  # When the pool next regains an account whose week is spent. Measured over
+  # exactly those accounts, so it answers "blocked until X" rather than naming a
+  # rollover on an account that was never blocked — see ClaudeAccountPool.
+  def pool_weekly_reset_line(measure)
+    reset = measure.next_weekly_reset
+
+    if reset
+      tag.p(safe_join([
+        "Next 7-day reset: ", pool_reset_time(reset),
+        " (in #{time_until_reset(reset)}) — the soonest of " \
+        "#{pluralize(measure.weekly_spent_count, 'account')} whose 7-day window is spent."
+      ]), class: "mt-1 text-xs text-gray-500")
+    elsif measure.weekly_spent_count.zero?
+      tag.p("No account's 7-day window is spent, so nothing is waiting on a 7-day reset.",
+        class: "mt-1 text-xs text-gray-500")
+    else
+      tag.p("#{pluralize(measure.weekly_spent_count, 'account')} with a spent 7-day window, " \
+            "and no reset time recorded for #{measure.weekly_spent_count == 1 ? 'it' : 'them'}.",
+        class: "mt-1 text-xs text-red-500")
+    end
+  end
+
   def subscription_type_badge(type)
     colors = case type&.downcase
     when /max/
