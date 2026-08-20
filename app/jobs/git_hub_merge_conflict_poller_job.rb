@@ -203,7 +203,8 @@ class GitHubMergeConflictPollerJob < ApplicationJob
     deliver_automated_message(
       session,
       AutomatedPrompts.merge_conflict_message(pr_url),
-      event_description: "Merge conflict detected on #{pr_url}"
+      event_description: "Merge conflict detected on #{pr_url}",
+      origin: "automated_merge_conflict"
     )
   end
 end

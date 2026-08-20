@@ -443,4 +443,32 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     assert_not message.valid?
     assert_includes message.errors[:status], "dropped is not a valid status"
   end
+
+  # Origin — who wrote the message. See EnqueuedMessage::ORIGINS.
+  test "defaults to the caller origin" do
+    message = sessions(:running).enqueued_messages.create!(content: "queued by a human", position: 1)
+
+    assert_equal "caller", message.origin
+    assert_not message.archive_satisfied?
+  end
+
+  test "rejects an origin that is not in the vocabulary" do
+    message = EnqueuedMessage.new(session: sessions(:running), content: "x", position: 1, origin: "nonsense")
+
+    assert_not message.valid?
+    assert_includes message.errors[:origin], "nonsense is not a valid origin"
+  end
+
+  # An archive complies with the PR-merged notice rather than discarding it: its
+  # whole instruction is "the PR merged, archive if nothing is left in scope".
+  test "only the PR-merged notice is satisfied by an archive" do
+    session = sessions(:running)
+
+    merged = session.enqueued_messages.create!(content: "merged", position: 1, origin: "automated_pr_merged")
+    conflict = session.enqueued_messages.create!(content: "conflict", position: 2, origin: "automated_merge_conflict")
+
+    assert merged.archive_satisfied?
+    assert_not conflict.archive_satisfied?,
+      "an unresolved merge conflict stays true after the archive, and nothing else reports it"
+  end
 end

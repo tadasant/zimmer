@@ -726,4 +726,20 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       "pass"
     end
   end
+
+  # The queue could not tell Zimmer's own notices from a caller's, and the
+  # archive alert is the one reader that must: a session archiving over this
+  # message is complying with it, not discarding something somebody is waiting
+  # on. See EnqueuedMessage::ARCHIVE_SATISFIED_ORIGINS.
+  test "a queued merged-PR notice is stamped with its origin" do
+    @session_with_pr.update!(status: :running)
+
+    GitHubPullRequestPollerJob.new.send(
+      :notify_merged_prs, @session_with_pr, [ "https://github.com/owner/repo/pull/1" ]
+    )
+
+    message = @session_with_pr.enqueued_messages.sole
+    assert_equal "automated_pr_merged", message.origin
+    assert message.archive_satisfied?
+  end
 end

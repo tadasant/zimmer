@@ -31,11 +31,15 @@ module AutomatedSessionMessage
   # @param prompt [String] the AutomatedPrompts message to deliver
   # @param event_description [String] what happened, for the session log — e.g.
   #   "Merge conflict detected on https://github.com/owner/repo/pull/1"
+  # @param origin [String] an EnqueuedMessage::ORIGINS value naming which notice
+  #   this is. It reaches the row only on the queued branch, which is the only
+  #   branch where anything reads it: an immediate send has no row, because the
+  #   session takes the prompt straight away.
   # @return [Boolean] true when the message was delivered or queued, false when
   #   it was not. A caller that records "this session has been told" should key
   #   off this rather than off having tried, so its marker never claims a
   #   delivery that did not happen.
-  def deliver_automated_message(session, prompt, event_description:)
+  def deliver_automated_message(session, prompt, event_description:, origin:)
     with_db_retry do
       ActiveRecord::Base.transaction do
         session.lock!
@@ -43,7 +47,7 @@ module AutomatedSessionMessage
         if session.needs_input?
           send_prompt_immediately(session, prompt, event_description)
         else
-          enqueue_prompt_for_later(session, prompt, event_description)
+          enqueue_prompt_for_later(session, prompt, event_description, origin)
         end
       end
     end
@@ -70,14 +74,15 @@ module AutomatedSessionMessage
 
   # Queue prompt as an enqueued message for later processing
   # Used when session is running or waiting
-  def enqueue_prompt_for_later(session, prompt, event_description)
+  def enqueue_prompt_for_later(session, prompt, event_description, origin)
     max_position = session.enqueued_messages.maximum(:position) || 0
     next_position = max_position + 1
 
     session.enqueued_messages.create!(
       content: prompt,
       position: next_position,
-      status: "pending"
+      status: "pending",
+      origin: origin
     )
 
     session.logs.create!(
