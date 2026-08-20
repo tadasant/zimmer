@@ -1,0 +1,42 @@
+<%#
+  A breakdown table with an inline proportional bar.
+
+  Deliberately not a chart library: the whole page is rank-ordered "where did it
+  go" tables, a bar-in-a-cell reads at a glance, and it costs no JS and survives
+  a 375px viewport where a canvas chart would not.
+
+  locals: rows (Array<Hash>), label_key (Symbol), title (String),
+          empty (String), max (Float)
+%>
+<div class="bg-white shadow rounded-lg overflow-hidden mb-6">
+  <div class="px-4 py-3 border-b border-gray-200">
+    <h2 class="text-sm font-semibold text-gray-900"><%= title %></h2>
+  </div>
+  <% if rows.blank? %>
+    <p class="px-4 py-6 text-sm text-gray-500"><%= empty %></p>
+  <% else %>
+    <ul class="divide-y divide-gray-100">
+      <% rows.each do |row| %>
+        <% share = max.to_f.positive? ? (row[:cost_usd] / max.to_f) : 0 %>
+        <li class="px-4 py-3">
+          <div class="flex items-baseline justify-between gap-3">
+            <span class="text-sm text-gray-900 truncate min-w-0" title="<%= row[label_key] %>">
+              <%= row[label_key] %>
+            </span>
+            <span class="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
+              <%= number_to_currency(row[:cost_usd], precision: 2) %>
+            </span>
+          </div>
+          <div class="mt-1.5 flex items-center gap-2">
+            <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div class="h-full bg-indigo-500 rounded-full" style="width: <%= (share * 100).round(1) %>%"></div>
+            </div>
+            <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+              <%= number_with_delimiter(row[:api_calls]) %> calls
+            </span>
+          </div>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+</div>
