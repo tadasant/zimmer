@@ -25,6 +25,16 @@ Rails.application.routes.draw do
     resources :logs
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
+    # Read-only plus destroy: an analysis is a reading a specific analyzer took of
+    # a specific transcript, so there is nothing to hand-author and editing one
+    # would forge it. A row saved in error is superseded by saving another, or
+    # removed here.
+    resources :outcome_analyses, except: [ :new, :create, :edit, :update ]
+    # No create: a batch exists because someone clicked Analyze All. Edit is
+    # limited to `status`/`state` (the dashboards' FORM_ATTRIBUTES) — the escape
+    # hatch for a batch or item wedged in `running` that the pump cannot resolve.
+    resources :outcome_analysis_batches, except: [ :new, :create ]
+    resources :outcome_analysis_batch_items, except: [ :new, :create ]
     resources :runtime_login_attempts
     resources :session_token_usages, only: [ :index, :show ]
     resources :sessions
