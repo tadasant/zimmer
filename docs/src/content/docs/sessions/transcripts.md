@@ -61,6 +61,43 @@ when the bytes have moved; `alert-ci-failure.yml` listens on every workflow in t
 failure lands in Slack. Refreshing the snapshot is a deliberate act with a diff to read — the
 procedure is in `vendor/open_transcripts/README.md`.
 
+### Who wrote this line
+
+Claude Code writes lines into its own transcript that carry `type: "user"` but were never typed by
+a person. Two of them show up constantly in Zimmer:
+
+| Flag on the JSONL line | What the CLI is recording |
+| --- | --- |
+| `interruptedByShutdown: true` | a turn killed mid-tool-use, by a process shutdown rather than a keyboard interrupt |
+| `isMeta: true` | the CLI's own resume scaffolding — "Continue from where you left off." |
+
+In Zimmer the shutdown behind the first one is usually Zimmer: `Sessions::InterruptService`
+SIGTERMs the CLI to deliver an enqueued message ahead of the running turn. Rendering the resulting
+line as a `UserMessage` told the reader a human had acted — the opposite of what Zimmer knows, and
+it cost the deployment's owner a full trace across the logs, the raw JSONL and the normalizer
+source to establish that he had not interrupted a session he had never touched.
+
+`ClaudeTranscriptNormalizer` routes both to `SystemEvent` under the subtype
+`OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE`, and the timeline draws them as a
+**Runtime Notice** — the cyan system glyph, not the indigo user one — above a line naming the flag
+that marked the line machine-written. The CLI's own wording inside the text is left alone:
+"[Request interrupted by user for tool use]" says "by user" and is Claude Code's string, not
+Zimmer's. The attribution Zimmer wraps around it is Zimmer's, and that is what carries the
+correction.
+
+The flags are matched against a literal `true`. Anything looser — truthiness, key presence — would
+relabel a turn a person really did type as machine-written, which is the same misattribution with
+the sign flipped, so both directions are covered by tests.
+
+A runtime notice stays in the `message` filter bucket and keeps its fork affordance. It is not a
+message, but it sits in the conversational slot the CLI wrote it into, and "the turn was cut off
+here" is context a reader on the `minimal` filter still needs.
+
+Codex gets no equivalent treatment: its rollout `response_item` message payloads carry only `role`
+and `content`, with no per-line marker that distinguishes a machine-written user turn from a typed
+one. There is nothing unambiguous to key off, so `CodexTranscriptNormalizer` is left alone rather
+than given an invented discriminator.
+
 ## Secret redaction
 
 Zimmer hands its agents real credentials. MCP `${VAR}` values are interpolated into `.mcp.json`
@@ -287,9 +324,10 @@ surfaces that need one — `GET /api/v1/sessions/:id/transcript` and the `get_se
 `transcript_format: "text"` — because they previously carried separate copies of the same `case`
 and drifted apart.
 
-`user`, `assistant`, `tool_use` and `tool_result` get a labelled section each. Every other entry
-type is labelled and dumped rather than dropped, so the text never quietly disagrees with the raw
-transcript — this matters most for Codex, whose rollout lines are all `session_meta` /
+`user`, `assistant`, `tool_use` and `tool_result` get a labelled section each — and a runtime
+notice gets `--- Runtime Notice (agent runtime, not a person) ---`, because the plain-text export
+carried the same false attribution the timeline did. Every other entry type is labelled and dumped
+rather than dropped, so the text never quietly disagrees with the raw transcript — this matters most for Codex, whose rollout lines are all `session_meta` /
 `response_item` / `event_msg` / `turn_context` and would otherwise render as nothing at all.
 
 Content that arrives as an array of blocks is rendered block by block: `text`, `thinking`, `image`,

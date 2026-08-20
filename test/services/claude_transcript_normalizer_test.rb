@@ -186,6 +186,147 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
     assert_equal [ { "type" => "text", "text" => "Direct message content" } ], events.first[:content]
   end
 
+  # === normalize: runtime notices (#488) ===
+  #
+  # Claude Code writes lines into its own transcript that carry `type: "user"`
+  # but were never typed by a person. Rendering them as UserMessage told the
+  # deployment's owner he had interrupted a session he had not touched. Both
+  # directions are covered here: the flagged lines must NOT become user
+  # messages, and everything else must still be one.
+
+  test "normalize routes an interruptedByShutdown line to a runtime-notice SystemEvent" do
+    # Verbatim shape of the line the CLI writes when a turn is killed
+    # mid-tool-use, e.g. by Sessions::InterruptService SIGTERMing it.
+    raw = {
+      "type" => "user",
+      "uuid" => "u-interrupt",
+      "message" => {
+        "role" => "user",
+        "content" => [ { "type" => "text", "text" => "[Request interrupted by user for tool use]" } ]
+      },
+      "interruptedByShutdown" => true,
+      "userType" => "external",
+      "entrypoint" => "sdk-cli"
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::SYSTEM_EVENT ], types_of(events)
+    event = events.first
+    assert_equal OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE, event[:subtype]
+    assert_equal "[Request interrupted by user for tool use]", event[:payload]["text"]
+    assert_equal [ "interruptedByShutdown" ], event[:payload]["markers"]
+    # The raw line is still carried, as it is for every other SystemEvent.
+    assert_equal true, event[:payload]["interruptedByShutdown"]
+  end
+
+  test "normalize routes an isMeta line to a runtime-notice SystemEvent" do
+    raw = {
+      "type" => "user",
+      "uuid" => "u-meta",
+      "message" => {
+        "role" => "user",
+        "content" => [ { "type" => "text", "text" => "Continue from where you left off." } ]
+      },
+      "isMeta" => true,
+      "userType" => "external",
+      "entrypoint" => "sdk-cli"
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::SYSTEM_EVENT ], types_of(events)
+    assert_equal OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE, events.first[:subtype]
+    assert_equal "Continue from where you left off.", events.first[:payload]["text"]
+    assert_equal [ "isMeta" ], events.first[:payload]["markers"]
+  end
+
+  test "normalize records both markers when a line carries both flags" do
+    raw = {
+      "type" => "user",
+      "uuid" => "u-both",
+      "message" => { "role" => "user", "content" => "shutdown scaffolding" },
+      "isMeta" => true,
+      "interruptedByShutdown" => true
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal %w[interruptedByShutdown isMeta], events.first[:payload]["markers"]
+  end
+
+  # The failure mode pointed the other way: a loose flag check would reclassify
+  # genuine user turns as machine ones, which is the same misattribution with
+  # the sign flipped. Only a literal `true` counts.
+  test "normalize keeps an ordinary user line a UserMessage" do
+    raw = {
+      "type" => "user",
+      "uuid" => "u-human",
+      "message" => { "role" => "user", "content" => "please rebase this" },
+      "userType" => "external",
+      "entrypoint" => "sdk-cli"
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::USER_MESSAGE ], types_of(events)
+    assert_equal [ { "type" => "text", "text" => "please rebase this" } ], events.first[:content]
+  end
+
+  test "normalize keeps a user line whose runtime flags are falsey a UserMessage" do
+    [ false, nil, "", 0 ].each do |value|
+      raw = {
+        "type" => "user",
+        "uuid" => "u-falsey",
+        "message" => { "role" => "user", "content" => "a real question" },
+        "isMeta" => value,
+        "interruptedByShutdown" => value
+      }
+
+      events = @normalizer.normalize(raw, session: @session)
+
+      assert_equal [ Types::USER_MESSAGE ], types_of(events),
+        "isMeta/interruptedByShutdown = #{value.inspect} must not reclassify a user turn"
+    end
+  end
+
+  test "normalize keeps a user line whose runtime flags are non-boolean truthy a UserMessage" do
+    # A string "false" is truthy in Ruby. Keying off truthiness rather than the
+    # literal `true` would silently relabel a human turn as machine-written.
+    [ "false", "true", "yes", 1 ].each do |value|
+      raw = {
+        "type" => "user",
+        "uuid" => "u-stringy",
+        "message" => { "role" => "user", "content" => "a real question" },
+        "isMeta" => value
+      }
+
+      events = @normalizer.normalize(raw, session: @session)
+
+      assert_equal [ Types::USER_MESSAGE ], types_of(events),
+        "isMeta = #{value.inspect} is not the JSON boolean and must not reclassify a user turn"
+    end
+  end
+
+  test "normalize keeps tool_result blocks as ToolResults even when the line is flagged" do
+    # A ToolResult already reads as machine output, so there is no false
+    # attribution to correct, and rerouting would drop the tool_call_id.
+    raw = {
+      "type" => "user",
+      "uuid" => "u-flagged-result",
+      "isMeta" => true,
+      "message" => {
+        "role" => "user",
+        "content" => [ { "type" => "tool_result", "tool_use_id" => "t9", "content" => "out" } ]
+      }
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::TOOL_RESULT ], types_of(events)
+    assert_equal "t9", events.first[:tool_call_id]
+  end
+
   test "normalize maps each tool_result block to its own ToolResult event" do
     raw = {
       "type" => "user",

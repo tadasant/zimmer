@@ -482,6 +482,92 @@ class ViewContractTest < ActionView::TestCase
       "nested items must still render their content"
   end
 
+  # =========================================================================
+  # Contract: a machine-written transcript line must not render as a User turn
+  # (#488)
+  # =========================================================================
+  #
+  # End-to-end proof, from the verbatim JSONL the Claude Code CLI writes into
+  # its own transcript through the normalizer to the rendered row. Before this
+  # fix both lines below drew an indigo "User" header, indistinguishable from
+  # something a person typed — the deployment's owner read one and asked whether
+  # he had interrupted a session he had never touched.
+
+  def render_claude_line(raw)
+    events = ClaudeTranscriptNormalizer.new.normalize(raw, session: @running_session, transcript_index: 7)
+    assert_equal 1, events.length
+    render partial: "timeline_items/item", locals: { item: events.first, session: @running_session }
+  end
+
+  test "timeline_items/item renders an interrupted-by-shutdown line as a runtime notice, not a User turn" do
+    html = render_claude_line(
+      "type" => "user",
+      "uuid" => "line-interrupt",
+      "message" => {
+        "role" => "user",
+        "content" => [ { "type" => "text", "text" => "[Request interrupted by user for tool use]" } ]
+      },
+      "interruptedByShutdown" => true,
+      "userType" => "external",
+      "entrypoint" => "sdk-cli"
+    )
+
+    assert_includes html, "Runtime Notice"
+    assert_includes html, "not typed by a person"
+    assert_includes html, "interruptedByShutdown"
+    # The CLI's own wording is preserved — it is not ours to rewrite.
+    assert_includes html, "[Request interrupted by user for tool use]"
+
+    # What must be gone: the "User" header and the indigo user badge.
+    refute_includes html, ">User<"
+    refute_includes html, "bg-indigo-100"
+    assert_includes html, "bg-cyan-100"
+
+    # Still a first-class row: visible under every filter a message is, still
+    # anchorable, and still forkable.
+    assert_includes html, 'data-filter-category="message"'
+    assert_includes html, 'id="message-7"'
+    assert_includes html, "fork-session"
+  end
+
+  test "timeline_items/item renders an isMeta resume line as a runtime notice, not a User turn" do
+    html = render_claude_line(
+      "type" => "user",
+      "uuid" => "line-meta",
+      "message" => {
+        "role" => "user",
+        "content" => [ { "type" => "text", "text" => "Continue from where you left off." } ]
+      },
+      "isMeta" => true,
+      "userType" => "external",
+      "entrypoint" => "sdk-cli"
+    )
+
+    assert_includes html, "Runtime Notice"
+    assert_includes html, "not typed by a person"
+    assert_includes html, "Continue from where you left off."
+    refute_includes html, ">User<"
+    refute_includes html, "bg-indigo-100"
+  end
+
+  # The same assertion pointed the other way: a turn a person actually typed
+  # must still render as one.
+  test "timeline_items/item still renders a genuine user line as a User turn" do
+    html = render_claude_line(
+      "type" => "user",
+      "uuid" => "line-human",
+      "message" => { "role" => "user", "content" => [ { "type" => "text", "text" => "please rebase this" } ] },
+      "userType" => "external",
+      "entrypoint" => "sdk-cli"
+    )
+
+    assert_includes html, ">User<"
+    assert_includes html, "bg-indigo-100"
+    assert_includes html, "please rebase this"
+    refute_includes html, "Runtime Notice"
+    refute_includes html, "not typed by a person"
+  end
+
   test "timeline_items/item partial renders log type successfully" do
     item = {
       type: "log",

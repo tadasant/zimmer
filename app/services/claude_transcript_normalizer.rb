@@ -27,6 +27,32 @@
 class ClaudeTranscriptNormalizer < TranscriptNormalizer
   SUBAGENT_TOOL_NAMES = %w[Task Agent].freeze
 
+  # Top-level flags Claude Code puts on lines it writes into its own transcript
+  # that wear `type: "user"` but were never typed by a person, mapped to the
+  # provenance Zimmer states in their place.
+  #
+  #   interruptedByShutdown — the CLI's marker for a turn killed mid-tool-use,
+  #     recording that the kill was a process shutdown rather than a keyboard
+  #     interrupt. In Zimmer that shutdown is usually Zimmer's own doing:
+  #     Sessions::InterruptService SIGTERMs the CLI to deliver an enqueued
+  #     message ahead of the running turn.
+  #   isMeta — the CLI's internal resume scaffolding ("Continue from where you
+  #     left off."), paired with a stub assistant turn.
+  #
+  # Rendering either as a UserMessage tells the reader a human acted, which is
+  # the opposite of what Zimmer knows; the deployment's owner read one and asked
+  # whether he had interrupted the session (#488). They are routed to
+  # SystemEvent instead — the spec's bucket for vendor system metadata — under
+  # OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE.
+  #
+  # Matched strictly against `true`. A looser check (truthiness, `key?`) would
+  # reclassify genuine user turns as machine ones, which is the same
+  # misattribution with the sign flipped.
+  RUNTIME_NOTICE_FLAGS = {
+    "interruptedByShutdown" => "the CLI was shut down mid-turn",
+    "isMeta" => "CLI-internal scaffolding"
+  }.freeze
+
   # @see TranscriptNormalizer#normalize
   #
   # Returns an Array of OpenTranscripts events (possibly empty). The optional
@@ -181,6 +207,9 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
     content = ctx.message["content"]
     tool_results = content.is_a?(Array) ? content.select { |b| b.is_a?(Hash) && b["type"] == "tool_result" } : []
 
+    # tool_result blocks win over the runtime-notice flags: a ToolResult already
+    # renders as machine output, so there is no false attribution to correct,
+    # and rerouting it would drop the tool_call_id correlation.
     if tool_results.any?
       tool_results.each_with_index.map do |block, i|
         suffix = i.zero? ? "" : "toolresult:#{i}"
@@ -195,6 +224,22 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
           is_error: !!block["is_error"]
         )
       end
+    elsif (markers = runtime_notice_markers(ctx.raw_event)).any?
+      [
+        build_event(
+          ctx,
+          type: OpenTranscript::Types::SYSTEM_EVENT,
+          event_order: 0,
+          subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,
+          # The raw line, as every other SystemEvent carries it, plus the two
+          # things a renderer needs without re-deriving them: the text the CLI
+          # wrote, and which flags marked it machine-written.
+          payload: ctx.stripped_line.merge(
+            "text" => stringify_content(content),
+            "markers" => markers
+          )
+        )
+      ]
     else
       [
         build_event(
@@ -206,6 +251,13 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
         )
       ]
     end
+  end
+
+  # The RUNTIME_NOTICE_FLAGS set on this line, in declaration order. Empty for
+  # an ordinary user line — including one that merely carries the keys with a
+  # falsey or non-boolean value.
+  def runtime_notice_markers(raw_event)
+    RUNTIME_NOTICE_FLAGS.keys.select { |flag| raw_event[flag] == true }
   end
 
   def normalize_assistant_line(ctx)
