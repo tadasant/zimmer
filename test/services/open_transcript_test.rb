@@ -99,6 +99,20 @@ class OpenTranscriptTest < ActiveSupport::TestCase
     assert_equal "regular-log", OpenTranscript.filter_category(make_event(id: "f", ts: "2025-11-20T10:00:00Z", type: Types::SYSTEM_EVENT, subtype: "system"))
   end
 
+  # A runtime notice (#488) is a SystemEvent, but it occupies the conversational
+  # slot the CLI wrote it into and "the turn was cut off here" is context a
+  # reader on the `minimal` filter still needs. Reclassifying it out of
+  # `message` would hide a row that used to be visible — that fix is about
+  # attribution, not about showing less.
+  test "filter_category keeps a runtime notice in the message bucket" do
+    item = make_event(
+      id: "g", ts: "2025-11-20T10:00:00Z", type: Types::SYSTEM_EVENT,
+      subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE
+    )
+
+    assert_equal "message", OpenTranscript.filter_category(item)
+  end
+
   test "filter_category handles non-OT log items" do
     assert_equal "verbose-log", OpenTranscript.filter_category({ type: "log", level: "verbose" })
     assert_equal "regular-log", OpenTranscript.filter_category({ type: "log", level: "info" })

@@ -77,6 +77,15 @@ class TranscriptTextRenderer
         [ "--- Tool Result ---", content_text(entry[:output]).truncate(TOOL_RESULT_TRUNCATION), "" ]
       when OpenTranscript::Types::COMPACTION
         [ "--- Compaction ---", entry[:summary].to_s, "" ]
+      when OpenTranscript::Types::SYSTEM_EVENT
+        if entry[:subtype] == OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE
+          # The plain-text export reads the same false attribution the timeline
+          # did — these lines used to come out under "--- User ---".
+          payload = entry[:payload].is_a?(Hash) ? entry[:payload] : {}
+          [ "--- Runtime Notice (agent runtime, not a person) ---", payload["text"].to_s, "" ]
+        else
+          [ "--- System Event ---", content_text(entry[:payload]).truncate(UNKNOWN_ENTRY_TRUNCATION), "" ]
+        end
       else
         label = entry[:type].to_s.titleize
         [ "--- #{label} ---", content_text(entry.except(:provider_raw)).truncate(UNKNOWN_ENTRY_TRUNCATION), "" ]

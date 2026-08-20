@@ -33,6 +33,34 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
     assert_includes text, "The directory contains README.md."
   end
 
+  # #488: these lines used to come out of the plain-text export under
+  # "--- User ---", the same false attribution the timeline carried.
+  test "renders a runtime notice under its own header, never as a user turn" do
+    text = TranscriptTextRenderer.render([
+      {
+        type: OpenTranscript::Types::SYSTEM_EVENT,
+        subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,
+        payload: {
+          "text" => "[Request interrupted by user for tool use]",
+          "markers" => [ "interruptedByShutdown" ]
+        }
+      }
+    ])
+
+    assert_includes text, "--- Runtime Notice (agent runtime, not a person) ---"
+    assert_includes text, "[Request interrupted by user for tool use]"
+    refute_includes text, "--- User ---"
+  end
+
+  test "renders other system events under the generic system header" do
+    text = TranscriptTextRenderer.render([
+      { type: OpenTranscript::Types::SYSTEM_EVENT, subtype: "queue-operation", payload: { "operation" => "dequeue" } }
+    ])
+
+    assert_includes text, "--- System Event ---"
+    refute_includes text, "Runtime Notice"
+  end
+
   # The bug this class exists to kill: `content` is frequently an array of
   # content blocks, and pushing it into the line list left `join` to `to_s` each
   # Hash into the output.
