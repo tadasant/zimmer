@@ -155,6 +155,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
 
     SlackService.stubs(:get_messages_since).returns(messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
 
@@ -190,6 +194,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
 
     SlackService.stubs(:get_messages_since).returns(messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
 
     job = SlackTriggerPollerJob.new
 
@@ -261,6 +269,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
 
     SlackService.stubs(:get_messages_since).with("C_GENERAL", since_ts: "1704067000.000000").returns(general_messages)
     SlackService.stubs(:get_messages_since).with("C_TESTING", since_ts: "1704067000.000000").returns(testing_messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
     SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "general"))
@@ -340,6 +352,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
     SlackService.stubs(:get_messages_since).with("C_GENERAL", since_ts: "1704067000.000000").returns(messages)
 
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
+
     job = SlackTriggerPollerJob.new
 
     assert_no_difference("Session.count") do
@@ -365,6 +381,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
 
     SlackService.stubs(:get_messages_since).returns(messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
 
@@ -410,6 +430,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
       OpenStruct.new(ts: "1704067300.000000", text: "Hey <@U_BOT_123> help!", bot_id: nil, thread_ts: nil, user: "U222")
     ]
     SlackService.stubs(:get_messages_since).with("C_GOOD", since_ts: "1704067000.000000").returns(good_messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
     SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "good-channel"))
