@@ -17,15 +17,18 @@ class CostsController < ApplicationController
     @days = requested_days
     @analytics = CostAnalytics.new(from: @days.days.ago)
 
-    @totals = @analytics.totals
-    @cost_breakdown = @analytics.cost_breakdown
-    @by_day = @analytics.by_day
-    @by_agent_root = @analytics.by_agent_root
-    @by_model = @analytics.by_model
-    @by_thread_kind = @analytics.by_thread_kind
-    @by_adhoc_source = @analytics.by_adhoc_source
-    @top_sessions = @analytics.top_sessions
-    @unpriced_models = @analytics.unpriced_models
+    # One cached bundle rather than a dozen separate scans of the same window —
+    # see CostAnalytics#snapshot for why that matters at a year of history.
+    snapshot = @analytics.snapshot
+    @totals = snapshot[:totals]
+    @cost_breakdown = snapshot[:cost_breakdown]
+    @by_day = snapshot[:by_day]
+    @by_agent_root = snapshot[:by_agent_root]
+    @by_model = snapshot[:by_model]
+    @by_thread_kind = snapshot[:by_thread_kind]
+    @by_adhoc_source = snapshot[:by_adhoc_source]
+    @top_sessions = snapshot[:top_sessions]
+    @unpriced_models = snapshot[:unpriced_models]
 
     @last_ingested_at = [
       SessionTokenUsage.maximum(:called_at),

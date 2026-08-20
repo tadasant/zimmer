@@ -12,6 +12,10 @@
 class CostAnalytics
   DEFAULT_WINDOW = 7.days
 
+  # Ingestion runs every 10 minutes, so a snapshot is stale for at most one cycle
+  # even when nothing invalidates the key.
+  CACHE_TTL = 10.minutes
+
   # How many rows each breakdown returns before the tail is folded into "other".
   # The page is a summary, not an export; the REST index is the export.
   TOP_N = 15
@@ -19,8 +23,48 @@ class CostAnalytics
   attr_reader :from, :to
 
   def initialize(from: nil, to: nil)
-    @to = to || Time.current
-    @from = from || (@to - DEFAULT_WINDOW)
+    # BOTH ends round down to the minute, including one the caller supplied.
+    # `7.days.ago` carries sub-second precision, so a window built from it moves
+    # every request: it can never be cached, never be compared between two
+    # requests, and never be reproduced by someone checking a figure. Nobody
+    # reading a spend page needs the last few seconds.
+    @to = (to || Time.current).change(sec: 0, usec: 0)
+    @from = (from || (@to - DEFAULT_WINDOW)).change(sec: 0, usec: 0)
+  end
+
+  # Everything the Costs page and the REST rollup endpoint render, in one
+  # memoizable bundle.
+  #
+  # There are a dozen separate aggregates here and each one scans the window. That
+  # is fine at a week and ruinous at a year: this table grows by thousands of rows
+  # a day, so a 365-day window is millions of rows read a dozen times over, per
+  # request, by every viewer. Computing them together and caching the result makes
+  # the expensive case pay once per ingestion cycle instead of once per page view.
+  def snapshot
+    Rails.cache.fetch(cache_key, expires_in: CACHE_TTL) do
+      {
+        totals: totals,
+        cost_breakdown: cost_breakdown,
+        by_day: by_day,
+        by_agent_root: by_agent_root,
+        by_model: by_model,
+        by_thread_kind: by_thread_kind,
+        by_adhoc_source: by_adhoc_source,
+        top_sessions: top_sessions,
+        unpriced_models: unpriced_models
+      }
+    end
+  end
+
+  # `MAX(id)` is an index lookup, not a scan, and it changes the moment ingestion
+  # writes anything — so the key turns over exactly when the numbers do rather
+  # than on a timer alone. The TTL is the backstop for a row deleted rather than
+  # added, which moves no maximum.
+  def cache_key
+    [
+      "cost-analytics/v1", from.to_i, to.to_i,
+      SessionTokenUsage.maximum(:id).to_i, AdhocTokenUsage.maximum(:id).to_i
+    ].join("/")
   end
 
   def session_scope = SessionTokenUsage.in_window(from, to)

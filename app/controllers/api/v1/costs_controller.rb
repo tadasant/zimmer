@@ -25,17 +25,8 @@ class Api::V1::CostsController < Api::BaseController
 
     render json: {
       window: { from: analytics.from.iso8601, to: analytics.to.iso8601 },
-      pricing: pricing_json,
-      totals: analytics.totals,
-      cost_breakdown: analytics.cost_breakdown,
-      by_day: analytics.by_day,
-      by_agent_root: analytics.by_agent_root,
-      by_model: analytics.by_model,
-      by_thread_kind: analytics.by_thread_kind,
-      by_adhoc_source: analytics.by_adhoc_source,
-      top_sessions: analytics.top_sessions,
-      unpriced_models: analytics.unpriced_models
-    }
+      pricing: pricing_json
+    }.merge(analytics.snapshot)
   end
 
   # GET /api/v1/costs/records

@@ -179,7 +179,7 @@ class TokenUsageIngestionServiceTest < ActiveSupport::TestCase
 
     assert_equal 0, result.session_rows
     assert_equal 2, result.adhoc_rows
-    assert_equal %w[cli_status_probe session_title].sort, AdhocTokenUsage.pluck(:source).sort
+    assert_equal %w[cli_status_probe headless_inference].sort, AdhocTokenUsage.pluck(:source).sort
   end
 
   test "an unrecognised directory lands in the ad hoc table as unknown" do
@@ -214,6 +214,44 @@ class TokenUsageIngestionServiceTest < ActiveSupport::TestCase
     ingest
 
     assert_equal session.id, SessionTokenUsage.sole.session_id
+  end
+
+  test "a forked session does not take its parent's spend" do
+    # ForkSessionService copies the source session's transcript verbatim into the
+    # FORK's clone directory under a new filename, and the copied lines keep the
+    # parent's requestId AND sessionId. Attributing by file would hand the parent's
+    # whole pre-fork spend to the fork, and then — first writer wins on request_id —
+    # silently drop those rows when the parent's own file was scanned.
+    parent = sessions(:active_session)
+    parent.update_column(:session_id, "parent-runtime-uuid")
+    fork = sessions(:archived)
+    fork.update_column(:session_id, "fork-runtime-uuid")
+    fork.update_column(:metadata, { "clone_path" => "/home/rails/.zimmer/clones/zimmer-main-1786989710-abcdef12" })
+
+    # The fork's directory, holding a copy of the parent's line plus its own.
+    write_transcript(clone_dir, "fork-runtime-uuid.jsonl", [
+      assistant_line(request_id: "req_from_parent", session_id: "parent-runtime-uuid"),
+      assistant_line(request_id: "req_from_fork", session_id: "fork-runtime-uuid")
+    ])
+
+    ingest
+
+    assert_equal parent.id, SessionTokenUsage.find_by(request_id: "req_from_parent").session_id,
+      "a line copied from the parent must stay the parent's spend"
+    assert_equal fork.id, SessionTokenUsage.find_by(request_id: "req_from_fork").session_id
+  end
+
+  test "backfill scratch symlinks do not leave a dead transcript path" do
+    write_transcript(clone_dir, "sess-uuid.jsonl", [ assistant_line(request_id: "req_path") ])
+
+    Dir.mktmpdir do |scratch|
+      File.symlink(File.join(@root, clone_dir), File.join(scratch, clone_dir))
+      TokenUsageIngestionService.new(root: scratch).call
+    end
+
+    stored = SessionTokenUsage.sole.transcript_path
+    assert File.exist?(stored), "stored transcript_path #{stored} should still resolve"
+    assert_not stored.include?("token_usage_test_scratch"), "should not store the scratch path"
   end
 
   test "stores usage for a transcript with no matching session" do

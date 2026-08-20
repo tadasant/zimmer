@@ -14,7 +14,11 @@ class AdhocTokenUsage < ApplicationRecord
   # Where the call came from. `unknown` is deliberately a real value rather than
   # nil: a transcript that lands outside every known path pattern is a fact worth
   # showing, not a gap to hide.
-  SOURCES = %w[session_title push_notification cli_status_probe unknown].freeze
+  #
+  # `headless_inference` covers both HeadlessInferenceService call sites — session
+  # titles and push-notification summaries. The transcript does not record which
+  # one ran, so they share one honest label instead of one of them being guessed.
+  SOURCES = %w[headless_inference cli_status_probe unknown].freeze
 
   validates :source, presence: true, inclusion: { in: SOURCES }
 
