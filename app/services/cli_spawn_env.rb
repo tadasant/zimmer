@@ -245,7 +245,7 @@ module CliSpawnEnv
   # This reaches the CLI itself and, on Claude Code, the stdio MCP servers that
   # inherit its environment. It does NOT reach a Codex server: Codex rebuilds each
   # server's environment from a fixed whitelist plus the config entry's own tables.
-  # RuntimeConfigPostProcessor#inject_elicitation_env! writes the same two values
+  # RuntimeConfigPostProcessor#inject_elicitation_env! writes the same values
   # (with the same .env precedence) into those tables, which is what makes the gate
   # work on both runtimes.
   #

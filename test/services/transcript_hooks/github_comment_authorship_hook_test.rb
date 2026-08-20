@@ -223,6 +223,30 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 8888)
   end
 
+  test "records a gh api post behind the bash -lc wrapper a Codex argv joins into" do
+    # Codex records a shell call as an argv array the parser joins back into one
+    # string, so `gh api` is never at the front of the command it ran.
+    output = { "id" => 9999, "html_url" => "https://github.com/o/r/pull/7#issuecomment-9999" }.to_json
+
+    run_hook(claude_transcript(
+      command: "bash -lc gh api repos/o/r/issues/7/comments -f body=hi",
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 9999)
+  end
+
+  test "records a gh api post whose output the command captures" do
+    output = { "id" => 10101, "html_url" => "https://github.com/o/r/pull/7#issuecomment-10101" }.to_json
+
+    run_hook(claude_transcript(
+      command: "out=$(gh api repos/o/r/issues/7/comments -f body=hi)",
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 10101)
+  end
+
   test "reads a tool result whose content is an array of text blocks" do
     transcript = <<~JSONL
       {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"gh pr comment 281 --body done"}}]}}

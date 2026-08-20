@@ -1399,7 +1399,35 @@ sweep reaches is discarded without anyone being asked.
 Nothing stops a *new* `pending` row being created for an already-archived session either — the three
 `create` surfaces have no session-status guard, unlike `follow_up` and `send_now`, which reject an
 archived target. That re-creates the stranded state after the archive callback has already run.
-Tracked separately in [#549](https://github.com/tadasant/zimmer/issues/549).
+Tracked separately in [#549](https://github.com/tadasant/zimmer/issues/549). Those same surfaces are
+equally unguarded against a session in `needs_input`, but that case is now handled rather than
+refused: an `after_create_commit` hook schedules the delivery, because an idle session is exactly
+the condition the message is waiting for.
+
+### Three states still hold a queued message on an idle session
+
+A session no longer comes to rest in `needs_input` with a message queued for it — the `pause`
+transition schedules the delivery ([lifecycle](/sessions/lifecycle/)). The invariant has edges.
+
+`EnqueuedMessageDrainJob` refuses to deliver in three states, and in each the message waits for that
+state to clear rather than for anyone to notice: blocked on an MCP elicitation (the agent process is
+still alive), parked by `AuthOutageParkService` on a quota or auth wall, and `paused_by: "mcp_retry"`
+with a retry already scheduled. Each is the right call — delivering would spawn a second process
+against one clone, or burn the message on the wall that caused the park — and each ends in the
+message going out on the turn that follows. But a park that never clears holds the message
+indefinitely, and nothing says so.
+
+Only `needs_input` is covered. A session that pauses straight into a scheduled sleep goes dormant in
+`waiting` with its queue intact, which is correct — it has a wake armed, and that wake's turn drains
+the queue — but a session whose wake is later destroyed keeps the message with it. A session in
+`failed` holds its queue too; the recovery sweeps prefer a queued user message when they
+auto-continue one, so it usually goes out, but only if a sweep reaches the session.
+
+The terminal case is an alert, not a resolution. After three failed attempts the job stops and pages,
+leaving the messages `pending` — deliberately, because they are still deliverable and retiring them
+to `undelivered` would destroy a message to record that one job could not deliver it. What that means
+in practice is that the invariant is restored by a human giving the session a turn, and until then
+the session is idle with work queued for it.
 
 ### 🔴 Every turn a session finishes costs a second agent turn, for the Status summary
 
@@ -2495,7 +2523,8 @@ Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 ### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 
 `GithubPrUrlHook` decides which PRs belong to a session by reading its transcript for evidence that
-the session *opened* one: a successful `gh pr create`, a failed one that says the branch's PR already
+the session *opened* one: a successful create (`gh pr create`, or a POST to the REST
+`repos/OWNER/REPO/pulls` endpoint), a failed `gh pr create` that says the branch's PR already
 exists, or the agent's own prose claiming it opened a PR on this repo. Everything else — a PR read
 with `gh pr view`, a PR URL arriving in a user message or a Zimmer notification — is ignored on
 purpose, because recording it is how one session ends up receiving another session's review comments
@@ -2510,8 +2539,11 @@ Heuristics have two failure directions and neither announces itself:
   indistinguishable from a true one.
 - **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
   `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
-  opened through a path the hook can't see — an MCP GitHub tool, the web UI — and never mentioned in
-  the agent's prose lands here.
+  opened through a path the hook can't see — an MCP GitHub tool's `create_pull_request`, which is a
+  structured tool call rather than a shell command, or the web UI — and never mentioned in the
+  agent's prose lands here. The shell shapes are enumerated, so each new one costs a session before
+  it is recognised: the REST fallback agents reach for when GitHub's GraphQL API is down took
+  session [5679](https://zimmer.tadasant.com/sessions/5679) to discover.
 
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no
@@ -3078,25 +3110,11 @@ cgroup-scoped one — the incident is still written to
 
 ---
 
-## A sleeping session can still be dragged awake by an interrupt race
+## Two narrow gaps in the InterruptError stand-down
 
-`AgentSessionJob#handle_interrupt_error` stands down when a session has already come to rest in
-`needs_input`, so a job row re-picked after a normal turn completion no longer resurrects it. The
-equivalent race one state further along is **not** closed.
-
-A session whose agent called `wake_me_up_later` goes `running → needs_input → waiting` inside a
-single `pause` callback chain, via `execute_pending_sleep`. If the worker dies in that window, the
-re-pick lands on a `waiting` session, and the handler's `elsif session.waiting? && session.may_start?`
-branch — which exists for the genuinely different case of an interrupt arriving before the process
-ever spawned — drags it `waiting → running → needs_input` and nudges it. A session that explicitly
-asked to sleep is woken, and its scheduled wake is defeated.
-
-The two cases are distinguishable: `Session#armed_one_time_wake?` is true for the sleeper and false
-for the never-started session. It is private to the model today, so closing this means widening that
-surface as well as branching on it. Tracked in
-[#553](https://github.com/tadasant/zimmer/issues/553).
-
-Two narrower gaps in the same handler, both deliberate:
+`AgentSessionJob#handle_interrupt_error` stands down when a session has already come to rest — in
+`needs_input` after a normal turn completion, or in `waiting` after a deliberate sleep. Two narrower
+gaps remain, both deliberate:
 
 - The status is read once, before the guard. A session that pauses in the moment *between* that read
   and the guard falls through to the old behaviour. The window is small and the failure is the

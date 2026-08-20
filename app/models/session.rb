@@ -284,6 +284,8 @@ class Session < ApplicationRecord
     transcript_waiting_logged
     transcript_files_waiting_logged
     transcript_reading_started_logged
+    interrupted_start_requeue_count
+    recovery_continue_attempts
   ]).freeze
 
   # Metadata keys rendered by the session metadata partial. A change to any of them is
