@@ -136,6 +136,12 @@ Rails.application.routes.draw do
         end
       end
 
+      # Outcome analyses of archived session transcripts (the Outcomes view).
+      # `create` is the REST half of the `save_outcome_analysis` MCP tool; :id on
+      # the member routes is the ANALYZED SESSION's id or slug, not the analysis
+      # row's, because a caller has a handle on the session.
+      resources :outcome_analyses, only: [ :index, :show, :create ]
+
       # MCP server fallback elicitations
       resources :elicitations, only: [ :create, :show ] do
         member do
@@ -250,6 +256,18 @@ Rails.application.routes.draw do
   patch "quotas/spot_policy", to: "spot_policies#update", as: :spot_policy
   patch "quotas/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
   delete "quotas/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
+
+  # Outcomes: the transcript-outcome analysis ledger, one transcript's
+  # flamegraph drilldown, and the separate summary-stats surface. Every write
+  # here spawns agent sessions, so all of them are POSTs — nothing analyzes on a
+  # page load.
+  get "outcomes", to: "outcomes#index", as: :outcomes
+  get "outcomes/stats", to: "outcomes#stats", as: :outcomes_stats
+  post "outcomes/analyze_all", to: "outcomes#analyze_all", as: :analyze_all_outcomes
+  post "outcomes/batches/:id/cancel", to: "outcomes#cancel_batch", as: :cancel_outcome_batch
+  post "outcomes/:id/analyze", to: "outcomes#analyze", as: :analyze_outcome
+  # Last in the group so it cannot shadow "stats" as a session identifier.
+  get "outcomes/:id", to: "outcomes#show", as: :outcome
 
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the

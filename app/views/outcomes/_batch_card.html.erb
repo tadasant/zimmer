@@ -1,0 +1,38 @@
+<%# One "Analyze All" batch: what it was created from, where it is, and the Stop
+    button. Rendered for the last few batches so a runaway one is impossible to
+    miss and one click away from stopped. %>
+<% counts = { queued: batch.queued_count, running: batch.running_count, succeeded: batch.succeeded_count, failed: batch.failed_count, canceled: batch.canceled_count } %>
+<div class="border rounded-md px-3 py-2 <%= batch.running? ? 'border-indigo-300 bg-indigo-50/40' : 'border-gray-200 bg-white' %>">
+  <div class="flex items-center gap-2 flex-wrap">
+    <span class="text-xs font-semibold text-gray-900">Batch #<%= batch.id %></span>
+    <span class="text-[11px] px-1.5 py-0.5 rounded font-medium <%=
+      case batch.status
+      when OutcomeAnalysisBatch::RUNNING then 'bg-indigo-100 text-indigo-800'
+      when OutcomeAnalysisBatch::CANCELED then 'bg-amber-100 text-amber-800'
+      else 'bg-gray-100 text-gray-700'
+      end %>"><%= batch.status %></span>
+    <span class="text-[11px] text-gray-500"><%= batch.concurrency %> at a time</span>
+    <% if batch.advisory_concurrency? %>
+      <span class="text-[11px] text-amber-700" title="Far more than the spot gate will admit at once — the extra sessions wait rather than run.">⚠ high</span>
+    <% end %>
+    <span class="text-[11px] text-gray-400 truncate hidden sm:inline">· <%= batch.filter_summary %></span>
+    <% if batch.running? %>
+      <%= button_to "Stop", cancel_outcome_batch_path(batch, return_params), method: :post,
+          form: { class: "ml-auto", data: { turbo_confirm: "Stop batch ##{batch.id}? Queued analyses are canceled; the #{batch.running_count} already in flight will finish." } },
+          class: "text-[11px] px-2 py-0.5 border border-red-300 text-red-700 rounded hover:bg-red-50 cursor-pointer" %>
+    <% end %>
+  </div>
+  <div class="mt-1.5 flex items-center gap-2">
+    <div class="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+      <div class="h-full bg-indigo-500" style="width: <%= batch.progress_percent %>%"></div>
+    </div>
+    <span class="text-[11px] tabular-nums text-gray-600"><%= batch.finished_item_count %>/<%= batch.total_count %></span>
+  </div>
+  <div class="mt-1 flex gap-3 text-[11px] text-gray-600 tabular-nums">
+    <span title="Analysis sessions in flight"><span class="text-indigo-700 font-medium"><%= counts[:running] %></span> running</span>
+    <span><span class="font-medium"><%= counts[:queued] %></span> queued</span>
+    <span><span class="text-emerald-700 font-medium"><%= counts[:succeeded] %></span> saved</span>
+    <% if counts[:failed].positive? %><span><span class="text-red-700 font-medium"><%= counts[:failed] %></span> failed</span><% end %>
+    <% if counts[:canceled].positive? %><span><span class="text-amber-700 font-medium"><%= counts[:canceled] %></span> canceled</span><% end %>
+  </div>
+</div>

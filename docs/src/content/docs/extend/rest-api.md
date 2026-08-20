@@ -513,6 +513,36 @@ curl -X POST "$BASE_URL/categories/reorder" \
   -d '{"ids": [5, "uncategorized", 3, 8]}'
 ```
 
+## Outcome analyses
+
+The write half of the [Outcomes view](/sessions/outcomes/): a Transcript Segment tree saved against
+an archived session. `POST /outcome_analyses` mirrors the `save_outcome_analysis` MCP tool exactly —
+both go through the same validator, so they cannot disagree about what a well-formed tree is.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /outcome_analyses` | Save one. Body: `session_id` (id or slug), `analyzer_session_id`, `schema_version`, `root`, `notes` |
+| `GET /outcome_analyses` | Current analyses, newest first, **without** their trees. Filters: `from`, `to`, `agent_root`, `agent_runtime`, `model`, `outcome` |
+| `GET /outcome_analyses/:id` | One analysis **with** its tree. `:id` is the analyzed session's id or slug, not the analysis row's |
+
+The whole tree is validated before anything is stored — id scheme, enum values, explanation presence
+and its 140-character cap, nesting. A malformed tree is a `422` naming every problem, and nothing is
+written. A session that is not archived is a `422` too: only finished transcripts have outcomes.
+
+Saving twice supersedes rather than duplicating — the earlier reading is kept and stamped
+`superseded_at`, and `superseded_previous` in the response says whether that happened.
+
+```bash
+curl -X POST "$BASE_URL/outcome_analyses" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"session_id": 4021, "schema_version": "1",
+       "root": {"id": "S0",
+                "trigger": {"kind": "New", "source": "user"},
+                "goal": {"text": "Fix the login redirect loop", "kind": "Action"},
+                "outcome": {"kind": "Success", "explanation": "Landed after one failed patch."},
+                "meta": {}, "children": []}}'
+```
+
 ## The rest
 
 | Resource | Endpoints |
