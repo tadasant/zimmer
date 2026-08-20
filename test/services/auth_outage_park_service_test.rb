@@ -928,6 +928,61 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "needs_input", @session.reload.status
   end
 
+  # The finding that mattered most in review: `active_follow_up_prompt` is cleared by only
+  # ONE exit path, and these guards sit on the others — so its mere presence is not evidence
+  # the turn failed. A turn whose prompt is in the transcript ran, whatever the pool says.
+  test "leaves a stop alone when the prompt reached the runtime's transcript" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+    prompt = "continue where you left off"
+    @session.update!(transcript: [
+      { "type" => "user", "message" => { "role" => "user", "content" => prompt } }.to_json,
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => "done",
+                                              "stop_reason" => "end_turn" } }.to_json
+    ].join("\n") + "\n")
+    @session.merge_metadata!("active_follow_up_prompt" => prompt)
+
+    assert_not AuthOutageParkService.turn_undelivered?(@session)
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session),
+      "A turn the runtime recorded is a turn that ran, however empty the pool is"
+
+    @session.pause!
+    assert_equal "needs_input", @session.reload.status
+  end
+
+  # A user pause terminates the process BEFORE transitioning, so these exits can be reached
+  # for a session the human has already stopped. Re-arming it with a wake trigger would undo
+  # their decision.
+  test "leaves a user-paused session alone" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue",
+      "paused_by" => "user")
+
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session)
+  end
+
+  # Two of the three call sites can be reached in one pass through the monitoring loop.
+  # Parking twice would charge one stop twice against the consecutive-park backoff.
+  test "does not park a session that is already parked" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue")
+    assert AuthOutageParkService.park_undelivered_turn!(@session)
+
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session.reload),
+      "A parked session must not be parked again by the next exit path in the same pass"
+    assert_equal 1, AuthOutageParkService.recent_quota_parks(@session).size
+  end
+
+  # An unreadable pool is not evidence of an outage. The sibling predicate
+  # .runtime_has_available_account? rescues to false meaning "do not wake", which is
+  # conservative; the same false here would mean "park", which is not.
+  test "does not park when the pool cannot be read" do
+    @session.merge_metadata!("active_follow_up_prompt" => "continue")
+    RuntimeAuthProvider.stubs(:for).raises(StandardError.new("pool unreadable"))
+
+    assert_not AuthOutageParkService.pool_confirmed_empty?("claude_code")
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session)
+  end
+
   # A whole population parked by one outage must not retry in lockstep. The park
   # times are drawn from the same reset, so any spread between them is jitter.
   test "parks caught by one outage do not all retry at the same instant" do
@@ -936,8 +991,9 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     retry_ats = 12.times.map do
       peer = parked_peer
+      peer.update!(status: :running)
       peer.merge_metadata!("active_follow_up_prompt" => "continue")
-      AuthOutageParkService.park_undelivered_turn!(peer)
+      assert AuthOutageParkService.park_undelivered_turn!(peer)
       Time.zone.parse(peer.reload.metadata["auth_outage_retry_at"])
     end
 
