@@ -178,6 +178,36 @@ An account with no reading at all contributes nothing and is left out of the den
 decision says how many of the pool's accounts it averaged. When nothing has a readable window the
 gate falls open on `no_snapshot`.
 
+### When the pool comes back
+
+The Account Pool section answers "we're blocked until when?" beside each average, as a wall-clock
+time and a countdown. Both come off the same `ClaudeAccountPool` measure as the figures above them,
+and each names the reset that actually returns capacity on its window rather than the soonest reset
+of that kind anywhere in the pool:
+
+- **Next usable 5-hour reset** is measured only over accounts whose weekly allowance is still there.
+  An account whose week is spent does not start serving again when its 5-hour window rolls over, so
+  including it would report the pool as recovering hours before it does — the same trap the
+  *effective* qualifier on the 5-hour average exists to avoid. It names that rollover whether or not
+  the pool is currently short of headroom, so on a healthy pool it reads as the next 5-hour boundary
+  rather than as a wait. When every account with a reading has spent its week there is no such time,
+  and the note says so instead: the pool is blocked until the 7-day reset, or — if no weekly reset
+  time is recorded either — that nothing on the page says when it comes back. When the servable
+  accounts simply are not waiting on a rollover, it says that too.
+- **Next 7-day reset** is measured only over accounts whose week *is* spent, because those are the
+  ones a weekly rollover returns to service. When no account is weekly-blocked the note says that
+  rather than naming a rollover on an account that was never blocked. It reports the soonest reset
+  *recorded* among the spent accounts and counts them separately, because a spent window does not
+  always carry a reset timestamp — when none of them does, the note is the count alone.
+
+Neither figure counts a reset time that has already passed. A past timestamp describes a window that
+has already rolled over, which is the same rule the counters follow, so it is not something the pool
+is waiting for.
+
+The times are rendered as UTC on the server and rewritten to the reader's own clock in the browser
+(the `local-time` Stimulus controller), which names the zone it converted to; the UTC reading stays
+on hover, and stays on screen if JavaScript never runs.
+
 Targets and the concurrency limit are set together on the Claude Code tab of `/quotas`, on the same
 page as the windows they are measured against, and all three are settable over MCP with
 `action_spot_policy` (`set_gating`).

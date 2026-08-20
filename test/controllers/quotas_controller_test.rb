@@ -176,6 +176,47 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Avg 7-Day Utilization 65\.0%/, stats)
   end
 
+  # ── the pool's reset notes ──
+
+  test "show names the next usable 5-hour reset and the next 7-day reset" do
+    # The shape from production: the account with 5-hour headroom to come back to
+    # is not the one whose 5-hour window resets soonest, because that one's week
+    # is spent and its rollover returns nothing.
+    spent_5h = 20.minutes.from_now
+    servable_5h = 3.hours.from_now
+    spent_7d = 30.hours.from_now
+
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.05, status_5h: "allowed", reset_5h: spent_5h,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: spent_7d },
+      { utilization_5h: 0.60, status_5h: "allowed", reset_5h: servable_5h,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 6.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    stats = aggregate_stats_text
+    assert_match "Next usable 5-hour reset: #{utc_reset_text(servable_5h)}", stats
+    assert_no_match(/#{Regexp.escape(utc_reset_text(spent_5h))}/, stats)
+    assert_match "Next 7-day reset: #{utc_reset_text(spent_7d)}", stats
+    assert_match "the soonest recorded among 1 account whose 7-day window is spent", stats
+  end
+
+  test "show says nothing is waiting on a 7-day reset when no week is spent" do
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.45, status_5h: "allowed", reset_5h: 3.hours.from_now,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now },
+      { utilization_5h: 0.25, status_5h: "allowed", reset_5h: 2.hours.from_now,
+        utilization_7d: 0.10, status_7d: "allowed", reset_7d: 4.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    assert_match "No account's 7-day window is spent", aggregate_stats_text
+  end
+
   test "show averages the raw 5-hour counters when both windows are healthy" do
     seed_aggregate_snapshots(
       { utilization_5h: 0.45, status_5h: "allowed", reset_5h: 3.hours.from_now,
@@ -1286,6 +1327,12 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     css_select("#account_card_#{account.id} span.rounded-full")
       .map { |el| el.text.strip }
       .find { |text| text != "Current" }
+  end
+
+  # The pool's reset notes render UTC on the server, whatever the reader's clock
+  # rewrites them to.
+  def utc_reset_text(time)
+    time.utc.strftime("%b %-d, %H:%M UTC")
   end
 
   def aggregate_stats_text
