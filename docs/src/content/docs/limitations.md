@@ -1139,14 +1139,15 @@ such rejections, spread across at least 15 minutes each, before the account is m
 
 The cost is on the other side. An account whose credential really is dead, in the way that does *not*
 say "expired" — revoked out of band, or a chain Zimmer orphaned before the fix landed — stays `active`
-for roughly 20 to 45 minutes while the strikes accumulate. During that window rotation will hand
-sessions an account that cannot mint an access token, and those sessions fail on 401 rather than
-being routed past it. The bound is the 5-minute sweep plus the 15-minute strike debounce; it is a
-deliberate trade of a slower true positive for far fewer false ones, not an oversight.
+for at least half an hour while the strikes accumulate. Two strikes must be 15 minutes apart and the
+sweep runs every 5 minutes, so the floor is ~30 minutes and the usual case is 30–45. During that
+window rotation can hand a session an account that cannot mint an access token. It is a deliberate
+trade of a slower true positive for far fewer false ones, not an oversight.
 
-The strikes are on `claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at` and are
-not surfaced anywhere in the UI, so "why is this account still active when every refresh fails?" is
-answerable only from the logs or the console.
+The strikes are on `claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at`. They
+are on the account's Administrate record page but **not** on `/quotas`, which is where anyone actually
+looks — so "why is this account still active when every refresh fails?" is a question `/quotas` cannot
+answer.
 
 ---
 

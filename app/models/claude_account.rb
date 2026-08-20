@@ -53,14 +53,24 @@ class ClaudeAccount < ApplicationRecord
   # is not evidence — three, spread out, are.
   STALE_REFRESH_STRIKE_LIMIT = 3
 
-  # Strikes older than this are forgotten. Three lost races a week apart are
-  # three unrelated races, not a credential going bad.
+  # A streak expires six hours after its most recent strike, not six hours after
+  # it started: three lost races a week apart are three unrelated races, and
+  # forgetting the streak between them is the point.
   STALE_REFRESH_STRIKE_WINDOW = 6.hours
 
-  # A second stale failure this soon after the last one is the same burst — the
-  # refresh sweep retries a non-permanent failure three times with backoff, and
-  # four attempts at one spent value are one piece of evidence, not four. Sized
-  # above that retry ladder (2 + 4 + 8 minutes).
+  # Stamped into the shared credentials-owner marker when Zimmer holds credentials
+  # it could not write to disk. It matches no account, so every marker-gated read
+  # of ~/.claude/.credentials.json declines until a successful write re-stamps the
+  # marker with a real owner. Deliberately a syntactically valid address in a
+  # reserved TLD: a blank marker reads as "no marker yet", which is the state
+  # AccountRotationService converges by writing one.
+  UNOWNED_CREDENTIALS_MARKER = "unwritten@zimmer.invalid"
+
+  # A second stale rejection this soon after the last one is the same episode.
+  # refresh_token! has nine call sites — the quotas page, rotation, activation,
+  # the quota-reset checker and the 5-minute sweep — and several of them can
+  # present the same spent value within minutes of each other. That is one piece
+  # of evidence, not five, so three strikes take at least half an hour.
   STALE_REFRESH_STRIKE_DEBOUNCE = 15.minutes
 
   enum :status, { active: 0, quota_exceeded: 1, needs_reauth: 2 }
@@ -472,6 +482,8 @@ class ClaudeAccount < ApplicationRecord
   #   account first transitioned to needs_reauth, and a known-dead token fails every
   #   cycle until a human re-authenticates.
   def refresh_token!(recovery_probe: false)
+    @last_refresh_failure_kind = nil
+
     # API-key Codex accounts authenticate statically — nothing to rotate, nothing
     # to race, so they skip the lock entirely.
     return true if codex? && codex_api_key_account?
@@ -538,6 +550,21 @@ class ClaudeAccount < ApplicationRecord
     # rotation mid-flight. Preserve the "returns false, never raises" contract.
     Rails.logger.error "[ClaudeAccount] Token refresh could not acquire or hold the account lock for #{email}: #{e.message}"
     false
+  end
+
+  # Why the last #refresh_token! call failed, for the callers that have to decide
+  # what to do next.
+  #
+  #   :needs_reauth - the account was condemned; only a human clears it
+  #   :stale        - the vendor rejected the VALUE. Retrying would present the
+  #                   same one, so a retry ladder is wasted requests
+  #   :transient    - a network blip or an unrecognised response; worth retrying
+  #
+  # @return [Symbol, nil] nil when the last call succeeded
+  def last_refresh_failure_reason
+    return :needs_reauth if needs_reauth?
+
+    @last_refresh_failure_kind == :stale ? :stale : :transient
   end
 
   # The refresh token currently stored on this row, whichever runtime owns it.
@@ -636,6 +663,7 @@ class ClaudeAccount < ApplicationRecord
           write_credentials_to_filesystem!
         rescue StandardError => e
           Rails.logger.error "[ClaudeAccount] Refreshed #{email} but could not write the new credentials to the filesystem: #{e.message}"
+          disown_filesystem_credentials!
         end
       end
 
@@ -810,6 +838,11 @@ class ClaudeAccount < ApplicationRecord
 
     if fs_tokens["access_token"].blank? || fs_tokens["refresh_token"].blank?
       Rails.logger.warn "[ClaudeAccount] Skipping codex filesystem sync for #{email}: filesystem tokens are incomplete (missing access_token or refresh_token)"
+      return
+    end
+
+    unless codex_auth_at_least_as_new_on_disk?(fs)
+      Rails.logger.info "[ClaudeAccount] Skipping codex filesystem sync for #{email}: the stored tokens are newer than the ones on disk"
       return
     end
 
@@ -1051,6 +1084,7 @@ class ClaudeAccount < ApplicationRecord
   # rejected but nothing says the chain behind it is gone — collects a strike and
   # is left alone until the strikes say otherwise.
   def handle_refresh_rejection(response, presented:, kind:)
+    @last_refresh_failure_kind = kind
     label = codex? ? "Codex refresh" : "Refresh"
 
     if kind == :unknown
@@ -1091,6 +1125,11 @@ class ClaudeAccount < ApplicationRecord
     # does not page on a recoverable condition (the human re-auths to recover).
     Rails.logger.warn "[ClaudeAccount] #{label} token permanently invalid for #{email} (#{response.code}), marking needs_reauth: #{response.body}"
     update!(status: :needs_reauth)
+    # The strikes have done their job and the row is now condemned by status. Left
+    # standing, they would deny the next credential its benefit of the doubt: an
+    # account flipped back to active from the admin form, without a new token,
+    # would be condemned again by a single stale rejection.
+    clear_stale_refresh_failures!
     false
   end
 
@@ -1109,16 +1148,45 @@ class ClaudeAccount < ApplicationRecord
       if last.blank? || last < STALE_REFRESH_STRIKE_WINDOW.ago
         1
       elsif last > STALE_REFRESH_STRIKE_DEBOUNCE.ago
-        # Same burst. The refresh sweep retries a non-permanent failure three times
-        # with backoff, and four attempts at one spent value are one piece of
-        # evidence, not four.
-        return false
+        # Same episode — no new evidence, so no new strike. Answer on the strikes
+        # already banked rather than a flat "spare it", so a row that somehow
+        # arrives here already at the limit is not spared forever.
+        return stale_refresh_failures >= STALE_REFRESH_STRIKE_LIMIT
       else
         stale_refresh_failures + 1
       end
 
     update_columns(stale_refresh_failures: strikes, last_stale_refresh_failure_at: Time.current)
     strikes >= STALE_REFRESH_STRIKE_LIMIT
+  end
+
+  # Codex has no owner marker to disown (see #disown_filesystem_credentials!), but
+  # its auth.json carries a last_refresh that both the CLI and Zimmer stamp on
+  # every rotation — so the same "do not move backwards" rule is answerable
+  # directly. A disk copy older than the one we hold is the residue of a write
+  # that did not land, and adopting it would overwrite the only live refresh
+  # token with one OpenAI has already spent.
+  def codex_auth_at_least_as_new_on_disk?(fs_auth)
+    on_disk = fs_auth["last_refresh"]
+    stored = codex_auth_json&.dig("last_refresh")
+    return true if on_disk.blank? || stored.blank?
+
+    Time.parse(on_disk.to_s) >= Time.parse(stored.to_s)
+  rescue ArgumentError, TypeError
+    true
+  end
+
+  # The credentials on disk are now a pair this row has already spent, and the
+  # marker still says they are ours — which would have the very next
+  # sync_tokens_from_filesystem! adopt them and overwrite the live token with the
+  # dead one. Point the marker at nobody instead: every marker-gated read declines
+  # until a successful write re-stamps it, and ensure_active_account! performs that
+  # write on the next session spawn.
+  def disown_filesystem_credentials!
+    self.class.write_credentials_owner_marker!(UNOWNED_CREDENTIALS_MARKER)
+    Rails.logger.warn "[ClaudeAccount] Disowned the shared credentials marker: the file on disk holds a token #{email} has already spent"
+  rescue StandardError => e
+    Rails.logger.error "[ClaudeAccount] Could not disown the shared credentials marker for #{email}: #{e.message}"
   end
 
   def clear_stale_refresh_failures!

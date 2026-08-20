@@ -87,7 +87,10 @@
 class RuntimeAuthProvider
   # Outcome of a token refresh attempt.
   #   ok    - true when the refresh succeeded
-  #   error - nil on success; :needs_reauth (permanent) or :transient on failure
+  #   error - nil on success; on failure one of :needs_reauth (the account was
+  #           condemned and only a human clears it), :stale (the vendor rejected
+  #           the token VALUE, so presenting it again is a wasted request), or
+  #           :transient (a blip worth retrying)
   Result = Data.define(:ok, :error) do
     def ok? = ok
   end
