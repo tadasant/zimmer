@@ -30,12 +30,64 @@
       </nav>
     </div>
 
+    <!-- Ledger coverage: how much history is actually in here -->
+    <%# Branch on the LATEST run's status, not on `complete`. The two differ while
+        a re-scan of an already-swept corpus is in flight, and pairing the finished
+        run's timestamp with the running one's counters is how a page ends up
+        saying "swept 3 hours ago" over a progress figure that is still moving. %>
+    <% swept = @coverage[:status] == "complete" %>
+    <% tone = swept ? "bg-white border-gray-200" : "bg-amber-50 border-amber-200" %>
+    <div class="mb-6 rounded-lg border <%= tone %> px-4 py-3">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-sm font-semibold <%= swept ? "text-gray-900" : "text-amber-900" %>">
+            <% if swept %>
+              History backfilled
+            <% elsif @coverage[:status] == "running" %>
+              <%= @coverage[:complete] ? "Re-scanning history" : "Backfilling history" %><%= " — #{@coverage[:progress_pct]}%" if @coverage[:progress_pct] %>
+            <% elsif @coverage[:status] == "queued" %>
+              History sweep queued
+            <% else %>
+              History not backfilled yet
+            <% end %>
+          </p>
+          <p class="text-xs <%= swept ? "text-gray-500" : "text-amber-800" %> mt-0.5">
+            <% if @coverage[:covers_since] %>
+              Ledger covers <%= @coverage[:covers_since].strftime("%b %-d, %Y") %> onward.
+            <% else %>
+              Nothing recorded yet.
+            <% end %>
+            <% if swept %>
+              Swept <%= time_ago_in_words(@coverage[:finished_at]) %> ago<%= " (#{number_with_delimiter(@coverage[:files_scanned])} files)" if @coverage[:files_scanned].to_i.positive? %>.
+            <% elsif @coverage[:status] == "running" && @coverage[:directories_total].to_i.positive? %>
+              <%= number_with_delimiter(@coverage[:directories_done]) %> of <%= number_with_delimiter(@coverage[:directories_total]) %>
+              transcript directories swept; figures below grow as it runs. It runs itself — no action needed.
+            <% elsif @coverage[:status] == "running" %>
+              Reading the transcript corpus now. It runs itself — no action needed.
+            <% else %>
+              Older spend is missing until the sweep runs. It starts on its own within five minutes.
+            <% end %>
+          </p>
+          <% if @coverage[:last_error].present? %>
+            <%# A stored error is usually a class name and a file path — one unbroken
+                token that would set this container's width on a phone. %>
+            <p class="text-xs text-red-700 mt-1 break-all">Last error: <%= @coverage[:last_error] %></p>
+          <% end %>
+        </div>
+        <%= button_to costs_backfill_path(days: @days), method: :post,
+            class: "shrink-0 inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" do %>
+          <%= swept ? "Re-scan history" : "Sweep now" %>
+        <% end %>
+      </div>
+    </div>
+
     <% if @totals[:api_calls].zero? %>
       <div class="bg-white shadow rounded-lg px-4 py-8 text-center">
         <p class="text-sm text-gray-700 font-medium">No usage recorded in this window.</p>
         <p class="mt-2 text-sm text-gray-500">
-          Usage is swept out of transcripts by <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">TokenUsageIngestionJob</code>.
-          To load history that predates it, run <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">rake token_usage:backfill</code>.
+          Usage is swept out of transcripts by <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">TokenUsageIngestionJob</code>
+          every ten minutes, and history is swept once by <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">TokenUsageBackfillJob</code>.
+          Both run on their own; nothing here needs a shell on the box.
         </p>
       </div>
     <% else %>

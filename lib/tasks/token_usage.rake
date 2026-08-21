@@ -1,59 +1,53 @@
 # frozen_string_literal: true
 
-
-require "tmpdir"
 namespace :token_usage do
-  desc "Backfill token usage from every transcript on disk (idempotent; safe to re-run)"
+  desc "Run the historical backfill to completion in the foreground (idempotent; safe to re-run)"
   task backfill: :environment do
-    root = ENV.fetch("TRANSCRIPT_ROOT", File.join(Dir.home, ".claude", "projects"))
-    since = ENV["MODIFIED_SINCE"].presence&.then { |v| Time.zone.parse(v) }
+    # The backfill normally needs nobody: TokenUsageBackfillJob starts a run on
+    # the first tick after a deploy and works it a slice at a time. This task is
+    # the same object driven without a budget, for a developer who wants the
+    # whole sweep now and wants to watch it. It resumes an in-flight run rather
+    # than starting a second one.
+    run = TokenUsageBackfill.request!(trigger: "manual")
 
-    # The corpus is tens of gigabytes across tens of thousands of files, so the
-    # run is chunked by directory rather than handed to one process as a single
-    # glob. Each chunk commits before the next starts, which is what makes an
-    # interrupted backfill resumable: ingestion is idempotent on `request_id`,
-    # so re-running simply skips everything already stored.
-    dirs = Dir.children(root).select { |d| File.directory?(File.join(root, d)) }.sort
-    chunk_size = Integer(ENV.fetch("CHUNK_SIZE", "200"))
+    puts "Backfilling from #{run.transcript_root} (run ##{run.id}, #{run.status})"
 
-    puts "Backfilling from #{root}"
-    puts "#{dirs.size} transcript directories, #{chunk_size} per chunk#{since ? ", modified since #{since}" : ""}"
+    last_done = run.directories_done
+    until run.complete?
+      TokenUsageBackfillService.new(run: run, budget: 30.seconds).call
+      run.reload
 
-    totals = Hash.new(0)
-    started = Time.current
-
-    dirs.each_slice(chunk_size).with_index(1) do |slice, chunk_number|
-      # A scratch root of symlinks lets the service keep its one glob shape
-      # (root/*/*.jsonl) while the task controls how much it sees at a time.
-      Dir.mktmpdir("token_usage_backfill_") do |scratch|
-        slice.each { |d| File.symlink(File.join(root, d), File.join(scratch, d)) }
-
-        result = TokenUsageIngestionService.new(root: scratch, modified_since: since).call
-
-        totals[:files] += result.files_scanned
-        totals[:session_rows] += result.session_rows
-        totals[:adhoc_rows] += result.adhoc_rows
+      if run.last_error.present?
+        warn "  error: #{run.last_error}"
+        break
       end
 
       printf(
-        "  chunk %d/%d — %d files, %d session rows, %d ad hoc rows (%.0fs elapsed)\n",
-        chunk_number, (dirs.size / chunk_size.to_f).ceil,
-        totals[:files], totals[:session_rows], totals[:adhoc_rows],
-        Time.current - started
+        "  %d/%d directories — %d files, %d session rows, %d ad hoc rows\n",
+        run.directories_done, run.directories_total,
+        run.files_scanned, run.session_rows, run.adhoc_rows
       )
+      break if run.directories_done == last_done && !run.complete?
+      last_done = run.directories_done
     end
 
     puts
-    puts "Done in #{(Time.current - started).round}s"
-    puts "  files scanned    : #{totals[:files]}"
-    puts "  session rows new : #{totals[:session_rows]}"
-    puts "  ad hoc rows new  : #{totals[:adhoc_rows]}"
+    puts run.complete? ? "Done in #{(run.finished_at - run.started_at).round}s" : "Stopped before completion"
+    puts "  files scanned    : #{run.files_scanned}"
+    puts "  session rows new : #{run.session_rows}"
+    puts "  ad hoc rows new  : #{run.adhoc_rows}"
     puts "  session table    : #{SessionTokenUsage.count} rows"
     puts "  ad hoc table     : #{AdhocTokenUsage.count} rows"
   end
 
-  desc "Show what is currently stored (sanity check after a backfill)"
+  desc "Show what is currently stored, and how far back the ledger goes"
   task summary: :environment do
+    coverage = TokenUsageBackfill.coverage
+    puts "backfill: #{coverage[:status]}#{coverage[:progress_pct] ? " (#{coverage[:progress_pct]}%)" : ""}"
+    puts "  ledger covers: #{coverage[:covers_since] || "nothing yet"} .. #{coverage[:covers_until] || "—"}"
+    puts "  last error   : #{coverage[:last_error]}" if coverage[:last_error].present?
+    puts
+
     [ SessionTokenUsage, AdhocTokenUsage ].each do |klass|
       totals = klass.totals
       puts "#{klass.table_name}:"

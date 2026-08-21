@@ -214,6 +214,12 @@ agent session does not have. It is silent when nothing is waiting, and says so e
 read itself fails rather than dropping the whole health report. See
 [The page says which queue, and of what](/operate/background-jobs/#the-page-says-which-queue-and-of-what).
 
+`action_health` also carries `backfill_token_usage`: queue a sweep of every transcript on disk into
+the token-spend ledger, so `get_costs` covers all of history rather than only spend since ingestion
+was deployed. It is the MCP half of an ops action that deliberately has no shell equivalent, it is
+not throttled, and it is idempotent — asking twice joins the run already in flight. See
+[Token spend](/operate/costs/).
+
 The action tools are verb-multiplexers: `action_session` takes an `action` enum (`follow_up`,
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
 `create` / `update` / `delete` / `toggle` / `invoke`, and so on. `tools/list` carries the full schema for each —
@@ -295,6 +301,10 @@ window.
 It lives in `health` rather than `sessions` for the same reason `get_spot_policy` does — this is the
 deployment's posture, not one session's business — and it is therefore **not** in the `self_session`
 set injected into every session. A session has no reason to read the whole fleet's bill.
+
+Every fleet report states how complete the ledger is: a `Partial history` warning with the sweep's
+progress while the one-time historical backfill is still running, and the covered window once it has
+finished. An agent comparing this month against last needs to know which of the two it is looking at.
 
 The usual caution applies to anything it returns: the dollar figures are list price on
 subscription-billed accounts, so they are a comparable unit across models rather than money owed,

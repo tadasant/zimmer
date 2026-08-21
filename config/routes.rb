@@ -37,6 +37,7 @@ Rails.application.routes.draw do
     resources :outcome_analysis_batch_items, except: [ :new, :create ]
     resources :runtime_login_attempts
     resources :session_token_usages, only: [ :index, :show ]
+    resources :token_usage_backfills, only: [ :index, :show ]
     resources :sessions
     # No create: a summary row exists because a session asked for one. Edit is
     # limited to `state` (the dashboard's FORM_ATTRIBUTES), which is how an
@@ -95,6 +96,8 @@ Rails.application.routes.draw do
       # `records` is the row-level export the cost-vs-performance analysis needs.
       get "costs", to: "costs#index"
       get "costs/records", to: "costs#records"
+      # Ops action, not a shell: sweep every transcript into the ledger.
+      post "costs/backfill", to: "costs#backfill"
 
       # Organizational categories for the sessions dashboard.
       resources :categories, only: [ :index, :create, :update, :destroy ] do
@@ -249,6 +252,9 @@ Rails.application.routes.draw do
   # Costs sits beside Quotas: same posture question, different source. Quotas
   # reads Anthropic's rate-limit headers; Costs reads our own token ledger.
   get "costs", to: "costs#show", as: :costs
+  # Re-scan every transcript into the ledger. An ops action with a button rather
+  # than a rake task, because nobody is meant to need a shell on the box.
+  post "costs/backfill", to: "costs#backfill", as: :costs_backfill
   get "quotas", to: "quotas#show", as: :quotas
   post "quotas/refresh_all", to: "quotas#refresh_all", as: :refresh_all_quotas
   post "quotas/refresh_account/:id", to: "quotas#refresh_account", as: :refresh_account_quotas

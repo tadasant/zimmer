@@ -104,6 +104,31 @@ class CostsMobileTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/costs-375.png")
   end
 
+  test "the coverage panel and its button fit a phone, error text and all" do
+    seed_spend!
+    # A sweep in flight, stuck on the kind of error the ledger actually stores:
+    # a class name and a file path, with nothing to break on. Signature 4.
+    TokenUsageBackfill.create!(
+      transcript_root: "/home/rails/.claude/projects",
+      started_at: 20.minutes.ago, last_ran_at: 1.minute.ago,
+      directories_total: 3_182, directories_done: 914,
+      last_error: "Errno::EACCES: Permission denied @ rb_sysopen - " \
+                  "/home/rails/.claude/projects/-home-rails--zimmer-clones-zimmer-main-1786989710-abcdef12/" \
+                  "0f3c9d21-6b4e-4a77-9a11-5c2f7de91b40.jsonl"
+    )
+
+    visit costs_path(days: 30)
+    assert_text "Backfilling history"
+    assert_text "Sweep now"
+
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the coverage panel overflows the viewport at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+      "the coverage panel pushes something past the right edge at #{MOBILE_WIDTH}px"
+
+    page.save_screenshot("tmp/screenshots/costs-coverage-375.png")
+  end
+
   test "the sessions index nav still fits a phone with Costs added to it" do
     visit root_path
     assert_selector "a[href='#{costs_path}']", visible: :all

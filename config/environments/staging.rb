@@ -145,6 +145,11 @@ Rails.application.configure do
       class: "TokenUsageIngestionJob",
       description: "Sweep recent transcripts into the token-spend ledger"
     },
+    token_usage_backfill: {
+      cron: "*/5 * * * *", # Every 5 minutes; a no-op once history has been swept
+      class: "TokenUsageBackfillJob",
+      description: "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box"
+    },
     cli_status_refresh: {
       cron: "*/2 * * * *", # Every 2 minutes
       class: "CliStatusRefreshJob",
