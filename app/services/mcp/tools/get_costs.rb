@@ -33,6 +33,9 @@ module Mcp
           routinely dominate a bill that looks like it should be about output
         - spend per day, so a spike can be placed in time
         - spend by agent root, by model, by main-thread vs subagent, by ad hoc source
+        - spend by **context-management feature** — the injected goal block, the session hierarchy,
+          MCP responses, skill bodies, thinking, tool output — with the share it could not account
+          for stated as its own line
         - the most expensive individual sessions
         - any model seen in the window that has no price configured
         - how complete the ledger is: whether the one-time historical sweep has finished, and the
@@ -40,9 +43,19 @@ module Mcp
           since ingestion was deployed. The sweep runs itself; `action_health` with
           `backfill_token_usage` asks for a fresh one.
 
+        **The feature figures are ESTIMATES, and must be quoted as such.** The API reports one usage
+        total per request with no per-feature decomposition, so the split is derived from transcript
+        content: characters measured per feature, converted at a fixed ratio, and scaled so the parts
+        can never exceed a request's real totals. Whatever is left over is reported as unattributed
+        rather than spread across the features — most of it is the harness system prompt and the tool
+        schemas, which never appear in a transcript. Do not present an estimated feature cost as a
+        measurement, and do not recommend cutting a feature on a thin margin.
+
         **Use cases:**
         - Find which agent root or session a spend spike came from
         - Check what a change to an agent root's model or prompt actually cost
+        - Decide whether a context-management feature earns what it costs, or should move to a
+          cheaper model
         - Establish the cost side of a cost-vs-performance comparison
         - Notice app-internal inference that should not be running at all
 
@@ -51,8 +64,8 @@ module Mcp
         than money owed.
       DESC
 
-      MAX_DAYS = 365
-      DEFAULT_DAYS = 7
+      MAX_DAYS = CostWindow::MAX_DAYS
+      DEFAULT_DAYS = CostWindow::DEFAULT_DAYS
       TOP_N = 10
 
       input_schema({
@@ -60,9 +73,22 @@ module Mcp
         properties: {
           days: {
             type: "integer",
-            description: "Window size in days, counting back from now. Default 7, max 365.",
+            description: "Window size in days, counting back from now. Default 7, max 365. " \
+                         "Ignored when `from` or `to` is given.",
             minimum: 1,
             maximum: MAX_DAYS
+          },
+          from: {
+            type: "string",
+            description: "Start of an explicit calendar window, as YYYY-MM-DD. Inclusive, from the " \
+                         "start of that day in the deployment's time zone. Pairs with `to`; either " \
+                         "may be given alone. Spans longer than 365 days are clamped to the most " \
+                         "recent 365."
+          },
+          to: {
+            type: "string",
+            description: "End of an explicit calendar window, as YYYY-MM-DD. Inclusive, through the " \
+                         "END of that day. Defaults to today when only `from` is given."
           },
           agent_root: {
             type: "string",
@@ -77,26 +103,28 @@ module Mcp
       })
 
       def call(args)
-        days = (args["days"] || DEFAULT_DAYS).to_i.clamp(1, MAX_DAYS)
-        analytics = CostAnalytics.new(from: days.days.ago)
+        # The same object the Costs page resolves its window with, so a preset and
+        # a calendar range mean exactly the same thing on both surfaces.
+        window = CostWindow.from_params(days: args["days"], from: args["from"], to: args["to"])
+        analytics = window.analytics
 
         if args["session_id"].present?
-          session_report(args["session_id"].to_i, analytics, days)
+          session_report(args["session_id"].to_i, analytics, window)
         elsif args["agent_root"].present?
-          agent_root_report(args["agent_root"].to_s, analytics, days)
+          agent_root_report(args["agent_root"].to_s, analytics, window)
         else
-          fleet_report(analytics, days)
+          fleet_report(analytics, window)
         end
       end
 
       private
 
-      def fleet_report(analytics, days)
+      def fleet_report(analytics, window)
         totals = analytics.totals
-        return empty_notice(days) if totals[:api_calls].zero?
+        return empty_notice(window) if totals[:api_calls].zero?
 
         lines = [
-          "## Token spend — last #{days} #{"day".pluralize(days)}",
+          "## Token spend — #{window.label}",
           "",
           "- **Total (list price):** #{money(totals[:cost_usd])}",
           "- **Session usage:** #{money(totals[:session_cost_usd])} · " \
@@ -121,6 +149,7 @@ module Mcp
         lines.concat(table("Ad hoc calls from Zimmer's own code", "Source", adhoc, :source, totals[:cost_usd])) if adhoc.any?
 
         lines.concat(coverage_lines)
+        lines.concat(feature_lines(analytics.by_feature))
         lines.concat(by_day_lines(analytics))
         lines.concat(top_sessions_lines(analytics))
         lines.concat(unpriced_lines(analytics))
@@ -129,14 +158,14 @@ module Mcp
         lines.join("\n")
       end
 
-      def agent_root_report(root, analytics, days)
+      def agent_root_report(root, analytics, window)
         scope = analytics.session_scope.for_agent_root(root)
         totals = scope.totals
-        return "No spend recorded for agent root `#{root}` in the last #{days} #{"day".pluralize(days)}." if totals[:api_calls].zero?
+        return "No spend recorded for agent root `#{root}` over #{window.label}." if totals[:api_calls].zero?
 
         fleet = analytics.totals[:cost_usd]
         [
-          "## `#{root}` — last #{days} #{"day".pluralize(days)}",
+          "## `#{root}` — #{window.label}",
           "",
           "- **Cost:** #{money(totals[:cost_usd])}#{fleet.positive? ? " (#{pct(totals[:cost_usd] / fleet)} of fleet)" : ""}",
           "- **Tokens:** #{number(totals[:total_tokens])} across #{number(totals[:api_calls])} API calls",
@@ -150,14 +179,17 @@ module Mcp
           "|---|---:|---:|",
           *scope.group(:model).order(SessionTokenUsage.cost_sum_sql.desc)
             .pluck(:model, SessionTokenUsage.cost_sum_sql, Arel.sql("COUNT(*)"))
-            .map { |model, cost, calls| "| `#{model}` | #{money(cost.to_f)} | #{number(calls)} |" }
+            .map { |model, cost, calls| "| `#{model}` | #{money(cost.to_f)} | #{number(calls)} |" },
+          # The drilldown this root-scoped report exists for: which of the bytes
+          # this root carries were context management rather than the work.
+          *feature_lines(analytics.feature_breakdown(agent_root: root))
         ].join("\n")
       end
 
-      def session_report(session_id, analytics, days)
+      def session_report(session_id, analytics, window)
         scope = analytics.session_scope.where(session_id: session_id)
         totals = scope.totals
-        return "No spend recorded for session ##{session_id} in the last #{days} #{"day".pluralize(days)}." if totals[:api_calls].zero?
+        return "No spend recorded for session ##{session_id} over #{window.label}." if totals[:api_calls].zero?
 
         session = Session.find_by(id: session_id)
         main = scope.main_thread.totals
@@ -166,7 +198,7 @@ module Mcp
         [
           "## Session ##{session_id}#{session&.title ? " — #{session.title}" : ""}",
           "",
-          "- **Cost (last #{days} #{"day".pluralize(days)}):** #{money(totals[:cost_usd])}",
+          "- **Cost (#{window.label}):** #{money(totals[:cost_usd])}",
           "- **Tokens:** #{number(totals[:total_tokens])} across #{number(totals[:api_calls])} API calls",
           "- **Main thread:** #{money(main[:cost_usd])} (#{number(main[:api_calls])} calls) · " \
           "**subagents:** #{money(sub[:cost_usd])} (#{number(sub[:api_calls])} calls)",
@@ -177,8 +209,40 @@ module Mcp
           "| output | #{number(totals[:output_tokens])} |",
           "| cache read | #{number(totals[:cache_read_tokens])} |",
           "| cache write | #{number(totals[:cache_creation_tokens])} " \
-          "(#{number(totals[:cache_creation_1h_tokens])} at the 1h TTL) |"
+          "(#{number(totals[:cache_creation_1h_tokens])} at the 1h TTL) |",
+          *feature_lines(analytics.feature_breakdown(session_id: session_id))
         ].join("\n")
+      end
+
+      # The context-feature split, with its residual. Reported as an estimate every
+      # time it appears, because an agent quoting this figure downstream will quote
+      # the label with it.
+      def feature_lines(breakdown)
+        rows = breakdown[:rows]
+        return [] if rows.blank?
+
+        total = breakdown[:total_cost_usd]
+        lines = [
+          "", "### Context features (estimated)", "",
+          "| Feature | Owner | Cost | Share | Tokens |", "|---|---|---:|---:|---:|"
+        ]
+
+        rows.first(TOP_N).each do |row|
+          definition = ContextFeatureRegistry.find(row[:feature])
+          share = total.positive? ? pct(row[:cost_usd] / total) : "—"
+          lines << "| #{definition&.label || row[:feature]} | #{definition&.owner || "?"} | " \
+                   "#{money(row[:cost_usd])} | #{share} | #{number(row[:tokens])} |"
+        end
+
+        residual_share = total.positive? ? pct(breakdown[:residual_cost_usd] / total) : "—"
+        lines << "| _unattributed_ | — | #{money(breakdown[:residual_cost_usd])} | #{residual_share} | " \
+                 "#{number(breakdown[:residual_tokens])} |"
+        lines << ""
+        lines << "_Estimated from transcript content, not measured — see this tool's description. " \
+                 "#{pct(breakdown[:coverage])} of tokens were attributed; the rest is the harness " \
+                 "system prompt, the tool schemas of the session's MCP servers, and per-request " \
+                 "server-tool charges, none of which a transcript records._"
+        lines
       end
 
       def table(title, column, rows, key, total)
@@ -257,8 +321,8 @@ module Mcp
         ]
       end
 
-      def empty_notice(days)
-        "No token usage recorded in the last #{days} #{"day".pluralize(days)}. " \
+      def empty_notice(window)
+        "No token usage recorded over #{window.label}. " \
         "Usage is swept out of transcripts by `TokenUsageIngestionJob` every ten minutes, and history " \
         "that predates it by `TokenUsageBackfillJob`, which runs itself. Current coverage: " \
         "#{TokenUsageBackfill.coverage[:status]}."

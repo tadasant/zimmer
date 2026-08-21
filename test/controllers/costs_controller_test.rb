@@ -59,14 +59,51 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     get costs_path(days: 100_000)
 
     assert_response :success
-    assert_equal CostsController::MAX_DAYS, @controller.instance_variable_get(:@days)
+    assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).preset_days
   end
 
   test "a non-numeric window falls back to the default" do
     get costs_path(days: "banana")
 
     assert_response :success
-    assert_equal CostsController::DEFAULT_DAYS, @controller.instance_variable_get(:@days)
+    assert_equal CostWindow::DEFAULT_DAYS, @controller.instance_variable_get(:@window).preset_days
+  end
+
+  test "an explicit calendar range is honoured over the preset horizons" do
+    usage(called_at: Time.zone.parse("2026-03-10 12:00"))
+
+    get costs_path(from: "2026-03-09", to: "2026-03-11")
+
+    assert_response :success
+    window = @controller.instance_variable_get(:@window)
+    assert window.custom?, "from/to should produce a custom window"
+    assert_equal Date.new(2026, 3, 9), window.from_date
+    assert_equal Date.new(2026, 3, 11), window.to_date
+    assert_no_match "No usage recorded", response.body
+
+    get costs_path(from: "2026-03-01", to: "2026-03-05")
+    assert_response :success
+    assert_match "No usage recorded", response.body, "a call outside the range must not be counted"
+  end
+
+  test "the calendar range survives a reversed or oversized span" do
+    get costs_path(from: "2026-03-11", to: "2026-03-09")
+    assert_response :success
+    window = @controller.instance_variable_get(:@window)
+    assert_equal Date.new(2026, 3, 9), window.from_date, "a reversed range is swapped, not rejected"
+
+    get costs_path(from: "2019-01-01", to: "2026-03-09")
+    assert_response :success
+    assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).days
+  end
+
+  test "the picker renders both the presets and the calendar fields" do
+    get costs_path
+
+    assert_response :success
+    assert_select "a[href=?]", costs_path(days: 30)
+    assert_select "input#costs-from[type=date]"
+    assert_select "input#costs-to[type=date]"
   end
 
   test "warns about models it has no price for rather than counting them as free" do
