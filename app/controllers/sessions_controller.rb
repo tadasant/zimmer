@@ -1273,7 +1273,13 @@ class SessionsController < ApplicationController
     # whole set rather than one per waiting session.
     waiting_candidates = sessions.where(status: :waiting).where.not(session_id: [ nil, "" ]).to_a
     sleeping_ids = Session.ids_awaiting_scheduled_wake(waiting_candidates.map(&:id))
-    nudgeable_waiting = waiting_candidates.reject { |session| sleeping_ids.include?(session.id) }
+    # A session the spot ceiling paused is deliberately dormant, not stalled:
+    # nudging it back awake would put it straight back on the quota window that
+    # stopped it, with the sweep pausing it again minutes later. It comes back
+    # when utilization does — or immediately, if you make it priority.
+    nudgeable_waiting = waiting_candidates.reject do |session|
+      sleeping_ids.include?(session.id) || SpotSessionPause.paused?(session)
+    end
 
     # Track totals to warn if limit is exceeded
     total_failed_count = sessions.where(status: :failed).count
