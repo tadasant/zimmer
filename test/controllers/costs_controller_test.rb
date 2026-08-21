@@ -22,7 +22,8 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_match "No usage recorded", response.body
-    assert_match "token_usage:backfill", response.body, "the empty state should say how to load history"
+    assert_match "TokenUsageBackfillJob", response.body, "the empty state should say what loads history"
+    assert_no_match(/rake token_usage:backfill/, response.body, "nothing on this page should require a shell on the box")
   end
 
   test "renders totals and breakdowns once usage exists" do
@@ -83,5 +84,44 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "a[href=?]", costs_path
+  end
+
+  test "says how complete the ledger is before any sweep has run" do
+    usage
+
+    get costs_path
+
+    assert_response :success
+    assert_match "History not backfilled yet", response.body
+    assert_match "Sweep now", response.body
+  end
+
+  test "says the ledger is backfilled, and how far back it goes, once a sweep finished" do
+    usage(called_at: Time.zone.parse("2026-02-03T10:00:00Z"))
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago,
+                               finished_at: 1.hour.ago, files_scanned: 4_120)
+
+    get costs_path(days: 365)
+
+    assert_response :success
+    assert_match "History backfilled", response.body
+    assert_match "Feb 3, 2026", response.body
+    assert_match "Re-scan history", response.body
+  end
+
+  test "the re-scan button queues a sweep, and asking twice does not start two" do
+    assert_difference -> { TokenUsageBackfill.count }, 1 do
+      assert_enqueued_with(job: TokenUsageBackfillJob) do
+        post costs_backfill_path
+      end
+    end
+
+    assert_redirected_to costs_path(days: 7)
+
+    assert_no_difference -> { TokenUsageBackfill.count } do
+      post costs_backfill_path
+    end
+
+    assert_equal "manual", TokenUsageBackfill.latest.trigger
   end
 end

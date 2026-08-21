@@ -80,20 +80,61 @@ Older transcript lines predate the `cache_creation` sub-object. Those are charge
 
 ## How usage gets in
 
-`TokenUsageIngestionService` reads the runtime's transcript files and upserts rows. It runs
-two ways:
+`TokenUsageIngestionService` reads the runtime's transcript files and upserts rows. Two jobs drive
+it, and **both run themselves** — there is no step here that needs a shell on the production box:
 
 - **`TokenUsageIngestionJob`**, on a 10-minute cron, scanning only files modified in the last
   two hours. The lookback overlaps the interval generously so a missed run, a deploy, or a
   late-written transcript closes itself on the next pass.
-- **`rake token_usage:backfill`**, which scans everything. Chunked by directory so an
-  interrupted run resumes for free.
+- **`TokenUsageBackfillJob`**, on a 5-minute cron, sweeping the whole corpus once. It works
+  against a `token_usage_backfills` row — one row per sweep — in two-minute slices, recording a
+  cursor after each committed chunk. On the first tick after a deploy, if no sweep has ever
+  finished, it starts one. Once one has, the job is an indexed lookup and nothing else, on that
+  deploy and every deploy after it.
 
 ```sh
-bin/rails token_usage:backfill                  # everything on disk
-MODIFIED_SINCE=2026-01-01 bin/rails token_usage:backfill
-bin/rails token_usage:summary                   # what is stored now
+bin/rails token_usage:backfill   # same object, no budget, in the foreground — for a developer
+bin/rails token_usage:summary    # what is stored, and how far back it goes
 ```
+
+The rake task is a convenience, not the delivery mechanism. It resumes the run already in flight
+rather than starting a competing one.
+
+### Why a job and not a rake task
+
+Getting history into the ledger used to mean somebody SSH'ing into production and running
+`rake token_usage:backfill`. That is an operational step this deployment is not supposed to have:
+[deploy is the delivery mechanism for ops actions](/operate/deploying/#ops-actions-ship-with-the-deploy),
+and the Costs page was quietly wrong until a human found the time.
+
+The property that makes an unattended sweep safe is the one the unique index already gave us:
+ingestion is idempotent on `request_id`. A re-swept directory writes nothing, so a slice that dies
+mid-chunk, a recurring sweep overlapping the backfill, and a full re-scan all cost time and nothing
+else. The cursor only advances on a committed chunk, so an interrupted run resumes rather than
+restarting.
+
+`TokenUsageBackfillJob` runs on the `default` queue, deliberately not `pollers`: it holds its
+thread for minutes, and `pollers` has three threads shared by the latency-sensitive singleton
+pollers.
+
+### How complete is the page?
+
+`TokenUsageBackfill.coverage` is the single answer, rendered three ways so the surfaces cannot
+disagree:
+
+| Surface | Shows |
+| --- | --- |
+| The Costs page | A panel: backfilled or not, progress while sweeping, the date the ledger starts, and a **Re-scan history** button |
+| `GET /api/v1/costs` | A `ledger_coverage` object alongside every rollup |
+| `get_costs` (MCP) | A **Partial history** warning while sweeping; the covered window once finished |
+
+`covers_since` is the oldest call actually stored — the only defensible answer to "how far back
+does this go". Before a backfill it is roughly the deploy that shipped ingestion; after one it is
+the oldest transcript on disk.
+
+A re-scan can be asked for from the page's button, `POST /api/v1/costs/backfill`, or the
+`backfill_token_usage` action on the `action_health` MCP tool. All three are the same idempotent
+request: they join a sweep already in flight rather than starting a second.
 
 Ingestion deliberately does **not** hook into `TranscriptPollerService`. That service is a
 live-broadcast path running inside `AgentSessionJob`, so hanging accounting off it would put

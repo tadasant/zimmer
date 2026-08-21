@@ -39,6 +39,11 @@ class TokenUsageIngestionService
 
   BATCH_SIZE = 500
 
+  # Where transcripts live. A class method because the backfill records the root
+  # it swept on its run row, and a coverage claim has to name the corpus it
+  # covers.
+  def self.default_root = ENV["TRANSCRIPT_ROOT"].presence || File.join(Dir.home, ".claude", "projects")
+
   Result = Struct.new(:files_scanned, :session_rows, :adhoc_rows, :skipped_lines, keyword_init: true) do
     def total_rows = session_rows + adhoc_rows
     def to_s
@@ -50,7 +55,7 @@ class TokenUsageIngestionService
   # @param modified_since [Time, nil] only scan files touched since this time.
   #   nil scans everything, which is what the backfill wants.
   # @param logger [Logger]
-  def initialize(root: default_root, modified_since: nil, logger: Rails.logger)
+  def initialize(root: self.class.default_root, modified_since: nil, logger: Rails.logger)
     @root = root
     @modified_since = modified_since
     @logger = logger
@@ -91,8 +96,6 @@ class TokenUsageIngestionService
   end
 
   private
-
-  def default_root = File.join(Dir.home, ".claude", "projects")
 
   def each_transcript_file
     Dir.glob(File.join(@root, "*", "*.jsonl")).each do |path|

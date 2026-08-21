@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_20_140000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_20_150000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -533,6 +533,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_140000) do
     t.index ["session_id", "agent_id"], name: "index_subagent_transcripts_on_session_id_and_agent_id", unique: true
     t.index ["session_id"], name: "index_subagent_transcripts_on_session_id"
     t.index ["tool_use_id"], name: "index_subagent_transcripts_on_tool_use_id"
+  end
+
+  create_table "token_usage_backfills", force: :cascade do |t|
+    t.bigint "adhoc_rows", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.string "cursor"
+    t.integer "directories_done", default: 0, null: false
+    t.integer "directories_total", default: 0, null: false
+    t.bigint "files_scanned", default: 0, null: false
+    t.datetime "finished_at"
+    t.text "last_error"
+    t.datetime "last_ran_at"
+    t.bigint "session_rows", default: 0, null: false
+    t.datetime "started_at"
+    t.string "transcript_root", null: false
+    t.string "trigger", default: "automatic", null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_at"], name: "index_token_usage_backfills_on_created_at"
+    t.index ["finished_at"], name: "index_token_usage_backfills_on_finished_at"
   end
 
   create_table "trigger_conditions", force: :cascade do |t|

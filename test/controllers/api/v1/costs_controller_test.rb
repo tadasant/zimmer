@@ -118,4 +118,101 @@ class Api::V1::CostsControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal [ "claude-not-a-real-model" ], JSON.parse(response.body)["unpriced_models"]
   end
+
+  test "every rollup carries the ledger's coverage" do
+    usage(called_at: Time.zone.parse("2026-08-01T10:00:00Z"))
+
+    get "/api/v1/costs", params: { days: 365 }, headers: @headers
+
+    body = JSON.parse(response.body)
+    coverage = body["ledger_coverage"]
+    assert_equal "never_run", coverage["status"]
+    assert_equal false, coverage["complete"]
+    assert_equal "2026-08-01T10:00:00Z", Time.zone.parse(coverage["covers_since"]).utc.iso8601
+  end
+
+  test "reports a finished sweep as complete coverage" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago, finished_at: 1.hour.ago)
+
+    get "/api/v1/costs", headers: @headers
+
+    coverage = JSON.parse(response.body)["ledger_coverage"]
+    assert_equal true, coverage["complete"]
+    assert_equal "complete", coverage["status"]
+    assert_not_nil coverage["finished_at"]
+  end
+
+  test "backfill queues a sweep of the whole corpus" do
+    assert_difference -> { TokenUsageBackfill.count }, 1 do
+      assert_enqueued_with(job: TokenUsageBackfillJob) do
+        post "/api/v1/costs/backfill", headers: @headers
+      end
+    end
+
+    body = JSON.parse(response.body)
+    assert_equal true, body["queued"]
+    assert_equal "queued", body["run"]["status"]
+    assert_equal "manual", body["run"]["trigger"]
+  end
+
+  test "backfill is idempotent and needs an api key" do
+    post "/api/v1/costs/backfill"
+    assert_response :unauthorized
+
+    post "/api/v1/costs/backfill", headers: @headers
+    first = JSON.parse(response.body)["run"]["id"]
+
+    assert_no_difference -> { TokenUsageBackfill.count } do
+      post "/api/v1/costs/backfill", headers: @headers
+    end
+    assert_equal first, JSON.parse(response.body)["run"]["id"]
+  end
+
+  test "every rollup says how complete the ledger behind it is" do
+    usage(called_at: Time.zone.parse("2026-02-03T10:00:00Z"))
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago, finished_at: 1.hour.ago)
+
+    get "/api/v1/costs", params: { days: 365 }, headers: @headers
+
+    assert_response :success
+    coverage = JSON.parse(response.body)["ledger_coverage"]
+    assert_equal "complete", coverage["status"]
+    assert coverage["complete"]
+    assert_equal "2026-02-03T10:00:00Z", coverage["covers_since"]
+  end
+
+  test "coverage reports an unswept ledger rather than implying completeness" do
+    usage
+
+    get "/api/v1/costs", headers: @headers
+
+    coverage = JSON.parse(response.body)["ledger_coverage"]
+    assert_equal "never_run", coverage["status"]
+    assert_not coverage["complete"]
+  end
+
+  test "backfill queues a sweep and is idempotent" do
+    assert_difference -> { TokenUsageBackfill.count }, 1 do
+      assert_enqueued_with(job: TokenUsageBackfillJob) do
+        post "/api/v1/costs/backfill", headers: @headers
+      end
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert body["queued"]
+    assert_equal "queued", body["run"]["status"]
+
+    assert_no_difference -> { TokenUsageBackfill.count } do
+      post "/api/v1/costs/backfill", headers: @headers
+    end
+  end
+
+  test "backfill requires an api key" do
+    post "/api/v1/costs/backfill"
+
+    assert_response :unauthorized
+    assert_equal 0, TokenUsageBackfill.count
+  end
 end

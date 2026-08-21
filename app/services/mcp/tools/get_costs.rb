@@ -35,6 +35,10 @@ module Mcp
         - spend by agent root, by model, by main-thread vs subagent, by ad hoc source
         - the most expensive individual sessions
         - any model seen in the window that has no price configured
+        - how complete the ledger is: whether the one-time historical sweep has finished, and the
+          oldest call actually stored. Until that sweep completes the figures only cover spend
+          since ingestion was deployed. The sweep runs itself; `action_health` with
+          `backfill_token_usage` asks for a fresh one.
 
         **Use cases:**
         - Find which agent root or session a spend spike came from
@@ -116,6 +120,7 @@ module Mcp
         adhoc = analytics.by_adhoc_source
         lines.concat(table("Ad hoc calls from Zimmer's own code", "Source", adhoc, :source, totals[:cost_usd])) if adhoc.any?
 
+        lines.concat(coverage_lines)
         lines.concat(by_day_lines(analytics))
         lines.concat(top_sessions_lines(analytics))
         lines.concat(unpriced_lines(analytics))
@@ -215,6 +220,28 @@ module Mcp
         ]
       end
 
+      # Every figure above is bounded by what has been ingested. Saying so is the
+      # difference between "we spent $X" and "we have recorded $X of what we
+      # spent", and only one of those is true before the historical sweep lands.
+      def coverage_lines
+        coverage = TokenUsageBackfill.coverage
+        since = coverage[:covers_since] ? coverage[:covers_since].strftime("%b %-d, %Y") : "nothing yet"
+
+        if coverage[:complete]
+          [ "", "_Ledger covers #{since} onward; the historical backfill finished #{coverage[:finished_at]&.strftime("%b %-d, %Y")}._" ]
+        else
+          progress = coverage[:progress_pct] ? " (#{coverage[:progress_pct]}% swept)" : ""
+          [
+            "",
+            "### ⚠️ Partial history",
+            "",
+            "The one-time backfill of historical transcripts is **#{coverage[:status]}**#{progress}, so these " \
+            "figures cover only #{since} onward. It runs itself on a cron — no action needed unless it is stuck " \
+            "(`last_error`: #{coverage[:last_error].presence || "none"})."
+          ]
+        end
+      end
+
       def unpriced_lines(analytics)
         unpriced = analytics.unpriced_models
         return [] if unpriced.empty?
@@ -228,8 +255,9 @@ module Mcp
 
       def empty_notice(days)
         "No token usage recorded in the last #{days} #{"day".pluralize(days)}. " \
-        "Usage is swept out of transcripts by `TokenUsageIngestionJob`; history that predates it " \
-        "is loaded by `rake token_usage:backfill`."
+        "Usage is swept out of transcripts by `TokenUsageIngestionJob` every ten minutes, and history " \
+        "that predates it by `TokenUsageBackfillJob`, which runs itself. Current coverage: " \
+        "#{TokenUsageBackfill.coverage[:status]}."
       end
 
       def money(value)
