@@ -3150,6 +3150,38 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil session.metadata["failure_reason"]
   end
 
+  # The backoff ladder on a held spot session can only know a person asked for this
+  # session if the caller says so — a restart re-enters the gate looking exactly
+  # like the scheduled re-check (no prompt, no resume flag). Saying so is dropping
+  # the hold metadata here. Without it, Restart on a session sitting at 40 minutes
+  # would push it to an hour, the opposite of what was asked for.
+  test "restart from scratch clears the spot-hold backoff ladder" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :failed,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(
+      metadata: {
+        "failure_reason" => "git_clone_failed",
+        SpotSessionHold::HELD_AT => 20.minutes.ago.iso8601,
+        SpotSessionHold::HELD_REASON => "at_utilization_limit",
+        SpotSessionHold::HELD_DETAIL => "Holding spot sessions: the 5-hour window is at its target.",
+        SpotSessionHold::HELD_RETRY_AT => 40.minutes.from_now.iso8601,
+        SpotSessionHold::HELD_COUNT => 4
+      }
+    )
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      post restart_session_url(session)
+    end
+
+    session.reload
+    SpotSessionHold::METADATA_KEYS.each do |key|
+      assert_nil session.metadata[key], "#{key} must not survive a restart — it is the backoff ladder"
+    end
+  end
+
   test "should use normal restart for pre-prompt failure with complete setup artifacts even if clone deleted" do
     session = Session.create!(
       prompt: "Fix the bug",

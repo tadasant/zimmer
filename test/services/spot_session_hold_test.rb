@@ -118,7 +118,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     session = build_session(SessionGenesis::GITHUB_ISSUE)
 
     delay = SpotGateService.stub(:evaluate, held_decision) do
-      # Four prior holds would put an unclamped delay at 10m * 2**4 = 160m.
+      # Four prior rungs would put an unclamped delay at 10m * 2**4 = 160m.
       4.times { SpotSessionHold.hold_if_needed(session.reload) }
       hold_and_measure(session)
     end
@@ -163,6 +163,45 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
     assert_in_delta retry_at.to_f, scheduled_at.to_f, 5
     assert_operator scheduled_at - Time.current, :>, SpotGateService::RETRY_DELAY
+  end
+
+  # The whole design rests on jitter being applied AFTER the ceiling. Applied
+  # before it, `min(base + jitter, ceiling)` pins every session at exactly the
+  # ceiling — a co-held population re-checking in lockstep, which is the failure
+  # the jitter existed for. A band assertion cannot see that, because the pinned
+  # value sits inside the band; only variance can.
+  test "delays still vary once the ladder is pinned at its ceiling" do
+    delays = SpotGateService.stub(:evaluate, held_decision) do
+      Array.new(12) do
+        session = build_session(SessionGenesis::GITHUB_ISSUE)
+        4.times { SpotSessionHold.hold_if_needed(session.reload) }
+        hold_and_measure(session)
+      end
+    end
+
+    assert_operator delays.map(&:to_i).uniq.size, :>, 1,
+                    "every hold pinned at the ceiling took the same delay — jitter is being " \
+                    "applied before the ceiling instead of after it"
+  end
+
+  # The three "restart from scratch" paths re-enter the gate looking exactly like a
+  # scheduled re-check — no prompt, no resume flag — so the ladder can only know a
+  # person asked for this session if they say so. They say so by dropping the hold
+  # metadata, which is what this asserts; the callers are covered where they live.
+  # Without it, clicking Restart on a session sitting at 40 minutes would push it
+  # to an hour, the opposite of what was asked for.
+  test "clearing the hold metadata, as a restart does, starts the ladder over" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    delay = SpotGateService.stub(:evaluate, held_decision) do
+      3.times { SpotSessionHold.hold_if_needed(session.reload) }
+
+      session.update!(metadata: session.metadata.except(*SpotSessionHold::METADATA_KEYS))
+      hold_and_measure(session)
+    end
+
+    assert_delay_band SpotGateService::RETRY_DELAY, delay
+    assert_equal 1, session.reload.metadata[SpotSessionHold::HELD_COUNT]
   end
 
   # Getting through resets the ladder: the next time this session is held it must

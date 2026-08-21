@@ -1091,7 +1091,8 @@ class Api::V1::SessionsController < Api::BaseController
 
     cleaned_metadata = (session.metadata || {}).except(
       *Session::STALE_RETRY_METADATA_KEYS,
-      *Session::SETUP_ARTIFACT_KEYS
+      *Session::SETUP_ARTIFACT_KEYS,
+      *SpotSessionHold::METADATA_KEYS
     )
 
     ActiveRecord::Base.transaction do

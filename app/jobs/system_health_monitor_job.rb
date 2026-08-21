@@ -126,8 +126,8 @@ class SystemHealthMonitorJob < ApplicationJob
       "",
       "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
         "oldest waiting #{HealthMonitorService.format_wait(stats[:oldest_ready_age_seconds])}",
-      "• Ready by queue: #{format_breakdown(breakdown[:by_queue])}",
-      "• Ready by job class: #{format_breakdown(breakdown[:by_job_class])}",
+      "• Ready by queue: #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
+      "• Ready by job class: #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
       "• Not backlog: #{stats[:claimed_count]} claimed (executing now), " \
         "#{stats[:scheduled_count]} scheduled (future-dated)",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
@@ -146,16 +146,15 @@ class SystemHealthMonitorJob < ApplicationJob
   # breakdown is two extra grouped scans of `good_jobs` at exactly the moment the
   # database may be the thing going wrong, and a depth number that reaches a human
   # beats a richer one that raises on the way.
+  #
+  # Nil on failure, NOT an empty breakdown. The two render differently — a queue
+  # that read as empty and a query that never answered are different facts about
+  # the incident, and collapsing them would tell the responder the backlog is
+  # spread across nothing.
   def ready_backlog_breakdown
     HealthMonitorService.new.ready_backlog_breakdown
   rescue StandardError => e
     Rails.logger.warn("[SystemHealthMonitorJob] Could not read the backlog breakdown: #{e.message}")
-    { by_queue: {}, by_job_class: {} }
-  end
-
-  def format_breakdown(counts)
-    return "unavailable" if counts.blank?
-
-    counts.map { |name, count| "#{name} #{count}" }.join(", ")
+    { by_queue: nil, by_job_class: nil }
   end
 end

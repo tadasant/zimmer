@@ -3686,7 +3686,8 @@ class SessionsController < ApplicationController
         # partial/inconsistent state.
         cleaned_metadata = (session.metadata || {}).except(
           *Session::STALE_RETRY_METADATA_KEYS,
-          *Session::SETUP_ARTIFACT_KEYS
+          *Session::SETUP_ARTIFACT_KEYS,
+          *SpotSessionHold::METADATA_KEYS
         )
 
         session.update!(
