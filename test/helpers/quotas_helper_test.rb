@@ -352,7 +352,7 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match "Work unblocked in", banner
     assert_match(/1:29:5\d|1:30:00/, banner)
     assert_match "room on both its 5-hour and 7-day windows", banner
-    assert_match "2 accounts out of capacity now", banner
+    assert_match "2 of 2 accounts with a reading out of capacity now", banner
     assert_match "UTC", banner
     assert_match(/data-controller="local-time"/, banner)
   end
@@ -363,7 +363,7 @@ class QuotasHelperTest < ActionView::TestCase
   test "pool_capacity_banner hands the browser an absolute deadline to tick from" do
     at = 2.hours.from_now.change(usec: 0)
 
-    banner = pool_capacity_banner(measure(next_capacity_at: at, blocked_count: 1))
+    banner = pool_capacity_banner(measure(next_capacity_at: at, read_count: 1, blocked_count: 1))
 
     assert_match(/data-controller="unblock-countdown"/, banner)
     assert_match "data-unblock-countdown-deadline-value=\"#{at.utc.iso8601}\"", banner
@@ -396,7 +396,7 @@ class QuotasHelperTest < ActionView::TestCase
     )
 
     assert_match "Nothing here says when work resumes", banner
-    assert_match "3 accounts out of capacity", banner
+    assert_match "3 of 3 accounts with a reading out of capacity", banner
     assert_no_match(/unblock-countdown/, banner)
   end
 
@@ -410,10 +410,22 @@ class QuotasHelperTest < ActionView::TestCase
   # in between. The clock says "now" rather than a negative wait, and the
   # controller reveals the note beside it the moment it connects.
   test "pool_capacity_banner does not render a negative wait" do
-    banner = pool_capacity_banner(measure(next_capacity_at: 1.second.ago, blocked_count: 1))
+    banner = pool_capacity_banner(measure(next_capacity_at: 1.second.ago, read_count: 1, blocked_count: 1))
 
     assert_match ">now<", banner
-    assert_match "That moment has passed", banner
+    assert_match ">Work unblocked<", banner
+    # The note is in the markup either way; whether it is hidden is the state.
+    assert_no_match(/hidden="hidden"/, banner)
+  end
+
+  # The counterpart: with the deadline still ahead, the same note ships hidden
+  # and the controller reveals it if the moment passes while the page is open.
+  test "pool_capacity_banner keeps the passed note out of the way while the wait is real" do
+    banner = pool_capacity_banner(measure(next_capacity_at: 20.minutes.from_now, blocked_count: 2))
+
+    assert_match ">Work unblocked in<", banner
+    # The passed note is the only element in the banner that can carry it.
+    assert_match 'hidden="hidden"', banner
   end
 
   test "countdown_clock_text ticks in seconds, and grows a unit as the wait does" do

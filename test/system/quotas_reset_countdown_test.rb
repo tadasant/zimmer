@@ -1,6 +1,8 @@
 require "application_system_test_case"
 
-# The "Resets in" line on a /quotas account card, rendered in a real browser.
+# The /quotas time displays, rendered in a real browser: the "Resets in" line on
+# an account card, and the Account Pool's countdown to the moment work is
+# unblocked.
 #
 # The reported bug: a card showed the label "Resets in" with nothing after it.
 # `time_until_reset` reported days, hours and minutes, so the last minute before
@@ -13,8 +15,10 @@ require "application_system_test_case"
 # "Exceeded" badge sitting beside the 0.0% and the green "Window reset" line the
 # same snapshot produced.
 #
-# Both are one card away from each other in the shape the bug was reported in,
-# so one page render covers them.
+# The first two are one card away from each other in the shape the bug was
+# reported in, so one page render covers them. The third is the pool banner
+# above those cards, and needs a pool that is out of capacity rather than a
+# single card, so it renders its own page.
 class QuotasResetCountdownTest < ApplicationSystemTestCase
   # Alongside the failure screenshots Rails writes, so CI's artifact upload
   # picks them up.
@@ -151,13 +155,11 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
       assert_equal deadline.utc.iso8601,
                    banner["data-unblock-countdown-deadline-value"]
 
-      clock = banner.find("[data-unblock-countdown-target='remaining']")
+      readings = [ banner.find("[data-unblock-countdown-target='remaining']").text ]
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      readings = sample_clock(clock, count: 4)
+      3.times { readings << next_reading(banner, readings.last) }
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
-      assert readings.uniq.size >= 3,
-             "the clock should tick once a second, got: #{readings.inspect}"
       seconds = readings.map { |text| clock_seconds(text) }
       assert_equal seconds.sort.reverse, seconds,
                    "the clock should count down, not up or sideways: #{readings.inspect}"
@@ -202,21 +204,28 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
                    "a passed deadline should stop at the moment rather than run negative"
       assert banner.has_text?("That moment has passed"),
              "and should say the reading is stale rather than freezing on 0:00"
-      # A stopped clock: nothing counts up past zero.
-      after = sample_clock(banner.find("[data-unblock-countdown-target='remaining']"), count: 2)
-      assert_equal [ "now" ], after.uniq
+      # And it stopped: no interval is left running to count up past zero.
+      assert page.evaluate_script(<<~JS), "the expired clock should clear its interval"
+        (function () {
+          const el = document.querySelector("[data-controller='unblock-countdown']");
+          const controller = window.Stimulus.getControllerForElementAndIdentifier(el, "unblock-countdown");
+          return controller.interval === null;
+        })()
+      JS
     end
   end
 
   private
 
-  # Read the clock `count` times, a little over a second apart, so consecutive
-  # samples land in different seconds.
-  def sample_clock(clock, count:)
-    Array.new(count) do |index|
-      sleep 1.1 if index.positive?
-      clock.text
-    end
+  # The next reading after `previous`, waited for rather than slept through:
+  # Capybara blocks until the element's text actually changes, so a repaint that
+  # lands late is a slower sample rather than a duplicate one, and a clock that
+  # never ticks fails here with its own message instead of quietly passing a
+  # uniqueness check.
+  def next_reading(banner, previous)
+    banner.assert_no_selector("[data-unblock-countdown-target='remaining']",
+      exact_text: previous, wait: 5)
+    banner.find("[data-unblock-countdown-target='remaining']").text
   end
 
   # "1:59" or "2:04:31" or "1d 02:04:31" back to seconds, for asserting the

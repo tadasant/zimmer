@@ -91,10 +91,12 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   #
   # Deliberately not what #windows_clear? decides on. That predicate answers a
   # different question — "is there enough evidence to put this account back in
-  # rotation?" — and is conservative about a window it cannot read, where this
-  # one calls an unreadable window "not spent". Restoring an account on a guess
-  # puts it straight back in front of rotation; leaving a countdown off the page
-  # does not.
+  # rotation?" — and the two diverge in both directions on purpose. #windows_clear?
+  # is conservative about a window it cannot read, where this one calls an
+  # unreadable window "not spent"; and it treats a counter at the cap with no
+  # reset timestamp as clear, where this one calls it spent, the same way
+  # #seven_day_window_spent? does. Restoring an account on a guess puts it
+  # straight back in front of rotation; leaving a countdown off the page does not.
   def five_hour_window_spent?
     return true if window_refused?(status_5h, reset_5h)
 
@@ -140,6 +142,11 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # The correction runs one way. The 7-day window subsumes the 5-hour one: an
   # account at its 5-hour cap is idle for minutes and then serves again, so it
   # must never be reported as having burned its week.
+  #
+  # This is a utilization, which is why it does not read #five_hour_window_spent?
+  # and round a refused-but-lightly-used 5-hour window up to 100%. The figure
+  # says what it says: 5-hour utilization, with weekly-blocked accounts counted
+  # as 100%. Servability is the countdown's question, not this one's.
   #
   # Lives here rather than in the view helper because the spot gate decides on
   # the same figure /quotas renders — see ClaudeAccountPool.

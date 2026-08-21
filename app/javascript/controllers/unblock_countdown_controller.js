@@ -23,18 +23,36 @@ export default class extends Controller {
   static targets = ["label", "remaining", "passed"]
   static values = { deadline: String }
 
+  // The words the server renders for a deadline still ahead of us, repeated
+  // here because #reset has to put them back onto DOM this controller may
+  // already have rewritten — see there.
+  static PENDING_LABEL = "Work unblocked in"
+  static PASSED_LABEL = "Work unblocked"
+  static PASSED_TEXT = "now"
+
   connect() {
     this.deadline = new Date(this.deadlineValue)
     // An unparseable deadline leaves the server's text alone rather than
     // replacing it with "NaN:NaN".
     if (isNaN(this.deadline.getTime())) return
 
+    this.reset()
     this.tick()
     this.interval = setInterval(() => this.tick(), 1000)
   }
 
   disconnect() {
     this.stop()
+  }
+
+  // Put the pending wording back before the first tick decides otherwise.
+  // connect() runs again on a Turbo Drive cache restore, over a snapshot that
+  // may already carry an expired clock's wording — without this, a restored
+  // page with a deadline still ahead of it would tick down under a "Work
+  // unblocked" heading with the stale-reading note showing.
+  reset() {
+    this.labelTarget.textContent = this.constructor.PENDING_LABEL
+    this.passedTarget.hidden = true
   }
 
   tick() {
@@ -45,22 +63,16 @@ export default class extends Controller {
       return
     }
 
-    const text = this.constructor.clockText(remaining)
-    // The seconds change every tick, so this only saves a write on a repaint —
-    // but it keeps the element untouched when nothing about it changed.
-    if (text === this.previousText) return
-
-    this.remainingTarget.textContent = text
-    this.previousText = text
+    this.remainingTarget.textContent = this.constructor.clockText(remaining)
   }
 
   // The deadline is behind us. The page cannot know what the next probe will
   // read, so it says the moment passed rather than freezing on 0:00 — or, worse,
   // counting up into a negative wait.
   expire() {
-    this.remainingTarget.textContent = "now"
-    if (this.hasLabelTarget) this.labelTarget.textContent = "Work unblocked"
-    if (this.hasPassedTarget) this.passedTarget.hidden = false
+    this.remainingTarget.textContent = this.constructor.PASSED_TEXT
+    this.labelTarget.textContent = this.constructor.PASSED_LABEL
+    this.passedTarget.hidden = false
     this.stop()
   }
 
