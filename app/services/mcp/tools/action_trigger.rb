@@ -36,6 +36,23 @@ module Mcp
       # SESSION-scoped one-shot wake; what this opens up is the broadcast form, and
       # the account events, which no wake tool covers.
       TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
+
+      # The cap applied to a BROADCAST SESSION ao_event trigger created here when the
+      # caller names none.
+      #
+      # A broadcast session event fires on every autonomous session's transition, so
+      # an uncapped one spawns a session per transition indefinitely. Loop prevention
+      # stops a trigger firing on its OWN sessions, but it is per-trigger: two such
+      # triggers — one on needs_input, one on archived — feed each other with nothing
+      # bounding either. Opening ao_event creation to agents is what makes that
+      # reachable, so the default closes it. A caller who wants no cap can still send
+      # max_sessions_per_minute explicitly.
+      #
+      # Deliberately NOT applied to account events: `account_needs_reauth` is already
+      # bounded at source (one event per account per ClaudeAccount::REAUTH_ALERT_THROTTLE),
+      # and a burst cap there could only drop alerts during the mass-failure it exists
+      # to report.
+      BROADCAST_SESSION_AO_EVENT_BURST_CAP = 5
       # Derived from the model, not re-declared, so the tool cannot drift behind
       # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
       # and AoEventTriggerJob park a one-shot trigger there when its fire raises,
@@ -273,7 +290,7 @@ module Mcp
           status: args["status"].presence || "enabled",
           goal: args["goal"],
           reuse_session: args.fetch("reuse_session", false),
-          max_sessions_per_minute: args["max_sessions_per_minute"].presence,
+          max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
           mcp_servers: args["mcp_servers"] || [],
           trigger_conditions_attributes: created_condition_attributes(args)
@@ -293,6 +310,23 @@ module Mcp
 
           #{condition_detail(trigger)}
         TEXT
+      end
+
+      # An explicit value always wins, including an explicit null for "no cap".
+      def max_sessions_per_minute_for(args)
+        explicit = args["max_sessions_per_minute"].presence
+        return explicit if explicit
+        return nil unless args.key?("conditions") || args["trigger_type"] == "ao_event"
+
+        broadcast = created_condition_attributes(args).any? do |attrs|
+          next false unless attrs[:condition_type] == "ao_event"
+
+          config = attrs[:configuration] || {}
+          TriggerCondition::SESSION_AO_EVENT_NAMES.include?(config["event_name"]) &&
+            config["watched_session_id"].blank?
+        end
+
+        broadcast ? BROADCAST_SESSION_AO_EVENT_BURST_CAP : nil
       end
 
       def update(args)
@@ -559,8 +593,28 @@ module Mcp
 
         case target.condition_type
         when "slack" then reject_widening_slack_configuration!(target, incoming, index)
+        when "ao_event" then reject_widening_ao_event_configuration!(target, incoming, index)
         when "github_issue" then reject_widening_github_issue_configuration!(target, incoming, index)
         end
+      end
+
+      # Dropping `watched_session_id` turns a one-shot wake on ONE session into a
+      # broadcast that spawns a session on every autonomous session's transition —
+      # the widest silent widening available here, and reachable now that ao_event
+      # is creatable through this tool. It is also how the wake_me_up_when_session_
+      # changes_state tool's own rows are shaped, so an ordinary-looking edit to one
+      # of those would do it.
+      def reject_widening_ao_event_configuration!(target, incoming, index)
+        return unless target.session_scoped_ao_event?
+        return if incoming["watched_session_id"].present?
+
+        raise ToolError, "conditions[#{index}] omits \"watched_session_id\" from the configuration of " \
+                         "condition #{target.id}, which currently watches session " \
+                         "##{target.watched_session_id}. configuration replaces the condition's " \
+                         "user-facing keys, so this would widen a one-shot wake into a broadcast that " \
+                         "spawns a session on EVERY autonomous session transition. Send " \
+                         "watched_session_id to keep it, or delete the condition and add a new one if " \
+                         "a broadcast is really what you want."
       end
 
       # Dropping `event_type` is not a small mistake: the reader defaults to

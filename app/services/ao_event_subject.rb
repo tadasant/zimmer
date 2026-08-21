@@ -28,9 +28,16 @@ class AoEventSubject
     if TriggerCondition::ACCOUNT_AO_EVENT_NAMES.include?(event_name)
       account = ClaudeAccount.find_by(id: subject_id)
       account && AccountSubject.new(account)
-    else
+    elsif TriggerCondition::SESSION_AO_EVENT_NAMES.include?(event_name)
       session = Session.find_by(id: subject_id)
       session && SessionSubject.new(session)
+    else
+      # Dispatched explicitly rather than defaulting to a session, so an event
+      # added to AO_EVENT_NAMES but not mapped here fails loudly. Falling through
+      # would load whatever Session happens to own that id and apply session rules
+      # to it — a silent misfire against an unrelated row.
+      Rails.logger.error "[AoEventSubject] No subject mapped for event #{event_name.inspect}"
+      nil
     end
   end
 
@@ -109,7 +116,20 @@ class AoEventSubject
     # back onto an account whose credentials file still parses, and the recovery
     # sweep probes dead refresh tokens on a timer. Spawning a session to tell a
     # human about an account that is working again is worse than saying nothing.
-    def stale? = !account.reload.needs_reauth?
+    #
+    # Releasing the throttle slot is part of being stale, not an extra: the claim
+    # was taken at emit time for a notification that is now not going to happen,
+    # and leaving it taken would silence the NEXT — real — condemnation for the
+    # rest of the window. The flood the throttle exists to stop is unaffected,
+    # because in that flood the account is still `needs_reauth` when the job runs
+    # and this branch is not taken.
+    def stale?
+      return true unless account.class.exists?(account.id)
+      return false if account.reload.needs_reauth?
+
+      account.clear_reauth_alert!
+      true
+    end
 
     # An account event has no watched subject, no autonomy flag, and no session
     # the trigger could have created, so every enabled condition for it fires.

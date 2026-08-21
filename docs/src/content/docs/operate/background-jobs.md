@@ -374,11 +374,14 @@ trusting), and anything that is not transient in the first place. See
 
 The escape hatch for a queue that has run away from you. `QueueRecoveryMode` halts job **execution**
 on the demand-side queues — `pollers`, `triggers` and `default` — and deliberately leaves `agents`
-running.
+and `auth` running.
 
 That asymmetry is the whole design. Pausing every queue would also pause `agents`, which is where
-`AgentSessionJob` lives, so the mode would halt the very investigation it exists to enable. `agents`
-is not a source of queue demand either: it holds one long-running job per session, and sessions are
+`AgentSessionJob` lives, so the mode would halt the very investigation it exists to enable. `auth`
+is spared for the same shape of reason: a human is watching the /quotas login panel for as long as
+`RuntimeLoginJob` sits unstarted, and re-authenticating a dead account is often exactly what an
+operator is doing while the mode is on — halting it would freeze the fix along with the failure.
+Neither is a source of queue demand: `agents` holds one long-running job per session, and sessions are
 started by a human or by an already-running agent, never by the backlog. So while recovery mode is
 on you can still start a session, and that session can still run, look at `/jobs`, disable a
 stampeding trigger, and archive runaway sessions — with nothing new arriving behind it.

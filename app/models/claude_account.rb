@@ -844,8 +844,18 @@ class ClaudeAccount < ApplicationRecord
   #
   # `update_columns`, not `update!`: this must not itself look like a status
   # transition, and it runs immediately after one.
+  #
+  # Rescued because it is the LAST statement of a successful `capture!`, after the
+  # credentials have already been persisted. An exception here would propagate out
+  # of the login driver and make RuntimeLoginJob mark the attempt failed — showing
+  # the human a failed login panel for a login that actually worked. Losing the
+  # release only costs one throttle window.
   def clear_reauth_alert!
     update_columns(reauth_alerted_at: nil)
+    true
+  rescue => e
+    Rails.logger.warn "[ClaudeAccount] Could not release the reauth alert throttle for #{email}: #{e.class} - #{e.message}"
+    false
   end
 
   private
@@ -926,7 +936,15 @@ class ClaudeAccount < ApplicationRecord
     return unless @crossed_into_needs_reauth
     return unless claim_reauth_alert_slot!
 
-    AoEventTriggerJob.perform_later("account_needs_reauth", id)
+    begin
+      AoEventTriggerJob.perform_later("account_needs_reauth", id)
+    rescue
+      # The slot was claimed for an event that never reached the queue. Give it
+      # back, or this account stays silent for the whole throttle window over a
+      # transient enqueue failure — a suppression that suppresses nothing.
+      clear_reauth_alert!
+      raise
+    end
   rescue => e
     # Never let alerting break the auth path. This runs after commit, so the
     # status change is already durable; losing the notification is survivable,
@@ -945,6 +963,13 @@ class ClaudeAccount < ApplicationRecord
 
   # Take the one alert slot this account has per REAUTH_ALERT_THROTTLE, returning
   # false when it is already taken.
+  #
+  # Claimed at EMIT time, before the event is enqueued, because that is the only
+  # point that serializes concurrent condemnations of the same account. The cost
+  # is that a claim can outlive an event that delivers nothing, so every path
+  # which ends without a notification gives the slot back: the enqueue rescue
+  # below, and AoEventSubject::AccountSubject#stale? when the account recovered
+  # before the job ran.
   #
   # A single conditional UPDATE, so two workers condemning the same account in the
   # same instant cannot both win it — the loser's WHERE matches zero rows. That is

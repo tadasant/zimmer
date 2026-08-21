@@ -30,9 +30,21 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
       "agents must keep running or recovery mode halts the investigation it exists to enable"
   end
 
-  test "the live queue is not in the halted set" do
+  test "the live queues are not in the halted set" do
     assert_empty QueueRecoveryMode::HALTED_QUEUES & QueueRecoveryMode::LIVE_QUEUES
     assert_includes QueueRecoveryMode::LIVE_QUEUES, "agents"
+    assert_includes QueueRecoveryMode::LIVE_QUEUES, "auth"
+  end
+
+  # A queue in neither list is neither halted nor deliberately spared — it just
+  # escapes recovery mode because nobody remembered it. The `auth` lane did exactly
+  # that when it was added, so assert coverage rather than only disjointness.
+  test "every configured queue is either halted or explicitly live" do
+    configured = ConnectionBudget.good_job_queue_threads.keys.map(&:to_s)
+    classified = QueueRecoveryMode::HALTED_QUEUES | QueueRecoveryMode::LIVE_QUEUES
+
+    assert_empty configured - classified,
+      "queue(s) in neither HALTED_QUEUES nor LIVE_QUEUES: #{(configured - classified).inspect}"
   end
 
   test "config.good_job.enable_pauses is on, or every pause is a silent no-op" do

@@ -65,9 +65,16 @@ class QueueRecoveryMode
   # demand. `agents` is deliberately absent -- see the class comment.
   HALTED_QUEUES = %w[pollers triggers default].freeze
 
-  # The queue that keeps running so sessions can still be started and can still run
-  # while the rest of the system is frozen.
-  LIVE_QUEUES = %w[agents].freeze
+  # The queues that keep running while the rest of the system is frozen.
+  #
+  # `agents` so sessions can still be started and can still run. `auth` because a
+  # human is watching the /quotas login panel for as long as RuntimeLoginJob sits
+  # unstarted, and re-authenticating a dead account is often exactly what an
+  # operator is doing while recovery mode is on — halting it would freeze the fix
+  # along with the failure. Neither is a source of background demand: `agents`
+  # holds one long-running job per session, and `auth` runs only when a human
+  # presses a button.
+  LIVE_QUEUES = %w[agents auth].freeze
 
   DEFAULT_TTL = 60.minutes
   MIN_TTL = 5.minutes

@@ -145,7 +145,7 @@ module Mcp
           ## Queue Recovery Mode ON
 
           - **Halted queues:** #{QueueRecoveryMode::HALTED_QUEUES.join(", ")}
-          - **Still running:** #{QueueRecoveryMode::LIVE_QUEUES.join(", ")} (agent sessions start and run normally)
+          - **Still running:** #{QueueRecoveryMode::LIVE_QUEUES.join(", ")} (agent sessions start and run normally, and interactive logins on /quotas still work)
           - **Auto-exit at:** #{status.expires_at&.iso8601} (#{((status.expires_in || 0) / 60.0).ceil} min)
 
           Enqueued jobs are frozen, not discarded — they resume when the mode is lifted. To
