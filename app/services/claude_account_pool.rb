@@ -26,32 +26,39 @@ class ClaudeAccountPool
   # They differ when an account has never been probed, which is worth saying out
   # loud rather than quietly averaging over a smaller pool than the page shows.
   #
-  # The two reset times answer "we're blocked until when?". Each is the soonest
-  # reset that actually hands capacity back on its window, not the soonest reset
-  # of that kind anywhere in the pool:
+  # The two times answer "we're blocked until when?", from opposite ends.
   #
-  # - `next_five_hour_reset` looks only at accounts whose weekly allowance is
-  #   still there. An account whose week is spent does not become servable when
-  #   its 5-hour window rolls over, so counting its reset here would report the
-  #   pool as recovering hours before it does — the same confusion the
-  #   "effective" qualifier on the 5-hour average exists to prevent.
+  # - `next_capacity_at` is the pool's answer: the soonest moment any account
+  #   has room on *both* of its windows at once. An account is servable when the
+  #   last of its spent windows rolls over, so per account it is the later of the
+  #   two pending resets — a window that already has room contributes nothing,
+  #   because that room is there now. Taking the earliest of those across the
+  #   pool is when work starts moving again. It is nil when nothing is blocked
+  #   (the pool has capacity this minute, and `capacity_now?` says so) and also
+  #   nil when everything is blocked with no reset time recorded — the two are
+  #   told apart by `capacity_now?`, not by the timestamp.
   # - `next_weekly_reset` looks only at accounts whose week IS spent, because
   #   those are the ones a 7-day rollover returns to service. When no account is
   #   weekly-blocked it is nil, which is the pool saying the week is not what
-  #   holds it.
+  #   holds it. It is the detail under the 7-day average, not the pool's answer:
+  #   an account whose week returns at noon but whose 5-hour window is also spent
+  #   until 2pm is not servable at noon.
   #
-  # Either is nil when nothing in that set carries a reset time still ahead of
-  # us; a past timestamp describes a window that has already rolled over.
+  # A past timestamp describes a window that has already rolled over, so neither
+  # ever reports one.
   Measure = Data.define(:five_hour, :weekly, :worst_five_hour, :worst_weekly,
                         :account_count, :read_count, :weekly_spent_count,
-                        :next_five_hour_reset, :next_weekly_reset) do
+                        :blocked_count, :next_capacity_at, :next_weekly_reset) do
     # True when at least one account had something to say.
     def any_readings? = read_count.positive?
 
-    # Accounts with a reading whose weekly allowance is still there. These are
-    # the only ones a 5-hour reset can hand capacity back to, which is what
-    # `next_five_hour_reset` is measured over.
-    def weekly_available_count = read_count - weekly_spent_count
+    # Accounts with a reading that can serve a request this minute: room on the
+    # 5-hour window and room on the 7-day one.
+    def servable_count = read_count - blocked_count
+
+    # True when the pool is not waiting on anything — there is capacity now, so
+    # there is nothing for `next_capacity_at` to name.
+    def capacity_now? = servable_count.positive?
   end
 
   class << self
@@ -86,10 +93,11 @@ class ClaudeAccountPool
   def measure
     fives = []
     weeklies = []
-    five_hour_resets = []
+    capacity_times = []
     weekly_resets = []
     read_count = 0
     weekly_spent_count = 0
+    blocked_count = 0
 
     @accounts.each do |account|
       snapshot = @snapshots[account.id]
@@ -105,16 +113,22 @@ class ClaudeAccountPool
       fives << five if five
       weeklies << weekly if weekly
 
-      # An account is waiting on exactly one of the two windows. Its weekly
-      # allowance is either gone — in which case only the 7-day reset returns
-      # anything, and its 5-hour reset returns headroom nobody can spend — or it
-      # is not, in which case the 5-hour window is the one that gates it.
-      if snapshot.seven_day_window_spent?
+      five_spent = snapshot.five_hour_window_spent?
+      weekly_spent = snapshot.seven_day_window_spent?
+
+      if weekly_spent
         weekly_spent_count += 1
         weekly_resets << snapshot.reset_7d if pending?(snapshot.reset_7d)
-      else
-        five_hour_resets << snapshot.reset_5h if pending?(snapshot.reset_5h)
       end
+
+      # Either window being spent takes the account out of service, and both
+      # have to have room again before it comes back — which is why this is one
+      # question about the account rather than two about its windows.
+      next unless five_spent || weekly_spent
+
+      blocked_count += 1
+      servable_at = capacity_at(snapshot, five_spent: five_spent, weekly_spent: weekly_spent)
+      capacity_times << servable_at if servable_at
     end
 
     Measure.new(
@@ -122,12 +136,31 @@ class ClaudeAccountPool
       worst_five_hour: fives.max, worst_weekly: weeklies.max,
       account_count: @accounts.size, read_count: read_count,
       weekly_spent_count: weekly_spent_count,
-      next_five_hour_reset: five_hour_resets.min,
+      blocked_count: blocked_count,
+      next_capacity_at: capacity_times.min,
       next_weekly_reset: weekly_resets.min
     )
   end
 
   private
+
+  # When an account carrying this reading can serve again: the later of the
+  # resets it is actually waiting on. A window with room contributes nothing —
+  # that room is available now — so an account blocked only by its week comes
+  # back the moment the week does, whatever its 5-hour window is doing.
+  #
+  # nil when a window it is waiting on has no reset time recorded, or one that
+  # has already passed. Either way nothing here can name the moment, and an
+  # account that cannot say when it returns must not be the one that sets the
+  # pool's countdown.
+  def capacity_at(snapshot, five_spent:, weekly_spent:)
+    waiting_on = []
+    waiting_on << snapshot.reset_5h if five_spent
+    waiting_on << snapshot.reset_7d if weekly_spent
+    return nil unless waiting_on.all? { |reset_time| pending?(reset_time) }
+
+    waiting_on.max
+  end
 
   # A reset time still ahead of us. A timestamp in the past describes a window
   # that has already rolled over — the same rule

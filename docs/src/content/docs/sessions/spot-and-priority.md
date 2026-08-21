@@ -180,27 +180,51 @@ gate falls open on `no_snapshot`.
 
 ### When the pool comes back
 
-The Account Pool section answers "we're blocked until when?" beside each average, as a wall-clock
-time and a countdown. Both come off the same `ClaudeAccountPool` measure as the figures above them,
-and each names the reset that actually returns capacity on its window rather than the soonest reset
-of that kind anywhere in the pool:
+The Account Pool section leads with the answer to "when does work get unblocked?", as a clock
+ticking down by the second to a wall-clock time. It comes off the same `ClaudeAccountPool` measure
+as the figures below it.
 
-- **Next usable 5-hour reset** is measured only over accounts whose weekly allowance is still there.
-  An account whose week is spent does not start serving again when its 5-hour window rolls over, so
-  including it would report the pool as recovering hours before it does — the same trap the
-  *effective* qualifier on the 5-hour average exists to avoid. It names that rollover whether or not
-  the pool is currently short of headroom, so on a healthy pool it reads as the next 5-hour boundary
-  rather than as a wait. When every account with a reading has spent its week there is no such time,
-  and the note says so instead: the pool is blocked until the 7-day reset, or — if no weekly reset
-  time is recorded either — that nothing on the page says when it comes back. When the servable
-  accounts simply are not waiting on a rollover, it says that too.
-- **Next 7-day reset** is measured only over accounts whose week *is* spent, because those are the
-  ones a weekly rollover returns to service. When no account is weekly-blocked the note says that
-  rather than naming a rollover on an account that was never blocked. It reports the soonest reset
-  *recorded* among the spent accounts and counts them separately, because a spent window does not
-  always carry a reset timestamp — when none of them does, the note is the count alone.
+An account can serve a request when **both** of its windows have room, so the moment it comes back
+is the later of the two resets it is actually waiting on — a window that already has room
+contributes nothing, because that room is there now. The pool's moment is the earliest of those
+across its accounts.
 
-Neither figure counts a reset time that has already passed. A past timestamp describes a window that
+That is the whole of the rule, and it is worth being concrete about why it is not two separate
+answers. An account sitting on an empty 5-hour window with its week spent comes back the moment its
+week does, whatever its 5-hour window is doing; an account over its 5-hour cap with plenty of week
+left comes back when the 5-hour window rolls. Measuring the two windows separately — a "next usable
+5-hour reset" over the accounts with weekly allowance left, and a 7-day reset over the rest — cannot
+express the first of those, so a pool whose soonest relief was a weekly reset twenty minutes out
+would advertise a 5-hour rollover hours later.
+
+The banner has three states, and the empty ones say which emptiness they are:
+
+- **A countdown**, when every account with a reading is out of capacity and at least one of them can
+  say when it returns. It names the wall-clock moment beside the clock and how many accounts are
+  out.
+- **"Work is not blocked"**, when an account has room on both windows right now. There is nothing to
+  count down to, and a clock ticking toward the next rollover would read as a wait that is not one.
+- **"Nothing here says when work resumes"**, when everything with a reading is out and none of them
+  recorded a reset time. A zeroed clock would read as "any moment now".
+
+The tick is driven in the browser from an absolute ISO-8601 instant in the markup
+(`unblock_countdown_controller.js`), not from a duration the server rendered — /quotas is a page
+people leave open, and "in 22m" is right for one second and wrong for every second after it. The
+server renders the same clock string from the same instant, so the first paint is already correct
+and the page still tells the truth if JavaScript never runs. When the deadline passes while the page
+is open the clock stops at `now` and says the reading is stale rather than counting into a negative
+wait.
+
+Under the weekly average, **Next 7-day reset** still describes its own window: it is measured only
+over accounts whose week *is* spent, because those are the ones a weekly rollover returns to
+service. It is the detail behind the headline, not the headline — an account whose week returns at
+noon but whose 5-hour window is spent until 2pm is not servable at noon. When no account is
+weekly-blocked the note says that rather than naming a rollover on an account that was never
+blocked. It reports the soonest reset *recorded* among the spent accounts and counts them
+separately, because a spent window does not always carry a reset timestamp — when none of them does,
+the note is the count alone.
+
+Nothing here counts a reset time that has already passed. A past timestamp describes a window that
 has already rolled over, which is the same rule the counters follow, so it is not something the pool
 is waiting for.
 
