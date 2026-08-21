@@ -86,6 +86,27 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_match(/At the target:\*\* yes — spot work is paused until it falls/, output)
   end
 
+  # Parity with /quotas, which renders the same count: the decision above answers
+  # "would a session STARTING now be held", and this answers "did anything that
+  # was already running get stopped" — an agent whose own turn was cut short has
+  # to be able to read that second answer.
+  test "get_spot_policy reports how many running spot sessions the ceiling paused" do
+    output = get_policy
+    assert_match(/Spot sessions paused mid-run:\*\* 0/, output)
+
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "work", status: :waiting,
+      genesis: SessionGenesis::GITHUB_ISSUE,
+      metadata: {
+        SpotSessionPause::PAUSED_AT => 1.hour.ago.utc.iso8601,
+        SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+        SpotSessionPause::PAUSED_DETAIL => "Holding spot sessions: 5-hour window at 89% of its 80% target."
+      }
+    )
+
+    assert_match(/Spot sessions paused mid-run:\*\* 1/, get_policy)
+  end
+
   # Parity with /quotas: an agent asking why it is held has to see the same
   # aggregate the page shows, including the accounts a human cannot serve from.
   test "get_spot_policy averages every account, needs_reauth included" do
