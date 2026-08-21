@@ -123,15 +123,155 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   test "inline transcript context keeps the latest messages when it is truncated" do
-    generator = SessionStatusSummaryGenerator.new(session: @session, file_system: @fs)
     rendered = "oldest message\n#{"middle\n" * 20_000}latest message"
 
-    excerpt = generator.send(:latest_transcript_excerpt, rendered)
+    excerpt = StatusSummaryTranscriptExcerpt.truncate_to_tail(
+      rendered, SessionStatusSummaryGenerator::INLINE_TRANSCRIPT_MAX_CHARS
+    )
 
     assert_operator excerpt.length, :<=, SessionStatusSummaryGenerator::INLINE_TRANSCRIPT_MAX_CHARS
     assert_match(/\A\n\n\[Earlier transcript truncated\]\n\n/, excerpt)
     assert_no_match(/oldest message/, excerpt)
     assert_match(/latest message\z/, excerpt)
+  end
+
+
+  # --- The pool-independent path --------------------------------------------
+  #
+  # THE DEFECT THIS SECTION EXISTS FOR. The fork path needs a login-pool account,
+  # a copy of the clone and an agent turn. Under sustained quota pressure the
+  # fork is parked before it answers, and the repair sweep that would retry it
+  # used to stand down for the same outage — so a session at rest never got a
+  # blurb at all, and the panel read "the summary fork was parked, it will be
+  # retried" for hours. The one-shot path is the answer that does not need any of
+  # that.
+
+  # A fake standing in for HeadlessInferenceService: same #generate contract,
+  # records what it was asked.
+  class FakeInference
+    attr_reader :prompts
+
+    def initialize(answer) = (@answer = answer; @prompts = [])
+
+    def generate(prompt, **)
+      @prompts << prompt
+      @answer
+    end
+  end
+
+  def generate_headless(answer, **opts)
+    inference = FakeInference.new(answer)
+    result = SessionStatusSummaryGenerator.call(
+      session: @session, file_system: @fs, headless: true, inference_service: inference, **opts
+    )
+    [ result, inference ]
+  end
+
+  test "the headless path writes the blurb without forking anything" do
+    result, inference = nil
+
+    assert_no_difference -> { Session.count } do
+      result, inference = generate_headless("The PR is open and CI is green.")
+    end
+
+    assert_equal :ready, result.outcome
+
+    stored = @session.reload.status_summary
+    assert_equal "The PR is open and CI is green.", stored.summary
+    assert_equal "ready", stored.state
+    assert_nil stored.fork_session_id
+    assert_not_nil stored.generated_at
+
+    # Stamped at the line count it was written from, so the summary reads as
+    # CURRENT and the sweep stops retrying this session.
+    assert_equal @session.transcript_line_count, stored.transcript_line_count
+    assert_not stored.stale?(@session.transcript_line_count)
+
+    # It was handed the conversation, because it has none of its own.
+    assert_match(/Conversation so far:/, inference.prompts.sole)
+    assert_match(/Opened the PR/, inference.prompts.sole)
+  end
+
+  # The exact regression #561 fixed on the fork path, guarded on the new one:
+  # `claude -p` prints the runtime's limit line to stdout just as a parked fork
+  # writes it into its transcript. Stored, it would be stamped CURRENT and never
+  # replaced.
+  test "the headless path never publishes a runtime refusal as the summary" do
+    result, = generate_headless("You've hit your session limit · resets 6:30pm (UTC)")
+
+    assert_equal :failed, result.outcome
+
+    stored = @session.reload.status_summary
+    assert_nil stored.summary, "a refusal must not become the blurb"
+    assert_equal "failed", stored.state
+    assert stored.stale?(@session.transcript_line_count),
+      "the session must stay a candidate for another attempt"
+  end
+
+  test "the headless path records a failure when the inference returns nothing" do
+    result, = generate_headless(nil)
+
+    assert_equal :failed, result.outcome
+
+    stored = @session.reload.status_summary
+    assert_nil stored.summary
+    assert_equal "failed", stored.state
+    assert stored.error.present?
+  end
+
+  # The automatic FORK path refuses a session whose clone has been reclaimed,
+  # because a fork needs a tree to copy. The one-shot path does not, so that
+  # refusal must not apply to it — a session whose clone is gone is exactly the
+  # kind someone opens later to ask what happened.
+  test "the headless path does not need a clone on disk" do
+    @session.update!(metadata: @session.metadata.merge("clone_path" => "/gone"))
+
+    result, = generate_headless("Finished and archived.")
+
+    assert_equal :ready, result.outcome
+    assert_equal "Finished and archived.", @session.reload.status_summary.summary
+  end
+
+  test "the headless path declines a session whose summary is already current" do
+    SessionStatusSummary.create!(
+      session: @session, state: "ready", summary: "Already current.",
+      transcript_line_count: @session.transcript_line_count, generated_at: 1.minute.ago
+    )
+
+    result, inference = generate_headless("A newer answer.")
+
+    assert_equal :fresh, result.outcome
+    assert_empty inference.prompts, "a current summary must not cost an inference call"
+    assert_equal "Already current.", @session.reload.status_summary.summary
+  end
+
+  # Both paths take the same claim, so they cannot both be writing this record —
+  # and a runner whose claim was taken over must not stomp the one that replaced
+  # it.
+  test "the headless path does not stomp a generation that took the claim from it" do
+    session_id = @session.id
+    inference = Object.new
+    inference.define_singleton_method(:generate) do |_prompt, **|
+      # A newer generation claims the record while the completion is in flight.
+      SessionStatusSummary.find_by(session_id: session_id)
+        .update!(state: "pending", requested_at: Time.current, requested_line_count: 99)
+      "An answer that is now too late."
+    end
+
+    result = SessionStatusSummaryGenerator.call(
+      session: @session, file_system: @fs, headless: true, inference_service: inference
+    )
+
+    assert_equal :pending, result.outcome
+    assert_nil @session.reload.status_summary.summary
+    assert_equal "pending", @session.status_summary.state
+  end
+
+  test "a headless generation is noted on the session's own timeline" do
+    generate_headless("The PR is open.")
+
+    assert @session.logs.reload.any? { |log| log.content.include?("one-shot inference call") },
+      "a reader who finds the blurb terser than usual should be able to see why"
   end
 
   # The dashboard broadcasts a card from after_create_commit, so a marker

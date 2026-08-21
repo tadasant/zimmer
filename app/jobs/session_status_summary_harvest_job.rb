@@ -29,36 +29,6 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
   include DatabaseRetry
   queue_as :default
 
-  # Hard cap on stored summary text. The prompt asks for 2-3 sentences; this is
-  # the backstop for an agent that answered with an essay, so the panel cannot
-  # push the rest of the page off screen.
-  MAX_SUMMARY_CHARS = 1200
-
-  # The refusals a runtime writes into its own transcript instead of doing the
-  # work. The usage-limit wording is borrowed from the service that owns it,
-  # because that pattern is anchored tightly enough ("hit your … limit …
-  # resets") that only a refusal matches it.
-  #
-  # The logged-out wording is spelled out here rather than borrowed from
-  # AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN. That constant answers a
-  # different question — "should this session rotate accounts?" — and is
-  # deliberately a wide net, wide enough to match ordinary English a session
-  # writes ABOUT auth work ("fixed the bug where the access token expired").
-  # Importing it here would discard those summaries as refusals. Two short
-  # patterns that cannot appear in a real summary are the right size for this
-  # job's question.
-  REFUSAL_PATTERNS = [
-    ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN,
-    /not logged in/i,
-    /please run\s*\/login/i
-  ].freeze
-
-  # A refusal is one short line. A real answer is 2-3 sentences carrying markdown
-  # links, and is an order of magnitude longer — so length is what keeps the
-  # patterns off a genuine summary that happens to be ABOUT a session which hit a
-  # limit. Getting that judgement wrong costs a regeneration, never a wrong blurb.
-  MAX_REFUSAL_CHARS = 200
-
   # @param fork_session_id [Integer] the summary fork that just came to rest
   # @param failed [Boolean] true when the fork reached `failed` rather than `needs_input`
   def perform(fork_session_id, failed: false)
@@ -107,13 +77,21 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
       else
         # NOT a summary write: `summary`, `generated_at` and
         # `transcript_line_count` are all left alone, so whatever was displayed
-        # stays displayed and stays STALE — which is what makes the session a
-        # candidate for StatusSummaryBackstopJob to retry once the pool recovers.
+        # stays displayed and stays STALE — which is what keeps the session a
+        # candidate for a retry.
         summary.update!(state: "failed", error: no_answer_reason(fork, failed: failed, parked: parked))
       end
     end
 
     archive_fork(fork)
+
+    # The fork produced nothing, so try the path that does not need one. A
+    # parked fork is the overwhelmingly common case here and it means the pool
+    # is empty — which is exactly when waiting for the next sweep to re-fork
+    # produces one more parked fork instead of a blurb. Enqueued rather than run
+    # inline so this job stays short, and only after the record is committed as
+    # `failed`, so the retry claims a record no other runner holds.
+    enqueue_headless_retry(source_id) if text.blank?
   rescue StandardError => e
     Rails.logger.error "[SessionStatusSummaryHarvestJob] Failed to harvest fork #{fork_session_id}: #{e.message}"
     archive_fork(Session.find_by(id: fork_session_id))
@@ -140,7 +118,7 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
       text_content_from_parts(event[:content]).presence
     end
 
-    normalize_text(texts.last)
+    StatusSummaryAnswer.clean(texts.last)
   end
 
   def text_content_from_parts(parts)
@@ -151,37 +129,6 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
 
       part["text"].presence
     end.join("\n\n")
-  end
-
-  # Strips the wrapper an agent sometimes puts around a "reply with only X"
-  # answer (a fenced block), then truncates.
-  #
-  # A refusal never becomes an answer. The park marker catches nearly every one
-  # of these, but the runtime can also print its limit line and exit cleanly
-  # before rotation has anything left to rotate into — in which case there is no
-  # park to read and the text is the only evidence.
-  def normalize_text(text)
-    return nil if text.blank?
-
-    cleaned = text.strip
-    cleaned = cleaned.sub(/\A```[a-z]*\n/i, "").sub(/\n?```\z/, "").strip
-    return nil if refused_answer?(cleaned)
-
-    cleaned.truncate(MAX_SUMMARY_CHARS)
-  end
-
-  # Whether the fork wrote the runtime's refusal where its answer should be.
-  #
-  # Squished before it is measured or matched. A refusal can arrive wrapped over
-  # two lines, or assembled from two content parts that #text_content_from_parts
-  # joined with a blank line — and the patterns are single-line
-  # (`.` does not cross a newline), so testing the raw text would let exactly
-  # those through.
-  def refused_answer?(text)
-    probe = text.squish
-    return false if probe.length > MAX_REFUSAL_CHARS
-
-    REFUSAL_PATTERNS.any? { |pattern| probe.match?(pattern) }
   end
 
   # The park this fork is sitting in, or nil if it is not parked.
@@ -214,6 +161,15 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
     ].compact.join(" — ")
 
     detail.present? ? "The summary fork failed: #{detail}".truncate(SessionStatusSummary::MAX_ERROR_CHARS) : "The summary fork failed."
+  end
+
+  # Asks for a pool-independent retry of a generation the fork could not deliver.
+  # Unforced, so it costs nothing when the record turns out to be current after
+  # all (a concurrent forced Regenerate that landed while this fork was dying).
+  def enqueue_headless_retry(source_id)
+    SessionStatusSummaryJob.perform_later(source_id, headless: true)
+  rescue StandardError => e
+    Rails.logger.error "[SessionStatusSummaryHarvestJob] Could not enqueue a headless retry for session #{source_id}: #{e.message}"
   end
 
   def archive_fork(fork)

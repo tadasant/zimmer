@@ -5,6 +5,8 @@ require "mocha/minitest"
 
 # Lifting a finished summary fork's answer onto the source session.
 class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)
@@ -102,7 +104,7 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     SessionStatusSummaryHarvestJob.perform_now(fork.id)
 
     stored = @source.reload.status_summary.summary
-    assert_equal SessionStatusSummaryHarvestJob::MAX_SUMMARY_CHARS, stored.length
+    assert_equal StatusSummaryAnswer::MAX_SUMMARY_CHARS, stored.length
     assert stored.end_with?("...")
   end
 
@@ -344,5 +346,51 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     SessionStatusSummaryHarvestJob.perform_now(fork.id)
 
     assert fork.reload.archived?
+  end
+
+  # --- The fallback that makes a parked fork recoverable --------------------
+  #
+  # A parked fork means the pool is empty, which is exactly when waiting for the
+  # next sweep to re-fork produces one more parked fork instead of a blurb. The
+  # harvest hands the session straight to the path that needs no pool.
+
+  test "a parked fork hands the session to the pool-independent path" do
+    fork = build_fork(answer: "You've hit your session limit · resets 10pm (UTC)")
+    fork.update_column(:metadata, fork.metadata.merge("auth_outage_reason" => "quota_exhausted"))
+    pending_record(fork)
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @source.id, { headless: true } ]) do
+      SessionStatusSummaryHarvestJob.perform_now(fork.id)
+    end
+  end
+
+  test "a fork that died without answering also hands the session to the headless path" do
+    fork = build_fork
+    pending_record(fork)
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @source.id, { headless: true } ]) do
+      SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
+    end
+  end
+
+  test "a fork that answered costs no headless retry" do
+    fork = build_fork(answer: "The PR is open and CI is green.")
+    pending_record(fork)
+
+    assert_no_enqueued_jobs only: SessionStatusSummaryJob do
+      SessionStatusSummaryHarvestJob.perform_now(fork.id)
+    end
+  end
+
+  # A superseded fork returns before `text` is ever computed: another generation
+  # owns this record, so retrying it here would race the runner that does.
+  test "a superseded fork does not trigger a headless retry" do
+    fork = build_fork
+    other = build_fork
+    pending_record(other)
+
+    assert_no_enqueued_jobs only: SessionStatusSummaryJob do
+      SessionStatusSummaryHarvestJob.perform_now(fork.id)
+    end
   end
 end
