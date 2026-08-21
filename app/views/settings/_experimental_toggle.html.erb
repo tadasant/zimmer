@@ -1,0 +1,34 @@
+<%# One row in Settings → Experimental: a status banner plus a switch that submits
+    the enclosing form. Shared by the first-class experimental settings and by the
+    registry-driven Zimmer Extension rows, so both read and behave identically.
+
+    Locals: title, description, param_name, dom_id, on (current state),
+    default_on (the state labelled "recommended default"), first (skip top margin) %>
+<div class="<%= "mt-6" unless first %> mb-4 rounded-md px-3 py-2 text-sm <%= on == default_on ? "bg-gray-50 text-gray-600" : "bg-amber-50 text-amber-800" %>">
+  <%= title %> is
+  <span class="font-medium"><%= on ? "ON" : "OFF" %></span><%= " (recommended default)" if on == default_on %>.
+</div>
+
+<div class="flex items-start justify-between">
+  <div class="flex-1 min-w-0 pr-4">
+    <p class="text-sm font-medium text-gray-900"><%= title %></p>
+    <p class="text-sm text-gray-500"><%= description %></p>
+  </div>
+  <div class="flex-shrink-0">
+    <!-- Toggle switch (submits the form) -->
+    <input type="hidden" name="<%= param_name %>" value="0">
+    <label class="relative inline-flex items-center cursor-pointer">
+      <span class="sr-only">Toggle <%= title %></span>
+      <input type="checkbox"
+             name="<%= param_name %>"
+             id="<%= dom_id %>"
+             value="1"
+             class="sr-only peer"
+             role="switch"
+             aria-label="<%= title %>"
+             <%= "checked" if on %>
+             onchange="this.form.requestSubmit()">
+      <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-2 peer-focus:ring-indigo-500 peer-checked:bg-indigo-600 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:border after:border-gray-300 after:shadow after:transition-all peer-checked:after:translate-x-5"></div>
+    </label>
+  </div>
+</div>
