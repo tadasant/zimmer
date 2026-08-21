@@ -1482,7 +1482,7 @@ class AgentSessionJob < ApplicationJob
                 "api_error_retries_exhausted"
               when /Signal death resume limit exhausted/i
                 "signal_death_retries_exhausted"
-              when /Turn ended on an unrecognized API error/i
+              when /Turn ended on an API error no recovery path claimed/i
                 # The backstop in ProcessLifecycleManager#handle_exit: a turn that
                 # died on an API error no recovery path claimed. Its own bucket
                 # because it is the one failure class that means a classifier has
