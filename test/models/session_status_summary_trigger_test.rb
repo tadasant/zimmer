@@ -97,14 +97,24 @@ class SessionStatusSummaryTriggerTest < ActiveSupport::TestCase
     end
   end
 
-  # The job is the whole automatic path's entry point; it must pass `force`
-  # through and must not raise on a session that has since been destroyed.
+  # The job is the whole automatic path's entry point; it must pass both mode
+  # flags through and must not raise on a session that has since been destroyed.
   test "the job forwards force to the generator" do
     SessionStatusSummaryGenerator.expects(:call)
-      .with(session: instance_of(Session), force: true)
+      .with(session: instance_of(Session), force: true, headless: false)
       .returns(SessionStatusSummaryGenerator::Result.new(outcome: :started, message: "ok"))
 
     SessionStatusSummaryJob.perform_now(@session.id, force: true)
+  end
+
+  # The repair sweep during an auth outage, and the harvest of a fork that came
+  # back with nothing, both ask for the pool-independent path through this job.
+  test "the job forwards headless to the generator" do
+    SessionStatusSummaryGenerator.expects(:call)
+      .with(session: instance_of(Session), force: false, headless: true)
+      .returns(SessionStatusSummaryGenerator::Result.new(outcome: :ready, message: "ok"))
+
+    SessionStatusSummaryJob.perform_now(@session.id, headless: true)
   end
 
   test "the job discards a session that no longer exists" do

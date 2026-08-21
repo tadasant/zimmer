@@ -20,12 +20,17 @@ class SessionStatusSummaryJob < ApplicationJob
 
   discard_on ActiveRecord::RecordNotFound
 
-  def perform(session_id, force: false)
+  # @param headless [Boolean] write the blurb with one pool-independent
+  #   `claude -p` completion instead of forking. Passed by the two callers that
+  #   know a fork cannot deliver right now: the repair sweep during an auth
+  #   outage, and the harvest of a fork that came back with no answer.
+  def perform(session_id, force: false, headless: false)
     session = Session.find(session_id)
-    result = SessionStatusSummaryGenerator.call(session: session, force: force)
+    result = SessionStatusSummaryGenerator.call(session: session, force: force, headless: headless)
 
     Rails.logger.info(
-      "[SessionStatusSummaryJob] session=#{session_id} force=#{force} outcome=#{result.outcome} #{result.message}"
+      "[SessionStatusSummaryJob] session=#{session_id} force=#{force} headless=#{headless} " \
+      "outcome=#{result.outcome} #{result.message}"
     )
   end
 end

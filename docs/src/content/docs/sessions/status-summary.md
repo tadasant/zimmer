@@ -64,6 +64,10 @@ headless inference call (the substrate `SessionTitleJob` uses for titles and cat
 sees a truncated, flattened rendering of the transcript, which is exactly where those specifics get
 lost. The fork gets the real conversation at the real point it stopped.
 
+That trade only holds while a fork can actually run. When it cannot, the one-shot completion is not a
+worse summary than the fork's — it is a summary against no summary at all, which is why it exists as
+[the pool-independent path](#the-pool-independent-path) below.
+
 **The inherited goal is stripped, and that is not optional.** A fork inherits the source's goal, and
 a goal is an instruction to act — a summarizer still carrying "open a PR and label it ready to merge"
 would go and do that.
@@ -213,6 +217,59 @@ resume a fork sitting between its pause and its harvest and spend a second agent
 A fork reaching `needs_input` is routed into harvesting instead of into the action queue: no push
 notification, no `session_needs_input` trigger fire, no title inference.
 
+## The pool-independent path
+
+Everything above needs a login-pool account, a copy of the session's clone, and an agent turn. Under
+sustained quota pressure a fork is **parked before it answers**, and the whole apparatus produces
+nothing but a parked session holding a repository copy.
+
+That is not a rare edge. It is the busiest hour of the day — and the busiest hour is exactly when a
+human opens the action queue and wants to know where things stand. The first version of the repair
+sweep answered it by standing down during an outage, which gated the retry on the very resource whose
+absence caused the failure being retried. The result was a panel that read *"the summary fork was
+parked before it could answer (quota_exhausted). It will be retried."* for hours, while the retry that
+would have fixed it was the thing standing down.
+
+So `SessionStatusSummaryGenerator` has a second mode. Passed `headless: true`, it takes the same
+claim on the same record, then — instead of forking — renders the session's conversation to text and
+asks for the blurb in **one `claude -p` completion** on a small model (Haiku, the substrate
+`SessionTitleJob` has always used). It writes the answer onto the record exactly as the harvest does.
+
+What that mode does not need is the point of it:
+
+| | Fork | One-shot |
+| --- | --- | --- |
+| Login-pool account | yes — parks when the pool is empty | no; runs against the ambient credentials |
+| Clone copy | yes, a full repository | none |
+| MCP servers | booted | none |
+| Cost | an agent turn | one small-model completion |
+| Reach | the real conversation, its tools, its clone | the rendered transcript tail only |
+
+It is reached from the two places a fork is known not to be able to deliver:
+
+- **The repair sweep during an auth outage.** A runtime with no available account switches to this
+  path rather than standing down, under its own higher cap (`MAX_HEADLESS_PER_SWEEP`).
+- **The harvest of a fork that came back with nothing.** A parked or dead fork enqueues a headless
+  retry for its source session immediately, rather than leaving it to a sweep that would re-fork into
+  the same empty pool.
+
+Two properties keep it honest:
+
+- **A refusal never becomes a blurb.** `claude -p` prints the runtime's limit line to stdout just as a
+  parked fork writes it into its transcript, so both paths run their answer through
+  `StatusSummaryAnswer` — one definition of "is this an answer or a refusal", rather than one per
+  caller. A rejected answer records a failure and leaves the session stale, i.e. still a candidate.
+- **It cannot stomp a fork.** Both modes take the same claim and every write is conditional on still
+  holding it, so a one-shot whose record was taken over by a newer generation returns `pending` and
+  writes nothing.
+
+A headless generation notes itself on the session's own timeline ("Wrote the status summary with a
+one-shot inference call (no fork)"), so a reader who finds a blurb terser than usual can see why.
+
+The clone refusal does not apply here. An automatic *fork* declines a session whose clone has been
+reclaimed, because a fork needs a tree to copy; a one-shot does not, and a session whose clone is gone
+is exactly the kind someone opens later to ask what happened.
+
 ## Caching: staleness is counted in messages, not minutes
 
 A summary does not expire because time passed. It expires because the session **said something new**.
@@ -285,9 +342,10 @@ It is a repair sweep, not polling, and the difference is enforced rather than as
 - **It is capped at `MAX_PER_SWEEP` (5) repairs.** Each repair costs a fork of a repository and an
   agent turn, so a fleet-wide outage that failed every generation at once cannot become a fleet-wide
   re-fork.
-- **It stands down during an auth outage.** A runtime with no available account is skipped entirely
-  and *not* stamped, so nothing is spent forking into an empty pool and the first sweep after the pool
-  recovers picks the whole backlog up.
+- **An auth outage changes how it repairs, not whether it does.** A runtime with no available account
+  is repaired on the [pool-independent path](#the-pool-independent-path) instead — no fork, no clone
+  copy, no account slot. That path is capped separately at `MAX_HEADLESS_PER_SWEEP` (10), higher than
+  the fork cap because the costs are not comparable.
 - **A session mid-turn is not swept.** A `blocked_on_elicitation` session is `needs_input` with a live
   process waiting on an approval; it is not at rest, and there is nothing final to say about it yet.
   Neither are summary forks, which would fork the fork.
@@ -419,7 +477,7 @@ of the 92 summary forks carried the park marker.
 
 - **The park marker.** A fork carrying `auth_outage_reason` is treated exactly like a failed one — the
   reason is recorded, nothing is stamped, and the displayed summary stays stale and therefore eligible
-  for the repair sweep to write over once the pool recovers.
+  to be written over.
 - **The text.** A runtime can also print its limit line and exit cleanly, before rotation has anything
   left to rotate into and so before anything parks it. An answer that is a single line under 200
   characters matching `ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN` or
@@ -427,11 +485,17 @@ of the 92 summary forks carried the park marker.
   keeps the patterns off a genuine blurb that happens to be *about* a session which hit a limit;
   getting that judgement wrong costs a regeneration, never a wrong blurb.
 
+**Refusing an answer is not the same as delivering one**, and for a while that was the whole of the
+remaining bug. Rejecting the refusal made the panel honest — it said the generation had failed
+instead of displaying a quota refusal as though it were a summary — but it was still empty, which
+from the reader's side is the same defect. So a fork that comes back with nothing now hands its
+source session straight to [the pool-independent path](#the-pool-independent-path) rather than
+waiting for a sweep to re-fork into the pool that just parked it.
+
 The fork is archived either way, so the copied clone is still reclaimed. The park's own wake trigger
-goes with it — one parked fork waiting hours for quota holds a full repository copy, and the repair
-sweep starting a fresh generation later is cheaper than keeping it. In the incident above the same
-source sessions were re-forked up to five times each, so the re-fork was happening regardless; the
-sweep at least rate-limits it.
+goes with it — one parked fork waiting hours for quota holds a full repository copy, and starting a
+fresh generation later is cheaper than keeping it. In the incident above the same source sessions
+were re-forked up to five times each, so the re-fork was happening regardless.
 
 The recorded reason folds together the fork's `failure_reason`, `exit_status`, and
 `exception_message`, capped at `SessionStatusSummary::MAX_ERROR_CHARS`. All three are included
