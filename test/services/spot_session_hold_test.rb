@@ -104,7 +104,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     base = SpotGateService::RETRY_DELAY
 
     delays = SpotGateService.stub(:evaluate, held_decision) do
-      Array.new(3) { climb_one_rung(session) }
+      Array.new(3) { hold_and_measure(session) }
     end
 
     assert_delay_band base, delays[0], "the first hold takes the plain interval"
@@ -119,8 +119,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
     delay = SpotGateService.stub(:evaluate, held_decision) do
       # Four prior rungs would put an unclamped delay at 10m * 2**4 = 160m.
-      4.times { climb_one_rung(session) }
-      climb_one_rung(session)
+      4.times { SpotSessionHold.hold_if_needed(session.reload) }
+      hold_and_measure(session)
     end
 
     assert_delay_band SpotSessionHold::UTILIZATION_MAX_RETRY_DELAY, delay
@@ -134,8 +134,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     session = build_session(SessionGenesis::GITHUB_ISSUE)
 
     delay = SpotGateService.stub(:evaluate, fleet_cap_decision) do
-      4.times { climb_one_rung(session) }
-      climb_one_rung(session)
+      4.times { SpotSessionHold.hold_if_needed(session.reload) }
+      hold_and_measure(session)
     end
 
     assert_delay_band SpotSessionHold::FLEET_CAP_MAX_RETRY_DELAY, delay
@@ -149,15 +149,11 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   test "the backed-off delay is what the re-check job is scheduled with" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
 
-    now = nil
     SpotGateService.stub(:evaluate, held_decision) do
-      4.times { climb_one_rung(session) }
+      4.times { SpotSessionHold.hold_if_needed(session.reload) }
 
-      travel_to(next_recheck_at(session)) do
-        now = Time.current
-        assert_enqueued_with(job: AgentSessionJob) do
-          SpotSessionHold.hold_if_needed(session.reload)
-        end
+      assert_enqueued_with(job: AgentSessionJob) do
+        SpotSessionHold.hold_if_needed(session.reload)
       end
     end
 
@@ -166,7 +162,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     retry_at = Time.zone.parse(session.reload.metadata[SpotSessionHold::HELD_RETRY_AT])
 
     assert_in_delta retry_at.to_f, scheduled_at.to_f, 5
-    assert_operator scheduled_at - now, :>, SpotGateService::RETRY_DELAY
+    assert_operator scheduled_at - Time.current, :>, SpotGateService::RETRY_DELAY
   end
 
   # The whole design rests on jitter being applied AFTER the ceiling. Applied
@@ -178,8 +174,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     delays = SpotGateService.stub(:evaluate, held_decision) do
       Array.new(12) do
         session = build_session(SessionGenesis::GITHUB_ISSUE)
-        4.times { climb_one_rung(session) }
-        climb_one_rung(session)
+        4.times { SpotSessionHold.hold_if_needed(session.reload) }
+        hold_and_measure(session)
       end
     end
 
@@ -188,36 +184,24 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
                     "applied before the ceiling instead of after it"
   end
 
-  # A hold that arrives EARLY was not the re-check the last hold scheduled —
-  # something else started this session, and the only somethings are the Restart
-  # button, `action_session`'s restart and the REST restart. Pushing the ladder up
-  # for those would make a human asking for the session NOW wait longer, which is
-  # the opposite of what they asked for.
-  test "a restart before the scheduled re-check starts the ladder over" do
+  # The three "restart from scratch" paths re-enter the gate looking exactly like a
+  # scheduled re-check — no prompt, no resume flag — so the ladder can only know a
+  # person asked for this session if they say so. They say so by dropping the hold
+  # metadata, which is what this asserts; the callers are covered where they live.
+  # Without it, clicking Restart on a session sitting at 40 minutes would push it
+  # to an hour, the opposite of what was asked for.
+  test "clearing the hold metadata, as a restart does, starts the ladder over" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
 
     delay = SpotGateService.stub(:evaluate, held_decision) do
-      3.times { climb_one_rung(session) }
-      # No time travel: this stands at "now", well before the ~60m re-check the
-      # third rung scheduled — which is exactly where a human clicking Restart is.
+      3.times { SpotSessionHold.hold_if_needed(session.reload) }
+
+      session.update!(metadata: session.metadata.except(*SpotSessionHold::METADATA_KEYS))
       hold_and_measure(session)
     end
 
     assert_delay_band SpotGateService::RETRY_DELAY, delay
     assert_equal 1, session.reload.metadata[SpotSessionHold::HELD_COUNT]
-  end
-
-  # ...but the ordinary case must NOT reset, or the ladder never climbs at all.
-  test "a re-check at its scheduled time climbs the ladder" do
-    session = build_session(SessionGenesis::GITHUB_ISSUE)
-
-    SpotGateService.stub(:evaluate, held_decision) do
-      SpotSessionHold.hold_if_needed(session)
-      # Stand where the scheduled re-check would: at its time, not before it.
-      travel_to(next_recheck_at(session)) { SpotSessionHold.hold_if_needed(session.reload) }
-    end
-
-    assert_equal 2, session.reload.metadata[SpotSessionHold::HELD_COUNT]
   end
 
   # Getting through resets the ladder: the next time this session is held it must
@@ -226,11 +210,11 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     session = build_session(SessionGenesis::GITHUB_ISSUE)
 
     SpotGateService.stub(:evaluate, held_decision) do
-      3.times { climb_one_rung(session) }
+      3.times { SpotSessionHold.hold_if_needed(session.reload) }
     end
     SpotGateService.stub(:evaluate, allowed_decision) { SpotSessionHold.hold_if_needed(session.reload) }
 
-    delay = SpotGateService.stub(:evaluate, held_decision) { climb_one_rung(session) }
+    delay = SpotGateService.stub(:evaluate, held_decision) { hold_and_measure(session) }
     assert_delay_band SpotGateService::RETRY_DELAY, delay
   end
 
@@ -273,22 +257,6 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   def hold_and_measure(session)
     SpotSessionHold.hold_if_needed(session.reload)
     Time.zone.parse(session.reload.metadata[SpotSessionHold::HELD_RETRY_AT]) - Time.current
-  end
-
-  # When the re-check this session is currently waiting on comes due.
-  def next_recheck_at(session)
-    Time.zone.parse(session.reload.metadata[SpotSessionHold::HELD_RETRY_AT])
-  end
-
-  # Advance to the moment the scheduled re-check runs and take it — the ONLY way
-  # to climb the ladder, because a hold that arrives early is deliberately read as
-  # a human restart and starts it over. Holding back-to-back in wall-clock time
-  # therefore measures the reset path, not the ladder.
-  def climb_one_rung(session)
-    held = session.reload.metadata&.dig(SpotSessionHold::HELD_RETRY_AT)
-    return hold_and_measure(session) if held.blank?
-
-    travel_to(Time.zone.parse(held)) { hold_and_measure(session) }
   end
 
   def fleet_cap_decision

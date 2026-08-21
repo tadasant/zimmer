@@ -312,9 +312,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     breakdown = HealthMonitorService.new.ready_backlog_breakdown
     limit = HealthMonitorService::READY_BREAKDOWN_LIMIT
 
-    assert_equal [ "a", "b", "c", "d", "e", "+2 more" ], breakdown[:by_queue].keys
+    assert_equal [ "a", "b", "c", "d", "e", "other (2 more)" ], breakdown[:by_queue].keys
     assert_equal limit + 1, breakdown[:by_queue].size
-    assert_equal 5 + 4, breakdown[:by_queue]["+2 more"], "the remainder carries the counts it cut"
+    assert_equal 5 + 4, breakdown[:by_queue]["other (2 more)"], "the remainder carries the counts it cut"
     assert_equal (4..10).sum, breakdown[:by_queue].values.sum,
                  "a capped breakdown must still add up against ready_count"
   end
