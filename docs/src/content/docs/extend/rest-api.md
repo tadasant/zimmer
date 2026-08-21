@@ -453,7 +453,17 @@ unthrottled. `GET /health` is unaffected. See
 or `source`. This is the export path for cost-versus-performance analysis — the app deliberately
 does not try to do that analysis itself.
 
-Both responses carry a `pricing` object: the per-MTok rates and cache multipliers used to produce
+`POST /api/v1/costs/backfill` → queue a sweep of every transcript on disk into the ledger. This is
+an **ops action with an endpoint rather than a shell**: getting history into the ledger must not
+require SSH onto the production box. Idempotent — it returns the run already in flight rather than
+starting a second one, and ingestion upserts on `request_id`, so a re-read directory writes no
+duplicate rows. The same sweep starts itself after a deploy; this is for a re-scan.
+
+`GET /api/v1/costs` also carries `ledger_coverage`: whether the one-time historical sweep has
+finished, how far it has got, and `covers_since` — the oldest call actually stored. A total whose
+coverage is unknown is not interpretable, which is why it travels with the figures.
+
+Both rollup and record responses carry a `pricing` object: the per-MTok rates and cache multipliers used to produce
 every dollar figure in that response. Volumes are stored, prices are applied on read, so a figure
 without its rate table is not reproducible — see [Token spend](/operate/costs/).
 

@@ -8,7 +8,7 @@ module Mcp
     class ActionHealth < Tool
       ACTIONS = %w[
         cleanup_processes retry_sessions archive_old cli_refresh cli_clear_cache
-        enter_queue_recovery_mode exit_queue_recovery_mode
+        enter_queue_recovery_mode exit_queue_recovery_mode backfill_token_usage
       ].freeze
 
       # The three HealthMonitorService actions terminate processes and rewrite rows
@@ -40,6 +40,12 @@ module Mcp
           Calling it again while active extends the window. This is an INSTANCE-WIDE halt:
           everything except agent sessions stops until it is lifted.
         - **exit_queue_recovery_mode**: Resume normal background job processing.
+        - **backfill_token_usage**: Queue a sweep of every transcript on disk into the token-spend
+          ledger, so `get_costs` covers all of history rather than only spend since ingestion was
+          deployed. The sweep normally starts itself after a deploy and needs nobody; use this to
+          re-scan, or to restart one that stopped. Idempotent — it returns the run already in
+          flight rather than starting a second, and ingestion upserts on the API request id, so a
+          re-read directory writes no duplicate rows.
 
         Note: "queue recovery mode" is about the JOB QUEUES. It is unrelated to session
         recovery after a deploy or crash, and it never touches session state.
@@ -95,6 +101,7 @@ module Mcp
         when "cli_clear_cache" then cli_clear_cache
         when "enter_queue_recovery_mode" then enter_queue_recovery_mode(args)
         when "exit_queue_recovery_mode" then exit_queue_recovery_mode
+        when "backfill_token_usage" then backfill_token_usage
         end
 
         record_action(action)
@@ -165,6 +172,21 @@ module Mcp
 
         "## Queue Recovery Mode OFF\n\nBackground job processing resumed on " \
           "#{QueueRecoveryMode::HALTED_QUEUES.join(", ")}.\n\n#{json_block(status)}"
+      end
+
+      # The MCP half of an ops action that has no shell equivalent: nothing about
+      # loading the ledger's history requires access to the production box.
+      def backfill_token_usage
+        run = TokenUsageBackfill.request!(trigger: "manual")
+        TokenUsageBackfillJob.perform_later
+
+        "## Token Usage Backfill Queued\n\n" \
+        "- **Run:** ##{run.id} (#{run.status}, trigger #{run.trigger})\n" \
+        "- **Corpus:** #{run.transcript_root}\n" \
+        "- **Progress:** #{run.directories_done}/#{run.directories_total} directories, " \
+        "#{run.rows_written} rows written so far\n\n" \
+        "It runs in slices on a five-minute cron and stops when the corpus is covered. " \
+        "`get_costs` reports coverage as it advances.\n\n#{json_block(TokenUsageBackfill.coverage)}"
       end
 
       def json_block(payload)

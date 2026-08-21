@@ -23,11 +23,12 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
     }.merge(overrides))
   end
 
-  test "says plainly when nothing has been ingested, and how to load history" do
+  test "says plainly when nothing has been ingested, and that the sweep runs itself" do
     output = @tool.call({})
 
     assert_match "No token usage recorded", output
-    assert_match "token_usage:backfill", output
+    assert_match "TokenUsageBackfillJob", output
+    assert_match "never_run", output, "an agent should be able to tell a quiet fleet from an unswept ledger"
   end
 
   test "reports the fleet breakdown" do
@@ -100,5 +101,38 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
     output = @tool.call({ "days" => 10_000 })
 
     assert_match "last 365 days", output
+  end
+
+  test "warns that the figures are partial until the historical sweep finishes" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 1.minute.ago,
+                               directories_total: 100, directories_done: 40)
+
+    output = @tool.call({})
+
+    assert_match "Partial history", output
+    assert_match "40% swept", output
+  end
+
+  test "a re-scan of already-swept history is not reported as partial" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 3.hours.ago, finished_at: 2.hours.ago)
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", trigger: "manual",
+                               started_at: 1.minute.ago, directories_total: 100, directories_done: 40)
+
+    output = @tool.call({})
+
+    assert_match "A re-scan of the corpus is running", output
+    assert_no_match(/Partial history/, output)
+  end
+
+  test "states the covered window once the sweep has finished" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago, finished_at: 1.hour.ago)
+
+    output = @tool.call({})
+
+    assert_match "Ledger covers", output
+    assert_no_match(/Partial history/, output)
   end
 end

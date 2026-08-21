@@ -9,6 +9,9 @@
 #                                for analysis that this app should not be doing,
 #                                including the cost-vs-performance work these
 #                                tables exist to enable.
+#   POST /api/v1/costs/backfill — ask for a fresh sweep of the whole transcript
+#                                corpus into the ledger. An ops action with an
+#                                endpoint, because it must not need a prod shell.
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::CostsController < Api::BaseController
@@ -25,8 +28,25 @@ class Api::V1::CostsController < Api::BaseController
 
     render json: {
       window: { from: analytics.from.iso8601, to: analytics.to.iso8601 },
-      pricing: pricing_json
+      pricing: pricing_json,
+      # How much history is behind those figures. Returned with every rollup for
+      # the same reason the rate table is: a total whose coverage is unknown is
+      # not interpretable, and before the historical sweep completes these
+      # numbers only cover spend since ingestion shipped.
+      ledger_coverage: coverage_json
     }.merge(analytics.snapshot)
+  end
+
+  # POST /api/v1/costs/backfill
+  #
+  # Queues a sweep of every transcript on disk. Idempotent: returns the run
+  # already in flight rather than starting a second one, and ingestion upserts on
+  # `request_id`, so re-reading a directory writes no duplicate rows.
+  def backfill
+    run = TokenUsageBackfill.request!(trigger: "manual")
+    TokenUsageBackfillJob.perform_later
+
+    render json: { queued: true, run: run_json(run), ledger_coverage: coverage_json }
   end
 
   # GET /api/v1/costs/records
@@ -51,6 +71,32 @@ class Api::V1::CostsController < Api::BaseController
   end
 
   private
+
+  def coverage_json
+    coverage = TokenUsageBackfill.coverage
+    coverage.merge(
+      started_at: coverage[:started_at]&.iso8601,
+      finished_at: coverage[:finished_at]&.iso8601,
+      last_ran_at: coverage[:last_ran_at]&.iso8601,
+      covers_since: coverage[:covers_since]&.iso8601,
+      covers_until: coverage[:covers_until]&.iso8601
+    )
+  end
+
+  def run_json(run)
+    {
+      id: run.id,
+      status: run.status,
+      trigger: run.trigger,
+      transcript_root: run.transcript_root,
+      directories_done: run.directories_done,
+      directories_total: run.directories_total,
+      files_scanned: run.files_scanned,
+      rows_written: run.rows_written,
+      started_at: run.started_at&.iso8601,
+      finished_at: run.finished_at&.iso8601
+    }
+  end
 
   def kind = params[:kind].presence == "adhoc" ? "adhoc" : "session"
 
