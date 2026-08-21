@@ -344,6 +344,10 @@ class QuotasController < ApplicationController
   def load_spot_gate
     @app_setting = AppSetting.current
     @spot_decision = SpotGateService.evaluate
+    # Running spot sessions the ceiling has stopped. The decision above says what
+    # would happen to a session STARTING now; this says what already happened to
+    # the ones that were in flight when a window arrived at its target.
+    @spot_paused_count = SpotSessionPause.paused_count
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
   end

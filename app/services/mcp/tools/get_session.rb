@@ -155,6 +155,24 @@ module Mcp
         ]
       end
 
+      # Why a spot session that WAS running is now sitting in `waiting`. The hold
+      # lines above cover a session that never started; this covers one the spot
+      # ceiling interrupted mid-run, which an agent reading its own session needs
+      # to tell apart from a crash — its last turn ended without finishing, and
+      # nothing it wrote is lost.
+      def spot_pause_lines(session)
+        detail = session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL)
+        return [] if detail.blank?
+
+        [
+          "- **Paused mid-run by the spot ceiling:** #{detail}",
+          "- **Paused at:** #{session.metadata&.dig(SpotSessionPause::PAUSED_AT).presence || 'unknown'}",
+          "- **Pauses so far:** #{session.metadata&.dig(SpotSessionPause::PAUSED_COUNT).to_i}",
+          "- **Resumes when:** the pool's utilization falls #{SpotGateService::RESUME_MARGIN_PCT} " \
+          "points below the target it reached. Nothing is cancelled and no action is needed."
+        ]
+      end
+
       # The cached Status blurb, with the staleness count that decides whether to
       # trust it. Read-only here: nothing about calling get_session generates a
       # summary, exactly as viewing the session page does not.
@@ -291,6 +309,7 @@ module Mcp
         lines << "- **Genesis:** #{session.genesis_key} (#{session.genesis_label})"
         lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
         lines.concat(spot_hold_lines(session))
+        lines.concat(spot_pause_lines(session))
 
         lines << ""
         lines << "### Git Configuration"

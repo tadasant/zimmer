@@ -1,10 +1,16 @@
-<%# A spot session the gate is holding — for a quota window at its target, or for
-    a free session slot. Without this the session sits in `waiting` looking
-    indistinguishable from one that is merely queued, and the only record of why
-    would be a line in its log. %>
+<%# A spot session the gate has stopped — either held at the starting line (a
+    quota window at its target, or no free session slot) or paused mid-run once a
+    window arrived at its target with this session already running. Without this
+    the session sits in `waiting` looking indistinguishable from one that is
+    merely queued, and the only record of why would be a line in its log.
+
+    One partial for both because a session is only ever in one of the two states:
+    it was either never started or interrupted, never both. %>
 <% hold_detail = agent_session.metadata&.dig(SpotSessionHold::HELD_DETAIL) %>
 <% hold_reason = agent_session.metadata&.dig(SpotSessionHold::HELD_REASON) %>
-<% if hold_detail.present? && agent_session.waiting? %>
+<% pause_detail = agent_session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL) %>
+<% if (hold_detail.present? || pause_detail.present?) && agent_session.waiting? %>
+  <% paused_mid_run = hold_detail.blank? %>
   <% retry_at = agent_session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT) %>
   <%# A data attribute rather than an id: this partial renders twice per page —
       once in the mobile block, once in the desktop header, mirroring
@@ -16,14 +22,23 @@
       </svg>
       <div class="min-w-0">
         <h3 class="text-sm font-medium text-amber-900">
-          <%= hold_reason == "fleet_at_cap" ? "Held for a free session slot" : "Held for quota headroom" %>
+          <% if paused_mid_run %>
+            Paused mid-run for quota headroom
+          <% else %>
+            <%= hold_reason == "fleet_at_cap" ? "Held for a free session slot" : "Held for quota headroom" %>
+          <% end %>
         </h3>
-        <p class="mt-1 text-sm text-amber-800"><%= hold_detail %></p>
+        <p class="mt-1 text-sm text-amber-800"><%= paused_mid_run ? pause_detail : hold_detail %></p>
         <p class="mt-2 text-xs text-amber-700">
           This is a <span class="font-medium">spot</span> session
           (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
           <%= agent_session.scheduling_class_source %>). It has not been cancelled —
-          it will start on its own once the gate lets it<%= ", next check #{retry_at}" if retry_at.present? %>.
+          <% if paused_mid_run %>
+            it was already running when a window reached its target, and it resumes on its own
+            once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
+          <% else %>
+            it will start on its own once the gate lets it<%= ", next check #{retry_at}" if retry_at.present? %>.
+          <% end %>
         </p>
         <%# Moves this session alone. The genesis-wide lever on /quotas would
             move every other session that shares its origin, which is exactly the
