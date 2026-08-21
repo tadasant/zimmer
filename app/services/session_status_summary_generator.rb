@@ -508,7 +508,7 @@ class SessionStatusSummaryGenerator
   # does not distinguish "the model refused" from "the call failed": both mean
   # the same thing to the reader, and both are retried by the same sweep.
   def headless_failure_reason
-    "Could not write a summary without a fork — the one-shot summary call returned no usable answer. It will be retried."
+    "Could not write a summary without a fork — the one-shot summary produced no usable answer. It will be retried."
   end
 
   # Writes the answer onto the claim this runner holds. Same lock-and-check

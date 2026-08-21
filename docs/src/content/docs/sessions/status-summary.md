@@ -245,25 +245,39 @@ What that mode does not need is the point of it:
 | Cost | an agent turn | one small-model completion |
 | Reach | the real conversation, its tools, its clone | the rendered transcript tail only |
 
-It is reached from the two places a fork is known not to be able to deliver:
+It is reached from the three places a fork is known not to be able to deliver:
 
 - **The repair sweep during an auth outage.** A runtime with no available account switches to this
   path rather than standing down, under its own higher cap (`MAX_HEADLESS_PER_SWEEP`).
-- **The harvest of a fork that came back with nothing.** A parked or dead fork enqueues a headless
-  retry for its source session immediately, rather than leaving it to a sweep that would re-fork into
-  the same empty pool.
+- **The harvest of a fork that could not have delivered.** A fork that was *parked*, or that died
+  while the pool was empty, enqueues a headless retry for its source session immediately rather than
+  leaving it to a sweep that would re-fork into the same empty pool. A fork that died of something
+  else while the pool was healthy is deliberately *not* downgraded — re-forking is the right repair
+  there, and stamping a terser blurb as current would stop the sweep ever trying again.
+- **A forced Regenerate while the pool is empty.** The three surfaces that offer it are all forced
+  and none of them consults the pool, so the generator re-checks it rather than trusting the caller.
+  It fails *open*: a pool it cannot read is not evidence of an outage.
+
+Concurrency is bounded at `SessionStatusSummaryJob::HEADLESS_PERFORM_LIMIT`. A headless run blocks a
+worker thread on a subprocess for up to `HEADLESS_TIMEOUT`, `default` has four threads, and only the
+sweep's entry point is capped per tick — so without a fleet-wide ceiling an outage could put summary
+inference on most of the shared queue at once.
 - **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
   re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
-  panel's **Regenerate** button, `POST /api/v1/sessions/:id/status_summary`, and the MCP
+  panel's **Regenerate** button, `POST /api/v1/sessions/:id/regenerate_status_summary`, and the MCP
   `action_session` regenerate action — do not consult it. Without that check, pressing Regenerate
   during an outage paid for a clone copy, watched the fork park, and reported a failure.
 
 Two properties keep it honest:
 
-- **A refusal never becomes a blurb.** `claude -p` prints the runtime's limit line to stdout just as a
-  parked fork writes it into its transcript, so both paths run their answer through
+- **A refusal never becomes a blurb**, and the guard has two halves because the wording half is not
+  enough on its own. `claude -p` prints its own errors to stdout — a usage limit, a credit balance, an
+  API error blob — so the primary test is the **exit status**, which `ClaudePrintRunner::Result` now
+  carries: a backend that reported a failing code did not answer, whatever it left on stdout, and
+  `HeadlessInferenceService` discards it. On top of that both paths run their text through
   `StatusSummaryAnswer` — one definition of "is this an answer or a refusal", rather than one per
-  caller. A rejected answer records a failure and leaves the session stale, i.e. still a candidate.
+  caller — which is what covers a backend that cannot report a code at all. A rejected answer records
+  a failure and leaves the session stale, i.e. still a candidate.
 - **It cannot stomp a fork.** Both modes take the same claim and every write is conditional on still
   holding it, so a one-shot whose record was taken over by a newer generation returns `pending` and
   writes nothing.

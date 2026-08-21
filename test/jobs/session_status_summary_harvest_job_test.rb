@@ -354,21 +354,40 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
   # next sweep to re-fork produces one more parked fork instead of a blurb. The
   # harvest hands the session straight to the path that needs no pool.
 
+  # The park is its own evidence that a fork cannot deliver, so this does not
+  # depend on what the pool looks like by the time the harvest runs — an account
+  # may well have recovered in between.
   test "a parked fork hands the session to the pool-independent path" do
     fork = build_fork(answer: "You've hit your session limit · resets 10pm (UTC)")
     fork.update_column(:metadata, fork.metadata.merge("auth_outage_reason" => "quota_exhausted"))
     pending_record(fork)
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
 
     assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @source.id, { headless: true } ]) do
       SessionStatusSummaryHarvestJob.perform_now(fork.id)
     end
   end
 
-  test "a fork that died without answering also hands the session to the headless path" do
+  test "a fork that died while the pool was empty also hands the session to the headless path" do
     fork = build_fork
     pending_record(fork)
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
 
     assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @source.id, { headless: true } ]) do
+      SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
+    end
+  end
+
+  # A fork that died of something else — a crashed process, an MCP boot failure —
+  # while the pool was healthy is NOT a case a fork cannot deliver. Downgrading
+  # it would stamp a terser blurb as CURRENT and stop the sweep ever re-forking,
+  # so the session keeps the degraded summary for good.
+  test "a fork that died while the pool was healthy is left for the sweep to re-fork" do
+    fork = build_fork
+    pending_record(fork)
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+
+    assert_no_enqueued_jobs only: SessionStatusSummaryJob do
       SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
     end
   end

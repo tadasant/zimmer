@@ -781,8 +781,10 @@ module Mcp
       end
 
       # The MCP twin of the Status panel's "Regenerate" button. Enqueued rather
-      # than run inline: generation forks the session and waits on a whole agent
-      # turn, which is far longer than a tool call should block.
+      # than run inline: generation normally forks the session and waits on a
+      # whole agent turn, which is far longer than a tool call should block.
+      # (With no login-pool account free it takes the one-shot path instead —
+      # still not something to block a tool call on.)
       def regenerate_status_summary(session)
         # Refused up front rather than by the job, which has nowhere to report a
         # refusal to. An archived session is fine, and so is one whose clone has
@@ -798,7 +800,7 @@ module Mcp
           "## Status Summary Regenerating",
           "",
           "- **Session:** ##{session.id}",
-          "- **Message:** A fork was queued to rewrite the status summary. Read it back with get_session once the fork's turn finishes."
+          "- **Message:** A generation was queued to rewrite the status summary. Read it back with get_session once it finishes."
         ].join("\n")
       end
 
