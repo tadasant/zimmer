@@ -1494,6 +1494,12 @@ class AgentSessionJob < ApplicationJob
                 "api_error_retries_exhausted"
               when /Signal death resume limit exhausted/i
                 "signal_death_retries_exhausted"
+              when /Turn ended on an API error no recovery path claimed/i
+                # The backstop in ProcessLifecycleManager#handle_exit: a turn that
+                # died on an API error no recovery path claimed. Its own bucket
+                # because it is the one failure class that means a classifier has
+                # gone stale, and the health dashboard is where that shows up.
+                "terminal_api_error"
               when /Clone directory no longer exists/i
                 # Benign terminal case: the clone was GC'd after the session was torn
                 # down, so a continuation re-spawn is impossible (not a system fault).

@@ -156,6 +156,31 @@ class ClaudeRetryStrategy
     nil
   end
 
+  # The API error this turn DIED on: the last conversational entry in the
+  # transcript being an isApiErrorMessage. ProcessLifecycleManager consults this
+  # LAST on the NORMAL-COMPLETION path, after every classifier above has declined
+  # to act — so an answer here means nobody is handling a turn that did not
+  # finish, and it would otherwise be indistinguishable from one that did.
+  #
+  # @return [ApiErrorRetryService::TerminalApiError, nil]
+  def terminal_api_error(working_dir:)
+    return nil unless working_dir
+
+    temp_service = ApiErrorRetryService.new(
+      @session,
+      cli_adapter: @cli_adapter,
+      process_manager: @process_manager,
+      log_buffer: NullLogBuffer.new,
+      file_system: @file_system,
+      rate_limit_tracker: @rate_limit_tracker
+    )
+
+    temp_service.terminal_api_error(working_dir)
+  rescue => e
+    @logger.error("Error checking transcript for a terminal API error", error: e.message)
+    nil
+  end
+
   # Claude's classifiers answer real questions about a real exit, so an exit that
   # matches none of them is genuinely unknown and worth paging on. See
   # CodexRetryStrategy#classifies_exits? for the runtime where that is not true.
