@@ -225,8 +225,9 @@
         <option value="session_needs_input" <%= "selected" if condition.ao_event_name == "session_needs_input" %>>Session transitions to needs_input</option>
         <option value="session_failed" <%= "selected" if condition.ao_event_name == "session_failed" %>>Session transitions to failed</option>
         <option value="session_archived" <%= "selected" if condition.ao_event_name == "session_archived" %>>Session archived</option>
+        <option value="account_needs_reauth" <%= "selected" if condition.ao_event_name == "account_needs_reauth" %>>Account needs re-authentication</option>
       </select>
-      <p class="mt-1 text-xs text-gray-500">Fires when an autonomous session transitions to the selected state. Sessions created by this trigger are excluded to prevent loops.</p>
+      <p class="mt-1 text-xs text-gray-500">Session events fire when an autonomous session transitions to the selected state; sessions created by this trigger are excluded to prevent loops. "Account needs re-authentication" is about a runtime account, not a session — it fires when one can no longer refresh its token, at most once every 12 hours per account.</p>
     </div>
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">Watched Session ID</label>
@@ -236,7 +237,7 @@
              min="1"
              placeholder="(optional) e.g., 1234"
              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
-      <p class="mt-1 text-xs text-gray-500">Optional. When set, the condition only fires when THIS specific session transitions to the selected state. Leave blank to fire for any session.</p>
+      <p class="mt-1 text-xs text-gray-500">Optional, and only for session events. When set, the condition only fires when THIS specific session transitions to the selected state; leave blank to fire for any session. Leave it blank for "Account needs re-authentication" — that event has no session to watch, and a value here is rejected.</p>
     </div>
   </div>
 

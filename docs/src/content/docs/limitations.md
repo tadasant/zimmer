@@ -506,6 +506,11 @@ and the database's connection ceiling is a plan property Terraform will not rais
 so it is a deliberate change rather than a tuning tweak. Tracked in
 [#533](https://github.com/tadasant/zimmer/issues/533).
 
+The `auth` lane spent some of the room that change would need. It is two threads, which is four
+backends after the deploy-cutover doubling, taking `ConnectionBudget.required_backends` from 91 to 95
+against the 97 a `db-s-2vcpu-4gb` cluster serves. That leaves one more worker thread of headroom in
+the whole system; anything larger needs a cluster resize first.
+
 ### The tailnet reaper still no-ops without credentials — it just says so now
 
 `scripts/tailnet-reap-node.sh` skips cleanup when `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` are
@@ -787,6 +792,26 @@ matched; it answers `classifies_exits? => false` and gets the loud log without a
 paging on a runtime's designed-for path is how a channel gets ignored.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
+
+### Telling you the pool is dead requires the pool
+
+🟡 `needs_reauth` is reported by emitting the `account_needs_reauth` Zimmer event, which fires a
+Trigger, which spawns a `general-agent` session holding the `slack-workspace` MCP server to send the
+DM ([a dead account tells you so](/auth/harness/#a-dead-account-tells-you-so)). Spawning that session
+needs a working account.
+
+One dead account among six is fine — the pool rotates and the notifier session runs on any of the
+others. A pool where *every* account is dead cannot spawn the session that would say so. Two things
+bound it rather than fix it: the seeded trigger is `priority` rather than the `spot` that `ao_event`
+derives, so the one session whose job is to report a dead pool is not itself gated behind a healthy
+account under quota; and when the spawn fails anyway, `AoEventTriggerJob#handle_fire_failure` raises
+an `#eng-alerts` post, which needs no account at all.
+
+So the floor is a channel post rather than a DM. That is a real downgrade — a feed entry you scroll
+past instead of a nag aimed at the person who can fix it — but it is not silence, and it is strictly
+better than the native DM path it replaced, which failed silently for
+[three different configuration reasons](/operate/background-jobs/#when-an-alert-is-a-dm-instead-of-a-channel-post)
+none of which any health check looked at.
 
 ### Auth recovery can rotate away from an account that was fine
 

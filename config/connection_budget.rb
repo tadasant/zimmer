@@ -124,11 +124,22 @@ module ConnectionBudget
 
   # The GoodJob scheduler threads, one per queue. Each one can be executing a job, and
   # each executing job holds a primary connection for its whole duration.
+  #
+  # `auth` is small on purpose, and it is the one lane whose size is a policy
+  # decision rather than a throughput one. RuntimeLoginJob holds its thread for as
+  # long as the login CLI is open -- up to RuntimeLoginJob::MAX_DURATION, twelve
+  # minutes -- so these threads are concurrent *interactive logins*, not jobs per
+  # second. QuotasController#login supersedes an account's previous attempt before
+  # enqueuing a new one, so a human re-authenticating six accounts one after
+  # another needs one thread, not six; two covers a second browser tab and leaves
+  # the budget below room to breathe. Raise GOOD_JOB_AUTH_THREADS and
+  # app_required_backends in infra/terraform/main.tf moves with it.
   def good_job_queue_threads
     {
       agents: int_env("GOOD_JOB_AGENTS_THREADS", 16),
       pollers: int_env("GOOD_JOB_POLLERS_THREADS", 3),
       triggers: int_env("GOOD_JOB_TRIGGERS_THREADS", 2),
+      auth: int_env("GOOD_JOB_AUTH_THREADS", 2),
       default: int_env("GOOD_JOB_DEFAULT_THREADS", 4)
     }
   end
