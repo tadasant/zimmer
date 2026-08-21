@@ -57,7 +57,13 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # asserts nothing, so the edge goes away with either session.
     [ "session_uncle_links", "session_id", :cascade ],
     [ "session_uncle_links", "uncle_session_id", :cascade ],
-    [ "subagent_transcripts", "session_id", :cascade ]
+    [ "subagent_transcripts", "session_id", :cascade ],
+    # Nullify for the same reason the parent usage row does, and it has to MATCH the
+    # parent: `session_token_usages` blanks its own `session_id` on delete, so a
+    # feature row that cascaded away would leave the split shorter than the whole,
+    # and one that kept a dead id would leave a split with no whole to reconcile
+    # against. Both tables forget the session and keep the spend.
+    [ "token_usage_features", "session_id", :nullify ]
   ].freeze
 
   test "row-level delete of a session with notifications does not raise a foreign key violation" do
@@ -127,6 +133,27 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
 
     assert_not Notification.exists?(notification.id)
     assert_not Log.exists?(log.id)
+  end
+
+  test "deleting a session keeps its spend and its feature split, both unattributed" do
+    session = create_session
+    usage = SessionTokenUsage.create!(
+      request_id: "req_cascade", session_id: session.id, model: "claude-opus-5",
+      agent_root: "zimmer", called_at: 1.hour.ago, cache_read_tokens: 100_000
+    )
+    feature = TokenUsageFeature.create!(
+      request_id: usage.request_id, feature: "goal", session_id: session.id,
+      agent_root: "zimmer", model: "claude-opus-5", called_at: 1.hour.ago,
+      cache_read_tokens: 40_000
+    )
+
+    assert_nothing_raised { session.destroy! }
+
+    # Spend that happened is still spend, and its split is still its split. Both
+    # forget the session; neither forgets the money.
+    assert_nil usage.reload.session_id
+    assert_nil feature.reload.session_id
+    assert_equal 40_000, feature.cache_read_tokens
   end
 
   # Guards the rules themselves rather than one path through them. A table added later
