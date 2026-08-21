@@ -119,6 +119,55 @@ class AirPrepareService
   UNRESOLVED_VARIABLE_PATTERN =
     /Unresolved variables? in .*?: (\$\{[^}]+\}(?:, \$\{[^}]+\})*)/
 
+  # Signature AIR emits (exit 1) when one of the config files it manages inside
+  # the target directory fails to parse as JSON. Node's message is bare —
+  # `Error: Unexpected end of JSON input`, with no path — because air-sdk parses
+  # those files UNGUARDED in two places (`transform-runner.js`, and `prepare.js`'s
+  # closing unresolved-${VAR} scan), while every parse of the same files inside
+  # the Claude adapter is try/caught.
+  #
+  # This is a RACE, not a bad config, and the distinction is load-bearing enough
+  # to have been checked against the real CLI: a `.mcp.json` that is already
+  # corrupt on disk does not produce this error, because the adapter's
+  # `mergeMcpConfig` catches its own parse failure and rewrites the file before
+  # the transform stage reads it; an already-corrupt `.claude/settings.json` does
+  # not either, because the adapter refuses to touch an unparseable one and drops
+  # it from `configFiles`. The only way to reach the unguarded parse is for the
+  # file to change between the adapter's write and that later read — a concurrent
+  # writer over the same target directory.
+  #
+  # `air prepare` re-runs on every follow-up, resume and unarchive, over a
+  # directory a *previous* job for the same session may still be tearing down —
+  # which is exactly that. In the observed incident (session 6787,
+  # 2026-08-21T11:03:26Z) the failing prepare was a resumption of a session that
+  # had been running for ~16 hours, on a clone that had already been prepared
+  # successfully many times; nothing about the catalog or the config had changed.
+  #
+  # So it is retryable — with the same bounded ladder as any other transient
+  # failure, which keeps it loud if it ever stops being self-resolving. Retrying
+  # here is also strictly better than the recovery that actually saved that
+  # session: an unhandled AirPrepareError fails the whole job, and Zimmer's
+  # orphan cleanup restarted it ~20s later at the cost of a full MCP reconnect
+  # mid-work.
+  #
+  # Two message shapes, because Node changed the wording: an empty or truncated
+  # read gives "Unexpected end of JSON input", and garbage mid-stream gives
+  # "… is not valid JSON" (older Node: "Unexpected token … in JSON").
+  JSON_PARSE_FAILURE_PATTERN = /Unexpected end of JSON input|is not valid JSON|Unexpected token .{0,80} in JSON/
+
+  # The config files AIR parses inside the target directory, relative to it.
+  # `claude-adapter.js` reports exactly these two as its `configFiles`; the Codex
+  # adapter deliberately reports none (its config is TOML), so inspecting this
+  # list under Codex simply finds nothing rather than needing a runtime branch.
+  #
+  # Used only to describe the directory's state in the error message — AIR tells
+  # us a config file was unparseable and refuses to say which, so Zimmer answers
+  # that question itself.
+  AIR_TARGET_CONFIG_FILES = [
+    ".mcp.json",
+    File.join(".claude", "settings.json")
+  ].freeze
+
   # Pulls the bare names out of the `${A}, ${B}` token list captured above.
   VARIABLE_TOKEN_PATTERN = /\$\{([^}]+)\}/
 
@@ -491,6 +540,7 @@ class AirPrepareService
         transient = transient_air_failure?(error.message)
         root_not_found = ROOT_NOT_FOUND_PATTERN.match?(error.message)
         unresolved_variables = unresolved_variable_names(error.message)
+        json_parse_failure = JSON_PARSE_FAILURE_PATTERN.match?(error.message)
       rescue BoundedSubprocess::TimeoutError => e
         # A watchdog kill means `air prepare` hung — most likely the catalog clone
         # stalled on a half-open github.com connection. The process group has been
@@ -501,6 +551,7 @@ class AirPrepareService
         transient = true
         root_not_found = false
         unresolved_variables = []
+        json_parse_failure = false
       end
 
       # An unresolved ${VAR} is deterministic and operator-fixable: the selected
@@ -540,6 +591,22 @@ class AirPrepareService
         raise RootResolutionError, error.message
       end
 
+      # A config file AIR could not parse is a concurrent-writer race over the
+      # target directory (see JSON_PARSE_FAILURE_PATTERN), so it retries on the
+      # normal ladder. Handled here rather than by adding the signature to
+      # TRANSIENT_AIR_PREPARE_PATTERNS because it also needs the diagnosis below:
+      # AIR's message names no file, and a bare "Unexpected end of JSON input" in
+      # an alert is unactionable. Attaching what the directory actually looked
+      # like makes the *next* occurrence answerable — either it confirms the race
+      # (everything parses by the time we look) or it reports a file that really
+      # is broken on disk, which would be a different bug than this one.
+      if json_parse_failure
+        error = AirPrepareError.new(
+          "#{error.message.to_s.strip} [#{describe_target_config_files}]"
+        )
+        transient = true
+      end
+
       if transient && attempt < max_attempts
         delay = AIR_PREPARE_RETRY_DELAYS_SECONDS[attempt - 1]
         Rails.logger.info(
@@ -558,6 +625,41 @@ class AirPrepareService
       end
       raise error
     end
+  end
+
+  # Describe the AIR-managed config files in the target directory, for an error
+  # message that AIR left pathless.
+  #
+  # Read-only on purpose. The tempting move is to delete or quarantine an
+  # unparseable file so the retry regenerates it, but that would be machinery for
+  # a case that cannot arise: AIR self-repairs a corrupt `.mcp.json` and skips a
+  # corrupt `.claude/settings.json`, so neither can be what failed. Reporting is
+  # what is actually missing.
+  #
+  # Best-effort: this runs while the caller is mid-handling a failure, so an
+  # unreadable file degrades to a note in the string rather than replacing the
+  # error the caller is about to raise.
+  # @return [String] a human-readable summary, one clause per file
+  def describe_target_config_files
+    summary = AIR_TARGET_CONFIG_FILES.map do |relative_path|
+      path = File.join(working_directory, relative_path)
+      next "#{relative_path}: absent" unless file_system.exists?(path)
+
+      contents = file_system.read(path)
+      state = parseable_json?(contents) ? "parses" : "UNPARSEABLE"
+      "#{relative_path}: #{contents.bytesize}b, #{state}"
+    rescue StandardError => e
+      "#{relative_path}: unreadable (#{e.class})"
+    end
+
+    "target #{working_directory} — #{summary.join('; ')}"
+  end
+
+  def parseable_json?(contents)
+    JSON.parse(contents)
+    true
+  rescue JSON::ParserError
+    false
   end
 
   # Bust this worker's AIR github catalog cache by running a bounded `air update`,

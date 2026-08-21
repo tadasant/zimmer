@@ -1311,6 +1311,29 @@ silently skipped by the adapter with a warning nobody reads.
 `SkillsConfig` and `HooksConfig` assert every registered artifact really has one — but that is a
 Zimmer-side test, not something AIR enforces.
 
+### AIR parses the config files it just wrote without a guard, and names no file when it fails
+
+`@pulsemcp/air-sdk` `JSON.parse`s each of the adapter's `configFiles` — `.mcp.json` and
+`.claude/settings.json` — with no `try`/`catch`, in `transform-runner.js` and again in `prepare.js`'s
+closing unresolved-`${VAR}` scan. Every parse of those same two files inside the *Claude adapter* is
+guarded; only the SDK's are not. So a failed parse exits 1 with Node's bare `Error: Unexpected end of
+JSON input` — no path, no file, nothing to act on.
+
+That is only reachable as a race. A `.mcp.json` already corrupt on disk does not trigger it (the
+adapter catches its own parse failure and rewrites the file first), and a corrupt
+`.claude/settings.json` does not either (the adapter refuses to touch one and drops it from
+`configFiles`) — both verified against the pinned CLI. It takes a second writer changing the file
+between the adapter's write and the SDK's read, which `air prepare` invites by running over a session
+directory a previous job may still be tearing down.
+
+Zimmer cannot fix the upstream parse, so it treats the signature as transient and retries it, and
+appends its own description of the target's config files to the error. That is a workaround for a
+message that should have carried a path: if AIR ever adds one, the enrichment becomes redundant
+rather than wrong. First seen in production 2026-08-21 (session 6787), which was ~16 hours into a task
+on a clone already prepared many times. The unhandled error failed the whole job; what recovered it
+was Zimmer's orphan cleanup restarting the session ~20s later, at the cost of a full MCP reconnect
+mid-work — not anything the prepare path chose.
+
 ### The environment configs describe a catalog that no longer exists
 
 `production.rb` and `staging.rb` comments say `air.production.json` *"uses `github://` URIs to pull from

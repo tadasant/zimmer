@@ -181,6 +181,20 @@ not found"**: it triggers one inline bounded `air update` (cache bust) and a ret
 freshly-merged root can legitimately be absent from a worker's up-to-15-minutes-stale cache. If
 it's still absent, it raises a graceful `RootResolutionError`.
 
+An **unparseable config file** is retried on that same ladder, for a reason worth stating
+precisely. air-sdk `JSON.parse`s the files the adapter wrote into the target — `.mcp.json` and
+`.claude/settings.json` — without a guard, once in its transform stage and again in its closing
+unresolved-`${VAR}` scan, so a failure there exits 1 with a bare `Error: Unexpected end of JSON
+input` and no path. That cannot be a file that was *already* broken on disk: the Claude adapter
+catches its own parse failure on `.mcp.json` and rewrites it, and declines to touch an unparseable
+`.claude/settings.json` at all, dropping it from `configFiles`. The only way to reach the unguarded
+parse is for the file to change between the adapter's write and that later read — a second writer
+over the same target directory. `air prepare` re-runs on every follow-up, resume and unarchive, over
+a directory a previous job for the same session may still be tearing down, which is exactly that
+race. So `AirPrepareService` retries it, and — because AIR names no file — appends what the target's
+config files actually looked like when it failed, so an alert that survives the retries says which
+file rather than repeating Node's pathless message.
+
 Requested **skill** ids get one more guard, *before* the invocation. A session's `catalog_skills`
 are validated against the catalog when the session is created, but the catalog moves on
 independently: a local skill renamed (`pr` → `open-pr`) or removed leaves a stale id in a
