@@ -86,7 +86,21 @@ class HeadlessInferenceService
       process_manager: @process_manager,
       pty_override: @pty_override
     )
-    runner.run(prompt: prompt, timeout: timeout)&.text
+    result = runner.run(prompt: prompt, timeout: timeout)
+    return nil if result.nil?
+
+    # A backend that reported a failing exit code did not answer, whatever it
+    # left on stdout. `claude -p` prints its own errors there — a usage limit, a
+    # credit balance, an API error blob — so a consumer reading only `text`
+    # would store the error as the completion. This is the wording-independent
+    # half of that guard; the caller's own content check is the other half, for
+    # a backend that cannot report a code at all.
+    if result.failed?
+      Rails.logger.warn "[HeadlessInferenceService] inference exited #{result.exit_status}; discarding its output"
+      return nil
+    end
+
+    result.text
   rescue Timeout::Error
     Rails.logger.warn "[HeadlessInferenceService] inference timed out after #{timeout}s"
     nil

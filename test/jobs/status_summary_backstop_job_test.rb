@@ -30,7 +30,7 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
   test "a session at rest with no summary at all gets one enqueued" do
     session = at_rest
 
-    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id ]) do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id, { headless: false } ]) do
       StatusSummaryBackstopJob.perform_now
     end
   end
@@ -46,7 +46,7 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
       error: "The summary fork was parked before it could answer (quota_exhausted)."
     )
 
-    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id ]) do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id, { headless: false } ]) do
       StatusSummaryBackstopJob.perform_now
     end
   end
@@ -61,7 +61,7 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
       requested_line_count: 2
     )
 
-    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id ]) do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id, { headless: false } ]) do
       StatusSummaryBackstopJob.perform_now
     end
   end
@@ -87,7 +87,7 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
       transcript_line_count: 1, generated_at: 1.hour.ago
     )
 
-    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id ]) do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id, { headless: false } ]) do
       StatusSummaryBackstopJob.perform_now
     end
   end
@@ -191,28 +191,103 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
       backstop_attempted_at: (StatusSummaryBackstopJob::RETRY_INTERVAL + 1.minute).ago
     )
 
-    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id ]) do
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id, { headless: false } ]) do
       StatusSummaryBackstopJob.perform_now
     end
   end
 
+  # THE REGRESSION THIS FILE EXISTS FOR, SECOND EDITION.
+  #
   # Re-forking into an empty pool produces one more parked fork holding one more
-  # copy of a repository — the exact waste that made the summaries wrong in the
-  # first place.
-  test "an exhausted login pool holds the sweep, without spending the retry interval" do
+  # copy of a repository, so the sweep still must not fork during an outage. But
+  # the first version of this job answered that by standing down entirely —
+  # which gated the retry on the very resource whose absence caused the failure
+  # being retried. On a deployment under sustained quota pressure the blurb was
+  # then unreachable: the panel said "the summary fork was parked, it will be
+  # retried" for hours, and the retry was the thing standing down.
+  #
+  # An outage must now change the MODE, not the outcome.
+  test "an exhausted login pool switches the sweep to the headless path rather than standing it down" do
     session = at_rest
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id, { headless: true } ]) do
+      StatusSummaryBackstopJob.perform_now
+    end
+  end
+
+  test "a healthy login pool still repairs by forking" do
+    session = at_rest
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id, { headless: false } ]) do
+      StatusSummaryBackstopJob.perform_now
+    end
+  end
+
+  # The headless repair costs one small-model completion rather than a clone
+  # copy and an account slot, so an outage — which makes every session at rest a
+  # candidate at once — gets a higher ceiling than the fork path. It is still a
+  # ceiling: a sweep must not turn a fleet-wide outage into an unbounded burst
+  # of subprocesses.
+  test "the headless path has its own, higher per-sweep cap" do
+    (StatusSummaryBackstopJob::MAX_HEADLESS_PER_SWEEP + 3).times { at_rest }
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+
+    assert_enqueued_jobs StatusSummaryBackstopJob::MAX_HEADLESS_PER_SWEEP, only: SessionStatusSummaryJob do
+      StatusSummaryBackstopJob.perform_now
+    end
+    assert_operator StatusSummaryBackstopJob::MAX_HEADLESS_PER_SWEEP, :>,
+      StatusSummaryBackstopJob::MAX_PER_SWEEP
+  end
+
+  # A session with a current summary costs nothing on either path — the outage
+  # raises the cap, it does not lower the bar for what gets repaired.
+  test "an outage does not repair a session whose summary is already current" do
+    session = at_rest
+    SessionStatusSummary.create!(
+      session: session, state: "ready", summary: "Where things stand.",
+      transcript_line_count: 2, generated_at: 1.minute.ago
+    )
     ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
 
     assert_no_enqueued_jobs only: SessionStatusSummaryJob do
       StatusSummaryBackstopJob.perform_now
     end
-    assert_nil session.reload.status_summary&.backstop_attempted_at,
-      "a session held back by an outage must not burn its retry interval"
+  end
 
-    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+  # A cap is a budget for ONE path, not a reason to stop walking. On a mixed
+  # fleet — one runtime's pool exhausted, another's healthy — breaking as soon
+  # as either budget filled would end the sweep on the first session of
+  # whichever kind came first in `updated_at` order, starving the other path
+  # entirely.
+  test "a spent budget on one path does not starve the other" do
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.create!(
+      email: "codex@tadasant.com", runtime: "codex", status: :active, priority: 0,
+      oauth_config: { "tokens" => { "access_token" => "t" } }
+    )
 
-    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ session.id ]) do
+    # More outage-path sessions than the headless budget, ordered ahead of the
+    # healthy-runtime one, so a `break` on the filled budget would never reach it.
+    (StatusSummaryBackstopJob::MAX_HEADLESS_PER_SWEEP + 2).times { at_rest }
+    codex = at_rest(agent_runtime: "codex")
+    codex.update_column(:updated_at, 1.hour.ago)
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ codex.id, { headless: false } ]) do
       StatusSummaryBackstopJob.perform_now
     end
+  end
+
+  # The corollary: a session skipped because its path's budget is spent must not
+  # burn its retry interval on a cap it never got past.
+  test "a session skipped for a spent budget keeps its retry interval" do
+    sessions = Array.new(StatusSummaryBackstopJob::MAX_PER_SWEEP + 2) { at_rest }
+
+    StatusSummaryBackstopJob.perform_now
+
+    stamped = sessions.count { |session| session.reload.status_summary&.backstop_attempted_at.present? }
+    assert_equal StatusSummaryBackstopJob::MAX_PER_SWEEP, stamped,
+      "only the sessions the sweep actually got to should have been stamped"
   end
 end
