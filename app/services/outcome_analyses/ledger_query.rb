@@ -81,8 +81,13 @@ module OutcomeAnalyses
 
     # Distinct models seen on archived sessions, for the filter dropdown. Cheap
     # against the (config->>'model') expression index added with this feature.
+    # Narrowed the same way #base is: a model only the feature's own analysis
+    # sessions ever ran under would otherwise be offered as a filter that can
+    # only ever match zero rows.
     def self.model_options
       Session.archived
+        .excluding_status_summary_forks
+        .excluding_outcome_analysis_sessions
         .where.not("config->>'model' IS NULL")
         .distinct
         .pluck(Arel.sql("config->>'model'"))

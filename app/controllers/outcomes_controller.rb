@@ -87,8 +87,7 @@ class OutcomesController < ApplicationController
   # flight are left to finish (see OutcomeAnalyses::CancelBatch).
   def cancel_batch
     batch = OutcomeAnalysisBatch.find(params[:id])
-    canceled = batch.items.queued.count
-    OutcomeAnalyses::CancelBatch.call(batch)
+    canceled = OutcomeAnalyses::CancelBatch.call(batch)
 
     redirect_back_to_ledger(
       notice: "Stopped batch ##{batch.id}. #{canceled} queued #{'analysis'.pluralize(canceled)} canceled; " \
