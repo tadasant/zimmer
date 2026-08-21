@@ -28,7 +28,15 @@ class CostAnalytics
     # every request: it can never be cached, never be compared between two
     # requests, and never be reproduced by someone checking a figure. Nobody
     # reading a spend page needs the last few seconds.
-    @to = (to || Time.current).change(sec: 0, usec: 0)
+    # The START rounds DOWN and the END rounds UP, both to the minute. Rounding
+    # both down would drop the final partial minute — which for a calendar range
+    # is the last 59 seconds of the end day, since CostWindow hands over an
+    # end_of_day and `in_window` is inclusive. Nobody reading a spend page needs
+    # the last few seconds, but silently excluding them from a range someone
+    # typed is a different thing from not showing them.
+    given_to = to || Time.current
+    @to = given_to.change(sec: 0, usec: 0)
+    @to += 1.minute if @to < given_to
     @from = (from || (@to - DEFAULT_WINDOW)).change(sec: 0, usec: 0)
   end
 
@@ -136,11 +144,32 @@ class CostAnalytics
   # to every turn" is. That is the drilldown the whole feature table exists for,
   # and the agent-root breakdown is where it earns its keep.
   def by_agent_root
-    rows = top_rows(grouped(session_scope, "agent_root"), label: :agent_root)
+    grouped_roots = grouped(session_scope, "agent_root")
+    rows = top_rows(grouped_roots, label: :agent_root)
     features = nested(feature_scope, "agent_root", "feature")
 
+    # The folded "other (N)" row is not a root, so it has no bucket of its own.
+    # Summing the roots it swallowed keeps its drilldown as informative as every
+    # other row's, rather than opening onto nothing.
+    folded = rows.last&.dig(:agent_root).to_s.start_with?("other (")
+    tail_keys = folded ? grouped_roots.keys - rows.map { |r| r[:agent_root] } : []
+
     rows.map do |row|
-      row.merge(features: top_pairs(features[row[:agent_root]], limit: 6, label: :feature))
+      bucket = if folded && row.equal?(rows.last)
+        tail_keys.each_with_object(Hash.new { |h, k| h[k] = blank_row }) do |key, merged|
+          (features[key] || {}).each do |feature, value|
+            merged[feature] = {
+              cost_usd: merged[feature][:cost_usd] + value[:cost_usd],
+              tokens: merged[feature][:tokens] + value[:tokens],
+              api_calls: merged[feature][:api_calls] + value[:api_calls]
+            }
+          end
+        end
+      else
+        features[row[:agent_root]]
+      end
+
+      row.merge(features: top_pairs(bucket, limit: 6, label: :feature))
     end
   end
   def by_model = top_rows(merge_grouped(grouped(session_scope, "model"), grouped(adhoc_scope, "model")), label: :model)

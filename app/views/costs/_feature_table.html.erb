@@ -7,7 +7,7 @@
   across the features. That is not a caveat bolted on; it is the reason the table
   is trustworthy enough to cut a feature on.
 
-  locals: feature (Hash from CostAnalytics#by_feature), window (CostWindow)
+  locals: feature (Hash from CostAnalytics#by_feature)
 %>
 <div class="bg-white shadow rounded-lg overflow-hidden mb-6">
   <div class="px-4 py-3 border-b border-gray-200">
@@ -23,8 +23,9 @@
     <p class="px-4 py-6 text-sm text-gray-500">
       No feature attribution stored for this window. It is written by
       <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">TokenUsageIngestionJob</code>
-      alongside the usage rows; history that predates it is loaded by
-      <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">rake token_usage:backfill</code>.
+      alongside the usage rows, and filled in for older history by the sweep the
+      coverage panel above reports — press <span class="font-medium">Re-scan history</span>
+      there to start one now.
     </p>
   <% else %>
     <% max = feature[:rows].map { |r| r[:cost_usd] }.max || 0 %>

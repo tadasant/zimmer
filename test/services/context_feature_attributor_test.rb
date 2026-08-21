@@ -158,6 +158,27 @@ class ContextFeatureAttributorTest < ActiveSupport::TestCase
       "the second conversation never saw the first one's goal block"
   end
 
+  test "a request whose lines are interleaved with another's is not split in two" do
+    # Two sidechains in one file can put a line of request B between two lines of
+    # request A. Re-opening A would emit two partial row sets for the same
+    # (request_id, feature) pair, of which insert_all's conflict clause keeps only
+    # the first — leaving that request's attribution short rather than wrong.
+    u = user_line(GOAL)
+    a1 = assistant_line(request_id: "req-a", parent: u["uuid"], cache_read: 0, cache_creation: 20_000,
+                        blocks: [ { "type" => "text", "text" => "first half" } ])
+    b = assistant_line(request_id: "req-b", parent: a1["uuid"], cache_read: 0, cache_creation: 5_000,
+                       blocks: [ { "type" => "text", "text" => "other request" } ])
+    a2 = assistant_line(request_id: "req-a", parent: b["uuid"], cache_read: 0, cache_creation: 20_000,
+                        blocks: [ { "type" => "text", "text" => "second half" } ])
+
+    rows = attribute([ u, a1, b, a2 ])
+    request_ids = rows.map { |r| r[:request_id] }
+
+    assert_equal request_ids.uniq.length, request_ids.group_by { |id| id }.length
+    assert_equal rows.length, rows.map { |r| [ r[:request_id], r[:feature] ] }.uniq.length,
+      "no (request_id, feature) pair may be emitted twice"
+  end
+
   test "a line with no usage object produces nothing rather than a zeroed row" do
     u = user_line(GOAL)
     line = assistant_line(request_id: "req-1", parent: u["uuid"], blocks: [])

@@ -83,11 +83,28 @@ class CreateTokenUsageFeatures < ActiveRecord::Migration[8.0]
     end
 
     add_index :token_usage_features, [ :request_id, :feature ], unique: true
+
+    # `called_at` ALONE, and not only as the trailing half of the composites
+    # below. Every read path narrows to the window first and groups second —
+    # `by_feature` groups by feature with no feature in the WHERE, `by_agent_root`
+    # groups by (agent_root, feature) with no agent_root in the WHERE — so none of
+    # the composites is usable for those scans. Without this one Postgres reads
+    # the whole table, which is the biggest in the schema. The parent table
+    # carries the same index for the same reason.
+    add_index :token_usage_features, :called_at
+
     add_index :token_usage_features, [ :feature, :called_at ]
     add_index :token_usage_features, [ :agent_root, :called_at ]
     add_index :token_usage_features, [ :session_id, :called_at ]
 
     add_foreign_key :token_usage_features, :session_token_usages,
       column: :request_id, primary_key: :request_id, on_delete: :cascade
+
+    # `session_id` nullifies, matching the parent exactly. Anything else and the
+    # two tables disagree after a session is deleted: `session_token_usages`
+    # blanks its own `session_id`, so a per-session rollup would find feature rows
+    # still pointing at the dead id while the parent reported nothing — a split
+    # with no whole to reconcile against, rendering as a full residual of zero.
+    add_foreign_key :token_usage_features, :sessions, on_delete: :nullify
   end
 end

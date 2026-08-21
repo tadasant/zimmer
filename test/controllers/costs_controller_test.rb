@@ -97,6 +97,50 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).days
   end
 
+  test "the re-scan button comes back to the window it was pressed from" do
+    # The button used to carry `days: @days`, which the CostWindow rewrite stopped
+    # assigning — so every sweep silently dropped the viewer back to 7 days.
+    post costs_backfill_path(from: "2026-03-09", to: "2026-03-11")
+
+    assert_response :redirect
+    assert_match "from=2026-03-09", response.location
+    assert_match "to=2026-03-11", response.location
+
+    post costs_backfill_path(days: 90)
+
+    assert_response :redirect
+    assert_match "days=90", response.location
+  end
+
+  test "the feature table renders its populated state without telling anyone to run a rake task" do
+    # The empty state of this card is the one a fresh deploy sees, and CLAUDE.md
+    # forbids user-facing copy whose remedy needs a shell on the production box.
+    record = usage
+    TokenUsageFeature.create!(
+      request_id: record.request_id, feature: "goal", session_id: record.session_id,
+      agent_root: record.agent_root, model: record.model, subagent: record.subagent,
+      called_at: record.called_at, cache_read_tokens: 50_000
+    )
+
+    get costs_path(days: 30)
+
+    assert_response :success
+    assert_match "Context features", response.body
+    assert_match "Session goal", response.body
+    assert_match "Unattributed", response.body
+    assert_no_match(/rake token_usage:backfill/, response.body)
+  end
+
+  test "the feature card's empty state also keeps the rake task out of the page" do
+    usage
+
+    get costs_path(days: 30)
+
+    assert_response :success
+    assert_match "No feature attribution stored", response.body
+    assert_no_match(/rake token_usage:backfill/, response.body)
+  end
+
   test "the picker renders both the presets and the calendar fields" do
     get costs_path
 

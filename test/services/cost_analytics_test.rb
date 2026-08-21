@@ -110,6 +110,18 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     assert_raises(NotImplementedError) { TokenUsageFeature.totals }
   end
 
+  # TOP_N is a constant on purpose — the page is a summary, not an export — so a
+  # test that needs the fold has to narrow it rather than seed sixteen roots.
+  def stub_const_top_n(value)
+    original = CostAnalytics::TOP_N
+    CostAnalytics.send(:remove_const, :TOP_N)
+    CostAnalytics.const_set(:TOP_N, value)
+    yield
+  ensure
+    CostAnalytics.send(:remove_const, :TOP_N)
+    CostAnalytics.const_set(:TOP_N, original)
+  end
+
   def feature_row(record, feature, **volumes)
     TokenUsageFeature.create!({
       request_id: record.request_id, feature: feature, session_id: record.session_id,
@@ -193,6 +205,35 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     # inflated by the number of features detected. Refusing beats a wrong number
     # that reads as authoritative.
     assert_raises(NotImplementedError) { TokenUsageFeature.totals }
+  end
+
+  test "the folded other-roots row carries the feature split of what it swallowed" do
+    # `top_rows` folds the tail into a synthetic "other (N)" row, which is not a
+    # real agent_root and so has no bucket of its own. Opening it must not reveal
+    # an empty panel.
+    stub_const_top_n(1) do
+      big = usage(agent_root: "zimmer-router", cache_read_tokens: 500_000)
+      small = usage(agent_root: "issue-work-gate", cache_read_tokens: 100_000)
+      feature_row(big, "goal", cache_read_tokens: 100_000)
+      feature_row(small, "mcp_result", cache_read_tokens: 40_000)
+
+      rows = CostAnalytics.new(from: 1.day.ago).by_agent_root
+      folded = rows.last
+
+      assert_match(/\Aother \(/, folded[:agent_root])
+      assert_equal [ "mcp_result" ], folded[:features].map { |f| f[:feature] }
+    end
+  end
+
+  test "a custom window keeps the last minute of its end day" do
+    # CostWindow hands over an end_of_day; rounding both ends DOWN to the minute
+    # would silently drop calls in the final 59 seconds of a range someone typed.
+    late = Time.zone.parse("2026-03-11 23:59:30")
+    usage(called_at: late)
+
+    window = CostWindow.from_params(from: "2026-03-09", to: "2026-03-11")
+
+    assert_equal 1, CostAnalytics.new(from: window.from, to: window.to).totals[:api_calls]
   end
 
   test "a window with no attribution still reports a total and a full residual" do

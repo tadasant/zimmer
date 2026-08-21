@@ -3223,6 +3223,11 @@ things account for most of it, and none is fixable from this side:
   955 thinking blocks in the recent corpus, not one retained its text. The signature is
   counted; the reasoning is not.
 - System reminders — including the injected CLAUDE.md — are usually not persisted either.
+- A turn whose prompt cache has expired re-writes the whole prefix, so its
+  `cache_creation_input_tokens` covers content the attributor is holding as already-carried.
+  The estimate for that turn stays small and the re-write lands in the residual. Those are the
+  expensive turns, and the content being re-written is exactly the always-appended material the
+  page exists to indict, so the residual is understating the very thing it is asked about.
 
 So the table ranks features against each other honestly and does **not** account for the
 majority of the bill. Read it as "of the context I can see, here is the split", and do not

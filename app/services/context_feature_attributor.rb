@@ -84,8 +84,11 @@ class ContextFeatureAttributor
 
   def initialize
     @chains = {}
+    # One entry per line in the file, and per file only — a fresh attributor is
+    # built for each transcript, so nothing here outlives the scan of one file.
     @chain_of_uuid = {}
     @last_chain_in_lane = {}
+    @closed_requests = Set.new
     @tool_names = {}
     @open = nil
     @rows = []
@@ -111,7 +114,7 @@ class ContextFeatureAttributor
     # and its prefix was still billed. Bailing early would drop that request's
     # attribution entirely rather than attributing what it can see.
     request_id = entry["requestId"].presence
-    start_request(entry, chain, request_id) if request_id && request_id != @open&.[](:request_id)
+    start_request(entry, chain, request_id) if request_id && reopens?(request_id)
     return if blocks.empty?
 
     if @open
@@ -219,6 +222,22 @@ class ContextFeatureAttributor
     end
   end
 
+  # Whether this line begins a request we are not already accumulating.
+  #
+  # `request_id != @open[:request_id]` alone is not enough. Two sidechains
+  # interleaved in one file can put a line of request S between two lines of
+  # request R, which would close R and open it again — emitting two partial row
+  # sets for the same `(request_id, feature)` pair, of which `insert_all`'s
+  # conflict clause keeps only the first. The result is not wrong, but it is
+  # short: half of R's output would be missing. Remembering what has already been
+  # closed makes the later lines fall through to the chain's own pending bucket,
+  # where they are still counted as prompt content for the next request.
+  def reopens?(request_id)
+    return false if request_id == @open&.[](:request_id)
+
+    !@closed_requests.include?(request_id)
+  end
+
   def start_request(entry, chain, request_id)
     close_request
 
@@ -242,6 +261,8 @@ class ContextFeatureAttributor
     open = @open
     @open = nil
     return unless open
+
+    @closed_requests << open[:request_id]
 
     # The assistant's own output becomes prompt content for the next request.
     open[:carry_forward].each { |k, v| open[:chain].pending[k] += v }
