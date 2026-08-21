@@ -174,8 +174,8 @@ module Mcp
           "#{QueueRecoveryMode::HALTED_QUEUES.join(", ")}.\n\n#{json_block(status)}"
       end
 
-      # The ops action that used to be `rake token_usage:backfill` on the
-      # production box. Nothing here needs a shell.
+      # The MCP half of an ops action that has no shell equivalent: nothing about
+      # loading the ledger's history requires access to the production box.
       def backfill_token_usage
         run = TokenUsageBackfill.request!(trigger: "manual")
         TokenUsageBackfillJob.perform_later

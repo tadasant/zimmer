@@ -550,6 +550,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_150000) do
     t.string "transcript_root", null: false
     t.string "trigger", default: "automatic", null: false
     t.datetime "updated_at", null: false
+    t.index "((finished_at IS NULL))", name: "index_token_usage_backfills_one_unfinished", unique: true, where: "(finished_at IS NULL)"
     t.index ["created_at"], name: "index_token_usage_backfills_on_created_at"
     t.index ["finished_at"], name: "index_token_usage_backfills_on_finished_at"
   end

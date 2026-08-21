@@ -53,7 +53,7 @@ class CostsController < ApplicationController
     TokenUsageBackfillJob.perform_later
 
     redirect_to costs_path(days: requested_days),
-      notice: run.complete? ? "History sweep queued." : "History sweep #{run.status} — progress appears here as it runs."
+      notice: "History sweep #{run.status} — progress appears here as it runs."
   end
 
   private

@@ -7,6 +7,10 @@ require "tmpdir"
 class TokenUsageBackfillJobTest < ActiveJob::TestCase
   def setup
     @root = Dir.mktmpdir("token_usage_backfill_job_test_")
+    # One (empty) transcript directory, so the sweep has a corpus to cover. A
+    # root with none at all is a misconfiguration the service refuses to call
+    # complete — covered in TokenUsageBackfillServiceTest.
+    FileUtils.mkdir_p(File.join(@root, "-home-rails--zimmer-clones-repo-main-1786989710-abcdef12"))
     TokenUsageIngestionService.stubs(:default_root).returns(@root)
   end
 
@@ -22,7 +26,7 @@ class TokenUsageBackfillJobTest < ActiveJob::TestCase
     run = TokenUsageBackfill.latest
     assert_equal "automatic", run.trigger
     assert_equal @root, run.transcript_root
-    assert run.complete?, "an empty corpus is covered in one slice"
+    assert run.complete?, "a small corpus is covered in one slice"
   end
 
   test "does nothing at all once a sweep has completed — every deploy after the first" do

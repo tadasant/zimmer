@@ -226,11 +226,15 @@ module Mcp
       def coverage_lines
         coverage = TokenUsageBackfill.coverage
         since = coverage[:covers_since] ? coverage[:covers_since].strftime("%b %-d, %Y") : "nothing yet"
+        progress = coverage[:progress_pct] ? " (#{coverage[:progress_pct]}% swept)" : ""
 
-        if coverage[:complete]
+        if coverage[:status] == "complete"
           [ "", "_Ledger covers #{since} onward; the historical backfill finished #{coverage[:finished_at]&.strftime("%b %-d, %Y")}._" ]
+        elsif coverage[:complete]
+          # History is in and something is re-scanning it. The figures are whole;
+          # saying "partial" here would be false.
+          [ "", "_Ledger covers #{since} onward. A re-scan of the corpus is #{coverage[:status]}#{progress}._" ]
         else
-          progress = coverage[:progress_pct] ? " (#{coverage[:progress_pct]}% swept)" : ""
           [
             "",
             "### ⚠️ Partial history",

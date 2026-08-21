@@ -4,16 +4,20 @@
 #
 # The recurring TokenUsageIngestionJob only looks at files modified in the last
 # two hours, so everything older than the feature itself has to be swept once.
-# That sweep used to be a rake task somebody ran on the production box. It is now
-# a row: TokenUsageBackfillJob starts one automatically when no sweep has ever
-# finished, works it a slice at a time, and stops doing anything once it is
-# finished. A deploy is therefore all it takes to get history into the ledger,
-# and every deploy after that costs one indexed lookup per tick.
+# That sweep is a row rather than something a human runs on the production box:
+# TokenUsageBackfillJob starts one automatically when no sweep has ever finished,
+# works it a slice at a time, and stops doing anything once it is finished. A
+# deploy is therefore all it takes to get history into the ledger, and every
+# deploy after that costs one indexed lookup per tick.
 #
 # The row is also the honest answer to "how complete is the Costs page" — which
 # is why `coverage` lives here and is rendered on the page, returned by the REST
 # API, and reported by the `get_costs` MCP tool rather than being knowable only
 # from a shell.
+#
+# At most one run may be unfinished at a time; a partial unique index enforces
+# it, so two callers asking for a re-scan at once cannot leave an orphaned run
+# behind to re-sweep the corpus later.
 class TokenUsageBackfill < ApplicationRecord
   TRIGGERS = %w[automatic manual].freeze
 
@@ -25,13 +29,8 @@ class TokenUsageBackfill < ApplicationRecord
   scope :newest_first, -> { order(created_at: :desc, id: :desc) }
 
   class << self
-    # The run the job should work, or nil when there is nothing to do. Only the
-    # newest unfinished row is ever worked: an older one that never finished has
-    # been superseded by a re-scan, and re-sweeping it would repeat work the
-    # newer run is already doing.
-    def pending
-      unfinished.newest_first.first
-    end
+    # The run the job should work, or nil when there is nothing to do.
+    def pending = unfinished.newest_first.first
 
     def latest = newest_first.first
 
@@ -43,13 +42,25 @@ class TokenUsageBackfill < ApplicationRecord
 
     # Start a sweep unless one is already pending. Returns the run either way, so
     # the caller can report progress without caring which case it hit.
+    #
+    # The insert is the race arbiter, not the read: two simultaneous requests
+    # both see no pending run, both insert, and the partial unique index rejects
+    # the loser — which then reads the winner's row and reports on that.
     def request!(trigger: "automatic", transcript_root: TokenUsageIngestionService.default_root)
       pending || create!(trigger: trigger, transcript_root: transcript_root)
+    rescue ActiveRecord::RecordNotUnique
+      pending || raise
     end
 
     # What the Costs page, the REST API and the MCP tool all say about how
     # complete the ledger is. One place, so the three surfaces cannot drift into
     # claiming different things.
+    #
+    # `status` describes the LATEST run and `complete` describes the ledger, and
+    # the two deliberately disagree while a re-scan of an already-swept corpus is
+    # in flight: history is in (`complete`), and a sweep is `running`. Callers
+    # that render one state must branch on `status`, or they will pair a finished
+    # run's timestamp with a running one's counters.
     #
     # `covers_since` is the oldest call actually stored, which is the only
     # defensible answer to "how far back does this page go". Before a backfill it
