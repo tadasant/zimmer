@@ -85,6 +85,24 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert session.reload.running?
   end
 
+  # The batch is selected once and then walked, spending SIGTERM grace on each
+  # session in turn — long enough for somebody to press "Make this session
+  # priority" on one still queued behind the others. The class is therefore
+  # re-read under the row lock, not just when the batch was chosen.
+  test "a session promoted after the batch was selected is not paused" do
+    seed(current_5h: 0.89)
+    session = running_session
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    # Stands in for the stale batch: the relation still names a session that no
+    # longer classifies spot.
+    SpotSessionPause.stub(:pausable_sessions, Session.where(id: session.id)) do
+      assert_equal 0, SpotSessionPause.sweep!.paused
+    end
+
+    assert session.reload.running?
+  end
+
   test "a session on another runtime is not paused by a Claude Code window" do
     seed(current_5h: 0.99)
     session = running_session(runtime: "codex")

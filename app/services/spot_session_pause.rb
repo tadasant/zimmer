@@ -128,7 +128,8 @@ class SpotSessionPause
       if decision.held? && decision.reason == UTILIZATION_REASON
         # `held` counts the sessions that were already asleep and stay that way,
         # not the ones this pass is putting to sleep — those are `paused`.
-        return Result.new(paused: pause_running!(decision, logger), resumed: resumed, held: still_spot.size)
+        return Result.new(paused: pause_running!(decision, overrides, logger),
+                          resumed: resumed, held: still_spot.size)
       end
 
       resumed_spot, held = resume_spot!(still_spot, logger)
@@ -175,14 +176,14 @@ class SpotSessionPause
 
     private
 
-    def pause_running!(decision, logger)
+    def pause_running!(decision, overrides, logger)
       sessions = pausable_sessions.to_a
       return 0 if sessions.empty?
 
       logger.info("A window reached its target — pausing running spot sessions",
         candidates: sessions.size, reason: decision.reason, detail: decision.detail)
 
-      sessions.count { |session| pause!(session, decision, logger) }
+      sessions.count { |session| pause!(session, decision, overrides, logger) }
     end
 
     # Pause one running spot session.
@@ -192,7 +193,7 @@ class SpotSessionPause
     # monitoring loop exit on the status change without a final transcript poll,
     # losing the agent's last message. Killing first means the job sees the exit,
     # polls, and stops.
-    def pause!(session, decision, logger)
+    def pause!(session, decision, overrides, logger)
       return false unless session.running?
 
       terminate_process(session, logger)
@@ -200,7 +201,12 @@ class SpotSessionPause
       paused = false
       ActiveRecord::Base.transaction do
         session.lock!
-        raise ActiveRecord::Rollback unless session.running? && session.may_pause?
+        # The class is re-read under the lock, not just when the batch was
+        # selected. A full-fleet pause spends seconds per session waiting out
+        # SIGTERM grace, which is time enough for somebody to press "Make this
+        # session priority" on one still queued behind it — and pausing a
+        # priority session is the one thing this service must never do.
+        raise ActiveRecord::Rollback unless session.running? && session.may_pause? && session.spot?(overrides)
 
         metadata = (session.metadata || {}).merge(
           PAUSED_AT => Time.current.utc.iso8601,
