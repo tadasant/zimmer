@@ -3177,6 +3177,31 @@ gaps remain, both deliberate:
   carrying `paused_by: "recovery"` — a session at rest with a stale job id is inert, but it is not
   tidied either.
 
+## The historical backfill sweeps forward only, and "complete" means one pass
+
+`TokenUsageBackfillJob` walks transcript directories in sort order and records a cursor. A directory
+created *while a run is in flight* that sorts **before** the cursor is never visited by that run.
+That is deliberate rather than an oversight: a directory created mid-run holds files written
+mid-run, and `TokenUsageIngestionJob`'s two-hour lookback on a 10-minute cron already has them. But
+it does mean the backfill alone is not a coverage proof — the two jobs are, together.
+
+Two consequences worth knowing:
+
+- **`complete` means "one pass finished", not "the ledger is exhaustive".** A transcript that was
+  unreadable when its chunk ran (a permission error, a file deleted mid-scan) is skipped, the chunk
+  still commits, and the run still finishes. `covers_since` on the Costs page is the oldest row
+  actually stored, which is the honest figure; nothing claims every call ever made is in there.
+- **A transcript root that gets emptied is invisible.** If `~/.claude/projects` is wiped, a re-scan
+  completes instantly against nothing and the ledger keeps whatever it already had. The rows are
+  durable, so this loses no history — but a fast, clean "complete" is not evidence that the corpus
+  was read.
+
+`progress_pct` is also approximate while a run is in flight: the denominator is re-derived each
+slice from the directories still ahead of the cursor, so it moves as clones are created and cleaned
+up. It is a progress bar, not an accounting.
+
+---
+
 ---
 
 ## Open questions

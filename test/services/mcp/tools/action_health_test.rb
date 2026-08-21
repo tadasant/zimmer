@@ -89,6 +89,23 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
     end
   end
 
+  test "backfill_token_usage queues a sweep of the whole corpus" do
+    assert_enqueued_with(job: TokenUsageBackfillJob) do
+      output = @tool.call("action" => "backfill_token_usage")
+      assert_includes output, "## Token Usage Backfill Queued"
+    end
+
+    assert_equal 1, TokenUsageBackfill.count
+    assert_equal "manual", TokenUsageBackfill.latest.trigger
+  end
+
+  test "backfill_token_usage is idempotent: a second call joins the run in flight" do
+    @tool.call("action" => "backfill_token_usage")
+    @tool.call("action" => "backfill_token_usage")
+
+    assert_equal 1, TokenUsageBackfill.count, "asking twice must not start two sweeps"
+  end
+
   test "unknown action raises" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "reboot") }
 

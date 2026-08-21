@@ -30,10 +30,30 @@ class CostsController < ApplicationController
     @top_sessions = snapshot[:top_sessions]
     @unpriced_models = snapshot[:unpriced_models]
 
-    @last_ingested_at = [
-      SessionTokenUsage.maximum(:called_at),
-      AdhocTokenUsage.maximum(:called_at)
-    ].compact.max
+    # How complete the ledger is, from the same object the REST API and the MCP
+    # tool read. Without it the page implies more coverage than it has: every
+    # figure above is bounded by whatever has been ingested, and before the
+    # historical sweep finishes that is only spend since ingestion shipped.
+    @coverage = TokenUsageBackfill.coverage
+    @last_ingested_at = @coverage[:covers_until]
+  end
+
+  # POST /costs/backfill
+  #
+  # The re-scan button. There is no shell on the production box to run a rake
+  # task from — deliberately — so asking for a fresh sweep of the whole corpus
+  # has to be something the app itself offers. Idempotent twice over: it returns
+  # the run already in flight rather than starting a second, and ingestion
+  # upserts on `request_id`, so a sweep that re-reads a directory writes nothing.
+  def backfill
+    run = TokenUsageBackfill.request!(trigger: "manual")
+
+    # The cron would pick this up within five minutes anyway; enqueuing now means
+    # the button does something visible immediately.
+    TokenUsageBackfillJob.perform_later
+
+    redirect_to costs_path(days: requested_days),
+      notice: run.complete? ? "History sweep queued." : "History sweep #{run.status} — progress appears here as it runs."
   end
 
   private
