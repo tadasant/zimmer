@@ -181,6 +181,24 @@ not found"**: it triggers one inline bounded `air update` (cache bust) and a ret
 freshly-merged root can legitimately be absent from a worker's up-to-15-minutes-stale cache. If
 it's still absent, it raises a graceful `RootResolutionError`.
 
+An **unparseable JSON file** is retried on that same ladder. air-sdk `JSON.parse`s the files the
+adapter wrote into the target — `.mcp.json` and `.claude/settings.json` — without a guard, and
+air-core does the same for `air.json` and the catalog indexes, so a failure there exits 1 with a bare
+Node parse error and no path.
+
+For the two files in the target directory, that is only reachable as a race. Neither can be a file
+that was *already* broken on disk, because the Claude adapter rescues its own parse failure and
+rewrites both from scratch before the SDK reads them. It takes a second writer changing one between
+the adapter's write and that later read — and `air prepare` re-runs on every follow-up, resume and
+unarchive, over a directory a previous job for the same session may still be tearing down. A
+malformed `air.json` or catalog index reaches the same signature and is *not* a race; retrying costs
+one bounded ladder and the failure stays loud either way.
+
+Because AIR names no file, `AirPrepareService` prepends what the target's config files actually
+looked like when it failed. In the race that description reports everything as parsing, which is
+itself the confirmation; a file genuinely broken on disk shows up as `UNPARSEABLE` and is a different
+bug. The enrichment is skipped when AIR's message already carries a path of its own.
+
 Requested **skill** ids get one more guard, *before* the invocation. A session's `catalog_skills`
 are validated against the catalog when the session is created, but the catalog moves on
 independently: a local skill renamed (`pr` → `open-pr`) or removed leaves a stale id in a
