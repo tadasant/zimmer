@@ -73,6 +73,14 @@ class HealthMonitorService
   # Compact human-readable wait ("45s", "12m", "2h 5m"). Public because the Slack page
   # `SystemHealthMonitorJob` sends is the one surface where a human, not a parser,
   # reads this number — "oldest waiting 18000s" is worse there than "5h 0m".
+  def self.format_wait(seconds)
+    seconds = seconds.to_i
+    return "#{seconds}s" if seconds < 60
+    return "#{seconds / 60}m" if seconds < 3600
+
+    "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
+  end
+
   # One breakdown as a line of "<name> <count>" pairs. Lives here rather than in
   # each caller: the Slack page and the `get_system_health` MCP tool render the
   # same data and must not drift into two spellings of it.
@@ -85,14 +93,6 @@ class HealthMonitorService
     return "none" if counts.empty?
 
     counts.map { |name, count| "#{name} #{count}" }.join(", ")
-  end
-
-  def self.format_wait(seconds)
-    seconds = seconds.to_i
-    return "#{seconds}s" if seconds < 60
-    return "#{seconds / 60}m" if seconds < 3600
-
-    "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
   end
 
   # Structured result for health status
@@ -588,7 +588,10 @@ class HealthMonitorService
   end
 
   # Biggest first, keeping at most `limit` — plus a remainder entry for whatever
-  # the limit cut, so the breakdown always adds up against `ready_count`.
+  # the limit cut, so the breakdown always adds up against `ready_count`. The
+  # remainder is labelled rather than bare because every entry renders as
+  # "<name> <count>": "+3 more 10" puts two numbers in different units next to
+  # each other, "other (3 more) 10" does not.
   #
   # The remainder is not cosmetic. The alert asks the reader to tell "concentrated
   # in one queue" from "spread across every queue", and there are 50-odd job
@@ -611,7 +614,7 @@ class HealthMonitorService
     kept = ranked.first(limit).to_h
     remainder = ranked.drop(limit).sum { |_name, count| count }
 
-    remainder.zero? ? kept : kept.merge("+#{ranked.size - limit} more" => remainder)
+    remainder.zero? ? kept : kept.merge("other (#{ranked.size - limit} more)" => remainder)
   end
 
   # Calculate worker statistics using GoodJob

@@ -26,7 +26,7 @@
 # unmoved for 23 minutes) until `SystemHealthMonitorJob` paged. Every one of
 # those re-checks was refused, because the pool was quota-exhausted the whole
 # time. Doubling the interval on consecutive holds turns that fixed arrival rate
-# into a decaying one: 10m, 20m, then whichever ceiling applies.
+# into a decaying one: 10m, 20m, 40m, then whichever ceiling applies.
 #
 # The ceiling depends on WHY the session is held, because the two reasons clear
 # on very different timescales. A utilization hold waits on a quota window coming
@@ -35,11 +35,13 @@
 # would either leave the utilization case re-checking pointlessly or make the
 # fleet-cap case sluggish, so they get different ones.
 #
-# The cost is disclosed rather than hidden: a session can now sleep longer than
-# it strictly had to — up to its ceiling — if the condition clears early. That is
+# The cost is disclosed rather than hidden: a session can sleep longer than it
+# strictly had to — up to its ceiling — if the condition clears early. That is
 # bounded (an hour at worst), visible on the session page via HELD_RETRY_AT, and
 # a human who wants it now can make the one session priority, which the hold
-# message already says.
+# message already says. Restarting the session resets the ladder (see
+# METADATA_KEYS) but does not bypass the gate: a still-held session is held again,
+# back at ten minutes.
 #
 # The hold is recorded in `metadata` so the session detail page can explain
 # itself rather than looking mysteriously stuck, and a log line lands in the
@@ -57,6 +59,17 @@ class SpotSessionHold
   HELD_RETRY_AT = "spot_hold_retry_at"
   HELD_COUNT = "spot_hold_count"
 
+  # Read by two callers, and the second is what keeps the backoff honest. `clear`
+  # drops these when a session gets through — and the three "restart from scratch"
+  # paths (the Restart button, `action_session`, `POST /api/v1/sessions/:id/restart`)
+  # except them from the metadata they carry forward, so an explicit request to
+  # start this session resets the ladder with it.
+  #
+  # That reset has to be a POSITIVE signal from the caller rather than something
+  # inferred here. Those paths re-enter the gate looking exactly like a scheduled
+  # re-check — no prompt, no resume flag — so without it a person clicking Restart
+  # on a session sitting at 40 minutes would push it to an hour, which is the
+  # opposite of what they asked for.
   METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT ].freeze
 
   # Spread over which held sessions re-check, so a backlog does not re-evaluate
@@ -64,13 +77,14 @@ class SpotSessionHold
   RETRY_JITTER = 2.minutes
 
   # Consecutive holds double the re-check interval from SpotGateService::RETRY_DELAY
-  # — 10m, 20m, and on until the ceiling for the hold's reason clamps it.
+  # — 10m, 20m, 40m, and on until the ceiling for the hold's reason clamps it: on
+  # the fourth rung for a utilization hold (80m clamped to 60m), the third for a
+  # fleet-cap one (40m clamped to 30m).
   #
-  # The ceilings, not this, are what bound the delay: both of them bind by the
-  # third rung, so `steps` never actually reaches this value. It bounds the
-  # ARITHMETIC rather than the result — a session held for weeks would otherwise
-  # raise 2 to a four-figure power on every re-check just to hand the bignum
-  # straight to `.min`.
+  # The ceilings, not this, are what bound the DELAY. This bounds the ARITHMETIC:
+  # `steps` does keep climbing to here, and without the clamp a session held for
+  # weeks would raise 2 to a four-figure power on every re-check only to hand the
+  # bignum straight to `.min`.
   MAX_BACKOFF_STEPS = 5
 
   # Ceiling for a utilization hold. The pool's windows come back down over hours,
@@ -83,12 +97,6 @@ class SpotSessionHold
   # backoff is to stop a *stuck* population spinning, not to make a session that
   # could start in five minutes wait half an hour.
   FLEET_CAP_MAX_RETRY_DELAY = 30.minutes
-
-  # How early a re-evaluation has to be before it reads as "something other than
-  # the scheduled re-check started this". Tolerates the jitter GoodJob's own
-  # pickup adds: a scheduled job runs at or after its time, never meaningfully
-  # before it.
-  EARLY_RESTART_SLACK = 1.minute
 
   # The gate reasons this service backs off differently. Anything else — a reason
   # added later, or one of the fail-open reasons that never reaches a hold at all
@@ -132,7 +140,7 @@ class SpotSessionHold
 
     def hold!(session, decision, log_buffer:, images:, files:)
       metadata = session.metadata || {}
-      count = consecutive_hold_count(metadata)
+      count = metadata[HELD_COUNT].to_i + 1
       delay = retry_delay(decision, count)
       retry_at = Time.current + delay
 
@@ -177,36 +185,6 @@ class SpotSessionHold
 
     def ceiling_for(decision)
       decision.reason == UTILIZATION_REASON ? UTILIZATION_MAX_RETRY_DELAY : FLEET_CAP_MAX_RETRY_DELAY
-    end
-
-    # Which rung of the ladder this hold is on.
-    #
-    # A hold that arrives EARLY — before the re-check the last hold scheduled —
-    # was not that re-check. Something else started this session: the Restart
-    # button, `action_session`'s restart, `POST /api/v1/sessions/:id/restart`.
-    # All of them re-enter the gate with no prompt and no resume flag, so without
-    # this they would read as another consecutive hold and push the ladder UP —
-    # a human clicking Restart on a session sitting at 40 minutes would make it
-    # wait an hour, which is the opposite of what they asked for. Before the
-    # backoff existed that click cost nothing, and it should still cost nothing.
-    #
-    # So an early arrival starts the ladder over. The interval it re-checks on is
-    # the plain one, and the ladder rebuilds from there if the hold persists.
-    def consecutive_hold_count(metadata)
-      return 1 if restarted_early?(metadata)
-
-      metadata[HELD_COUNT].to_i + 1
-    end
-
-    def restarted_early?(metadata)
-      scheduled = metadata[HELD_RETRY_AT].presence
-      return false if scheduled.nil?
-
-      Time.current < Time.zone.parse(scheduled) - EARLY_RESTART_SLACK
-    rescue ArgumentError, TypeError
-      # An unparseable stamp tells us nothing about who started this. Treat it as
-      # the ordinary re-check rather than silently resetting the ladder.
-      false
     end
   end
 end

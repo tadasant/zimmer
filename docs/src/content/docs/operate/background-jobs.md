@@ -522,12 +522,12 @@ So the alert body carries two more lines, from `HealthMonitorService#ready_backl
 
 ```
 • Ready by queue: agents 231, default 18, pollers 2
-• Ready by job class: AgentSessionJob 231, SessionTitleJob 12, HeartbeatSweepJob 6, +3 more 10
+• Ready by job class: AgentSessionJob 231, SessionTitleJob 12, HeartbeatSweepJob 6, other (3 more) 10
 ```
 
 Both are taken over the same population as `ready_count` and both add up to it, biggest first with
 ties broken by name, capped at `READY_BREAKDOWN_LIMIT` (5) entries each. Whatever the cap cuts comes
-back as a `+N more` remainder rather than vanishing — five job classes with no total look the same
+back as an `other (N more)` remainder rather than vanishing — five job classes with no total look the same
 whether they are the whole backlog or a tenth of it, and telling those apart is the entire question
 below. A row with no `job_class` is counted under `(unknown)`. Read them this way:
 
