@@ -123,7 +123,17 @@ class SessionsHelperTest < ActionView::TestCase
   # A line the CLI wrote into its own transcript wearing a user role must not
   # read as "User" anywhere in the header.
 
+  RUNTIME_MARKERS = {
+    "interruptedByShutdown" => "the CLI was shut down mid-turn",
+    "isMeta" => "CLI-internal scaffolding"
+  }.freeze
+
+  def markers_for(flags)
+    flags&.map { |flag| { "flag" => flag, "reason" => RUNTIME_MARKERS[flag] } }
+  end
+
   def runtime_notice(text: "[Request interrupted by user for tool use]", markers: [ "interruptedByShutdown" ])
+    markers = markers_for(markers)
     event(
       Types::SYSTEM_EVENT,
       subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,

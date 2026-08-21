@@ -91,7 +91,16 @@ the sign flipped, so both directions are covered by tests.
 
 A runtime notice stays in the `message` filter bucket and keeps its fork affordance. It is not a
 message, but it sits in the conversational slot the CLI wrote it into, and "the turn was cut off
-here" is context a reader on the `minimal` filter still needs.
+here" is context a reader on the `minimal` filter still needs. A flagged line with no text is not
+made into a notice at all — there is nothing to attribute — so it stays on the message path, where
+a content-less message is already suppressed at render and an image-only one still shows its image.
+
+The timeline is not the only surface that was asserting a person. `TranscriptTextRenderer` (the
+plain-text export behind `GET /api/v1/sessions/:id/transcript` and the `get_session` MCP tool's
+`transcript_format: "text"`) and the session page's own copy-to-clipboard both read
+`parsed_transcript` — raw JSONL, never normalized — so both apply the same discriminator directly,
+via `ClaudeTranscriptNormalizer.runtime_notice_markers`. Fixing only the normalizer would have left
+an agent reading the text export being told a human typed the line.
 
 Codex gets no equivalent treatment: its rollout `response_item` message payloads carry only `role`
 and `content`, with no per-line marker that distinguishes a machine-written user turn from a typed
@@ -324,10 +333,10 @@ surfaces that need one — `GET /api/v1/sessions/:id/transcript` and the `get_se
 `transcript_format: "text"` — because they previously carried separate copies of the same `case`
 and drifted apart.
 
-`user`, `assistant`, `tool_use` and `tool_result` get a labelled section each — and a runtime
-notice gets `--- Runtime Notice (agent runtime, not a person) ---`, because the plain-text export
-carried the same false attribution the timeline did. Every other entry type is labelled and dumped
-rather than dropped, so the text never quietly disagrees with the raw transcript — this matters most for Codex, whose rollout lines are all `session_meta` /
+`user`, `assistant`, `tool_use` and `tool_result` get a labelled section each — and a `user` line
+carrying one of the runtime-notice flags gets `--- Runtime Notice (agent runtime, not a person) ---`
+instead of `--- User ---`. Every other entry type is labelled and dumped rather than dropped, so the
+text never quietly disagrees with the raw transcript — this matters most for Codex, whose rollout lines are all `session_meta` /
 `response_item` / `event_msg` / `turn_context` and would otherwise render as nothing at all.
 
 Content that arrives as an array of blocks is rendered block by block: `text`, `thinking`, `image`,

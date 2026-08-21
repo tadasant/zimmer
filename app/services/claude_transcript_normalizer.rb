@@ -53,6 +53,22 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
     "isMeta" => "CLI-internal scaffolding"
   }.freeze
 
+  # The RUNTIME_NOTICE_FLAGS set on a raw Claude line, as [{flag, reason}], in
+  # declaration order. Empty for an ordinary user line — including one that
+  # merely carries the keys with a falsey or non-boolean value.
+  #
+  # Public because the raw-JSONL readers need the same discriminator without
+  # normalizing first: TranscriptTextRenderer's plain-text export and
+  # SessionsController's copy-to-clipboard both read `parsed_transcript`
+  # directly, and both were printing these lines as "User".
+  def self.runtime_notice_markers(raw_line)
+    return [] unless raw_line.is_a?(Hash)
+
+    RUNTIME_NOTICE_FLAGS.filter_map do |flag, reason|
+      { "flag" => flag, "reason" => reason } if raw_line[flag] == true
+    end
+  end
+
   # @see TranscriptNormalizer#normalize
   #
   # Returns an Array of OpenTranscripts events (possibly empty). The optional
@@ -224,20 +240,14 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
           is_error: !!block["is_error"]
         )
       end
-    elsif (markers = runtime_notice_markers(ctx.raw_event)).any?
+    elsif (notice = runtime_notice_payload(ctx, content))
       [
         build_event(
           ctx,
           type: OpenTranscript::Types::SYSTEM_EVENT,
           event_order: 0,
           subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,
-          # The raw line, as every other SystemEvent carries it, plus the two
-          # things a renderer needs without re-deriving them: the text the CLI
-          # wrote, and which flags marked it machine-written.
-          payload: ctx.stripped_line.merge(
-            "text" => stringify_content(content),
-            "markers" => markers
-          )
+          payload: notice
         )
       ]
     else
@@ -253,11 +263,27 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
     end
   end
 
-  # The RUNTIME_NOTICE_FLAGS set on this line, in declaration order. Empty for
-  # an ordinary user line — including one that merely carries the keys with a
-  # falsey or non-boolean value.
-  def runtime_notice_markers(raw_event)
-    RUNTIME_NOTICE_FLAGS.keys.select { |flag| raw_event[flag] == true }
+  # The SystemEvent payload for a runtime notice, or nil when this line is not
+  # one.
+  #
+  # A flagged line with no text is not made into a notice: there is nothing to
+  # attribute and nothing to show, and the UserMessage arm below already
+  # suppresses a content-less message at render (OpenTranscript.blank_message?).
+  # That also keeps a flagged line carrying only an image on the message path,
+  # where its image part still renders — stringify_content would drop it.
+  def runtime_notice_payload(ctx, content)
+    markers = self.class.runtime_notice_markers(ctx.raw_event)
+    return nil if markers.empty?
+
+    text = stringify_content(content)
+    return nil if text.blank?
+
+    # The raw line, as every other SystemEvent carries it, overlaid with the two
+    # things a renderer needs without re-deriving them: the text the CLI wrote,
+    # and which flags marked the line machine-written. The overlay wins on a key
+    # collision, so a raw line carrying its own "text" or "markers" would be
+    # read through these rather than its own.
+    ctx.stripped_line.merge("text" => text, "markers" => markers)
   end
 
   def normalize_assistant_line(ctx)
