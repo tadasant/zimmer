@@ -94,7 +94,7 @@
         <table class="min-w-full text-sm">
           <thead class="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
             <tr>
-              <th class="px-3 py-2 text-left font-medium w-32">Segment</th>
+              <th class="px-3 py-2 text-left font-medium w-24 sm:w-32">Segment</th>
               <th class="px-3 py-2 text-left font-medium">Goal</th>
               <th class="px-3 py-2 text-left font-medium w-24 hidden sm:table-cell">Trigger</th>
               <th class="px-3 py-2 text-left font-medium w-20">Outcome</th>
@@ -108,7 +108,7 @@
                 <td class="px-3 py-1 font-mono text-[11px] text-gray-500 whitespace-nowrap align-top">
                   <span style="padding-left: <%= depth * 10 %>px" class="inline-block"><%= segment["id"] %></span>
                 </td>
-                <td class="px-3 py-1 align-top">
+                <td class="px-3 py-1 align-top break-all">
                   <span class="text-gray-900"><%= segment.dig("goal", "text") %></span>
                   <span class="ml-1 text-[10px] px-1 rounded <%= segment.dig("goal", "kind") == "Plan" ? "bg-sky-100 text-sky-800" : "bg-violet-100 text-violet-800" %>"><%= segment.dig("goal", "kind") %></span>
                 </td>
@@ -116,7 +116,7 @@
                   <%= segment.dig("trigger", "kind") %> · <%= segment.dig("trigger", "source") %>
                 </td>
                 <td class="px-3 py-1 align-top"><%= render "outcome_pill", outcome: segment.dig("outcome", "kind") %></td>
-                <td class="px-3 py-1 text-gray-600 text-xs align-top"><%= segment.dig("outcome", "explanation") %></td>
+                <td class="px-3 py-1 text-gray-600 text-xs align-top break-all"><%= segment.dig("outcome", "explanation") %></td>
               </tr>
             <% end %>
           </tbody>
