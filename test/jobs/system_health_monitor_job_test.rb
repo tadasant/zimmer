@@ -187,6 +187,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
 
     assert_includes details, "Ready (waiting on a worker): 105"
     assert_includes details, "Ready by queue: unavailable"
+    assert_includes details, "Ready by job class: unavailable"
   end
 
   test "does not alert on a deep queue that is still draining" do

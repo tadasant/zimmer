@@ -48,8 +48,12 @@ class HealthMonitorService
 
   # How many entries `ready_backlog_breakdown` keeps from each breakdown. Enough
   # to cover every Zimmer queue and still name the job classes that matter, short
-  # enough that the alert body stays readable in Slack.
+  # enough that the alert body stays readable in Slack. Whatever the limit cuts is
+  # reported as a remainder entry rather than dropped.
   READY_BREAKDOWN_LIMIT = 5
+
+  # What a row with no `job_class` (or no `queue_name`) is called in a breakdown.
+  UNKNOWN_LABEL = "(unknown)"
   FAILURE_RATE_WARNING_THRESHOLD = 0.1
   FAILURE_RATE_CRITICAL_THRESHOLD = 0.25
 
@@ -75,6 +79,20 @@ class HealthMonitorService
     return "#{seconds / 60}m" if seconds < 3600
 
     "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
+  end
+
+  # One breakdown as a line of "<name> <count>" pairs. Lives here rather than in
+  # each caller: the Slack page and the `get_system_health` MCP tool render the
+  # same data and must not drift into two spellings of it.
+  #
+  # Three distinct answers, because they mean different things to whoever is
+  # reading: `nil` is "the query failed", an empty breakdown is "nothing is
+  # waiting", and anything else is the split itself.
+  def self.format_breakdown(counts)
+    return "unavailable" if counts.nil?
+    return "none" if counts.empty?
+
+    counts.map { |name, count| "#{name} #{count}" }.join(", ")
   end
 
   # Structured result for health status
@@ -569,14 +587,34 @@ class HealthMonitorService
     unclaimed_jobs.where("scheduled_at <= ? OR scheduled_at IS NULL", Time.current)
   end
 
-  # Biggest first, keeping at most `limit`. A nil key (a row GoodJob wrote with no
-  # job_class, which ADAPTER-enqueued rows can have) is labelled rather than
-  # dropped, so the counts in the breakdown still add up against `ready_count`.
+  # Biggest first, keeping at most `limit` — plus a remainder entry for whatever
+  # the limit cut, so the breakdown always adds up against `ready_count`. The
+  # remainder is labelled rather than bare because every entry renders as
+  # "<name> <count>": "+3 more 10" puts two numbers in different units next to
+  # each other, "other (3 more) 10" does not.
+  #
+  # The remainder is not cosmetic. The alert asks the reader to tell "concentrated
+  # in one queue" from "spread across every queue", and there are 50-odd job
+  # classes against a limit of five: without it, five names and no total look the
+  # same whether they are the whole backlog or a tenth of it, which is exactly the
+  # distinction the reader was asked to make.
+  #
+  # Sorted by count and then by name so equal counts come out in a stable order
+  # rather than shuffling between two readings of an unchanged queue. A nil or
+  # blank key (a row GoodJob wrote with no job_class) is labelled rather than
+  # dropped, and labelled by SUMMING onto any existing entry — `transform_keys`
+  # alone would collapse nil and "" onto one label and silently keep only the
+  # last of them.
   def top_counts(counts, limit)
-    counts.transform_keys { |key| key.presence || "(unknown)" }
-          .sort_by { |_name, count| -count }
-          .first(limit)
-          .to_h
+    labelled = counts.each_with_object(Hash.new(0)) do |(key, count), acc|
+      acc[key.presence || UNKNOWN_LABEL] += count
+    end
+
+    ranked = labelled.sort_by { |name, count| [ -count, name.to_s ] }
+    kept = ranked.first(limit).to_h
+    remainder = ranked.drop(limit).sum { |_name, count| count }
+
+    remainder.zero? ? kept : kept.merge("other (#{ranked.size - limit} more)" => remainder)
   end
 
   # Calculate worker statistics using GoodJob
