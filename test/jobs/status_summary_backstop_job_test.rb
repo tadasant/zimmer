@@ -255,4 +255,39 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
       StatusSummaryBackstopJob.perform_now
     end
   end
+
+  # A cap is a budget for ONE path, not a reason to stop walking. On a mixed
+  # fleet — one runtime's pool exhausted, another's healthy — breaking as soon
+  # as either budget filled would end the sweep on the first session of
+  # whichever kind came first in `updated_at` order, starving the other path
+  # entirely.
+  test "a spent budget on one path does not starve the other" do
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.create!(
+      email: "codex@tadasant.com", runtime: "codex", status: :active, priority: 0,
+      oauth_config: { "tokens" => { "access_token" => "t" } }
+    )
+
+    # More outage-path sessions than the headless budget, ordered ahead of the
+    # healthy-runtime one, so a `break` on the filled budget would never reach it.
+    (StatusSummaryBackstopJob::MAX_HEADLESS_PER_SWEEP + 2).times { at_rest }
+    codex = at_rest(agent_runtime: "codex")
+    codex.update_column(:updated_at, 1.hour.ago)
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ codex.id, { headless: false } ]) do
+      StatusSummaryBackstopJob.perform_now
+    end
+  end
+
+  # The corollary: a session skipped because its path's budget is spent must not
+  # burn its retry interval on a cap it never got past.
+  test "a session skipped for a spent budget keeps its retry interval" do
+    sessions = Array.new(StatusSummaryBackstopJob::MAX_PER_SWEEP + 2) { at_rest }
+
+    StatusSummaryBackstopJob.perform_now
+
+    stamped = sessions.count { |session| session.reload.status_summary&.backstop_attempted_at.present? }
+    assert_equal StatusSummaryBackstopJob::MAX_PER_SWEEP, stamped,
+      "only the sessions the sweep actually got to should have been stamped"
+  end
 end
