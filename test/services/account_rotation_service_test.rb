@@ -516,7 +516,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     secondary = claude_accounts(:secondary)
     tertiary = claude_accounts(:tertiary)
 
-    # 503 -> permanent_refresh_failure? returns false, so refresh_token! does
+    # 503 -> not a recognised auth rejection, so refresh_token! does
     # NOT mark needs_reauth — this tests the rotation service's behavior.
     failed_response = Net::HTTPServiceUnavailable.new("1.1", "503", "Service Unavailable")
     failed_response.stubs(:code).returns("503")
@@ -549,7 +549,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     secondary = claude_accounts(:secondary)
     tertiary = claude_accounts(:tertiary)
 
-    # 401 triggers permanent_refresh_failure? -> refresh_token! marks needs_reauth
+    # 401 classifies as a dead credential -> refresh_token! marks needs_reauth
     failed_response = Net::HTTPUnauthorized.new("1.1", "401", "Unauthorized")
     failed_response.stubs(:code).returns("401")
     failed_response.stubs(:body).returns({ error: "invalid_grant" }.to_json)

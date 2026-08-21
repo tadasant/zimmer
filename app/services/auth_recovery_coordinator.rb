@@ -251,10 +251,12 @@ class AuthRecoveryCoordinator
     result = auth_provider.refresh!(account)
     return if result.ok?
 
-    # A lost single-use-token race no longer reaches here as :needs_reauth —
-    # ClaudeAccount#refresh_token! serializes on the row and checks, before
-    # condemning anything, whether the token it presented has since moved. So a
-    # :needs_reauth verdict at this point is a real one.
+    # A lost single-use-token race no longer reaches here as :needs_reauth.
+    # ClaudeAccount#refresh_token! serializes on the row and, before condemning
+    # anything, checks whether the token it presented has since moved; and a
+    # rejection it cannot attribute to a dead credential collects a strike rather
+    # than a verdict. So a :needs_reauth at this point is a real one, and a
+    # rejected-but-unproven value arrives as :stale.
     if result.error == :needs_reauth
       @logger.warn("Outgoing account's credentials are permanently invalid", account: account.email)
     else
