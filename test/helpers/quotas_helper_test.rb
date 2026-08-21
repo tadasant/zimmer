@@ -352,7 +352,7 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match "Work unblocked in", banner
     assert_match(/1:29:5\d|1:30:00/, banner)
     assert_match "room on both its 5-hour and 7-day windows", banner
-    assert_match "2 of 2 accounts with a reading out of capacity now", banner
+    assert_match "All 2 accounts with a reading are out of capacity.", banner
     assert_match "UTC", banner
     assert_match(/data-controller="local-time"/, banner)
   end
@@ -396,7 +396,7 @@ class QuotasHelperTest < ActionView::TestCase
     )
 
     assert_match "Nothing here says when work resumes", banner
-    assert_match "3 of 3 accounts with a reading out of capacity", banner
+    assert_match "All 3 accounts with a reading are out of capacity.", banner
     assert_no_match(/unblock-countdown/, banner)
   end
 
@@ -412,6 +412,7 @@ class QuotasHelperTest < ActionView::TestCase
   test "pool_capacity_banner does not render a negative wait" do
     banner = pool_capacity_banner(measure(next_capacity_at: 1.second.ago, read_count: 1, blocked_count: 1))
 
+    assert_match "The one account with a reading is out of capacity.", banner
     assert_match ">now<", banner
     assert_match ">Work unblocked<", banner
     # The note is in the markup either way; whether it is hidden is the state.

@@ -148,7 +148,9 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
       visit quotas_url
 
       banner = find("[data-controller='unblock-countdown']")
-      assert banner.has_text?("Work unblocked in"),
+      # Matched case-insensitively: the label is `uppercase` in CSS, and
+      # Capybara reads the rendered text, not the source.
+      assert banner.has_text?(/work unblocked in/i),
              "the pool should say what the clock is counting down to, got: #{banner.text.inspect}"
       # Driven off the absolute instant, not off a remaining-duration string —
       # a page left open must not freeze on the wait as the server rendered it.
@@ -199,7 +201,8 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
         controller.tick();
       JS
 
-      assert_equal "Work unblocked", banner.find("[data-unblock-countdown-target='label']").text
+      assert_equal "work unblocked",
+                   banner.find("[data-unblock-countdown-target='label']").text.downcase
       assert_equal "now", banner.find("[data-unblock-countdown-target='remaining']").text,
                    "a passed deadline should stop at the moment rather than run negative"
       assert banner.has_text?("That moment has passed"),
