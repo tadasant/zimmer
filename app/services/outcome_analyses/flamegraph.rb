@@ -59,7 +59,6 @@ module OutcomeAnalyses
       # as containment rather than as a stacked bar.
       sizes = children.map { |child| subtree_size(child) }
       total = sizes.sum
-      return if total.zero?
 
       offset = left
       children.each_with_index do |child, index|

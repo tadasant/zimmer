@@ -115,10 +115,15 @@ module OutcomeAnalyses
       items = @batch.items.queued.in_order.limit(slots).to_a
       return [] if items.empty?
 
+      # `started_at` doubles as the claim's identity: `spawn` writes its session id
+      # back only if the row still carries the same one, so a wave that outlives
+      # SPAWN_GRACE and gets its item requeued underneath it cannot overwrite
+      # whatever claimed the item next.
+      claimed_at = Time.current
       OutcomeAnalysisBatchItem.where(id: items.map(&:id)).update_all(
         state: OutcomeAnalysisBatchItem::RUNNING,
-        started_at: Time.current,
-        updated_at: Time.current
+        started_at: claimed_at,
+        updated_at: claimed_at
       )
       items.each { |item| item.reload }
     end
@@ -130,8 +135,24 @@ module OutcomeAnalyses
         return
       end
 
+      claimed_at = item.started_at
       analysis_session = SpawnAnalysisSession.call(session: session, batch: @batch)
-      item.update!(analysis_session_id: analysis_session.id)
+
+      # Conditional on the claim: spawning happens outside the lock, so a spawn
+      # slower than SPAWN_GRACE can find its item already requeued and re-claimed
+      # by a later wave. Writing unconditionally would point the item at this
+      # session and orphan the other one, leaving two analyses in flight for one
+      # transcript with only one of them accounted for.
+      linked = OutcomeAnalysisBatchItem
+        .where(id: item.id, state: OutcomeAnalysisBatchItem::RUNNING, started_at: claimed_at)
+        .update_all(analysis_session_id: analysis_session.id, updated_at: Time.current)
+
+      return if linked.positive?
+
+      Rails.logger.warn(
+        "[OutcomeAnalyses] Batch #{@batch.id} item #{item.id} was re-claimed while session " \
+        "#{analysis_session.id} was being spawned for it; that session is now unattached."
+      )
     rescue StandardError => e
       # One session that cannot be spawned must not take the batch with it —
       # record why on the item and let the wave continue.

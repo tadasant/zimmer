@@ -173,6 +173,37 @@ class OutcomeAnalyses::BatchTest < ActiveSupport::TestCase
     assert_equal 0, batch.items.where(state: OutcomeAnalysisBatchItem::FAILED).count
   end
 
+  test "a spawn that outlived its claim does not overwrite the wave that replaced it" do
+    stub_spawn!
+    batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 1)
+    OutcomeAnalyses::PumpBatch.call(batch)
+    item = batch.items.running.sole
+    stale_claim = item.started_at
+
+    # Wave B requeues and re-claims the item while wave A is still spawning for it.
+    item.update!(analysis_session_id: nil, started_at: (OutcomeAnalyses::PumpBatch::SPAWN_GRACE + 1.minute).ago)
+    OutcomeAnalyses::PumpBatch.call(batch)
+    reclaimed_session_id = item.reload.analysis_session_id
+    reclaimed_at = item.started_at
+
+    # Wave A's late write, replayed with its own (now stale) claim.
+    linked = OutcomeAnalysisBatchItem
+      .where(id: item.id, state: OutcomeAnalysisBatchItem::RUNNING, started_at: stale_claim)
+      .update_all(analysis_session_id: analysis_session.id)
+
+    assert_equal 0, linked, "a stale claim must not be able to relink the item"
+    assert_equal reclaimed_session_id, item.reload.analysis_session_id
+    assert_equal reclaimed_at.to_i, item.started_at.to_i
+  end
+
+  test "cancel reports the number of items it actually canceled" do
+    stub_spawn!
+    batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 2)
+    OutcomeAnalyses::PumpBatch.call(batch)
+
+    assert_equal 3, OutcomeAnalyses::CancelBatch.call(batch)
+  end
+
   test "a canceled batch still reconciles what was left in flight" do
     stub_spawn!
     batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 1)

@@ -36,7 +36,6 @@ module OutcomeAnalyses
     Row = Data.define(:key, :label, :transcripts, :successes, :failures, :segments, :failed_segments) do
       def transcript_success_rate = transcripts.zero? ? nil : successes.to_f / transcripts
       def segment_success_rate = segments.zero? ? nil : (segments - failed_segments).to_f / segments
-      def avg_segments = transcripts.zero? ? 0.0 : segments.to_f / transcripts
       def avg_failed_segments = transcripts.zero? ? 0.0 : failed_segments.to_f / transcripts
     end
 
