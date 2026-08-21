@@ -54,7 +54,17 @@ class TriggerCondition < ApplicationRecord
   ALL_CHANNEL_EVENT_TYPES = (%w[bot_mention dm_message] + PASSIVE_EVENT_TYPES).freeze
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
-  AO_EVENT_NAMES = %w[session_needs_input session_failed session_archived].freeze
+  # Zimmer's internal event vocabulary, split by what the event is ABOUT.
+  #
+  # The subject is not decoration. A session event carries a session id, may be
+  # scoped to one watched session, and is filtered by that session's autonomy and
+  # by loop prevention. An account event carries a ClaudeAccount id and has none
+  # of those: there is no session to watch, no autonomy to consult, and nothing
+  # for the trigger to have created. AoEventSubject is where that difference
+  # lives; everything here just has to say which vocabulary an event belongs to.
+  SESSION_AO_EVENT_NAMES = %w[session_needs_input session_failed session_archived].freeze
+  ACCOUNT_AO_EVENT_NAMES = %w[account_needs_reauth].freeze
+  AO_EVENT_NAMES = (SESSION_AO_EVENT_NAMES + ACCOUNT_AO_EVENT_NAMES).freeze
 
   GITHUB_CONDITION_TYPES = %w[github_label github_issue].freeze
   GITHUB_TARGETS = %w[pull_request issue].freeze
@@ -293,12 +303,28 @@ class TriggerCondition < ApplicationRecord
     configuration["event_name"]
   end
 
+  # True when this condition watches an event whose subject is a Session.
+  def session_ao_event?
+    condition_type == "ao_event" && SESSION_AO_EVENT_NAMES.include?(ao_event_name)
+  end
+
+  # True when this condition watches an event whose subject is a ClaudeAccount.
+  def account_ao_event?
+    condition_type == "ao_event" && ACCOUNT_AO_EVENT_NAMES.include?(ao_event_name)
+  end
+
   # Optional session id this ao_event condition is scoped to. When set, the
   # condition only fires when the specified session transitions to the watched
   # state. When nil, the condition fires for any session transitioning to the
   # watched state (broadcast semantics).
+  #
+  # Gated on the event being a SESSION event, not merely on the condition being an
+  # ao_event: an account event has no session to watch, and a stray
+  # watched_session_id in its configuration must not be read as scoping. The
+  # validation below rejects one outright, so this is belt-and-braces for rows
+  # written before that validation existed or around it.
   def watched_session_id
-    return nil unless condition_type == "ao_event"
+    return nil unless session_ao_event?
     value = configuration["watched_session_id"]
     return nil if value.blank?
     value.to_i
@@ -306,7 +332,7 @@ class TriggerCondition < ApplicationRecord
 
   # Returns true if this ao_event condition is scoped to a specific session.
   def session_scoped_ao_event?
-    condition_type == "ao_event" && watched_session_id.present?
+    session_ao_event? && watched_session_id.present?
   end
 
   # GitHub configuration accessors
@@ -478,6 +504,8 @@ class TriggerCondition < ApplicationRecord
         "Zimmer Event: Session failed"
       when "session_archived"
         "Zimmer Event: Session archived"
+      when "account_needs_reauth"
+        "Zimmer Event: Account needs re-authentication"
       else
         "Zimmer Event: #{ao_event_name}"
       end
@@ -803,6 +831,12 @@ class TriggerCondition < ApplicationRecord
 
     unless AO_EVENT_NAMES.include?(event_name)
       errors.add(:configuration, "event_name must be one of: #{AO_EVENT_NAMES.join(', ')}")
+    end
+
+    if configuration["watched_session_id"].present? && !SESSION_AO_EVENT_NAMES.include?(event_name)
+      errors.add(:configuration, "watched_session_id is only meaningful for session events " \
+                                 "(#{SESSION_AO_EVENT_NAMES.join(', ')})")
+      return
     end
 
     if configuration.key?("watched_session_id") && configuration["watched_session_id"].present?

@@ -25,7 +25,7 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
   KNOBS = %w[
     RAILS_ENV RAILS_MAX_THREADS DB_POOL CABLE_DB_POOL
     GOOD_JOB_AGENTS_THREADS GOOD_JOB_POLLERS_THREADS
-    GOOD_JOB_TRIGGERS_THREADS GOOD_JOB_DEFAULT_THREADS
+    GOOD_JOB_TRIGGERS_THREADS GOOD_JOB_AUTH_THREADS GOOD_JOB_DEFAULT_THREADS
   ].freeze
 
   # ConnectionBudget reads the process's shape from ENV and $PROGRAM_NAME, because that
@@ -105,8 +105,33 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
   test "the queue string GoodJob is configured with is the one the budget counted" do
     as_worker("GOOD_JOB_AGENTS_THREADS" => 20) do
       assert_includes ConnectionBudget.good_job_queues, "agents:20"
-      assert_equal 20 + 3 + 2 + 4, ConnectionBudget.good_job_scheduler_threads
+      assert_equal 20 + 3 + 2 + 2 + 4, ConnectionBudget.good_job_scheduler_threads
     end
+  end
+
+  test "the auth lane is declared, sized, and knob-configured like every other lane" do
+    # The lane only does anything if GoodJob is actually told to run a scheduler for
+    # it. A job that names a queue nobody serves is not prioritized, it is stranded --
+    # so assert the resolved string, which is what config.good_job.queues is set to.
+    as_worker do
+      assert_includes ConnectionBudget.good_job_queues, "auth:2"
+      assert_equal 2, ConnectionBudget.good_job_queue_threads.fetch(:auth)
+    end
+
+    as_worker("GOOD_JOB_AUTH_THREADS" => 5) do
+      assert_includes ConnectionBudget.good_job_queues, "auth:5"
+    end
+  end
+
+  test "the auth lane's threads are covered by the pool and counted in the budget" do
+    # A lane whose threads the pool does not cover is the exact overcommit this file
+    # exists to prevent: two more threads that can each hold a connection for the
+    # twelve minutes RuntimeLoginJob pins one.
+    baseline = as_worker("GOOD_JOB_AUTH_THREADS" => 2) { ConnectionBudget.required_backends }
+    raised = as_worker("GOOD_JOB_AUTH_THREADS" => 4) { ConnectionBudget.required_backends }
+
+    # One extra worker thread costs one pool slot, doubled by the Kamal cutover.
+    assert_equal baseline + (2 * ConnectionBudget::DEPLOY_CUTOVER_MULTIPLIER), raised
   end
 
   test "max_threads cannot authorize more threads than the queues declare" do

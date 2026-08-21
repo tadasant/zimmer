@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_20_043000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -138,6 +138,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_043000) do
     t.jsonb "oauth_config", default: {}
     t.integer "priority", default: 0, null: false
     t.integer "quota_hit_count", default: 0, null: false
+    t.datetime "reauth_alerted_at"
     t.string "runtime", default: "claude_code", null: false
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false

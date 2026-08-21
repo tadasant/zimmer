@@ -562,8 +562,9 @@ export default class extends Controller {
               <option value="session_needs_input">Session transitions to needs_input</option>
               <option value="session_failed">Session transitions to failed</option>
               <option value="session_archived">Session archived</option>
+              <option value="account_needs_reauth">Account needs re-authentication</option>
             </select>
-            <p class="mt-1 text-xs text-gray-500">Fires when an autonomous session transitions to the selected state. Sessions created by this trigger are excluded to prevent loops.</p>
+            <p class="mt-1 text-xs text-gray-500">Session events fire when an autonomous session transitions to the selected state; sessions created by this trigger are excluded to prevent loops. "Account needs re-authentication" is about a runtime account, not a session — it fires when one can no longer refresh its token, at most once every 12 hours per account.</p>
           </div>
         </div>
 

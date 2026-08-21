@@ -28,7 +28,14 @@ module Mcp
     # live trigger; an omitted-means-untouched upsert cannot.
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle invoke].freeze
-      TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
+      # `ao_event` is creatable here, and it has to be: the /triggers form has
+      # always offered it, so leaving it out made the web UI strictly more capable
+      # than the MCP surface — a human could wire a Zimmer event to a trigger and an
+      # agent session could not. The wake-up tools
+      # (wake_me_up_when_session_changes_state) remain the right way to create a
+      # SESSION-scoped one-shot wake; what this opens up is the broadcast form, and
+      # the account events, which no wake tool covers.
+      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
       # Derived from the model, not re-declared, so the tool cannot drift behind
       # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
       # and AoEventTriggerJob park a one-shot trigger there when its fire raises,
@@ -88,6 +95,7 @@ module Mcp
         **Trigger types:**
         - **slack**: Triggered by Slack events (requires configuration with channel_id)
         - **schedule**: Triggered on a recurring or one-time schedule
+        - **ao_event**: Triggered by an internal Zimmer event (requires configuration with event_name)
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
         - **github_issue**: Triggered when a new issue is opened in a watched repo
 
@@ -109,6 +117,19 @@ module Mcp
         **Schedule configuration:**
         - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
+
+        **Zimmer event configuration:**
+        - `{"event_name": "session_needs_input"}` — also `session_failed`, `session_archived`. These are
+          BROADCAST: they fire for every autonomous session that transitions, so the trigger they hang
+          off spawns a session each time. Add `{"watched_session_id": 1234}` to narrow one to a single
+          session — but to wake yourself on a session you are waiting for, use
+          wake_me_up_when_session_changes_state instead, which creates the one-shot wake AND puts this
+          session to sleep.
+        - `{"event_name": "account_needs_reauth"}` — fires when a runtime account in the pool can no
+          longer refresh its OAuth token and drops out of rotation until a human re-authenticates it.
+          Its subject is an ACCOUNT, not a session, so `watched_session_id` is rejected. Suppressed to
+          at most one fire per account per 12 hours (ClaudeAccount::REAUTH_ALERT_THROTTLE), released
+          when a human completes a login for that account.
 
         **GitHub configuration:**
         - **github_label**: `{"repos": ["owner/a", "owner/b"], "target": "pull_request", "labels": ["ready to merge"]}`

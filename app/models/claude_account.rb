@@ -92,6 +92,18 @@ class ClaudeAccount < ApplicationRecord
   after_update_commit :notify_status_transition
   after_rollback :clear_needs_reauth_latch
 
+  # How long a single account's needs_reauth event stays suppressed after one is
+  # emitted. Not a nicety: `sync_from_filesystem!` writes `active` back onto a
+  # needs_reauth row whose credentials file still parses, and `ensure_active_
+  # account!` runs it before every session spawn — so an account can cross INTO
+  # needs_reauth many times an hour without a human doing anything. Unsuppressed,
+  # that is one spawned agent session per spawn attempt.
+  #
+  # Twelve hours, matching the operator-DM window this replaces. The condition
+  # stays broken until a human acts, and the sweeps that rediscover it run every
+  # few minutes, so a shorter window buys nothing but noise.
+  REAUTH_ALERT_THROTTLE = 12.hours
+
   # Postgres advisory lock namespace for serializing mutations of one runtime's
   # account pool (rotation, activation). Distinct from
   # Session::SESSION_ADVISORY_LOCK_NAMESPACE so the two subsystems can never
@@ -820,10 +832,33 @@ class ClaudeAccount < ApplicationRecord
     File.write(CodexAuthProvider::AUTH_JSON_PATH, JSON.pretty_generate(auth_json))
   end
 
+  # Release the alert throttle so the NEXT time this account dies, it says so
+  # immediately rather than waiting out REAUTH_ALERT_THROTTLE.
+  #
+  # Called from the login drivers' `capture!` and nowhere else, because a human
+  # completing a login is the only event that means "this is genuinely fixed".
+  # Plenty of machinery writes `active` without a human involved
+  # (sync_from_filesystem!, the recovery sweep); releasing on those would let an
+  # account that is condemned again seconds later alert again, which is the flood
+  # the throttle exists to stop.
+  #
+  # `update_columns`, not `update!`: this must not itself look like a status
+  # transition, and it runs immediately after one.
+  def clear_reauth_alert!
+    update_columns(reauth_alerted_at: nil)
+  end
+
   private
 
-  # DM the operator when this account crosses INTO needs_reauth, and forget that
-  # DM when it crosses back out.
+  # Emit the `account_needs_reauth` Zimmer event when this account crosses INTO
+  # needs_reauth.
+  #
+  # Zimmer does not compose the notification itself. The event fires whatever
+  # `ao_event` triggers watch it, and the one this deployment seeds spawns a
+  # `general-agent` session holding the `slack-workspace` MCP server, which sends
+  # the DM. That indirection is the point: the notification is configurable at
+  # /triggers instead of compiled in, and its failures land in a session
+  # transcript instead of in a swallowed `.warn`.
   #
   # A model callback rather than instrumentation at the call sites, so no path
   # that condemns an account can forget to alert — including the Administrate
@@ -833,7 +868,7 @@ class ClaudeAccount < ApplicationRecord
   #
   # - **Creation.** `after_update_commit` does not fire on insert, so the
   #   credential-less account QuotasController seeds directly into needs_reauth
-  #   does not DM. The human is on the page adding it; telling them to go to the
+  #   does not alert. The human is on the page adding it; telling them to go to the
   #   page they are on is noise.
   #
   # - **Recovery restores.** {ClaudeAuthProvider#recover_needs_reauth} (and its
@@ -847,16 +882,16 @@ class ClaudeAccount < ApplicationRecord
   #   Without both of those, every recovery sweep would look like a fresh
   #   transition and re-nag on the dedup window's clock.
   #
-  # Note what this does NOT do: clear the suppression when an account leaves
+  # Note what this does NOT do: release the throttle when an account leaves
   # needs_reauth. That was the first shape of this callback and it was wrong.
   # `sync_from_filesystem!` resurrects the on-disk owner to `active` with a plain
   # `update!` — including a needs_reauth row whose dead-but-complete tokens are
   # still in the credentials file — and `ensure_active_account!` runs it before
-  # every session spawn. Clearing there would drop the suppression moments before
+  # every session spawn. Releasing there would drop the throttle moments before
   # `usable_candidate?` re-condemns the same account, turning a drained pool into
-  # one DM per spawn attempt: exactly the flood the window exists to prevent.
-  # Clearing is therefore the job of the human re-auth path alone, where it means
-  # what it says — see ClaudeLoginDriver#capture!.
+  # one spawned session per spawn attempt: exactly the flood the window exists to
+  # prevent. Releasing is therefore the job of the human re-auth path alone, where
+  # it means what it says — see #clear_reauth_alert! and ClaudeLoginDriver#capture!.
   # Record, at save time, that this save crossed into needs_reauth — so that
   # #notify_status_transition can still tell after the transaction commits.
   #
@@ -889,8 +924,9 @@ class ClaudeAccount < ApplicationRecord
 
   def notify_status_transition
     return unless @crossed_into_needs_reauth
+    return unless claim_reauth_alert_slot!
 
-    AccountReauthAlertJob.perform_later(id)
+    AoEventTriggerJob.perform_later("account_needs_reauth", id)
   rescue => e
     # Never let alerting break the auth path. This runs after commit, so the
     # status change is already durable; losing the notification is survivable,
@@ -902,9 +938,29 @@ class ClaudeAccount < ApplicationRecord
     # avoids.
     Rails.logger.warn "[ClaudeAccount] Failed to dispatch status-transition alert for #{email}: #{e.class} - #{e.message}"
   ensure
-    # One latch, one DM. Without this a later save on the same in-memory record
+    # One latch, one event. Without this a later save on the same in-memory record
     # would re-enqueue the alert it already sent.
     @crossed_into_needs_reauth = false
+  end
+
+  # Take the one alert slot this account has per REAUTH_ALERT_THROTTLE, returning
+  # false when it is already taken.
+  #
+  # A single conditional UPDATE, so two workers condemning the same account in the
+  # same instant cannot both win it — the loser's WHERE matches zero rows. That is
+  # the whole reason this lives in the database rather than in Rails.cache, where
+  # its predecessor lived: a cache-backed suppressor fails OPEN when the cache is
+  # unreachable, and "one agent session per spawn attempt" is the wrong way to
+  # fail. It is also readable after the fact, which a cache key never was.
+  #
+  # `update_all` deliberately skips callbacks: this runs from inside one.
+  def claim_reauth_alert_slot!
+    now = Time.current
+    self.class
+      .where(id: id)
+      .where("reauth_alerted_at IS NULL OR reauth_alerted_at < ?", now - REAUTH_ALERT_THROTTLE)
+      .update_all(reauth_alerted_at: now)
+      .positive?
   end
 
   # True when an exception raised during token refresh is a transient network

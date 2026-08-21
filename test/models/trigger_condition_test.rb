@@ -260,6 +260,62 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert @ao_event_condition.valid?
   end
 
+  # === The account subject ===
+  #
+  # The vocabulary was session-only until `account_needs_reauth`. What matters is
+  # that the two halves stay apart: session-only machinery (scoping, the one-shot
+  # guard) must not attach itself to an account event.
+
+  test "ao_event condition accepts the account_needs_reauth event name" do
+    @ao_event_condition.configuration = { "event_name" => "account_needs_reauth" }
+
+    assert @ao_event_condition.valid?
+    assert_predicate @ao_event_condition, :account_ao_event?
+    assert_not @ao_event_condition.session_ao_event?
+  end
+
+  test "an account event is never session-scoped" do
+    @ao_event_condition.configuration = { "event_name" => "account_needs_reauth" }
+
+    assert_not @ao_event_condition.session_scoped_ao_event?
+    assert_nil @ao_event_condition.watched_session_id
+  end
+
+  test "watched_session_id is rejected on an account event" do
+    target = sessions(:needs_input)
+    @ao_event_condition.configuration = {
+      "event_name" => "account_needs_reauth",
+      "watched_session_id" => target.id
+    }
+
+    assert_not @ao_event_condition.valid?
+    assert @ao_event_condition.errors[:configuration].any? { |e| e.include?("only meaningful for session events") }
+  end
+
+  # A row written before that validation existed must still not be read as scoped
+  # — otherwise AoEventTriggerJob would compare an account id against a session id
+  # and silently never fire.
+  test "a stray watched_session_id on a stored account event is ignored, not obeyed" do
+    @ao_event_condition.update_columns(
+      configuration: { "event_name" => "account_needs_reauth", "watched_session_id" => 999_999 }
+    )
+
+    assert_nil @ao_event_condition.reload.watched_session_id
+    assert_not @ao_event_condition.session_scoped_ao_event?
+  end
+
+  test "the account event describes itself in the vocabulary the UI renders" do
+    @ao_event_condition.configuration = { "event_name" => "account_needs_reauth" }
+
+    assert_equal "Zimmer Event: Account needs re-authentication", @ao_event_condition.description
+  end
+
+  test "the event vocabularies partition AO_EVENT_NAMES" do
+    assert_equal TriggerCondition::AO_EVENT_NAMES.sort,
+                 (TriggerCondition::SESSION_AO_EVENT_NAMES + TriggerCondition::ACCOUNT_AO_EVENT_NAMES).sort
+    assert_empty TriggerCondition::SESSION_AO_EVENT_NAMES & TriggerCondition::ACCOUNT_AO_EVENT_NAMES
+  end
+
   test "ao_event condition with valid watched_session_id is valid" do
     target = sessions(:needs_input)
     @ao_event_condition.configuration = {

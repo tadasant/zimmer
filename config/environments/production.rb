@@ -81,6 +81,14 @@ Rails.application.configure do
   #     ScheduleTriggerJob). Isolated onto its own scheduler so state-change and
   #     scheduled wakes are never starved behind the `default` queue's periodic/
   #     bulk backlog (heartbeat sweeps, Slack polling, cleanup, etc.).
+  # - auth: User-interactive authentication (RuntimeLoginJob and the reaper that
+  #     resolves its attempts). The `triggers` argument with a human added: someone
+  #     is watching the /quotas login panel spin while this runs, and on `default`
+  #     it queued behind whatever periodic or multi-minute job held those four
+  #     threads -- including, since RuntimeLoginJob pins a thread for up to twelve
+  #     minutes, an earlier login. Periodic auth work (RefreshRuntimeAuthTokensJob,
+  #     RefreshMcpOauthTokensJob) deliberately stays on `default`: nobody is waiting
+  #     on it, and it is exactly the bulk character this lane exists to escape.
   # - default: Everything else - cleanup, title generation, etc.
   #
   # Every scheduler thread here can be executing a job, and an executing GoodJob job
