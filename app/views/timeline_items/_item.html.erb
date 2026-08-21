@@ -37,10 +37,9 @@
     label = ot_event_label(item)
     icon_kind = ot_icon_kind(item)
     is_message = [ OpenTranscript::Types::USER_MESSAGE, OpenTranscript::Types::ASSISTANT_MESSAGE ].include?(item[:type])
-    # A runtime notice is not a message, but it is a real transcript line and
+    # A runtime notice is not a message, but it is a real transcript line, and
     # "fork from just here" is exactly what an operator wants at the point a
-    # turn was cut off — so it keeps the fork affordance it had while it was
-    # being mislabelled as a User turn.
+    # turn was cut off — so it is forkable too.
     forkable = (is_message || ot_runtime_notice?(item)) && session && item[:transcript_index].present?
     image_count = is_message ? ot_image_count(item) : 0
   %>

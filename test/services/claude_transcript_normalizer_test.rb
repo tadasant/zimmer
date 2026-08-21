@@ -215,7 +215,8 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
     event = events.first
     assert_equal OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE, event[:subtype]
     assert_equal "[Request interrupted by user for tool use]", event[:payload]["text"]
-    assert_equal [ "interruptedByShutdown" ], event[:payload]["markers"]
+    assert_equal [ { "flag" => "interruptedByShutdown", "reason" => "the CLI was shut down mid-turn" } ],
+      event[:payload]["markers"]
     # The raw line is still carried, as it is for every other SystemEvent.
     assert_equal true, event[:payload]["interruptedByShutdown"]
   end
@@ -238,7 +239,7 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
     assert_equal [ Types::SYSTEM_EVENT ], types_of(events)
     assert_equal OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE, events.first[:subtype]
     assert_equal "Continue from where you left off.", events.first[:payload]["text"]
-    assert_equal [ "isMeta" ], events.first[:payload]["markers"]
+    assert_equal [ { "flag" => "isMeta", "reason" => "CLI-internal scaffolding" } ], events.first[:payload]["markers"]
   end
 
   test "normalize records both markers when a line carries both flags" do
@@ -252,7 +253,7 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
 
     events = @normalizer.normalize(raw, session: @session)
 
-    assert_equal %w[interruptedByShutdown isMeta], events.first[:payload]["markers"]
+    assert_equal %w[interruptedByShutdown isMeta], events.first[:payload]["markers"].map { |m| m["flag"] }
   end
 
   # The failure mode pointed the other way: a loose flag check would reclassify
@@ -306,6 +307,56 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
       assert_equal [ Types::USER_MESSAGE ], types_of(events),
         "isMeta = #{value.inspect} is not the JSON boolean and must not reclassify a user turn"
     end
+  end
+
+  test "normalize routes a flagged line that carries role/content at the top level" do
+    # Some user lines have no "message" envelope (see LineContext#message). The
+    # flags sit on the line either way, so the notice must still be minted.
+    raw = {
+      "type" => "user", "uuid" => "u-flat", "role" => "user",
+      "content" => [ { "type" => "text", "text" => "[Request interrupted by user for tool use]" } ],
+      "interruptedByShutdown" => true
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::SYSTEM_EVENT ], types_of(events)
+    assert_equal "[Request interrupted by user for tool use]", events.first[:payload]["text"]
+  end
+
+  test "normalize leaves a flagged line with no text on the message path" do
+    # There is nothing to attribute and nothing to show, and the UserMessage arm
+    # is already suppressed at render — minting a notice would add a bare
+    # attribution row where none was drawn before.
+    raw = { "type" => "user", "uuid" => "u-empty", "isMeta" => true, "message" => { "role" => "user", "content" => [] } }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::USER_MESSAGE ], types_of(events)
+    assert OpenTranscript.blank_message?(events.first), "a content-less line must stay suppressible"
+  end
+
+  test "normalize keeps an image-only flagged line on the message path so the image survives" do
+    raw = {
+      "type" => "user", "uuid" => "u-img", "isMeta" => true,
+      "message" => {
+        "role" => "user",
+        "content" => [ { "type" => "image", "source" => { "data" => "AAAA", "media_type" => "image/png" } } ]
+      }
+    }
+
+    events = @normalizer.normalize(raw, session: @session)
+
+    assert_equal [ Types::USER_MESSAGE ], types_of(events)
+    assert_equal 1, events.first[:content].count { |part| part["type"] == "image" }
+  end
+
+  test "runtime_notice_markers is a public discriminator for raw JSONL readers" do
+    assert_empty ClaudeTranscriptNormalizer.runtime_notice_markers(nil)
+    assert_empty ClaudeTranscriptNormalizer.runtime_notice_markers({ "type" => "user" })
+    assert_empty ClaudeTranscriptNormalizer.runtime_notice_markers({ "isMeta" => "true" })
+    assert_equal [ "isMeta" ],
+      ClaudeTranscriptNormalizer.runtime_notice_markers({ "isMeta" => true }).map { |m| m["flag"] }
   end
 
   test "normalize keeps tool_result blocks as ToolResults even when the line is flagged" do

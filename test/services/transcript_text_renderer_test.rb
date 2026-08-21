@@ -33,8 +33,7 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
     assert_includes text, "The directory contains README.md."
   end
 
-  # #488: these lines used to come out of the plain-text export under
-  # "--- User ---", the same false attribution the timeline carried.
+  # #488: the plain-text export must not carry the false attribution either.
   test "renders a runtime notice under its own header, never as a user turn" do
     text = TranscriptTextRenderer.render([
       {
@@ -42,7 +41,7 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
         subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,
         payload: {
           "text" => "[Request interrupted by user for tool use]",
-          "markers" => [ "interruptedByShutdown" ]
+          "markers" => [ { "flag" => "interruptedByShutdown", "reason" => "the CLI was shut down mid-turn" } ]
         }
       }
     ])
@@ -52,12 +51,47 @@ class TranscriptTextRendererTest < ActiveSupport::TestCase
     refute_includes text, "--- User ---"
   end
 
+  # The surfaces this class actually serves — GET /api/v1/sessions/:id/transcript
+  # and the get_session MCP tool — hand it RAW JSONL, not normalized events, so
+  # the raw branch needs the discriminator too. Without it an agent reading the
+  # text export is told a person typed these lines.
+  test "renders a raw flagged JSONL line as a runtime notice, not a user turn" do
+    [ "interruptedByShutdown", "isMeta" ].each do |flag|
+      text = TranscriptTextRenderer.render([
+        {
+          "type" => "user",
+          "message" => { "role" => "user", "content" => [ { "type" => "text", "text" => "machine line" } ] },
+          flag => true
+        }
+      ])
+
+      assert_includes text, "--- Runtime Notice (agent runtime, not a person) ---", "flag: #{flag}"
+      assert_includes text, "machine line"
+      refute_includes text, "--- User ---", "flag: #{flag} must not render as a user turn"
+    end
+  end
+
+  test "renders a raw unflagged JSONL user line as a user turn" do
+    text = TranscriptTextRenderer.render([
+      {
+        "type" => "user",
+        "message" => { "role" => "user", "content" => [ { "type" => "text", "text" => "please rebase this" } ] },
+        "isMeta" => "false"
+      }
+    ])
+
+    assert_includes text, "--- User ---"
+    assert_includes text, "please rebase this"
+    refute_includes text, "Runtime Notice"
+  end
+
   test "renders other system events under the generic system header" do
     text = TranscriptTextRenderer.render([
       { type: OpenTranscript::Types::SYSTEM_EVENT, subtype: "queue-operation", payload: { "operation" => "dequeue" } }
     ])
 
     assert_includes text, "--- System Event ---"
+    assert_includes text, "queue-operation", "a non-notice SystemEvent keeps its generic dump, subtype included"
     refute_includes text, "Runtime Notice"
   end
 

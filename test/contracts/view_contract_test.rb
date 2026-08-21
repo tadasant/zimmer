@@ -487,11 +487,10 @@ class ViewContractTest < ActionView::TestCase
   # (#488)
   # =========================================================================
   #
-  # End-to-end proof, from the verbatim JSONL the Claude Code CLI writes into
-  # its own transcript through the normalizer to the rendered row. Before this
-  # fix both lines below drew an indigo "User" header, indistinguishable from
-  # something a person typed — the deployment's owner read one and asked whether
-  # he had interrupted a session he had never touched.
+  # End-to-end, from the verbatim JSONL the Claude Code CLI writes into its own
+  # transcript through the normalizer to the rendered row. An indigo "User"
+  # header on either of these tells the reader a person typed it, which is what
+  # sent the deployment's owner looking for an interrupt he never made.
 
   def render_claude_line(raw)
     events = ClaudeTranscriptNormalizer.new.normalize(raw, session: @running_session, transcript_index: 7)

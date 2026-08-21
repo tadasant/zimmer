@@ -101,9 +101,8 @@ class OpenTranscriptTest < ActiveSupport::TestCase
 
   # A runtime notice (#488) is a SystemEvent, but it occupies the conversational
   # slot the CLI wrote it into and "the turn was cut off here" is context a
-  # reader on the `minimal` filter still needs. Reclassifying it out of
-  # `message` would hide a row that used to be visible — that fix is about
-  # attribution, not about showing less.
+  # reader on the `minimal` filter still needs. Any other bucket would hide the
+  # row: the point is to correct its attribution, not to show less.
   test "filter_category keeps a runtime notice in the message bucket" do
     item = make_event(
       id: "g", ts: "2025-11-20T10:00:00Z", type: Types::SYSTEM_EVENT,

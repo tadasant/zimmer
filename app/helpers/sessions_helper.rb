@@ -311,14 +311,19 @@ module SessionsHelper
   # wrote it. The wording inside the text is Claude Code's — "[Request
   # interrupted by user for tool use]" says "by user" and is not ours to change
   # — so the attribution Zimmer wraps around it has to carry the correction.
+  #
+  # The flag names and their explanations ride on the payload rather than being
+  # looked up from a runtime's normalizer, so this stays runtime-agnostic like
+  # the rest of the OpenTranscripts display helpers.
   def ot_runtime_notice_markdown(item)
     payload = item[:payload]
     payload = {} unless payload.is_a?(Hash)
 
     markers = payload["markers"]
-    reasons = (markers.is_a?(Array) ? markers : []).filter_map do |flag|
-      reason = ClaudeTranscriptNormalizer::RUNTIME_NOTICE_FLAGS[flag]
-      "#{reason} (`#{flag}`)" if reason
+    reasons = (markers.is_a?(Array) ? markers : []).filter_map do |marker|
+      next unless marker.is_a?(Hash) && marker["flag"].present?
+
+      marker["reason"].present? ? "#{marker['reason']} (`#{marker['flag']}`)" : "`#{marker['flag']}`"
     end
 
     attribution = "*Written by the agent runtime, not typed by a person"
