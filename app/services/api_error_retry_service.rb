@@ -371,9 +371,11 @@ class ApiErrorRetryService
     content = file_system.read(transcript_path)
     return nil if content.blank?
 
-    terminal = nil
-
-    content.lines.each do |line|
+    # Walk backwards and stop at the first conversational entry: it is the last
+    # thing the conversation contains, and the only one the question is about.
+    # Forwards would parse every line of a transcript that can run to tens of
+    # thousands, on every normal exit of every session.
+    terminal = content.lines.reverse_each.lazy.filter_map { |line|
       next if line.strip.blank?
 
       begin
@@ -385,12 +387,12 @@ class ApiErrorRetryService
       next unless CONVERSATIONAL_ENTRY_TYPES.include?(entry["type"])
       next if entry["isSidechain"] == true
 
-      # A conversational entry that is NOT an API error is the turn making
-      # progress, which clears any error before it.
-      terminal = entry["isApiErrorMessage"] == true ? entry : nil
-    end
+      entry
+    }.first
 
-    return nil unless terminal
+    # No conversational entry at all, or the turn ended on real output rather
+    # than on an error — either way, nothing died here.
+    return nil unless terminal && terminal["isApiErrorMessage"] == true
 
     error_type = terminal["error"].to_s
     message_text = extract_message_text(terminal)
