@@ -127,8 +127,15 @@ class ApiErrorRetryService
   # Transcript entry types that are the conversation itself. Everything else the
   # runtime writes into the same file — +queue-operation+, +attachment+,
   # +atis-latch+, +last-prompt+ — is bookkeeping, and routinely lands AFTER the
-  # final message of a turn. See #unrecognized_terminal_api_error_text.
+  # final message of a turn. See #terminal_api_error.
   CONVERSATIONAL_ENTRY_TYPES = %w[user assistant].freeze
+
+  # The API error a turn died on. +recognized+ says whether some classifier owns
+  # the wording — it gates alerting, never the verdict. +line+ identifies the
+  # transcript entry, so the caller can refuse to fail the same dead turn twice.
+  TerminalApiError = Data.define(:text, :recognized, :line) do
+    def recognized? = recognized
+  end
 
   attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :file_system, :rate_limit_tracker
 
@@ -337,31 +344,39 @@ class ApiErrorRetryService
     nil
   end
 
-  # The API error this turn DIED on, when no classifier recognizes it.
+  # The API error this turn DIED on: the last conversational entry in the
+  # transcript being an isApiErrorMessage.
   #
   # A stronger question than #unclassified_api_error_text asks. That one answers
   # "is there an unrecognized API error anywhere in the transcript"; this one
-  # answers "is an unrecognized API error the LAST thing the conversation
-  # contains" — which is only ever true of a turn that stopped because of it.
+  # answers "is an API error the LAST thing the conversation contains" — which is
+  # only ever true of a turn that stopped because of it.
   #
-  # That distinction is what makes this safe to act on from the NORMAL-COMPLETION
-  # path in ProcessLifecycleManager, where a stale unrecognized entry further back
-  # must not be allowed to condemn a turn that really did finish. It is also why
-  # this reader ignores +api_error_last_checked_line+: the marker exists to stop a
-  # handled error being retried twice, and a terminal error is by definition the
-  # one that just ended this turn. Skipping it because some earlier pass moved the
-  # marker is exactly how a dead turn goes quiet.
+  # == Why it does not filter by classifier ==
   #
-  # Only +user+ and +assistant+ entries count, on both sides of the question. The
-  # runtime writes bookkeeping entries (+last-prompt+, +atis-latch+, +attachment+,
-  # +queue-operation+) after the final message, and those are not the conversation
-  # making progress. Sidechain (subagent) entries are skipped for the mirror-image
-  # reason: a subagent's API error does not end the main turn.
+  # ProcessLifecycleManager asks this LAST on the normal-completion path, after
+  # every specific classifier has already looked at the same exit and declined to
+  # act. So a terminal error reaching here means nobody is handling this dead
+  # turn, whatever its wording — including the case where a classifier DOES
+  # recognize the wording but has already spent its cursor on it. That case is
+  # reachable: a 5xx is retried, +api_error_last_checked_line+ advances past it,
+  # the respawn writes nothing and exits 1, and every classifier now says "not
+  # mine" about a transcript whose last word is still that 5xx.
+  #
+  # +recognized+ records which of the two it was. It changes only whether the
+  # failure is *alerted* as an unknown wording — not whether the turn is allowed
+  # to look finished, which it never is.
+  #
+  # Only +user+ and +assistant+ entries count. The runtime writes bookkeeping
+  # entries (+last-prompt+, +atis-latch+, +attachment+, +queue-operation+) after
+  # the final message, and those are not the conversation making progress.
+  # Sidechain (subagent) entries are skipped for the mirror-image reason: a
+  # subagent's API error does not end the main turn.
   #
   # @param working_directory [String] Working directory for locating the transcript
-  # @return [String, nil] the unmatched error text, or nil when the turn ended on
-  #   real output, on a recognized error, or on nothing at all
-  def unrecognized_terminal_api_error_text(working_directory)
+  # @return [TerminalApiError, nil] nil when the turn ended on real output or on
+  #   nothing at all
+  def terminal_api_error(working_directory)
     return nil unless working_directory
 
     transcript_path = find_transcript_path(working_directory)
@@ -373,9 +388,12 @@ class ApiErrorRetryService
 
     # Walk backwards and stop at the first conversational entry: it is the last
     # thing the conversation contains, and the only one the question is about.
-    # Forwards would parse every line of a transcript that can run to tens of
-    # thousands, on every normal exit of every session.
-    terminal = content.lines.reverse_each.lazy.filter_map { |line|
+    # Forwards would JSON-parse every line of a transcript that can run to tens
+    # of thousands, on every normal exit of every session.
+    lines = content.lines
+    offset_from_end = 0
+    terminal = lines.reverse_each.lazy.filter_map { |line|
+      offset_from_end += 1
       next if line.strip.blank?
 
       begin
@@ -384,22 +402,28 @@ class ApiErrorRetryService
         next
       end
 
+      # A line that parses to a bare scalar ("null", "42") is valid JSON and not
+      # an entry; asking it for ["type"] would raise past the lazy block.
+      next unless entry.is_a?(Hash)
       next unless CONVERSATIONAL_ENTRY_TYPES.include?(entry["type"])
       next if entry["isSidechain"] == true
 
-      entry
+      [ entry, lines.length - offset_from_end + 1 ]
     }.first
 
     # No conversational entry at all, or the turn ended on real output rather
     # than on an error — either way, nothing died here.
-    return nil unless terminal && terminal["isApiErrorMessage"] == true
+    return nil unless terminal && terminal.first["isApiErrorMessage"] == true
 
-    error_type = terminal["error"].to_s
-    message_text = extract_message_text(terminal)
-    return nil if retryable_error?(error_type, message_text)
-    return nil if classified_elsewhere?(error_type, message_text)
+    entry, line_number = terminal
+    error_type = entry["error"].to_s
+    message_text = extract_message_text(entry)
 
-    [ error_type.presence, message_text.presence ].compact.join(": ").presence
+    TerminalApiError.new(
+      text: [ error_type.presence, message_text.presence ].compact.join(": ").presence || "(no error text)",
+      recognized: retryable_error?(error_type, message_text) || classified_elsewhere?(error_type, message_text),
+      line: line_number
+    )
   rescue => e
     @logger.error("Error checking transcript for a terminal API error", error: e.message)
     nil

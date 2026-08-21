@@ -156,14 +156,14 @@ class ClaudeRetryStrategy
     nil
   end
 
-  # The API error this turn DIED on, if no classifier above recognized it: the
-  # last conversational entry in the transcript being an unmatched
-  # isApiErrorMessage. ProcessLifecycleManager consults this on the
-  # NORMAL-COMPLETION path, where a turn that ended on an error would otherwise
-  # be indistinguishable from one that finished.
+  # The API error this turn DIED on: the last conversational entry in the
+  # transcript being an isApiErrorMessage. ProcessLifecycleManager consults this
+  # LAST on the NORMAL-COMPLETION path, after every classifier above has declined
+  # to act — so an answer here means nobody is handling a turn that did not
+  # finish, and it would otherwise be indistinguishable from one that did.
   #
-  # @return [String, nil] the unmatched error text
-  def terminal_api_error_text(working_dir:)
+  # @return [ApiErrorRetryService::TerminalApiError, nil]
+  def terminal_api_error(working_dir:)
     return nil unless working_dir
 
     temp_service = ApiErrorRetryService.new(
@@ -175,7 +175,7 @@ class ClaudeRetryStrategy
       rate_limit_tracker: @rate_limit_tracker
     )
 
-    temp_service.unrecognized_terminal_api_error_text(working_dir)
+    temp_service.terminal_api_error(working_dir)
   rescue => e
     @logger.error("Error checking transcript for a terminal API error", error: e.message)
     nil

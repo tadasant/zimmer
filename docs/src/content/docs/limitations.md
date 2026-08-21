@@ -758,7 +758,7 @@ after the servers have already been wired for that run.
 | What | Pattern | File |
 | --- | --- | --- |
 | Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb:116` |
-| Auth lost → adopt/rotate/wait, respawn, then park | the `error` type `authentication_failed`, plus a prose net | `auth_recovery_service.rb` |
+| Auth lost → adopt/rotate/wait, respawn, then park | the `error` types `authentication_failed` / `oauth_error`, plus a prose net | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb:44` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb:75` |
 | Held runtime session id → resume it, or mint a new one | `/session id\b.*\balready in use/i` | `claude_retry_strategy.rb` |
@@ -775,20 +775,20 @@ transcript text, so the next wording change surfaces as a Slack message rather t
 archaeology session. The same reporter fires when a classifier and its recovery service disagree
 about the same exit.
 
-The normal-completion branch is covered too, and it did not used to be. Claude exits 0 or 1 for a
-finished turn, so an unrecognized error there once reached `needs_input` without a word — which is
-exactly what happened on 2026-08-20, when a reworded auth failure ended production session 6412 and
-left a human's message unanswered with nothing but the transcript to find it by. `handle_exit` now
-also asks a question with no prose in it: *is the last conversational entry in the transcript an API
-error?* If it is, the turn did not complete however the runtime worded it, and the session fails with
-the unmatched text in the alert rather than parking as finished. See
+The normal-completion branch is covered too. Claude exits 0 or 1 for a finished turn, so an exit
+there is the one a stale classifier can hide behind — on 2026-08-20 a reworded auth failure ended
+production session 6412 that way and left a human's message unanswered with nothing but the
+transcript to find it by. `handle_exit` therefore asks a last question with no prose in it: *is the
+last conversational entry in the transcript an API error?* If it is, the turn did not complete
+however the runtime worded it, and the session fails — with the unmatched text in an alert when the
+wording is one nothing recognises — rather than parking as finished. See
 [Agent harness auth](/auth/harness/#a-turn-that-dies-on-an-api-error-can-never-look-finished).
 
 Two gaps remain inside that, deliberately. A stale classifier still costs a **failed session** rather
 than the recovery it should have got: the held-session-id row above is one of those — Claude reports
-that refusal with exit 1 and writes nothing to the transcript, so the state check that catches it is
-the empty-turn restart (see [Spawning](/sessions/spawning/)), which covers the first turn of a
-session and not a later one. And `CodexRetryStrategy` classifies nothing but a missing rollout, so
+that refusal with exit 1 and writes nothing to the transcript at all, so no terminal API error exists
+for the backstop to see and the only state check that catches it is the empty-turn restart (see
+[Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. And `CodexRetryStrategy` classifies nothing but a missing rollout, so
 every ordinary Codex failure is by construction an exit no classifier matched; it answers
 `classifies_exits? => false` and gets the loud log without a page, because paging on a runtime's
 designed-for path is how a channel gets ignored. The terminal-error backstop reads Claude's
