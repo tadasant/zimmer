@@ -104,6 +104,44 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_match(/5-hour window at 80% of its 80% target/, decision.detail)
   end
 
+  # --- the resume margin -------------------------------------------------------
+
+  # The ceiling half of the policy needs a different line from the admission
+  # half. Holding a session that has not started costs nothing; resuming one that
+  # was interrupted mid-turn costs a lost tool call, so it waits for real
+  # headroom rather than resuming the instant the window dips under the target
+  # and pushing it straight back over.
+  test "the resume decision holds inside the margin, where a starting session would be admitted" do
+    seed(current_5h: 0.78, current_7d: 0.10)
+
+    assert SpotGateService.evaluate.allowed?, "78% is under the 80% target for a session starting now"
+
+    resume = SpotGateService.resume_decision
+    refute resume.allowed?
+    assert_equal "at_utilization_limit", resume.reason
+    assert_in_delta 75.0, resume.five_hour.threshold_pct, 0.001,
+      "the resume decision reports the target it actually decided on"
+  end
+
+  test "the resume decision allows once utilization clears the margin" do
+    seed(current_5h: 0.74, current_7d: 0.10)
+
+    decision = SpotGateService.resume_decision
+    assert decision.allowed?
+    assert_equal "within_limits", decision.reason
+  end
+
+  # The margin lowers the target; it never inverts it. A 3% target with a 5-point
+  # margin must not become a negative threshold that no reading can clear.
+  test "the margin cannot push a target below zero" do
+    @setting.update!(spot_gate_five_hour_threshold_pct: 3)
+    seed(current_5h: 0.0, current_7d: 0.10)
+
+    decision = SpotGateService.resume_decision
+    assert_in_delta 0.0, decision.five_hour.threshold_pct, 0.001
+    refute decision.allowed?, "a zero target is reached by any reading, including zero"
+  end
+
   test "the weekly window pauses spot work on its own" do
     seed(current_5h: 0.10, current_7d: 0.95)
     decision = SpotGateService.evaluate

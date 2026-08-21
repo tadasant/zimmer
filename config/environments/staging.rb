@@ -228,6 +228,11 @@ Rails.application.configure do
       class: "QuotaResetCheckerJob",
       description: "Check if quota-exceeded accounts have reset and restore them to active"
     },
+    spot_ceiling_sweep: {
+      cron: "*/5 * * * *", # Every 5 minutes — quota readings land every 15, so this is not the bound
+      class: "SpotCeilingSweepJob",
+      description: "Pause running spot sessions when a quota window reaches its target, and resume them when it falls"
+    },
     claude_usage_sampler: {
       cron: "*/15 * * * *", # Every 15 minutes
       class: "ClaudeUsageSamplerJob",

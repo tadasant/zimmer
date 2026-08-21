@@ -105,6 +105,23 @@
         <strong><%= @spot_decision.allowed? ? "started" : "held" %></strong>.
       </p>
 
+      <%# The other half of the same policy: a target is a ceiling on spot spend,
+          so reaching one stops the sessions already running as well as the ones
+          trying to start. Rendered whether or not any are paused — "0 paused"
+          is the answer to "did it actually stop anything?". %>
+      <p class="mt-1 text-sm text-gray-600" id="spot-gate-running-decision">
+        Running spot sessions paused for the ceiling:
+        <strong id="spot-paused-count"><%= @spot_paused_count %></strong>.
+        <% if @spot_decision.held? && @spot_decision.reason == SpotSessionPause::UTILIZATION_REASON %>
+          A window is at its target, so running spot sessions are being paused too — they resume
+          on their own once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
+        <% else %>
+          Running spot sessions are paused only while a window sits at its target, and resume once
+          utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it. Priority
+          sessions are never paused.
+        <% end %>
+      </p>
+
       <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 text-sm">
         <div>
           <dt class="text-gray-500">Sessions running</dt>

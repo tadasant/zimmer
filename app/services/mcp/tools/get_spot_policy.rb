@@ -18,7 +18,10 @@ module Mcp
         Every session runs as `priority` (always starts) or `spot`. A spot session starts while the
         Claude Code account pool is under both window targets ON AVERAGE — across every account, including
         ones in needs_reauth — AND a session slot is free. Nothing is forecast: when a window reaches its
-        target, spot work pauses until utilization comes back down.
+        target, spot work pauses until utilization comes back down — both the spot sessions trying to
+        start AND the ones already running, which are paused mid-run so the window stops climbing
+        instead of filling to 100%. A paused session goes dormant in `waiting` and resumes on its own
+        once utilization falls a few points below the target.
         Every running session counts toward the concurrency limit, priority included, but only spot
         sessions are held by it — priority work is meant to crowd spot work out. A held spot session is
         deferred, never cancelled: it stays `waiting` and starts on its own once a slot frees or the
@@ -31,6 +34,7 @@ module Mcp
         Returns:
         - the gate setting (on/off, both window targets, and the max sessions at once)
         - the current decision: running or held, the reason, and how many sessions are running
+        - how many running spot sessions are currently paused for the ceiling, and what brings them back
         - each window's utilization as last read across the pool, against its target
         - every genesis kind, its current class, and how many live sessions derive from it
         - every trigger that carries a class of its own
@@ -73,7 +77,14 @@ module Mcp
           "- **Spot sessions:** #{decision.allowed? ? "running" : "HELD"}",
           "- **Reason:** `#{decision.reason}`",
           "- **Detail:** #{decision.detail}",
-          "- **Running Claude Code sessions:** #{decision.active_sessions}"
+          "- **Running Claude Code sessions:** #{decision.active_sessions}",
+          # The decision above is about a session STARTING. This is the same
+          # policy applied to the ones already running, which is what keeps the
+          # target a ceiling on spend rather than a floor under when new work
+          # stops. Same number the /quotas card shows.
+          "- **Spot sessions paused mid-run:** #{SpotSessionPause.paused_count} " \
+          "(paused while a window sits at its target; they resume automatically once utilization " \
+          "falls #{SpotGateService::RESUME_MARGIN_PCT} points below it, and priority sessions are never paused)"
         ]
 
         if decision.pool_size
@@ -103,7 +114,7 @@ module Mcp
           "",
           "- **Utilization now:** #{format_pct(reading.current_pct)}",
           "- **Target:** #{format_pct(reading.threshold_pct)}",
-          "- **At the target:** #{reading.at_limit? ? "yes — spot work is paused until it falls" : "no"}"
+          "- **At the target:** #{reading.at_limit? ? "yes — spot work is paused until it falls, running sessions included" : "no"}"
         ]
       end
 

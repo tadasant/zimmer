@@ -13,9 +13,9 @@ Zimmer's answer is to classify sessions by where they came from, and to let the 
 | Class | Behavior |
 | --- | --- |
 | **priority** | Starts whenever it is ready. Never consulted about quota or concurrency. |
-| **spot** | Starts while the Claude Code account pool averages under both window targets and a session slot is free. Otherwise it waits and starts later. |
+| **spot** | Starts while the Claude Code account pool averages under both window targets and a session slot is free. Otherwise it waits and starts later. **And stops if a window reaches its target while it is running.** |
 
-A held spot session is **deferred, never cancelled**. Nothing is lost.
+A held or paused spot session is **deferred, never cancelled**. Nothing is lost.
 
 The targets on `/quotas` are a **level to reach, not a line to stay clear of**. A deployment sitting
 idle should be idle because its windows are at 80%, never because the gate was being careful.
@@ -134,6 +134,9 @@ statements about numbers that have already been read.
 There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
 its target, not when it might. Utilization falls on its own — Anthropic's counters are sliding
 windows — so the pause ends when the number does, on the next re-check.
+
+The same two checks decide for a session that is **already running**, which is what makes a target a
+ceiling rather than only a starting line — see [The target is a ceiling](#the-target-is-a-ceiling).
 
 ### The concurrency limit
 
@@ -283,12 +286,81 @@ is the intent — the pause is meant to last exactly as long as the utilization 
 for considerably longer, which is the cost of a hard stop and is visible on `/quotas` the whole time.
 Promoting one session to priority is the lever for a single piece of work that cannot wait.
 
-**Only a session's first start is gated.** Follow-ups, monitoring resumes and clone-only setups pass
-straight through. Interrupting a conversation already underway strands it half-done and wastes the
-tokens already spent on it — the decision point that means something is "should this work begin".
+**Only a session's first start is gated at the starting line.** Follow-ups, monitoring resumes and
+clone-only setups pass straight through the admission check. What stops an already-running spot
+session is the ceiling sweep below, which acts only when a window has actually reached its target —
+so an ordinary follow-up is never held for a pool with headroom.
 
 The session detail page shows a **Held for quota headroom** banner naming the reason, the next check
 time, and how to start it now.
+
+## The target is a ceiling
+
+Admission alone made the target a **floor under when new spot work stops**, not a ceiling on what
+spot work spends. A session admitted at 79% goes on running, and a fleet of them carries the window
+straight past the line: on 2026-08-20 the spot gate card read *"Holding spot sessions: 5-hour window
+at 89% of its 80% target"* while twelve sessions ran and three accounts sat in `quota_exceeded`. The
+gate had stopped admitting at 80% and then watched the work already in flight climb toward 100%.
+
+So `SpotCeilingSweepJob` re-evaluates the same decision every five minutes and applies it to running
+sessions:
+
+| The gate says | What happens to running spot sessions |
+| --- | --- |
+| `at_utilization_limit` | Every running spot session is **paused**. |
+| `fleet_at_cap` | Nothing. A running session already holds its slot; pausing it would free that slot only for another spot session the same cap would hold. |
+| anything else | Sessions paused by an earlier sweep are **resumed**, oldest pause first. |
+
+Priority sessions are never paused, on any reading. Nor are Codex sessions (they spend nothing
+against a Claude window) or status-summary forks (Zimmer's own seconds-long bookkeeping).
+
+### What a pause does
+
+The session's CLI process is terminated and the session goes dormant in **`waiting`** — the same
+shape a `wake_me_up_later` sleep leaves behind, reached the same way (`pending_sleep` is set, and the
+pause callback carries it needs_input → waiting).
+
+`waiting`, not `needs_input`, is deliberate: a session in `needs_input` lands on the homepage action
+queue, which is for work a human must act on. A quota pause is not — and ten of them at once would
+bury the sessions that genuinely need a person.
+
+Pausing interrupts a turn. What the agent had already written to disk stays written; the tool call in
+flight is lost, along with any reasoning not yet flushed to the transcript. That cost is paid once
+per pause, and it is recorded rather than silent:
+
+| Where | What it says |
+| --- | --- |
+| `metadata` | `spot_pause_at`, `spot_pause_reason`, `spot_pause_detail` (the gate's own sentence), `spot_pause_count`, and `paused_by: spot_quota` |
+| The session log | A warning line naming the window, the target, and what brings the session back |
+| The session page | A **Paused mid-run for quota headroom** banner, with the same **Make this session priority** button the hold banner carries |
+| MCP | `get_session` reports the pause, why, and when it resumes |
+
+`paused_by: spot_quota` is what keeps the recovery sweeps out of it: it is neither `user` (which stops
+auto-continues) nor `recovery` (which would have `DeploymentRecoveryJob` resume the session straight
+back into the window that stopped it). A **Refresh all** on the dashboard skips these sessions for the
+same reason.
+
+### What brings it back
+
+The next sweep that finds the gate open resumes them, with the standard system-recovery nudge telling
+the agent to pick up where it left off. Two things shape which and how many:
+
+- **A resume margin.** Resumption decides against targets lowered by `SpotGateService::RESUME_MARGIN_PCT`
+  (5 points): with an 80% target, a paused session resumes when the pool reaches **75%**. Holding a
+  session that never started costs nothing, so admission uses the plain target; resuming one that was
+  interrupted mid-turn costs a lost tool call, so it waits for real headroom rather than resuming at
+  79.9% and pushing the window straight back over.
+- **A batch of five per sweep**, and never more than the free slots under **Max sessions at once**. A
+  window that has just come back down is at its most fragile — every session resumed starts spending
+  again immediately — so the fleet walks back up over successive sweeps rather than restoring all at
+  once. Sessions past the batch keep their place at the front of the next one.
+
+A session someone promotes to **priority** while it sleeps is resumed by the next sweep whatever the
+windows say, because priority work is never gated on quota.
+
+The sweep runs every five minutes, but what bounds how fast the ceiling reacts is the **reading**, not
+the sweep: utilization comes from quota snapshots, which land when `ClaudeUsageSamplerJob` samples
+(every 15 minutes), when an account rotates, and when someone opens `/quotas`.
 
 ## MCP parity
 
@@ -297,6 +369,8 @@ time, and how to start it now.
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
 | Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
+| Read how many running spot sessions the ceiling has paused | Spot gate card on `/quotas` | `get_spot_policy` |
+| Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
 | Toggle gating, set the window targets, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
 | One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
 | Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
