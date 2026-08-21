@@ -303,6 +303,35 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     end
   end
 
+
+  # Nothing renderable means there is nothing to ask about, so no call is made
+  # at all — but the record must still land in a state the sweep will retry.
+  test "the headless path records a failure without calling out when there is nothing to render" do
+    @session.update_column(:transcript, "not json\nalso not json\n")
+    inference = FakeInference.new("An answer that should never be asked for.")
+
+    result = SessionStatusSummaryGenerator.call(
+      session: @session, file_system: @fs, headless: true, inference_service: inference
+    )
+
+    assert_equal :failed, result.outcome
+    assert_empty inference.prompts, "a blank excerpt must not cost an inference call"
+    assert_nil @session.reload.status_summary.summary
+    assert_equal "failed", @session.status_summary.state
+  end
+
+  # The refusal gate has two halves and this is the wording-independent one:
+  # HeadlessInferenceService answers nil for a backend that exited non-zero, and
+  # the generator must treat that as no answer rather than storing anything.
+  test "the headless path records a failure when the inference reports no answer" do
+    result, = generate_headless(nil)
+
+    assert_equal :failed, result.outcome
+    assert_nil @session.reload.status_summary.summary
+    assert @session.status_summary.stale?(@session.transcript_line_count),
+      "the session must stay a candidate for another attempt"
+  end
+
   # The dashboard broadcasts a card from after_create_commit, so a marker
   # stamped afterwards is stamped too late — the card is already on every open
   # dashboard.

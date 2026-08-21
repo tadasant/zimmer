@@ -85,13 +85,18 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
 
     archive_fork(fork)
 
-    # The fork produced nothing, so try the path that does not need one. A
-    # parked fork is the overwhelmingly common case here and it means the pool
-    # is empty — which is exactly when waiting for the next sweep to re-fork
-    # produces one more parked fork instead of a blurb. Enqueued rather than run
-    # inline so this job stays short, and only after the record is committed as
-    # `failed`, so the retry claims a record no other runner holds.
-    enqueue_headless_retry(source_id) if text.blank?
+    # The fork produced nothing, so try the path that does not need one — but
+    # ONLY when a fork genuinely could not have delivered. A park means the pool
+    # is empty, which is exactly when waiting for the next sweep to re-fork
+    # produces one more parked fork instead of a blurb. A fork that died of
+    # something else while the pool was healthy is a different case: re-forking
+    # is the right repair, the sweep will do it, and downgrading here would
+    # stamp a terser blurb as CURRENT and stop the sweep ever trying again.
+    #
+    # Enqueued rather than run inline so this job stays short, and only after
+    # the record is committed as `failed`, so the retry claims a record no other
+    # runner holds.
+    enqueue_headless_retry(source_id) if text.blank? && (parked || pool_exhausted?(fork.agent_runtime))
   rescue StandardError => e
     Rails.logger.error "[SessionStatusSummaryHarvestJob] Failed to harvest fork #{fork_session_id}: #{e.message}"
     archive_fork(Session.find_by(id: fork_session_id))
@@ -161,6 +166,17 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
     ].compact.join(" — ")
 
     detail.present? ? "The summary fork failed: #{detail}".truncate(SessionStatusSummary::MAX_ERROR_CHARS) : "The summary fork failed."
+  end
+
+  # Whether this runtime's login pool has nothing left to run another fork on.
+  # Fail-CLOSED here, unlike the generator: an unreadable pool is not a reason to
+  # downgrade a session whose fork may simply have crashed, and the sweep is
+  # still behind this as the repair of last resort.
+  def pool_exhausted?(runtime)
+    RuntimeAuthProvider.for(runtime).accounts.available.none?
+  rescue StandardError => e
+    Rails.logger.warn "[SessionStatusSummaryHarvestJob] Could not read the #{runtime} account pool: #{e.message}"
+    false
   end
 
   # Asks for a pool-independent retry of a generation the fork could not deliver.
