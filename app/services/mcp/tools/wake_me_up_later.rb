@@ -5,33 +5,18 @@ module Mcp
     # Mirrors POST /api/v1/triggers with a one-time schedule condition bound to an
     # existing session (reuse_session + last_session_id).
     #
-    # The sleep is NOT a separate step: Trigger's `after_create
-    # :sleep_target_session_if_applicable` callback transitions the target session
-    # to waiting (or sets pending_sleep on a running one) inside the same
-    # transaction that persists the trigger. Creating the trigger IS the atomic
-    # sleep+schedule, which is why this tool never calls Session#sleep! itself.
+    # The scheduling itself — validation, the trigger, and the sleep that trigger
+    # creation performs as a side effect — lives in Sessions::ScheduleWakeUp, which
+    # the web UI's "Pause Until" control shares. This class is the MCP-shaped
+    # wrapper around it: argument coercion, the rendered description, and the
+    # markdown receipt.
     class WakeMeUpLater < Tool
       tool_name "wake_me_up_later"
 
-      # Reject wake-ups that resolve to <= 30 seconds in the future. Anything inside
-      # this window is effectively "now" — and the past-dated case (the bug this
-      # guards against) silently fires-and-drops in the scheduler, leaving the
-      # session permanently asleep.
-      WAKE_AT_GRACE_WINDOW = 30.seconds
-
-      # Reject inputs that don't look like a calendar+time: bare dates ("2026-04-15"),
-      # trailing offsets ("...+05:00"), and `Z` paired with a non-UTC IANA timezone
-      # (ambiguous — we'd have to pick one to honor and the other to ignore).
-      NAIVE_DATETIME_REGEX = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z?\z/
-      EXPLICIT_OFFSET_REGEX = /[+-]\d{2}:?\d{2}\z/
-
-      UTC_ZONE_NAMES = %w[UTC Etc/UTC].freeze
-
-      # `needs_input` → immediate sleep; `running` → deferred sleep via pending_sleep
-      # metadata; `waiting` → already dormant, the trigger fires normally. Anything
-      # else (failed, archived) would silently no-op the auto-sleep and leave the
-      # caller with a trigger targeting a session that can't be woken.
-      WAKEABLE_STATUSES = %w[needs_input running waiting].freeze
+      # Re-exported so the description below and anything reading the tool surface
+      # see the same numbers the scheduler enforces.
+      WAKE_AT_GRACE_WINDOW = Sessions::ScheduleWakeUp::WAKE_AT_GRACE_WINDOW
+      WAKEABLE_STATUSES = Sessions::ScheduleWakeUp::WAKEABLE_STATUSES
 
       # The description interpolates the current server time, so it is rendered per
       # tools/list call rather than frozen at class-definition time — the model uses
@@ -122,34 +107,25 @@ module Mcp
       })
 
       def call(args)
-        wake_at = normalize_seconds(require_arg(args, :wake_at).to_s)
+        wake_at = require_arg(args, :wake_at).to_s
         prompt = require_arg(args, :prompt).to_s
         timezone = args["timezone"].presence || "UTC"
 
-        # Cheapest validation runs first (no DB writes). A past-dated wake_at
-        # silently fires-and-drops in the scheduler and leaves the session
-        # permanently asleep, so reject it before any state change.
-        wake_at_utc = parse_wake_at(wake_at, timezone)
-        if wake_at_utc <= Time.current + WAKE_AT_GRACE_WINDOW
-          raise ToolError, "wake_at \"#{wake_at}\" (timezone: #{timezone}) resolves to #{format_utc(wake_at_utc)} UTC, " \
-                           "which is in the past or within 30 seconds of the current server time (#{format_utc(Time.current)} UTC). " \
-                           "No trigger was created and no session state was changed. Recompute relative to the current server time " \
-                           "shown in the tool description and call again — wake_at must be more than 30 seconds in the future."
-        end
-
         session = find_session(args["session_id"])
-        unless WAKEABLE_STATUSES.include?(session.status.to_s)
-          raise ToolError, "Session #{session.id} is in \"#{session.status}\" state and cannot be scheduled for wake-up. " \
-                           "Only sessions in #{WAKEABLE_STATUSES.join(', ')} can be woken up."
+
+        trigger = begin
+          Sessions::ScheduleWakeUp.call(session: session, wake_at: wake_at, timezone: timezone, prompt: prompt)
+        rescue Sessions::ScheduleWakeUp::Error => e
+          raise ToolError, tool_error_message(e)
         end
 
-        trigger = create_wake_trigger!(session, wake_at, timezone, prompt)
+        scheduled_at = trigger.trigger_conditions.first.scheduled_at
 
         <<~TEXT.strip
           ## Wake-Up Scheduled Successfully
 
           - **Session ID:** #{session.id}
-          - **Wake At:** #{wake_at} (#{timezone})
+          - **Wake At:** #{scheduled_at} (#{timezone})
           - **Trigger ID:** #{trigger.id}
           - **Trigger Name:** #{trigger.name}
 
@@ -163,85 +139,15 @@ module Mcp
 
       private
 
-      # Convert a naive ISO-8601 wall-clock string in `timezone` to an absolute
-      # instant, using the same ActiveSupport::TimeZone#parse the scheduler itself
-      # uses (TriggerCondition#schedule_due?) so validation and firing agree on
-      # what the string means — including across DST boundaries.
-      # Minute-precision is accepted, but the value is stored on the trigger
-      # condition and re-parsed with Time.iso8601 when it fires, which requires
-      # seconds. TriggerCondition normalizes the bare "…T09:00" form itself but not
-      # "…T09:00Z", so canonicalize here and store a value that always fires.
-      def normalize_seconds(wake_at)
-        match = /\A(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(Z?)\z/.match(wake_at)
-        return wake_at unless match
+      # The scheduler's rejection, plus the one remediation sentence that only
+      # makes sense to a model: recompute against the server time the description
+      # renders. The web UI's remediation is different, which is why it is spliced
+      # on here rather than baked into Sessions::ScheduleWakeUp.
+      def tool_error_message(error)
+        return error.message unless error.code == :wake_at_too_soon
 
-        "#{match[1]}:00#{match[2]}"
-      end
-
-      def parse_wake_at(wake_at, timezone)
-        if wake_at.match?(EXPLICIT_OFFSET_REGEX)
-          invalid_wake_at!(wake_at, timezone,
-            'wake_at must not include a UTC offset (e.g., "+05:00"); pass the wall-clock time and an IANA timezone name (e.g., "America/New_York")')
-        end
-
-        unless wake_at.match?(NAIVE_DATETIME_REGEX)
-          invalid_wake_at!(wake_at, timezone,
-            'wake_at must be an ISO-8601 datetime like "2026-04-15T14:30:00" (date-only and other formats are not accepted)')
-        end
-
-        zone = ActiveSupport::TimeZone[timezone]
-        invalid_wake_at!(wake_at, timezone, "\"#{timezone}\" is not a recognized IANA timezone name") if zone.nil?
-
-        if wake_at.end_with?("Z") && !UTC_ZONE_NAMES.include?(timezone)
-          invalid_wake_at!(wake_at, timezone,
-            "wake_at ends with \"Z\" (UTC) but timezone is \"#{timezone}\". Either drop the trailing \"Z\" or set timezone to \"UTC\"")
-        end
-
-        parsed = begin
-          zone.parse(wake_at.delete_suffix("Z"))
-        rescue ArgumentError
-          nil
-        end
-        invalid_wake_at!(wake_at, timezone, "Invalid wake_at value: \"#{wake_at}\"") if parsed.nil?
-
-        parsed
-      end
-
-      def invalid_wake_at!(wake_at, timezone, detail)
-        raise ToolError, "Could not parse wake_at \"#{wake_at}\" with timezone \"#{timezone}\": #{detail}. " \
-                         "No trigger was created and no session state was changed."
-      end
-
-      def format_utc(time)
-        time.utc.iso8601
-      end
-
-      def create_wake_trigger!(session, wake_at, timezone, prompt)
-        Trigger.create!(
-          name: "Wake session ##{session.id} at #{wake_at}",
-          agent_root_name: trigger_agent_root_name(session),
-          prompt_template: prompt,
-          reuse_session: true,
-          last_session_id: session.id,
-          trigger_conditions_attributes: [
-            {
-              condition_type: "schedule",
-              configuration: { "scheduled_at" => wake_at, "timezone" => timezone }
-            }
-          ]
-        )
-      rescue ActiveRecord::RecordInvalid => e
-        raise ToolError, "Trigger creation failed: #{e.record.errors.full_messages.join(', ')}. " \
-                         "The session is still in its original state — no changes were made."
-      end
-
-      # Trigger requires agent_root_name, but a per-session wake-up trigger
-      # (reuse_session + last_session_id + a one-time condition) never spawns a new
-      # session — the target session is always reused — so the value is only ever
-      # bookkeeping. Prefer the catalog root the session resolves to; fall back to
-      # the runtime for sessions that predate agent roots.
-      def trigger_agent_root_name(session)
-        session.agent_root_key.presence || session.agent_runtime
+        "#{error.message} Recompute relative to the current server time shown in the tool description " \
+          "and call again — wake_at must be more than #{WAKE_AT_GRACE_WINDOW.to_i} seconds in the future."
       end
     end
   end
