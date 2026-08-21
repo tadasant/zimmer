@@ -96,6 +96,32 @@ class AoEventTriggerJobAccountTest < ActiveJob::TestCase
     assert_nil @condition.reload.last_triggered_at
   end
 
+  # The claim was taken at emit time for a notification that is now not happening.
+  # Holding it would silence the next — real — condemnation for the rest of the
+  # window.
+  test "a stale account gets its throttle slot back" do
+    @account.update_columns(
+      status: ClaudeAccount.statuses[:active],
+      reauth_alerted_at: Time.current
+    )
+
+    AoEventTriggerJob.perform_now(EVENT, @account.id)
+
+    assert_nil @account.reload.reauth_alerted_at
+  end
+
+  # The flood the throttle exists to stop is unaffected by that release: in the
+  # flood the account is still needs_reauth when the job runs, so it is not stale
+  # and the slot stays spent.
+  test "a still-dead account keeps its throttle slot spent" do
+    stamped = 1.minute.ago.change(usec: 0)
+    @account.update_columns(reauth_alerted_at: stamped)
+
+    AoEventTriggerJob.perform_now(EVENT, @account.id)
+
+    assert_equal stamped, @account.reload.reauth_alerted_at
+  end
+
   test "a deleted account does not fire and does not raise" do
     id = @account.id
     @account.destroy!

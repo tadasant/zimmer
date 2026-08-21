@@ -35,11 +35,10 @@ class AlertService
   # Much longer than DEDUP_WINDOW on purpose. The conditions worth a DM stay
   # broken until a human acts on them, and the background sweeps that discover
   # them run every minute or two — an hourly re-nag would be 24 DMs a day about
-  # one dead account. The suppression is dropped when a human resolves the
-  # condition (see {clear_dm_suppression}, called from the login drivers'
-  # `capture!`), so in the ordinary case this window only bounds an unfixed
-  # problem. It is deliberately NOT dropped when the status merely changes —
-  # ClaudeAccount#latch_needs_reauth_transition explains why that would flood.
+  # one subject. A caller that wants a recurrence inside the window to get
+  # through drops the suppression itself with {clear_dm_suppression}, on the
+  # narrowest signal that the problem is actually fixed rather than any signal
+  # that it currently looks fixed.
   OPERATOR_DM_DEDUP_WINDOW = 12.hours
 
   # Read through SecretsLoader like the other Slack settings, unlike

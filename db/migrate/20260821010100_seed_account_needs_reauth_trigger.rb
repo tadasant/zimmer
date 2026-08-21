@@ -25,8 +25,17 @@
 # are checked against the catalog by test/models/trigger_test.rb's seeded-trigger
 # test instead, where a failed resolve is a test failure rather than a stuck deploy.
 #
+# NO BURST CAP, DELIBERATELY. `max_sessions_per_minute` would be the obvious
+# safety belt and it is the wrong one here: burst suppression drops the fires it
+# suppresses, and the burst case for this event is a mass token revocation —
+# exactly when every account's notification matters most. The bound already
+# exists upstream and is durable: ClaudeAccount::REAUTH_ALERT_THROTTLE admits one
+# event per account per 12 hours, so the worst burst this trigger can see is one
+# session per account in the pool, once. A cap on top of that could only subtract
+# alerts, never add safety.
+#
 # EDITING THIS ROW IS EXPECTED. It is a starting point, not a fixture: the prompt,
-# the burst cap and the agent root are all editable at /triggers, and nothing
+# the agent root and the schedule class are all editable at /triggers, and nothing
 # re-asserts them. `down` removes the row only while it still carries the name and
 # the condition this migration gave it.
 class SeedAccountNeedsReauthTrigger < ActiveRecord::Migration[8.1]
@@ -71,7 +80,7 @@ class SeedAccountNeedsReauthTrigger < ActiveRecord::Migration[8.1]
       WITH new_trigger AS (
         INSERT INTO triggers (
           name, agent_root_name, prompt_template, mcp_servers, catalog_skills,
-          status, scheduling_class, max_sessions_per_minute, reuse_session,
+          status, scheduling_class, reuse_session,
           created_at, updated_at
         ) VALUES (
           #{quote(NAME)},
@@ -81,7 +90,6 @@ class SeedAccountNeedsReauthTrigger < ActiveRecord::Migration[8.1]
           '[]'::jsonb,
           'enabled',
           'priority',
-          3,
           false,
           NOW(), NOW()
         )
@@ -103,7 +111,7 @@ class SeedAccountNeedsReauthTrigger < ActiveRecord::Migration[8.1]
   # JOINs the very conditions this method has just removed, so a second lookup
   # matches nothing and the trigger rows survive as orphans.
   def down
-    ids = select_values(seeded_trigger_ids_sql).map(&:to_i)
+    ids = connection.select_values(seeded_trigger_ids_sql).map(&:to_i)
     return if ids.empty?
 
     list = ids.join(", ")
@@ -130,14 +138,16 @@ class SeedAccountNeedsReauthTrigger < ActiveRecord::Migration[8.1]
   # row, or wired the event onto a trigger of their own, already has what this
   # migration would provide, and a second one would double every notification.
   def seeded_trigger_exists?
-    select_value(<<~SQL.squish).to_i.positive?
+    connection.select_value(<<~SQL.squish).to_i.positive?
       SELECT COUNT(*) FROM trigger_conditions
       WHERE condition_type = 'ao_event'
         AND configuration ->> 'event_name' = #{quote(EVENT_NAME)}
     SQL
   end
 
-  # Reached through the connection rather than Migration's method_missing, which
-  # would rewrite the first argument via proper_table_name.
+  # Reads and `quote` all go through the connection rather than Migration's
+  # method_missing, which exempts only execute/enable_extension/disable_extension
+  # and would otherwise rewrite the first argument via proper_table_name — and, for
+  # the reads, wrap each in a say_with_time that logs the whole statement.
   def quote(value) = connection.quote(value)
 end

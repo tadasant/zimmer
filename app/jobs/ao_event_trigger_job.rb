@@ -255,8 +255,8 @@ class AoEventTriggerJob < ApplicationJob
         "enabled — it will re-fire only if session ##{condition.watched_session_id} transitions " \
         "again. Check #{trigger_url(trigger_id)} by hand."
       else
-        "This is a broadcast (recurring) state-change condition: it remains enabled and will fire " \
-        "on the next matching session transition."
+        "This is a broadcast (recurring) condition: it remains enabled and will fire on the next " \
+        "matching #{event_name} event."
       end
 
     if parked

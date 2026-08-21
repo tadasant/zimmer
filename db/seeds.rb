@@ -25,5 +25,24 @@ end
 # definition. Its `up` is idempotent — it returns early when anything already
 # watches the event — so a re-run of `db:seed` cannot produce a second watcher
 # and cannot undo an edit made at /triggers.
-require Rails.root.join("db/migrate/20260821010100_seed_account_needs_reauth_trigger")
-SeedAccountNeedsReauthTrigger.new.up
+#
+# Two guards on the coupling, because `db:seed` runs from the image entrypoint and
+# must not be the thing that stops a container booting:
+#
+#   * `defined?` first. ActiveRecord `load`s migration files, which does not
+#     populate `$LOADED_FEATURES`, so a `db:prepare` that migrates and seeds in one
+#     process would otherwise re-execute this file and warn on every constant.
+#   * `LoadError` is survivable. If the migration is ever squashed or pruned, a
+#     fresh install should come up without this trigger and say so, not fail to boot.
+begin
+  unless defined?(SeedAccountNeedsReauthTrigger)
+    require Rails.root.join("db/migrate/20260821010100_seed_account_needs_reauth_trigger").to_s
+  end
+
+  SeedAccountNeedsReauthTrigger.new.up
+rescue LoadError => e
+  Rails.logger.warn(
+    "[seeds] Could not seed the account_needs_reauth trigger (#{e.class}: #{e.message}). " \
+    "Create it by hand at /triggers, or nothing will report a dead runtime account."
+  )
+end

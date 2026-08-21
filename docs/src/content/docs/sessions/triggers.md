@@ -384,6 +384,20 @@ Both kinds are creatable from the /triggers form and from the MCP `action_trigge
 *yourself* on a session you are waiting for, use `wake_me_up_when_session_changes_state` instead — it
 creates the one-shot wake **and** puts your session to sleep.
 
+Two guards apply to `ao_event` specifically, because a broadcast session condition fires on every
+autonomous session's transition and loop prevention is only per-trigger — two of them (one on
+`session_needs_input`, one on `session_archived`) would otherwise feed each other unbounded:
+
+- **A broadcast session condition created through `action_trigger` gets a default
+  `max_sessions_per_minute`** (`BROADCAST_SESSION_AO_EVENT_BURST_CAP`) when the caller names none.
+  Send the value explicitly to choose your own, including no cap. Account events and session-scoped
+  wakes are exempt: the first is already bounded at source, and a cap there could only drop alerts
+  during the mass failure it exists to report; the second fires at most once.
+- **An update that drops `watched_session_id` from a session-scoped condition is refused.**
+  `configuration` replaces a condition's user-facing keys, so omitting it would silently widen a
+  one-shot wake into a broadcast — including one of the rows `wake_me_up_when_session_changes_state`
+  creates. Delete the condition and add a new one if a broadcast is genuinely what you want.
+
 #### When an `ao_event` fire fails
 
 The same two-shapes rule as schedules, drawn along the scoping line rather than the

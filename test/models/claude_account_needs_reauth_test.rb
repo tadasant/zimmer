@@ -124,6 +124,17 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
     assert_predicate @account.reload, :needs_reauth?
   end
 
+  # A claim that outlives an event which never reached the queue would silence this
+  # account for the whole window over a transient failure — a suppression that
+  # suppressed nothing.
+  test "an enqueue that fails gives the throttle slot back" do
+    AoEventTriggerJob.stubs(:perform_later).raises(StandardError.new("queue down"))
+
+    @account.update!(status: :needs_reauth)
+
+    assert_nil @account.reload.reauth_alerted_at
+  end
+
   test "a codex account transition alerts too" do
     codex = ClaudeAccount.create!(email: "codex@example.com", runtime: "codex")
 
@@ -190,10 +201,11 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
     end
   end
 
-  # Two workers can condemn the same account in the same instant — the refresh
-  # sweep and a spawn-time usability check, for instance. The claim is a single
-  # conditional UPDATE precisely so only one of them wins.
-  test "concurrent claims on one account yield exactly one event" do
+  # The claim is a single conditional UPDATE so that two workers condemning the
+  # same account — the refresh sweep and a spawn-time usability check, say — cannot
+  # both win it. This asserts the WHERE clause that makes that true; it runs
+  # sequentially and is not itself a concurrency test.
+  test "only the first claim on an account succeeds" do
     claims = 5.times.map { ClaudeAccount.find(@account.id).send(:claim_reauth_alert_slot!) }
 
     assert_equal 1, claims.count(true), "expected exactly one winner, got #{claims.inspect}"

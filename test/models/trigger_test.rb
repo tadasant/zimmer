@@ -3174,8 +3174,12 @@ class TriggerTest < ActiveSupport::TestCase
         "if ao_event ever defaults to priority, the explicit override here is redundant"
     end
 
-    test "it is burst-capped, so a thrashing pool cannot spawn without bound" do
-      assert_operator @seeded.max_sessions_per_minute, :>, 0
+    # Burst suppression DROPS the fires it suppresses, and the burst case for this
+    # event is a mass token revocation — precisely when every account's notification
+    # matters most. The bound is upstream and durable instead: one event per account
+    # per REAUTH_ALERT_THROTTLE.
+    test "it carries no burst cap, because a cap here could only drop alerts" do
+      assert_nil @seeded.max_sessions_per_minute
     end
 
     test "its prompt keeps the structure the agent has to follow" do
