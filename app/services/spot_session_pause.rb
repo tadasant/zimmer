@@ -102,6 +102,13 @@ class SpotSessionPause
     # One pass: pause running spot sessions if a window is at its target,
     # otherwise resume the ones a previous pass paused.
     #
+    # A session someone made priority while it slept is resumed on EVERY pass,
+    # including one that is pausing everything else. It is not spot work any
+    # more, and priority work is never gated on quota — so leaving it asleep
+    # until utilization fell would break the promise the pause banner's "Make
+    # this session priority" button makes, at exactly the moment somebody
+    # pressed it.
+    #
     # Never raises. This runs on a cron alongside everything else on the
     # `default` queue, and a spot-policy sweep that blew up would take its
     # retries with it — the condition it acts on is re-read from scratch every
@@ -112,11 +119,21 @@ class SpotSessionPause
       logger ||= StructuredLogger.new({ service: "SpotSessionPause" })
       decision = SpotGateService.evaluate
 
+      # One read of the dormant population, and one read of the class overrides
+      # it is classified against, for the whole pass.
+      overrides = AppSetting.current.genesis_class_overrides
+      promoted, still_spot = paused_sessions.to_a.partition { |session| !session.spot?(overrides) }
+      resumed = promoted.count { |session| resume!(session, promoted_message, logger) }
+
       if decision.held? && decision.reason == UTILIZATION_REASON
-        Result.new(paused: pause_running!(decision, logger), resumed: 0, held: 0)
-      else
-        resume_paused!(logger)
+        # `held` counts the sessions that were already asleep and stay that way,
+        # not the ones this pass is putting to sleep — those are `paused`.
+        return Result.new(paused: pause_running!(decision, logger), resumed: resumed, held: still_spot.size)
       end
+
+      resumed_spot, held = resume_spot!(still_spot, logger)
+
+      Result.new(paused: 0, resumed: resumed + resumed_spot, held: held)
     rescue StandardError => e
       logger.warn("Spot ceiling sweep failed", error: "#{e.class}: #{e.message}")
       Result.new(paused: 0, resumed: 0, held: 0)
@@ -234,39 +251,30 @@ class SpotSessionPause
         session_id: session.id, error: "#{e.class}: #{e.message}")
     end
 
-    def resume_paused!(logger)
-      paused = paused_sessions.to_a
-      return Result.new(paused: 0, resumed: 0, held: 0) if paused.empty?
-
-      # A session someone made priority while it slept is not spot work any
-      # more, and priority work is never gated on quota — so it goes back
-      # whatever the windows say, and does not spend the batch below. This is
-      # what the "Make this session priority" button on the pause banner does
-      # for a session the ceiling has already stopped.
-      promoted, still_spot = paused.partition { |session| !session.spot? }
-      resumed = promoted.count { |session| resume!(session, promoted_message, logger) }
-
-      return Result.new(paused: 0, resumed: resumed, held: 0) if still_spot.empty?
+    # Put back as many of the still-spot sleepers as the gate and the batch
+    # allow, oldest pause first.
+    #
+    # @return [Array(Integer, Integer)] resumed, and left asleep
+    def resume_spot!(sessions, logger)
+      return [ 0, 0 ] if sessions.empty?
 
       decision = SpotGateService.resume_decision
       unless decision.allowed?
         logger.info("Spot-paused sessions stay asleep",
-          asleep: still_spot.size, reason: decision.reason, detail: decision.detail)
-        return Result.new(paused: 0, resumed: resumed, held: still_spot.size)
+          asleep: sessions.size, reason: decision.reason, detail: decision.detail)
+        return [ 0, sessions.size ]
       end
 
-      budget = [ resume_budget(decision), still_spot.size ].min
-      resumed += still_spot.first(budget).count { |session| resume!(session, resume_message(decision), logger) }
-      held = paused.size - resumed
+      budget = [ resume_budget(decision), sessions.size ].min
+      resumed = sessions.first(budget).count { |session| resume!(session, resume_message(decision), logger) }
+      held = sessions.size - resumed
 
       # Named rather than left implicit: a sweep that resumed 5 of 40 must not
       # read as "5 were waiting".
-      if resumed.positive? || held.positive?
-        logger.info("Resumed spot sessions the ceiling had paused",
-          resumed: resumed, still_asleep: held, budget: budget)
-      end
+      logger.info("Resumed spot sessions the ceiling had paused",
+        resumed: resumed, still_asleep: held, budget: budget)
 
-      Result.new(paused: 0, resumed: resumed, held: held)
+      [ resumed, held ]
     end
 
     # How many sessions this sweep may put back. Bounded by the free slots the
@@ -329,9 +337,17 @@ class SpotSessionPause
         "the target. Nothing is cancelled. Make it priority and the next sweep resumes it regardless."
     end
 
+    # Two sentences because a resume has two shapes: the window genuinely fell
+    # (the common one), or the gate stopped holding work for some other reason —
+    # somebody turned gating off, or there is no reading to decide on. Naming
+    # the second as if utilization had recovered would be a lie in the log.
     def resume_message(decision)
-      "Utilization came back down to #{decision.reason == "within_limits" ? "within the resume margin" : decision.reason} — " \
-        "resuming this spot session automatically."
+      if decision.reason == "within_limits"
+        "Utilization came back down past the resume margin — resuming this spot session automatically."
+      else
+        "The spot gate is no longer holding spot work (#{decision.reason}) — " \
+          "resuming this spot session automatically."
+      end
     end
 
     def promoted_message

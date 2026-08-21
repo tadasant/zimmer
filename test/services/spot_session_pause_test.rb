@@ -225,6 +225,23 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert session.reload.running?
   end
 
+  # The same button, pressed at the moment it matters most: while the ceiling is
+  # actively pausing everything else. A sweep that only resumed on its "gate is
+  # open" branch would leave this session asleep for hours.
+  test "a sweep that pauses running sessions still resumes one promoted to priority" do
+    seed(current_5h: 0.95)
+    running = running_session
+    promoted = paused_session
+    promoted.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    result = SpotSessionPause.sweep!
+
+    assert_equal 1, result.paused
+    assert_equal 1, result.resumed
+    assert running.reload.waiting?, "the running spot session is paused by the same sweep"
+    assert promoted.reload.running?
+  end
+
   # A stand-in for the real manager, which would go looking for a live process.
   # Records the order the two calls arrived in, because the ORDER is the property
   # under test: SessionsController#pause kills the process before flipping the
