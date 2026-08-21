@@ -84,6 +84,11 @@ Rails.application.configure do
       class: "CleanupOrphanedSessionsJob",
       description: "Cleanup orphaned sessions every 5 minutes"
     },
+    outcome_analysis_batch_pump: {
+      cron: "* * * * *", # Every minute — the engine behind "Analyze All" concurrency
+      class: "OutcomeAnalysisBatchPumpJob",
+      description: "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
+    },
     heartbeat_sweep: {
       cron: "*/30 * * * * *", # Every 30 seconds
       class: "HeartbeatSweepJob",

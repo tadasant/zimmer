@@ -359,6 +359,57 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_140000) do
     t.index ["stale"], name: "index_notifications_on_stale"
   end
 
+  create_table "outcome_analyses", force: :cascade do |t|
+    t.string "agent_root"
+    t.string "agent_runtime", null: false
+    t.datetime "analyzed_at", null: false
+    t.bigint "analyzer_session_id"
+    t.datetime "created_at", null: false
+    t.integer "failure_segment_count", default: 0, null: false
+    t.integer "max_depth", default: 0, null: false
+    t.string "model"
+    t.text "notes"
+    t.jsonb "root", null: false
+    t.string "root_outcome", null: false
+    t.string "schema_version", default: "1", null: false
+    t.integer "segment_count", default: 0, null: false
+    t.datetime "session_created_at", null: false
+    t.bigint "session_id", null: false
+    t.datetime "superseded_at"
+    t.datetime "updated_at", null: false
+    t.index ["analyzer_session_id"], name: "index_outcome_analyses_on_analyzer_session_id", where: "(analyzer_session_id IS NOT NULL)"
+    t.index ["session_created_at", "agent_runtime", "model", "agent_root"], name: "index_outcome_analyses_stats", where: "(superseded_at IS NULL)"
+    t.index ["session_id", "analyzed_at"], name: "index_outcome_analyses_on_session_and_analyzed_at"
+    t.index ["session_id"], name: "index_outcome_analyses_current_per_session", unique: true, where: "(superseded_at IS NULL)"
+  end
+
+  create_table "outcome_analysis_batch_items", force: :cascade do |t|
+    t.bigint "analysis_session_id"
+    t.datetime "created_at", null: false
+    t.text "error"
+    t.datetime "finished_at"
+    t.bigint "outcome_analysis_batch_id", null: false
+    t.integer "position", default: 0, null: false
+    t.bigint "session_id", null: false
+    t.datetime "started_at"
+    t.string "state", default: "queued", null: false
+    t.datetime "updated_at", null: false
+    t.index ["analysis_session_id"], name: "index_outcome_analysis_batch_items_on_analysis_session_id", where: "(analysis_session_id IS NOT NULL)"
+    t.index ["outcome_analysis_batch_id", "session_id"], name: "index_outcome_batch_items_on_batch_session", unique: true
+    t.index ["outcome_analysis_batch_id", "state", "position"], name: "index_outcome_batch_items_on_batch_state_position"
+  end
+
+  create_table "outcome_analysis_batches", force: :cascade do |t|
+    t.integer "concurrency", default: 1, null: false
+    t.datetime "created_at", null: false
+    t.jsonb "filters", default: {}, null: false
+    t.datetime "finished_at"
+    t.string "status", default: "running", null: false
+    t.integer "total_count", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["status", "id"], name: "index_outcome_analysis_batches_on_status_and_id"
+  end
+
   create_table "push_subscriptions", force: :cascade do |t|
     t.string "auth_key", null: false
     t.datetime "created_at", null: false
@@ -489,8 +540,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_140000) do
     t.json "transcript"
     t.datetime "trash_after"
     t.datetime "updated_at", null: false
+    t.index "((config ->> 'model'::text))", name: "index_sessions_on_config_model"
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
     t.index "((custom_metadata ->> 'router_session_id'::text))", name: "index_sessions_on_router_session_id"
+    t.index "((metadata ->> 'agent_root_key'::text))", name: "index_sessions_on_agent_root_key"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
     t.index ["category_id"], name: "index_sessions_on_category_id"
@@ -618,6 +671,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_20_140000) do
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
+  add_foreign_key "outcome_analyses", "sessions", column: "analyzer_session_id", on_delete: :nullify
+  add_foreign_key "outcome_analyses", "sessions", on_delete: :cascade
+  add_foreign_key "outcome_analysis_batch_items", "outcome_analysis_batches", on_delete: :cascade
+  add_foreign_key "outcome_analysis_batch_items", "sessions", column: "analysis_session_id", on_delete: :nullify
+  add_foreign_key "outcome_analysis_batch_items", "sessions", on_delete: :cascade
   add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade

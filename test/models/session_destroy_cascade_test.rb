@@ -31,6 +31,16 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "logs", "session_id", :cascade ],
     [ "mcp_oauth_pending_flows", "session_id", :cascade ],
     [ "notifications", "session_id", :cascade ],
+    # An analysis describes one transcript, so it goes when that transcript does;
+    # the session that PRODUCED it is nullified instead, because the finding
+    # outlives the worker that found it.
+    [ "outcome_analyses", "analyzer_session_id", :nullify ],
+    [ "outcome_analyses", "session_id", :cascade ],
+    # Same split on a batch item: it exists to name a session (NOT NULL, so it
+    # cascades), and separately points at the analysis session it spawned, which
+    # is nullified so a deleted analyzer does not erase the record of the attempt.
+    [ "outcome_analysis_batch_items", "analysis_session_id", :nullify ],
+    [ "outcome_analysis_batch_items", "session_id", :cascade ],
     # Nullify on the fork, cascade on the subject: losing the throwaway fork that
     # wrote a status summary must not lose the summary text, but the summary is
     # meaningless without the session it describes.

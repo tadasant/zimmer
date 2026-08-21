@@ -1,0 +1,62 @@
+<%# The filter bar, shared by the ledger and the stats view.
+
+    Same inputs on both surfaces on purpose: a filter set narrowed on the ledger
+    survives the switch to stats and back, and the Analyze All form posts exactly
+    what the user is looking at. %>
+<%= form_with url: url, method: :get, data: { turbo: false },
+    class: "bg-white border border-gray-200 rounded-lg p-3 mb-4" do |f| %>
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 items-end">
+    <div>
+      <label for="from" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Created from</label>
+      <%= date_field_tag :from, filters.from, class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="to" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Created to</label>
+      <%= date_field_tag :to, filters.to, class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="agent_root" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Agent root</label>
+      <%= select_tag :agent_root, options_for_select([ [ "Any", "" ] ] + agent_root_options.map { |r| [ r, r ] }, filters.agent_root),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="agent_runtime" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Harness</label>
+      <%= select_tag :agent_runtime,
+          options_for_select([ [ "Any", "" ] ] + runtime_options.map { |r| [ RuntimeRegistry.label_for(r), r ] }, filters.agent_runtime),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="model" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Model</label>
+      <%= select_tag :model, options_for_select([ [ "Any", "" ] ] + model_options.map { |m| [ m, m ] }, filters.model),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <%# The ledger can filter on "has an analysis at all"; the stats view is by
+          definition only about analyzed transcripts, so it filters on the
+          transcript-level outcome instead. %>
+      <% if show_analyzed_filter %>
+        <label for="analyzed" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Analysis</label>
+        <%= select_tag :analyzed, options_for_select([
+              [ "Any", OutcomeAnalyses::LedgerFilters::ANALYZED_ANY ],
+              [ "Analyzed", OutcomeAnalyses::LedgerFilters::ANALYZED_YES ],
+              [ "Not analyzed", OutcomeAnalyses::LedgerFilters::ANALYZED_NO ]
+            ], filters.analyzed), class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+      <% else %>
+        <label for="outcome" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Outcome</label>
+        <%= select_tag :outcome, options_for_select([
+              [ "Any", OutcomeAnalyses::LedgerFilters::OUTCOME_ANY ],
+              [ "Success", OutcomeAnalyses::SegmentTree::SUCCESS ],
+              [ "Failure", OutcomeAnalyses::SegmentTree::FAILURE ]
+            ], filters.outcome), class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+      <% end %>
+    </div>
+  </div>
+  <div class="flex items-center gap-2 mt-3">
+    <%= hidden_field_tag :group_by, params[:group_by] if params[:group_by].present? %>
+    <%= submit_tag "Apply", class: "px-3 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 cursor-pointer" %>
+    <% if filters.any? %>
+      <%= link_to "Clear", url, class: "px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900" %>
+    <% end %>
+    <span class="text-xs text-gray-500 ml-auto truncate"><%= filters.summary %></span>
+  </div>
+<% end %>
