@@ -48,17 +48,40 @@ class SessionStatusSummaryGenerator
   FORK_MARKER = "status_summary_for_session_id"
   INLINE_TRANSCRIPT_MAX_CHARS = 80.kilobytes
 
+  # --- The pool-independent path (see #run_headless) --------------------------
+
+  # Wall-clock budget for the one-shot completion. Generous enough for a long
+  # excerpt on a small model, short enough that a sweep repairing a batch of
+  # sessions cannot tie the queue up: the call is abandoned and the session stays
+  # a candidate for the next sweep.
+  HEADLESS_TIMEOUT = 90
+
+  # A status blurb is the same shape of work as a session title, and
+  # SessionTitleJob has run titles on Haiku all along. Matches ModelCatalog's
+  # "haiku" id for claude_code.
+  HEADLESS_MODEL = "haiku"
+
+  # Smaller than the fork's inline cap. The fork is an agent with a full context
+  # window; this is one prompt to a small model, and the tail of a conversation
+  # is where "where does this stand" is answered.
+  HEADLESS_TRANSCRIPT_MAX_CHARS = 24.kilobytes
+
   Result = Struct.new(:outcome, :message, :fork_session, keyword_init: true) do
     def started? = outcome == :started
   end
 
-  attr_reader :session, :force
+  attr_reader :session, :force, :headless
 
-  def initialize(session:, force: false, fork_service: ForkSessionService, file_system: nil)
+  # @param headless [Boolean] produce the blurb with a single pool-independent
+  #   `claude -p` completion instead of forking. See #run_headless.
+  def initialize(session:, force: false, headless: false, fork_service: ForkSessionService, file_system: nil,
+                 inference_service: nil)
     @session = session
     @force = force
+    @headless = headless
     @fork_service = fork_service
     @file_system = file_system
+    @inference_service = inference_service
     # The `requested_at` this run wrote when it claimed the record, and the
     # attributes that claim displaced. Both nil until it has claimed. See #claim.
     @claim_token = nil
@@ -98,7 +121,7 @@ class SessionStatusSummaryGenerator
       Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
     elsif session.transcript_line_count.zero?
       Result.new(outcome: :skipped, message: "Session has no transcript yet.")
-    elsif !force && !source_clone_available?
+    elsif !force && !headless && !source_clone_available?
       Result.new(outcome: :unavailable, message: clone_unavailable_message)
     end
   end
@@ -119,6 +142,16 @@ class SessionStatusSummaryGenerator
     unless claim(summary, line_count)
       return Result.new(outcome: :pending, message: "A summary is already being generated.")
     end
+
+    # The claim is taken the same way for both paths, so a fork and a one-shot
+    # can never both be writing this record. Everything below it is the fork.
+    #
+    # The pool is re-checked here rather than trusted from the caller, because
+    # the two forced surfaces do not check it at all: an operator pressing
+    # Regenerate during an outage would otherwise pay for a clone copy, watch
+    # the fork park, and be told the generation failed. A fork that cannot run
+    # is not a better summary than a one-shot — it is no summary.
+    return run_headless(summary, line_count) if headless || pool_exhausted?
 
     fork_args = {
       source_session: session,
@@ -400,6 +433,148 @@ class SessionStatusSummaryGenerator
     @logger.error("Failed to abandon status summary fork", fork_session_id: fork&.id, error: e.message)
   end
 
+  # Writes the blurb with ONE `claude -p` completion and no fork at all.
+  #
+  # **Why this path exists.** The fork path needs a login-pool account, a copy of
+  # the session's clone, and an agent turn. When the pool is exhausted the fork
+  # is parked before it answers — and the pool is exhausted precisely when the
+  # fleet is busiest, which is when the human most wants to read the queue. The
+  # repair sweep that retries the fork used to stand down for the same outage,
+  # so the retry was gated on the resource whose absence caused the failure it
+  # was retrying: under sustained pressure the blurb was simply unreachable.
+  #
+  # A one-shot completion is not gated on any of that. It takes no account slot
+  # (`claude -p` runs against the ambient credentials, so it never asks
+  # `accounts.available`), copies no clone, boots no MCP server, and answers or
+  # fails in HEADLESS_TIMEOUT seconds. It costs roughly what a session title
+  # costs — SessionTitleJob has run on this substrate all along.
+  #
+  # What it gives up is the fork's reach: it answers from the rendered
+  # conversation alone, so it cannot open a file or check a PR the way a forked
+  # agent could. That is the trade, and it is the right way round — a slightly
+  # terser blurb that is THERE beats a richer one that never arrives.
+  def run_headless(summary, line_count)
+    answer = StatusSummaryAnswer.clean(headless_answer)
+
+    if answer.blank?
+      record_failure(headless_failure_reason)
+      return Result.new(outcome: :failed, message: headless_failure_reason)
+    end
+
+    unless publish(summary, answer, line_count)
+      return Result.new(outcome: :pending, message: "A newer summary generation took over.")
+    end
+
+    @logger.info("Status summary written without a fork", transcript_line_count: line_count)
+    note_headless_generation
+    Result.new(outcome: :ready, message: "Summary written.")
+  end
+
+  # The raw completion, or nil. HeadlessInferenceService already swallows a
+  # timeout or a non-zero exit into nil and logs it, so there is nothing to
+  # rescue here — a nil is the failure, and #run_headless reports it as one.
+  def headless_answer
+    excerpt = StatusSummaryTranscriptExcerpt.render(session, max_chars: HEADLESS_TRANSCRIPT_MAX_CHARS)
+    return nil if excerpt.blank?
+
+    inference_service.generate(
+      headless_prompt(excerpt),
+      timeout: HEADLESS_TIMEOUT,
+      model: HEADLESS_MODEL,
+      single_line: false
+    )
+  end
+
+  def inference_service = @inference_service ||= HeadlessInferenceService.new
+
+  # Whether this runtime's login pool has anything left to run a fork on.
+  #
+  # Memoized, and deliberately fail-open: a pool that cannot be read is not
+  # evidence of an outage, and guessing "exhausted" would silently downgrade
+  # every generation to the cheaper path.
+  def pool_exhausted?
+    return @pool_exhausted unless @pool_exhausted.nil?
+
+    @pool_exhausted =
+      begin
+        RuntimeAuthProvider.for(session.agent_runtime).accounts.available.none?
+      rescue StandardError => e
+        @logger.warn("Could not read the #{session.agent_runtime} account pool", error: e.message)
+        false
+      end
+  end
+
+  # Why nothing was stored, in terms the panel's reader can act on. Deliberately
+  # does not distinguish "the model refused" from "the call failed": both mean
+  # the same thing to the reader, and both are retried by the same sweep.
+  def headless_failure_reason
+    "Could not write a summary without a fork — the one-shot summary produced no usable answer. It will be retried."
+  end
+
+  # Writes the answer onto the claim this runner holds. Same lock-and-check
+  # shape as #attach_fork and #record_failure: a runner whose claim aged past
+  # PENDING_TIMEOUT and was taken over must not stomp the generation that
+  # replaced it.
+  def publish(summary, answer, line_count)
+    published = false
+
+    summary.with_lock do
+      next unless holds_claim?(summary)
+
+      summary.update!(
+        summary: answer,
+        generated_at: Time.current,
+        transcript_line_count: line_count,
+        state: "ready",
+        error: nil,
+        fork_session: nil
+      )
+      published = true
+    end
+
+    published
+  end
+
+  # Says on the session's own timeline that this blurb came from the cheap path,
+  # so a reader who finds it terser than usual can see why. Best-effort: a
+  # timeline write must not fail a summary that already landed.
+  def note_headless_generation
+    session.logs.create!(
+      content: "Wrote the status summary with a one-shot inference call (no fork)",
+      level: "info"
+    )
+  rescue StandardError => e
+    @logger.error("Failed to note the headless status summary", error: e.message)
+  end
+
+  # The fork is asked to summarize a conversation it is already holding; this
+  # asks the same question of a model that has only the text below. The rules
+  # are the fork's rules minus the two that assume an agent — there are no tools
+  # to decline to run, and no transcript beyond what is in the prompt.
+  def headless_prompt(excerpt)
+    <<~PROMPT
+      Write the Status panel for this Zimmer session (##{session.id}). It is read
+      at a glance, above the transcript, by someone deciding whether this session
+      needs them right now.
+
+      Rules:
+      - 2-3 sentences. Not four. Say where things stand, not how you got here.
+      - Link instead of explaining. If a detail is worth more than a clause, link
+        to where it lives rather than spending a sentence on it.
+      - Markdown links only, no headings, no bullet lists, no preamble, no
+        trailing offer to help.
+      - Answer only from the conversation below. Do not invent a detail it does
+        not contain.
+
+      Links you can use:
+      - Any pull request, issue, or run URL that appears in the conversation,
+        linked by what it is ("PR #123", "the failing CI run").
+      - Another Zimmer session: #{AppUrl.base_url}/sessions/ID.
+      #{conversation_section(excerpt)}
+      Reply with the summary text and nothing else.
+    PROMPT
+  end
+
   def prompt_for(fork)
     <<~PROMPT
       Write the Status panel for this Zimmer session (##{session.id}). It is read
@@ -440,11 +615,13 @@ class SessionStatusSummaryGenerator
   def inline_transcript_for(fork)
     return "" if resumable_fork?(fork)
 
-    rendered = TranscriptTextRenderer.render(normalized_transcript_for(fork)).strip
-    return "" if rendered.blank?
+    excerpt = StatusSummaryTranscriptExcerpt.render(fork, max_chars: INLINE_TRANSCRIPT_MAX_CHARS)
+    return "" if excerpt.blank?
 
-    excerpt = latest_transcript_excerpt(rendered)
+    conversation_section(excerpt)
+  end
 
+  def conversation_section(excerpt)
     <<~TEXT
 
       Conversation so far:
@@ -452,21 +629,6 @@ class SessionStatusSummaryGenerator
       #{excerpt}
       ```
     TEXT
-  end
-
-  def latest_transcript_excerpt(rendered)
-    return rendered if rendered.length <= INLINE_TRANSCRIPT_MAX_CHARS
-
-    omission = "\n\n[Earlier transcript truncated]\n\n"
-    "#{omission}#{rendered.last(INLINE_TRANSCRIPT_MAX_CHARS - omission.length)}"
-  end
-
-  def normalized_transcript_for(fork)
-    normalizer = TranscriptRuntime.normalizer_for(fork)
-
-    fork.parsed_transcript.flat_map do |raw_event|
-      normalizer.normalize(raw_event, session: fork, transcript_index: raw_event["_transcript_index"])
-    end
   end
 
   # Records a failure against the row as it exists IN THE DATABASE.
