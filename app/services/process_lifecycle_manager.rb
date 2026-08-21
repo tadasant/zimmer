@@ -1366,7 +1366,7 @@ class ProcessLifecycleManager
     @mutex.synchronize { @state = :idle }
     ExitDecision.new(
       action: :failed,
-      error_message: "Turn ended on an unrecognized API error: #{terminal.text.truncate(300)}"
+      error_message: "Turn ended on an API error no recovery path claimed: #{terminal.text.truncate(300)}"
     )
   end
 

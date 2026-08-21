@@ -2583,11 +2583,16 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal :failed, decision.action,
       "A turn that ended on an unrecognized API error must fail loudly, not park as needs_input"
     assert_match(/Your quantum entitlement has decohered/, decision.error_message)
+    # AgentSessionJob greps this exact phrase out of error_message to bucket the
+    # failure as `terminal_api_error` on the health dashboard. Reword the message
+    # without reworking that `case` and the failure silently lands in
+    # `process_failed` — so pin the coupling here rather than discovering it in prod.
+    assert_match(/Turn ended on an API error no recovery path claimed/, decision.error_message)
     assert_equal 0, @mock_cli_adapter.resumed_sessions.length
 
     @log_buffer.flush
     log_contents = @session.logs.pluck(:content).join("\n")
-    assert_match(/Turn ended on an unrecognized API error/, log_contents)
+    assert_match(/Turn ended on an API error and no recovery path claimed it/, log_contents)
 
     assert_equal "terminal API error", reported[:kind], "The unknown must announce itself"
     assert_match(/Your quantum entitlement has decohered/, reported[:output],
