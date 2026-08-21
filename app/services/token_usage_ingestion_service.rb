@@ -135,12 +135,15 @@ class TokenUsageIngestionService
     seen = Set.new
 
     File.foreach(path) do |line|
-      # Cheap pre-filter: most lines in a transcript are user turns, tool results,
-      # and metadata, and none of them carries a `usage` object. Feature
-      # attribution is the exception — it has to see the user turns too, because
-      # the goal block, the tool results and the skill bodies it measures live
-      # there — so it opts into the full parse.
-      next unless features || line.include?('"type":"assistant"')
+      # Cheap pre-filter. Most lines in a transcript carry no `usage` object, and
+      # parsing them would make a full backfill several times slower for nothing.
+      # Attribution widens the filter rather than dropping it: it has to see user
+      # turns too — the goal block, the tool results and the skill bodies it
+      # measures live there — but a transcript also holds `summary`, `attachment`,
+      # `mode` and `pr-link` lines that neither path can use, and on the backfill
+      # those are lines JSON.parse would build and `observe` would discard on its
+      # first statement.
+      next unless line.include?('"type":"assistant"') || (features && line.include?('"type":"user"'))
 
       begin
         entry = JSON.parse(line)

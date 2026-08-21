@@ -334,6 +334,23 @@ class TokenUsageIngestionServiceTest < ActiveSupport::TestCase
     assert_equal 0, TokenUsageFeature.count, "the foreign key cascades"
   end
 
+  test "a feature row is never written for a request whose usage row was skipped" do
+    # A request with all-zero volumes is not stored, so its attribution has no
+    # parent to hang off — and the foreign key would reject it. It is dropped.
+    write_transcript(clone_dir, "sess-uuid.jsonl", [
+      { "type" => "user", "uuid" => "u1", "parentUuid" => nil, "sessionId" => "sess-uuid",
+        "message" => { "role" => "user", "content" => "Do the work." } },
+      assistant_line(request_id: "req_zero", uuid: "a1", parent: "u1",
+                     input: 0, output: 0, cache_read: 0, cache_creation: 0, ephemeral_1h: 0)
+    ])
+
+    result = ingest
+
+    assert_equal 0, result.session_rows
+    assert_equal 0, result.feature_rows
+    assert_equal 0, TokenUsageFeature.count
+  end
+
   test "attribution can be turned off without changing what the usage tables store" do
     write_transcript(clone_dir, "sess-uuid.jsonl", [
       { "type" => "user", "uuid" => "u1", "parentUuid" => nil, "sessionId" => "sess-uuid",

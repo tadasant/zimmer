@@ -37,18 +37,6 @@ class TokenUsageFeature < ApplicationRecord
   # see but not directly legislate.
   scope :zimmer_owned, -> { where(feature: ContextFeatureRegistry.zimmer_keys) }
 
-  # TokenAccounting#totals is for the two tables that hold ONE row per API call.
-  # Here several rows describe one call, so `api_calls` would be inflated by the
-  # number of features detected, and the server-tool counters it sums do not exist
-  # on this table at all. Refusing is better than either: a wrong total reads as
-  # authoritative. CostAnalytics reads this table through `cost_sum_sql` and
-  # `total_tokens_sql`, and reconciles against the PARENT table's totals.
-  def self.totals
-    raise NotImplementedError,
-      "token_usage_features holds several rows per API call — use SessionTokenUsage.totals " \
-      "for the whole, and CostAnalytics#feature_breakdown for the split"
-  end
-
   def label = ContextFeatureRegistry.label_for(feature)
 
   # The concern's `totals` is meaningless here and refuses rather than lying.

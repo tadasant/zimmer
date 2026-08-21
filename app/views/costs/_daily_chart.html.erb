@@ -1,7 +1,7 @@
 <%#
   Daily spend, with the breakdown behind each day revealed on hover or tap.
 
-  locals: by_day (Array<Hash>), window (CostWindow)
+  locals: by_day (Array<Hash>)
 %>
 <% max_day = by_day.map { |d| d[:cost_usd] }.max || 0 %>
 <div class="bg-white shadow rounded-lg overflow-hidden mb-6" data-controller="cost-chart">

@@ -627,6 +627,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_050000) do
     t.boolean "subagent", default: false, null: false
     t.datetime "updated_at", null: false
     t.index ["agent_root", "called_at"], name: "index_token_usage_features_on_agent_root_and_called_at"
+    t.index ["called_at"], name: "index_token_usage_features_on_called_at"
     t.index ["feature", "called_at"], name: "index_token_usage_features_on_feature_and_called_at"
     t.index ["request_id", "feature"], name: "index_token_usage_features_on_request_id_and_feature", unique: true
     t.index ["session_id", "called_at"], name: "index_token_usage_features_on_session_id_and_called_at"
@@ -730,5 +731,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_050000) do
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
   add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade
   add_foreign_key "token_usage_features", "session_token_usages", column: "request_id", primary_key: "request_id", on_delete: :cascade
+  add_foreign_key "token_usage_features", "sessions", on_delete: :nullify
   add_foreign_key "trigger_conditions", "triggers"
 end
