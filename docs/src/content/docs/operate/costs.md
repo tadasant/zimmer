@@ -127,6 +127,7 @@ disagree:
 | The Costs page | A panel: backfilled or not, progress while sweeping, the date the ledger starts, and a **Re-scan history** button |
 | `GET /api/v1/costs` | A `ledger_coverage` object alongside every rollup |
 | `get_costs` (MCP) | A **Partial history** warning while sweeping; the covered window once finished |
+| Supervisor | `token_usage_backfills` — every sweep, its cursor, counters and last error, read-only |
 
 `covers_since` is the oldest call actually stored — the only defensible answer to "how far back
 does this go". Before a backfill it is roughly the deploy that shipped ingestion; after one it is

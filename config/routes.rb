@@ -27,6 +27,7 @@ Rails.application.routes.draw do
     resources :mcp_oauth_pending_flows
     resources :runtime_login_attempts
     resources :session_token_usages, only: [ :index, :show ]
+    resources :token_usage_backfills, only: [ :index, :show ]
     resources :sessions
     # No create: a summary row exists because a session asked for one. Edit is
     # limited to `state` (the dashboard's FORM_ATTRIBUTES), which is how an
