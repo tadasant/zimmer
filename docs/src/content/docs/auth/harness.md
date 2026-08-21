@@ -563,10 +563,80 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 ## Mid-run auth loss
 
-`AuthRecoveryService` watches the transcript for `"Not logged in · Please run /login"` (matched by
-`/not logged in|please run\s*\/login/i`) and, on the **first** match, hands the decision to
-`AuthRecoveryCoordinator` rather than re-spawning. Bounded by `MAX_RECOVERY_ATTEMPTS` attempts
-within `CONSECUTIVE_WINDOW` (15 minutes).
+`AuthRecoveryService` watches the transcript for an authentication failure and, on the **first**
+match, hands the decision to `AuthRecoveryCoordinator` rather than re-spawning. Bounded by
+`MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUTIVE_WINDOW` (15 minutes).
+
+It recognizes the failure two ways, and the order matters:
+
+1. **The error type.** `AUTH_ERROR_TYPES` — `authentication_failed`, `oauth_error` — matched against
+   the transcript entry's `error` field. This is the machine-readable half of the signature and the
+   half that does not move when the prose does.
+2. **The prose.** `AUTH_RECOVERABLE_ERROR_PATTERN` — `not logged in`, `please run /login`, `failed to
+   authenticate`, `oauth/refresh/access token … expired|invalid|revoked`, `invalid_grant` — for the
+   entries the runtime records with an *empty* error type, which is how
+   `"Not logged in · Please run /login"` is recorded.
+
+An entry the API typed as retryable (`api_error`, `rate_limit_error`) is never claimed on prose: a
+transient upstream failure that happens to say *"Authentication failed: 401 from gateway"* belongs on
+the backoff path, not on a path that spends an account rotation. The structured type wins both ways.
+
+The prose net is deliberately wide, because here a false positive costs one rotation and a false
+negative costs a lost turn. That trade does not travel: `SessionStatusSummaryHarvestJob` asks a
+different question — *is this "summary" a refusal?* — where a false positive discards a real summary,
+so it spells out its own two narrow patterns instead of importing this constant.
+
+:::caution[Why the type is read first]
+On 2026-08-20, Claude Code 2.1.237 ended a turn in production session 6412 with
+
+```json
+{"isApiErrorMessage":true,"error":"authentication_failed",
+ "message":{"content":[{"type":"text",
+   "text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]}}
+```
+
+and exited **1** — its "turn finished, awaiting input" convention. The prose matched neither half of
+the pattern Zimmer had, no classifier claimed the entry, and `handle_exit` logged *"Process exited
+successfully"* and parked the session as `needs_input`. A human's message sat unanswered, and the
+only trace was in the transcript. The account pool had already done its job: the refresh token for
+the identity that session was holding had been rejected with `invalid_grant` seven minutes earlier
+and the account marked `needs_reauth`. What failed was recognizing the *runtime's* report of it.
+:::
+
+### A turn that dies on an API error can never look finished
+
+Reading the error type makes *this* wording classifiable. It does nothing about the next one, so
+`handle_exit` also asks a question that has no prose in it at all.
+
+`ApiErrorRetryService#terminal_api_error` answers *did this turn die on an API error?* — is the
+**last conversational entry** in the transcript an `isApiErrorMessage`. Only `user` and `assistant`
+entries count on either side of the question: the runtime writes `last-prompt`, `atis-latch`,
+`attachment` and `queue-operation` bookkeeping after the final message, and `isSidechain` entries
+belong to a subagent whose failure does not end the main turn. Unlike every other transcript reader
+it ignores `api_error_last_checked_line` — that cursor exists to stop a *handled* error being retried
+twice, and a terminal error is by definition the one that just ended this turn.
+
+It does **not** filter by classifier, and that matters. `handle_exit` asks it last, after every
+specific branch has looked at the same exit and declined, so an answer means nobody is handling a
+turn that plainly died — which covers a wording nothing recognises *and* the case where a classifier
+does recognise it but has already spent its cursor on it. That second case is reachable: a 5xx is
+retried, `api_error_last_checked_line` advances past it, the respawn writes nothing and exits 1, and
+every branch now says "not mine" about a transcript whose last word is still that 5xx.
+
+When it answers yes, the session **fails**, loudly, and the prose goes into the session log under the
+`terminal_api_error` failure reason. Whether it also *alerts* is the one thing the recognised/
+unrecognised distinction decides: an unknown wording goes to `UnclassifiedFailureReporter` (deduped
+per runtime, so a fleet-wide wave is one Slack message), while a recognised one has already been
+through its own classifier and is a dead turn rather than an unknown failure mode. Failing is the
+honest verdict either way — the turn is over, its work did not happen, and the prompt is sitting
+unanswered — where `needs_input` said the opposite of all three.
+
+The backstop fires **once per dead turn**: it records the transcript line it fired on in
+`metadata["terminal_api_error_line"]`, so a resume that writes nothing new leaves the same entry
+terminal without re-failing the session and re-alerting on it.
+
+So the next time Anthropic rewords an error, the cost is an alert naming the new wording, not a lost
+message someone finds by reading a transcript.
 
 ### The recovery decision tree
 

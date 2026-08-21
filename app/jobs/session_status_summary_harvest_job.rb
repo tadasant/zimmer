@@ -35,13 +35,22 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
   MAX_SUMMARY_CHARS = 1200
 
   # The refusals a runtime writes into its own transcript instead of doing the
-  # work, borrowed from the services that already own each wording so there is
-  # one definition of each per codebase. ApiErrorRetryService's covers the usage
-  # limits ("You've hit your session limit · resets 10pm (UTC)");
-  # AuthRecoveryService's covers the logged-out signature.
+  # work. The usage-limit wording is borrowed from the service that owns it,
+  # because that pattern is anchored tightly enough ("hit your … limit …
+  # resets") that only a refusal matches it.
+  #
+  # The logged-out wording is spelled out here rather than borrowed from
+  # AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN. That constant answers a
+  # different question — "should this session rotate accounts?" — and is
+  # deliberately a wide net, wide enough to match ordinary English a session
+  # writes ABOUT auth work ("fixed the bug where the access token expired").
+  # Importing it here would discard those summaries as refusals. Two short
+  # patterns that cannot appear in a real summary are the right size for this
+  # job's question.
   REFUSAL_PATTERNS = [
     ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN,
-    AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN
+    /not logged in/i,
+    /please run\s*\/login/i
   ].freeze
 
   # A refusal is one short line. A real answer is 2-3 sentences carrying markdown
