@@ -145,7 +145,13 @@ class SessionStatusSummaryGenerator
 
     # The claim is taken the same way for both paths, so a fork and a one-shot
     # can never both be writing this record. Everything below it is the fork.
-    return run_headless(summary, line_count) if headless
+    #
+    # The pool is re-checked here rather than trusted from the caller, because
+    # the two forced surfaces do not check it at all: an operator pressing
+    # Regenerate during an outage would otherwise pay for a clone copy, watch
+    # the fork park, and be told the generation failed. A fork that cannot run
+    # is not a better summary than a one-shot — it is no summary.
+    return run_headless(summary, line_count) if headless || pool_exhausted?
 
     fork_args = {
       source_session: session,
@@ -480,6 +486,23 @@ class SessionStatusSummaryGenerator
   end
 
   def inference_service = @inference_service ||= HeadlessInferenceService.new
+
+  # Whether this runtime's login pool has anything left to run a fork on.
+  #
+  # Memoized, and deliberately fail-open: a pool that cannot be read is not
+  # evidence of an outage, and guessing "exhausted" would silently downgrade
+  # every generation to the cheaper path.
+  def pool_exhausted?
+    return @pool_exhausted unless @pool_exhausted.nil?
+
+    @pool_exhausted =
+      begin
+        RuntimeAuthProvider.for(session.agent_runtime).accounts.available.none?
+      rescue StandardError => e
+        @logger.warn("Could not read the #{session.agent_runtime} account pool", error: e.message)
+        false
+      end
+  end
 
   # Why nothing was stored, in terms the panel's reader can act on. Deliberately
   # does not distinguish "the model refused" from "the call failed": both mean

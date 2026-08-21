@@ -274,6 +274,35 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       "a reader who finds the blurb terser than usual should be able to see why"
   end
 
+
+  # The parity gap this closes: the panel's Regenerate button, the REST endpoint
+  # and the MCP `action_session` regenerate action are all FORCED, and none of
+  # them consults the login pool. Before this, pressing Regenerate during an
+  # outage paid for a clone copy, watched the fork park, and reported a failure.
+  test "a forced generation falls back to the one-shot path when the pool is empty" do
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    inference = FakeInference.new("Where things stand.")
+
+    result = nil
+    assert_no_difference -> { Session.count } do
+      result = SessionStatusSummaryGenerator.call(
+        session: @session, file_system: @fs, force: true, inference_service: inference
+      )
+    end
+
+    assert_equal :ready, result.outcome
+    assert_equal "Where things stand.", @session.reload.status_summary.summary
+    assert_equal 1, inference.prompts.size
+  end
+
+  test "a healthy pool still forks" do
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+
+    assert_difference -> { Session.count }, 1 do
+      assert_equal :started, generate.outcome
+    end
+  end
+
   # The dashboard broadcasts a card from after_create_commit, so a marker
   # stamped afterwards is stamped too late — the card is already on every open
   # dashboard.

@@ -252,6 +252,11 @@ It is reached from the two places a fork is known not to be able to deliver:
 - **The harvest of a fork that came back with nothing.** A parked or dead fork enqueues a headless
   retry for its source session immediately, rather than leaving it to a sweep that would re-fork into
   the same empty pool.
+- **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
+  re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
+  panel's **Regenerate** button, `POST /api/v1/sessions/:id/status_summary`, and the MCP
+  `action_session` regenerate action — do not consult it. Without that check, pressing Regenerate
+  during an outage paid for a clone copy, watched the fork park, and reported a failure.
 
 Two properties keep it honest:
 
