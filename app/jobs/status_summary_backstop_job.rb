@@ -76,17 +76,25 @@ class StatusSummaryBackstopJob < ApplicationJob
     scanned = candidates.to_a
 
     scanned.each do |session|
-      # Whether this session would be repaired by a fork or by the one-shot
-      # path decides which cap it counts against, so it is asked first.
-      # #pool_exhausted? is memoized per runtime: one query per sweep, not one
-      # per session.
-      outage = pool_exhausted?(session.agent_runtime)
-
-      break if outage ? headless >= MAX_HEADLESS_PER_SWEEP : forked >= MAX_PER_SWEEP
+      # Only when BOTH budgets are spent is there nothing left this sweep can
+      # do. Breaking as soon as EITHER is spent would starve the other path on a
+      # mixed fleet — one runtime's pool exhausted and another's healthy — by
+      # ending the walk on the first session of whichever kind filled up first.
+      break if forked >= MAX_PER_SWEEP && headless >= MAX_HEADLESS_PER_SWEEP
       next if session.blocked_on_elicitation?
 
       record = session.status_summary
       next unless due?(record)
+
+      # Which path would repair this session decides which budget it draws on.
+      # #pool_exhausted? is memoized per runtime: one query per sweep, not one
+      # per session.
+      outage = pool_exhausted?(session.agent_runtime)
+
+      # Asked BEFORE the session is stamped, so a session skipped for a spent
+      # budget does not also spend its retry interval on a cap it never got
+      # past — the next sweep picks it up.
+      next if outage ? headless >= MAX_HEADLESS_PER_SWEEP : forked >= MAX_PER_SWEEP
 
       stamp_examined(session, record)
       next unless needs_repair?(session, record)
