@@ -4113,18 +4113,25 @@ class SessionsController < ApplicationController
       # Skip non-conversation entries (system events, file history, etc.)
       next if role.nil? && entry["type"].present? && !%w[user assistant].include?(entry["type"])
 
-      # Determine the speaker label
-      label = case role
-      when "user"
-        "User"
-      when "assistant"
-        "Assistant"
+      # Determine the speaker label. A line the CLI wrote into its own
+      # transcript wearing a user role is labelled for what it is — the copied
+      # text is read by the same person reading the timeline, and it carried the
+      # same false attribution.
+      label = if ClaudeTranscriptNormalizer.runtime_notice_markers(entry).any?
+        "Runtime Notice (agent runtime, not a person)"
       else
-        # Handle Claude Code transcript events
-        case entry["type"]
-        when "user" then "User"
-        when "assistant" then "Assistant"
-        else next # Skip other event types
+        case role
+        when "user"
+          "User"
+        when "assistant"
+          "Assistant"
+        else
+          # Handle Claude Code transcript events
+          case entry["type"]
+          when "user" then "User"
+          when "assistant" then "Assistant"
+          else next # Skip other event types
+          end
         end
       end
 
