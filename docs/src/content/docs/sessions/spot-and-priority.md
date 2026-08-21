@@ -254,18 +254,28 @@ quota-held sessions re-checking every ~11 minutes held a standing ~8 jobs/min ag
 pushed each re-check into the tens of seconds, arrivals outran service and the GoodJob ready queue
 grew without draining until `SystemHealthMonitorJob` paged.
 
-So each *consecutive* hold doubles the interval — 10m, 20m, 40m — up to a ceiling that depends on
-why the session is held, because the two reasons clear on very different timescales:
+So each *consecutive* hold doubles the interval — 10m, 20m, then on until the ceiling clamps it — and
+the ceiling depends on why the session is held, because the two reasons clear on very different
+timescales:
 
 | Hold reason | Ceiling | Why |
 | --- | --- | --- |
 | `at_utilization_limit` | 1 hour | A pool window comes back down over hours. Re-checking more often than this cannot learn anything new, and this is the reason that produces the long-lived holds. |
 | `fleet_at_cap` | 30 minutes | A slot frees whenever any running session ends, which is unpredictable and often soon. |
 
+Each ladder therefore reaches its ceiling on the third rung: 10m, 20m, 40m, 60m for a utilization
+hold, and 10m, 20m, 30m for a fleet-cap one.
+
 Jitter is added *after* the ceiling, so a population pinned at the ceiling still spreads out. The
-ladder resets when the session gets through: `spot_hold_count` is one of the metadata keys cleared
-on start, so the next outage starts again at ten minutes rather than resuming where the last one
-left off.
+ladder resets in two situations. **The session gets through** — `spot_hold_count` is one of the
+metadata keys cleared on start, so the next outage starts again at ten minutes rather than resuming
+where the last one left off. And **a person asks for the session directly**: Restart, `action_session`'s
+restart and `POST /api/v1/sessions/:id/restart` all re-enter the gate with no prompt and no resume
+flag, so they would otherwise read as another consecutive hold and push the ladder *up* — making a
+human who asked for the session now wait longer than if they had left it alone. A hold that arrives
+before the re-check the last one scheduled is taken as exactly that case and starts the ladder over.
+(Restarting does not *bypass* the gate; a still-held session is still held, just back at ten minutes.
+The lever that starts it now is still **Make this session priority**.)
 
 The cost is real and is not hidden: a session can now sleep longer than it strictly had to, up to
 its ceiling, if the condition clears early. That is bounded, visible as `spot_hold_retry_at` on the

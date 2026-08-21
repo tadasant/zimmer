@@ -295,23 +295,70 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     breakdown = HealthMonitorService.new.ready_backlog_breakdown
 
     assert_equal({ "default" => 3 }, breakdown[:by_queue])
+    assert_equal({ "PlaceholderJob" => 3 }, breakdown[:by_job_class])
     assert_equal 3, breakdown[:by_queue].values.sum,
                  "the breakdown must add up against ready_count, not against every unfinished row"
   end
 
-  test "ready_backlog_breakdown keeps at most the configured number of entries" do
+  # The cap keeps the alert readable; the remainder keeps it honest. The alert
+  # asks its reader to tell "concentrated in one queue" from "spread across every
+  # queue", and five names with no total look identical whether they are the whole
+  # backlog or a tenth of it.
+  test "ready_backlog_breakdown caps the entries but reports what it cut" do
     %w[a b c d e f g].each_with_index do |queue, i|
       insert_good_jobs(10 - i) { { queue_name: queue, scheduled_at: 5.minutes.ago } }
     end
 
     breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    limit = HealthMonitorService::READY_BREAKDOWN_LIMIT
 
-    assert_equal HealthMonitorService::READY_BREAKDOWN_LIMIT, breakdown[:by_queue].size
-    assert_equal [ "a", "b", "c", "d", "e" ], breakdown[:by_queue].keys
+    assert_equal [ "a", "b", "c", "d", "e", "+2 more" ], breakdown[:by_queue].keys
+    assert_equal limit + 1, breakdown[:by_queue].size
+    assert_equal 5 + 4, breakdown[:by_queue]["+2 more"], "the remainder carries the counts it cut"
+    assert_equal (4..10).sum, breakdown[:by_queue].values.sum,
+                 "a capped breakdown must still add up against ready_count"
+  end
+
+  test "ready_backlog_breakdown adds no remainder when nothing was cut" do
+    insert_good_jobs(3) { { queue_name: "agents", scheduled_at: 5.minutes.ago } }
+
+    assert_equal({ "agents" => 3 }, HealthMonitorService.new.ready_backlog_breakdown[:by_queue])
+  end
+
+  # Ties would otherwise come out in whatever order the adapter felt like,
+  # so two readings of an unchanged queue could disagree.
+  test "ready_backlog_breakdown breaks ties by name so the order is stable" do
+    %w[zebra alpha middle].each do |queue|
+      insert_good_jobs(4) { { queue_name: queue, scheduled_at: 5.minutes.ago } }
+    end
+
+    assert_equal [ "alpha", "middle", "zebra" ],
+                 HealthMonitorService.new.ready_backlog_breakdown[:by_queue].keys
+  end
+
+  # A row with no job_class is labelled rather than dropped, and blank and nil
+  # are SUMMED onto one label rather than one silently replacing the other.
+  test "ready_backlog_breakdown labels rows with no job class instead of losing them" do
+    insert_good_jobs(2) { { job_class: nil, queue_name: "agents", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(3) { { job_class: "", queue_name: "agents", scheduled_at: 5.minutes.ago } }
+
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+
+    assert_equal({ HealthMonitorService::UNKNOWN_LABEL => 5 }, breakdown[:by_job_class])
+    assert_equal breakdown[:by_queue].values.sum, breakdown[:by_job_class].values.sum
   end
 
   test "ready_backlog_breakdown is empty when nothing is waiting" do
     assert_equal({ by_queue: {}, by_job_class: {} }, HealthMonitorService.new.ready_backlog_breakdown)
+  end
+
+  # Three distinct answers, because they are three different facts about an
+  # incident: the query failed, nothing is waiting, or here is the split.
+  test "format_breakdown tells a failed read apart from an empty one" do
+    assert_equal "unavailable", HealthMonitorService.format_breakdown(nil)
+    assert_equal "none", HealthMonitorService.format_breakdown({})
+    assert_equal "agents 231, default 18",
+                 HealthMonitorService.format_breakdown({ "agents" => 231, "default" => 18 })
   end
 
   test "queue_depth counts ready work only, not scheduled or claimed jobs" do

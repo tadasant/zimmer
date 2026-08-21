@@ -522,11 +522,14 @@ So the alert body carries two more lines, from `HealthMonitorService#ready_backl
 
 ```
 • Ready by queue: agents 231, default 18, pollers 2
-• Ready by job class: AgentSessionJob 231, SessionTitleJob 12, HeartbeatSweepJob 6
+• Ready by job class: AgentSessionJob 231, SessionTitleJob 12, HeartbeatSweepJob 6, +3 more 10
 ```
 
-Both are taken over the same population as `ready_count`, biggest first, capped at
-`READY_BREAKDOWN_LIMIT` (5) entries each. Read them this way:
+Both are taken over the same population as `ready_count` and both add up to it, biggest first with
+ties broken by name, capped at `READY_BREAKDOWN_LIMIT` (5) entries each. Whatever the cap cuts comes
+back as a `+N more` remainder rather than vanishing — five job classes with no total look the same
+whether they are the whole backlog or a tenth of it, and telling those apart is the entire question
+below. A row with no `job_class` is counted under `(unknown)`. Read them this way:
 
 - **Concentrated in one queue** — that queue is starving. Its threads are all held, or blocked on a
   long external wait.
@@ -536,13 +539,14 @@ Both are taken over the same population as `ready_count`, biggest first, capped 
 This is deliberately *not* folded into `queue_statistics`, which runs on every `/health` render;
 these are two extra grouped scans of `good_jobs` and are only worth paying for when something is
 about to page. And if they raise — plausible, since the database may be the thing going wrong — the
-lines degrade to `unavailable` and the page still goes out. A depth number that reaches a human
-beats a richer one that raises on the way.
+lines read `unavailable` and the page still goes out. A depth number that reaches a human beats a
+richer one that raises on the way. `unavailable` and `none` are deliberately different words: a
+query that never answered and a queue that read as empty are different facts about an incident.
 
-The alert used to end by telling the reader to check the GoodJob dashboard at `/jobs` for exactly
-this. That is a dead end for the reader most likely to be reading it: an agent triage session has no
-shell on the production host and no way to open the dashboard, so the breakdown has to be *in* the
-page.
+The breakdown has to be *in* the page rather than a pointer to the GoodJob dashboard at `/jobs`,
+because the reader most likely to be reading it cannot open that dashboard: an agent triage session
+has no shell on the production host. The same split is on the `get_system_health` MCP tool for the
+same reason.
 
 ### "N active / M registered" workers
 
