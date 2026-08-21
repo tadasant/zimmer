@@ -48,7 +48,11 @@ class TranscriptTextRenderer
 
       case type
       when "user"
-        [ "--- User ---", content_text(content), "" ]
+        if ClaudeTranscriptNormalizer.runtime_notice_markers(entry).any?
+          runtime_notice_lines(content_text(content))
+        else
+          [ "--- User ---", content_text(content), "" ]
+        end
       when "assistant"
         [ "--- Assistant ---", content_text(content), "" ]
       when "tool_use"
@@ -77,10 +81,33 @@ class TranscriptTextRenderer
         [ "--- Tool Result ---", content_text(entry[:output]).truncate(TOOL_RESULT_TRUNCATION), "" ]
       when OpenTranscript::Types::COMPACTION
         [ "--- Compaction ---", entry[:summary].to_s, "" ]
+      when OpenTranscript::Types::SYSTEM_EVENT
+        # Only the runtime notice is special-cased; every other SystemEvent
+        # keeps the generic dump below, subtype and ids included.
+        if entry[:subtype] == OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE
+          payload = entry[:payload].is_a?(Hash) ? entry[:payload] : {}
+          runtime_notice_lines(payload["text"])
+        else
+          generic_entry_lines(entry)
+        end
       else
-        label = entry[:type].to_s.titleize
-        [ "--- #{label} ---", content_text(entry.except(:provider_raw)).truncate(UNKNOWN_ENTRY_TRUNCATION), "" ]
+        generic_entry_lines(entry)
       end
+    end
+
+    def generic_entry_lines(entry)
+      label = entry[:type].to_s.titleize
+      [ "--- #{label} ---", content_text(entry.except(:provider_raw)).truncate(UNKNOWN_ENTRY_TRUNCATION), "" ]
+    end
+
+    # A line the coding agent's CLI wrote into its own transcript wearing a user
+    # role gets a header that says so. Both surfaces this class serves —
+    # GET /api/v1/sessions/:id/transcript and the get_session MCP tool's
+    # transcript_format: "text" — pass raw JSONL, so the raw branch above needs
+    # the same discriminator the normalizer applies; a reader of either would
+    # otherwise be told a person typed it.
+    def runtime_notice_lines(text)
+      [ "--- Runtime Notice (agent runtime, not a person) ---", text.to_s, "" ]
     end
 
     # Render an entry's `content`, which is a String on some entries and an array

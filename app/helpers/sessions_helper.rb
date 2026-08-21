@@ -164,7 +164,11 @@ module SessionsHelper
     when OpenTranscript::Types::COMPACTION then "Compaction"
     when OpenTranscript::Types::ERROR then "Error"
     when OpenTranscript::Types::SYSTEM_EVENT
-      item[:subtype] == "queue-operation" ? "Queue Event" : (item[:subtype].presence || "system").to_s.titleize
+      case item[:subtype]
+      when "queue-operation" then "Queue Event"
+      when OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE then "Runtime Notice"
+      else (item[:subtype].presence || "system").to_s.titleize
+      end
     else "Event"
     end
   end
@@ -203,6 +207,14 @@ module SessionsHelper
     end
   end
 
+  # True for a line the coding agent's CLI wrote into its own transcript wearing
+  # a user role (see ClaudeTranscriptNormalizer::RUNTIME_NOTICE_FLAGS). Used to
+  # keep the row out of the affordances that only make sense on a real message.
+  def ot_runtime_notice?(item)
+    item[:type] == OpenTranscript::Types::SYSTEM_EVENT &&
+      item[:subtype] == OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE
+  end
+
   # Whether this event row should get the subtle gray tool background.
   def ot_tool_row?(item)
     %w[Thinking ToolCall ToolResult SubagentSpawn].include?(item[:type])
@@ -234,7 +246,7 @@ module SessionsHelper
     when OpenTranscript::Types::ERROR
       item[:message].to_s
     when OpenTranscript::Types::SYSTEM_EVENT
-      ot_system_event_markdown(item)
+      ot_runtime_notice?(item) ? ot_runtime_notice_markdown(item) : ot_system_event_markdown(item)
     else
       ""
     end
@@ -293,6 +305,32 @@ module SessionsHelper
     end
     parts << item[:summary] if item[:summary].present?
     parts.join("\n")
+  end
+
+  # A runtime notice renders the text the CLI wrote, under a line saying who
+  # wrote it. The wording inside the text is Claude Code's — "[Request
+  # interrupted by user for tool use]" says "by user" and is not ours to change
+  # — so the attribution Zimmer wraps around it has to carry the correction.
+  #
+  # The flag names and their explanations ride on the payload rather than being
+  # looked up from a runtime's normalizer, so this stays runtime-agnostic like
+  # the rest of the OpenTranscripts display helpers.
+  def ot_runtime_notice_markdown(item)
+    payload = item[:payload]
+    payload = {} unless payload.is_a?(Hash)
+
+    markers = payload["markers"]
+    reasons = (markers.is_a?(Array) ? markers : []).filter_map do |marker|
+      next unless marker.is_a?(Hash) && marker["flag"].present?
+
+      marker["reason"].present? ? "#{marker['reason']} (`#{marker['flag']}`)" : "`#{marker['flag']}`"
+    end
+
+    attribution = "*Written by the agent runtime, not typed by a person"
+    attribution += ": #{reasons.to_sentence}" if reasons.any?
+    attribution += ".*"
+
+    [ attribution, payload["text"].to_s.presence ].compact.join("\n\n")
   end
 
   def ot_system_event_markdown(item)
