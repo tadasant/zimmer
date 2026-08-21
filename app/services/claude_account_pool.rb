@@ -131,13 +131,18 @@ class ClaudeAccountPool
       capacity_times << servable_at if servable_at
     end
 
+    # A pool that is serving has nothing to wait for. The moment a blocked
+    # account rejoins is not when work resumes — work never stopped — so the
+    # field stays nil and `capacity_now?` is what says which emptiness this is.
+    serving_now = blocked_count < read_count
+
     Measure.new(
       five_hour: average(fives), weekly: average(weeklies),
       worst_five_hour: fives.max, worst_weekly: weeklies.max,
       account_count: @accounts.size, read_count: read_count,
       weekly_spent_count: weekly_spent_count,
       blocked_count: blocked_count,
-      next_capacity_at: capacity_times.min,
+      next_capacity_at: serving_now ? nil : capacity_times.min,
       next_weekly_reset: weekly_resets.min
     )
   end
@@ -149,10 +154,11 @@ class ClaudeAccountPool
   # that room is available now — so an account blocked only by its week comes
   # back the moment the week does, whatever its 5-hour window is doing.
   #
-  # nil when a window it is waiting on has no reset time recorded, or one that
-  # has already passed. Either way nothing here can name the moment, and an
-  # account that cannot say when it returns must not be the one that sets the
-  # pool's countdown.
+  # nil when a window it is waiting on has no reset time recorded. A spent
+  # window's reset is either that or still ahead of us — a timestamp in the past
+  # describes a window that has already rolled over, which makes it not spent —
+  # so the pending? check here is the nil case, stated as the invariant it is.
+  # An account that cannot say when it returns must not set the pool's countdown.
   def capacity_at(snapshot, five_spent:, weekly_spent:)
     waiting_on = []
     waiting_on << snapshot.reset_5h if five_spent

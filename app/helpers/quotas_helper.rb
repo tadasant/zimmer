@@ -176,10 +176,9 @@ module QuotasHelper
   #
   # An account is servable when *both* its windows have room, so the moment the
   # pool comes back is the earliest of the per-account moments — see
-  # ClaudeAccountPool. Splitting that into a 5-hour answer and a 7-day answer is
-  # what made this line wrong before: an account sitting on free 5-hour headroom
-  # with its week spent could never set the headline, even when its weekly reset
-  # was the soonest thing that would unblock the pool.
+  # ClaudeAccountPool. An answer split into a 5-hour time and a 7-day time
+  # cannot express that: an account sitting on free 5-hour headroom with its
+  # week spent belongs to neither half, however soon its weekly reset is.
   #
   # Three states, and the emptiness cases say which emptiness they are: a pool
   # with capacity right now reads very differently from one whose accounts are
@@ -188,7 +187,10 @@ module QuotasHelper
   # The countdown ticks in the browser off the absolute deadline in the markup,
   # not off the text rendered here — a page left open would otherwise keep
   # showing the wait as it stood when the server drew it. The text is still the
-  # right value at first paint, and stays the answer if JavaScript never runs.
+  # right value at first paint, and stays the answer if JavaScript never runs,
+  # which is why the passed state is rendered here too rather than left to the
+  # controller: the measure is taken before the view renders, so the deadline
+  # can cross now in between.
   def pool_capacity_banner(measure)
     return unless measure.any_readings?
     return pool_capacity_now_banner(measure) if measure.capacity_now?
@@ -196,21 +198,26 @@ module QuotasHelper
     reset = measure.next_capacity_at
     return pool_capacity_unknown_banner(measure) if reset.nil?
 
+    clock = countdown_clock_text(reset)
+    passed = clock == COUNTDOWN_PASSED_TEXT
+
     tag.div(safe_join([
-      tag.p("Work unblocked in",
+      tag.p(passed ? "Work unblocked" : "Work unblocked in",
         class: "text-xs font-semibold uppercase tracking-wide text-amber-800",
+        aria: { live: "polite" },
         data: { unblock_countdown_target: "label" }),
-      tag.p(countdown_clock_text(reset),
+      tag.p(clock,
         class: "mt-0.5 text-2xl sm:text-3xl font-bold tabular-nums text-amber-900",
         data: { unblock_countdown_target: "remaining" }),
       tag.p(safe_join([
         "The first moment an account has room on both its 5-hour and 7-day windows: ",
         pool_reset_time(reset, css: "font-semibold text-amber-900"),
-        ". #{pluralize(measure.blocked_count, 'account')} out of capacity now."
+        ". #{measure.blocked_count} of #{pluralize(measure.read_count, 'account')} " \
+        "with a reading out of capacity now."
       ]), class: "mt-1 text-xs text-amber-800"),
       tag.p("That moment has passed — refresh for a fresh reading.",
         class: "mt-1 text-xs font-semibold text-amber-900",
-        hidden: true,
+        hidden: !passed,
         data: { unblock_countdown_target: "passed" })
     ]), class: "mb-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3",
         data: { controller: "unblock-countdown",
@@ -235,11 +242,17 @@ module QuotasHelper
   def pool_capacity_unknown_banner(measure)
     tag.div(safe_join([
       tag.p("Nothing here says when work resumes", class: "text-sm font-semibold text-red-800"),
-      tag.p("#{pluralize(measure.blocked_count, 'account')} out of capacity, and no reset time " \
-            "recorded for the windows they are waiting on. Refresh to probe them again.",
+      tag.p("#{measure.blocked_count} of #{pluralize(measure.read_count, 'account')} with a reading " \
+            "out of capacity, and no reset time recorded for the windows they are waiting on. " \
+            "Refresh to probe them again.",
         class: "mt-0.5 text-xs text-red-700")
     ]), class: "mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3")
   end
+
+  # What the clock reads once there is nothing left to count. Not "0:00", which
+  # reads as a live clock that has stopped; the reading behind it is stale the
+  # moment the deadline passes.
+  COUNTDOWN_PASSED_TEXT = "now"
 
   # A clock counting down to `reset_time`, in the format the browser keeps
   # ticking: "4:31" under an hour, "2:04:31" under a day, "1d 02:04:31" beyond.
@@ -247,7 +260,7 @@ module QuotasHelper
   # instant, so the value does not jump when it takes over.
   def countdown_clock_text(reset_time)
     total = (reset_time - Time.current).floor
-    return "now" if total <= 0
+    return COUNTDOWN_PASSED_TEXT if total <= 0
 
     days = total / 86_400
     hours = (total % 86_400) / 3_600

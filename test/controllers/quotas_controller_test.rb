@@ -200,9 +200,9 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     stats = aggregate_stats_text
     assert_match "Work unblocked in", stats
     assert_match "room on both its 5-hour and 7-day windows: #{utc_reset_text(weekly_back)}", stats
-    # The time the page used to headline, which is not when work resumes.
+    # The other account's 5-hour rollover, which is not when work resumes.
     assert_no_match(/#{Regexp.escape(utc_reset_text(five_hour_back))}/, stats)
-    assert_match "2 accounts out of capacity now", stats
+    assert_match "2 of 2 accounts with a reading out of capacity now", stats
     # The 7-day note below still describes its own window, over the accounts
     # whose week is spent.
     assert_match "Next 7-day reset: #{utc_reset_text(weekly_back)}", stats
