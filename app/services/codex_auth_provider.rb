@@ -83,7 +83,7 @@ class CodexAuthProvider < RuntimeAuthProvider
     if account.refresh_token!
       Result.new(ok: true, error: nil)
     else
-      Result.new(ok: false, error: account.reload.needs_reauth? ? :needs_reauth : :transient)
+      Result.new(ok: false, error: account.reload.last_refresh_failure_reason)
     end
   end
 

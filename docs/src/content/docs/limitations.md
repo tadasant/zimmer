@@ -1118,10 +1118,36 @@ is a fact about someone else's private code that can change without notice. Last
 8. The CLI sometimes rewrites `.credentials.json` with no `claudeAiOauth` block at all. Adopting it
    blindly would brick the pool.
 9. Token lifetime ~8h — inferred, not specified.
+10. `invalid_grant`'s two meanings are separated only by an `error_description` string. Zimmer keys on
+    `/expired|revoked/i` to tell a dead credential from a spent value; if Anthropic reworded that
+    field tomorrow, every rejection would read as merely stale and a genuinely dead account would take
+    three strikes to surface instead of one. Nothing detects the rewording.
 
 Tracked in [#58](https://github.com/tadasant/zimmer/issues/58). None of this can be *fixed* — there is
 no public API to fix it against — so the issue asks for a canary that fails loudly when one of these
 facts stops being true.
+
+---
+
+## A dead pooled account takes about half an hour to reach you
+
+`ClaudeAccount#refresh_token!` no longer condemns an account on a single `invalid_grant` whose body
+says only that the value it presented was rejected — that mistake accounted for 14 of the 15
+`needs_reauth` marks over an eleven-day window and made Tadas re-authenticate the same live account
+four times in a fortnight ([#530](https://github.com/tadasant/zimmer/issues/530)). It now takes three
+such rejections, spread across at least 15 minutes each, before the account is marked.
+
+The cost is on the other side. An account whose credential really is dead, in the way that does *not*
+say "expired" — revoked out of band, or a chain Zimmer orphaned before the fix landed — stays `active`
+for at least half an hour while the strikes accumulate. Two strikes must be 15 minutes apart and the
+sweep runs every 5 minutes, so the floor is ~30 minutes and the usual case is 30–45. During that
+window rotation can hand a session an account that cannot mint an access token. It is a deliberate
+trade of a slower true positive for far fewer false ones, not an oversight.
+
+The strikes are on `claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at`. They
+are on the account's Administrate record page but **not** on `/quotas`, which is where anyone actually
+looks — so "why is this account still active when every refresh fails?" is a question `/quotas` cannot
+answer.
 
 ---
 
