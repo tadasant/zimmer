@@ -114,6 +114,18 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
     assert_match "40% swept", output
   end
 
+  test "a re-scan of already-swept history is not reported as partial" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 3.hours.ago, finished_at: 2.hours.ago)
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", trigger: "manual",
+                               started_at: 1.minute.ago, directories_total: 100, directories_done: 40)
+
+    output = @tool.call({})
+
+    assert_match "A re-scan of the corpus is running", output
+    assert_no_match(/Partial history/, output)
+  end
+
   test "states the covered window once the sweep has finished" do
     usage
     TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago, finished_at: 1.hour.ago)

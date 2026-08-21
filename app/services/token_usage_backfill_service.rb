@@ -9,11 +9,10 @@ require "tmpdir"
 #
 # The corpus is tens of thousands of files and tens of gigabytes. One process
 # handed the lot would hold a worker thread for as long as it takes, which is
-# fine for a hand-run rake task and not fine for something that has to run
-# unattended on a cron next to everything else the worker does. So the run is
-# chunked by directory, each chunk commits before the next starts, and the caller
-# says how long it may spend before handing the thread back. The next tick picks
-# up at the cursor.
+# not acceptable for something that runs unattended on a cron next to everything
+# else the worker does. So the run is chunked by directory, each chunk commits
+# before the next starts, and the caller says how long it may spend before
+# handing the thread back. The next tick picks up at the cursor.
 #
 # That is only safe because ingestion is idempotent on `request_id`: a directory
 # swept twice writes nothing the second time, so an interrupted slice, an
@@ -36,23 +35,27 @@ class TokenUsageBackfillService
   end
 
   # Works the run until its budget expires or the corpus is covered. Returns the
-  # run, reloaded, so a caller can report progress.
+  # run, so a caller can report progress.
   def call
     return @run if @run.complete?
 
-    unless File.directory?(root)
-      # A missing root is a misconfiguration, not a finished sweep. Recording it
-      # and leaving the run unfinished is what stops the Costs page claiming
-      # complete coverage it does not have.
-      @run.update!(last_ran_at: Time.current, last_error: "transcript root #{root} does not exist")
-      return @run
-    end
+    return abort_run("transcript root #{root} does not exist") unless File.directory?(root)
+
+    directories = listing
+    # A root that exists but holds no transcript directories is the same class of
+    # misconfiguration as one that is missing — an unmounted volume, a wrong HOME
+    # — and not a finished sweep. Finishing here would set the completion marker
+    # permanently on a run that read nothing, and the Costs page would report
+    # full coverage it does not have. Record it and leave the run open for the
+    # next tick. A run that HAS swept directories is a different case: the corpus
+    # going away afterwards does not undo the work already committed.
+    return abort_run("no transcript directories under #{root}") if directories.empty? && @run.directories_done.zero?
 
     @run.update!(started_at: @run.started_at || Time.current)
     deadline = @budget ? Time.current + @budget : nil
 
     loop do
-      remaining = remaining_directories
+      remaining = remaining_directories(directories)
       @run.directories_total = [ @run.directories_total, @run.directories_done + remaining.size ].max
 
       if remaining.empty?
@@ -61,7 +64,7 @@ class TokenUsageBackfillService
         break
       end
 
-      sweep(remaining.first(@chunk_size))
+      break unless sweep(remaining.first(@chunk_size))
       break if deadline && Time.current >= deadline
     end
 
@@ -72,36 +75,54 @@ class TokenUsageBackfillService
 
   def root = @run.transcript_root
 
+  # Listed once per slice rather than once per chunk. At ten thousand clone
+  # directories, re-listing and re-stat'ing the whole tree for every 25-directory
+  # chunk is hundreds of full directory walks per sweep, all to learn something
+  # that has not changed.
+  def listing
+    return [] unless File.directory?(root)
+
+    Dir.children(root).select { |d| File.directory?(File.join(root, d)) }.sort
+  rescue SystemCallError => e
+    @logger.warn("[TokenUsageBackfill] #{root}: #{e.message}")
+    []
+  end
+
   # Directories still ahead of the cursor, in the sort order the cursor is
   # expressed in. A directory created after the run started may sort before the
   # cursor and be skipped — deliberately: its files are new, so the 10-minute
   # TokenUsageIngestionJob with its two-hour lookback already has them.
-  def remaining_directories
-    dirs = Dir.children(root).select { |d| File.directory?(File.join(root, d)) }.sort
-    return dirs if @run.cursor.blank?
+  def remaining_directories(directories)
+    return directories if @run.cursor.blank?
 
-    dirs.select { |d| d > @run.cursor }
+    directories.select { |d| d > @run.cursor }
   end
 
+  # True when the chunk committed, false when it failed. A failure leaves the
+  # cursor where it was, so the next tick retries the same chunk.
   def sweep(chunk)
     result = ingest(chunk)
 
     @run.update!(
       cursor: chunk.last,
       directories_done: @run.directories_done + chunk.size,
-      directories_total: @run.directories_total,
       files_scanned: @run.files_scanned + result.files_scanned,
       session_rows: @run.session_rows + result.session_rows,
       adhoc_rows: @run.adhoc_rows + result.adhoc_rows,
       last_ran_at: Time.current,
       last_error: nil
     )
+    true
   rescue StandardError => e
-    # The cursor has not moved, so the next tick retries this chunk. Recording
-    # the error is what makes a permanently failing sweep visible on the Costs
-    # page instead of looking like one that is merely slow.
+    # Recorded and surfaced on the Costs page rather than raised. A chunk that
+    # fails for a durable reason — one unreadable directory — fails again on
+    # every tick, and an unhandled job error every five minutes forever is an
+    # ERROR line per tick, which this deployment escalates to a page. The stored
+    # error is the signal; a permanently stalled run shows as one on the page,
+    # in `ledger_coverage`, and in `get_costs`.
+    @logger.warn("[TokenUsageBackfill] run ##{@run.id} chunk failed: #{e.class}: #{e.message}")
     @run.update!(last_ran_at: Time.current, last_error: "#{e.class}: #{e.message}")
-    raise
+    false
   end
 
   # A scratch root of symlinks lets TokenUsageIngestionService keep its one glob
@@ -112,5 +133,11 @@ class TokenUsageBackfillService
 
       TokenUsageIngestionService.new(root: scratch, modified_since: nil, logger: @logger).call
     end
+  end
+
+  def abort_run(message)
+    @logger.warn("[TokenUsageBackfill] run ##{@run.id}: #{message}")
+    @run.update!(last_ran_at: Time.current, last_error: message)
+    @run
   end
 end

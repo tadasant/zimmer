@@ -2,12 +2,10 @@
 
 # Makes the historical token-usage backfill a thing the app does to itself.
 #
-# The ledger tables landed with a `rake token_usage:backfill` task, which meant
-# the only way to get history into them was for a human to open a shell on the
-# production box. That is exactly the kind of operational step Zimmer is supposed
-# not to have: a deploy is the delivery mechanism for ops actions, not an SSH
-# session. This table is what lets a recurring job do the sweep unattended and
-# still answer the two questions a one-shot script cannot:
+# Getting history into the ledger must not require a shell on the production box:
+# a deploy is the delivery mechanism for an ops action, not an SSH session. This
+# table is what lets a recurring job do the sweep unattended and still answer the
+# two questions a one-shot script cannot:
 #
 #   - has history been backfilled yet, and how far did it get?
 #   - is it safe to leave the job on a cron forever?
@@ -18,9 +16,11 @@
 # idempotent on `request_id`, so a re-swept directory writes nothing.
 #
 # Rows are runs, not a singleton, so a re-scan requested from the Costs page
-# leaves the previous run's record intact. `TokenUsageBackfillJob` only ever
-# works the newest unfinished row, and does nothing at all once every row is
-# finished — which is what keeps it a no-op on every deploy after the first.
+# leaves the previous run's record intact. At most ONE run may be unfinished at a
+# time, which the partial unique index below enforces in the database rather than
+# in a read-then-write that two concurrent requests can both win.
+# `TokenUsageBackfillJob` works that row, and does nothing at all once every row
+# is finished — which is what keeps it a no-op on every deploy after the first.
 class CreateTokenUsageBackfills < ActiveRecord::Migration[8.0]
   def change
     create_table :token_usage_backfills do |t|
@@ -56,5 +56,14 @@ class CreateTokenUsageBackfills < ActiveRecord::Migration[8.0]
     # on every tick, and the answer is almost always no. Both are index lookups.
     add_index :token_usage_backfills, :finished_at
     add_index :token_usage_backfills, :created_at
+
+    # At most one unfinished run, enforced by the database. Two callers asking
+    # for a re-scan at the same moment — a double-clicked button, the button and
+    # the MCP action — would otherwise both see no pending run and both create
+    # one, and the loser would sit unfinished until the winner completed and then
+    # re-sweep the whole corpus from an empty cursor.
+    add_index :token_usage_backfills, "(finished_at IS NULL)",
+      unique: true, where: "finished_at IS NULL",
+      name: "index_token_usage_backfills_one_unfinished"
   end
 end

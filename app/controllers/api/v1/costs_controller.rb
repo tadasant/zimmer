@@ -10,8 +10,8 @@
 #                                including the cost-vs-performance work these
 #                                tables exist to enable.
 #   POST /api/v1/costs/backfill — ask for a fresh sweep of the whole transcript
-#                                corpus into the ledger. The ops action that used
-#                                to be a rake task on the production box.
+#                                corpus into the ledger. An ops action with an
+#                                endpoint, because it must not need a prod shell.
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::CostsController < Api::BaseController

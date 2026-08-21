@@ -139,22 +139,41 @@ class TokenUsageBackfillServiceTest < ActiveSupport::TestCase
     assert_not_nil run.last_ran_at
   end
 
-  test "an empty corpus completes without writing anything" do
+  test "a root with no transcript directories is an error, not a finished sweep" do
+    # An unmounted volume or a wrong HOME resolves to a real, empty directory.
+    # Finishing here would set the completion marker permanently on a run that
+    # read nothing, and the Costs page would claim coverage it does not have.
     run = run_record
 
     TokenUsageBackfillService.new(run: run).call
+    run.reload
 
-    assert run.reload.complete?
+    assert_not run.complete?
+    assert_match "no transcript directories", run.last_error
     assert_equal 0, SessionTokenUsage.count
   end
 
-  test "a failing sweep records the error, leaves the cursor put, and raises" do
+  test "a corpus emptied after a run has swept part of it still completes" do
+    corpus(1)
+    run = run_record
+    TokenUsageBackfillService.new(run: run, budget: 0.seconds, chunk_size: 1).call
+    FileUtils.rm_rf(Dir.glob(File.join(@root, "*")))
+
+    TokenUsageBackfillService.new(run: run).call
+
+    assert run.reload.complete?, "work already done is not undone by the corpus going away"
+  end
+
+  test "a failing chunk records the error and leaves the cursor put, without raising" do
     corpus(2)
     run = run_record
 
     TokenUsageIngestionService.any_instance.stubs(:call).raises(Errno::EACCES, "permission denied")
 
-    assert_raises(Errno::EACCES) { TokenUsageBackfillService.new(run: run).call }
+    # Deliberately not raised: a chunk that fails for a durable reason fails on
+    # every tick, and an unhandled job error every five minutes forever is a
+    # page. The stored error is the signal, and the Costs page renders it.
+    TokenUsageBackfillService.new(run: run).call
 
     run.reload
     assert_nil run.cursor, "a chunk that failed must not advance the cursor"

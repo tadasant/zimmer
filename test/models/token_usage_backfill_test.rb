@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class TokenUsageBackfillTest < ActiveSupport::TestCase
   def run_record(**overrides)
@@ -92,6 +93,25 @@ class TokenUsageBackfillTest < ActiveSupport::TestCase
     assert coverage[:complete], "history was swept once; a re-scan does not un-sweep it"
     assert_equal "running", coverage[:status]
     assert_equal 30, coverage[:progress_pct]
+  end
+
+  test "the database refuses a second unfinished run" do
+    run_record
+
+    error = assert_raises(ActiveRecord::RecordNotUnique) { run_record(trigger: "manual") }
+    assert_match "one_unfinished", error.message
+  end
+
+  test "request! hands back the run in flight when the insert loses the race" do
+    existing = run_record
+
+    # What the loser of a genuine race sees: its own read found nothing, its
+    # insert was rejected by the index, and it reports on the winner's run.
+    TokenUsageBackfill.stubs(:pending).returns(nil).then.returns(existing)
+
+    assert_no_difference -> { TokenUsageBackfill.count } do
+      assert_equal existing, TokenUsageBackfill.request!(trigger: "manual")
+    end
   end
 
   test "rejects an unknown trigger" do
