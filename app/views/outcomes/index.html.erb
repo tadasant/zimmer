@@ -91,7 +91,7 @@
               <tr class="hover:bg-gray-50">
                 <td class="px-2 sm:px-3 py-2 sm:py-1.5">
                   <%= link_to session_path(row), class: "text-indigo-600 hover:text-indigo-800 font-medium" do %>#<%= row.id %><% end %>
-                  <span class="text-gray-700 ml-1 truncate inline-block max-w-[8rem] sm:max-w-[16rem] xl:max-w-[22rem] align-bottom" title="<%= row.title %>"><%= row.title.presence || "(untitled)" %></span>
+                  <span class="text-gray-700 ml-1 truncate inline-block max-w-[5rem] sm:max-w-[16rem] xl:max-w-[22rem] align-bottom" title="<%= row.title %>"><%= row.title.presence || "(untitled)" %></span>
                 </td>
                 <td class="px-3 py-1.5 text-gray-600 whitespace-nowrap hidden md:table-cell"><%= row.metadata&.dig("agent_root_key") || row.agent_root_key || "—" %></td>
                 <td class="px-3 py-1.5 text-gray-600 whitespace-nowrap hidden md:table-cell"><%= RuntimeRegistry.label_for(row.agent_runtime) %></td>

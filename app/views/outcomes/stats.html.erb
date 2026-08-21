@@ -51,27 +51,27 @@
             <table class="min-w-full text-sm">
               <thead class="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
                 <tr>
-                  <th class="px-3 py-2 text-left font-medium"><%= @stats.grouping_label %></th>
-                  <th class="px-3 py-2 text-right font-medium">Transcripts</th>
-                  <th class="px-3 py-2 text-right font-medium" title="Share of transcripts whose ROOT segment was a Success">Success</th>
-                  <th class="px-3 py-2 text-right font-medium">Segments</th>
-                  <th class="px-3 py-2 text-right font-medium" title="Share of ALL segments that were a Success">Seg success</th>
-                  <th class="px-3 py-2 text-right font-medium" title="Average failed segments per transcript">Fails/txn</th>
+                  <th class="px-2 sm:px-3 py-2 text-left font-medium"><%= @stats.grouping_label %></th>
+                  <th class="px-2 sm:px-3 py-2 text-right font-medium"><span class="sm:hidden">Txns</span><span class="hidden sm:inline">Transcripts</span></th>
+                  <th class="px-2 sm:px-3 py-2 text-right font-medium" title="Share of transcripts whose ROOT segment was a Success">Success</th>
+                  <th class="px-3 py-2 text-right font-medium hidden sm:table-cell">Segments</th>
+                  <th class="px-2 sm:px-3 py-2 text-right font-medium" title="Share of ALL segments that were a Success"><span class="sm:hidden">Seg</span><span class="hidden sm:inline">Seg success</span></th>
+                  <th class="px-3 py-2 text-right font-medium hidden sm:table-cell" title="Average failed segments per transcript">Fails/txn</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-100">
                 <% @stats.rows.each do |row| %>
                   <tr class="hover:bg-gray-50">
-                    <td class="px-3 py-1.5 text-gray-900 font-medium truncate max-w-[16rem]" title="<%= row.label %>"><%= row.label %></td>
-                    <td class="px-3 py-1.5 text-right tabular-nums text-gray-700"><%= number_with_delimiter(row.transcripts) %></td>
-                    <td class="px-3 py-1.5 text-right tabular-nums">
+                    <td class="px-3 py-1.5 text-gray-900 font-medium truncate max-w-[5rem] sm:max-w-[16rem]" title="<%= row.label %>"><%= row.label %></td>
+                    <td class="px-2 sm:px-3 py-1.5 text-right tabular-nums text-gray-700"><%= number_with_delimiter(row.transcripts) %></td>
+                    <td class="px-2 sm:px-3 py-1.5 text-right tabular-nums">
                       <%= render "rate_bar", rate: row.transcript_success_rate %>
                     </td>
-                    <td class="px-3 py-1.5 text-right tabular-nums text-gray-700"><%= number_with_delimiter(row.segments) %></td>
-                    <td class="px-3 py-1.5 text-right tabular-nums">
+                    <td class="px-3 py-1.5 text-right tabular-nums text-gray-700 hidden sm:table-cell"><%= number_with_delimiter(row.segments) %></td>
+                    <td class="px-2 sm:px-3 py-1.5 text-right tabular-nums">
                       <%= render "rate_bar", rate: row.segment_success_rate %>
                     </td>
-                    <td class="px-3 py-1.5 text-right tabular-nums <%= row.avg_failed_segments > 0 ? 'text-red-700' : 'text-gray-400' %>"><%= number_with_precision(row.avg_failed_segments, precision: 1) %></td>
+                    <td class="px-3 py-1.5 text-right tabular-nums hidden sm:table-cell <%= row.avg_failed_segments > 0 ? 'text-red-700' : 'text-gray-400' %>"><%= number_with_precision(row.avg_failed_segments, precision: 1) %></td>
                   </tr>
                 <% end %>
               </tbody>
@@ -80,9 +80,9 @@
                   <td class="px-3 py-1.5 font-semibold text-gray-900">All</td>
                   <td class="px-3 py-1.5 text-right tabular-nums font-semibold"><%= number_with_delimiter(totals.transcripts) %></td>
                   <td class="px-3 py-1.5 text-right tabular-nums"><%= render "rate_bar", rate: totals.transcript_success_rate %></td>
-                  <td class="px-3 py-1.5 text-right tabular-nums font-semibold"><%= number_with_delimiter(totals.segments) %></td>
+                  <td class="px-3 py-1.5 text-right tabular-nums font-semibold hidden sm:table-cell"><%= number_with_delimiter(totals.segments) %></td>
                   <td class="px-3 py-1.5 text-right tabular-nums"><%= render "rate_bar", rate: totals.segment_success_rate %></td>
-                  <td class="px-3 py-1.5 text-right tabular-nums font-semibold"><%= number_with_precision(totals.avg_failed_segments, precision: 1) %></td>
+                  <td class="px-3 py-1.5 text-right tabular-nums font-semibold hidden sm:table-cell"><%= number_with_precision(totals.avg_failed_segments, precision: 1) %></td>
                 </tr>
               </tfoot>
             </table>
