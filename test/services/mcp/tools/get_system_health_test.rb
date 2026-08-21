@@ -41,9 +41,7 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "## System Health Report"
     assert_includes result, "*Could not fetch CLI status: cache unavailable*"
   end
-  # A pending-job count means something completely different when the queues are
-  # deliberately halted, so the report says which it is — in both directions, so
-  # "no" is distinguishable from "this report doesn't say".
+
   # Parity with the Slack backlog page. A bare ready count cannot tell a starved
   # queue from a busy one, and this tool is what an agent triaging that page
   # actually has — the GoodJob dashboard needs a browser session on the production
@@ -60,7 +58,10 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "- **Ready backlog by job class:** AgentSessionJob 231, SessionTitleJob 18"
   end
 
-  # A breakdown of an empty queue is a line of noise on every healthy call.
+  # A breakdown of an empty queue is a line of noise on every healthy call. A
+  # breakdown that could not be READ is not — the caller most likely to hit a
+  # database that cannot serve these scans is the one triaging a database that is
+  # struggling, so that case has to say so rather than go quiet or raise.
   test "says nothing about the backlog when nothing is waiting" do
     result = @tool.call({})
 
@@ -68,6 +69,19 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     refute_includes result, "Ready backlog by job class"
   end
 
+  test "a breakdown that cannot be read is reported, not raised, and keeps the report" do
+    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown)
+                        .raises(ActiveRecord::StatementInvalid, "canceling statement due to statement timeout")
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Ready backlog breakdown:** unavailable"
+    assert_includes result, '"overall_status": "healthy"'
+  end
+
+  # A pending-job count means something completely different when the queues are
+  # deliberately halted, so the report says which it is — in both directions, so
+  # "no" is distinguishable from "this report doesn't say".
   test "reports queue recovery mode as off when it is off" do
     assert_includes @tool.call({}), "**Queue Recovery Mode:** Off"
   end
