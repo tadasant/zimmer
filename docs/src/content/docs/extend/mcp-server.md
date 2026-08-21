@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 18 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 22 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -76,7 +76,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The full surface — all 18 tools |
+| `/mcp` | The full surface — all 22 tools |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 6 tools a session needs to run itself |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
@@ -152,11 +152,11 @@ production.
 
 ## The tool surface
 
-21 tools, four domains.
+22 tools, four domains.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |

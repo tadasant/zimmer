@@ -9,6 +9,14 @@ class Session < ApplicationRecord
   has_many :enqueued_messages, dependent: :destroy
   has_many :notifications, dependent: :destroy
   has_many :mcp_oauth_pending_flows, dependent: :destroy
+
+  # Outcome analyses OF this session's transcript (the Outcomes view). No
+  # `dependent:` — the foreign key is ON DELETE CASCADE, so the database already
+  # guarantees an analysis cannot outlive the transcript it describes, and adding
+  # a Rails-side sweep would only duplicate that at the cost of a query per
+  # destroy. The reverse direction (analyses this session PRODUCED) is nullified,
+  # so it is deliberately not modeled here as an ownership edge.
+  has_many :outcome_analyses
   has_many :elicitations, dependent: :destroy
 
   # What Zimmer knows a named human said TO THIS SESSION. Read-only once
@@ -45,6 +53,21 @@ class Session < ApplicationRecord
   # rather than the operator's work, so the lists an operator reads exclude them.
   scope :excluding_status_summary_forks, lambda {
     where("metadata->>? IS NULL", SessionStatusSummaryGenerator::FORK_MARKER)
+  }
+
+  # The sessions Zimmer spawns to analyze another session's transcript for the
+  # Outcomes view (OutcomeAnalyses::SpawnAnalysisSession). An "Analyze All" batch
+  # can put hundreds of these in flight at once, so they carry a marker that makes
+  # them identifiable rather than being indistinguishable from the operator's own
+  # work — the Outcomes ledger excludes them from the analyzable set, and the
+  # dashboard offers them as a filter.
+  OUTCOME_ANALYSIS_MARKER = "outcome_analysis_target_session_id"
+
+  scope :outcome_analysis_sessions, lambda {
+    where("metadata->>? IS NOT NULL", OUTCOME_ANALYSIS_MARKER)
+  }
+  scope :excluding_outcome_analysis_sessions, lambda {
+    where("metadata->>? IS NULL", OUTCOME_ANALYSIS_MARKER)
   }
 
   scope :root_sessions, -> { where(parent_session_id: nil) }

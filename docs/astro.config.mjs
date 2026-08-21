@@ -80,6 +80,7 @@ export default defineConfig({
             { label: "Spawning and monitoring", slug: "sessions/spawning" },
             { label: "Goals and stop conditions", slug: "sessions/goals" },
             { label: "Transcripts", slug: "sessions/transcripts" },
+            { label: "Outcome analysis", slug: "sessions/outcomes" },
             { label: "Triggers and schedules", slug: "sessions/triggers" },
             { label: "Elicitation", slug: "sessions/elicitation" },
             { label: "Hierarchy and human messages", slug: "sessions/hierarchy-and-human-messages" },

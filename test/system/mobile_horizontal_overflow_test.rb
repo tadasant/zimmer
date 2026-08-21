@@ -422,6 +422,63 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("notifications")
   end
 
+  # The Outcomes ledger is the widest table Zimmer ships: eight columns, two
+  # action buttons on the right of every row, and titles that are long unbreakable
+  # strings. The action buttons being the LAST column is what makes this the exact
+  # shape of the original report — a Analyze button that runs off the right edge.
+  test "the outcomes ledger, drilldown and stats do not overflow horizontally on a phone" do
+    analyzed = create_session(status: :archived, archived_at: 1.day.ago)
+    with_agent_root(analyzed, AgentRootsConfig.all.first.name)
+    unanalyzed = create_session(title: "Short one", status: :archived, archived_at: 2.days.ago)
+    OutcomeAnalyses::Save.call(session: analyzed, root: outcome_tree)
+
+    visit outcomes_path
+    assert_text "Short one"
+    assert_no_horizontal_overflow("outcomes ledger")
+    # The action buttons are the LAST column, so they only stay on screen because
+    # the metadata columns collapse below their breakpoints. If those come back at
+    # phone width, Analyze goes back off the right edge behind a sideways scroll.
+    # Regexes, not strings: the headers are rendered through `uppercase`, so
+    # Capybara sees "SESSION". A case-sensitive `assert_no_selector` would pass
+    # against a visible "HARNESS" and prove nothing.
+    assert_selector "th", text: /session/i
+    assert_no_selector "th", text: /harness/i
+    assert_no_selector "th", text: /created/i
+    assert_selector "button", text: "Analyze", exact_text: true
+
+    visit outcome_path(analyzed.id)
+    assert_selector "[data-segment-id]"
+    assert_no_horizontal_overflow("outcomes drilldown")
+
+    visit outcomes_stats_path
+    assert_selector "h1"
+    assert_no_horizontal_overflow("outcome stats")
+
+    assert unanalyzed.reload.archived?
+  end
+
+  # A root Segment with one failed and one successful child — the shape the ledger
+  # and the flamegraph both have to render.
+  def outcome_tree
+    {
+      "id" => "S0",
+      "trigger" => { "kind" => "New", "source" => "user" },
+      "goal" => { "text" => LONG_TOKEN_TITLE, "kind" => "Action" },
+      "outcome" => { "kind" => "Success", "explanation" => "Landed after one failed patch." },
+      "meta" => {},
+      "children" => [
+        { "id" => "S0.0", "trigger" => { "kind" => "New", "source" => "agent" },
+          "goal" => { "text" => "Patch the state machine", "kind" => "Action" },
+          "outcome" => { "kind" => "Failure", "explanation" => "Patch did not compile; reverted." },
+          "meta" => {}, "children" => [] },
+        { "id" => "S0.1", "trigger" => { "kind" => "Correction", "source" => "user" },
+          "goal" => { "text" => "Read the failing spec first", "kind" => "Plan" },
+          "outcome" => { "kind" => "Success", "explanation" => "Found the missing guard." },
+          "meta" => {}, "children" => [] }
+      ]
+    }
+  end
+
   # The desktop layout has to keep working: these same pages are read on a laptop,
   # and `flex-wrap` / stacked-on-mobile fixes are exactly the kind of change that
   # silently reflows a wide screen.
@@ -432,7 +489,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     [ root_path, new_session_path, settings_path, triggers_path, trigger_path(trigger),
       quotas_path, health_dashboard_path, clis_path, connectors_path,
-      notifications_path ].each do |path|
+      notifications_path, outcomes_path, outcomes_stats_path ].each do |path|
       visit path
       doc_overflow, = overflow_report
       assert doc_overflow <= 0, "#{path} scrolls sideways at 1400px (#{doc_overflow}px too wide)"
