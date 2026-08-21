@@ -870,4 +870,192 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
       jitter_delta
     assert_match(/Codex/, @session.logs.where(level: "error").last.content)
   end
+
+  # ===========================================================================
+  # park_undelivered_turn! — the escape path from zimmer#6597
+  #
+  # 6597 was resumed from a quota park, its recovery turn was killed before it
+  # reached the runtime, and the exit path answered "the process is gone" with
+  # pause! — landing it in needs_input, on the human's action queue, with the
+  # undelivered prompt still sitting in metadata and the pool still empty.
+  # ===========================================================================
+
+  # The regression: an undelivered turn plus an empty pool must land in `waiting`
+  # with a scheduled retry, never needs_input.
+  test "parks a stop whose turn was never delivered while the pool is empty" do
+    create_account(email: "out@example.com", status: :quota_exceeded,
+      reset_5h: 40.minutes.from_now)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue where you left off")
+
+    assert AuthOutageParkService.park_undelivered_turn!(@session),
+      "An undelivered turn against an empty pool is the outage, not a finished turn"
+
+    # park! marks the running session pending_sleep; the caller's pause is what
+    # carries it through to waiting, exactly as the monitoring loop does.
+    @session.reload
+    assert @session.metadata["pending_sleep"], "The session must be marked for sleep"
+    @session.pause!
+
+    assert_equal "waiting", @session.reload.status
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"]
+    assert_not_nil @session.metadata["auth_outage_retry_at"]
+    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count,
+      "A parked session must carry a scheduled retry"
+  end
+
+  # The other half of the guard. A session that finished its work in the same
+  # minute the pool ran dry has nothing to resume; parking it would sleep it and
+  # then nudge an agent that is already done.
+  test "leaves a stop alone when the turn was delivered" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session)
+
+    @session.pause!
+    assert_equal "needs_input", @session.reload.status
+    assert_nil @session.metadata["auth_outage_reason"]
+  end
+
+  # An undelivered turn with a usable pool is some other failure, and parking it
+  # would hide that behind a quota banner.
+  test "leaves an undelivered turn alone while the pool can still serve it" do
+    create_account(email: "fine@example.com", status: :active)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue where you left off")
+
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session)
+
+    @session.pause!
+    assert_equal "needs_input", @session.reload.status
+  end
+
+  # The finding that mattered most in review: `active_follow_up_prompt` is cleared by only
+  # ONE exit path, and these guards sit on the others — so its mere presence is not evidence
+  # the turn failed. A turn whose prompt is in the transcript ran, whatever the pool says.
+  test "leaves a stop alone when the prompt reached the runtime's transcript" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+    prompt = "continue where you left off"
+    @session.update!(transcript: [
+      { "type" => "user", "message" => { "role" => "user", "content" => prompt } }.to_json,
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => "done",
+                                              "stop_reason" => "end_turn" } }.to_json
+    ].join("\n") + "\n")
+    @session.merge_metadata!("active_follow_up_prompt" => prompt)
+
+    assert_not AuthOutageParkService.turn_undelivered?(@session)
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session),
+      "A turn the runtime recorded is a turn that ran, however empty the pool is"
+
+    @session.pause!
+    assert_equal "needs_input", @session.reload.status
+  end
+
+  # A user pause terminates the process BEFORE transitioning, so these exits can be reached
+  # for a session the human has already stopped. Re-arming it with a wake trigger would undo
+  # their decision.
+  test "leaves a user-paused session alone" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue",
+      "paused_by" => "user")
+
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session)
+  end
+
+  # Two of the three call sites can be reached in one pass through the monitoring loop.
+  # Parking twice would charge one stop twice against the consecutive-park backoff.
+  test "does not park a session that is already parked" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue")
+    assert AuthOutageParkService.park_undelivered_turn!(@session)
+
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session.reload),
+      "A parked session must not be parked again by the next exit path in the same pass"
+    assert_equal 1, AuthOutageParkService.recent_quota_parks(@session).size
+  end
+
+  # An unreadable pool is not evidence of an outage. The sibling predicate
+  # .runtime_has_available_account? rescues to false meaning "do not wake", which is
+  # conservative; the same false here would mean "park", which is not.
+  test "does not park when the pool cannot be read" do
+    @session.merge_metadata!("active_follow_up_prompt" => "continue")
+    RuntimeAuthProvider.stubs(:for).raises(StandardError.new("pool unreadable"))
+
+    assert_not AuthOutageParkService.pool_confirmed_empty?("claude_code")
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session)
+  end
+
+  # A whole population parked by one outage must not retry in lockstep. The park
+  # times are drawn from the same reset, so any spread between them is jitter.
+  test "parks caught by one outage do not all retry at the same instant" do
+    create_account(email: "out@example.com", status: :quota_exceeded,
+      reset_5h: 6.hours.from_now)
+
+    retry_ats = 12.times.map do
+      peer = parked_peer
+      peer.update!(status: :running)
+      peer.merge_metadata!("active_follow_up_prompt" => "continue")
+      assert AuthOutageParkService.park_undelivered_turn!(peer)
+      Time.zone.parse(peer.reload.metadata["auth_outage_retry_at"])
+    end
+
+    assert retry_ats.uniq.size > 1,
+      "Every session parked by one outage retried at the same instant — no jitter"
+    spread = retry_ats.max - retry_ats.min
+    assert spread <= AuthOutageParkService::RETRY_JITTER.to_i,
+      "Retry times must stay inside one RETRY_JITTER window (spread was #{spread}s)"
+  end
+
+  # A session parked this way is woken by the pool recovering, not by its timer.
+  test "a turn parked as undelivered is resumed by the reset sweep" do
+    create_account(email: "out@example.com", status: :quota_exceeded)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue where you left off")
+    AuthOutageParkService.park_undelivered_turn!(@session)
+    @session.pause!
+    assert_equal "waiting", @session.reload.status
+
+    ClaudeAccount.find_by(email: "out@example.com").update!(status: :active)
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "running", @session.reload.status
+  end
+
+  # ===========================================================================
+  # resume_parked! — the window that let the sweep hijack 6597's resume
+  # ===========================================================================
+
+  # CleanupOrphanedSessionsJob calls a running session with a blank running_job_id
+  # "DEFINITELY orphaned" with no grace period. resume_parked! used to leave the
+  # session in exactly that shape while its job was still being enqueued, so a
+  # sweep landing in the gap reaped the resume and replaced it with a
+  # resume-monitoring job pointed at a stale pid.
+  test "resuming a parked session records its prompt and its job id" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!
+    assert_equal "waiting", @session.reload.status
+
+    AuthOutageParkService.wake_parked_sessions!
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert @session.metadata["pending_follow_up_prompt"].present?,
+      "The recovery prompt must be visible the moment the session is running"
+    assert @session.running_job_id.present?,
+      "The resuming job must be recorded so orphan detection has something to look at"
+  end
+
+  # The marker is only worth writing if the sweep honours it. This pins that it
+  # does, for a session in the exact mid-resume shape.
+  test "orphan detection skips a mid-resume session because of the prompt marker" do
+    @session.update!(running_job_id: nil)
+    @session.update_column(:created_at, 1.hour.ago)
+    sweep = CleanupOrphanedSessionsJob.new
+
+    assert sweep.send(:orphaned_running_session?, @session),
+      "Without the marker a running session with no job is reaped — the 6597 window"
+
+    @session.merge_metadata!("pending_follow_up_prompt" => "continue where you left off")
+
+    assert_not sweep.send(:orphaned_running_session?, @session.reload),
+      "The marker resume_parked! now writes must close that window"
+  end
 end

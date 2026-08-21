@@ -332,7 +332,13 @@ durable in-flight source: `active_follow_up_prompt`, then `sent_message`, then
 sets `active_follow_up_prompt` to the exact expanded runtime prompt for every
 follow-up turn before it clears the pending marker, including automated deploy
 continuations and status-summary forks that never had a pending marker. That slot
-is removed when the turn finishes normally.
+is removed when the turn finishes normally — but on **one** path only, the
+`:needs_input` branch of the exit decision. The monitoring loop's two fallback
+exits leave it set, so the slot is a reliable *recovery source* and an unreliable
+"this turn never ran" signal. `AuthOutageParkService.park_undelivered_turn!`,
+which guards those fallbacks, therefore checks the persisted transcript for the
+prompt rather than trusting the slot's presence — see
+[When the pool runs dry](/auth/harness/#the-park-has-to-survive-the-paths-that-do-not-know-about-it).
 
 A turn that ends with the runtime having written **nothing at all** is the general backstop behind
 every specific branch above. A normal-looking exit over a completely empty transcript is not a

@@ -694,6 +694,55 @@ carrying on 2026-08-17 (two waves at `02:08–02:15Z` and `02:20–02:25Z`, twel
 parks). The pre-jitter clamp therefore stops one jitter window short of the ceiling, leaving the
 spread somewhere to go.
 
+### The park has to survive the paths that do not know about it
+
+Everything above assumes the code that stops a session knows the pool is what stopped it. Three
+paths did not, and on 2026-08-20 a `pr-merge-gate` session (#6597) escaped through all three in
+eight seconds — parked correctly at 04:19, and back in `needs_input` by 09:00:42.
+
+1. **The resume left a window for the orphan sweep.** `resume_parked!` transitioned the session to
+   `running` and *then* enqueued its job, so for a moment it was running with a blank
+   `running_job_id` — which `CleanupOrphanedSessionsJob` calls "DEFINITELY orphaned" with no grace
+   period. The sweep landed in that window, reaped the resume, and replaced it with a
+   resume-monitoring job pointed at a stale pid. The resume now stamps `pending_follow_up_prompt`
+   inside the same transaction as the transition (the marker that sweep already honours) and
+   records `running_job_id` as soon as the job exists — the same ordering
+   `Session#deliver_follow_up!` uses, and for the same reason.
+
+2. **The reconnect could not tell our process from a stranger.** `ProcessLifecycleManager#resume_monitoring`
+   adopted a pid on `Process.kill(0, pid)`, which answers "some process holds this number", not
+   "the process we spawned is still there". It confirmed a recovery onto a pid that had been
+   SIGKILLed nine seconds earlier. `AgentProcessLiveness` already recorded the boot id, PID
+   namespace and start-time ticks needed to tell those apart, but was wired only into the spawn
+   guard; `.adoptable?` is the read-only half, and refuses `:dead` and `:recycled` while standing
+   down on `:unknown` so macOS development still reconnects.
+
+3. **The exit paths read a dead process as a finished turn.** With the adopted process gone, the
+   monitoring loop's fallbacks answered with `pause!` — `needs_input` — while
+   `active_follow_up_prompt` still held the recovery turn Zimmer never delivered and the pool was
+   still empty (two status-summary forks parked `quota_exhausted` three and eleven minutes later).
+   `AuthOutageParkService.park_undelivered_turn!` now guards those exits: an undelivered turn plus a
+   pool with no available account is the outage, so it parks into `waiting` with a scheduled retry
+   instead.
+
+The tempting test for "undelivered" is that `active_follow_up_prompt` is still set, and it is the
+wrong one. `AgentSessionJob` removes that key in exactly **one** place — the `:needs_input` branch of
+the exit decision — and the paths this guard protects are the *fallbacks*, which never clear it. So a
+turn that ran to completion and exited through one of them still carries the marker; on the
+`end_turn`-plus-dead-process fallback that marker sits next to the strongest evidence available that
+the turn *did* complete. Parking on it would sleep a finished session and then nudge an agent with
+nothing left to do.
+
+`park_undelivered_turn!` therefore asks for positive evidence, and refuses on every one of these:
+
+| It declines when… | Because |
+| --- | --- |
+| the prompt appears in the persisted transcript | the turn ran — the same comparison `TranscriptPollerService` makes to decide a follow-up landed. 6597's transcript never grew past the 115 messages it held before the park |
+| the session is not `running` | a user pause terminates the process *before* transitioning, so these exits are reachable for a session a human already stopped |
+| `paused_by` is `"user"` | same reason, stated directly — re-arming a wake trigger would undo their decision |
+| `auth_outage_reason` is already set | two of the three call sites can be reached in one pass through the monitoring loop, and a double park charges one stop twice against the consecutive-park backoff |
+| the pool could not be *read* | an unreadable pool is not an empty one. `.runtime_has_available_account?` rescues to `false` meaning "do not wake", which is conservative; the same `false` here would mean "park", which is not — and a runtime with no accounts at all would then park, time out, finish and park again for as long as it lived |
+
 ### The sweep wakes a batch, not the fleet
 
 Spreading the timer does nothing for the other way a parked session wakes.

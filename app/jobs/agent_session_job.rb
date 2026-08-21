@@ -478,7 +478,8 @@ class AgentSessionJob < ApplicationJob
         # Use lifecycle_manager to resume monitoring
         resume_result = lifecycle_manager.resume_monitoring(
           pid: process_pid,
-          stderr_log_path: stderr_log_path
+          stderr_log_path: stderr_log_path,
+          verify_identity: true
         )
 
         if resume_result.success?
@@ -506,6 +507,17 @@ class AgentSessionJob < ApplicationJob
               level: "info"
             )
             log_buffer.flush
+            return
+          end
+          # The process this job was told to adopt is gone and the turn it was meant to
+          # carry was never delivered. If the pool is still empty, that is the outage
+          # rather than a finished turn: park into `waiting` with a scheduled retry, and
+          # deliberately WITHOUT the recovery marker below — a parked session must not be
+          # auto-continued into the same exhausted pool by the recovery sweeps.
+          if AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
+            session.update!(running_job_id: nil)
+            session.pause! if session.may_pause?
+            @broadcast_service.session_status(session)
             return
           end
           # Mark as recovery-initiated pause so CleanupOrphanedSessionsJob and
@@ -1539,6 +1551,10 @@ class AgentSessionJob < ApplicationJob
             log_buffer.flush
             return
           end
+          # A stop with the turn still undelivered and the pool still empty is the outage,
+          # not a completed turn. Parking marks the session pending_sleep, so the pause
+          # below carries it through to `waiting` instead of the human's action queue.
+          AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
           session.pause! if session.may_pause?
           # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
           @broadcast_service.session_status(session)
@@ -2435,6 +2451,12 @@ class AgentSessionJob < ApplicationJob
           return
         end
 
+        # The transcript's last end_turn can predate the turn this job was delivering —
+        # that is exactly the shape of a resume whose process died before it wrote
+        # anything. When the undelivered prompt is still in metadata and the pool is
+        # still empty, this is the outage, so park into `waiting` rather than reporting
+        # a completed turn.
+        AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
         session.pause! if session.may_pause?
         # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
         @broadcast_service.session_status(session)

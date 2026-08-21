@@ -164,6 +164,11 @@ class AuthOutageParkService
   # park stops recognising the trigger its predecessor left behind.
   RETRY_TRIGGER_NAME_PREFIX = "Auth outage retry for session"
 
+  # What the park log says when the stop was a turn that never reached the runtime,
+  # rather than a quota error the runtime itself reported.
+  UNDELIVERED_TURN_DETAIL =
+    "the turn was never delivered to the runtime and the login pool is still empty"
+
   attr_reader :session, :log_buffer
 
   def initialize(session, log_buffer: nil, logger: nil)
@@ -209,6 +214,126 @@ class AuthOutageParkService
     # needs_input — it just doesn't auto-retry.
     @logger.error("Failed to park session for auth outage", reason: reason, error: e.message)
     nil
+  end
+
+  # A session that stops with its turn still undelivered, while its runtime's login pool
+  # has nothing left to serve it, has not finished anything — it has hit the outage. Park
+  # it into `waiting` with a scheduled retry instead of letting the caller pause it onto
+  # the human's action queue.
+  #
+  # This is the guard the resume-failure and turn-completion exit paths were missing. They
+  # answer "the process is gone" with `pause!`, which is right for a turn that ran and
+  # ended and wrong for one that never started: the session lands in needs_input claiming
+  # to want a human, while the prompt Zimmer meant to deliver sits unconsumed in metadata
+  # and the pool it was blocked on is still empty.
+  #
+  # Every condition below is required, and each one exists because parking a session that
+  # should not be parked is its own bug — it sleeps, wakes on a reset, and nudges an agent
+  # with nothing to do:
+  #
+  #   * The session is still `running`. A user pause terminates the process BEFORE
+  #     transitioning (SessionsController), so the monitoring loop can reach these exits
+  #     with a dead process and a session the human has already stopped. Re-arming that
+  #     with a wake trigger would undo their decision.
+  #   * It is not already parked. `auth_outage_reason` is cleared by every resume, so its
+  #     presence means "parked right now" — and two of the three call sites can be reached
+  #     in the same pass through the monitoring loop, which would otherwise charge one stop
+  #     twice against the consecutive-park backoff and send two push notifications.
+  #   * The turn is provably undelivered — see #turn_undelivered?. Not merely "the marker
+  #     was never cleared": only ONE exit path clears it, and it is not one of these.
+  #   * The pool is CONFIRMED empty — see #pool_confirmed_empty?. A pool we could not read
+  #     is not evidence of an outage.
+  #
+  # The caller still performs its own `pause!`. #park! schedules the wake trigger, whose
+  # after_create marks the running session `pending_sleep`, and the pause callback is what
+  # carries it needs_input → waiting. So: park first, pause second. The session is reloaded
+  # before returning either way, so a caller that merges into `session.metadata` afterwards
+  # cannot clobber the `pending_sleep` the trigger wrote straight to the row.
+  #
+  # @param session [Session, nil]
+  # @return [Boolean] true when the session was parked, and the caller must not also mark
+  #   this stop as a recovery-continuable pause
+  def self.park_undelivered_turn!(session, log_buffer: nil, logger: nil)
+    return false unless session
+
+    session.reload
+    return false unless session.running?
+    return false if session.metadata&.dig("auth_outage_reason").present?
+    return false if session.metadata&.dig("paused_by") == "user"
+    return false unless turn_undelivered?(session)
+    return false unless pool_confirmed_empty?(session.agent_runtime)
+
+    new(session, log_buffer: log_buffer, logger: logger)
+      .park!(reason: QUOTA_EXHAUSTED, detail: UNDELIVERED_TURN_DETAIL)
+      .present?
+  rescue => e
+    # Same posture as #park!: this is an improvement on top of the exit decision the
+    # caller already made, never a reason that decision cannot be carried out.
+    Rails.logger.warn "[AuthOutageParkService] Could not park undelivered turn for session " \
+      "#{session&.id} (#{e.class}): #{e.message}"
+    false
+  ensure
+    session&.reload
+  end
+
+  # Did the turn Zimmer was delivering never reach the runtime?
+  #
+  # The tempting answer is "`active_follow_up_prompt` is still set", and it is wrong.
+  # AgentSessionJob removes that key in exactly one place — the `:needs_input` branch of
+  # the exit decision — and the paths this guard protects are the *fallbacks*, which never
+  # clear it. So a turn that ran to completion and exited through one of them still carries
+  # the marker, and on the `end_turn`-plus-dead-process fallback that is the strongest
+  # evidence available that the turn DID complete.
+  #
+  # So require positive evidence instead: the prompt Zimmer sent is absent from the
+  # conversation the runtime persisted. That is the same comparison TranscriptPollerService
+  # makes to decide whether a follow-up has landed, and it is what actually distinguishes
+  # session 6597 — whose transcript never grew past the 115 messages it held before the
+  # park — from a session that answered its follow-up and stopped.
+  #
+  # An unreadable transcript answers `false`: unproven is not undelivered, and the caller's
+  # existing pause is the safe default.
+  def self.turn_undelivered?(session)
+    prompt = session.metadata&.dig("active_follow_up_prompt").to_s.strip
+    return false if prompt.blank?
+
+    session.parsed_transcript.none? { |event| user_message_text(event).include?(prompt) }
+  rescue => e
+    Rails.logger.info "[AuthOutageParkService] Could not read transcript for session " \
+      "#{session&.id} (#{e.class}): #{e.message}"
+    false
+  end
+
+  # The text of a transcript entry, when it is a user message. Content arrives as a bare
+  # string or as an array of content blocks depending on the runtime and the turn.
+  def self.user_message_text(event)
+    return "" unless event.is_a?(Hash) && event["type"] == "user"
+
+    content = event.dig("message", "content")
+    case content
+    when String then content
+    when Array then content.filter_map { |block| block.is_a?(Hash) ? block["text"] : block }.join("\n")
+    else ""
+    end.to_s
+  end
+
+  # Is the runtime's pool CONFIRMED to have nothing available?
+  #
+  # .runtime_has_available_account? cannot answer this, and the difference matters because
+  # the two callers need its failure to fall opposite ways. There, a rescue to `false`
+  # means "do not wake", which is conservative. Here the same `false` would mean "park",
+  # which is not: a transient database blip, or a runtime with no accounts configured at
+  # all, would park a session that is not blocked on quota — and a pool that is
+  # permanently empty never satisfies the wake sweep, so the session would park, time out,
+  # finish, and park again for as long as it lived.
+  #
+  # So read the pool directly and treat an unreadable one as "not confirmed".
+  def self.pool_confirmed_empty?(runtime)
+    !RuntimeAuthProvider.for(runtime).accounts.available.exists?
+  rescue => e
+    Rails.logger.info "[AuthOutageParkService] Could not confirm the pool is empty for " \
+      "runtime #{runtime}: #{e.message}"
+    false
   end
 
   # Resume every parked session whose runtime can plausibly serve it again.
@@ -475,6 +600,7 @@ class AuthOutageParkService
   # (so the cap bounding nothing) if that second write failed.
   def self.resume_parked!(session, logger)
     reason = nil
+    prompt = nil
 
     ActiveRecord::Base.transaction do
       session.lock!
@@ -482,6 +608,8 @@ class AuthOutageParkService
 
       reason = session.metadata&.dig("auth_outage_reason")
       raise ActiveRecord::Rollback if reason.blank?
+
+      prompt = AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
 
       metadata = (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
       if reason == AUTH_UNRECOVERABLE
@@ -491,6 +619,21 @@ class AuthOutageParkService
 
       session.update!(running_job_id: nil, metadata: metadata)
       session.resume!
+
+      # Stamp the prompt BEFORE leaving the transaction, and after `resume!` so a reader
+      # that sees the marker is guaranteed to also see `running` (the same ordering, and
+      # the same reason, as Session#deliver_follow_up!).
+      #
+      # Without it this method resumes a session to `running` while its job does not yet
+      # exist and `running_job_id` is nil — and CleanupOrphanedSessionsJob calls a running
+      # session with a blank running_job_id "DEFINITELY orphaned" with no grace period. A
+      # sweep landing in that window reaps the resume, hijacks the session with a
+      # resume-monitoring job pointed at a stale pid, and the recovery turn never runs.
+      # `pending_follow_up_prompt` is the marker that sweep already honours.
+      session.merge_metadata!(
+        "pending_follow_up_prompt" => prompt,
+        "pending_follow_up_sent_at" => Time.current.utc.iso8601
+      )
     end
 
     return false if reason.blank? || !session.reload.running?
@@ -501,10 +644,20 @@ class AuthOutageParkService
     discard_retry_triggers!(session, reason: "resumed by the recovery sweep", logger: logger)
 
     session.logs.create!(level: "warning", content: resume_message(reason))
-    AgentSessionJob.enqueue_with_prompt(
-      session.id,
-      AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
-    )
+
+    # Record running_job_id as soon as the job exists, closing the rest of the same
+    # window: past this point the sweep has a live job to look at rather than a blank.
+    job = AgentSessionJob.enqueue_with_prompt(session.id, prompt)
+    job_id = job.try(:job_id)
+    if job_id.blank?
+      logger.warn("Resumed parked session but no job id was returned", session_id: session.id)
+    elsif session.reload.running? && session.running_job_id.blank?
+      # Re-read under the same condition the write assumes. GoodJob can pick the job up,
+      # deliver the turn and pause the session before this line runs, and stamping a job id
+      # onto a session that is no longer running would hand orphan detection a job that has
+      # already finished.
+      session.update!(running_job_id: job_id)
+    end
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)
     true
   rescue => e
