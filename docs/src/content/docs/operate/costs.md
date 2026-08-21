@@ -237,7 +237,7 @@ estimated from what the transcript records, and the estimate is built so it cann
    features.
 
 That residual is large, and its size is the finding rather than a defect: on this
-deployment about **58% of tokens** are unattributed. It is the fixed prompt prefix — the
+deployment about **56% of tokens** are unattributed. It is the fixed prompt prefix — the
 harness system prompt and the tool schemas of every MCP server attached to the session —
 plus per-request web-search charges. None of it appears in a transcript. Because it is a
 per-request *constant*, the lever that shrinks it is attaching fewer tools to a session,

@@ -3213,8 +3213,8 @@ content rather than measured.
 
 The estimate is built not to mislead — shares are divided by `max(estimated, actual)` so the
 parts cannot exceed the whole, and the shortfall is carried as an explicit unattributed line
-— but the shortfall is big. On this deployment about **58% of tokens** land there. Three
-things account for most of it, and none is fixable from this side:
+— but the shortfall is big. On this deployment about **56% of tokens** land there. Three
+things account for most of it, and none is fixable from this side (a fourth, below, is smaller):
 
 - The harness system prompt and the tool schemas of every attached MCP server are in every
   priced prompt and in no transcript. This is the bulk of it, and it is a per-request
