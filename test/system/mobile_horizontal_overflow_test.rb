@@ -438,9 +438,12 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # The action buttons are the LAST column, so they only stay on screen because
     # the metadata columns collapse below their breakpoints. If those come back at
     # phone width, Analyze goes back off the right edge behind a sideways scroll.
-    assert_selector "th", text: "Session"
-    assert_no_selector "th", text: "Harness"
-    assert_no_selector "th", text: "Created"
+    # Regexes, not strings: the headers are rendered through `uppercase`, so
+    # Capybara sees "SESSION". A case-sensitive `assert_no_selector` would pass
+    # against a visible "HARNESS" and prove nothing.
+    assert_selector "th", text: /session/i
+    assert_no_selector "th", text: /harness/i
+    assert_no_selector "th", text: /created/i
     assert_selector "button", text: "Analyze", exact_text: true
 
     visit outcome_path(analyzed.id)
