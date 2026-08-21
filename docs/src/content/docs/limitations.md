@@ -3204,6 +3204,42 @@ up. It is a progress bar, not an accounting.
 
 ---
 
+## Context-feature attribution is an estimate with a large residual
+
+`token_usage_features` says which context-management feature a request's tokens paid for.
+Nothing in the API supports that: the `usage` object is a per-request total with no
+per-content-block decomposition, so every figure in that table is derived from transcript
+content rather than measured.
+
+The estimate is built not to mislead — shares are divided by `max(estimated, actual)` so the
+parts cannot exceed the whole, and the shortfall is carried as an explicit unattributed line
+— but the shortfall is big. On this deployment about **58% of tokens** land there. Three
+things account for most of it, and none is fixable from this side:
+
+- The harness system prompt and the tool schemas of every attached MCP server are in every
+  priced prompt and in no transcript. This is the bulk of it, and it is a per-request
+  *constant*, so it dominates short conversations.
+- Extended thinking is written to the transcript as `thinking: ""` plus a signature. Across
+  955 thinking blocks in the recent corpus, not one retained its text. The signature is
+  counted; the reasoning is not.
+- System reminders — including the injected CLAUDE.md — are usually not persisted either.
+
+So the table ranks features against each other honestly and does **not** account for the
+majority of the bill. Read it as "of the context I can see, here is the split", and do not
+cut a feature on a thin margin.
+
+## A feature detector can only be backfilled as far as transcripts survive
+
+Adding a detector is one entry in `ContextFeatureRegistry` plus a re-ingest, and because
+ingestion is an idempotent scanner over files on disk, the new detector is applied to
+history for free. That is bounded by Claude Code's own retention of
+`~/.claude/projects`, which on this deployment holds about **30 days** in bulk.
+
+The usage rows themselves are unaffected — they are already stored, and their totals do not
+change. Only the per-feature split is limited: a detector added today cannot explain spend
+from three months ago, because the evidence it would read has been pruned. Nothing warns
+about this; the older part of the window simply shows a larger unattributed share.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

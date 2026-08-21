@@ -11,12 +11,16 @@ rates on the **Costs** page. This is Zimmer's own accounting. It is a different 
 "how much headroom is left in the window". Costs answers "what did we spend it on". Neither
 substitutes for the other, and they can disagree without either being wrong.
 
-## Two tables
+## The tables
 
 | Table | Holds | Keyed on |
 | --- | --- | --- |
 | `session_token_usages` | Inference an agent session did — the bulk of spend | `request_id` |
 | `adhoc_token_usages` | Inference Zimmer's own code made outside any session | `request_id` |
+
+A third table, `token_usage_features`, splits each session request across the
+context-management features it was carrying. It is an estimate rather than a measurement —
+see [Context features](#context-features).
 
 The split is not cosmetic. Ad hoc calls — auto-generated session titles, push-notification
 summaries, the CLI status probe — have no session to hang off, so they would be invisible in
@@ -161,6 +165,150 @@ directory (created per session) covers `agent-*.jsonl` subagent files and resume
 whose runtime uuid drifted. A row that matches neither is still stored — spend that happened
 is still spend — and shows up as unattributed rather than disappearing.
 
+## Picking a window
+
+The Costs page carries both a set of one-click horizons — 24 hours, 7 days, 30 days,
+90 days, 1 year — and an explicit from/to calendar range. Both resolve through `CostWindow`,
+which is also what every drilldown link on the page carries, so clicking into a breakdown
+never silently changes the window under you.
+
+The calendar fields are plain `<input type="date">` elements. That is the control a phone
+renders as its own native calendar, and it needs no JavaScript. A reversed range is swapped
+rather than rejected, a half-filled one still resolves, and a span longer than a year is
+clamped to the most recent 365 days rather than handed to Postgres as a full-table scan.
+
+The same window is expressible over MCP and REST: `get_costs` takes `days`, or `from`/`to`
+as `YYYY-MM-DD`; `GET /api/v1/costs` takes `days`, or `from`/`to` as ISO-8601 instants.
+
+## Drilling in
+
+The daily-spend chart and the breakdown tables both reveal what is behind a figure.
+
+- Each bar in the daily chart is a **button**. Hovering it on a pointer device, or tapping
+  it on a phone, fills the readout strip below the chart with that day's session/ad-hoc
+  split, tokens, calls, and biggest agent roots. The readout sits in normal flow rather
+  than floating over the bar, which is what makes it legible at a 375px viewport.
+- Each row in a breakdown table is a `<details>` element. It opens on click, on tap, on
+  Enter, and with JavaScript disabled; `hover_details_controller.js` adds hover-to-open on
+  pointer devices only, and a row you opened deliberately stays open when the pointer leaves.
+
+Every figure a drilldown shows is precomputed in the same cached snapshot as the page — the
+per-day and per-root detail come from one extra grouped query each, not one query per bar.
+
+## Per-session cost
+
+Each dashboard card and each session detail page carries the session's own total, in muted
+gray. It is a secondary signal, not a headline: it sits beside the session id and the
+timestamp rather than anywhere prominent.
+
+The figure comes from `SessionTokenUsage.cost_by_session`, one grouped query per rendered
+collection, warmed by `preload_session_costs` in each partial that renders a list of cards.
+A per-card lookup would be a per-card round trip on a page that renders hundreds of them.
+
+A session with no stored usage renders **nothing** rather than `$0.00` — usually it just
+means its transcript has not been swept yet, and a zero would assert it was free.
+
+## Context features
+
+`token_usage_features` answers a question the usage tables cannot: not *what did this call
+cost*, but *what was it carrying*. The injected goal block, the session hierarchy, the
+human-message record, skill bodies, MCP responses, tool output, extended thinking — each is
+a decision someone made, each bills again on every turn it stays in the context, and none of
+them is individually visible in a bill.
+
+### These numbers are estimates, and the page says so
+
+The API reports one `usage` total per request with **no per-content-block decomposition**.
+Nothing it returns says how many input tokens were the goal text versus a skill definition
+versus an MCP tool result. So a per-feature figure cannot be measured — it can only be
+estimated from what the transcript records, and the estimate is built so it cannot mislead:
+
+1. `ContextFeatureAttributor` walks each transcript in order, measuring the characters each
+   feature contributes.
+2. Characters convert to tokens at a fixed ratio — **3.7**, which is measured rather than
+   guessed. Between two consecutive requests the fixed prompt prefix cancels, so the change
+   in billed tokens over the change in transcript characters reads the ratio directly; over
+   2,782 such pairs on this deployment the median is 3.57 and the mean 3.93. Re-measure with
+   `rake token_usage:calibrate_chars_per_token`.
+3. Every share is divided by `max(estimated, actual)`, so the parts can never exceed the
+   request's real totals. When the estimate overshoots, all shares scale down together
+   rather than any one being trusted.
+4. Whatever is left is carried as an explicit **unattributed** line, never spread across the
+   features.
+
+That residual is large, and its size is the finding rather than a defect: on this
+deployment about **58% of tokens** are unattributed. It is the fixed prompt prefix — the
+harness system prompt and the tool schemas of every MCP server attached to the session —
+plus per-request web-search charges. None of it appears in a transcript. Because it is a
+per-request *constant*, the lever that shrinks it is attaching fewer tools to a session,
+not writing shorter prompts.
+
+### Marginal, not cumulative — and why dollars ≠ tokens
+
+Content added at turn 3 is in the prompt for every turn after it, so "the goal block is
+3,600 characters" does not answer "what did the goal cost". The attributor keeps two buckets
+per conversation:
+
+| Bucket | What it holds | What it is billed as |
+| --- | --- | --- |
+| `carried` | everything already in the prompt | cache **read**, at 0.1× base input |
+| `pending` | everything added since the last request | cache **write**, at 1.25× or 2× |
+
+`cache_read_tokens` splits across `carried`; `input_tokens + cache_creation_*` across
+`pending`; `output_tokens` across the assistant's own blocks. This is why the page reports
+both tokens and dollars and why they rank differently: a feature re-appended to every turn
+is cache-written at up to 2× on every turn, while one that lands once in the prefix is
+written once and read back at a tenth forever after. **Dollars is the column that decides.**
+
+### Adding a feature
+
+Append one entry to `ContextFeatureRegistry` and re-run ingestion:
+
+```ruby
+feature(
+  key: "my_thing",
+  label: "My thing",
+  blurb: "One line the page shows under the bar.",
+  owner: :zimmer,
+  pattern: %r{<my-thing>[\s\S]*?</my-thing>}   # or a block: { |block| block.type == "tool_result" }
+)
+```
+
+That is the whole procedure. Because ingestion is a re-runnable scanner over the transcripts
+on disk, a detector written today is backfilled over everything still retained — no
+instrumentation at the call site, no waiting for fresh data.
+
+**Retention bounds the backfill.** Claude Code prunes `~/.claude/projects` on its own
+schedule; on this deployment the corpus goes back about **30 days** in bulk. A new detector
+can therefore see roughly the last month, not all history. The usage rows already ingested
+keep their totals — only the per-feature split is limited.
+
+`owner` is what makes the table actionable. `:zimmer` marks the features this repository
+chose to inject and can therefore choose to stop injecting, shrink, or serve from a cheaper
+model; `:harness` and `:work` are cost you can see but not directly legislate.
+
+### What the attribution cannot see
+
+- **Extended thinking is under-counted.** The harness writes `thinking: ""` into the
+  transcript and keeps only the cryptographic signature — across 955 thinking blocks in this
+  deployment's recent corpus, not one retained its text. The signature is counted; the
+  reasoning is not, and the difference lands in the residual. No detector can fix this.
+- **System reminders are rarely persisted**, so the CLAUDE.md contents injected on the first
+  turn usually fall into the residual too.
+- **Server-tool charges are not split.** A web search bills per request, not per token, and
+  there is no defensible way to divide a per-request charge across the content features
+  inside that request. It stays on the parent row and lands in the residual.
+- **Volume.** The table grows at roughly the number of features detected per request — about
+  8× the parent table. `request_id` carries a foreign key to the parent's unique index, so
+  deleting a usage row takes its attribution with it.
+
+Check the reconciliation yourself at any time:
+
+```sh
+bin/rails token_usage:attribution_report DAYS=30
+bin/rails token_usage:calibrate_chars_per_token
+```
+
 ## Reading it back
 
 - **Web:** the Costs page, alongside Quotas.
@@ -168,7 +316,8 @@ is still spend — and shows up as unattributed rather than disappearing.
   themselves, paginated and filterable by session, agent root, model, or source. See
   [the REST API](/extend/rest-api/).
 - **MCP:** the `get_costs` tool, in the `health` group. Fleet-wide by default; scopeable to
-  one agent root or one session.
+  one agent root or one session, and windowed by `days` or by an explicit `from`/`to`. Every
+  report carries the context-feature split, always labelled as an estimate.
 
 ## What the dollar figures are not
 

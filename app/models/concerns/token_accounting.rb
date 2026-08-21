@@ -29,7 +29,10 @@ module TokenAccounting
   ].freeze
 
   included do
-    validates :request_id, presence: true, uniqueness: true
+    # Uniqueness is NOT here: it differs per table. `request_id` identifies one API
+    # call and is unique on the two usage tables, but `token_usage_features` holds
+    # several rows per call — one per feature — so it declares its own scoped rule.
+    validates :request_id, presence: true
     validates :model, presence: true
     validates :called_at, presence: true
 

@@ -116,6 +116,11 @@
               <%= @session.status.titleize %>
             </span>
             <span class="text-xs text-gray-400 font-mono">#<%= @session.id %></span>
+            <%# The full metadata row is desktop-only, so the phone header carries the
+                cost itself — same muted treatment, beside the id, where the card puts
+                it too. Without this the indicator exists on the page and is invisible
+                on the device Zimmer is actually read on. %>
+            <%= session_cost_badge(@session) %>
           </div>
         </div>
 
