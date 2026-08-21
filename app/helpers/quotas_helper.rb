@@ -212,8 +212,7 @@ module QuotasHelper
       tag.p(safe_join([
         "The first moment an account has room on both its 5-hour and 7-day windows: ",
         pool_reset_time(reset, css: "font-semibold text-amber-900"),
-        ". #{measure.blocked_count} of #{pluralize(measure.read_count, 'account')} " \
-        "with a reading out of capacity now."
+        ". #{pool_blocked_count_phrase(measure)}"
       ]), class: "mt-1 text-xs text-amber-800"),
       tag.p("That moment has passed — refresh for a fresh reading.",
         class: "mt-1 text-xs font-semibold text-amber-900",
@@ -242,11 +241,20 @@ module QuotasHelper
   def pool_capacity_unknown_banner(measure)
     tag.div(safe_join([
       tag.p("Nothing here says when work resumes", class: "text-sm font-semibold text-red-800"),
-      tag.p("#{measure.blocked_count} of #{pluralize(measure.read_count, 'account')} with a reading " \
-            "out of capacity, and no reset time recorded for the windows they are waiting on. " \
-            "Refresh to probe them again.",
+      tag.p("#{pool_blocked_count_phrase(measure)} No reset time is recorded for the blocked " \
+            "windows, so nothing on this page says when the pool comes back. Refresh to probe again.",
         class: "mt-0.5 text-xs text-red-700")
     ]), class: "mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3")
+  end
+
+  # How many accounts are out, for the two banners that only render when the
+  # whole read pool is out. It says "all of them" rather than "N of N", and
+  # keeps the "with a reading" qualifier the green banner carries: a pool can
+  # hold accounts that have never been probed, and those are not counted here.
+  def pool_blocked_count_phrase(measure)
+    return "The one account with a reading is out of capacity." if measure.blocked_count == 1
+
+    "All #{measure.blocked_count} accounts with a reading are out of capacity."
   end
 
   # What the clock reads once there is nothing left to count. Not "0:00", which
