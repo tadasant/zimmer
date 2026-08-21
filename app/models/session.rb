@@ -397,6 +397,20 @@ class Session < ApplicationRecord
     [ "1 hour", 3600 ]
   ].freeze
 
+  # Choices offered by the "Pause Until" control, in order. `key` is the contract
+  # with pause_until_controller.js, which resolves each one to an absolute time in
+  # the BROWSER's timezone — the wall-clock presets ("Tomorrow, 9:00 AM") mean the
+  # operator's morning, not the server's, and only the browser knows which that is.
+  # Anything not on this list goes through the datetime picker instead.
+  PAUSE_UNTIL_PRESETS = [
+    { key: "15m", label: "In 15 minutes" },
+    { key: "1h", label: "In 1 hour" },
+    { key: "3h", label: "In 3 hours" },
+    { key: "tonight", label: "Tonight, 6 PM" },
+    { key: "tomorrow", label: "Tomorrow, 9 AM" },
+    { key: "monday", label: "Monday, 9 AM" }
+  ].freeze
+
   # Validations
   # Prompt is now optional to allow for "clone only" sessions
   validates :prompt, length: { maximum: PROMPT_MAX_LENGTH, message: "is too long (maximum #{PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_blank: true
