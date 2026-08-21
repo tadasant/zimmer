@@ -90,55 +90,46 @@
       </div>
 
       <!-- Experimental Section -->
-      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+      <div id="experimental-settings" class="bg-white shadow-sm rounded-lg border border-gray-200">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
           <h2 class="text-lg font-medium text-gray-900">Experimental</h2>
           <p class="mt-1 text-sm text-gray-500">
-            Opt-in features that are not yet considered stable. Leave these off unless you know you need them.
+            Features that are not yet considered stable. Each one says whether it is on by default;
+            change one only if you know you need to.
           </p>
         </div>
         <div class="px-4 py-5 sm:px-6">
-          <% if @extensions.blank? %>
-            <p class="text-sm text-gray-500">No experimental features are available in this build.</p>
-          <% else %>
-            <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
-              <% @extensions.each_with_index do |extension, index| %>
-                <% on = extension.enabled? %>
-                <div class="<%= "mt-6" unless index.zero? %> mb-4 rounded-md px-3 py-2 text-sm <%= on ? "bg-amber-50 text-amber-800" : "bg-gray-50 text-gray-600" %>">
-                  <%= extension.title %> is
-                  <span class="font-medium"><%= on ? "ON" : "OFF" %></span><%= " (recommended default)" unless on %>.
-                </div>
+          <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
+            <%# First-class experimental settings — these ship in the image, so unlike a
+                Zimmer Extension they are always present and always governable here. %>
+            <%= render "settings/experimental_toggle",
+                  title: "MCP tool search",
+                  description: "Spawn Claude Code sessions with ENABLE_TOOL_SEARCH=true so the agent searches " \
+                               "MCP tools on demand instead of loading every attached server's tool schemas up " \
+                               "front. Claude Code only — Codex ignores it.",
+                  param_name: "app_setting[mcp_tool_search_enabled]",
+                  dom_id: "app_setting_mcp_tool_search_enabled",
+                  on: @mcp_tool_search_enabled,
+                  default_on: true,
+                  first: true %>
 
-                <div class="flex items-start justify-between">
-                  <div class="flex-1 min-w-0 pr-4">
-                    <p class="text-sm font-medium text-gray-900"><%= extension.title %></p>
-                    <p class="text-sm text-gray-500"><%= extension.description %></p>
-                  </div>
-                  <div class="flex-shrink-0">
-                    <!-- Toggle switch (submits the form) -->
-                    <input type="hidden" name="app_setting[extensions][<%= extension.id %>]" value="0">
-                    <label class="relative inline-flex items-center cursor-pointer">
-                      <span class="sr-only">Toggle <%= extension.title %></span>
-                      <input type="checkbox"
-                             name="app_setting[extensions][<%= extension.id %>]"
-                             id="app_setting_extension_<%= extension.id %>"
-                             value="1"
-                             class="sr-only peer"
-                             role="switch"
-                             aria-label="<%= extension.title %>"
-                             <%= "checked" if on %>
-                             onchange="this.form.requestSubmit()">
-                      <div class="w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-2 peer-focus:ring-indigo-500 peer-checked:bg-indigo-600 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:border after:border-gray-300 after:shadow after:transition-all peer-checked:after:translate-x-5"></div>
-                    </label>
-                  </div>
-                </div>
-              <% end %>
-
-              <div class="mt-4">
-                <%= submit_tag "Save experimental settings",
-                      class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 cursor-pointer" %>
-              </div>
+            <%# Zimmer Extensions flagged experimental. Empty in a built image —
+                .dockerignore excludes app/extensions/*/ — so this list is usually blank. %>
+            <% @extensions.each do |extension| %>
+              <%= render "settings/experimental_toggle",
+                    title: extension.title,
+                    description: extension.description,
+                    param_name: "app_setting[extensions][#{extension.id}]",
+                    dom_id: "app_setting_extension_#{extension.id}",
+                    on: extension.enabled?,
+                    default_on: extension.default_enabled?,
+                    first: false %>
             <% end %>
+
+            <div class="mt-4">
+              <%= submit_tag "Save experimental settings",
+                    class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 cursor-pointer" %>
+            </div>
           <% end %>
         </div>
       </div>

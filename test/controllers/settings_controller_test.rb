@@ -44,14 +44,42 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[type=submit][value=?]", "Save session defaults"
   end
 
-  # Experimental Section — data-driven from the extension registry, so each
-  # registered experimental extension renders a checkbox keyed on its id.
-  test "should have experimental section with the tool-search toggle" do
+  # Experimental Section — first-class settings first, then a data-driven row per
+  # registered experimental extension (keyed on its id).
+  test "should have experimental section with the MCP tool search toggle" do
     get settings_url
     assert_select "h2", "Experimental"
     assert_select "form[action=?]", app_settings_path
-    assert_select "input[type=checkbox][name='app_setting[extensions][mcp_tool_search]']"
+    assert_select "input[type=checkbox][name='app_setting[mcp_tool_search_enabled]']"
     assert_select "input[type=submit][value=?]", "Save experimental settings"
+  end
+
+  test "the MCP tool search toggle renders checked by default and unchecked when off" do
+    AppSetting.delete_all
+
+    get settings_url
+    assert_select "input[name='app_setting[mcp_tool_search_enabled]'][checked]"
+
+    AppSetting.create!(mcp_tool_search_enabled: false)
+    get settings_url
+    assert_select "input[name='app_setting[mcp_tool_search_enabled]'][checked]", count: 0
+    assert_select "input[type=checkbox][name='app_setting[mcp_tool_search_enabled]']"
+  ensure
+    AppSetting.delete_all
+  end
+
+  test "renders a row for each registered experimental extension" do
+    ext = Class.new(Zimmer::Extension) do
+      def id = "fake_experiment"
+      def title = "Fake experiment"
+    end.new
+    Zimmer::ExtensionRegistry.register(ext)
+
+    get settings_url
+    assert_select "input[type=checkbox][name='app_setting[extensions][fake_experiment]']"
+  ensure
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
   end
 
   # The spot gate moved to /quotas, where the windows it reads are reported.

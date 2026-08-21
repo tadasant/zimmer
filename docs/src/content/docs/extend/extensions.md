@@ -1,6 +1,6 @@
 ---
 title: Extensions
-description: The Zimmer::Extension seam — what an extension can override, the one that ships, and how to write and install one.
+description: The Zimmer::Extension seam — what an extension can override, what ships today, and how to write and install one.
 sidebar:
   order: 3
 ---
@@ -59,24 +59,27 @@ are unreachable for Codex sessions.
 The other two mount points are Claude-specific by name (`ClaudePrintRunner`, `ClaudeSpawnEnv`).
 :::
 
-## What ships: exactly one
+## What ships: nothing
 
-`McpToolSearchExtension` (`app/extensions/mcp_tool_search/`), id `mcp_tool_search`, experimental, off
-by default.
+`BUILTIN_EXTENSION_CLASSES` is empty. The seam is live — the registry, the base class, the three
+mount points, and the Settings → Experimental rendering all work — but no extension is registered.
 
-Its only hook is `spawn_env_contribution`, returning `{"ENABLE_TOOL_SEARCH" => "true"}` — but only
-when `context[:runtime] == "claude_code"`. That flips Zimmer's baseline `ENABLE_TOOL_SEARCH=false`, so
-Claude Code loads tool schemas on demand instead of all of them up front.
+The one that used to ship was `McpToolSearchExtension` (id `mcp_tool_search`), whose only hook
+returned `{"ENABLE_TOOL_SEARCH" => "true"}` for Claude Code. It is gone, because it could never do
+its job: `.dockerignore` excludes `/app/extensions/*/`, so the class did not exist in any built
+image, the registry skipped it, and the `ENABLE_TOOL_SEARCH=false` baseline always stood in
+production. MCP tool search is now a first-class `AppSetting` column, on by default — see
+[Spawning a session](/sessions/spawning/#mcp-tool-search). The `mcp_tool_search` key
+is dropped from `extension_states` by the same migration, so there is only ever one control.
 
 :::danger[The old docs described a second extension that does not exist]
 `docs/AO_EXTENSIONS.md` described "the two built-in extensions" and documented `pty_transport` /
 `PtyTransportExtension` (bundling `PtyClaudeCliAdapter`, `PtyClaudePrintRunner`,
 `PtyClaudeRetryStrategy`) as shipping.
 
-No such directory or class exists in this repo. `BUILTIN_EXTENSION_CLASSES` contains only
-`McpToolSearchExtension`. `pty_transport` survives only in code comments and in the (now deleted) docs.
-The old doc's "Verifying removability" section told you to rename `app/extensions/pty_transport/` — a
-directory that isn't there.
+No such directory or class exists in this repo. `pty_transport` survives only in code comments and in
+the (now deleted) docs. The old doc's "Verifying removability" section told you to rename
+`app/extensions/pty_transport/` — a directory that isn't there.
 :::
 
 ## Enable, install, remove
@@ -85,12 +88,17 @@ directory that isn't there.
 `id → bool`). No migration per extension. Or from a console:
 
 ```ruby
-AppSetting.first_or_create!.set_extension_enabled("mcp_tool_search", true)
+AppSetting.first_or_create!.set_extension_enabled("my_thing", true)
 ```
 
+With no extension registered, that section of the page renders only the first-class experimental
+settings.
+
 **Install** — here's the wrinkle: the core Docker image ships with no extensions at all.
-`.dockerignore` excludes `/app/extensions/*/`. Even `mcp_tool_search` is absent from a built image.
-Tracked in [#91](https://github.com/tadasant/zimmer/issues/91).
+`.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
+from a built image and cannot govern anything in production. Tracked in
+[#91](https://github.com/tadasant/zimmer/issues/91). Until that is fixed, a setting an operator has
+to be able to change on the deployed app belongs on `AppSetting`, not behind an extension.
 
 ```bash
 scripts/install-extension.sh <id> --container <name>   # docker cp + restart

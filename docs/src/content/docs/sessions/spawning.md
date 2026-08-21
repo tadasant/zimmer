@@ -172,14 +172,32 @@ Shared scrubbing (`CliSpawnEnv`):
   (Claude's stdio MCP servers inherit the variable from the CLI; Codex's do not, so the Codex
   post-processor forwards it explicitly through `env_vars`.)
 
-Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH=false` (baseline; the `mcp_tool_search`
-extension flips it), `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
+Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH` (see below),
+`CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default 1,000,000), and when MCP is on: `MCP_TIMEOUT=180000`,
 a clone-local `NPM_CONFIG_CACHE`, and one filesystem side effect — `NpxBinExecutableGuard` restores
 the execute bit on any bin target in that cache which lost it
 ([MCP servers](/air/mcp-servers/#timeouts-and-caching)).
 
 Codex adds `RUST_LOG=warn,rmcp=info` and `CODEX_HOME`.
+
+### MCP tool search
+
+`ENABLE_TOOL_SEARCH` is the one variable here an operator sets: it tracks the **MCP tool search**
+toggle at Settings → Experimental (`AppSetting#mcp_tool_search_enabled`), and it is **on by
+default**. On, Claude Code searches an attached MCP server's tools on demand; off, it loads every
+attached server's full tool schemas up front, which with several servers attached is a large,
+unavoidable context cost at the start of every session.
+
+It is a Claude Code flag and nothing else reads it — `CodexRuntimeAdapter` never runs
+`ClaudeSpawnEnv`, so a Codex child never sees the variable at all, whatever the setting says.
+
+The setting is a plain column rather than a [Zimmer Extension](/extend/extensions/) on purpose. It
+used to be the `mcp_tool_search` extension, which could not work in a deployed container:
+`.dockerignore` excludes `/app/extensions/*/`, so the class was absent from the image and the old
+`ENABLE_TOOL_SEARCH=false` baseline always stood in production. A column ships with the image. An
+enabled extension can still override the variable through the spawn-env seam below — extension
+contributions are merged last.
 
 :::caution[A spawn-env asymmetry]
 `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —
