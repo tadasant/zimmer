@@ -2569,10 +2569,10 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     )
 
     reported = nil
-    UnclassifiedFailureReporter.stubs(:report).with do |*args, **kwargs|
+    UnclassifiedFailureReporter.stubs(:report).returns(true).with do |*args, **kwargs|
       reported = kwargs.presence || args.first
       true
-    end.returns(true)
+    end
 
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
@@ -2672,6 +2672,69 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     assert_equal :needs_input, decision.action,
       "A subagent's failure must not be read as the main turn dying"
+  end
+
+  # The hole the first cut of this backstop left: a RECOGNIZED error whose
+  # classifier has already spent its cursor still ends a turn, and still has to
+  # fail rather than park. It just must not page as an unknown wording.
+  test "handle_exit fails a turn that ended on a recognized error no classifier will act on" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_ending_with_api_error("500 Internal Server Error", error_type: "api_error")
+    # The retry path already handled this entry and advanced its cursor, so
+    # api_error_for_retry? now declines — leaving the turn dead and unclaimed.
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
+
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action,
+      "A dead turn is a dead turn even when something recognizes the wording"
+    @log_buffer.flush
+    assert_match(/no recovery path claimed it/, @session.logs.pluck(:content).join("\n"))
+  end
+
+  # Fire once per dead turn. A resume that writes nothing new leaves the same
+  # entry terminal; re-failing on it would turn one bad turn into a loop.
+  test "handle_exit does not fail twice on the same terminal API error" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_ending_with_api_error("Novel meltdown", error_type: "novel_failure")
+    UnclassifiedFailureReporter.stubs(:report).returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    first = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+    assert_equal :failed, first.action
+
+    @session.update!(status: :running)
+    manager2 = create_manager
+    manager2.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    second = manager2.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, second.action,
+      "The same dead turn must not be failed and alerted on again"
+  end
+
+  # A backstop that cannot answer must not become the thing that breaks exit
+  # handling — it sits on the hot path for every normal completion.
+  test "handle_exit parks as before when the terminal-error check raises" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_regular_message("All done")
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    manager.send(:retry_strategy).stubs(:terminal_api_error).raises(RuntimeError, "transcript on fire")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "A raising backstop falls through to the pre-existing park rather than breaking exit handling"
   end
 
   # Exactly the entry Claude Code 2.1.237 wrote into production session 6412.

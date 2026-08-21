@@ -96,4 +96,14 @@ class CodexRetryStrategyTest < ActiveSupport::TestCase
       assert_respond_to @strategy, method_name
     end
   end
+
+  # ProcessLifecycleManager's terminal-API-error backstop reads Claude Code's
+  # transcript shape (isApiErrorMessage entries, user/assistant entry types), and
+  # gates itself on the strategy answering this at all. Codex must keep NOT
+  # answering it, or every ordinary Codex exit would be measured against a
+  # transcript format it does not use. docs/limitations.md states this.
+  test "does not answer the terminal-API-error question, so Codex never reaches that backstop" do
+    assert_not @strategy.respond_to?(:terminal_api_error),
+      "Codex transcripts are not Claude transcripts; the backstop must not be applied to them"
+  end
 end

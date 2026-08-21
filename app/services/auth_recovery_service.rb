@@ -126,13 +126,17 @@ class AuthRecoveryService
   AUTH_ERROR_TYPES = %w[authentication_failed oauth_error].freeze
 
   # Prose fallback, for entries the runtime records with an EMPTY error type —
-  # which is how it recorded "Not logged in · Please run /login" for years. Each
+  # which is how "Not logged in · Please run /login" is recorded. Each
   # alternative is one half of a known signature rather than a whole sentence,
   # because the wording around it is a moving target.
   #
-  # This net is deliberately secondary: a pattern over Anthropic's prose is the
-  # thing that went stale here, and #unrecognized_terminal_api_error_text is the
-  # backstop for the next time it does.
+  # This net is deliberately secondary, and deliberately wide: it answers "should
+  # this session rotate accounts?", where a false positive costs one rotation and
+  # a false negative costs a lost turn. Do not borrow it for a question with the
+  # opposite cost profile — SessionStatusSummaryHarvestJob spells out its own two
+  # patterns for exactly that reason. A pattern over Anthropic's prose is the
+  # thing that went stale in the 2026-08-20 incident, and
+  # ApiErrorRetryService#terminal_api_error is the backstop for the next time.
   AUTH_RECOVERABLE_ERROR_PATTERN = Regexp.union(
     /not logged in/i,
     /please run\s*\/login/i,
@@ -153,6 +157,13 @@ class AuthRecoveryService
   # @param message_text [String, nil] the entry's rendered text content
   def self.auth_error?(error_type, message_text)
     return true if AUTH_ERROR_TYPES.include?(error_type.to_s.strip.downcase)
+
+    # The structured type wins both ways. An entry the API typed as retryable is
+    # a transient upstream failure whatever its prose says, and "Authentication
+    # failed: 401 from gateway" on an `api_error` must go to backoff retry rather
+    # than spend an account rotation. Only entries the runtime left untyped — the
+    # ones the prose net exists for — are matched on wording.
+    return false if ApiErrorRetryService::RETRYABLE_ERROR_TYPES.include?(error_type.to_s.strip.downcase)
 
     "#{error_type} #{message_text}".match?(AUTH_RECOVERABLE_ERROR_PATTERN)
   end
