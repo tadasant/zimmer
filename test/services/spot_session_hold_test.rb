@@ -312,11 +312,12 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     assert_equal "waiting", session.reload.status
   end
 
-  # A resuming session has ALREADY been flipped to `running` by whoever delivered
-  # the turn, so it is counted in the fleet itself. Refusing it for `fleet_at_cap`
-  # would refuse it on the strength of its own slot — and would refuse every
-  # session SpotSessionPause resumes, since those are flipped to `running` before
-  # their jobs run, which would break the ceiling's resume path outright.
+  # A session that is ALREADY `running` when the gate runs has been flipped there
+  # by whoever delivered the turn, so it is counted in the fleet itself. Refusing
+  # it for `fleet_at_cap` would refuse it on the strength of its own slot — and
+  # would refuse every session SpotSessionPause resumes, since those are flipped
+  # to `running` before their jobs run, which would break the ceiling's resume
+  # path outright.
   test "a resume is not held for a full fleet" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
     session.update!(status: :running)
@@ -327,6 +328,22 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
     refute held
     assert_equal "running", session.reload.status
+  end
+
+  # The other half of the carve-out, and the one that would have been a hole. A
+  # turn already deferred once comes back as a re-check on a session sitting in
+  # `waiting` — it holds no slot, so the cap has to apply to it like any
+  # admission. Keying the exemption on "this turn carries a prompt" would have
+  # exempted exactly the population the gate itself creates.
+  test "a deferred turn's re-check is held for a full fleet" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    held = SpotGateService.stub(:evaluate, fleet_cap_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue")
+    end
+
+    assert held, "a dormant session's turn holds no slot, so the fleet cap refuses it"
+    assert_equal "waiting", session.reload.status
   end
 
   test "a first start is still held for a full fleet" do
@@ -370,6 +387,53 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     end
 
     assert_equal "running", session.reload.status
+  end
+
+  # A second delivery arriving during a hold must not race the turn already
+  # deferred. Two jobs against one session means AgentSessionJob's concurrency
+  # guard drops whichever loses, so the later prompt goes to the durable queue —
+  # and the marker the first job would otherwise prefer over its own argument is
+  # dropped, so the first prompt is still the first prompt.
+  test "a second refused turn is queued behind the one already deferred" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+
+      session.reload.update!(status: :running)
+      session.merge_metadata!("pending_follow_up_prompt" => "Second wake")
+
+      assert_no_enqueued_jobs only: AgentSessionJob do
+        SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "Second wake")
+      end
+    end
+
+    session.reload
+    assert_equal "waiting", session.status
+    assert_equal [ "Second wake" ], session.enqueued_messages.pending.order(:position).pluck(:content)
+    refute session.metadata.key?("pending_follow_up_prompt"),
+           "the gate has custody of the turn, so the marker must not hijack the deferred job"
+    assert_equal 1, session.metadata[SpotSessionHold::HELD_COUNT],
+                 "queueing behind a scheduled turn is not another rung on the backoff ladder"
+  end
+
+  test "a queued second turn keeps its images and files" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    images = [ { "path" => "/tmp/b.png", "media_type" => "image/png" } ]
+    files = [ { "path" => "/tmp/b.txt", "original_filename" => "b.txt", "size" => 3 } ]
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+      SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "Second wake",
+                                    images: images, files: files)
+    end
+
+    queued = session.reload.enqueued_messages.pending.order(:position).last
+    assert_equal images, queued.images
+    assert_equal files, queued.files
   end
 
   # Promotion is the sanctioned escape valve, and the hold banner's button is what

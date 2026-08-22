@@ -70,13 +70,38 @@
 #   * `resume_monitoring` — re-attaches to a process that is ALREADY running.
 #     Holding it would orphan that process rather than save a token.
 #
-# And one hold reason does not apply to a resume: `fleet_at_cap`. A resuming
-# session has already been flipped to `running` by whoever delivered the turn,
-# so it is counted in `Session.running_claude_code_count` itself — refusing it
-# for a full fleet would refuse it on the strength of its own slot, and would
-# refuse every session SpotSessionPause resumes, which are flipped to `running`
-# before their jobs run. The utilization reading has no such problem: the pool's
-# windows are measured independently of this session.
+# One hold reason does not apply to a session that is ALREADY `running` when the
+# gate runs: `fleet_at_cap`. Such a session has been flipped to `running` by
+# whoever delivered the turn, so it is counted in
+# `Session.running_claude_code_count` itself — refusing it for a full fleet would
+# refuse it on the strength of its own slot, and would refuse every session
+# SpotSessionPause resumes, which are flipped to `running` before their jobs run.
+# The utilization reading has no such problem: the pool's windows are measured
+# independently of this session.
+#
+# That exemption is keyed on the session's STATUS, never on "this turn carries a
+# prompt". A resume the gate has already deferred is sitting in `waiting` and
+# holds no slot, so its re-check is an admission like any other — keying on the
+# prompt would have exempted the entire population this class creates, and the
+# cap would go unenforced for exactly the sessions it was holding.
+#
+# == A deferral must not lose the turn, even when a second one arrives
+#
+# The refused prompt (with its images and files) rides the delayed job. Two
+# things keep that honest when a session is held for the best part of an hour and
+# something delivers to it again in the meantime — an orchestrator's second child
+# waking it, say:
+#
+#   * The gate takes CUSTODY of the turn, so `pending_follow_up_prompt` is
+#     dropped. That marker means "a job has not picked this prompt up yet", and
+#     AgentSessionJob prefers it over its own argument. Left in place, a second
+#     delivery's marker would overwrite the first, and the first deferred job
+#     would then deliver the second prompt and discard its own.
+#   * A second refused turn is QUEUED rather than given a second delayed job. Two
+#     jobs racing one session means the concurrency guard drops whichever loses,
+#     so the later prompt goes into `enqueued_messages` — the durable queue
+#     Zimmer already drains at a session's next turn boundary — and is delivered
+#     after the deferred turn ahead of it.
 class SpotSessionHold
   HELD_AT = "spot_hold_at"
   HELD_REASON = "spot_hold_reason"
@@ -135,10 +160,16 @@ class SpotSessionHold
   # — falls to the shorter ceiling, which is the safe direction to be wrong in.
   UTILIZATION_REASON = "at_utilization_limit"
 
-  # The hold reasons that apply to a RESUME, as opposed to a first start. See the
-  # class comment: a resuming session is already counted in the fleet, so only
+  # The hold reasons that apply to a turn taken by a session that ALREADY HOLDS A
+  # SLOT — one whose deliverer has flipped it to `running`. See the class
+  # comment: it is counted in `Session.running_claude_code_count` itself, so only
   # the utilization reading can honestly refuse it.
-  RESUME_HOLD_REASONS = [ UTILIZATION_REASON ].freeze
+  #
+  # Not "a resume". A resume the gate has already deferred once sits in `waiting`
+  # and holds nothing, so its re-check is an admission like any other and the
+  # fleet cap applies to it in full. Keying this on the prompt rather than on the
+  # session's status would exempt exactly the population this class creates.
+  RUNNING_HOLD_REASONS = [ UTILIZATION_REASON ].freeze
 
   class << self
     # True when the turn was refused and the caller should stop. False means
@@ -157,7 +188,7 @@ class SpotSessionHold
       # The one seam. SpotGateService.allow_start? reads the same method, so the
       # readable predicate and the production path cannot drift apart.
       decision = SpotGateService.start_decision(session)
-      if decision.allowed? || !applies_to?(decision, follow_up_prompt)
+      if decision.allowed? || !applies_to?(decision, session)
         clear(session)
         return false
       end
@@ -179,30 +210,54 @@ class SpotSessionHold
 
     private
 
-    # Whether this decision refuses this shape of turn. A first start is refused
-    # by every hold reason; a resume only by the utilization reading.
-    def applies_to?(decision, follow_up_prompt)
-      return true if follow_up_prompt.blank?
+    # Whether this decision refuses this turn. Every hold reason refuses a session
+    # that holds no slot; a session already counted in the running fleet is
+    # refused only by the utilization reading.
+    def applies_to?(decision, session)
+      return true unless session.running?
 
-      RESUME_HOLD_REASONS.include?(decision.reason)
+      RUNNING_HOLD_REASONS.include?(decision.reason)
     end
 
     def hold!(session, decision, follow_up_prompt:, log_buffer:, images:, files:)
       resuming = follow_up_prompt.present?
       metadata = session.metadata || {}
+
+      # Read BEFORE this hold overwrites it: a re-check still in the future means
+      # an earlier deferral already has a job scheduled to carry a turn. This
+      # prompt goes behind that turn rather than racing it, and the hold record is
+      # left exactly as that deferral wrote it — the re-check it promises is the
+      # one that will actually fire, and this is not another rung on the ladder.
+      if resuming && (scheduled_at = scheduled_turn_at(metadata))
+        queue_behind_scheduled_turn(session, follow_up_prompt, scheduled_at,
+                                    images: images, files: files, log_buffer: log_buffer)
+        # Custody again, and here it is the whole point: the marker this delivery
+        # stamped names a prompt that is now in the queue, and the job already
+        # scheduled prefers the marker over its own argument. Left in place it
+        # would deliver this prompt twice and the earlier one never.
+        session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
+        return_to_queue!(session)
+        return
+      end
+
       count = metadata[HELD_COUNT].to_i + 1
       delay = retry_delay(decision, count)
       retry_at = Time.current + delay
 
-      session.update_columns(
-        metadata: metadata.merge(
+      # One statement, and it drops the delivery marker in the same breath. The gate
+      # is taking custody of this prompt — see the class comment — but only when it
+      # actually holds one: a promptless hold that dropped the marker would discard
+      # a prompt nothing else is carrying.
+      session.merge_metadata!(
+        {
           HELD_AT => Time.current.iso8601,
           HELD_REASON => decision.reason,
           HELD_DETAIL => decision.detail,
           HELD_RETRY_AT => retry_at.iso8601,
           HELD_COUNT => count,
           HELD_TURN => resuming ? TURN_RESUME : TURN_START
-        )
+        },
+        resuming ? %w[pending_follow_up_prompt pending_follow_up_sent_at] : []
       )
 
       message = "Spot session held #{resuming ? 'before its next turn' : 'before starting'}: " \
@@ -218,10 +273,7 @@ class SpotSessionHold
       session.logs.create!(level: "warning", content: message) if log_buffer.nil?
       Rails.logger.info("[SpotSessionHold] Session #{session.id} held: #{decision.reason}")
 
-      # The turn is DEFERRED, never dropped. A wake that arrived as a prompt is
-      # re-enqueued with that prompt and its attachments, so the delayed job
-      # GoodJob persists is a complete replacement for the turn being refused —
-      # nothing else has to remember it.
+      # The turn is DEFERRED, never dropped.
       if resuming
         AgentSessionJob.enqueue_with_prompt(
           session.id,
@@ -240,6 +292,51 @@ class SpotSessionHold
       end
 
       return_to_queue!(session)
+    end
+
+    # When an earlier deferral's re-check job is due, or nil if none is pending.
+    #
+    # `HELD_RETRY_AT` is written when a job is scheduled and is only ever in the
+    # future while that job is pending — the re-check that fires AT it reads its
+    # own stamp as already past. So a future stamp means "a job is coming", which
+    # is exactly the condition under which a second job would be redundant.
+    def scheduled_turn_at(metadata)
+      retry_at = metadata[HELD_RETRY_AT]
+      return nil if retry_at.blank?
+
+      at = Time.zone.parse(retry_at.to_s)
+      at if at.present? && at > Time.current
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    # Put a refused prompt into the session's durable message queue, behind the
+    # turn already scheduled ahead of it. `drain_enqueued_messages_after_pause`
+    # delivers it when that turn ends.
+    def queue_behind_scheduled_turn(session, prompt, scheduled_at, images:, files:, log_buffer:)
+      position = (session.enqueued_messages.maximum(:position) || 0) + 1
+      session.enqueued_messages.create!(
+        content: prompt,
+        position: position,
+        images: Array(images),
+        files: Array(files)
+      )
+      message = "Spot session held before its next turn: a turn is already deferred to " \
+                "#{scheduled_at.iso8601}, so this prompt was queued behind it (position " \
+                "#{position}) rather than given a job of its own. Nothing is lost — it is " \
+                "delivered when that turn ends."
+      log_buffer&.add(message, level: "warning")
+      session.logs.create!(level: "warning", content: message) if log_buffer.nil?
+    rescue StandardError => e
+      # Never lose the prompt to a queue failure: fall back to a job of its own,
+      # which the concurrency guard may drop but which at least still carries it.
+      Rails.logger.warn(
+        "[SpotSessionHold] Could not queue a deferred prompt for session #{session.id}: #{e.class}: #{e.message}"
+      )
+      AgentSessionJob.enqueue_with_prompt(
+        session.id, prompt, images: images.presence, files: files.presence,
+        delay: SpotGateService::RETRY_DELAY
+      )
     end
 
     # Put a session whose turn was refused into the dormant `waiting` state a held

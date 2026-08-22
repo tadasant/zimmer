@@ -129,7 +129,7 @@ Neither is a forecast: both are statements about numbers that have already been 
 | Check | What it means | Reason when it fails |
 | --- | --- | --- |
 | **Under the targets** | The Claude Code account pool averages below the 5-hour *and* weekly targets, as last read. When either average reaches its target, spot work pauses until utilization comes back down. | `at_utilization_limit` |
-| **A free slot** | Fewer sessions are running than **Max sessions at once**. Applies to a first start only — a resuming session is already counted in the running fleet. | `fleet_at_cap` |
+| **A free slot** | Fewer sessions are running than **Max sessions at once**. Skipped only for a session that is *already* `running` when the gate runs — it is counted in the fleet itself. | `fleet_at_cap` |
 
 There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
 its target, not when it might. Utilization falls on its own — Anthropic's counters are sliding
@@ -343,12 +343,16 @@ because neither spends anything:
 | `clone_only` | Sets up a clone and configures MCP. No agent is spawned. |
 | `resume_monitoring` | Re-attaches to a process that is **already running**. Holding it would orphan that process, not save a token. |
 
-One hold reason does not apply to a resume: **`fleet_at_cap`**. A session resuming has already been
-flipped to `running` by whoever delivered the turn, so it is counted in the running fleet itself —
-refusing it for a full fleet would refuse it on the strength of its own slot, and would refuse every
-session the ceiling sweep resumes (those are flipped to `running` before their jobs run). The
-utilization reading has no such problem: the pool's windows are measured independently of this
-session.
+One hold reason is skipped for a session that is **already `running`** when the gate runs:
+**`fleet_at_cap`**. Its deliverer has flipped it to `running`, so it is counted in the running fleet
+itself — refusing it for a full fleet would refuse it on the strength of its own slot, and would
+refuse every session the ceiling sweep resumes (those are flipped to `running` before their jobs
+run). The utilization reading has no such problem: the pool's windows are measured independently of
+this session.
+
+That exemption is keyed on the session's **status**, not on "this turn carries a prompt". A turn the
+gate has already deferred once is sitting in `waiting` and holds no slot, so its re-check is an
+admission like any other and the concurrency limit applies to it in full.
 
 **A deferred turn is not a lost turn.** The prompt that woke the session, and any images or files
 attached to it, are re-enqueued verbatim on the same backed-off re-check as a first-start hold —
@@ -356,6 +360,19 @@ GoodJob persists that delayed job in Postgres, so it survives a worker restart o
 session goes back to dormant `waiting` (not `needs_input`: nobody has to do anything about it), and
 nothing announces it as needing a human — no push notification, and no `session_needs_input` event
 that would wake a parent watching this session about a turn that never ran.
+
+Two details keep that true when something delivers to the session *again* during a hold, which can
+last the best part of an hour — a second child waking its orchestrator, say:
+
+- **The gate takes custody of the prompt**, so `pending_follow_up_prompt` is dropped. That marker
+  means "no job has picked this up yet" and `AgentSessionJob` prefers it over its own argument;
+  left in place, the second delivery's marker would overwrite the first, and the first deferred job
+  would deliver the second prompt and discard its own.
+- **A second refused turn is queued, not given a second job.** Two jobs racing one session means the
+  concurrency guard drops whichever loses, so the later prompt goes into `enqueued_messages` — the
+  durable queue Zimmer already drains at a session's next turn boundary — and is delivered after the
+  turn ahead of it. The hold record is left alone in that case: the re-check it names is the one
+  that will actually fire, and a queued prompt is not another rung on the backoff ladder.
 
 The session detail page shows a **Held for quota headroom** banner — **Next turn held for quota
 headroom** when it was a resume — naming the reason, the next check time, and how to run it now.

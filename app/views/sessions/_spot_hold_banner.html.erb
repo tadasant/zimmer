@@ -1,12 +1,15 @@
-<%# A spot session the gate has stopped, in any of the three ways it can be: held
-    at the starting line (a quota window at its target, or no free session slot),
-    held before its NEXT turn when a wake or a follow-up arrived while a window
-    was at its target, or paused mid-run once a window arrived at its target with
-    this session already running. Without this the session sits in `waiting`
-    looking indistinguishable from one that is merely queued, and the only record
-    of why would be a line in its log.
+<%# A spot session sitting in the queue rather than running, in any of the four
+    ways it gets there: held at the starting line (a quota window at its target,
+    or no free session slot), held before its NEXT turn when a wake or a
+    follow-up arrived while a window was at its target, paused mid-run once a
+    window arrived at its target with this session already running, or put there
+    deliberately by a human choosing "Spot Queue" in Pause Until. Without this
+    the session sits in `waiting` looking indistinguishable from one that is
+    merely queued, and the only record of why would be a line in its log.
 
-    One partial for all three because a session is only ever in one of them. %>
+    One partial for all four because a session is only ever in one of them, and
+    they are ordered most-specific first: a human's choice describes the session
+    better than the gate reason layered on top of it. %>
 <% hold_detail = agent_session.metadata&.dig(SpotSessionHold::HELD_DETAIL) %>
 <% hold_reason = agent_session.metadata&.dig(SpotSessionHold::HELD_REASON) %>
 <%# A hold on a RESUME is a turn that was refused, not a session that never
