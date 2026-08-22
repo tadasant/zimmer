@@ -16,7 +16,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" leaves the session wherever its existing rank puts it, which is usually the bottom — pass both when you mean it to be worked on soon.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -48,6 +48,7 @@ module Mcp
       ACTIONS = %w[
         follow_up
         pause
+        pause_into_spot_queue
         restart
         archive
         unarchive
@@ -103,6 +104,7 @@ module Mcp
         **Actions:**
         - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
+        - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of "Pause Until → Spot Queue" in the web UI, and the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately.
         - **unarchive**: Restore an archived session to idle "needs_input" status
@@ -204,6 +206,7 @@ module Mcp
         case action
         when "follow_up" then follow_up(find_session(args["session_id"]), args)
         when "pause" then pause(find_session(args["session_id"]))
+        when "pause_into_spot_queue" then pause_into_spot_queue(find_session(args["session_id"]), args)
         when "restart" then restart(find_session(args["session_id"]))
         when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
@@ -369,6 +372,29 @@ module Mcp
         session.pause!
 
         summary("Session Paused", session, status_label: "New Status")
+      end
+
+      # The web UI's "Pause Until → Spot Queue", for an agent. Everything about
+      # the park lives in the service, including which of `needs_input` /
+      # `running` / `waiting` it is being applied to; this is the tool surface.
+      def pause_into_spot_queue(session, args)
+        was = session.priority_class
+        result = Sessions::PauseIntoSpotQueue.call(session: session, prompt: args["prompt"])
+
+        [
+          "## Parked In The Spot Queue",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Status:** #{session.status}#{" (sleeps when the current turn ends)" if result.pending_sleep}",
+          "- **Scheduling class:** #{session.priority_class}#{" (was #{was})" if result.pinned_to_spot}",
+          "- **Queue position:** precedence #{session.precedence} (higher is handled sooner)",
+          "- **Resumes when:** a Claude Code account is under both quota targets and a session slot " \
+          "is free. No wake-up time is set — use \"change_scheduling_class\" with \"priority\" to " \
+          "take it out of the queue, or \"change_precedence\" to move it up."
+        ].join("\n")
+      rescue Sessions::PauseIntoSpotQueue::Error => e
+        raise ToolError, e.message
       end
 
       def restart(session)

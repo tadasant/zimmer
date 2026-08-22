@@ -34,6 +34,8 @@ module Mcp
 
           **If the fire itself errors** (a stale agent root, a bad MCP reference), the wake does NOT happen and the trigger is NOT deleted: it is parked in the `failed` status with the error on it, still listed at `/triggers` with a **Re-arm** button, and an alert is raised. It will not retry on its own. If this connection also has the trigger tools, a `status=failed` search finds wakes that never happened and a toggle re-arms one; otherwise the trigger page is where a human clears it.
 
+          **When there is no time worth naming.** This tool wants a wall-clock time, and inventing one for work that is not on a clock is how a session ends up polling a queue it could have joined. If what you are actually waiting on is quota headroom — not an event, not a deadline — use `action_session` with the "pause_into_spot_queue" action instead: it sleeps the session with no trigger at all and Zimmer resumes it when the spot scheduler reaches it.
+
           **Current server time:** #{Time.current.utc.iso8601} (UTC). Use this as your reference point when calculating wake-up times.
 
           **Timezone handling:**

@@ -196,6 +196,90 @@ class PauseUntilTest < ApplicationSystemTestCase
     assert_no_selector "##{ActionView::RecordIdentifier.dom_id(queued)} button[aria-label='More actions for session #{queued.id}']"
   end
 
+  # The choice in the same panel that is not a time. What makes it worth driving
+  # in a browser is the pair of outcomes: the session sleeps, and NOTHING is
+  # armed to wake it — which is the difference a unit test can assert but only a
+  # real click through the panel can demonstrate.
+  test "Spot Queue parks the session with no trigger, from the card menu" do
+    session = create_session
+    visit root_path
+    assert_text "Waiting on the deploy"
+
+    open_card_menu(session)
+    click_on "Pause Until…"
+    assert_text "Spot Queue"
+
+    assert_no_difference "Trigger.count" do
+      click_on "Spot Queue"
+      assert_selector "##{ActionView::RecordIdentifier.dom_id(session)}", text: "Waiting"
+    end
+
+    session.reload
+    assert session.waiting?
+    assert SpotSessionPause.queued_by_user?(session), "the sweep finds it by this record"
+    assert_not session.awaiting_scheduled_wake?
+    assert session.spot?, "a priority session cannot sit in the spot queue"
+  end
+
+  test "the detail page offers Spot Queue and confirms the park" do
+    session = create_session
+    visit session_path(session)
+
+    click_on "Pause Until"
+    assert_text "Spot Queue"
+    # Evidence for the PR: the panel as the operator sees it on the detail page,
+    # with the new option beside the time presets.
+    page.save_screenshot("tmp/screenshots/proof-spot-queue-detail-desktop.png")
+
+    assert_no_difference "Trigger.count" do
+      js_click(find("button[data-action='pause-until#chooseSpotQueue']"))
+      # The park broadcasts a replacement header, which tears the panel (and its
+      # confirmation line) out of the DOM — so the badge is what to wait on.
+      assert_selector "#session_#{session.id}_status_badge", text: "Waiting"
+    end
+
+    assert session.reload.waiting?
+  end
+
+  test "the mobile sheet offers Spot Queue on screen at a phone width" do
+    session = create_session
+    page.driver.browser.manage.window.resize_to(375, 812)
+
+    visit session_path(session)
+    assert_selector "[data-joystick-menu-target='sheet']", visible: :all
+    page.execute_script(<<~JS)
+      const sheet = document.querySelector("[data-joystick-menu-target='sheet']");
+      sheet.classList.remove("translate-y-full", "opacity-0");
+    JS
+    click_on "Pause Until…"
+    assert_text "Spot Queue"
+    page.save_screenshot("tmp/screenshots/proof-spot-queue-sheet-375.png")
+
+    # The option has to be reachable, not merely present: a row whose right edge
+    # sits past the viewport is a control nobody on a phone can press.
+    left, past_right, doc_overflow = page.evaluate_script(<<~JS)
+      (function () {
+        const b = document.querySelector("[data-action='pause-until#chooseSpotQueue']").getBoundingClientRect();
+        return [Math.round(b.left), Math.round(b.right - document.documentElement.clientWidth),
+                document.documentElement.scrollWidth - document.documentElement.clientWidth];
+      })()
+    JS
+
+    assert left >= 0, "the Spot Queue row starts #{-left}px off the left edge at 375px"
+    assert past_right <= 1, "the Spot Queue row runs #{past_right}px past the right edge at 375px"
+    assert doc_overflow <= 0, "the panel makes the page scroll sideways by #{doc_overflow}px"
+
+    assert_no_difference "Trigger.count" do
+      click_on "Spot Queue"
+      # visible: :all — the detail page's badge lives in the `hidden md:block`
+      # header, which is exactly what a phone does not get.
+      assert_selector "#session_#{session.id}_status_badge", text: "Waiting", visible: :all
+    end
+    assert session.reload.waiting?
+  ensure
+    page.driver.browser.manage.window.resize_to(1400, 900)
+  end
+
   test "the card menu opens fully on screen at a phone width" do
     session = create_session
     page.driver.browser.manage.window.resize_to(375, 812)
