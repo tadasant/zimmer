@@ -101,7 +101,7 @@ module Mcp
       def call(args)
         unless args["id"].nil?
           session = find_session(args["id"])
-          return "## Session Found\n\n#{format_session(session, paused: session.awaiting_scheduled_wake?)}"
+          return "## Session Found\n\n#{format_session(session, paused: session.paused_until_scheduled_time?)}"
         end
 
         scope = filtered_scope(args)
@@ -122,7 +122,7 @@ module Mcp
         # One batched read for the page rather than one query per row: a paused
         # session must be visibly paused in the queue listing, and the ranked
         # queue is exactly the listing a fleet-maintenance agent pages through.
-        sleeping = Session.ids_awaiting_scheduled_wake(sessions.map(&:id))
+        sleeping = Session.ids_paused_until_scheduled_time(sessions.map(&:id))
 
         sessions.each do |session|
           lines << format_session(session, paused: sleeping.include?(session.id))

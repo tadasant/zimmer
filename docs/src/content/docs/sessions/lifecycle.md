@@ -421,11 +421,13 @@ agent. Two consequences worth knowing before you click it:
 Its queue position is whatever `precedence` the session is already carrying; the
 [Ranked view](/sessions/spot-and-priority/) is where that is changed.
 
-A sleep with a wake-up armed outranks every automated reason to start the session again — its
-precedence, its scheduling class, a recovered quota pool, a freed fleet slot. The places that would
-otherwise have started it are listed in
-[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence). A Spot Queue
-park is the deliberate exception: it arms nothing, so the spot sweep resuming it is the whole point.
+A sleep with a wall-clock wake armed outranks every automated reason to start the session *early* —
+its precedence, its scheduling class, a recovered quota pool, a freed fleet slot. The places that
+would otherwise have started it are listed in
+[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence), along with
+the limit of what a pause claims: it is a floor under when the session may run, not a promotion past
+the spot queue when the moment arrives. A Spot Queue park is the deliberate exception to the whole
+thing — it arms nothing, so the spot sweep resuming it is the point.
 
 Zimmer also uses this path on its own behalf: `AuthOutageParkService` parks a session here when the
 login pool runs dry, which is what keeps a quota-blocked session out of the heartbeat sweep's reach.

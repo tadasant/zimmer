@@ -1448,6 +1448,41 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(clone_path)
   end
 
+  # A pause outranks precedence and scheduling class, and REST is a non-interactive
+  # door onto the same start `action_session restart` guards — a script or an
+  # integration working a queue, not a person taking one session over. Without this
+  # the refusal was reachable through MCP and not through the API, and `resume!`
+  # here would have consumed the pause before any deeper guard could see it.
+  test "should refuse to restart a session paused until a time it has not reached" do
+    clone_path = Rails.root.join("tmp", "test_api_restart_paused")
+    FileUtils.mkdir_p(clone_path)
+
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt",
+      status: :needs_input,
+      session_id: SecureRandom.uuid,
+      metadata: { "clone_path" => clone_path.to_s, "working_directory" => clone_path.to_s,
+                  "agent_root_key" => "zimmer" }
+    )
+    trigger = Sessions::ScheduleWakeUp.call(
+      session: session,
+      wake_at: 3.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+      prompt: "Resume after the pause"
+    )
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      post restart_api_v1_session_path(session.id), headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_match(/does not start early/, JSON.parse(response.body)["message"])
+    assert_equal "waiting", session.reload.status
+    assert Trigger.exists?(trigger.id), "refusing must leave the pause armed"
+  ensure
+    FileUtils.rm_rf(clone_path)
+  end
+
   test "should restart failed session" do
     clone_path = Rails.root.join("tmp", "test_api_restart_failed")
     FileUtils.mkdir_p(clone_path)

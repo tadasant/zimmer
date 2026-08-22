@@ -341,6 +341,38 @@ module SessionStateMachine
       ids.to_set
     end
 
+    # Of +session_ids+, the ids paused until a wall-clock time that has not come
+    # yet — the batch form of #paused_until_scheduled_time?, and the START guard's
+    # question rather than the refresh guard's.
+    #
+    # Deliberately NARROWER than #ids_awaiting_scheduled_wake, and the difference
+    # is the whole reason both exist. A one-time schedule expires: past its moment
+    # the session is no longer paused and every guard built on this stops applying,
+    # which is what makes a pause a deferral rather than a cancellation. A
+    # session-scoped `ao_event` wake has no time at all — it is still "ahead of"
+    # the session forever if the watched session never transitions again (it
+    # failed, it was archived). Refusing to START on that would make one dead
+    # watcher enough to put a session permanently beyond every automated path,
+    # which is a worse failure than the early start it prevents.
+    #
+    # @param session_ids [Array<Integer>] candidate session ids
+    # @return [Set<Integer>] the subset paused until a time still ahead of it
+    # @raise [ActiveRecord::ActiveRecordError] deliberately not rescued — see
+    #   #paused_until_scheduled_time?
+    def ids_paused_until_scheduled_time(session_ids)
+      ids = Array(session_ids).compact
+      return Set.new if ids.empty?
+
+      TriggerCondition
+        .joins(:trigger)
+        .includes(:trigger)
+        .where(condition_type: "schedule", last_triggered_at: nil)
+        .where(triggers: { last_session_id: ids, reuse_session: true, status: "enabled" })
+        .select { |condition| condition.one_time_schedule? && !condition.schedule_due? }
+        .map { |condition| condition.trigger.last_session_id }
+        .to_set
+    end
+
     # Whether +condition+ is a per-session wake-up this session is still waiting on.
     #
     # A session-scoped ao_event has no time component — it fires whenever the
@@ -483,6 +515,26 @@ module SessionStateMachine
     true
   end
 
+  # Whether this session is paused until a wall-clock time it has not reached.
+  #
+  # This is what every START path asks. #awaiting_scheduled_wake? answers the
+  # broader "is this session resting on purpose", which is the right question for
+  # a refresh nudge and the wrong one for a refusal to start — see
+  # .ids_paused_until_scheduled_time for why an `ao_event` wake must not make a
+  # session unstartable.
+  #
+  # Deliberately NOT rescued. The batch form's callers are sweeps that re-read
+  # from scratch minutes later, so treating an unreadable trigger table as "asleep"
+  # costs one pass and errs toward leaving work alone. A start path has no such
+  # next pass: standing down there does not re-enqueue, so swallowing the error
+  # would turn a transient blip into a session that never starts, and would say so
+  # in a log line claiming a pause that does not exist. Callers handle the raise.
+  def paused_until_scheduled_time?
+    pending_one_time_wake_conditions
+      .where(condition_type: "schedule")
+      .any? { |condition| condition.one_time_schedule? && !condition.schedule_due? }
+  end
+
   # When the earliest pending one-time wake fires, or nil.
   #
   # Nil is not "nothing is armed": a session-scoped ao_event wake has no time
@@ -494,7 +546,8 @@ module SessionStateMachine
   # @return [ActiveSupport::TimeWithZone, nil]
   def pending_wake_at
     pending_one_time_wake_conditions
-      .select { |condition| condition.one_time_schedule? && self.class.one_time_wake_pending?(condition) }
+      .where(condition_type: "schedule")
+      .select { |condition| condition.one_time_schedule? && !condition.schedule_due? }
       .filter_map do |condition|
         zone = ActiveSupport::TimeZone[condition.schedule_timezone]
         zone&.parse(condition.scheduled_at.to_s) rescue nil
@@ -507,8 +560,10 @@ module SessionStateMachine
     nil
   end
 
-  # The phrase every "we are not starting this session" log line uses, so the
-  # three sweeps that stand down say the same thing about the same condition.
+  # How a message names the pause: the time if there is one to name, and a plain
+  # statement otherwise. Shared by AgentSessionJob's stand-down log and the
+  # `action_session restart` refusal, so a caller refused by one and then reading
+  # the other's log sees the same sentence.
   def pending_wake_phrase
     at = pending_wake_at
     at ? "it is paused until #{at.utc.iso8601}" : "it is asleep on a pending wake-up"
@@ -1279,6 +1334,7 @@ module SessionStateMachine
   def pending_one_time_wake_conditions
     TriggerCondition
       .joins(:trigger)
+      .includes(:trigger)
       .where(condition_type: %w[schedule ao_event], last_triggered_at: nil)
       .where(triggers: { last_session_id: id, reuse_session: true, status: "enabled" })
   end

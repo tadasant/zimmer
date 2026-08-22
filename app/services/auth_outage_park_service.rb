@@ -355,7 +355,7 @@ class AuthOutageParkService
 
     # One batched read of "who is asleep on a wake-up they chose" for the whole
     # sweep, in the same shape as the pool reads above and for the same reason.
-    sleeping = Session.ids_awaiting_scheduled_wake(parked_sessions.pluck(:id))
+    sleeping = Session.ids_paused_until_scheduled_time(parked_sessions.pluck(:id))
 
     # `.each`, not `find_each`: find_each imposes its own primary-key order and
     # would discard the oldest-park-first ordering the cap below depends on. The
@@ -550,7 +550,7 @@ class AuthOutageParkService
       # Re-asked under the lock, for a pause armed after the sweep read the set.
       # `resume!` below consumes the session's pending one-time wakes, so a miss
       # here does not merely start the session early — it erases the pause.
-      raise ActiveRecord::Rollback if session.awaiting_scheduled_wake?
+      raise ActiveRecord::Rollback if session.paused_until_scheduled_time?
 
       reason = session.metadata&.dig("auth_outage_reason")
       raise ActiveRecord::Rollback if reason.blank?
