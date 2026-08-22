@@ -21,6 +21,13 @@ class PauseUntilTest < ApplicationSystemTestCase
     find("##{ActionView::RecordIdentifier.dom_id(session)} button[aria-label='More actions for session #{session.id}']").click
   end
 
+  # Capybara's save_screenshot makes the directory it writes into; a raw element
+  # capture does not, and the runner starts without one.
+  def save_element_screenshot(element, path)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.binwrite(path, element.native.screenshot_as(:png))
+  end
+
   # The picker is a native datetime-local control, so its value is set the way the
   # browser would set it and an input event is dispatched for anything listening.
   def set_picker(value)
@@ -286,9 +293,10 @@ class PauseUntilTest < ApplicationSystemTestCase
     # whatever happened to be at the top of that container — which is the rows
     # above this one. Capturing the element is what puts the option itself in the
     # picture.
-    File.binwrite("tmp/screenshots/proof-spot-queue-sheet-375.png",
-                  find("[data-joystick-menu-target='sheet'] [data-pause-until-target='panel']:not(.hidden)")
-                    .native.screenshot_as(:png))
+    save_element_screenshot(
+      find("[data-joystick-menu-target='sheet'] [data-pause-until-target='panel']:not(.hidden)"),
+      "tmp/screenshots/proof-spot-queue-sheet-375.png"
+    )
 
     # The option has to be REACHABLE, not merely present: a row past the right
     # edge, or below the bottom of a sheet that cannot scroll, is a control
