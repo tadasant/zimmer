@@ -80,6 +80,36 @@ class SessionsControllerPauseUntilTest < ActionDispatch::IntegrationTest
     assert_not body["pending_sleep"]
   end
 
+  # Stopping a turn skips the queue drain that a turn allowed to end performs, so
+  # the messages wait with the session — unbounded on the Spot Queue path, which
+  # arms no wake. The panel says so before the click rather than after it.
+  test "the panel warns a running session's operator about messages left queued" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Also check the migration", status: "pending", position: 1)
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "p.bg-amber-50", /stops the current turn/
+    assert_select "p.bg-amber-50", /1 queued message will wait with it/
+  end
+
+  test "the panel says nothing about a queue that is empty" do
+    get session_url(sessions(:running))
+
+    assert_response :success
+    assert_select "p.bg-amber-50", /stops the current turn/
+    assert_select "p.bg-amber-50", { text: /queued message/, count: 0 }
+  end
+
+  # The warning is about stopping a turn, so an idle session must not carry it.
+  test "the panel does not warn an idle session about a turn it is not taking" do
+    get session_url(sessions(:needs_input))
+
+    assert_response :success
+    assert_select "p.bg-amber-50", false
+  end
+
   test "halting a running session leaves the wake armed and deliverable" do
     session = sessions(:running)
 
