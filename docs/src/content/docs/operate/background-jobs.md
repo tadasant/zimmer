@@ -534,7 +534,7 @@ than looking like a day-old stall the moment it becomes runnable.
 
 ### The page says which queue, and of what
 
-A ready count on its own is not triageable. Zimmer runs four queues with very different shapes — an
+A ready count on its own is not triageable. Zimmer runs five queues with very different shapes — an
 `agents` thread is held for the entire life of a session, while `default` and `pollers` turn jobs
 over in milliseconds — so the same number is equally consistent with "one queue is starved" and
 "everything is busy", and those want opposite responses. Worse, the healthy-looking signals stay

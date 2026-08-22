@@ -2356,7 +2356,7 @@ Two knock-on effects worth knowing while the mode is on. Halting `pollers` also 
 `SystemHealthMonitorJob`, so the "Queue backlog critical" page stops firing — deliberate, since the
 backlog is now the operator's own doing, but it means the mode's own enter/exit alerts are the only
 signal. And enabling `config.good_job.enable_pauses` globally adds three `good_job_settings`
-subqueries to every dequeue poll on all four schedulers; the table holds one row and is indexed on
+subqueries to every dequeue poll on all five schedulers; the table holds one row and is indexed on
 `key`, but it is not nothing on a database already under the pressure of
 [#329](https://github.com/tadasant/zimmer/issues/329).
 
