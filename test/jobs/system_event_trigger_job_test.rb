@@ -58,6 +58,38 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
     end
   end
 
+  # The single point of failure the whole redesign rests on: if the fleet trigger
+  # is missing, disabled or broken, the edge must NOT be spent — or the parked
+  # sessions it exists to wake wait for the pool to empty and recover all over
+  # again.
+  test "a pass with nothing listening puts the edge back" do
+    AppSetting.current.update!(quota_pool_available: true)
+
+    SystemEventTriggerJob.perform_now("quota_available")
+
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+  end
+
+  test "a pass where every fire raises puts the edge back" do
+    wake_trigger
+    AppSetting.current.update!(quota_pool_available: true)
+    Trigger.any_instance.stubs(:create_session!).raises(StandardError, "boom")
+    AlertService.stubs(:raise_alert)
+
+    SystemEventTriggerJob.perform_now("quota_available")
+
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+  end
+
+  test "a delivered fire spends the edge" do
+    wake_trigger
+    AppSetting.current.update!(quota_pool_available: true)
+
+    SystemEventTriggerJob.perform_now("quota_available")
+
+    assert_equal true, AppSetting.current.reload.quota_pool_available
+  end
+
   test "an unknown event name does nothing" do
     wake_trigger
 

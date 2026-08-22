@@ -101,6 +101,19 @@ class SessionPrecedenceTest < ActiveSupport::TestCase
     assert_equal 30 + SessionPrecedence::SLOT_GAP, Session.precedence_above_top_spot
   end
 
+  # The guarantee has to survive the only path that passes a scope — the demote
+  # button, which excludes the session being demoted. Applying the archived
+  # exclusion to the default branch alone would let precedence ratchet upward
+  # across archive cycles.
+  test "precedence_above_top_spot ignores archived sessions in a caller's scope" do
+    demoted = build_session(scheduling_class: SessionGenesis::PRIORITY)
+    build_session(precedence: 900, scheduling_class: SessionGenesis::SPOT, status: :archived)
+    build_session(precedence: 30, scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal 30 + SessionPrecedence::SLOT_GAP,
+      Session.precedence_above_top_spot(Session.where.not(id: demoted.id))
+  end
+
   test "precedence_above_top_spot falls back to the default when nothing is queued" do
     assert_equal SessionPrecedence::DEFAULT + SessionPrecedence::SLOT_GAP,
       Session.precedence_above_top_spot

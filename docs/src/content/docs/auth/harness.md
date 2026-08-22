@@ -741,7 +741,7 @@ Two things wake a parked session now, and they cover different populations.
 
 | Population | Woken by | Why |
 | --- | --- | --- |
-| **spot** | the `quota_available` trigger event → one `fleet-maintenance` session running the `awaken-waiting-sessions` skill | spot work is exactly the work whose ORDER matters when quota is scarce, and the skill is what reads precedence, the spot thresholds and the concurrency ceiling to decide who starts |
+| **spot** | the `quota_available` trigger event → one `fleet-maintenance` session running the `awaken-waiting-sessions` skill | spot work is exactly the work whose ORDER matters when quota is scarce, and the skill is what reads precedence, the spot thresholds and the concurrency ceiling to decide who starts. Both artifacts ship in Zimmer's own catalog, so the seeded trigger resolves on a standalone install; a test asserts the root it names exists |
 | **priority** | `AuthOutageParkService.wake_parked_sessions!`, from `QuotaResetCheckerJob` every 15 minutes | priority work is never gated on quota, so making it wait for a spawned session to take its first turn would be a regression — and there is no ordering question to get wrong |
 
 `QuotaAvailabilityMonitor` owns the event. It runs in the same `QuotaResetCheckerJob` pass, right
@@ -753,6 +753,10 @@ answers "is utilization under the operator's targets and is a slot free", and fi
 also fire when a fleet slot opened, which is not a quota recovery. The fleet session reads the gate
 for itself before starting anything.
 
+A fire that delivers **no session** — nothing listening, every fire raised, every one burst-suppressed
+— puts the edge back (`QuotaAvailabilityMonitor.rearm!`), so the next sweep fires again rather than
+spending the one recovery the parked sessions were waiting for.
+
 The event is an **edge**, not a level. `AppSetting#quota_pool_available` stores the last observed
 level, and the event fires only on `false` → `true`; a level would be true on every sweep for as
 long as the pool stayed healthy and would spawn a fleet session every fifteen minutes forever. NULL
@@ -760,6 +764,17 @@ means nobody has looked yet, so the first observation records the level and fire
 landing while the pool happens to be healthy is not a recovery. A pool that cannot be read leaves the
 stored level alone, because recording an unreadable pool as an outage would make the next successful
 read fire a recovery nothing recovered from.
+
+Sampling alone is not enough to see the falling edge. `check!` runs every fifteen minutes, so an
+outage that opens and closes inside one tick is never observed as unavailable — the recovery is then
+not an edge, nothing fires, and everything parked in that window waits forever. So the **park itself**
+records it: `park!` calls `QuotaAvailabilityMonitor.record_unavailable!`, which is both the earliest
+moment Zimmer has positive evidence the pool is empty and the most certain.
+
+The sweep can also ask for the wake outright (`request_wake!`). It does that for a parked SPOT session
+it has found eligible on evidence the pool edge does not carry — an auth park whose pool credentials
+changed while `accounts.available` never went false→true. Deduplicated against the stored level, so a
+session that stays parked does not spawn a fleet session every fifteen minutes.
 
 `auth_outage_pool_recovers_at` survives as an **estimate** for the banner, and only for a quota park:
 `QuotaResetCheckerJob` clears an account only when both windows are clear, so an account frees up at

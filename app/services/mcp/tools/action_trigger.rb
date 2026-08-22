@@ -28,7 +28,7 @@ module Mcp
     # live trigger; an omitted-means-untouched upsert cannot.
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle invoke].freeze
-      TRIGGER_TYPES = %w[slack schedule github_label github_issue].freeze
+      TRIGGER_TYPES = %w[slack schedule github_label github_issue system_event].freeze
       # Derived from the model, not re-declared, so the tool cannot drift behind
       # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
       # and AoEventTriggerJob park a one-shot trigger there when its fire raises,
@@ -90,6 +90,7 @@ module Mcp
         - **schedule**: Triggered on a recurring or one-time schedule
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
         - **github_issue**: Triggered when a new issue is opened in a watched repo
+        - **system_event**: Triggered when the DEPLOYMENT changes state, not a session. One event today: `{"event_name": "quota_available"}`, the account pool going from serving nothing to serving something. Broadcast and recurring. This is what wakes quota-parked spot sessions, so there is normally exactly one such trigger and it is seeded by a migration — create another only deliberately.
 
         **Burst control:**
         - **max_sessions_per_minute**: caps how many sessions the trigger may spawn per minute.
@@ -639,10 +640,6 @@ module Mcp
         trigger
       end
 
-      # "spot" / "priority", and whether that came from the trigger or from the
-      # class its condition type derives — the same two facts the trigger page
-      # shows, so an agent reading this and a human reading the web UI see the
-      # same thing.
       # The predefined rank, or nil when the caller cleared it / said nothing.
       def trigger_precedence(args)
         value = args["precedence"]
@@ -666,6 +663,10 @@ module Mcp
         trigger.precedence.to_s
       end
 
+      # "spot" / "priority", and whether that came from the trigger or from the
+      # class its condition type derives — the same two facts the trigger page
+      # shows, so an agent reading this and a human reading the web UI see the
+      # same thing.
       def scheduling_class_summary(trigger)
         source = trigger.scheduling_class.present? ? "set on this trigger" : "default for its conditions"
         "#{trigger.effective_scheduling_class} (#{source})"

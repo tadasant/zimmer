@@ -17,6 +17,14 @@
     "default_branch": "main",
     "user_invocable": false
   },
+  "fleet-maintenance": {
+    "name": "fleet-maintenance",
+    "display_name": "Fleet Maintenance",
+    "description": "The deployment's own scheduler: event-driven sessions that hand out compute rather than write code. Today it runs one job — when a quota outage clears, decide which `waiting` sessions to start, in precedence order and within the spot thresholds and the concurrency ceiling. Not user-invocable; the `quota_available` trigger dispatches it.",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": false
+  },
   "agent-orchestrator": {
     "name": "agent-orchestrator",
     "display_name": "Zimmer",
