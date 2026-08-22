@@ -142,16 +142,14 @@ export default class extends Controller {
     return this.rowTargets.find((row) => row.dataset.sessionId === String(sessionId))
   }
 
+  // Both rank cells are rendered on every row and one of them is hidden, so both
+  // are written: whichever is showing now, and whichever a later promote or
+  // demote reveals. Writing only the visible one would leave a demoted row at the
+  // top of the queue still displaying the rank it carried while it was priority.
   applyPrecedence(row, value) {
     row.dataset.precedence = String(value)
     const input = row.querySelector("[data-ranked-queue-target='precedenceInput']")
-    if (input) {
-      input.value = String(value)
-      return
-    }
-    // A priority row shows its rank as static text, so the number has to be
-    // written there too — otherwise a demoted row lands at the top of the queue
-    // still displaying the rank it had before the demotion.
+    if (input) input.value = String(value)
     const readout = row.querySelector("[data-ranked-queue-target='precedenceReadout']")
     if (readout) readout.textContent = String(value)
   }

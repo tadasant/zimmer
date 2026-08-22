@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "uri"
 
 # The contract between the seeded `quota_available` trigger and the catalog it
 # fires into.
@@ -32,6 +33,27 @@ class QuotaAvailableWakeTriggerTest < ActiveSupport::TestCase
   # do. Assert the name is still the one the catalog carries.
   test "the wake prompt names the skill that encodes the wake policy" do
     assert_includes SeedQuotaAvailableWakeTrigger::PROMPT, "awaken-waiting-sessions"
+  end
+
+  # The gap that let a toolless wake ship: the root resolved, so the session
+  # started — and then found it had none of the tools its own skill tells it to
+  # call, so it archived having woken nothing.
+  test "the fleet root's default MCP servers give the wake skill the tools it uses" do
+    root = AgentRootsConfig.find!(SeedQuotaAvailableWakeTrigger::AGENT_ROOT)
+
+    assert root.default_mcp_servers.present?,
+      "a fleet-maintenance session takes the root's default servers (the seeded trigger names none), " \
+      "so an empty list leaves it with nothing but the injected self-session server"
+
+    groups = root.default_mcp_servers.filter_map { |name| ServersConfig.find(name)&.url }
+      .flat_map { |url| URI.decode_www_form(URI.parse(url).query.to_s).to_h["tool_groups"].to_s.split(",") }
+
+    tools = Mcp::Registry.tools_for(groups).map { |klass| klass.tool_name.to_s }
+
+    %w[get_spot_policy quick_search_sessions action_session].each do |tool|
+      assert_includes tools, tool,
+        "the awaken-waiting-sessions skill calls #{tool}; the root's servers must expose it"
+    end
   end
 
   test "the event it listens for is one the monitor can fire" do

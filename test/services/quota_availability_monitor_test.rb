@@ -118,15 +118,48 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
 
   # ...but it must not spawn a fleet session every fifteen minutes for as long as
   # one session stays parked.
-  test "request_wake! re-arms rather than firing twice for one recovery" do
+  test "request_wake! is a no-op once the edge has been spent" do
     account(:active)
     QuotaAvailabilityMonitor.check!
 
     assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
       assert_not QuotaAvailabilityMonitor.request_wake!(reason: "test")
     end
-    assert_equal false, AppSetting.current.reload.quota_pool_available,
-      "the next check! fires it once, rather than this firing a second session now"
+    assert_equal true, AppSetting.current.reload.quota_pool_available,
+      "the level stays spent — re-arming here is what made the next check! fire again"
+  end
+
+  # The loop this guards: `check!` and the sweep that calls `request_wake!` run in
+  # the SAME fifteen-minute pass. If a spent request re-armed the edge, the next
+  # pass would see false→true against a pool that never left, fire again, and
+  # keep firing for as long as one session stayed parked — each fire a real
+  # session burning the quota that just recovered.
+  test "a still-parked session does not make every later pass fire again" do
+    account(:active)
+
+    QuotaAvailabilityMonitor.record_unavailable!
+    assert QuotaAvailabilityMonitor.check!, "the first pass fires"
+    QuotaAvailabilityMonitor.request_wake!(reason: "still parked")
+
+    3.times do |pass|
+      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+        assert_not QuotaAvailabilityMonitor.check!, "pass #{pass + 2} must not re-fire"
+        assert_not QuotaAvailabilityMonitor.request_wake!(reason: "still parked")
+      end
+    end
+  end
+
+  # One global column, one monitored pool: a Codex park must not arm an edge that
+  # is only ever read against the Claude pool.
+  test "only the monitored runtime's park records the pool as unavailable" do
+    account(:active)
+    QuotaAvailabilityMonitor.check!
+
+    assert_not QuotaAvailabilityMonitor.record_unavailable!(runtime: "codex")
+    assert_equal true, AppSetting.current.reload.quota_pool_available
+
+    assert QuotaAvailabilityMonitor.record_unavailable!(runtime: ClaudeAuthProvider::RUNTIME)
+    assert_equal false, AppSetting.current.reload.quota_pool_available
   end
 
   # An unreadable pool must not be recorded as an outage: the next successful

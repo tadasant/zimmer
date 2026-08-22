@@ -154,7 +154,7 @@ class AuthOutageParkService
     # observed as unavailable — the recovery is then not an edge, no event fires,
     # and everything parked in that window waits forever. Recording it here is
     # what makes the next recovery a real rising edge.
-    QuotaAvailabilityMonitor.record_unavailable! if reason == QUOTA_EXHAUSTED
+    QuotaAvailabilityMonitor.record_unavailable!(runtime: session.agent_runtime) if reason == QUOTA_EXHAUSTED
 
     notify!(reason)
 
@@ -355,11 +355,14 @@ class AuthOutageParkService
     # `.each`, not `find_each`: find_each imposes its own primary-key order and
     # would discard the oldest-park-first ordering the cap below depends on. The
     # set is bounded by how many sessions can be asleep at once.
-    # Spot sessions this sweep found eligible but will not resume itself. The
-    # fleet wake is what starts them, in precedence order — but it fires on the
-    # POOL's rising edge, and an auth park is woken by the pool's CREDENTIALS
-    # changing, which is not that edge. Without this, a spot session parked
-    # `auth_unrecoverable` has no wake path at all.
+    # Spot AUTH parks this sweep found eligible but will not resume itself.
+    #
+    # Only auth parks. A quota-parked spot session is woken by the pool's own
+    # rising edge, which QuotaAvailabilityMonitor already fires — asking again
+    # for it would be a second request for a wake that is on its way. An auth
+    # park has no such edge: it is woken by the pool's CREDENTIALS changing,
+    # which happens with `accounts.available` true the whole time. Without this
+    # it would have no wake path at all.
     spot_eligible = 0
 
     parked_sessions.each do |session|
@@ -372,10 +375,10 @@ class AuthOutageParkService
       end
 
       # Eligible, but spot: this sweep has no notion of order, and ordering spot
-      # work is the whole point of the fleet wake. Count it and let that session
-      # decide, rather than resuming it here out of order.
+      # work is the whole point of the fleet wake. Let that session decide,
+      # rather than resuming it here out of order.
       unless session.priority?
-        spot_eligible += 1
+        spot_eligible += 1 if session.metadata&.dig("auth_outage_reason") == AUTH_UNRECOVERABLE
         next
       end
 
@@ -401,8 +404,10 @@ class AuthOutageParkService
     end
 
     if spot_eligible.positive?
-      logger.info("Left parked spot sessions to the ranked fleet wake", count: spot_eligible)
-      QuotaAvailabilityMonitor.request_wake!(reason: "#{spot_eligible} parked spot session(s) became eligible")
+      logger.info("Left parked spot auth-outage sessions to the ranked fleet wake", count: spot_eligible)
+      QuotaAvailabilityMonitor.request_wake!(
+        reason: "#{spot_eligible} parked spot session(s) whose pool credentials changed"
+      )
     end
 
     resumed

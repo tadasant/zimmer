@@ -771,10 +771,18 @@ not an edge, nothing fires, and everything parked in that window waits forever. 
 records it: `park!` calls `QuotaAvailabilityMonitor.record_unavailable!`, which is both the earliest
 moment Zimmer has positive evidence the pool is empty and the most certain.
 
-The sweep can also ask for the wake outright (`request_wake!`). It does that for a parked SPOT session
-it has found eligible on evidence the pool edge does not carry — an auth park whose pool credentials
-changed while `accounts.available` never went false→true. Deduplicated against the stored level, so a
-session that stays parked does not spawn a fleet session every fifteen minutes.
+The sweep can also ask for the wake outright (`request_wake!`). It does that only for a parked SPOT
+session it has found eligible on evidence the pool edge does not carry — an **auth** park whose pool
+credentials changed while `accounts.available` never went false→true. A quota-parked spot session
+never asks, because the pool's own edge already covers it.
+
+Once the edge has been spent the request is a **no-op**, and that is load-bearing rather than
+defensive. The sweep runs in the same fifteen-minute pass as `check!`, so re-arming the level here
+would make the next pass read `false` against a pool that never left, call it a rising edge, and fire
+again — one fleet session every fifteen minutes for as long as a single session stayed parked, each
+burning the quota that just recovered. The level and the job that spends it are written in one
+transaction for the same reason: a job that ran before the level committed would find nothing
+delivered, re-arm against a stale `false`, and silently lose the edge.
 
 `auth_outage_pool_recovers_at` survives as an **estimate** for the banner, and only for a quota park:
 `QuotaResetCheckerJob` clears an account only when both windows are clear, so an account frees up at
