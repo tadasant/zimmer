@@ -85,6 +85,10 @@
       </div>
       <div class="flex items-center gap-2 mr-14">
         <span class="text-xs text-gray-400 font-mono">#<%= agent_session.id %></span>
+        <%# Deliberately muted: a secondary signal about a card that is about work,
+            not a number the card is about. Sourced from a page-wide grouped query
+            warmed by whichever partial rendered this collection. %>
+        <%= session_cost_badge(agent_session) %>
         <span class="text-xs text-gray-500" data-timestamp="<%= agent_session.created_at.iso8601 %>" data-controller="timestamp-updater">
           <%= time_ago_in_words(agent_session.created_at) %> ago
         </span>

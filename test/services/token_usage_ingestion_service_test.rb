@@ -25,11 +25,12 @@ class TokenUsageIngestionServiceTest < ActiveSupport::TestCase
 
   def assistant_line(request_id:, uuid: SecureRandom.uuid, model: "claude-opus-5",
                      input: 10, output: 20, cache_read: 100, cache_creation: 50,
-                     ephemeral_5m: 0, ephemeral_1h: 50, sidechain: false,
+                     ephemeral_5m: 0, ephemeral_1h: 50, sidechain: false, parent: nil,
                      session_id: "sess-uuid", timestamp: "2026-08-15T10:00:00.000Z")
     {
       "type" => "assistant",
       "uuid" => uuid,
+      "parentUuid" => parent,
       "requestId" => request_id,
       "sessionId" => session_id,
       "isSidechain" => sidechain,
@@ -275,6 +276,104 @@ class TokenUsageIngestionServiceTest < ActiveSupport::TestCase
     assert_equal 300, row.cache_creation_tokens
     assert_equal 100, row.cache_creation_5m_tokens
     assert_equal 200, row.cache_creation_1h_tokens
+  end
+
+  # --- context-feature attribution -------------------------------------------
+
+  test "writes a feature row per detected feature, keyed so re-ingestion is free" do
+    goal = "\n\nThe user has indicated the goal for this task is: ship it.\n\n" \
+           "Hand back control to the user AS SOON as the goal is satisfied."
+    write_transcript(clone_dir, "sess-uuid.jsonl", [
+      { "type" => "user", "uuid" => "u1", "parentUuid" => nil, "sessionId" => "sess-uuid",
+        "message" => { "role" => "user", "content" => "Do the work.#{goal}" } },
+      assistant_line(request_id: "req_1", uuid: "a1", parent: "u1", cache_read: 0, cache_creation: 5_000)
+    ])
+
+    result = ingest
+
+    features = TokenUsageFeature.pluck(:feature)
+    assert_includes features, "goal"
+    assert_includes features, "prompt"
+    assert_equal features.length, result.feature_rows
+
+    # Re-running must add nothing: idempotence is what makes a detector added later
+    # backfillable over the transcripts still on disk.
+    before = TokenUsageFeature.count
+    assert_equal 0, ingest.feature_rows
+    assert_equal before, TokenUsageFeature.count
+  end
+
+  test "feature rows carry the parent's axes so a rollup needs no join" do
+    write_transcript(clone_dir, "sess-uuid.jsonl", [
+      { "type" => "user", "uuid" => "u1", "parentUuid" => nil, "sessionId" => "sess-uuid",
+        "message" => { "role" => "user", "content" => "Do the work." } },
+      assistant_line(request_id: "req_1", uuid: "a1", parent: "u1", model: "claude-sonnet-5", cache_read: 0, cache_creation: 5_000)
+    ])
+
+    ingest
+    row = TokenUsageFeature.first
+    parent = SessionTokenUsage.find_by(request_id: row.request_id)
+
+    assert_equal parent.agent_root, row.agent_root
+    assert_equal "claude-sonnet-5", row.model
+    assert_equal parent.called_at.to_i, row.called_at.to_i
+    assert_equal parent.subagent, row.subagent
+  end
+
+  test "no feature row outlives the usage row it splits" do
+    write_transcript(clone_dir, "sess-uuid.jsonl", [
+      { "type" => "user", "uuid" => "u1", "parentUuid" => nil, "sessionId" => "sess-uuid",
+        "message" => { "role" => "user", "content" => "Do the work." } },
+      assistant_line(request_id: "req_1", uuid: "a1", parent: "u1", cache_read: 0, cache_creation: 5_000)
+    ])
+    ingest
+    assert_operator TokenUsageFeature.count, :>, 0
+
+    SessionTokenUsage.find_by(request_id: "req_1").destroy
+
+    assert_equal 0, TokenUsageFeature.count, "the foreign key cascades"
+  end
+
+  test "a feature row is never written for a request whose usage row was skipped" do
+    # A request with all-zero volumes is not stored, so its attribution has no
+    # parent to hang off — and the foreign key would reject it. It is dropped.
+    write_transcript(clone_dir, "sess-uuid.jsonl", [
+      { "type" => "user", "uuid" => "u1", "parentUuid" => nil, "sessionId" => "sess-uuid",
+        "message" => { "role" => "user", "content" => "Do the work." } },
+      assistant_line(request_id: "req_zero", uuid: "a1", parent: "u1",
+                     input: 0, output: 0, cache_read: 0, cache_creation: 0, ephemeral_1h: 0)
+    ])
+
+    result = ingest
+
+    assert_equal 0, result.session_rows
+    assert_equal 0, result.feature_rows
+    assert_equal 0, TokenUsageFeature.count
+  end
+
+  test "attribution can be turned off without changing what the usage tables store" do
+    write_transcript(clone_dir, "sess-uuid.jsonl", [
+      { "type" => "user", "uuid" => "u1", "parentUuid" => nil, "sessionId" => "sess-uuid",
+        "message" => { "role" => "user", "content" => "Do the work." } },
+      assistant_line(request_id: "req_1", uuid: "a1", parent: "u1")
+    ])
+
+    result = TokenUsageIngestionService.new(root: @root, attribute_features: false).call
+
+    assert_equal 1, result.session_rows
+    assert_equal 0, result.feature_rows
+    assert_equal 0, TokenUsageFeature.count
+  end
+
+  test "Zimmer's own claude -p calls get no feature attribution" do
+    # The ad hoc population carries none of the context-management machinery this
+    # measures, so scanning it for features would only cost time.
+    write_transcript("-rails", "probe.jsonl", [ assistant_line(request_id: "req_probe") ])
+
+    result = ingest
+
+    assert_equal 1, result.adhoc_rows
+    assert_equal 0, result.feature_rows
   end
 
   test "only scans files modified since the given time" do

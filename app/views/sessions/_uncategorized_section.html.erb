@@ -61,6 +61,7 @@
          class="category-grid grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center min-h-[5rem]"
          data-category-dnd-target="list"
          data-category-id="">
+      <% preload_session_costs(sessions) %>
       <% sessions.each do |session| %>
         <%= render "sessions/session_card_frame", agent_session: session %>
       <% end %>
