@@ -758,7 +758,7 @@ after the servers have already been wired for that run.
 | What | Pattern | File |
 | --- | --- | --- |
 | Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb:116` |
-| Auth lost → adopt/rotate/wait, respawn, then park | `/not logged in\|please run\s*\/login/i` | `auth_recovery_service.rb` |
+| Auth lost → adopt/rotate/wait, respawn, then park | the `error` types `authentication_failed` / `oauth_error`, plus a prose net | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb:44` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb:75` |
 | Held runtime session id → resume it, or mint a new one | `/session id\b.*\balready in use/i` | `claude_retry_strategy.rb` |
@@ -775,16 +775,25 @@ transcript text, so the next wording change surfaces as a Slack message rather t
 archaeology session. The same reporter fires when a classifier and its recovery service disagree
 about the same exit.
 
-Two gaps remain inside that, deliberately. The reporter sits on the *failure* branch, so an
-unrecognized error on a Claude exit 0 or 1 — which `normal_completion_exit?` reads as a finished
-turn — still reaches `needs_input` without a word. The held-session-id row above is one of those:
-Claude reports that refusal with exit 1, so if the wording changes the classifier just stops
-matching, silently. What catches it then is not a pattern but a state check — a turn that ended
-with nothing written in either transcript store is restarted rather than parked (see
-[Spawning](/sessions/spawning/)) — which covers the first turn of a session and not a later one. And `CodexRetryStrategy` classifies nothing but
-a missing rollout, so every ordinary Codex failure is by construction an exit no classifier
-matched; it answers `classifies_exits? => false` and gets the loud log without a page, because
-paging on a runtime's designed-for path is how a channel gets ignored.
+The normal-completion branch is covered too. Claude exits 0 or 1 for a finished turn, so an exit
+there is the one a stale classifier can hide behind — on 2026-08-20 a reworded auth failure ended
+production session 6412 that way and left a human's message unanswered with nothing but the
+transcript to find it by. `handle_exit` therefore asks a last question with no prose in it: *is the
+last conversational entry in the transcript an API error?* If it is, the turn did not complete
+however the runtime worded it, and the session fails — with the unmatched text in an alert when the
+wording is one nothing recognises — rather than parking as finished. See
+[Agent harness auth](/auth/harness/#a-turn-that-dies-on-an-api-error-can-never-look-finished).
+
+Two gaps remain inside that, deliberately. A stale classifier still costs a **failed session** rather
+than the recovery it should have got: the held-session-id row above is one of those — Claude reports
+that refusal with exit 1 and writes nothing to the transcript at all, so no terminal API error exists
+for the backstop to see and the only state check that catches it is the empty-turn restart (see
+[Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. And `CodexRetryStrategy` classifies nothing but a missing rollout, so
+every ordinary Codex failure is by construction an exit no classifier matched; it answers
+`classifies_exits? => false` and gets the loud log without a page, because paging on a runtime's
+designed-for path is how a channel gets ignored. The terminal-error backstop reads Claude's
+transcript format and `CodexRetryStrategy` does not answer the question at all, so Codex never
+reaches it.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
@@ -1046,6 +1055,16 @@ guard's clones-base safety check would refuse to touch anyway.
 And it repairs the tree it finds on the way *in*, so a package that installs broken during a launch
 is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
 A session recovers by itself; it does not connect on the first attempt.
+
+### No extension can ship in a built image
+
+`.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
+from the Docker image: `ExtensionRegistry` skips the class that no longer resolves, and every seam
+falls back to native behavior. A deployed Zimmer therefore cannot run any extension, and a setting
+behind one cannot be changed on the deployed app — which is why MCP tool search is a plain
+`AppSetting` column rather than the extension it used to be.
+
+Tracked in [#91](https://github.com/tadasant/zimmer/issues/91).
 
 ### Extension env contributions are unreachable from Codex
 
@@ -1310,6 +1329,31 @@ silently skipped by the adapter with a warning nobody reads.
 ([#65](https://github.com/tadasant/zimmer/issues/65)). The body exists now, and the test suites for
 `SkillsConfig` and `HooksConfig` assert every registered artifact really has one — but that is a
 Zimmer-side test, not something AIR enforces.
+
+### AIR parses the config files it just wrote without a guard, and names no file when it fails
+
+`@pulsemcp/air-sdk` `JSON.parse`s each of the adapter's `configFiles` — `.mcp.json` and
+`.claude/settings.json` — with no `try`/`catch` in `transform-runner.js`, and `@pulsemcp/air-core`
+does the same for `air.json` and the catalog indexes. Every parse of those same two config files
+inside the *Claude adapter* is guarded; the SDK's and core's are not. So a failed parse exits 1 with
+Node's bare parse error — no path, no file, nothing to act on.
+
+For the two files in the target directory it is only reachable as a race, which was verified against
+the pinned CLI: neither an already-corrupt `.mcp.json` nor an already-corrupt `.claude/settings.json`
+reproduces it, because the adapter rescues its own parse failure and rewrites both from scratch
+before the SDK reads them. It takes a second writer changing one between the adapter's write and the
+SDK's read, which `air prepare` invites by running over a session directory a previous job may still
+be tearing down. A malformed `air.json` or catalog index reaches the same signature by a different,
+deterministic route.
+
+Zimmer cannot fix the upstream parse, so it treats the signature as transient, retries it, and
+prepends its own description of the target's config files to the error (skipped when AIR's message
+already carries a path). That is a workaround for a message that should have carried one: if AIR ever
+adds it, the enrichment becomes redundant rather than wrong. Tracked upstream of Zimmer's fix in
+[zimmer#590](https://github.com/tadasant/zimmer/issues/590). First seen in production 2026-08-21 (session 6787), which was ~16 hours into a task
+on a clone already prepared many times. The unhandled error failed the whole job; what recovered it
+was Zimmer's orphan cleanup restarting the session ~20s later, at the cost of a full MCP reconnect
+mid-work — not anything the prepare path chose.
 
 ### The environment configs describe a catalog that no longer exists
 

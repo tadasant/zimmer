@@ -70,11 +70,14 @@ class Zimmer::ExtensionRegistryTest < ActiveSupport::TestCase
     # Simulate a deleted extension directory: a built-in name that no longer
     # resolves must be silently skipped, not raise. This IS the removability
     # mechanism the OSS build depends on.
-    with_builtin_classes(%w[McpToolSearchExtension DefinitelyNotARealExtensionConstant]) do
+    with_builtin_classes(%w[
+      Zimmer::ExtensionRegistryTest::FakeExtA
+      DefinitelyNotARealExtensionConstant
+    ]) do
       assert_nothing_raised { Zimmer::ExtensionRegistry.register_builtins! }
     end
     ids = Zimmer::ExtensionRegistry.all.map(&:id)
-    assert_includes ids, "mcp_tool_search"
+    assert_includes ids, "fake_a"
     refute_includes ids, "definitely_not_a_real_extension_constant"
   end
 

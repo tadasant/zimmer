@@ -24,9 +24,12 @@ module Zimmer
     # Built-in extensions, by class name. Resolved via safe_constantize so a
     # removed extension directory is skipped rather than raising. Order is the
     # resolution order for first-wins hooks (cli_adapter_override, print backend).
-    BUILTIN_EXTENSION_CLASSES = %w[
-      McpToolSearchExtension
-    ].freeze
+    #
+    # No built-in extensions are registered. `.dockerignore` excludes
+    # /app/extensions/*/, so an extension cannot govern anything in a deployed
+    # image; a setting an operator must be able to change on the deployed app
+    # belongs on AppSetting instead. Add a class name here to register one.
+    BUILTIN_EXTENSION_CLASSES = [].freeze
 
     @mutex = Mutex.new
     @extensions = {}

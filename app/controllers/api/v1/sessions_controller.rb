@@ -87,6 +87,8 @@ class Api::V1::SessionsController < Api::BaseController
   #   - custom_metadata: Custom user metadata (JSON)
   #   - scheduling_class: "spot" or "priority" for this session, overriding the class its
   #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one).
+  #   - precedence: where this session sits in the spot queue — higher is handled sooner, on an
+  #     absolute scale. Omit to land one point above the parent, or at the default with no parent.
   def create
     @session = Session.new(session_params.except(:agent_root))
     # Machine-created. When the caller passed a parent_session_id this is an agent
@@ -471,8 +473,9 @@ class Api::V1::SessionsController < Api::BaseController
 
   # POST /api/v1/sessions/:id/regenerate_status_summary
   # Rewrite the session's Status blurb. Forced — it regenerates even when the
-  # cached blurb is current — and asynchronous, because generation forks the
-  # session and spends a whole agent turn.
+  # cached blurb is current — and asynchronous, because generation normally forks
+  # the session and spends a whole agent turn. (With no login-pool account free
+  # it takes the one-shot path instead, which is quicker but still not inline.)
   #
   # An archived session is a normal candidate, and so is one whose clone Zimmer
   # reclaimed when it went to the trash: the fork answers from the conversation,
@@ -1138,7 +1141,7 @@ class Api::V1::SessionsController < Api::BaseController
     params.permit(
       :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
       :title, :slug, :goal, :execution_provider, :is_autonomous,
-      :parent_session_id, :auto_compact_window, :scheduling_class,
+      :parent_session_id, :auto_compact_window, :scheduling_class, :precedence,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
     )
   end
@@ -1214,8 +1217,11 @@ class Api::V1::SessionsController < Api::BaseController
   # held behind the quota gate is still `waiting`, and this is how it gets moved
   # to priority and started without touching the trigger that spawned it or the
   # policy every other session shares. Send null to drop back to derived.
+  #
+  # `precedence` is updatable for the same reason at one remove: a session that
+  # stays spot still needs to be movable within the queue.
   def session_update_params
-    params.permit(:title, :slug, :goal, :is_autonomous, :scheduling_class, custom_metadata: {})
+    params.permit(:title, :slug, :goal, :is_autonomous, :scheduling_class, :precedence, custom_metadata: {})
   end
 
   def regenerate_mcp_config_file(session)

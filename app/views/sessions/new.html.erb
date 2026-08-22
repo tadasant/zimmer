@@ -187,6 +187,20 @@
           </p>
         </div>
 
+        <%# Precedence: where this lands in the spot queue if it is (or becomes) spot.
+            Offered next to the class because the two are one decision — "later" is
+            only useful if you can also say "later, but before that other thing". %>
+        <div>
+          <%= f.label :precedence, "Precedence", class: "block text-sm font-medium text-gray-700 mb-2" %>
+          <%= f.number_field :precedence, step: 1, placeholder: "0",
+              class: "shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-40 sm:text-sm border-gray-300 rounded-md px-3 py-2 text-right tabular-nums" %>
+          <p class="mt-1 text-xs text-gray-500">
+            Spot sessions are worked highest-precedence first, on an absolute scale — 100000 comes before 50 —
+            and nothing renumbers, so leave gaps. Leave blank for the default (0). Manage the whole queue in the
+            <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), class: "text-indigo-600 hover:text-indigo-500" %>.
+          </p>
+        </div>
+
         <!-- Prompt Field -->
         <div data-controller="character-counter" data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>">
           <%= f.label :prompt, "Initial Prompt", class: "block text-sm font-medium text-gray-700 mb-2" %>

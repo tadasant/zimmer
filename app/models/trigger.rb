@@ -65,6 +65,16 @@ class Trigger < ApplicationRecord
   validates :scheduling_class,
     inclusion: { in: -> { SessionGenesis::CLASSES }, message: "%{value} is not a known scheduling class" },
     allow_nil: true
+  # NULL is "predefine nothing" — the spawned session takes SessionPrecedence's
+  # own default. The bounds are the column's, not a policy: precedence is an
+  # absolute scale with no meaningful ceiling of its own.
+  validates :precedence,
+    numericality: {
+      only_integer: true,
+      greater_than_or_equal_to: SessionPrecedence::MIN,
+      less_than_or_equal_to: SessionPrecedence::MAX
+    },
+    allow_nil: true
   validate :catalog_skills_must_be_array
   validate :catalog_skills_must_exist_in_catalog, if: :catalog_skills_changed?
   validate :catalog_hooks_must_be_array
@@ -73,7 +83,8 @@ class Trigger < ApplicationRecord
   validate :catalog_plugins_must_exist_in_catalog, if: :catalog_plugins_changed?
 
   # A form's "Use the default" option submits "", which means "derive it", not a
-  # class named empty string.
+  # class named empty string or a precedence of zero.
+  before_validation :normalize_precedence
   before_validation :normalize_scheduling_class
 
   before_save :clear_burst_state_when_limit_changes
@@ -293,6 +304,21 @@ class Trigger < ApplicationRecord
     scheduling_class.presence
   end
 
+  # The spot-queue rank stamped on sessions this trigger spawns — nil when the
+  # operator has predefined nothing, so the session takes the default
+  # SessionPrecedence assigns.
+  #
+  # Unlike the class, this is NOT withheld from an Invoke. A precedence is a
+  # statement about how the trigger's work ranks against everything else queued,
+  # and that is as true of a hand-fired run as of a scheduled one; a human
+  # pressing Invoke on a trigger ranked 5000 is asking for that work, at that
+  # rank. It only ever orders spot sessions anyway, and Invoke's `web_ui` genesis
+  # makes the session priority — so a carried-over value costs nothing and keeps
+  # the rank if the session is later demoted.
+  def session_precedence
+    precedence
+  end
+
   # @param genesis [String, nil] override the derived genesis for this fire only.
   def create_session!(prompt:, genesis: nil)
     @last_fire_burst_suppressed = false
@@ -419,6 +445,10 @@ class Trigger < ApplicationRecord
 
   def normalize_scheduling_class
     self.scheduling_class = nil if scheduling_class.blank?
+  end
+
+  def normalize_precedence
+    self.precedence = nil if precedence_before_type_cast.is_a?(String) && precedence_before_type_cast.strip.empty?
   end
 
   # "ClassName: message", bounded. Accepts an exception or a plain string so
@@ -1033,6 +1063,7 @@ class Trigger < ApplicationRecord
       goal: goal,
       genesis: session_genesis,
       scheduling_class: session_scheduling_class,
+      precedence: session_precedence,
       metadata: { trigger_id: id, trigger_name: name }
     )
 

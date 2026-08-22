@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "json"
 require "tmpdir"
 
 # Service to prepare a session's working directory using the AIR CLI.
@@ -118,6 +119,55 @@ class AirPrepareService
   # allow the prefix on one line to bind to a `${…}` on a later, unrelated one.
   UNRESOLVED_VARIABLE_PATTERN =
     /Unresolved variables? in .*?: (\$\{[^}]+\}(?:, \$\{[^}]+\})*)/
+
+  # Signature AIR emits (exit 1) when a JSON file it reads fails to parse.
+  #
+  # Node's message carries no path, because the parses that can throw out of
+  # `air prepare` are unguarded: `transform-runner.js` parses each of the
+  # adapter's `configFiles` directly, and `air-core`'s `loadAirConfig` /
+  # `loadJsonFile` do the same for `air.json` and the catalog indexes.
+  #
+  # For the two files the Claude adapter manages inside the target directory,
+  # reaching one of those parses requires a concurrent writer. Both self-repair
+  # an unparseable file before the transform stage runs — `mergeMcpConfig`
+  # rescues its own parse failure and rewrites `.mcp.json`, and
+  # `reconcileSettingsHooks` does the same for `.claude/settings.json` — so a
+  # file that is already corrupt on disk when prepare starts does not produce
+  # this error. Only a file that changes between the adapter's write and the
+  # later read can, and `air prepare` re-runs on every follow-up, resume and
+  # unarchive over a directory a previous job for the same session may still be
+  # tearing down.
+  #
+  # A malformed `air.json` or catalog index reaches the same pattern and is NOT
+  # a race — it is deterministic and operator-fixable. Retrying is still the
+  # right response: it costs one bounded ladder and the failure stays loud,
+  # which is strictly better than the alternative this replaces, where an
+  # unhandled AirPrepareError failed the whole job and left Zimmer's orphan
+  # cleanup to restart the session at the cost of a full MCP reconnect mid-work.
+  #
+  # Covers the two shapes Node emits: a truncated or empty document gives
+  # "Unexpected end of JSON input", and every other syntax error gives
+  # "<reason> in JSON at position N" (or "after JSON at position N" for trailing
+  # garbage). The position-bearing family is the one that matters most — a
+  # truncated `.mcp.json` usually lands mid-string, which reads "Unterminated
+  # string in JSON at position N", not "Unexpected end".
+  JSON_PARSE_FAILURE_PATTERN = /Unexpected end of JSON input|(?:in|after) JSON at position \d+|is not valid JSON/
+
+  # Set when AIR's own message already names the file it failed to parse, in
+  # which case Zimmer has nothing to add. `transform-runner.js` rethrows a
+  # HOOK.json parse failure this way.
+  NAMED_PARSE_FAILURE_PATTERN = /Failed to parse \S+:/
+
+  # The config files the Claude adapter reports as its `configFiles`, relative to
+  # the target directory. The Codex adapter deliberately reports none (its config
+  # is TOML), so inspecting this list under Codex finds nothing rather than
+  # needing a runtime branch.
+  #
+  # Used only to describe the directory's state in an error AIR left pathless.
+  AIR_TARGET_CONFIG_FILES = [
+    ".mcp.json",
+    File.join(".claude", "settings.json")
+  ].freeze
 
   # Pulls the bare names out of the `${A}, ${B}` token list captured above.
   VARIABLE_TOKEN_PATTERN = /\$\{([^}]+)\}/
@@ -491,6 +541,7 @@ class AirPrepareService
         transient = transient_air_failure?(error.message)
         root_not_found = ROOT_NOT_FOUND_PATTERN.match?(error.message)
         unresolved_variables = unresolved_variable_names(error.message)
+        json_parse_failure = JSON_PARSE_FAILURE_PATTERN.match?(error.message)
       rescue BoundedSubprocess::TimeoutError => e
         # A watchdog kill means `air prepare` hung — most likely the catalog clone
         # stalled on a half-open github.com connection. The process group has been
@@ -501,6 +552,7 @@ class AirPrepareService
         transient = true
         root_not_found = false
         unresolved_variables = []
+        json_parse_failure = false
       end
 
       # An unresolved ${VAR} is deterministic and operator-fixable: the selected
@@ -540,6 +592,13 @@ class AirPrepareService
         raise RootResolutionError, error.message
       end
 
+      # A JSON file AIR could not parse retries on the normal ladder (see
+      # JSON_PARSE_FAILURE_PATTERN). Handled here rather than by adding the
+      # signature to TRANSIENT_AIR_PREPARE_PATTERNS because it also needs the
+      # diagnosis attached at the raise below, which that constant has no seam
+      # for.
+      transient ||= json_parse_failure
+
       if transient && attempt < max_attempts
         delay = AIR_PREPARE_RETRY_DELAYS_SECONDS[attempt - 1]
         Rails.logger.info(
@@ -550,6 +609,17 @@ class AirPrepareService
         next
       end
 
+      # AIR reports an unparseable file with no path, and a bare "Unexpected end
+      # of JSON input" in an alert is unactionable — so say what the directory
+      # actually looked like. That answers the *next* occurrence either way:
+      # everything parsing by the time we look confirms the race, and a file that
+      # is genuinely broken on disk is a different bug than this one. Prepended
+      # rather than appended so it survives AgentSessionJob's head-truncation of
+      # exception_message, and skipped when AIR already named the file itself.
+      if json_parse_failure && !NAMED_PARSE_FAILURE_PATTERN.match?(error.message)
+        error = AirPrepareError.new("[#{describe_target_config_files}] #{error.message.strip}")
+      end
+
       if transient
         Rails.logger.error(
           "[AirPrepareService] AIR prepare failed after retries " \
@@ -558,6 +628,41 @@ class AirPrepareService
       end
       raise error
     end
+  end
+
+  # Describe the AIR-managed config files in the target directory, for an error
+  # message that AIR left pathless.
+  #
+  # Read-only on purpose. The tempting move is to delete or quarantine an
+  # unparseable file so the retry regenerates it, but the adapter already
+  # self-repairs both of these before the parse that throws, so quarantining
+  # would be machinery for a case that cannot arise. Reporting is what is
+  # actually missing.
+  #
+  # Best-effort: this runs while the caller is mid-handling a failure, so an
+  # unreadable file degrades to a note in the string rather than replacing the
+  # error the caller is about to raise.
+  # @return [String] a human-readable summary, one clause per file
+  def describe_target_config_files
+    summary = AIR_TARGET_CONFIG_FILES.map do |relative_path|
+      path = File.join(working_directory, relative_path)
+      next "#{relative_path}: absent" unless file_system.exists?(path)
+
+      contents = file_system.read(path)
+      state = parseable_json?(contents) ? "parses" : "UNPARSEABLE"
+      "#{relative_path}: #{contents.bytesize}b, #{state}"
+    rescue StandardError => e
+      "#{relative_path}: unreadable (#{e.class})"
+    end
+
+    "target #{working_directory} — #{summary.join('; ')}"
+  end
+
+  def parseable_json?(contents)
+    JSON.parse(contents)
+    true
+  rescue JSON::ParserError
+    false
   end
 
   # Bust this worker's AIR github catalog cache by running a bounded `air update`,

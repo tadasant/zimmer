@@ -170,6 +170,123 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     assert_nil service.unclassified_api_error_text("/tmp/test-clone")
   end
 
+  # ===========================================================================
+  # Terminal API errors — "this turn DIED on an error", the structural question
+  # ProcessLifecycleManager asks last on the normal-completion path.
+  # ===========================================================================
+
+  test "terminal_api_error reports an unrecognized error the turn ended on" do
+    setup_transcript_with_api_error("Your quantum entitlement has decohered", error_type: "novel_failure")
+
+    terminal = create_service.terminal_api_error("/tmp/test-clone")
+
+    assert_match(/quantum entitlement has decohered/, terminal.text)
+    assert_match(/novel_failure/, terminal.text)
+    assert_not terminal.recognized?, "Nothing owns this wording"
+  end
+
+  # The hole the classifier filter used to leave. A 5xx is retried, the cursor
+  # advances past it, the respawn writes nothing and exits 1 — and every
+  # classifier now says "not mine" about a transcript whose last word is that
+  # 5xx. Filtering recognized errors out here is what let that park silently.
+  test "terminal_api_error reports a recognized error too, marked recognized" do
+    setup_transcript_with_api_error("500 Internal Server Error", error_type: "api_error")
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
+
+    terminal = create_service.terminal_api_error("/tmp/test-clone")
+
+    assert_match(/500 Internal Server Error/, terminal.text)
+    assert terminal.recognized?,
+      "ApiErrorRetryService owns this wording, so it must not be alerted as unknown"
+  end
+
+  test "terminal_api_error marks the auth signature recognized rather than dropping it" do
+    setup_transcript_with_api_error(
+      "Failed to authenticate: OAuth session expired and could not be refreshed",
+      error_type: "authentication_failed"
+    )
+
+    terminal = create_service.terminal_api_error("/tmp/test-clone")
+
+    assert terminal.recognized?, "AuthRecoveryService owns this wording"
+  end
+
+  test "terminal_api_error returns nil when the turn recovered and produced output" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Your quantum entitlement has decohered", error_type: "novel_failure")}
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Recovered and finished."}]}}
+    JSONL
+
+    assert_nil create_service.terminal_api_error("/tmp/test-clone"),
+      "An error the turn recovered from is not the error the turn died on"
+  end
+
+  # The shape of the real production session 6412 transcript: bookkeeping entries
+  # land after the last message, so "the last line" is the wrong question.
+  test "terminal_api_error looks past trailing bookkeeping entries" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Your quantum entitlement has decohered", error_type: "novel_failure")}
+      {"type": "last-prompt", "prompt": "Hello"}
+      {"type": "atis-latch", "value": 1}
+    JSONL
+
+    assert_match(/decohered/, create_service.terminal_api_error("/tmp/test-clone").text)
+  end
+
+  test "terminal_api_error ignores a subagent's error" do
+    setup_transcript_directory
+    sidechain = JSON.parse(api_error_json("Subagent blew up", error_type: "novel_failure")).merge("isSidechain" => true)
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "All done."}]}}
+      #{JSON.generate(sidechain)}
+    JSONL
+
+    assert_nil create_service.terminal_api_error("/tmp/test-clone"),
+      "A sidechain failure does not end the main turn"
+  end
+
+  # The cursor exists to stop a HANDLED error being retried twice. A terminal
+  # error is by definition the one that just ended this turn, so honouring the
+  # cursor here would be the silence this backstop exists to remove.
+  test "terminal_api_error ignores the api_error_last_checked_line cursor" do
+    setup_transcript_with_api_error("Your quantum entitlement has decohered", error_type: "novel_failure")
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 10))
+
+    assert_match(/decohered/, create_service.terminal_api_error("/tmp/test-clone").text)
+  end
+
+  test "terminal_api_error returns nil for a turn that ended on real output" do
+    setup_transcript_with_regular_message("Everything is fine")
+
+    assert_nil create_service.terminal_api_error("/tmp/test-clone")
+  end
+
+  test "terminal_api_error reports the line number of the entry the turn died on" do
+    setup_transcript_with_api_error("Your quantum entitlement has decohered", error_type: "novel_failure")
+
+    # user, assistant, error — the helper writes the error third.
+    assert_equal 3, create_service.terminal_api_error("/tmp/test-clone").line
+  end
+
+  # A bare scalar is valid JSON and not an entry. Asking it for ["type"] would
+  # raise past the lazy block and silently disable the backstop for that exit.
+  test "terminal_api_error survives a transcript line that parses to a bare scalar" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Your quantum entitlement has decohered", error_type: "novel_failure")}
+      null
+      42
+    JSONL
+
+    assert_match(/decohered/, create_service.terminal_api_error("/tmp/test-clone").text)
+  end
+
   test "unclassified_api_error_text respects the api_error_last_checked_line cursor" do
     setup_transcript_with_api_error("Your account has been placed in cool-down mode", error_type: "invalid_request")
     @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 10))

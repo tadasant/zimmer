@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class AppSettingTest < ActiveSupport::TestCase
   test "blank runtime and model are valid (no override)" do
@@ -122,6 +123,50 @@ class AppSettingTest < ActiveSupport::TestCase
     assert AppSetting.extension_enabled?("pty_transport", default: true)
   end
 
+  # ===== MCP tool search =====
+
+  test "mcp_tool_search_enabled? defaults on for a row that has never been saved" do
+    assert AppSetting.new.mcp_tool_search_enabled?
+  end
+
+  test "class-level mcp_tool_search_enabled? defaults on when no row exists" do
+    AppSetting.delete_all
+    assert AppSetting.mcp_tool_search_enabled?
+  end
+
+  test "class-level mcp_tool_search_enabled? reflects the persisted state" do
+    AppSetting.delete_all
+    AppSetting.create!(mcp_tool_search_enabled: false)
+    refute AppSetting.mcp_tool_search_enabled?
+
+    AppSetting.current.update!(mcp_tool_search_enabled: true)
+    assert AppSetting.mcp_tool_search_enabled?
+  end
+
+  test "mcp_tool_search_enabled? returns the default when the column is absent" do
+    # Same deploy window as the extension_states case below: new code booting
+    # against a schema that predates the migration must resolve to the shipped
+    # default rather than raise on the session-spawn hot path.
+    setting = AppSetting.new
+    setting.define_singleton_method(:has_attribute?) do |name|
+      name.to_sym == :mcp_tool_search_enabled ? false : super(name)
+    end
+
+    assert setting.mcp_tool_search_enabled?
+  end
+
+  test "class-level mcp_tool_search_enabled? falls back to the default when the row can't be read" do
+    # The claim the rescue makes: a database the spawn path cannot query resolves
+    # to the shipped default rather than raising mid-spawn.
+    AppSetting.stubs(:current).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+    assert AppSetting.mcp_tool_search_enabled?
+  end
+
+  test "the NULL stand-in resolves MCP tool search to the shipped default" do
+    assert AppSetting::NULL.mcp_tool_search_enabled?
+  end
+
   test "class-level extension_enabled? reflects the persisted state" do
     AppSetting.delete_all
     setting = AppSetting.create!
@@ -136,19 +181,19 @@ class AppSettingTest < ActiveSupport::TestCase
   test "set_extension_enabled touches only the named key" do
     setting = AppSetting.new
     setting.set_extension_enabled("pty_transport", true)
-    setting.set_extension_enabled("mcp_tool_search", false)
-    assert_equal({ "pty_transport" => true, "mcp_tool_search" => false }, setting.extension_states)
+    setting.set_extension_enabled("some_experiment", false)
+    assert_equal({ "pty_transport" => true, "some_experiment" => false }, setting.extension_states)
 
-    setting.set_extension_enabled("mcp_tool_search", true)
+    setting.set_extension_enabled("some_experiment", true)
     assert setting.extension_enabled?("pty_transport"), "unrelated key must be preserved"
-    assert setting.extension_enabled?("mcp_tool_search")
+    assert setting.extension_enabled?("some_experiment")
   end
 
   test "extension_enabled? coerces stored values through the boolean type" do
     setting = AppSetting.new
-    setting.extension_states = { "pty_transport" => "1", "mcp_tool_search" => "0" }
+    setting.extension_states = { "pty_transport" => "1", "some_experiment" => "0" }
     assert setting.extension_enabled?("pty_transport")
-    refute setting.extension_enabled?("mcp_tool_search")
+    refute setting.extension_enabled?("some_experiment")
   end
 
   test "extension_enabled? returns the default when the extension_states column is absent" do

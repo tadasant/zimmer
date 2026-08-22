@@ -68,11 +68,13 @@ class NativeClaudePrintRunner
       err: File::NULL
     )
 
-    Timeout.timeout(timeout) do
+    status = Timeout.timeout(timeout) do
       @process_manager.wait(pid)
     end
 
-    ClaudePrintRunner::Result.new(text: File.read(output_file), usage: nil)
+    ClaudePrintRunner::Result.new(
+      text: File.read(output_file), usage: nil, exit_status: exit_status_of(status)
+    )
   rescue Timeout::Error
     terminate_process(pid)
     raise
@@ -81,6 +83,16 @@ class NativeClaudePrintRunner
   end
 
   private
+
+  # `ProcessManager#wait` answers `Process.wait2`'s `[pid, status]`, so the code
+  # is one hop in. Nil rather than a guess when the shape is not what we expect:
+  # a consumer reads nil as "unknown", and inventing a zero here would assert
+  # success we did not observe.
+  def exit_status_of(wait_result)
+    return nil unless wait_result.is_a?(Array)
+
+    wait_result[1]&.exitstatus
+  end
 
   def build_command(prompt)
     cmd = [ @claude_binary, "--dangerously-skip-permissions" ]
