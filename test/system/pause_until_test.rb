@@ -272,27 +272,41 @@ class PauseUntilTest < ApplicationSystemTestCase
     JS
     click_on "Pause Until…"
     assert_text "Spot Queue"
-    # The sheet scrolls, and the new row sits below the time presets — so scroll
-    # it into view before capturing, or the screenshot proves only that the panel
-    # opened.
-    page.execute_script(<<~JS)
-      document.querySelector("[data-action='pause-until#chooseSpotQueue']")
-        .scrollIntoView({ block: "center" });
-    JS
-    page.save_screenshot("tmp/screenshots/proof-spot-queue-sheet-375.png")
+    # Scoped to the sheet, and that scoping is the test: the detail page renders
+    # this partial TWICE — once here and once in the `hidden md:block` header —
+    # so an unscoped selector measures the hidden desktop copy, whose rect is all
+    # zeroes, and every assertion below passes without looking at anything.
+    #
+    # The sheet scrolls (max-h-[80vh] overflow-y-auto) and the new row sits below
+    # the time presets, so it is scrolled to before being measured and captured.
+    sheet_button = "[data-joystick-menu-target='sheet'] [data-action='pause-until#chooseSpotQueue']"
+    page.execute_script("document.querySelector(arguments[0]).scrollIntoView({ block: 'center' })", sheet_button)
+    # The panel's own PNG rather than the viewport's. The sheet is a `fixed`,
+    # bottom-anchored scroll container, and a viewport capture of it shows
+    # whatever happened to be at the top of that container — which is the rows
+    # above this one. Capturing the element is what puts the option itself in the
+    # picture.
+    File.binwrite("tmp/screenshots/proof-spot-queue-sheet-375.png",
+                  find("[data-joystick-menu-target='sheet'] [data-pause-until-target='panel']:not(.hidden)")
+                    .native.screenshot_as(:png))
 
-    # The option has to be reachable, not merely present: a row whose right edge
-    # sits past the viewport is a control nobody on a phone can press.
-    left, past_right, doc_overflow = page.evaluate_script(<<~JS)
-      (function () {
-        const b = document.querySelector("[data-action='pause-until#chooseSpotQueue']").getBoundingClientRect();
+    # The option has to be REACHABLE, not merely present: a row past the right
+    # edge, or below the bottom of a sheet that cannot scroll, is a control
+    # nobody on a phone can press.
+    left, past_right, past_bottom, doc_overflow, height = page.evaluate_script(<<~JS, sheet_button)
+      (function (selector) {
+        const b = document.querySelector(selector).getBoundingClientRect();
         return [Math.round(b.left), Math.round(b.right - document.documentElement.clientWidth),
-                document.documentElement.scrollWidth - document.documentElement.clientWidth];
-      })()
+                Math.round(b.bottom - window.innerHeight),
+                document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                Math.round(b.height)];
+      })(arguments[0])
     JS
 
+    assert height.positive?, "the Spot Queue row in the sheet has no box — the selector matched a hidden copy"
     assert left >= 0, "the Spot Queue row starts #{-left}px off the left edge at 375px"
     assert past_right <= 1, "the Spot Queue row runs #{past_right}px past the right edge at 375px"
+    assert past_bottom <= 1, "the Spot Queue row sits #{past_bottom}px below the bottom of a 375x812 screen"
     assert doc_overflow <= 0, "the panel makes the page scroll sideways by #{doc_overflow}px"
 
     assert_no_difference "Trigger.count" do
@@ -316,6 +330,15 @@ class PauseUntilTest < ApplicationSystemTestCase
     open_card_menu(session)
     click_on "Pause Until…"
     assert_text "In 1 hour"
+
+    # Evidence for the PR: the panel a phone gets from a session card, with the
+    # new option and the sentence saying what choosing it costs. This one is in
+    # the normal page flow, so a viewport capture shows it.
+    page.execute_script(<<~JS)
+      document.querySelector("[data-action='pause-until#chooseSpotQueue']")
+        .scrollIntoView({ block: "center" });
+    JS
+    page.save_screenshot("tmp/screenshots/proof-spot-queue-card-menu-375.png")
 
     # The panel is only usable if it is actually within the viewport — a menu that
     # renders past the right edge on a phone is a control nobody can press.
