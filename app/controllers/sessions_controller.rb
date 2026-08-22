@@ -2805,10 +2805,11 @@ class SessionsController < ApplicationController
 
     result = Sessions::ReorderPrecedence.call(session: @session, above: above, below: below)
 
-    # Only when something actually moved. SortableJS reports a drop even when the
-    # row was released where it was picked up, and a log line per grab would bury
-    # the session's real history.
-    if result.changes.any?
+    # Only when THIS session's own value moved. `changes` also carries any
+    # neighbour nudged aside, so keying off it would log a move on a session that
+    # was dropped back onto the value it already had — and a log line per grab
+    # would bury the session's real history.
+    if result.changes.key?(@session.id)
       @session.logs.create!(
         content: "Precedence set to #{result.precedence} by drag-and-drop in the Ranked view",
         level: "info"
