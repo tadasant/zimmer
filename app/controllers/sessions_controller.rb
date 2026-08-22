@@ -2130,6 +2130,18 @@ class SessionsController < ApplicationController
   def pause_until
     @session = find_session
 
+    # Narrower than the service's WAKEABLE_STATUSES: a never-started `waiting`
+    # session is queued for spawn, not asleep, and pausing it would arm a wake the
+    # spawn pipeline ignores. Re-checked here because a card rendered before the
+    # session started still carries the button.
+    unless @session.pausable_until?
+      return respond_to do |format|
+        message = "Session #{@session.id} cannot be paused from here (status: #{@session.status})."
+        format.json { render json: { success: false, error: message }, status: :unprocessable_entity }
+        format.html { redirect_to @session, alert: message }
+      end
+    end
+
     prompt = params[:prompt].presence || AutomatedPrompts::PAUSE_UNTIL_WAKE
 
     # replace_existing: picking a second time from the UI means "not then, THIS

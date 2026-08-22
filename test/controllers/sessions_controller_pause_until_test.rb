@@ -107,7 +107,7 @@ class SessionsControllerPauseUntilTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :unprocessable_entity
-    assert_match "cannot be scheduled for wake-up", JSON.parse(response.body)["error"]
+    assert_match "cannot be paused from here", JSON.parse(response.body)["error"]
   end
 
   test "the HTML fallback redirects with a flash instead of rendering JSON" do
@@ -118,6 +118,9 @@ class SessionsControllerPauseUntilTest < ActionDispatch::IntegrationTest
   end
   test "picking a second time replaces the first rather than arming two wakes" do
     session = sessions(:needs_input)
+    # The first pause moves it to `waiting`, where pausable_until? starts asking
+    # whether it ever ran. A session in needs_input has, by definition.
+    session.update_columns(session_id: SecureRandom.uuid)
 
     post pause_until_session_url(session), params: { wake_at: future_wake_at(1.hour) }, as: :json
     first_id = JSON.parse(response.body)["trigger_id"]
@@ -129,5 +132,30 @@ class SessionsControllerPauseUntilTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_not Trigger.exists?(first_id), "the replaced wake would still fire an hour early"
     assert Trigger.exists?(JSON.parse(response.body)["trigger_id"])
+  end
+  test "refuses a waiting session that has never started" do
+    queued = sessions(:waiting)
+    assert_nil queued.session_id, "a queued-for-spawn session has never been issued one"
+
+    assert_no_difference "Trigger.count" do
+      post pause_until_session_url(queued), params: { wake_at: future_wake_at }, as: :json
+    end
+
+    # `waiting` is also the AASM initial state. A session queued for spawn is not
+    # asleep: the auto-sleep no-ops, `start` does not consume the wake, and the
+    # operator would be told it is paused while it starts anyway.
+    assert_response :unprocessable_entity
+    assert_match "cannot be paused from here", JSON.parse(response.body)["error"]
+  end
+
+  test "still accepts a waiting session that has started" do
+    sleeping = sessions(:waiting)
+    sleeping.update_columns(session_id: SecureRandom.uuid)
+
+    assert_difference "Trigger.count", 1 do
+      post pause_until_session_url(sleeping), params: { wake_at: future_wake_at }, as: :json
+    end
+
+    assert_response :success
   end
 end
