@@ -123,13 +123,13 @@ the **Scheduling class** selector on its detail page, `action_session` with
 
 ## The gate
 
-With gating on, a spot session starts while **both** of these hold. Neither is a forecast: both are
-statements about numbers that have already been read.
+With gating on, a spot session takes a turn — its first or its next — while **both** of these hold.
+Neither is a forecast: both are statements about numbers that have already been read.
 
 | Check | What it means | Reason when it fails |
 | --- | --- | --- |
 | **Under the targets** | The Claude Code account pool averages below the 5-hour *and* weekly targets, as last read. When either average reaches its target, spot work pauses until utilization comes back down. | `at_utilization_limit` |
-| **A free slot** | Fewer sessions are running than **Max sessions at once**. | `fleet_at_cap` |
+| **A free slot** | Fewer sessions are running than **Max sessions at once**. Applies to a first start only — a resuming session is already counted in the running fleet. | `fleet_at_cap` |
 
 There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
 its target, not when it might. Utilization falls on its own — Anthropic's counters are sliding
@@ -325,13 +325,42 @@ is the intent — the pause is meant to last exactly as long as the utilization 
 for considerably longer, which is the cost of a hard stop and is visible on `/quotas` the whole time.
 Promoting one session to priority is the lever for a single piece of work that cannot wait.
 
-**Only a session's first start is gated at the starting line.** Follow-ups, monitoring resumes and
-clone-only setups pass straight through the admission check. What stops an already-running spot
-session is the ceiling sweep below, which acts only when a window has actually reached its target —
-so an ordinary follow-up is never held for a pool with headroom.
+### Every turn is gated, not just the first
 
-The session detail page shows a **Held for quota headroom** banner naming the reason, the next check
-time, and how to start it now.
+The gate used to read "is this a first start?", and everything else — a fired `wake_me_up_later`
+backstop, a queued follow-up, a Slack or GitHub poller message, a heartbeat nudge, a restart — went
+straight through. All of those arrive at `AgentSessionJob` carrying a prompt, and every one of them
+begins a **new turn that spends fresh quota**. On 2026-08-22 a spot session woke on its own backstop
+trigger and ran a full turn while this gate was reporting `at_utilization_limit` at 87% of a 65%
+target, force-pausing 22 running spot sessions and holding 141 more at the starting line.
+
+So the admission check covers every turn. While a window sits at its target, the only way a
+spot-designated session runs is to be **promoted to priority first**. Two things still pass through,
+because neither spends anything:
+
+| Passes through | Why |
+| --- | --- |
+| `clone_only` | Sets up a clone and configures MCP. No agent is spawned. |
+| `resume_monitoring` | Re-attaches to a process that is **already running**. Holding it would orphan that process, not save a token. |
+
+One hold reason does not apply to a resume: **`fleet_at_cap`**. A session resuming has already been
+flipped to `running` by whoever delivered the turn, so it is counted in the running fleet itself —
+refusing it for a full fleet would refuse it on the strength of its own slot, and would refuse every
+session the ceiling sweep resumes (those are flipped to `running` before their jobs run). The
+utilization reading has no such problem: the pool's windows are measured independently of this
+session.
+
+**A deferred turn is not a lost turn.** The prompt that woke the session, and any images or files
+attached to it, are re-enqueued verbatim on the same backed-off re-check as a first-start hold —
+GoodJob persists that delayed job in Postgres, so it survives a worker restart or a deploy. The
+session goes back to dormant `waiting` (not `needs_input`: nobody has to do anything about it), and
+nothing announces it as needing a human — no push notification, and no `session_needs_input` event
+that would wake a parent watching this session about a turn that never ran.
+
+The session detail page shows a **Held for quota headroom** banner — **Next turn held for quota
+headroom** when it was a resume — naming the reason, the next check time, and how to run it now.
+`get_session` reports the same through `spot_hold_reason` / `spot_hold_retry_at` /
+`spot_hold_count`, and says explicitly that the queued prompt is still coming.
 
 ## The target is a ceiling
 

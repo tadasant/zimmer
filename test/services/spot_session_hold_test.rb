@@ -238,6 +238,135 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     assert_nothing_raised { SpotSessionHold.clear(session) }
   end
 
+  # ---------------------------------------------------------------------------
+  # A resume is a turn, and a turn is what the gate holds
+  # ---------------------------------------------------------------------------
+
+  # THE BYPASS. Until 2026-08-22 a prompt exempted the turn entirely, so a spot
+  # session woken by its own backstop trigger ran while the gate held 141 others.
+  test "a resume is held when a window is at its target" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    held = SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Backstop wake (round 2).")
+    end
+
+    assert held, "a wake delivered as a prompt is still a turn, and a turn is gated"
+    session.reload
+    assert_equal "waiting", session.status, "a deferred resume goes back to the spot queue"
+    assert_equal SpotSessionHold::TURN_RESUME, session.metadata[SpotSessionHold::HELD_TURN]
+    assert_equal "at_utilization_limit", session.metadata[SpotSessionHold::HELD_REASON]
+  end
+
+  # The pending prompt is the work. Dropping it would be a worse bug than the one
+  # the gate closes, so the retry has to be a complete replacement for the turn.
+  test "a deferred resume re-enqueues its prompt, images and files" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    images = [ { "path" => "/tmp/a.png", "media_type" => "image/png" } ]
+    files = [ { "path" => "/tmp/a.txt", "original_filename" => "a.txt", "size" => 3 } ]
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert_enqueued_with(job: AgentSessionJob) do
+        SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue",
+                                      images: images, files: files)
+      end
+    end
+
+    args = enqueued_jobs.last["args"] || enqueued_jobs.last[:args]
+    assert_equal session.id, args[0]
+    assert_equal "Please continue", args[1]
+    assert_equal images, args[2]["images"].map { |image| image.except("_aj_symbol_keys") }
+    assert_equal files, args[2]["files"].map { |file| file.except("_aj_symbol_keys") }
+  end
+
+  # A deferral must not look like a finished turn. `pause!` fires the
+  # session_needs_input triggers (waking a watching parent), enqueues a push
+  # notification and queues a status-summary refresh — announcements about a turn
+  # that never ran.
+  test "a deferred resume does not announce itself as needing input" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue")
+    end
+
+    assert_equal "waiting", session.reload.status
+    assert_no_enqueued_jobs only: SendPushNotificationJob
+    assert_no_enqueued_jobs only: AoEventTriggerJob
+  end
+
+  # A session sitting in `needs_input` when its turn is refused is put to sleep
+  # rather than left on the human action queue: nobody has to do anything about a
+  # deferred spot turn.
+  test "a resume refused while the session is idle sleeps it out of the action queue" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :needs_input)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue")
+    end
+
+    assert_equal "waiting", session.reload.status
+  end
+
+  # A resuming session has ALREADY been flipped to `running` by whoever delivered
+  # the turn, so it is counted in the fleet itself. Refusing it for `fleet_at_cap`
+  # would refuse it on the strength of its own slot — and would refuse every
+  # session SpotSessionPause resumes, since those are flipped to `running` before
+  # their jobs run, which would break the ceiling's resume path outright.
+  test "a resume is not held for a full fleet" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    held = SpotGateService.stub(:evaluate, fleet_cap_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue")
+    end
+
+    refute held
+    assert_equal "running", session.reload.status
+  end
+
+  test "a first start is still held for a full fleet" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    held = SpotGateService.stub(:evaluate, fleet_cap_decision) do
+      SpotSessionHold.hold_if_needed(session)
+    end
+
+    assert held
+    assert_equal SpotSessionHold::TURN_START, session.reload.metadata[SpotSessionHold::HELD_TURN]
+  end
+
+  test "a priority session's resume is never held" do
+    session = build_session(SessionGenesis::WEB_UI)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      refute SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue")
+    end
+
+    assert_equal "running", session.reload.status
+  end
+
+  # Promotion is the sanctioned escape valve, and the hold banner's button is what
+  # presses it. The re-check job the deferral left behind is what carries the turn
+  # through once the session is no longer spot.
+  test "promotion to priority releases a deferred resume" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue")
+
+      session.reload.update!(scheduling_class: SessionGenesis::PRIORITY)
+      refute SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Please continue"),
+             "promotion must let the turn through even while a window is at its target"
+    end
+  end
+
   private
 
   # A delay is correct when it sits in [expected, expected + RETRY_JITTER]: the
