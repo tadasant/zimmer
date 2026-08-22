@@ -442,6 +442,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_22_174500) do
     t.index ["status"], name: "index_runtime_login_attempts_on_status"
   end
 
+  create_table "session_experimental_flags", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "first_observed_at"
+    t.datetime "last_observed_at"
+    t.bigint "session_id", null: false
+    t.string "setting_key", null: false
+    t.string "source", default: "observed", null: false
+    t.datetime "updated_at", null: false
+    t.boolean "value_at_end"
+    t.boolean "value_at_start"
+    t.index ["session_id", "setting_key"], name: "index_session_experimental_flags_on_session_and_key", unique: true
+    t.index ["setting_key", "value_at_start", "value_at_end"], name: "index_session_experimental_flags_on_key_and_values"
+  end
+
   create_table "session_status_summaries", force: :cascade do |t|
     t.datetime "backstop_attempted_at"
     t.datetime "created_at", null: false
@@ -728,6 +742,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_22_174500) do
   add_foreign_key "outcome_analysis_batch_items", "sessions", column: "analysis_session_id", on_delete: :nullify
   add_foreign_key "outcome_analysis_batch_items", "sessions", on_delete: :cascade
   add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
+  add_foreign_key "session_experimental_flags", "sessions", on_delete: :cascade
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
   add_foreign_key "session_token_usages", "sessions", on_delete: :nullify

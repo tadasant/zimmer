@@ -25,6 +25,7 @@ class CostsController < ApplicationController
     @by_thread_kind = snapshot[:by_thread_kind]
     @by_adhoc_source = snapshot[:by_adhoc_source]
     @by_feature = snapshot[:by_feature]
+    @by_experiment = snapshot[:by_experiment]
     @top_sessions = snapshot[:top_sessions]
     @unpriced_models = snapshot[:unpriced_models]
 

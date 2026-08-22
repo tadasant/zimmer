@@ -3294,6 +3294,28 @@ change. Only the per-feature split is limited: a detector added today cannot exp
 from three months ago, because the evidence it would read has been pruned. Nothing warns
 about this; the older part of the window simply shows a larger unattributed share.
 
+## Experimental-setting cohorts are observational, and the first one is purely temporal
+
+The Costs page compares spend on each side of an experimental setting. Nothing about it is a
+controlled experiment, and three limits are worth stating rather than discovering:
+
+- **The settings are global.** A cohort is "every session that ran while the setting was on",
+  not a random assignment. Whatever else changed over the same stretch is inside the cohort.
+- **A backfilled setting's cohorts are a date, not a treatment.** For `mcp_tool_search`, "off"
+  is every session before 2026-08-22 13:55 UTC and "on" is every session after it, so anything
+  that landed the same afternoon — including the token-usage accounting changes in #591, two
+  hours later — is perfectly confounded with the setting. This is stated on screen next to the
+  number, but no amount of stating fixes it: only toggling the setting back and forth, which
+  makes the cohorts interleave in time, produces a comparison the data can carry.
+- **Normalization is partial.** Cost per API call divides out session length. It does not
+  divide out which model ran or what the work was. The paired-by-root drilldown holds the
+  agent root constant; it holds nothing else constant.
+
+The report refuses to print a percentage when a side has fewer than 5 sessions or 50 API calls
+in the window, and it excludes sessions whose start and end values disagree. Those guards stop
+the most obvious wrong readings. They do not turn an observational comparison into a causal
+one, and a thin report saying "not enough data to compare" is the correct output, not a bug.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

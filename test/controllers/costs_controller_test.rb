@@ -3,6 +3,13 @@
 require "test_helper"
 
 class CostsControllerTest < ActionDispatch::IntegrationTest
+  # Not `create_session`: ActionDispatch::Integration::Runner already defines a
+  # method by that name, and it builds a Rack test session, not this one.
+  def make_session(title)
+    Session.create!(title: title, prompt: "x", git_root: "https://github.com/test/repo.git",
+                    branch: "main", execution_provider: "local_filesystem")
+  end
+
   def usage(**overrides)
     SessionTokenUsage.create!({
       request_id: "req_#{SecureRandom.hex(6)}",
@@ -219,5 +226,40 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_equal "manual", TokenUsageBackfill.latest.trigger
+  end
+
+  test "the experiment report prints sample sizes and refuses a percentage on thin data" do
+    # The failure mode this section exists to prevent: a dramatic-looking delta
+    # over a handful of sessions, presented as if it meant something.
+    off = make_session("before")
+    on = make_session("after")
+    SessionExperimentalFlag.create!(session: off, setting_key: "mcp_tool_search",
+                                    value_at_start: false, value_at_end: false)
+    SessionExperimentalFlag.create!(session: on, setting_key: "mcp_tool_search",
+                                    value_at_start: true, value_at_end: true)
+    usage(session_id: off.id, input_tokens: 100_000)
+    usage(session_id: on.id, input_tokens: 10)
+
+    get costs_path
+
+    assert_response :success
+    assert_match "Experimental settings", response.body
+    assert_match "MCP tool search", response.body
+    assert_match "Not enough data to compare", response.body
+    assert_no_match(/lower<\/span>/, response.body, "no delta may be claimed from two sessions")
+  end
+
+  test "the experiment report names the boundary date a temporal cohort came from" do
+    session = make_session("tagged")
+    SessionExperimentalFlag.create!(session: session, setting_key: "mcp_tool_search",
+                                    value_at_start: true, value_at_end: true,
+                                    source: SessionExperimentalFlag::BACKFILLED)
+    usage(session_id: session.id)
+
+    get costs_path
+
+    assert_response :success
+    assert_match "temporal, not randomized", response.body
+    assert_match "inferred from", response.body, "the reader must be able to see which labels were guessed"
   end
 end

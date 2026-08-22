@@ -64,7 +64,21 @@ a stuck session).
 
 ### `start` — `waiting → running`
 
-Guarded on `git_root` being present. Resets the elapsed-time counter and logs.
+Guarded on `git_root` being present. Resets the elapsed-time counter, records the session's
+experimental-setting flags, and logs.
+
+#### Experimental-setting flags
+
+`start`, `resume`, `pause`, `fail` and `archive` all call `record_experimental_setting_flags`,
+which writes one row per experimental setting into `session_experimental_flags`. The first call
+fixes the session's start-of-life value; every call moves its end-of-life value. That is what
+makes a setting toggled between two turns of the same session show up as a disagreement between
+the two rather than silently landing in one cohort.
+
+It is bookkeeping and behaves like it: the write is a single upsert, it swallows its own errors,
+and the caller rescues again around it, so a cohort label can never be the reason a session fails
+to start or a cleaning-up transition aborts. See
+[Experimental settings](/operate/costs/#experimental-settings) for what the labels are for.
 
 ### `pause` — `running → needs_input`
 

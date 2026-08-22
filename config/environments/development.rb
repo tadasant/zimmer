@@ -123,6 +123,11 @@ Rails.application.configure do
       class: "GitHubMergeConflictPollerJob",
       description: "Poll GitHub PRs for merge conflicts and notify sessions"
     },
+    experimental_flag_backfill: {
+      cron: "*/15 * * * *", # Every 15 minutes; an indexed anti-join that writes nothing once history is labelled
+      class: "ExperimentalFlagBackfillJob",
+      description: "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
+    },
     cli_status_refresh: {
       cron: "*/2 * * * *", # Every 2 minutes
       class: "CliStatusRefreshJob",

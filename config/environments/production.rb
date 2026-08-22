@@ -144,6 +144,11 @@ Rails.application.configure do
       class: "TokenUsageBackfillJob",
       description: "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box"
     },
+    experimental_flag_backfill: {
+      cron: "*/15 * * * *", # Every 15 minutes; an indexed anti-join that writes nothing once history is labelled
+      class: "ExperimentalFlagBackfillJob",
+      description: "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
+    },
     cli_status_refresh: {
       cron: "*/2 * * * *", # Every 2 minutes
       class: "CliStatusRefreshJob",
