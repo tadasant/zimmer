@@ -3,12 +3,26 @@ class Session < ApplicationRecord
   include SessionStateMachine
   include AtomicJsonMetadata
   include SessionGenesisClassification
+  include SessionPrecedence
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
   has_many :enqueued_messages, dependent: :destroy
   has_many :notifications, dependent: :destroy
   has_many :mcp_oauth_pending_flows, dependent: :destroy
+  # What each experimental setting was when this session started and when it last
+  # ran — the cohort labels behind the Costs page's experiment report. No
+  # `dependent:`, for the same reason `outcome_analyses` below has none: the
+  # foreign key is ON DELETE CASCADE.
+  has_many :session_experimental_flags
+
+  # Outcome analyses OF this session's transcript (the Outcomes view). No
+  # `dependent:` — the foreign key is ON DELETE CASCADE, so the database already
+  # guarantees an analysis cannot outlive the transcript it describes, and adding
+  # a Rails-side sweep would only duplicate that at the cost of a query per
+  # destroy. The reverse direction (analyses this session PRODUCED) is nullified,
+  # so it is deliberately not modeled here as an ownership edge.
+  has_many :outcome_analyses
   has_many :elicitations, dependent: :destroy
 
   # What Zimmer knows a named human said TO THIS SESSION. Read-only once
@@ -45,6 +59,21 @@ class Session < ApplicationRecord
   # rather than the operator's work, so the lists an operator reads exclude them.
   scope :excluding_status_summary_forks, lambda {
     where("metadata->>? IS NULL", SessionStatusSummaryGenerator::FORK_MARKER)
+  }
+
+  # The sessions Zimmer spawns to analyze another session's transcript for the
+  # Outcomes view (OutcomeAnalyses::SpawnAnalysisSession). An "Analyze All" batch
+  # can put hundreds of these in flight at once, so they carry a marker that makes
+  # them identifiable rather than being indistinguishable from the operator's own
+  # work — the Outcomes ledger excludes them from the analyzable set, and the
+  # dashboard offers them as a filter.
+  OUTCOME_ANALYSIS_MARKER = "outcome_analysis_target_session_id"
+
+  scope :outcome_analysis_sessions, lambda {
+    where("metadata->>? IS NOT NULL", OUTCOME_ANALYSIS_MARKER)
+  }
+  scope :excluding_outcome_analysis_sessions, lambda {
+    where("metadata->>? IS NULL", OUTCOME_ANALYSIS_MARKER)
   }
 
   scope :root_sessions, -> { where(parent_session_id: nil) }
@@ -241,10 +270,10 @@ class Session < ApplicationRecord
   # needs it to tell an adoption from a rotation.
   #
   # The auth_outage_* keys (AuthOutageParkService) describe a session that is
-  # dormant awaiting a scheduled retry. Any resume — the retry firing, a user
-  # follow-up, deployment recovery — ends that state, so they are cleared here
-  # rather than by the one path that knows about them. Leaving them behind would
-  # render an outage banner promising a retry that already happened, and would
+  # dormant because its login pool had nothing usable. Any resume — the fleet
+  # wake, a user follow-up, deployment recovery — ends that state, so they are
+  # cleared here rather than by the one path that knows about them. Leaving them
+  # behind would render an outage banner for an outage that is over, and would
   # keep matching AuthOutageParkService.parked_sessions, so a later ordinary
   # sleep could be force-resumed as if it were still parked.
   #
@@ -252,6 +281,13 @@ class Session < ApplicationRecord
   # sweep has already resumed one session on a changed account pool, and it has
   # to outlive the resume it paid for or it would never bound anything. See
   # AuthOutageParkService::EARLY_WAKE_LOG_KEY.
+  #
+  # SpotSessionPause::METADATA_KEYS are on the list for the same reason
+  # `paused_by` is: they say the session is dormant in the spot queue, and a
+  # session somebody restarted, continued or unarchived is not. Left behind, the
+  # record outlives the park — and the next ordinary "Pause Until 9 AM" on that
+  # session would land in `waiting` still matching SpotSessionPause.paused?, so
+  # the ceiling sweep would resume it long before the time its human chose.
   STALE_RETRY_METADATA_KEYS = (SIGTERM_RETRY_METADATA_KEYS + %w[
     failure_reason
     exit_status
@@ -276,7 +312,7 @@ class Session < ApplicationRecord
     last_auth_adoption_at
     auth_outage_reason
     auth_outage_parked_at
-    auth_outage_retry_at
+    auth_outage_pool_recovers_at
     auth_outage_pool_fingerprint
     mcp_retry_count
     mcp_last_retry_at
@@ -286,7 +322,7 @@ class Session < ApplicationRecord
     transcript_reading_started_logged
     interrupted_start_requeue_count
     recovery_continue_attempts
-  ]).freeze
+  ] + SpotSessionPause::METADATA_KEYS).freeze
 
   # Metadata keys rendered by the session metadata partial. A change to any of them is
   # what makes a metadata write worth broadcasting.
@@ -373,6 +409,44 @@ class Session < ApplicationRecord
     [ "30 minutes", 1800 ],
     [ "1 hour", 3600 ]
   ].freeze
+
+  # Whether the web UI should offer "Pause Until" for this session.
+  #
+  # Narrower than Sessions::ScheduleWakeUp::WAKEABLE_STATUSES, which is the
+  # question an agent asks about itself. A `waiting` session that has never
+  # started is not asleep — it is queued for spawn, and `waiting` is simply the
+  # AASM initial state. Arming a wake there tells the operator the session is
+  # paused while the spawn pipeline goes right on starting it: `start` (unlike
+  # `resume`) does not consume the wake, so the trigger is left armed behind a
+  # session that is already running.
+  def pausable_until?
+    return false unless Sessions::ScheduleWakeUp::WAKEABLE_STATUSES.include?(status.to_s)
+    return false if waiting? && session_id.blank?
+
+    true
+  end
+
+  # Choices offered by the "Pause Until" control, in order. `key` is the contract
+  # with pause_until_controller.js, which resolves each one to an absolute time in
+  # the BROWSER's timezone — the wall-clock presets ("Tomorrow, 9:00 AM") mean the
+  # operator's morning, not the server's, and only the browser knows which that is.
+  # Anything not on this list goes through the datetime picker instead.
+  PAUSE_UNTIL_PRESETS = [
+    { key: "15m", label: "In 15 minutes" },
+    { key: "1h", label: "In 1 hour" },
+    { key: "3h", label: "In 3 hours" },
+    { key: "tonight", label: "Tonight, 6 PM" },
+    { key: "tomorrow", label: "Tomorrow, 9 AM" },
+    { key: "monday", label: "Monday, 9 AM" }
+  ].freeze
+
+  # The one choice in the same panel that is not a time, and therefore not a
+  # preset: "Spot Queue" sleeps the session and slots it into the spot queue
+  # instead of arming a wake-up (Sessions::PauseIntoSpotQueue). It is deliberately
+  # NOT in PAUSE_UNTIL_PRESETS — every entry there is a key the browser resolves
+  # to an absolute instant, and there is no instant to resolve here. The value is
+  # the `mode` SessionsController#pause_until switches on.
+  PAUSE_UNTIL_SPOT_QUEUE_MODE = "spot_queue"
 
   # Validations
   # Prompt is now optional to allow for "clone only" sessions
@@ -1102,10 +1176,13 @@ class Session < ApplicationRecord
   # @param parent_session_id [Integer, nil] ID of the parent session (used by the dependency graph and forking)
   # @param scheduling_class [String, nil] "spot"/"priority" for this session; nil
   #   derives it from the genesis
+  # @param precedence [Integer, nil] where this session sits in the spot queue —
+  #   higher is handled sooner, on an absolute scale. nil lands it just above its
+  #   parent, or at the default when it has none. See SessionPrecedence.
   # @param metadata [Hash] additional metadata to store on the session
   # @param custom_metadata [Hash] additional custom metadata
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil)
     agent_root = AgentRootsConfig.find!(agent_root_name)
 
     # An explicit override wins over the root's declared runtime; either way the
@@ -1165,6 +1242,9 @@ class Session < ApplicationRecord
       # nil means nobody chose a spot/priority class for this session, so it
       # derives from the genesis above — see SessionGenesisClassification.
       scheduling_class: scheduling_class,
+      # nil means nobody ranked this session, so SessionPrecedence lands it just
+      # above the session that spawned it.
+      precedence: precedence,
       metadata: metadata.merge("agent_root_key" => agent_root_name),
       custom_metadata: custom_metadata,
       config: { "model" => resolved_model }

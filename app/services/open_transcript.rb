@@ -54,6 +54,20 @@ module OpenTranscript
     ].freeze
   end
 
+  # Zimmer's own vocabulary for SystemEvent#subtype.
+  #
+  # The spec leaves the field open — SystemEvent is where "vendor system
+  # metadata" goes — so subtypes are not mirrored from upstream and are not
+  # covered by the drift guard. Most of them are simply the raw line's own
+  # `type` carried through (see ClaudeTranscriptNormalizer#normalize_other_line,
+  # which is where "queue-operation" comes from). RUNTIME_NOTICE is different:
+  # it is minted by Zimmer for a line the coding agent's CLI wrote into its own
+  # transcript wearing a user role, so that the renderers can say who actually
+  # wrote it. See ClaudeTranscriptNormalizer::RUNTIME_NOTICE_FLAGS.
+  module SystemEventSubtypes
+    RUNTIME_NOTICE = "runtime-notice"
+  end
+
   module_function
 
   # Build a ContentPart text node.
@@ -175,7 +189,16 @@ module OpenTranscript
     when Types::THINKING, Types::TOOL_CALL, Types::TOOL_RESULT, Types::SUBAGENT_SPAWN
       "tool-message"
     when Types::SYSTEM_EVENT
-      item[:subtype] == "queue-operation" ? "queue-event" : "regular-log"
+      case item[:subtype]
+      when "queue-operation" then "queue-event"
+      # A runtime notice sits in the conversational slot the CLI wrote it into,
+      # and "the turn was cut off here" is exactly the context a reader on the
+      # `minimal` filter still needs. It is not a message, but it belongs in the
+      # same bucket as one — reclassifying it out of `message` would hide it,
+      # and this change is about attribution, not about showing less.
+      when SystemEventSubtypes::RUNTIME_NOTICE then "message"
+      else "regular-log"
+      end
     when "mcp_log"
       "regular-log"
     when "log"

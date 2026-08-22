@@ -1,0 +1,219 @@
+<%#
+  What each experimental setting looks like to have done to spend.
+
+  The honest framing is the feature here, not a disclaimer bolted to it. These
+  cohorts are not randomized: a setting is global, so "off" and "on" are whoever
+  happened to run on each side of it — and for a setting backfilled from the date
+  it landed, that is literally "before this date" and "after this date". Anything
+  else that changed at the boundary is indistinguishable from the setting itself.
+
+  So the caveats sit NEXT TO the numbers, sample sizes are always on screen, and a
+  comparison whose thinner side is too small prints no percentage at all. A
+  dramatic-looking figure over four sessions is the failure mode this section is
+  built to refuse.
+
+  locals: reports (Array from CostAnalytics#by_experiment), window (CostWindow)
+%>
+<div class="bg-white shadow rounded-lg overflow-hidden mb-6">
+  <div class="px-4 py-3 border-b border-gray-200">
+    <h2 class="text-sm font-semibold text-gray-900">
+      Experimental settings <span class="font-normal text-gray-400">observational</span>
+    </h2>
+    <p class="text-xs text-gray-500 mt-0.5">
+      Each session is tagged with what every experimental setting was when it started and when it
+      last ran. Nothing here is a controlled experiment — the settings are global, so a cohort is
+      whoever ran while it was on.
+    </p>
+  </div>
+
+  <% if reports.blank? %>
+    <p class="px-4 py-6 text-sm text-gray-500">No experimental settings are registered.</p>
+  <% else %>
+    <div class="divide-y divide-gray-100">
+      <% reports.each do |report| %>
+        <% comparison = report[:comparison] %>
+        <% tagged = report[:tagged_sessions].positive? %>
+        <div class="px-4 py-4">
+          <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <h3 class="text-sm font-medium text-gray-900"><%= report[:title] %></h3>
+            <span class="text-xs whitespace-nowrap">
+              <span class="text-gray-400">now</span>
+              <span class="font-medium <%= report[:current_value] ? "text-indigo-700" : "text-gray-600" %>">
+                <%= report[:current_value].nil? ? "unknown" : (report[:current_value] ? "ON" : "OFF") %>
+              </span>
+            </span>
+          </div>
+
+          <p class="text-xs text-gray-500 mt-1"><%= report[:description] %></p>
+
+          <% unless tagged %>
+            <%# Registered, and nothing carries a label for it yet. Saying so beats
+                rendering two empty cohort cards under a panel about sample sizes —
+                and it is the signal that tracking is live but has seen nothing. %>
+            <p class="text-sm text-gray-500 mt-3 rounded-md bg-gray-50 px-3 py-2">
+              No session is tagged with this setting yet. Sessions are tagged as they start, so
+              this fills in from the next run onward.
+            </p>
+          <% end %>
+
+          <% if tagged %>
+          <%# Cohort cards. Stacked on a phone, side by side from `sm` — this is the
+              widest thing in the section and the reason it is a grid, not a table. %>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
+            <% %w[off on].each do |cohort| %>
+              <% side = report[:cohorts][cohort] %>
+              <div class="rounded-md border <%= cohort == "on" ? "border-indigo-200 bg-indigo-50/40" : "border-gray-200 bg-gray-50" %> px-3 py-2">
+                <div class="flex items-baseline justify-between gap-2">
+                  <span class="text-xs font-semibold uppercase tracking-wide <%= cohort == "on" ? "text-indigo-700" : "text-gray-500" %>">
+                    <%= cohort %>
+                  </span>
+                  <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+                    <%= pluralize(number_with_delimiter(side[:sessions]), "session") %>
+                  </span>
+                </div>
+                <div class="mt-1 text-lg font-semibold text-gray-900 tabular-nums">
+                  <%= side[:cost_per_call] ? number_to_currency(side[:cost_per_call], precision: 4) : "—" %>
+                  <span class="text-xs font-normal text-gray-400">per call</span>
+                </div>
+                <div class="text-xs text-gray-500 tabular-nums">
+                  <%= side[:cost_per_session] ? number_to_currency(side[:cost_per_session], precision: 2) : "—" %> per session
+                  &middot; <%= number_with_delimiter(side[:api_calls]) %> calls
+                </div>
+                <div class="text-xs text-gray-400 tabular-nums">
+                  <%= number_to_currency(side[:cost_usd], precision: 2) %> total
+                  &middot; <%= side[:tokens_per_call] ? "#{number_to_human(side[:tokens_per_call], units: { thousand: "K", million: "M" }, precision: 3)} tok/call" : "—" %>
+                </div>
+              </div>
+            <% end %>
+          </div>
+
+          <%# The headline. Printed as a number only when both sides clear the bar.
+              The two ways it can fail get different sentences: "widen the window"
+              is the answer to a thin cohort and nonsense in front of a cohort of
+              forty sessions whose models have no price configured. %>
+          <div class="mt-3 rounded-md px-3 py-2 <%= comparison[:comparable] ? "bg-gray-50" : "bg-amber-50" %>">
+            <% if comparison[:comparable] %>
+              <p class="text-sm text-gray-900">
+                Cost per API call is
+                <span class="font-semibold <%= comparison[:cost_per_call_change].negative? ? "text-green-700" : "text-red-700" %>">
+                  <%= number_to_percentage(comparison[:cost_per_call_change].abs * 100, precision: 1) %>
+                  <%= comparison[:cost_per_call_change].negative? ? "lower" : "higher" %>
+                </span>
+                with the setting on.
+                <% if comparison[:cost_per_session_change] %>
+                  Per session — which mostly tracks how long sessions were, not this setting — it is
+                  <span class="font-medium"><%= number_to_percentage(comparison[:cost_per_session_change].abs * 100, precision: 1) %>
+                  <%= comparison[:cost_per_session_change].negative? ? "lower" : "higher" %></span>.
+                <% end %>
+              </p>
+            <% elsif comparison[:reason] == :no_baseline %>
+              <p class="text-sm text-amber-900">
+                <span class="font-semibold">No baseline to compare against.</span>
+                Both sides have enough sessions, but the off cohort priced at
+                <span class="font-medium">$0.00</span> — every model it ran has no rate configured,
+                so there is nothing to express a change against. Add the rate and this fills in.
+              </p>
+            <% else %>
+              <p class="text-sm text-amber-900">
+                <span class="font-semibold">Not enough data to compare.</span>
+                A side needs at least <%= comparison[:min_sessions] %> sessions and
+                <%= comparison[:min_calls] %> API calls in this window before a percentage means
+                anything; this one has
+                <%= pluralize(report[:cohorts]["off"][:sessions], "session") %> off and
+                <%= pluralize(report[:cohorts]["on"][:sessions], "session") %> on.
+                Widen the window, or wait.
+              </p>
+            <% end %>
+          </div>
+
+          <%# Sessions that ran under both values of the setting. Never averaged into
+              either side; said out loud instead. %>
+          <% mixed = report[:cohorts]["mixed"] %>
+          <% unknown = report[:cohorts]["unknown"] %>
+          <% if mixed[:sessions].positive? || unknown[:sessions].positive? %>
+            <p class="text-xs text-gray-500 mt-2">
+              <% if mixed[:sessions].positive? %>
+                <%= pluralize(mixed[:sessions], "session") %>
+                (<%= number_to_currency(mixed[:cost_usd], precision: 2) %>) had the setting toggled mid-run —
+                excluded from both cohorts.
+              <% end %>
+              <% if unknown[:sessions].positive? %>
+                <%= pluralize(unknown[:sessions], "session") %> carry no observed value — also excluded.
+              <% end %>
+            </p>
+          <% end %>
+
+          <%# Same root, both sides. The nearest thing to like-for-like this data has. %>
+          <% if report[:paired_roots].any? %>
+            <details class="mt-3 group">
+              <summary class="text-xs text-indigo-600 hover:text-indigo-500 cursor-pointer">
+                Same agent root, both cohorts (<%= report[:paired_roots].size %>)
+              </summary>
+              <p class="text-xs text-gray-500 mt-1">
+                Only roots that ran on both sides. Holding the root constant removes the biggest
+                single source of task mix; it does not remove the rest.
+              </p>
+              <ul class="mt-2 divide-y divide-gray-100 border-t border-gray-100">
+                <% report[:paired_roots].each do |row| %>
+                  <li class="py-2">
+                    <div class="flex items-baseline justify-between gap-2">
+                      <span class="text-xs text-gray-900 truncate min-w-0"><%= row[:agent_root] %></span>
+                      <span class="text-xs font-medium tabular-nums whitespace-nowrap <%= row[:cost_per_call_change].nil? ? "text-gray-400" : (row[:cost_per_call_change].negative? ? "text-green-700" : "text-red-700") %>">
+                        <%= row[:cost_per_call_change] ? "#{row[:cost_per_call_change].negative? ? "−" : "+"}#{number_to_percentage(row[:cost_per_call_change].abs * 100, precision: 1)}" : "—" %>
+                      </span>
+                    </div>
+                    <div class="text-xs text-gray-500 tabular-nums mt-0.5">
+                      off <%= number_to_currency(row[:off][:cost_per_call], precision: 4) %>/call
+                      (<%= pluralize(row[:off][:sessions], "session") %>)
+                      &rarr;
+                      on <%= number_to_currency(row[:on][:cost_per_call], precision: 4) %>/call
+                      (<%= pluralize(row[:on][:sessions], "session") %>)
+                    </div>
+                  </li>
+                <% end %>
+              </ul>
+            </details>
+          <% end %>
+
+          <%# Provenance and confounds, per setting rather than as a page footnote —
+              they differ by setting, and a backfilled cohort is a different claim
+              from an observed one. %>
+          <div class="mt-3 rounded-md bg-gray-50 px-3 py-2">
+            <p class="text-xs text-gray-500">
+              <% if report[:landed_at] %>
+                <span class="font-medium text-gray-700">Cohorts are temporal, not randomized.</span>
+                This setting landed on
+                <%= report[:landed_at].in_time_zone.strftime("%b %-d, %Y at %H:%M %Z") %>, so
+                &ldquo;off&rdquo; is every session before that moment and &ldquo;on&rdquo; is every
+                session after it. Anything else that changed around then — other merges, a different
+                mix of work, how token usage is accounted — is indistinguishable from the setting.
+              <% else %>
+                <span class="font-medium text-gray-700">Cohorts are observational.</span>
+                Sessions are labelled with what the setting actually was while they ran, so the
+                cohorts interleave in time — but nothing assigns work to them.
+              <% end %>
+            </p>
+            <p class="text-xs text-gray-500 mt-1">
+              <%= pluralize(number_with_delimiter(report[:tagged_sessions]), "session") %> tagged
+              <% if report[:tagged_by_source]["backfilled"].to_i.positive? %>
+                (<%= number_with_delimiter(report[:tagged_by_source]["backfilled"].to_i) %> inferred from
+                dates, <%= number_with_delimiter(report[:tagged_by_source]["observed"].to_i) %> observed
+                while the session ran).
+              <% else %>
+                — all observed while the session ran.
+              <% end %>
+              Figures above cover <%= window.label %> only.
+            </p>
+          </div>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+
+    <div class="px-4 py-2 border-t border-gray-200 text-xs text-gray-400">
+      Cost per API call is the headline because it is the least confounded thing here: it divides
+      out session length, which is task mix rather than settings. It does not divide out which model
+      ran, which root ran, or what the work was.
+    </div>
+  <% end %>
+</div>

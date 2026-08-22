@@ -64,6 +64,45 @@ class SessionsControllerTranscriptCopyTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "---"
   end
 
+  # #488: the copy-to-clipboard export is read by the same person reading the
+  # timeline, so a line the CLI wrote into its own transcript wearing a user
+  # role must not be labelled [User] here either.
+  test "should label a machine-written CLI line as a runtime notice, not a user turn" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test",
+      transcript: <<~JSONL
+        {"type":"user","message":{"role":"user","content":"[Request interrupted by user for tool use]"},"interruptedByShutdown":true}
+        {"type":"user","message":{"role":"user","content":"Continue from where you left off."},"isMeta":true}
+      JSONL
+    )
+
+    get transcript_session_url(session, format: :text)
+    assert_response :success
+
+    assert_includes response.body, "[Runtime Notice (agent runtime, not a person)]"
+    assert_includes response.body, "[Request interrupted by user for tool use]"
+    assert_includes response.body, "Continue from where you left off."
+    refute_includes response.body, "[User]"
+  end
+
+  test "should still label a genuine user turn as User" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test",
+      transcript: <<~JSONL
+        {"type":"user","message":{"role":"user","content":"please rebase this"},"isMeta":false}
+      JSONL
+    )
+
+    get transcript_session_url(session, format: :text)
+    assert_response :success
+
+    assert_includes response.body, "[User]"
+    assert_includes response.body, "please rebase this"
+    refute_includes response.body, "Runtime Notice"
+  end
+
   test "should format tool use blocks" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git",

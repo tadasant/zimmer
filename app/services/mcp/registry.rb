@@ -49,6 +49,11 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::ManageEnqueuedMessages", group: "sessions", write: true),
       Definition.new(klass: "Mcp::Tools::ManageCategories", group: "sessions", write: true),
       Definition.new(klass: "Mcp::Tools::RespondToElicitation", group: "sessions", write: true),
+      # The Outcomes view's only write path. In `sessions` rather than a group of
+      # its own so the already-registered `zimmer` and `zimmer-sessions` catalog
+      # servers carry it unchanged — `zimmer-sessions` being the least-privileged
+      # server an analysis session can be spawned with.
+      Definition.new(klass: "Mcp::Tools::SaveOutcomeAnalysis", group: "sessions", write: true),
 
       # Notifications
       Definition.new(klass: "Mcp::Tools::GetNotifications", group: "notifications", write: false),

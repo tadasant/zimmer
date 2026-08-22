@@ -8,7 +8,7 @@ import { Controller } from "@hotwired/stimulus"
 export default class extends Controller {
   static targets = [
     "conditionsContainer", "conditionCard", "conditionTypeSelect",
-    "slackConfig", "scheduleConfig", "aoEventConfig",
+    "slackConfig", "scheduleConfig", "aoEventConfig", "systemEventConfig",
     "githubConfig", "githubLabelFields", "githubIssueFields",
     "channelSelect", "channelStatus", "channelId", "channelName",
     "channelManual", "channelManualInput", "slackChannelField", "slackEventTypeSelect",
@@ -73,10 +73,12 @@ export default class extends Controller {
     const slackConfig = card.querySelector("[data-trigger-form-target='slackConfig']")
     const scheduleConfig = card.querySelector("[data-trigger-form-target='scheduleConfig']")
     const aoEventConfig = card.querySelector("[data-trigger-form-target='aoEventConfig']")
+    const systemEventConfig = card.querySelector("[data-trigger-form-target='systemEventConfig']")
 
     if (slackConfig) slackConfig.classList.toggle("hidden", type !== "slack")
     if (scheduleConfig) scheduleConfig.classList.toggle("hidden", type !== "schedule")
     if (aoEventConfig) aoEventConfig.classList.toggle("hidden", type !== "ao_event")
+    if (systemEventConfig) systemEventConfig.classList.toggle("hidden", type !== "system_event")
 
     this.updateGithubFieldsInCard(card, type)
 
@@ -424,6 +426,7 @@ export default class extends Controller {
             <option value="slack">Slack - Channel messages or @mentions</option>
             <option value="schedule">Schedule - Time-based (recurring or one-time)</option>
             <option value="ao_event">Zimmer Event - Internal system event</option>
+            <option value="system_event">System Event - The deployment changed state</option>
             <option value="github_label">GitHub Label - A label is added to a PR or issue</option>
             <option value="github_issue">GitHub Issue - A new issue is opened</option>
           </select>

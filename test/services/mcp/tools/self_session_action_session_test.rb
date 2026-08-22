@@ -12,7 +12,7 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     schema = definition[:inputSchema]
 
     assert_equal "action_session", definition[:name]
-    assert_equal %w[update_notes update_title set_heartbeat archive], schema[:properties][:action][:enum]
+    assert_equal %w[update_notes update_title set_heartbeat pause_into_spot_queue archive], schema[:properties][:action][:enum]
     assert_equal %w[session_id action], schema[:required]
     assert_match(/self-management/, definition[:description])
   end
@@ -120,5 +120,24 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     description = properties[:force][:description]
     assert_includes description, "NOT archive", "the description has to talk the caller out of it first"
     assert_not_includes description, "bulk_archive", "this surface has no bulk_archive action to describe"
+  end
+  # The counterpart of wake_me_up_later for a session with no time worth naming.
+  # It is on the self-session surface because parking ITSELF is exactly the case:
+  # a session waiting on quota rather than on an event.
+  test "parks itself in the spot queue with no wake trigger" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    result = assert_no_difference "Trigger.count" do
+      @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id,
+                 "prompt" => "Pick the migration back up at step 4")
+    end
+
+    assert_includes result, "Parked In The Spot Queue"
+    session.reload
+    assert session.waiting?
+    assert session.spot?
+    assert_equal "Pick the migration back up at step 4", session.metadata[SpotSessionPause::QUEUED_PROMPT]
+    assert_not session.awaiting_scheduled_wake?
   end
 end

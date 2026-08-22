@@ -155,6 +155,40 @@ module Mcp
         ]
       end
 
+      # Why a spot session that WAS running is now sitting in `waiting`. The hold
+      # lines above cover a session that never started; this covers one the spot
+      # ceiling interrupted mid-run, which an agent reading its own session needs
+      # to tell apart from a crash — its last turn ended without finishing, and
+      # nothing it wrote is lost.
+      def spot_pause_lines(session)
+        detail = session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL)
+        return [] if detail.blank?
+
+        return user_queued_lines(session, detail) if SpotSessionPause.queued_by_user?(session)
+
+        [
+          "- **Paused mid-run by the spot ceiling:** #{detail}",
+          "- **Paused at:** #{session.metadata&.dig(SpotSessionPause::PAUSED_AT).presence || 'unknown'}",
+          "- **Pauses so far:** #{session.metadata&.dig(SpotSessionPause::PAUSED_COUNT).to_i}",
+          "- **Resumes when:** the pool's utilization falls #{SpotGateService::RESUME_MARGIN_PCT} " \
+          "points below the target it reached. Nothing is cancelled and no action is needed."
+        ]
+      end
+
+      # The same dormancy reached deliberately: a human chose "Spot Queue" in the
+      # web UI's "Pause Until". Nothing interrupted this session, so an agent
+      # reading it must not go looking for the turn it lost — there isn't one.
+      def user_queued_lines(session, detail)
+        [
+          "- **Parked in the spot queue by a human:** #{detail}",
+          "- **Parked at:** #{session.metadata&.dig(SpotSessionPause::PAUSED_AT).presence || 'unknown'}",
+          "- **Queue position:** precedence #{session.precedence} (higher is handled sooner)",
+          "- **Resumes when:** a Claude Code account is under both quota targets and a session slot " \
+          "is free. No wake-up time is set and nothing is cancelled; making the session priority " \
+          "resumes it on the next sweep."
+        ]
+      end
+
       # The cached Status blurb, with the staleness count that decides whether to
       # trust it. Read-only here: nothing about calling get_session generates a
       # summary, exactly as viewing the session page does not.
@@ -290,7 +324,9 @@ module Mcp
         # is about THIS session and reading it off a tree of one is awkward.
         lines << "- **Genesis:** #{session.genesis_key} (#{session.genesis_label})"
         lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
+        lines << "- **Precedence:** #{session.precedence}#{' — spot sessions start highest first' if session.spot?}"
         lines.concat(spot_hold_lines(session))
+        lines.concat(spot_pause_lines(session))
 
         lines << ""
         lines << "### Git Configuration"

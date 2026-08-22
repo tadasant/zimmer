@@ -84,6 +84,12 @@
                   <%= trigger.scheduling_class.capitalize %>
                 </span>
               <% end %>
+              <% if trigger.precedence.present? %>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 tabular-nums"
+                      title="Precedence stamped on spawned sessions">
+                  P<%= trigger.precedence %>
+                </span>
+              <% end %>
             </div>
             <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500">
               <span class="flex items-center">

@@ -41,12 +41,13 @@ module ClaudeSpawnEnv
     # (gem path conflicts, pulsemcp/agents#569). Setting them to nil unsets them in the child.
     env_vars = clear_inherited_env_vars(env_vars)
 
-    # Zimmer's baseline is MCP tool search OFF — spawned sessions run with
-    # ENABLE_TOOL_SEARCH=false to avoid unnecessary overhead during execution.
-    # An enabled Zimmer Extension may flip this on (the mcp_tool_search extension
-    # contributes ENABLE_TOOL_SEARCH=true via #spawn_env_contribution below). With
-    # that extension removed, the baseline stands and tool search stays off.
-    env_vars["ENABLE_TOOL_SEARCH"] = "false"
+    # MCP tool search, governed by the global Settings toggle and ON by default:
+    # the agent searches MCP tools on demand instead of loading every attached
+    # server's tool schemas up front. With several servers attached that up-front
+    # load is a large, unavoidable context cost at the start of every session.
+    # Claude Code only — Codex ignores the variable, and CodexRuntimeAdapter
+    # never runs this method.
+    env_vars["ENABLE_TOOL_SEARCH"] = AppSetting.mcp_tool_search_enabled?.to_s
 
     # Disable in-process cron/scheduling tools (CronCreate, ScheduleWakeup, /loop).
     # These are session-scoped and unreliable in headless mode — Zimmer's trigger system
@@ -69,10 +70,10 @@ module ClaudeSpawnEnv
     inject_api_key_from_credentials(env_vars)
     configure_mcp_env(env_vars, working_dir) if has_mcp
 
-    # Let enabled Zimmer Extensions contribute/override env vars (e.g. mcp_tool_search
-    # flipping ENABLE_TOOL_SEARCH to "true"). Merged over the baseline above so an
-    # extension can override a Zimmer default; with no extension enabled this is a
-    # no-op and the child sees the baseline env unchanged.
+    # Let enabled Zimmer Extensions contribute/override env vars. Merged over the
+    # baseline above so an extension can override a Zimmer default; with no
+    # extension enabled this is a no-op and the child sees the baseline env
+    # unchanged.
     env_vars.merge!(Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
 
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so

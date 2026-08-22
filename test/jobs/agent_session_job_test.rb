@@ -1827,6 +1827,37 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the recovery path should have run"
   end
 
+  test "handle_interrupt_error stands down for a session dormant in the spot queue" do
+    # A session parked by "Pause Until → Spot Queue" is `waiting` with NOTHING
+    # armed to wake it — that is the design, not a stall. Without its own signal
+    # the recovery path reads it as case 3 ("waiting, has run, nothing armed"),
+    # resumes it, and pulls it straight back out of the queue.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.pause!
+    Sessions::PauseIntoSpotQueue.call(session: @session.reload)
+    @session.reload
+    assert @session.waiting?
+    assert_not @session.awaiting_scheduled_wake?, "the park arms nothing — that is the point"
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.waiting?, "a queued session must stay queued, got #{@session.status}"
+    assert_equal SpotSessionPause::QUEUED_REASON, @session.metadata[SpotSessionPause::PAUSED_REASON]
+    assert @session.logs.any? { |log| log.content.include?("its turn in the spot queue") },
+      "expected a log naming what it is actually waiting for"
+  end
+
   test "handle_interrupt_error still recovers a session blocked on an MCP elicitation" do
     # block_on_elicitation reaches needs_input from running WITHOUT clearing
     # running_job_id and WITHOUT any paused_by, precisely because the agent process is
@@ -9724,5 +9755,84 @@ class AgentSessionJobTest < ActiveJob::TestCase
         trigger_conditions_attributes: [ condition ]
       ).trigger_conditions.first
     end
+  end
+
+  # ===========================================================================
+  # zimmer#6597: a stop with the turn undelivered and the pool empty
+  #
+  # 6597 was woken from a quota park, had its recovery turn killed before it
+  # reached the runtime, and was then adopted by a recovery job pointed at the
+  # dead pid. Six loop iterations later this fallback found the transcript's last
+  # end_turn — from the turn BEFORE the park — plus a dead process, and called it
+  # a completed turn. The session landed in needs_input with the recovery prompt
+  # still unconsumed in metadata and the pool still exhausted.
+  #
+  # The sibling test above ("transitions running to needs_input when turn
+  # completes and process exits") is the same code path with the turn delivered
+  # and the pool healthy, and must keep passing: this guard narrows that exit, it
+  # does not replace it.
+  # ===========================================================================
+
+  # A turn that ended cleanly, long before the park. It says nothing about the
+  # turn that was actually in flight when the process died.
+  def completed_turn_transcript
+    [
+      '{"type":"user","message":{"role":"user","content":"gate the PR"}}',
+      '{"type":"assistant","message":{"role":"assistant","content":"done","stop_reason":"end_turn"}}'
+    ].join("\n") + "\n"
+  end
+
+  def only_account(status)
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccount.delete_all
+    ClaudeAccount.create!(
+      email: "#{status}@example.com", status: status, runtime: "claude_code",
+      oauth_config: { "credentials_json" => { "claudeAiOauth" => { "accessToken" => "tok" } } }
+    )
+  end
+
+  def run_turn_completion_fallback(pid = 99999)
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_process_manager.getpgid_hook = ->(_p) { raise Errno::ESRCH }
+    job.process_manager = mock_process_manager
+    job.send(:check_and_update_status_if_turn_completed, @session, pid, LogBuffer.new(@session))
+  end
+
+  test "a dead process with an undelivered turn and an empty pool parks into waiting" do
+    only_account(:quota_exceeded)
+    @session.update!(
+      status: :running,
+      transcript: completed_turn_transcript,
+      metadata: { "process_pid" => 99999, "clone_path" => "/tmp/test-clone",
+                  "active_follow_up_prompt" => "continue where you left off" }
+    )
+
+    run_turn_completion_fallback
+
+    @session.reload
+    assert_equal "waiting", @session.status,
+      "A session blocked on an empty pool belongs in waiting, not the human's action queue"
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"]
+    assert_empty Trigger.where(last_session_id: @session.id),
+      "the session waits for the quota_available fleet wake, not for a timer of its own"
+  end
+
+  # The same exit with a usable pool is an ordinary completed turn and must still
+  # pause — otherwise the guard would swallow every normal end-of-turn.
+  test "a dead process with an undelivered turn but a usable pool still pauses" do
+    only_account(:active)
+    @session.update!(
+      status: :running,
+      transcript: completed_turn_transcript,
+      metadata: { "process_pid" => 99999, "clone_path" => "/tmp/test-clone",
+                  "active_follow_up_prompt" => "continue where you left off" }
+    )
+
+    run_turn_completion_fallback
+
+    @session.reload
+    assert_equal "needs_input", @session.status
+    assert_nil @session.metadata["auth_outage_reason"]
   end
 end

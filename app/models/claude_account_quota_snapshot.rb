@@ -80,6 +80,30 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
     !eff_7d.nil? && eff_7d >= 1.0
   end
 
+  # True when the 5-hour allowance this snapshot recorded is gone: the API was
+  # refusing on the 5-hour window, or its counter had reached the cap. The
+  # counterpart to #seven_day_window_spent?, and it follows the same rule — a
+  # status, like a number, holds only until its reset time passes.
+  #
+  # Read alongside #seven_day_window_spent? to ask when an account can serve
+  # again: a window with room contributes nothing, and a spent one contributes
+  # the reset that gives it back. ClaudeAccountPool does exactly that.
+  #
+  # Deliberately not what #windows_clear? decides on. That predicate answers a
+  # different question — "is there enough evidence to put this account back in
+  # rotation?" — and the two diverge in both directions on purpose. #windows_clear?
+  # is conservative about a window it cannot read, where this one calls an
+  # unreadable window "not spent"; and it treats a counter at the cap with no
+  # reset timestamp as clear, where this one calls it spent, the same way
+  # #seven_day_window_spent? does. Restoring an account on a guess puts it
+  # straight back in front of rotation; leaving a countdown off the page does not.
+  def five_hour_window_spent?
+    return true if window_refused?(status_5h, reset_5h)
+
+    eff_5h = self.class.effective_utilization(utilization_5h, reset_5h)
+    !eff_5h.nil? && eff_5h >= 1.0
+  end
+
   # True when this reading says the account can serve again: both windows are
   # clear, so nothing about it justifies a quota_exceeded label.
   #
@@ -118,6 +142,11 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # The correction runs one way. The 7-day window subsumes the 5-hour one: an
   # account at its 5-hour cap is idle for minutes and then serves again, so it
   # must never be reported as having burned its week.
+  #
+  # This is a utilization, which is why it does not read #five_hour_window_spent?
+  # and round a refused-but-lightly-used 5-hour window up to 100%. The figure
+  # says what it says: 5-hour utilization, with weekly-blocked accounts counted
+  # as 100%. Servability is the countdown's question, not this one's.
   #
   # Lives here rather than in the view helper because the spot gate decides on
   # the same figure /quotas renders — see ClaudeAccountPool.

@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 18 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 22 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -76,7 +76,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The full surface — all 18 tools |
+| `/mcp` | The full surface — all 22 tools |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 6 tools a session needs to run itself |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
@@ -88,7 +88,8 @@ group is dropped with a warning rather than failing the connection.
 `self_session` is the important one. It is **auto-injected into every session** (see below) and
 carries `get_session`, `get_configs`, `send_push_notification`, `wake_me_up_later`,
 `wake_me_up_when_session_changes_state`, and a **restricted `action_session`** — the same tool name,
-but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`, and `archive`.
+but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`,
+`pause_into_spot_queue`, and `archive`.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
@@ -152,11 +153,11 @@ production.
 
 ## The tool surface
 
-21 tools, four domains.
+22 tools, four domains.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |
@@ -207,6 +208,19 @@ frozen. An agent session only gets these if its connection was given the `health
 curated `self_session` set does not include it. See
 [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
 
+`get_system_health` also names the backlogged queues and job classes whenever ready work is waiting,
+carrying the same split as the `Queue backlog critical` Slack page. This is the parity that matters
+for triage: the GoodJob dashboard at `/jobs` needs a browser session on the production host, which an
+agent session does not have. It is silent when nothing is waiting, and says so explicitly when the
+read itself fails rather than dropping the whole health report. See
+[The page says which queue, and of what](/operate/background-jobs/#the-page-says-which-queue-and-of-what).
+
+`action_health` also carries `backfill_token_usage`: queue a sweep of every transcript on disk into
+the token-spend ledger, so `get_costs` covers all of history rather than only spend since ingestion
+was deployed. It is the MCP half of an ops action that deliberately has no shell equivalent, it is
+not throttled, and it is idempotent — asking twice joins the run already in flight. See
+[Token spend](/operate/costs/).
+
 The action tools are verb-multiplexers: `action_session` takes an `action` enum (`follow_up`,
 `pause`, `restart`, `archive`, `unarchive`, `fork`, `change_model`, …), `action_trigger` takes
 `create` / `update` / `delete` / `toggle` / `invoke`, and so on. `tools/list` carries the full schema for each —
@@ -235,6 +249,13 @@ trigger and counts toward its fire counter, a `disabled` trigger can still be in
 re-armed by it), and the trigger's [burst cap](/sessions/triggers/#burst-control) still applies — over
 it the tool returns the burst-notice session, or reports that nothing was created. See [firing a
 trigger by hand](/sessions/triggers/#firing-a-trigger-by-hand).
+
+`action_session`'s `pause_into_spot_queue` is the MCP half of **Pause Until → Spot Queue** in the web
+UI, and the counterpart of `wake_me_up_later` for a session with no time worth naming: it sleeps the
+session with no trigger at all and leaves it for the spot scheduler, which resumes it when a Claude
+Code account is under both quota targets and a slot is free. It is on the `self_session` surface too,
+because a session waiting on quota rather than on an event is exactly the caller for it. See
+[Spot and priority](/sessions/spot-and-priority/#joining-the-queue-on-purpose).
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
@@ -288,6 +309,10 @@ window.
 It lives in `health` rather than `sessions` for the same reason `get_spot_policy` does — this is the
 deployment's posture, not one session's business — and it is therefore **not** in the `self_session`
 set injected into every session. A session has no reason to read the whole fleet's bill.
+
+Every fleet report states how complete the ledger is: a `Partial history` warning with the sweep's
+progress while the one-time historical backfill is still running, and the covered window once it has
+finished. An agent comparing this month against last needs to know which of the two it is looking at.
 
 The usual caution applies to anything it returns: the dollar figures are list price on
 subscription-billed accounts, so they are a comparable unit across models rather than money owed,

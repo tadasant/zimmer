@@ -26,8 +26,9 @@
 # The defaults below are policy, not physics — but where you change them depends
 # on the kind, and the split is deliberate:
 #
-#   - Five of the eight kinds (`slack`, `github_issue`, `github_label`,
-#     `schedule`, `ao_event`) are restatements of trigger condition types. Their
+#   - Six of the nine kinds (`slack`, `github_issue`, `github_label`,
+#     `schedule`, `ao_event`, `system_event`) are restatements of trigger condition
+#     types. Their
 #     selector lives on the Trigger row (Trigger#scheduling_class), so one noisy
 #     `slack` trigger can be spot without demoting the eleven others that carry a
 #     human waiting for an answer. `#trigger_backed?` marks them.
@@ -52,6 +53,7 @@ module SessionGenesis
   GITHUB_LABEL = "github_label"
   SCHEDULE = "schedule"
   AO_EVENT = "ao_event"
+  SYSTEM_EVENT = "system_event"
   API = "api"
   UNKNOWN = "unknown"
 
@@ -102,6 +104,15 @@ module SessionGenesis
                    "Machine-to-machine follow-up with no human waiting."
     ),
     Kind.new(
+      key: SYSTEM_EVENT,
+      label: "System-event trigger",
+      default_class: PRIORITY,
+      description: "A system-event trigger fired because the DEPLOYMENT changed state — today, the " \
+                   "account pool recovering. Priority by default: the session it spawns is the one " \
+                   "that decides which spot work starts, so gating it on the quota it exists to " \
+                   "manage would deadlock the queue it is there to drain."
+    ),
+    Kind.new(
       key: API,
       label: "API / agent spawn",
       default_class: SPOT,
@@ -130,6 +141,7 @@ module SessionGenesis
     "slack" => "slack",
     "schedule" => "schedule",
     "ao_event" => "ao_event",
+    "system_event" => "system_event",
     "github_label" => "github_label",
     "github_issue" => "github_issue"
   }.freeze
@@ -137,7 +149,7 @@ module SessionGenesis
   # Which genesis wins when one trigger carries several condition types. The
   # human-facing kinds come first, so a mixed trigger is never silently demoted
   # to spot on the strength of a condition that did not fire.
-  CONDITION_TYPE_PRECEDENCE = %w[slack github_label github_issue ao_event schedule].freeze
+  CONDITION_TYPE_PRECEDENCE = %w[slack system_event github_label github_issue ao_event schedule].freeze
 
   # The kinds a trigger can produce. Their class is chosen per trigger, so there
   # is no per-kind setting for them.

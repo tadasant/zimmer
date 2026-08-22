@@ -1003,6 +1003,28 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_nil trigger.reload.scheduling_class, "the \"Default\" option submits blank, not a class named empty"
   end
 
+  test "the form's precedence is permitted, and blank predefines nothing" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    patch trigger_path(trigger), params: { trigger: { name: trigger.name, precedence: "750" } }
+    assert_equal 750, trigger.reload.precedence
+
+    patch trigger_path(trigger), params: { trigger: { name: trigger.name, precedence: "" } }
+    assert_nil trigger.reload.precedence, "an empty field predefines nothing, rather than a rank of zero"
+  end
+
+  test "the trigger page shows a predefined precedence" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    get trigger_path(trigger)
+    assert_response :success
+    assert_select "#trigger-precedence", text: /none predefined/
+
+    trigger.update!(precedence: 4242)
+    get trigger_path(trigger)
+    assert_select "#trigger-precedence", text: /4242/
+  end
+
   test "the trigger page shows the effective class and where it came from" do
     trigger = triggers(:enabled_schedule_trigger)
 

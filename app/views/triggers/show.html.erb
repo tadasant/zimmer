@@ -289,6 +289,19 @@
               </span>
             </dd>
           </div>
+          <div>
+            <dt class="text-sm font-medium text-gray-500">Precedence</dt>
+            <dd class="mt-1 flex flex-wrap items-center gap-2" id="trigger-precedence">
+              <% if @trigger.precedence.present? %>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 tabular-nums">
+                  <%= @trigger.precedence %>
+                </span>
+                <span class="text-xs text-gray-500">stamped on the sessions this trigger spawns — higher is worked first</span>
+              <% else %>
+                <span class="text-xs text-gray-500">none predefined</span>
+              <% end %>
+            </dd>
+          </div>
           <% if @trigger.mcp_servers.present? %>
             <div class="sm:col-span-2">
               <dt class="text-sm font-medium text-gray-500">MCP Servers</dt>

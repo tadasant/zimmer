@@ -1,0 +1,272 @@
+# frozen_string_literal: true
+
+require "test_helper"
+
+# The Ranked view and the writes it makes: the queue screen where spot work is
+# ordered, and priority work is demoted into it.
+class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
+  def spot(precedence, title: "spot #{precedence}", status: :waiting)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", title: title,
+      status: status, scheduling_class: SessionGenesis::SPOT, precedence: precedence)
+  end
+
+  def priority(precedence: 0, title: "priority")
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", title: title,
+      status: :waiting, scheduling_class: SessionGenesis::PRIORITY, precedence: precedence)
+  end
+
+  # Where each session's row appears in the rendered page, so ordering can be
+  # asserted without reaching into controller internals.
+  def row_position(session)
+    response.body.index("ranked_row_#{session.id}\"")
+  end
+
+  def spot_row_ids
+    response.body.scan(/data-ranked-queue-target="spotList".*?<\/ul>/m).first.to_s
+      .scan(/ranked_row_(\d+)"/).flatten.map(&:to_i)
+  end
+
+  def priority_row_ids
+    response.body.scan(/data-ranked-queue-target="priorityList".*?<\/ul>/m).first.to_s
+      .scan(/ranked_row_(\d+)"/).flatten.map(&:to_i)
+  end
+
+  # --- the view ---------------------------------------------------------------
+
+  test "the ranked view lists spot sessions highest precedence first" do
+    low = spot(10)
+    high = spot(900)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "waiting" ])
+
+    assert_response :success
+    assert_equal [ high.id, low.id ], spot_row_ids
+  end
+
+  test "the ranked view splits priority sessions out above the queue" do
+    queued = spot(10)
+    top = priority
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "waiting" ])
+
+    assert_includes priority_row_ids, top.id
+    assert_not_includes spot_row_ids, top.id
+    assert_includes spot_row_ids, queued.id
+  end
+
+  # The dashboard's default is `needs_input`, which would show an empty queue on
+  # a screen whose whole subject is work that has not started.
+  test "the ranked view defaults to showing unstarted work" do
+    queued = spot(10)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    assert_includes spot_row_ids, queued.id,
+      "a `waiting` session must be visible without the user choosing a filter first"
+  end
+
+  test "an explicitly chosen status filter still wins in the ranked view" do
+    spot(10)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "needs_input" ])
+
+    assert_empty spot_row_ids
+    assert_includes response.body, "No spot sessions match these filters"
+  end
+
+  # --- quick filters ----------------------------------------------------------
+
+  test "the All Unarchived quick filter shows live work and hides the trash" do
+    live = spot(10, title: "live spot")
+    trashed = spot(11, title: "trashed spot", status: :archived)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1",
+      status: SessionsController::UNARCHIVED_STATUSES)
+
+    assert_response :success
+    assert_includes spot_row_ids, live.id
+    assert_not_includes spot_row_ids, trashed.id
+  end
+
+  test "the All Priority Unarchived quick filter drops the spot queue entirely" do
+    queued = spot(10)
+    top = priority
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1",
+      status: SessionsController::UNARCHIVED_STATUSES, priority_class: SessionGenesis::PRIORITY)
+
+    assert_includes priority_row_ids, top.id
+    assert_not_includes spot_row_ids, queued.id
+  end
+
+  test "the All quick filter shows the trash too" do
+    trashed = spot(11, title: "trashed spot", status: :archived)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1")
+
+    assert_includes spot_row_ids, trashed.id, "no status ticked is every status"
+  end
+
+  test "a quick filter is persisted the way an Apply is" do
+    get root_url(filters: "1", status: SessionsController::UNARCHIVED_STATUSES)
+    assert_response :success
+
+    # A bare visit afterwards keeps the choice rather than snapping back to the
+    # needs_input default.
+    live = spot(10, title: "live spot")
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    assert_includes spot_row_ids, live.id
+  end
+
+  # --- editing a rank ---------------------------------------------------------
+
+  test "update_precedence sets the value and answers with JSON for the ranked view" do
+    session = spot(10)
+
+    patch update_precedence_session_url(session), params: { precedence: 640 }, as: :json
+
+    assert_response :success
+    assert_equal 640, session.reload.precedence
+    assert_equal 640, response.parsed_body["precedence"]
+  end
+
+  test "update_precedence records the change in the session log" do
+    session = spot(10)
+
+    patch update_precedence_session_url(session), params: { precedence: 55 }
+
+    assert_includes session.logs.reload.map(&:content).join, "Precedence set to 55 (was 10)"
+  end
+
+  test "update_precedence rejects a value outside the accepted range" do
+    session = spot(10)
+
+    patch update_precedence_session_url(session),
+      params: { precedence: SessionPrecedence::MAX + 1 }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal 10, session.reload.precedence
+  end
+
+  # --- dragging ---------------------------------------------------------------
+
+  test "reorder_precedence takes the midpoint of the two rows it was dropped between" do
+    above = spot(100)
+    below = spot(50)
+    moved = spot(1)
+
+    patch reorder_precedence_session_url(moved),
+      params: { above_id: above.id, below_id: below.id }, as: :json
+
+    assert_response :success
+    assert_equal 75, moved.reload.precedence
+    assert_equal 75, response.parsed_body["precedence"]
+  end
+
+  test "reorder_precedence nudges adjacent neighbours apart and reports every change" do
+    above = spot(21)
+    below = spot(20)
+    moved = spot(1)
+
+    patch reorder_precedence_session_url(moved),
+      params: { above_id: above.id, below_id: below.id }, as: :json
+
+    assert_response :success
+    assert_equal 22, above.reload.precedence
+    assert_equal 19, below.reload.precedence
+
+    changed = response.parsed_body["changes"].to_h { |c| [ c["id"], c["precedence"] ] }
+    assert_equal 22, changed[above.id]
+    assert_equal 19, changed[below.id]
+  end
+
+  test "a demotion does not land above an archived session's rank" do
+    spot(9_000, title: "archived top", status: :archived)
+    spot(40)
+    session = priority
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::SPOT, place: "top_of_spot" }, as: :json
+
+    assert_equal 40 + SessionPrecedence::SLOT_GAP, session.reload.precedence
+  end
+
+  # A stale page can name a row that has since left the queue. It must not be
+  # nudged: nobody is looking at it, and its rank is what a later demotion or
+  # promotion reads.
+  test "a neighbour that is no longer in the spot queue is ignored" do
+    archived = spot(50, title: "archived neighbour", status: :archived)
+    moved = spot(1)
+
+    patch reorder_precedence_session_url(moved),
+      params: { above_id: nil, below_id: archived.id }, as: :json
+
+    assert_response :success
+    assert_equal 50, archived.reload.precedence, "an archived row must not be nudged"
+    assert_equal SessionPrecedence::DEFAULT, moved.reload.precedence,
+      "with no usable neighbour the drop takes the default"
+  end
+
+  test "a drag that changes nothing writes no log line" do
+    above = spot(100)
+    below = spot(50)
+    moved = spot(75)
+
+    assert_no_difference -> { moved.logs.count } do
+      patch reorder_precedence_session_url(moved),
+        params: { above_id: above.id, below_id: below.id }, as: :json
+    end
+    assert_response :success
+    assert_equal 75, moved.reload.precedence
+  end
+
+  test "a neighbour that has since disappeared still places the drop" do
+    below = spot(50)
+    moved = spot(1)
+
+    patch reorder_precedence_session_url(moved),
+      params: { above_id: 999_999, below_id: below.id }, as: :json
+
+    assert_response :success
+    assert_equal 50 + SessionPrecedence::SLOT_GAP, moved.reload.precedence
+  end
+
+  # --- demote / promote -------------------------------------------------------
+
+  test "demoting a priority session lands it above the top of the spot queue" do
+    spot(70)
+    session = priority
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::SPOT, place: "top_of_spot" }, as: :json
+
+    assert_response :success
+    session.reload
+    assert session.spot?
+    assert_equal 70 + SessionPrecedence::SLOT_GAP, session.precedence
+  end
+
+  test "promoting a spot session keeps the rank it will land on if demoted again" do
+    session = spot(64)
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::PRIORITY }, as: :json
+
+    assert_response :success
+    session.reload
+    assert session.priority?
+    assert_equal 64, session.precedence, "the rank rides along so the round trip is coherent"
+  end
+
+  # The HTML form on the session detail page shares the endpoint with the ranked
+  # view's fetch, so it must keep redirecting rather than answering JSON.
+  test "the scheduling class form still redirects for an HTML request" do
+    session = priority
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::SPOT }
+
+    assert_redirected_to session_path(session)
+  end
+end

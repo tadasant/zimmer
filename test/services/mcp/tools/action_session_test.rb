@@ -49,6 +49,67 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/Unknown scheduling_class/, error.message)
   end
 
+  # --- precedence -------------------------------------------------------------
+
+  test "change_precedence sets the rank and reports the move" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 10)
+
+    output = @tool.call("action" => "change_precedence", "session_id" => session.id, "precedence" => 900)
+
+    assert_equal 900, session.reload.precedence
+    assert_includes output, "## Precedence Updated"
+    assert_includes output, "- **Precedence:** 900 (was 10)"
+  end
+
+  # A priority session carries a rank it does not currently use. Saying so beats
+  # letting an agent think it has just changed when the session starts.
+  test "change_precedence on a priority session says the rank is not gating it" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    output = @tool.call("action" => "change_precedence", "session_id" => session.id, "precedence" => 5)
+
+    assert_includes output, "this session is priority"
+  end
+
+  test "change_precedence requires the parameter" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_precedence", "session_id" => sessions(:needs_input).id)
+    end
+    assert_match(/"precedence" parameter is required/, error.message)
+  end
+
+  test "change_precedence rejects a non-integer" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_precedence", "session_id" => sessions(:needs_input).id,
+        "precedence" => "urgent")
+    end
+    assert_match(/precedence must be an integer/, error.message)
+  end
+
+  # A demotion that does not also place the session leaves it wherever its old
+  # rank puts it, which is usually the bottom — so one call can do both.
+  test "change_scheduling_class can place the session in the same call" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY, precedence: 0)
+
+    output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+      "scheduling_class" => "spot", "precedence" => 4242)
+
+    session.reload
+    assert session.spot?
+    assert_equal 4242, session.precedence
+    assert_includes output, "- **Precedence:** 4242 (was 0)"
+  end
+
+  test "the precedence description states the absolute scale" do
+    description = Mcp::Tools::ActionSession.input_schema.to_h.dig(:properties, :precedence, :description)
+
+    assert_match(/absolute scale/i, description)
+    assert_match(/100000 comes before 50/, description)
+  end
+
   test "rejects an unknown action" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "self_destruct", "session_id" => sessions(:needs_input).id) }
     assert_match(/Unknown action/, error.message)
@@ -846,5 +907,53 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       assert_includes result, "- **Refreshed:** 0"
       assert_nil failed.reload.transcript, "the restarted session's transcript must be left for its new job"
     end
+  end
+  # MCP parity for the web UI's "Pause Until → Spot Queue": an agent that has no
+  # time worth naming can park itself in the queue instead of inventing one.
+  test "pause_into_spot_queue parks a session with no wake trigger" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    output = assert_no_difference "Trigger.count" do
+      @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id)
+    end
+
+    assert_includes output, "Parked In The Spot Queue"
+    assert_includes output, "precedence #{session.precedence}"
+    session.reload
+    assert session.waiting?
+    assert session.spot?, "a priority session cannot sit in the queue"
+    assert SpotSessionPause.queued_by_user?(session)
+    assert_not session.awaiting_scheduled_wake?
+  end
+
+  test "pause_into_spot_queue keeps a resume prompt for the sweep" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id, "prompt" => "Pick the migration back up")
+
+    assert_equal "Pick the migration back up", session.reload.metadata[SpotSessionPause::QUEUED_PROMPT]
+  end
+
+  # The gate the web UI enforces, enforced here too: a `waiting` session with no
+  # session_id has never started — it is queued for spawn, not asleep.
+  test "pause_into_spot_queue refuses a session that has never started" do
+    queued = sessions(:waiting)
+    assert_nil queued.session_id
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "pause_into_spot_queue", "session_id" => queued.id)
+    end
+
+    assert_match(/cannot be put in the spot queue/, error.message)
+    assert_nil (queued.reload.metadata || {})[SpotSessionPause::PAUSED_REASON]
+  end
+
+  test "pause_into_spot_queue refuses a session that cannot be slept" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "pause_into_spot_queue", "session_id" => sessions(:archived).id)
+    end
+
+    assert_match(/cannot be put in the spot queue/, error.message)
   end
 end

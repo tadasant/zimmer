@@ -59,7 +59,10 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
       if success
         { access_token: "stubbed-access", refresh_token: "stubbed-refresh", expires_in: 3600 }.to_json
       else
-        { error: "invalid_grant" }.to_json
+        # The description matters: an expired refresh token is the response that
+        # proves a dead credential, and it is dead credentials these tests model.
+        # A bare invalid_grant means only that the value was rejected (#530).
+        { error: "invalid_grant", error_description: "Refresh token expired" }.to_json
       end
     )
     Net::HTTP.any_instance.stubs(:request).returns(response)

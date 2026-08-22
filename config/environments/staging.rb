@@ -103,6 +103,11 @@ Rails.application.configure do
   config.good_job.enable_cron = true
   config.good_job.enable_dashboard = true
   config.good_job.cron = {
+    outcome_analysis_batch_pump: {
+      cron: "* * * * *", # Every minute — the engine behind "Analyze All" concurrency
+      class: "OutcomeAnalysisBatchPumpJob",
+      description: "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
+    },
     cleanup_orphaned_sessions: {
       cron: "*/5 * * * *", # Every 5 minutes
       class: "CleanupOrphanedSessionsJob",
@@ -142,6 +147,16 @@ Rails.application.configure do
       cron: "*/10 * * * *", # Every 10 minutes
       class: "TokenUsageIngestionJob",
       description: "Sweep recent transcripts into the token-spend ledger"
+    },
+    token_usage_backfill: {
+      cron: "*/5 * * * *", # Every 5 minutes; a no-op once history has been swept
+      class: "TokenUsageBackfillJob",
+      description: "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box"
+    },
+    experimental_flag_backfill: {
+      cron: "*/15 * * * *", # Every 15 minutes; an indexed anti-join that writes nothing once history is labelled
+      class: "ExperimentalFlagBackfillJob",
+      description: "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
     },
     cli_status_refresh: {
       cron: "*/2 * * * *", # Every 2 minutes
@@ -230,6 +245,11 @@ Rails.application.configure do
       cron: "*/15 * * * *", # Every 15 minutes
       class: "QuotaResetCheckerJob",
       description: "Check if quota-exceeded accounts have reset and restore them to active"
+    },
+    spot_ceiling_sweep: {
+      cron: "*/5 * * * *", # Every 5 minutes — quota readings land every 15, so this is not the bound
+      class: "SpotCeilingSweepJob",
+      description: "Pause running spot sessions when a quota window reaches its target, and resume them when it falls"
     },
     claude_usage_sampler: {
       cron: "*/15 * * * *", # Every 15 minutes

@@ -70,6 +70,17 @@
 # back the entire premise of the feature — spot work is work you are happy to
 # have later, not work you are happy to lose.
 #
+# == The target is a ceiling, not just a starting line
+#
+# Admission is only half of it. A session admitted at 79% goes on spending, and
+# a fleet of them carries the window past the target it was supposed to stop at
+# — which is what 89% against an 80% target looked like on 2026-08-20, with the
+# gate correctly reporting itself as holding the whole time. So the same
+# decision is re-evaluated while sessions are in flight: SpotSessionPause pauses
+# the spot sessions that are already RUNNING when a window arrives at its
+# target, and resumes them when it comes back down. This service stays the only
+# place that decides; the sweep only acts on what `evaluate` answers.
+#
 # == Fail-open
 #
 # Every uncertain condition allows the session: gating off, no quota readings,
@@ -81,6 +92,18 @@ class SpotGateService
   # slot is noticed promptly; long enough that a held fleet is not re-evaluating
   # every few seconds.
   RETRY_DELAY = 10.minutes
+
+  # How far below its target a window has to fall before a session that was
+  # PAUSED mid-flight is resumed, in percentage points.
+  #
+  # Admission needs no such margin: holding a session that has not started costs
+  # nothing, so the plain target is the right line for it. Resuming one that was
+  # interrupted mid-turn costs a lost tool call and a re-orientation prompt, and
+  # a session resumed the instant a window dips to 79.9% pushes it straight back
+  # over — a pause/resume flap that spends tokens on nothing but flapping. The
+  # margin buys the pool a real distance from the target before that work
+  # restarts. Only .resume_decision applies it.
+  RESUME_MARGIN_PCT = 5
 
   # One quota window as last read, against the target it is filling toward.
   Reading = Data.define(:current, :threshold) do
@@ -168,6 +191,23 @@ class SpotGateService
     def evaluate
       new.evaluate
     end
+
+    # The decision for a session that is already RUNNING and paused: the same
+    # evaluation, against targets lowered by RESUME_MARGIN_PCT.
+    #
+    # Deliberately not rendered anywhere. Its `detail` names the lowered target,
+    # which is the honest description of what it decided on and the wrong number
+    # to show beside the policy the operator set — /quotas and `get_spot_policy`
+    # render `evaluate`.
+    def resume_decision
+      new(margin_pct: RESUME_MARGIN_PCT).evaluate
+    end
+  end
+
+  # @param margin_pct [Integer] percentage points to subtract from both window
+  #   targets before deciding. Zero for every admission decision.
+  def initialize(margin_pct: 0)
+    @margin_pct = margin_pct
   end
 
   def evaluate
@@ -300,6 +340,8 @@ class SpotGateService
   def reading(current, threshold_pct)
     return nil if current.nil?
 
-    Reading.new(current: current, threshold: threshold_pct.to_f / 100.0)
+    effective = [ threshold_pct.to_f - @margin_pct.to_f, 0.0 ].max
+
+    Reading.new(current: current, threshold: effective / 100.0)
   end
 end

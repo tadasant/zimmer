@@ -509,7 +509,27 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     assert_not codex.reload.needs_reauth?, "transient failure must not mark needs_reauth"
   end
 
-  test "permanent codex failure (refresh_token_reused) marks needs_reauth without retry" do
+  test "permanent codex failure (refresh_token_expired) marks needs_reauth without retry" do
+    codex = claude_accounts(:codex_primary)
+    set_codex_last_refresh!(codex, 25.hours.ago)
+
+    failed_response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    failed_response.stubs(:code).returns("400")
+    failed_response.stubs(:body).returns({ error: { code: "refresh_token_expired" } }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(failed_response)
+
+    assert_no_enqueued_jobs(only: RefreshRuntimeAuthTokensJob) do
+      RefreshRuntimeAuthTokensJob.perform_now
+    end
+
+    assert codex.reload.needs_reauth?
+  end
+
+  # refresh_token_reused says somebody else spent the value. That is neither a
+  # reason to summon a human nor a reason to climb the retry ladder — every rung
+  # would present the same spent value and be rejected the same way, and the
+  # ladder ends in an .error nobody can act on (#530).
+  test "codex refresh_token_reused neither condemns the account nor schedules a retry" do
     codex = claude_accounts(:codex_primary)
     set_codex_last_refresh!(codex, 25.hours.ago)
 
@@ -522,7 +542,27 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
       RefreshRuntimeAuthTokensJob.perform_now
     end
 
-    assert codex.reload.needs_reauth?
+    assert_not codex.reload.needs_reauth?
+    assert_equal 1, codex.stale_refresh_failures
+  end
+
+  test "a stale Claude rejection is not retried and does not page" do
+    account = claude_accounts(:expired_token)
+
+    failed_response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
+    failed_response.stubs(:code).returns("400")
+    failed_response.stubs(:body).returns({
+      error: "invalid_grant", error_description: "Refresh token not found or invalid"
+    }.to_json)
+    Net::HTTP.any_instance.stubs(:request).returns(failed_response)
+
+    Rails.logger.expects(:error).never
+
+    assert_no_enqueued_jobs(only: RefreshRuntimeAuthTokensJob) do
+      RefreshRuntimeAuthTokensJob.perform_now
+    end
+
+    assert_not account.reload.needs_reauth?
   end
 
   private

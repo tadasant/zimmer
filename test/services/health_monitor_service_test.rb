@@ -257,6 +257,110 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     insert_good_jobs(count) { { locked_by_id: SecureRandom.uuid, locked_at: Time.current } }
   end
 
+  # === Ready-backlog breakdown ===
+  #
+  # A ready count alone cannot tell a starved queue from a busy one, and Zimmer
+  # runs four queues with very different thread counts and job durations. Every
+  # triage of a backlog page opens with "deep with WHAT", and until this existed
+  # the only answer was the GoodJob dashboard — which the agent sessions that
+  # actually read these pages have no route to.
+
+  test "ready_backlog_breakdown splits the backlog by queue and by job class" do
+    insert_good_jobs(7) { { queue_name: "agents", job_class: "AgentSessionJob", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(2) { { queue_name: "default", job_class: "SessionTitleJob", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(1) { { queue_name: "pollers", job_class: "SlackTriggerPollerJob", scheduled_at: 5.minutes.ago } }
+
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+
+    assert_equal({ "agents" => 7, "default" => 2, "pollers" => 1 }, breakdown[:by_queue])
+    assert_equal({ "AgentSessionJob" => 7, "SessionTitleJob" => 2, "SlackTriggerPollerJob" => 1 },
+                 breakdown[:by_job_class])
+  end
+
+  test "ready_backlog_breakdown orders biggest first so the starved queue reads first" do
+    insert_good_jobs(2) { { queue_name: "default", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(9) { { queue_name: "agents", scheduled_at: 5.minutes.ago } }
+
+    assert_equal [ "agents", "default" ], HealthMonitorService.new.ready_backlog_breakdown[:by_queue].keys
+  end
+
+  # The breakdown must be taken over the same population as `ready_count`, or the
+  # two halves of the alert would contradict each other — and a future-dated wake-up
+  # counted as backlog is the exact arithmetic that paged four times in three days.
+  test "ready_backlog_breakdown ignores scheduled and claimed work" do
+    enqueue_ready_jobs(3)
+    insert_good_jobs(5) { { queue_name: "agents", scheduled_at: 1.hour.from_now } }
+    insert_good_jobs(4) { { queue_name: "agents", locked_by_id: SecureRandom.uuid, locked_at: Time.current } }
+
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+
+    assert_equal({ "default" => 3 }, breakdown[:by_queue])
+    assert_equal({ "PlaceholderJob" => 3 }, breakdown[:by_job_class])
+    assert_equal 3, breakdown[:by_queue].values.sum,
+                 "the breakdown must add up against ready_count, not against every unfinished row"
+  end
+
+  # The cap keeps the alert readable; the remainder keeps it honest. The alert
+  # asks its reader to tell "concentrated in one queue" from "spread across every
+  # queue", and five names with no total look identical whether they are the whole
+  # backlog or a tenth of it.
+  test "ready_backlog_breakdown caps the entries but reports what it cut" do
+    %w[a b c d e f g].each_with_index do |queue, i|
+      insert_good_jobs(10 - i) { { queue_name: queue, scheduled_at: 5.minutes.ago } }
+    end
+
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    limit = HealthMonitorService::READY_BREAKDOWN_LIMIT
+
+    assert_equal [ "a", "b", "c", "d", "e", "other (2 more)" ], breakdown[:by_queue].keys
+    assert_equal limit + 1, breakdown[:by_queue].size
+    assert_equal 5 + 4, breakdown[:by_queue]["other (2 more)"], "the remainder carries the counts it cut"
+    assert_equal (4..10).sum, breakdown[:by_queue].values.sum,
+                 "a capped breakdown must still add up against ready_count"
+  end
+
+  test "ready_backlog_breakdown adds no remainder when nothing was cut" do
+    insert_good_jobs(3) { { queue_name: "agents", scheduled_at: 5.minutes.ago } }
+
+    assert_equal({ "agents" => 3 }, HealthMonitorService.new.ready_backlog_breakdown[:by_queue])
+  end
+
+  # Ties would otherwise come out in whatever order the adapter felt like,
+  # so two readings of an unchanged queue could disagree.
+  test "ready_backlog_breakdown breaks ties by name so the order is stable" do
+    %w[zebra alpha middle].each do |queue|
+      insert_good_jobs(4) { { queue_name: queue, scheduled_at: 5.minutes.ago } }
+    end
+
+    assert_equal [ "alpha", "middle", "zebra" ],
+                 HealthMonitorService.new.ready_backlog_breakdown[:by_queue].keys
+  end
+
+  # A row with no job_class is labelled rather than dropped, and blank and nil
+  # are SUMMED onto one label rather than one silently replacing the other.
+  test "ready_backlog_breakdown labels rows with no job class instead of losing them" do
+    insert_good_jobs(2) { { job_class: nil, queue_name: "agents", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(3) { { job_class: "", queue_name: "agents", scheduled_at: 5.minutes.ago } }
+
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+
+    assert_equal({ HealthMonitorService::UNKNOWN_LABEL => 5 }, breakdown[:by_job_class])
+    assert_equal breakdown[:by_queue].values.sum, breakdown[:by_job_class].values.sum
+  end
+
+  test "ready_backlog_breakdown is empty when nothing is waiting" do
+    assert_equal({ by_queue: {}, by_job_class: {} }, HealthMonitorService.new.ready_backlog_breakdown)
+  end
+
+  # Three distinct answers, because they are three different facts about an
+  # incident: the query failed, nothing is waiting, or here is the split.
+  test "format_breakdown tells a failed read apart from an empty one" do
+    assert_equal "unavailable", HealthMonitorService.format_breakdown(nil)
+    assert_equal "none", HealthMonitorService.format_breakdown({})
+    assert_equal "agents 231, default 18",
+                 HealthMonitorService.format_breakdown({ "agents" => 231, "default" => 18 })
+  end
+
   test "queue_depth counts ready work only, not scheduled or claimed jobs" do
     enqueue_ready_jobs(68)
     enqueue_scheduled_jobs(23)

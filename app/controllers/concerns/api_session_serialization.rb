@@ -35,6 +35,8 @@ module ApiSessionSerialization
       genesis: session.genesis_key,
       scheduling_class: session.scheduling_class,
       priority_class: session.priority_class(genesis_class_overrides),
+      # Rank within the spot queue: higher is handled sooner, absolute scale.
+      precedence: session.precedence,
       prompt: session.prompt,
       git_root: session.git_root,
       branch: session.branch,

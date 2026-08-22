@@ -572,6 +572,28 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_equal "warn,rmcp=info", env["RUST_LOG"]
   end
 
+  # ENABLE_TOOL_SEARCH is a Claude Code flag written by ClaudeSpawnEnv, which the
+  # Codex adapter does not include. The global MCP tool search setting is
+  # therefore scoped to Claude Code: turning it on must not leak a variable into
+  # a Codex child that has no meaning there.
+  test "spawn never sets ENABLE_TOOL_SEARCH, whatever the MCP tool search setting says" do
+    AppSetting.delete_all
+    AppSetting.create!(mcp_tool_search_enabled: true)
+
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    env = @mock_process_manager.spawned_processes.last[:env]
+    assert_not env.key?("ENABLE_TOOL_SEARCH")
+
+    AppSetting.current.update!(mcp_tool_search_enabled: false)
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    env = @mock_process_manager.spawned_processes.last[:env]
+    assert_not env.key?("ENABLE_TOOL_SEARCH")
+  ensure
+    AppSetting.delete_all
+  end
+
   test "spawn respects an explicit RUST_LOG from the session .env" do
     @mock_file_system.write(File.join(@test_dir, ".env"), "RUST_LOG=debug\n")
 

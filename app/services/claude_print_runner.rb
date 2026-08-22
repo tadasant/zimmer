@@ -32,7 +32,18 @@ module ClaudePrintRunner
   # response (raw, unstripped — the consumer decides how to clean it); `usage`
   # is the model's token usage when the backend can surface it (PTY backend) or
   # nil when it cannot (native `-p` prints text only).
-  Result = Struct.new(:text, :usage, keyword_init: true)
+  #
+  # `exit_status` is the backend's process exit code when it has one, and is the
+  # only WORDING-INDEPENDENT evidence that the CLI refused rather than answered.
+  # It matters because `claude -p` prints its own error to stdout and exits
+  # non-zero: without this, a consumer reading only `text` stores the error as
+  # though it were the answer. A backend that cannot produce an exit code (the
+  # PTY transport drives a TUI, not a one-shot process) leaves it nil, which
+  # consumers must read as "unknown", never as "failed".
+  Result = Struct.new(:text, :usage, :exit_status, keyword_init: true) do
+    # True only when the backend reported a code AND that code is a failure.
+    def failed? = !exit_status.nil? && !exit_status.zero?
+  end
 
   module_function
 

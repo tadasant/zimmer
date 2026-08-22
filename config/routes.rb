@@ -25,8 +25,21 @@ Rails.application.routes.draw do
     resources :logs
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
+    # Read-only plus destroy: an analysis is a reading a specific analyzer took of
+    # a specific transcript, so there is nothing to hand-author and editing one
+    # would forge it. A row saved in error is superseded by saving another, or
+    # removed here.
+    resources :outcome_analyses, except: [ :new, :create, :edit, :update ]
+    # No create: a batch exists because someone clicked Analyze All. Edit is
+    # limited to `status`/`state` (the dashboards' FORM_ATTRIBUTES) — the escape
+    # hatch for a batch or item wedged in `running` that the pump cannot resolve.
+    resources :outcome_analysis_batches, except: [ :new, :create ]
+    resources :outcome_analysis_batch_items, except: [ :new, :create ]
     resources :runtime_login_attempts
     resources :session_token_usages, only: [ :index, :show ]
+    resources :token_usage_backfills, only: [ :index, :show ]
+    resources :token_usage_features, only: [ :index, :show ]
+    resources :session_experimental_flags, only: [ :index, :show ]
     resources :sessions
     # No create: a summary row exists because a session asked for one. Edit is
     # limited to `state` (the dashboard's FORM_ATTRIBUTES), which is how an
@@ -85,6 +98,8 @@ Rails.application.routes.draw do
       # `records` is the row-level export the cost-vs-performance analysis needs.
       get "costs", to: "costs#index"
       get "costs/records", to: "costs#records"
+      # Ops action, not a shell: sweep every transcript into the ledger.
+      post "costs/backfill", to: "costs#backfill"
 
       # Organizational categories for the sessions dashboard.
       resources :categories, only: [ :index, :create, :update, :destroy ] do
@@ -135,6 +150,12 @@ Rails.application.routes.draw do
           end
         end
       end
+
+      # Outcome analyses of archived session transcripts (the Outcomes view).
+      # `create` is the REST half of the `save_outcome_analysis` MCP tool; :id on
+      # the member routes is the ANALYZED SESSION's id or slug, not the analysis
+      # row's, because a caller has a handle on the session.
+      resources :outcome_analyses, only: [ :index, :show, :create ]
 
       # MCP server fallback elicitations
       resources :elicitations, only: [ :create, :show ] do
@@ -233,6 +254,9 @@ Rails.application.routes.draw do
   # Costs sits beside Quotas: same posture question, different source. Quotas
   # reads Anthropic's rate-limit headers; Costs reads our own token ledger.
   get "costs", to: "costs#show", as: :costs
+  # Re-scan every transcript into the ledger. An ops action with a button rather
+  # than a rake task, because nobody is meant to need a shell on the box.
+  post "costs/backfill", to: "costs#backfill", as: :costs_backfill
   get "quotas", to: "quotas#show", as: :quotas
   post "quotas/refresh_all", to: "quotas#refresh_all", as: :refresh_all_quotas
   post "quotas/refresh_account/:id", to: "quotas#refresh_account", as: :refresh_account_quotas
@@ -250,6 +274,18 @@ Rails.application.routes.draw do
   patch "quotas/spot_policy", to: "spot_policies#update", as: :spot_policy
   patch "quotas/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
   delete "quotas/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
+
+  # Outcomes: the transcript-outcome analysis ledger, one transcript's
+  # flamegraph drilldown, and the separate summary-stats surface. Every write
+  # here spawns agent sessions, so all of them are POSTs — nothing analyzes on a
+  # page load.
+  get "outcomes", to: "outcomes#index", as: :outcomes
+  get "outcomes/stats", to: "outcomes#stats", as: :outcomes_stats
+  post "outcomes/analyze_all", to: "outcomes#analyze_all", as: :analyze_all_outcomes
+  post "outcomes/batches/:id/cancel", to: "outcomes#cancel_batch", as: :cancel_outcome_batch
+  post "outcomes/:id/analyze", to: "outcomes#analyze", as: :analyze_outcome
+  # Last in the group so it cannot shadow "stats" as a session identifier.
+  get "outcomes/:id", to: "outcomes#show", as: :outcome
 
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the
@@ -320,6 +356,9 @@ Rails.application.routes.draw do
       post :follow_up
       post :refresh
       post :pause
+      # "Pause Until": sleep the session now and schedule a one-time wake trigger
+      # for the chosen time. The UI counterpart of the wake_me_up_later MCP tool.
+      post :pause_until
       post :restart
       post :touch_activity
       patch :update_title
@@ -331,6 +370,8 @@ Rails.application.routes.draw do
       patch :update_model
       patch :update_auto_compact_window
       patch :update_scheduling_class
+      patch :update_precedence
+      patch :reorder_precedence
       patch :update_goal
       patch :toggle_favorite
       patch :toggle_push_notifications

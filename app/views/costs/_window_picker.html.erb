@@ -1,0 +1,54 @@
+<%#
+  The one-click horizons and the calendar range, side by side.
+
+  Both have to be present at once rather than behind a toggle: the presets are
+  what makes the page answer "what happened this week" in one tap, and the
+  calendar is what makes it answer "what did that week in July cost". Hiding
+  either behind the other trades one of those away.
+
+  `<input type="date">` and not a JS date picker. It is the control a phone
+  renders as its own native calendar, which is both the best touch story
+  available and no JavaScript at all.
+
+  locals: window (CostWindow)
+%>
+<div class="mb-6">
+  <div class="border-b border-gray-200">
+    <nav class="-mb-px flex gap-4 sm:gap-6 overflow-x-auto" aria-label="Window">
+      <% CostWindow::PRESETS.each do |days, label| %>
+        <% active = !window.custom? && window.preset_days == days %>
+        <%= link_to costs_path(days: days),
+            class: "whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium #{active ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}",
+            "aria-current": (active ? "page" : nil) do %>
+          <%= label %>
+        <% end %>
+      <% end %>
+      <span class="whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium <%= window.custom? ? "border-indigo-500 text-indigo-600" : "border-transparent text-gray-400" %>">
+        <%= window.custom? ? window.label : "Custom" %>
+      </span>
+    </nav>
+  </div>
+
+  <%= form_with url: costs_path, method: :get, data: { turbo: false },
+        class: "mt-3 flex flex-wrap items-end gap-2 sm:gap-3" do |f| %>
+    <div class="min-w-0">
+      <label for="costs-from" class="block text-xs font-medium text-gray-500 mb-1">From</label>
+      <%= f.date_field :from, id: "costs-from", value: window.from_date,
+            max: Date.current.iso8601,
+            class: "block w-full sm:w-auto rounded-md border-gray-300 shadow-sm text-sm py-1.5 px-2 focus:border-indigo-500 focus:ring-indigo-500" %>
+    </div>
+    <div class="min-w-0">
+      <label for="costs-to" class="block text-xs font-medium text-gray-500 mb-1">To</label>
+      <%= f.date_field :to, id: "costs-to", value: window.to_date,
+            max: Date.current.iso8601,
+            class: "block w-full sm:w-auto rounded-md border-gray-300 shadow-sm text-sm py-1.5 px-2 focus:border-indigo-500 focus:ring-indigo-500" %>
+    </div>
+    <button type="submit"
+            class="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+      Apply
+    </button>
+    <p class="text-xs text-gray-400 basis-full sm:basis-auto sm:ml-1 sm:self-center">
+      Showing <span class="font-medium text-gray-500"><%= window.label %></span>
+    </p>
+  <% end %>
+</div>

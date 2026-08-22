@@ -113,6 +113,7 @@ module SessionStateMachine
         transitions from: :waiting, to: :running, guard: :can_start?
         after do
           reset_elapsed_time_counter
+          record_experimental_setting_flags
           log_state_change("Session started")
         end
       end
@@ -173,6 +174,7 @@ module SessionStateMachine
           clear_lost_elicitation_marker
           clear_pending_sleep
           reset_elapsed_time_counter
+          record_experimental_setting_flags
           mark_notifications_stale
           cancel_pending_one_time_wake_triggers
           log_state_change("Session resumed")
@@ -339,6 +341,38 @@ module SessionStateMachine
       ids.to_set
     end
 
+    # Of +session_ids+, the ids paused until a wall-clock time that has not come
+    # yet — the batch form of #paused_until_scheduled_time?, and the START guard's
+    # question rather than the refresh guard's.
+    #
+    # Deliberately NARROWER than #ids_awaiting_scheduled_wake, and the difference
+    # is the whole reason both exist. A one-time schedule expires: past its moment
+    # the session is no longer paused and every guard built on this stops applying,
+    # which is what makes a pause a deferral rather than a cancellation. A
+    # session-scoped `ao_event` wake has no time at all — it is still "ahead of"
+    # the session forever if the watched session never transitions again (it
+    # failed, it was archived). Refusing to START on that would make one dead
+    # watcher enough to put a session permanently beyond every automated path,
+    # which is a worse failure than the early start it prevents.
+    #
+    # @param session_ids [Array<Integer>] candidate session ids
+    # @return [Set<Integer>] the subset paused until a time still ahead of it
+    # @raise [ActiveRecord::ActiveRecordError] deliberately not rescued — see
+    #   #paused_until_scheduled_time?
+    def ids_paused_until_scheduled_time(session_ids)
+      ids = Array(session_ids).compact
+      return Set.new if ids.empty?
+
+      TriggerCondition
+        .joins(:trigger)
+        .includes(:trigger)
+        .where(condition_type: "schedule", last_triggered_at: nil)
+        .where(triggers: { last_session_id: ids, reuse_session: true, status: "enabled" })
+        .select { |condition| condition.one_time_schedule? && !condition.schedule_due? }
+        .map { |condition| condition.trigger.last_session_id }
+        .to_set
+    end
+
     # Whether +condition+ is a per-session wake-up this session is still waiting on.
     #
     # A session-scoped ao_event has no time component — it fires whenever the
@@ -481,6 +515,60 @@ module SessionStateMachine
     true
   end
 
+  # Whether this session is paused until a wall-clock time it has not reached.
+  #
+  # This is what every START path asks. #awaiting_scheduled_wake? answers the
+  # broader "is this session resting on purpose", which is the right question for
+  # a refresh nudge and the wrong one for a refusal to start — see
+  # .ids_paused_until_scheduled_time for why an `ao_event` wake must not make a
+  # session unstartable.
+  #
+  # Deliberately NOT rescued. The batch form's callers are sweeps that re-read
+  # from scratch minutes later, so treating an unreadable trigger table as "asleep"
+  # costs one pass and errs toward leaving work alone. A start path has no such
+  # next pass: standing down there does not re-enqueue, so swallowing the error
+  # would turn a transient blip into a session that never starts, and would say so
+  # in a log line claiming a pause that does not exist. Callers handle the raise.
+  def paused_until_scheduled_time?
+    pending_one_time_wake_conditions
+      .where(condition_type: "schedule")
+      .any? { |condition| condition.one_time_schedule? && !condition.schedule_due? }
+  end
+
+  # When the earliest pending one-time wake fires, or nil.
+  #
+  # Nil is not "nothing is armed": a session-scoped ao_event wake has no time
+  # component at all (it fires when the watched session transitions), and a
+  # schedule whose timezone or timestamp will not parse has no answer to give.
+  # #awaiting_scheduled_wake? remains the predicate; this is only for the surfaces
+  # that want to SAY when — a log line, the MCP queue listing, an operator banner.
+  #
+  # @return [ActiveSupport::TimeWithZone, nil]
+  def pending_wake_at
+    pending_one_time_wake_conditions
+      .where(condition_type: "schedule")
+      .select { |condition| condition.one_time_schedule? && !condition.schedule_due? }
+      .filter_map do |condition|
+        zone = ActiveSupport::TimeZone[condition.schedule_timezone]
+        zone&.parse(condition.scheduled_at.to_s) rescue nil
+      end
+      .min
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.error(
+      "[SessionStateMachine] Failed to read the pending wake time for session #{id}: #{e.message}"
+    )
+    nil
+  end
+
+  # How a message names the pause: the time if there is one to name, and a plain
+  # statement otherwise. Shared by AgentSessionJob's stand-down log and the
+  # `action_session restart` refusal, so a caller refused by one and then reading
+  # the other's log sees the same sentence.
+  def pending_wake_phrase
+    at = pending_wake_at
+    at ? "it is paused until #{at.utc.iso8601}" : "it is asleep on a pending wake-up"
+  end
+
   # Whether a manual refresh of this session should send the automated continue
   # nudge (AutomatedPrompts::SYSTEM_RECOVERY) instead of only re-syncing its
   # transcript. Applies to `waiting` sessions that have a conversation to resume
@@ -489,10 +577,18 @@ module SessionStateMachine
   # - a session with no `session_id` has never started, so there is nothing to
   #   continue — the spawn pipeline still owns it;
   # - a session with a wake-up still ahead of it is sleeping on purpose, and
-  #   nudging it would fire the work early.
+  #   nudging it would fire the work early;
+  # - a session dormant in the spot queue is also asleep on purpose, and it has
+  #   no wake-up to give it away: nudging one the ceiling paused puts it straight
+  #   back on the window that stopped it, and nudging one a human parked there
+  #   from "Pause Until" undoes the thing they just asked for. Both come back
+  #   through SpotSessionPause's sweep — or immediately, on "Make this session
+  #   priority". The bulk-refresh path already excluded these; this is the same
+  #   rule for a single session.
   def continue_nudge_on_refresh?
     return false unless waiting?
     return false if session_id.blank?
+    return false if SpotSessionPause.paused?(self)
 
     !awaiting_scheduled_wake?
   end
@@ -689,6 +785,32 @@ module SessionStateMachine
     # date from. A session archived with a nil archived_at is inconsistent
     # persistent state and nothing back-fills it.
     report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Tag this session with what every experimental setting is right now.
+  #
+  # Called from `start` and `resume` and NOWHERE ELSE, because those are the two
+  # transitions at which an agent process is about to spawn — and a setting like
+  # MCP tool search takes effect in the spawn environment. Observing here records
+  # what the session actually ran with. The first call fixes the start-of-life
+  # value; every later one moves the end-of-life value, so a setting toggled
+  # between two turns shows up as a disagreement between the two.
+  #
+  # The terminal transitions look like the natural place for the end-of-life
+  # value and are the wrong one. `archive` and `fail` fire at bookkeeping
+  # moments that can land arbitrarily long after the session last ran —
+  # HealthMonitorService#archive_old_sessions archives everything untouched for
+  # seven days in a loop — so recording there would re-stamp an old session's end
+  # value with today's setting, flip it to `mixed`, and quietly drain the control
+  # cohort of the very comparison this exists to support.
+  #
+  # Never raises: SessionExperimentalFlag.record! swallows its own errors, and
+  # this rescue covers the constant lookup that reaches it. A cohort label is
+  # bookkeeping, and bookkeeping must not be able to stop a session starting.
+  def record_experimental_setting_flags
+    SessionExperimentalFlag.record!(self)
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to tag experimental settings: #{e.message}"
   end
 
   # Say so when a session whose goal is about opening a pull request reaches a
@@ -1148,14 +1270,6 @@ module SessionStateMachine
       )
     end
 
-    # Consuming the condition leaves the trigger ROW enabled, having fired
-    # nothing, until CleanupStaleTriggersJob reaps it an hour after a
-    # scheduled_at that may be twelve hours out. For a wake Zimmer created on the
-    # session's behalf that row is pure residue, and a session that parks and
-    # resumes repeatedly accumulates one per cycle — so the auth-outage retries
-    # go with the conditions they belonged to. A user's own `wake_me_up_later`
-    # trigger is left alone: it is theirs to see and to clear.
-    AuthOutageParkService.discard_retry_triggers!(self, reason: "resumed")
   rescue => e
     # Don't raise — trigger bookkeeping failures shouldn't block the resume. But
     # do alert: on the cancel branch an uncancelled one-time wake stays armed and
@@ -1220,6 +1334,7 @@ module SessionStateMachine
   def pending_one_time_wake_conditions
     TriggerCondition
       .joins(:trigger)
+      .includes(:trigger)
       .where(condition_type: %w[schedule ao_event], last_triggered_at: nil)
       .where(triggers: { last_session_id: id, reuse_session: true, status: "enabled" })
   end

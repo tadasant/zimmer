@@ -163,43 +163,122 @@ module QuotasHelper
   # but the server has no timezone for them, so the UTC text is what ships and
   # what remains if JavaScript never runs. The title keeps UTC reachable either
   # way.
-  def pool_reset_time(reset_time)
+  def pool_reset_time(reset_time, css: "font-medium text-gray-700")
     utc_text = reset_time.utc.strftime("%b %-d, %H:%M UTC")
 
     time_tag(reset_time.utc, utc_text,
       title: utc_text,
-      class: "font-medium text-gray-700",
+      class: css,
       data: { controller: "local-time" })
   end
 
-  # When the pool next regains 5-hour capacity it can actually serve.
+  # The Account Pool's headline answer to "when does work get unblocked?".
   #
-  # The measure already excludes accounts whose week is spent, because their
-  # 5-hour reset hands back headroom nobody can spend — see ClaudeAccountPool.
-  # This names the next rollover on an account that can serve, whether or not the
-  # pool is short of headroom right now; the emptiness cases say which emptiness
-  # they are, because a pool with nothing left to wait for reads very differently
-  # from one whose whole week is gone.
-  def pool_five_hour_reset_line(measure)
-    reset = measure.next_five_hour_reset
+  # An account is servable when *both* its windows have room, so the moment the
+  # pool comes back is the earliest of the per-account moments — see
+  # ClaudeAccountPool. An answer split into a 5-hour time and a 7-day time
+  # cannot express that: an account sitting on free 5-hour headroom with its
+  # week spent belongs to neither half, however soon its weekly reset is.
+  #
+  # Three states, and the emptiness cases say which emptiness they are: a pool
+  # with capacity right now reads very differently from one whose accounts are
+  # all out with no recorded way back.
+  #
+  # The countdown ticks in the browser off the absolute deadline in the markup,
+  # not off the text rendered here — a page left open would otherwise keep
+  # showing the wait as it stood when the server drew it. The text is still the
+  # right value at first paint, and stays the answer if JavaScript never runs,
+  # which is why the passed state is rendered here too rather than left to the
+  # controller: the measure is taken before the view renders, so the deadline
+  # can cross now in between.
+  def pool_capacity_banner(measure)
+    return unless measure.any_readings?
+    return pool_capacity_now_banner(measure) if measure.capacity_now?
 
-    if reset
+    reset = measure.next_capacity_at
+    return pool_capacity_unknown_banner(measure) if reset.nil?
+
+    clock = countdown_clock_text(reset)
+    passed = clock == COUNTDOWN_PASSED_TEXT
+
+    tag.div(safe_join([
+      tag.p(passed ? "Work unblocked" : "Work unblocked in",
+        class: "text-xs font-semibold uppercase tracking-wide text-amber-800",
+        aria: { live: "polite" },
+        data: { unblock_countdown_target: "label" }),
+      tag.p(clock,
+        class: "mt-0.5 text-2xl sm:text-3xl font-bold tabular-nums text-amber-900",
+        data: { unblock_countdown_target: "remaining" }),
       tag.p(safe_join([
-        "Next usable 5-hour reset: ", pool_reset_time(reset),
-        "#{reset_countdown(reset)} — the soonest among accounts with weekly allowance left."
-      ]), class: "mt-1 text-xs text-gray-500")
-    elsif measure.any_readings? && measure.weekly_available_count.zero?
-      # Point at the 7-day note only when there is one to point at: with no
-      # recorded weekly reset either, the honest answer is that nothing on this
-      # page says when the pool comes back.
-      tag.p("No 5-hour reset frees capacity: every account with a reading has spent its 7-day window. " +
-            (measure.next_weekly_reset ? "The pool is blocked until the 7-day reset below." :
-                                         "No 7-day reset time is recorded either."),
-        class: "mt-1 text-xs text-red-500")
-    else
-      tag.p("No 5-hour reset pending — the accounts with weekly allowance left aren't waiting on one.",
-        class: "mt-1 text-xs text-gray-500")
-    end
+        "The first moment an account has room on both its 5-hour and 7-day windows: ",
+        pool_reset_time(reset, css: "font-semibold text-amber-900"),
+        ". #{pool_blocked_count_phrase(measure)}"
+      ]), class: "mt-1 text-xs text-amber-800"),
+      tag.p("That moment has passed — refresh for a fresh reading.",
+        class: "mt-1 text-xs font-semibold text-amber-900",
+        hidden: !passed,
+        data: { unblock_countdown_target: "passed" })
+    ]), class: "mb-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3",
+        data: { controller: "unblock-countdown",
+                unblock_countdown_deadline_value: reset.utc.iso8601 })
+  end
+
+  # The pool is serving right now, so there is nothing to count down to.
+  def pool_capacity_now_banner(measure)
+    servable = measure.servable_count
+
+    tag.div(safe_join([
+      tag.p("Work is not blocked", class: "text-sm font-semibold text-green-800"),
+      tag.p("#{pluralize(servable, 'account')} of #{measure.read_count} with a reading " \
+            "#{servable == 1 ? 'has' : 'have'} room on both windows right now.",
+        class: "mt-0.5 text-xs text-green-700")
+    ]), class: "mb-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3")
+  end
+
+  # Everything with a reading is out of capacity and none of them recorded a
+  # reset time. There is no countdown to render, and saying so is the honest
+  # answer — a zeroed clock would read as "any moment now".
+  def pool_capacity_unknown_banner(measure)
+    tag.div(safe_join([
+      tag.p("Nothing here says when work resumes", class: "text-sm font-semibold text-red-800"),
+      tag.p("#{pool_blocked_count_phrase(measure)} No reset time is recorded for the blocked " \
+            "windows, so nothing on this page says when the pool comes back. Refresh to probe again.",
+        class: "mt-0.5 text-xs text-red-700")
+    ]), class: "mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3")
+  end
+
+  # How many accounts are out, for the two banners that only render when the
+  # whole read pool is out. It says "all of them" rather than "N of N", and
+  # keeps the "with a reading" qualifier the green banner carries: a pool can
+  # hold accounts that have never been probed, and those are not counted here.
+  def pool_blocked_count_phrase(measure)
+    return "The one account with a reading is out of capacity." if measure.blocked_count == 1
+
+    "All #{measure.blocked_count} accounts with a reading are out of capacity."
+  end
+
+  # What the clock reads once there is nothing left to count. Not "0:00", which
+  # reads as a live clock that has stopped; the reading behind it is stale the
+  # moment the deadline passes.
+  COUNTDOWN_PASSED_TEXT = "now"
+
+  # A clock counting down to `reset_time`, in the format the browser keeps
+  # ticking: "4:31" under an hour, "2:04:31" under a day, "1d 02:04:31" beyond.
+  # unblock_countdown_controller.js renders the same string from the same
+  # instant, so the value does not jump when it takes over.
+  def countdown_clock_text(reset_time)
+    total = (reset_time - Time.current).floor
+    return COUNTDOWN_PASSED_TEXT if total <= 0
+
+    days = total / 86_400
+    hours = (total % 86_400) / 3_600
+    minutes = (total % 3_600) / 60
+    seconds = total % 60
+
+    return format("%dd %02d:%02d:%02d", days, hours, minutes, seconds) if days.positive?
+    return format("%d:%02d:%02d", hours, minutes, seconds) if hours.positive?
+
+    format("%d:%02d", minutes, seconds)
   end
 
   # When the pool next regains an account whose week is spent. Measured over

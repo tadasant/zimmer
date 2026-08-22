@@ -23,11 +23,12 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
     }.merge(overrides))
   end
 
-  test "says plainly when nothing has been ingested, and how to load history" do
+  test "says plainly when nothing has been ingested, and that the sweep runs itself" do
     output = @tool.call({})
 
     assert_match "No token usage recorded", output
-    assert_match "token_usage:backfill", output
+    assert_match "TokenUsageBackfillJob", output
+    assert_match "never_run", output, "an agent should be able to tell a quiet fleet from an unswept ledger"
   end
 
   test "reports the fleet breakdown" do
@@ -36,7 +37,7 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
 
     output = @tool.call({ "days" => 7 })
 
-    assert_match "Token spend — last 7 days", output
+    assert_match "Token spend — 7 days", output
     assert_match "Where the money goes", output
     assert_match "zimmer-router", output
     assert_match "issue-work-gate", output
@@ -99,6 +100,112 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
 
     output = @tool.call({ "days" => 10_000 })
 
-    assert_match "last 365 days", output
+    assert_match "1 year", output
+  end
+
+  test "accepts an explicit calendar window, matching what the Costs page offers" do
+    usage(called_at: Time.zone.parse("2026-03-10 12:00"), agent_root: "zimmer-router")
+
+    inside = @tool.call({ "from" => "2026-03-09", "to" => "2026-03-11" })
+    assert_match "Mar 9 – Mar 11, 2026", inside
+    assert_match "zimmer-router", inside
+
+    outside = @tool.call({ "from" => "2026-03-01", "to" => "2026-03-05" })
+    assert_match "No token usage recorded", outside
+  end
+
+  test "declares from and to in its schema so an agent can drive the calendar window" do
+    properties = Mcp::Tools::GetCosts.input_schema.to_h.deep_symbolize_keys[:properties]
+
+    assert properties.key?(:from), "schema must expose the calendar window start"
+    assert properties.key?(:to), "schema must expose the calendar window end"
+  end
+
+  test "reports the context-feature split as an estimate, with its residual" do
+    record = usage(called_at: 2.hours.ago, agent_root: "zimmer-router")
+    feature_row(record, "goal", cache_read_tokens: 100_000)
+
+    output = @tool.call({})
+
+    assert_match "Context features (estimated)", output
+    assert_match "Session goal", output
+    assert_match "_unattributed_", output
+    assert_match "not measured", output
+  end
+
+  test "the agent-root report carries the feature drilldown" do
+    record = usage(called_at: 2.hours.ago, agent_root: "zimmer-router")
+    feature_row(record, "mcp_result", cache_read_tokens: 50_000)
+
+    output = @tool.call({ "agent_root" => "zimmer-router" })
+
+    assert_match "Context features (estimated)", output
+    assert_match "MCP responses", output
+  end
+
+  private
+
+  def feature_row(record, feature, **volumes)
+    TokenUsageFeature.create!(
+      request_id: record.request_id, feature: feature, session_id: record.session_id,
+      agent_root: record.agent_root, model: record.model, subagent: record.subagent,
+      called_at: record.called_at, **volumes
+    )
+  end
+
+  test "warns that the figures are partial until the historical sweep finishes" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 1.minute.ago,
+                               directories_total: 100, directories_done: 40)
+
+    output = @tool.call({})
+
+    assert_match "Partial history", output
+    assert_match "40% swept", output
+  end
+
+  test "a re-scan of already-swept history is not reported as partial" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 3.hours.ago, finished_at: 2.hours.ago)
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", trigger: "manual",
+                               started_at: 1.minute.ago, directories_total: 100, directories_done: 40)
+
+    output = @tool.call({})
+
+    assert_match "A re-scan of the corpus is running", output
+    assert_no_match(/Partial history/, output)
+  end
+
+  test "states the covered window once the sweep has finished" do
+    usage
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago, finished_at: 1.hour.ago)
+
+    output = @tool.call({})
+
+    assert_match "Ledger covers", output
+    assert_no_match(/Partial history/, output)
+  end
+  test "the experiment cohorts are reported with the reasons not to trust them" do
+    # An agent quoting a delta downstream quotes whatever framing rides with it,
+    # so the framing has to be in the output, not only in the tool description.
+    SessionExperimentalFlag.create!(session: @session, setting_key: "mcp_tool_search",
+                                    value_at_start: true, value_at_end: true,
+                                    source: SessionExperimentalFlag::BACKFILLED)
+    usage
+
+    output = @tool.call({})
+
+    assert_match "Experimental settings (observational, not randomized)", output
+    assert_match "MCP tool search", output
+    assert_match "Too few sessions to compare", output
+    assert_match "Cohorts are temporal", output
+  end
+
+  test "no experiment section appears when nothing has been tagged" do
+    usage
+
+    output = @tool.call({})
+
+    assert_no_match(/Experimental settings/, output)
   end
 end
