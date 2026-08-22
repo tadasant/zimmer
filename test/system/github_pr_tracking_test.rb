@@ -32,7 +32,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     within "turbo-frame#session_#{@session.id}" do
       # Gray color for unknown status (color is on the SVG icon)
       pr_link = find("a[href='https://github.com/owner/repo/pull/123']")
-      assert_equal "View PR on GitHub", pr_link[:title]
+      assert_equal "View PR on GitHub (Unknown)", pr_link[:title]
       pr_icon = pr_link.find("svg")
       assert_includes pr_icon[:class], "text-gray-400"
     end
@@ -48,7 +48,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/owner/repo/pull/123']")
-      assert_equal "View PR on GitHub", pr_link[:title]
+      assert_equal "View PR on GitHub (Open)", pr_link[:title]
       pr_icon = pr_link.find("svg")
       assert_includes pr_icon[:class], "text-green-600"
     end
@@ -64,7 +64,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/owner/repo/pull/123']")
-      assert_equal "View PR on GitHub", pr_link[:title]
+      assert_equal "View PR on GitHub (Merged)", pr_link[:title]
       pr_icon = pr_link.find("svg")
       assert_includes pr_icon[:class], "text-purple-600"
     end
@@ -80,9 +80,43 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/owner/repo/pull/123']")
-      assert_equal "View PR on GitHub", pr_link[:title]
+      assert_equal "View PR on GitHub (Closed)", pr_link[:title]
       pr_icon = pr_link.find("svg")
       assert_includes pr_icon[:class], "text-red-600"
+    end
+  end
+
+  # The button label carries no state parenthetical: state is the icon's colour,
+  # asserted above. Sighted users were paying for that text in horizontal space --
+  # long enough that the card footer wrapped into two rows on a narrow card -- while
+  # anyone not reading colour needs it, so it moves to an sr-only span and the title.
+  test "the PR button label drops the state parenthetical but keeps it for assistive tech" do
+    url = "https://github.com/owner/repo/pull/123"
+    @session.update!(custom_metadata: {
+      "github_pull_request_urls" => [ url ],
+      "github_pull_request_statuses" => { url => "merged" }
+    })
+
+    visit root_path(every_status_params)
+
+    within "turbo-frame#session_#{@session.id}" do
+      pr_link = find("a[href='#{url}']")
+
+      # What a sighted user reads: the label with the sr-only text taken back out.
+      # Asserted on the DOM rather than on Capybara's #text, which is free to decide
+      # either way about a 1px clipped span.
+      sighted_label = page.evaluate_script(<<~JS, pr_link)
+        (function (el) {
+          const clone = el.cloneNode(true);
+          clone.querySelectorAll(".sr-only").forEach((n) => n.remove());
+          return clone.textContent;
+        })(arguments[0])
+      JS
+      assert_equal "PR", sighted_label.squish
+
+      # What a screen reader reads, and what a hover reveals.
+      assert_equal "(Merged)", pr_link.find("span.sr-only", visible: :all).text(:all).strip
+      assert_equal "View PR on GitHub (Merged)", pr_link[:title]
     end
   end
 
@@ -132,7 +166,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     # Verify PR link is still present after refresh
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/owner/repo/pull/456']")
-      assert_equal "View PR on GitHub", pr_link[:title]
+      assert_equal "View PR on GitHub (Merged)", pr_link[:title]
       pr_icon = pr_link.find("svg")
       assert_includes pr_icon[:class], "text-purple-600"
     end
@@ -148,7 +182,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
 
     # PR link should appear on the show page too
     pr_link = find("a[href='https://github.com/owner/repo/pull/789']")
-    assert_equal "View PR on GitHub", pr_link[:title]
+    assert_equal "View PR on GitHub (Open)", pr_link[:title]
     pr_icon = pr_link.find("svg")
     assert_includes pr_icon[:class], "text-green-600"
   end
@@ -288,7 +322,7 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
 
     within "turbo-frame#session_#{@session.id}" do
       pr_link = find("a[href='https://github.com/test/repo/pull/999']")
-      assert_equal "View PR on GitHub", pr_link[:title]
+      assert_equal "View PR on GitHub (Merged)", pr_link[:title]
       pr_icon = pr_link.find("svg")
       assert_includes pr_icon[:class], "text-purple-600"
     end
