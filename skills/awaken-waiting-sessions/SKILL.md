@@ -43,16 +43,43 @@ the failure this skill exists to prevent.
 2. **Read the queue.** `quick_search_sessions` with `status: "waiting"`,
    `priority_class: "spot"` and `order: "precedence"` lists it in the order it
    should be worked, each row carrying its precedence.
+
+   A row marked **`Paused: yes`** is asleep until a time somebody chose. Skip it
+   and take the next candidate — see *A pause outranks precedence* below.
 3. **Work out how many slots there are.** The ceiling counts *every* running
    session, priority included. Slots = ceiling − running. If that is zero or
    negative, stop.
 4. **Start that many, from the top of the list.** `action_session` with
-   `restart`. Confirm each one moved to `running` before starting the next, and
-   stop early if the policy stops allowing spot work — a batch that drains the
-   window it was admitted under is worse than a short batch.
+   `restart`, skipping any row marked `Paused: yes`. Confirm each one moved to
+   `running` before starting the next, and stop early if the policy stops allowing
+   spot work — a batch that drains the window it was admitted under is worse than
+   a short batch.
 5. **Say what you did and what you left.** Name the sessions you started, the
    number still parked, and the reason you stopped (slots exhausted, threshold
    reached, queue empty). Then archive yourself.
+
+## A pause outranks precedence
+
+A session can be at the top of the queue and still not be yours to start. **Pause
+Until** (a human) and `wake_me_up_later` (the session itself) put a session in
+`waiting` with a wake armed for a chosen time, and it keeps whatever precedence it
+had — so it appears in your list looking exactly like work you should hand compute
+to.
+
+It is not. A pause outranks precedence and scheduling class: that session does not
+start before its wake fires, however high it ranks. Skip it, count it as still
+parked, and move down the list.
+
+The reverse is not true, and it is worth knowing so you do not go looking for it.
+A pause is a floor under when a session may run, not a promotion past this queue
+when the moment arrives — a wake that comes due hands its session back to the same
+gate you are reading, in the same order. Nothing you skip here is being taken out
+of your hands.
+
+You do not have to get this right for it to hold — `action_session restart`
+refuses a paused session and tells you so, and `AgentSessionJob` refuses to start
+one whatever asked. But burning a turn discovering that is wasteful, and the queue
+already tells you: honour the `Paused: yes` marker on the way past.
 
 ## Things that are not your job
 
@@ -65,3 +92,6 @@ the failure this skill exists to prevent.
 - **Do not retry a session that fails to start.** Report it and move on; a
   session that cannot start is a separate problem from a queue that needs
   draining.
+- **Do not try to route around a pause.** If `restart` refuses a session because a
+  wake is still ahead of it, that is the answer, not an obstacle. Do not cancel its
+  trigger, do not promote it, do not follow up to wake it by hand.

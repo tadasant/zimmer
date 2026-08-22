@@ -407,6 +407,8 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
+    return if refuse_restart_of_paused_session
+
     # When setup never completed (e.g., git clone failed), re-run the full setup
     # pipeline instead of trying to send a follow-up prompt to a non-existent clone.
     if @session.failed_before_initial_prompt? && !@session.setup_complete?
@@ -1083,6 +1085,33 @@ class Api::V1::SessionsController < Api::BaseController
   end
 
   private
+
+  # Refuse a restart while the session is paused until a time it has not reached.
+  #
+  # The twin of Mcp::Tools::ActionSession#refuse_if_paused!, and it has to exist
+  # separately because the two surfaces share no restart code. Both are the
+  # non-interactive door — a script, an integration, an agent working a queue —
+  # where "start this session" is a claim about the queue rather than a person
+  # taking one session over. The web UI's Restart button is the interactive door
+  # and deliberately still consumes the pause.
+  #
+  # It sits ahead of `resume!`, which is the only place it can: `resume`'s
+  # cancel_pending_one_time_wake_triggers callback consumes the pause, so anything
+  # further down would arrive after it was gone.
+  #
+  # @return [Boolean] true when a response has been rendered and the caller must stop
+  def refuse_restart_of_paused_session
+    return false unless @session.paused_until_scheduled_time?
+
+    render_api_error(
+      "Cannot restart",
+      "Session #{@session.id} is asleep on a wake-up it has not reached yet " \
+      "(#{@session.pending_wake_phrase}). A pause outranks precedence and scheduling class, so this " \
+      "session does not start early — it wakes on its own schedule.",
+      status: :unprocessable_entity
+    )
+    true
+  end
 
   # Restart a session from scratch by re-running the full setup pipeline.
   # Used when setup never completed (e.g., git clone failed).
