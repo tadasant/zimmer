@@ -47,17 +47,49 @@
 # itself rather than looking mysteriously stuck, and a log line lands in the
 # session's own log for the same reason.
 #
-# Only the FIRST start of a session is gated. A follow-up, a monitoring resume
-# and a clone-only setup all pass straight through: interrupting a conversation
-# that is already underway strands work half-done and wastes the tokens already
-# spent on it, which is the opposite of what a quota gate is for. The decision
-# point that means something is "should this work begin at all".
+# == Every turn is gated, not just the first one
+#
+# This used to gate only a session's FIRST start, on the reasoning that
+# interrupting a conversation already underway strands work half-done. That
+# reasoning was about a session mid-turn — and it let through the thing it was
+# never meant to cover: an IDLE spot session being woken for a NEW turn.
+#
+# A wake is not a continuation. A fired `wake_me_up_later` backstop, a queued
+# follow-up, a poller-delivered comment and a restart all arrive at
+# AgentSessionJob carrying a prompt, and every one of them starts a fresh turn
+# that spends fresh quota. On 2026-08-22, session 7504 — spot, precedence 75,
+# 141 spot sessions queued behind it — woke on its own backstop trigger and ran
+# a full turn at 17:30Z while this gate was reporting HELD at 87% of a 65%
+# 5-hour target and force-pausing 22 running spot sessions. It was not far down
+# the queue by accident; it never consulted the queue at all.
+#
+# So the gate is a choke point on turns. What still passes through spends
+# nothing:
+#
+#   * `clone_only` — sets up a clone, spawns no agent.
+#   * `resume_monitoring` — re-attaches to a process that is ALREADY running.
+#     Holding it would orphan that process rather than save a token.
+#
+# And one hold reason does not apply to a resume: `fleet_at_cap`. A resuming
+# session has already been flipped to `running` by whoever delivered the turn,
+# so it is counted in `Session.running_claude_code_count` itself — refusing it
+# for a full fleet would refuse it on the strength of its own slot, and would
+# refuse every session SpotSessionPause resumes, which are flipped to `running`
+# before their jobs run. The utilization reading has no such problem: the pool's
+# windows are measured independently of this session.
 class SpotSessionHold
   HELD_AT = "spot_hold_at"
   HELD_REASON = "spot_hold_reason"
   HELD_DETAIL = "spot_hold_detail"
   HELD_RETRY_AT = "spot_hold_retry_at"
   HELD_COUNT = "spot_hold_count"
+
+  # Which shape of turn was refused, so the banner, the log line and
+  # `get_session` can say "held before starting" or "held before its next turn"
+  # rather than describing every hold as a session that never began.
+  HELD_TURN = "spot_hold_turn"
+  TURN_START = "start"
+  TURN_RESUME = "resume"
 
   # Read by two callers, and the second is what keeps the backoff honest. `clear`
   # drops these when a session gets through — and the three "restart from scratch"
@@ -70,7 +102,7 @@ class SpotSessionHold
   # re-check — no prompt, no resume flag — so without it a person clicking Restart
   # on a session sitting at 40 minutes would push it to an hour, which is the
   # opposite of what they asked for.
-  METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT ].freeze
+  METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT, HELD_TURN ].freeze
 
   # Spread over which held sessions re-check, so a backlog does not re-evaluate
   # in lockstep.
@@ -103,26 +135,35 @@ class SpotSessionHold
   # — falls to the shorter ceiling, which is the safe direction to be wrong in.
   UTILIZATION_REASON = "at_utilization_limit"
 
+  # The hold reasons that apply to a RESUME, as opposed to a first start. See the
+  # class comment: a resuming session is already counted in the fleet, so only
+  # the utilization reading can honestly refuse it.
+  RESUME_HOLD_REASONS = [ UTILIZATION_REASON ].freeze
+
   class << self
-    # True when the session was held and the caller should stop. False means
-    # carry on and start it.
+    # True when the turn was refused and the caller should stop. False means
+    # carry on and run it.
     #
     # @param session [Session]
+    # @param follow_up_prompt [String, nil] the prompt this turn would deliver.
+    #   Present means a resume — a wake, a follow-up, a poller message, a restart
+    #   — and it is re-enqueued verbatim when the turn is deferred.
     # @param log_buffer [LogBuffer, nil]
     # @param images [Array<Hash>, nil] carried through to the retry unchanged
     # @param files [Array<Hash>, nil]
-    def hold_if_needed(session, log_buffer: nil, images: nil, files: nil)
+    def hold_if_needed(session, follow_up_prompt: nil, log_buffer: nil, images: nil, files: nil)
       return false unless session.spot?
 
       # The one seam. SpotGateService.allow_start? reads the same method, so the
       # readable predicate and the production path cannot drift apart.
       decision = SpotGateService.start_decision(session)
-      if decision.allowed?
+      if decision.allowed? || !applies_to?(decision, follow_up_prompt)
         clear(session)
         return false
       end
 
-      hold!(session, decision, log_buffer: log_buffer, images: images, files: files)
+      hold!(session, decision, follow_up_prompt: follow_up_prompt,
+            log_buffer: log_buffer, images: images, files: files)
       true
     end
 
@@ -138,7 +179,16 @@ class SpotSessionHold
 
     private
 
-    def hold!(session, decision, log_buffer:, images:, files:)
+    # Whether this decision refuses this shape of turn. A first start is refused
+    # by every hold reason; a resume only by the utilization reading.
+    def applies_to?(decision, follow_up_prompt)
+      return true if follow_up_prompt.blank?
+
+      RESUME_HOLD_REASONS.include?(decision.reason)
+    end
+
+    def hold!(session, decision, follow_up_prompt:, log_buffer:, images:, files:)
+      resuming = follow_up_prompt.present?
       metadata = session.metadata || {}
       count = metadata[HELD_COUNT].to_i + 1
       delay = retry_delay(decision, count)
@@ -150,22 +200,76 @@ class SpotSessionHold
           HELD_REASON => decision.reason,
           HELD_DETAIL => decision.detail,
           HELD_RETRY_AT => retry_at.iso8601,
-          HELD_COUNT => count
+          HELD_COUNT => count,
+          HELD_TURN => resuming ? TURN_RESUME : TURN_START
         )
       )
 
-      message = "Spot session held: #{decision.detail} " \
+      message = "Spot session held #{resuming ? 'before its next turn' : 'before starting'}: " \
+                "#{decision.detail} " \
                 "Re-checking at #{retry_at.iso8601} (hold ##{count}). " \
                 "Its class was #{session.scheduling_class_source}. " \
                 "Make this one session priority to start it now."
       log_buffer&.add(message, level: "warning")
+      # A hold has to be readable in the session's own timeline, not only in the
+      # metadata the banner renders. AgentSessionJob passes a buffer and flushes
+      # it; a caller without one writes the line straight through rather than
+      # dropping it.
+      session.logs.create!(level: "warning", content: message) if log_buffer.nil?
       Rails.logger.info("[SpotSessionHold] Session #{session.id} held: #{decision.reason}")
 
-      AgentSessionJob.enqueue_new_session(
-        session.id,
-        images: images.presence,
-        files: files.presence,
-        delay: delay
+      # The turn is DEFERRED, never dropped. A wake that arrived as a prompt is
+      # re-enqueued with that prompt and its attachments, so the delayed job
+      # GoodJob persists is a complete replacement for the turn being refused —
+      # nothing else has to remember it.
+      if resuming
+        AgentSessionJob.enqueue_with_prompt(
+          session.id,
+          follow_up_prompt,
+          images: images.presence,
+          files: files.presence,
+          delay: delay
+        )
+      else
+        AgentSessionJob.enqueue_new_session(
+          session.id,
+          images: images.presence,
+          files: files.presence,
+          delay: delay
+        )
+      end
+
+      return_to_queue!(session) if resuming
+    end
+
+    # Put a session whose resume was refused back into the dormant `waiting`
+    # state a held session sits in.
+    #
+    # Whoever delivered the turn already flipped the session to `running` (or is
+    # about to, from `needs_input`). Leaving it there would be a lie with
+    # consequences: it counts against the fleet cap, the orphan sweep sees a
+    # running session with no process, and the session card claims work is
+    # happening. `waiting` makes a deferred turn indistinguishable from a hold at
+    # the starting line, which is exactly what it is.
+    #
+    # Deliberately NOT `pause!`. That event means "a turn ended and the session
+    # wants a human": it fires the `session_needs_input` event triggers — waking
+    # any parent watching this session — enqueues a push notification, and queues
+    # a status-summary refresh. No turn ran here and no token was spent, so
+    # announcing one would wake an orchestrator and page a person about work that
+    # never happened.
+    def return_to_queue!(session)
+      if session.running?
+        session.update!(status: :waiting, running_job_id: nil)
+      elsif session.needs_input? && session.may_sleep?
+        session.update!(running_job_id: nil) if session.running_job_id.present?
+        session.sleep!
+      end
+    rescue StandardError => e
+      # The retry is already enqueued, so the turn is safe either way. A session
+      # left `running` is wrong but not lost — the orphan sweep recovers it.
+      Rails.logger.warn(
+        "[SpotSessionHold] Could not return session #{session.id} to the spot queue: #{e.class}: #{e.message}"
       )
     end
 

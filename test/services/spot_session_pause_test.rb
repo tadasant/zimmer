@@ -276,6 +276,28 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert promoted.reload.running?
   end
 
+  # The two halves of the policy have to agree. The sweep resumes a paused session
+  # by enqueueing a recovery PROMPT, and the admission gate now refuses prompts —
+  # so a resume decided at 70% must still survive the gate the job re-reads a
+  # moment later, or the ceiling could never put anything back.
+  #
+  # It does because the margin makes resumption the STRICTER test: RESUME_MARGIN_PCT
+  # is subtracted from both targets, so anything the resume decision allows the
+  # admission decision allows too.
+  test "a session the ceiling resumes is not then held by the admission gate" do
+    seed(current_5h: 0.70)
+    session = paused_session
+
+    assert_equal 1, SpotSessionPause.sweep!.resumed
+    assert session.reload.running?
+
+    refute SpotSessionHold.hold_if_needed(
+      session,
+      follow_up_prompt: AutomatedPrompts.system_recovery(reason: "the ceiling resumed it")
+    ), "the gate must not undo the resume the ceiling just decided on"
+    assert session.reload.running?
+  end
+
   # A stand-in for the real manager, which would go looking for a live process.
   # Records the order the two calls arrived in, because the ORDER is the property
   # under test: SessionsController#pause kills the process before flipping the

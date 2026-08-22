@@ -141,25 +141,34 @@ module Mcp
       # Why a spot session is sitting in `waiting`. Emitted only when a hold is
       # actually recorded, so an ordinary session's output is unchanged — but when
       # it IS held, an agent reading its own session must be able to tell "deferred
-      # by the spot gate, will start by itself" apart from "stuck".
+      # by the spot gate, will run by itself" apart from "stuck".
+      #
+      # A hold on a RESUME is worth naming separately: that session has run before
+      # and was woken for a turn the gate refused, so "it never started" would be
+      # the wrong story to read back.
       def spot_hold_lines(session)
         detail = session.metadata&.dig(SpotSessionHold::HELD_DETAIL)
         return [] if detail.blank?
 
         retry_at = session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT)
         reason = session.metadata&.dig(SpotSessionHold::HELD_REASON)
+        resuming = session.metadata&.dig(SpotSessionHold::HELD_TURN) == SpotSessionHold::TURN_RESUME
+        what = resuming ? "next turn held" : "start held"
         [
-          "- **Held by the spot gate#{reason.present? ? " (`#{reason}`)" : ''}:** #{detail}",
+          "- **Spot gate: #{what}#{reason.present? ? " (`#{reason}`)" : ''}:** #{detail}",
           "- **Hold re-check at:** #{retry_at.presence || 'unknown'}",
-          "- **Holds so far:** #{session.metadata&.dig(SpotSessionHold::HELD_COUNT).to_i}"
-        ]
+          "- **Holds so far:** #{session.metadata&.dig(SpotSessionHold::HELD_COUNT).to_i}",
+          ("- **The prompt that woke it is not lost:** it is queued with the re-check above " \
+           "and is delivered when the gate lets the turn through. Promote this session to " \
+           "priority to run it now." if resuming)
+        ].compact
       end
 
       # Why a spot session that WAS running is now sitting in `waiting`. The hold
-      # lines above cover a session that never started; this covers one the spot
-      # ceiling interrupted mid-run, which an agent reading its own session needs
-      # to tell apart from a crash — its last turn ended without finishing, and
-      # nothing it wrote is lost.
+      # lines above cover a session that never started, or one whose next turn was
+      # refused before it began; this covers one the spot ceiling interrupted
+      # mid-run, which an agent reading its own session needs to tell apart from a
+      # crash — its last turn ended without finishing, and nothing it wrote is lost.
       def spot_pause_lines(session)
         detail = session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL)
         return [] if detail.blank?
