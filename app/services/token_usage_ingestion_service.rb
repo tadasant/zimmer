@@ -44,10 +44,11 @@ class TokenUsageIngestionService
   # covers.
   def self.default_root = ENV["TRANSCRIPT_ROOT"].presence || File.join(Dir.home, ".claude", "projects")
 
-  Result = Struct.new(:files_scanned, :session_rows, :adhoc_rows, :skipped_lines, keyword_init: true) do
+  Result = Struct.new(:files_scanned, :session_rows, :adhoc_rows, :feature_rows, :skipped_lines, keyword_init: true) do
     def total_rows = session_rows + adhoc_rows
     def to_s
-      "files=#{files_scanned} session_rows=#{session_rows} adhoc_rows=#{adhoc_rows} skipped=#{skipped_lines}"
+      "files=#{files_scanned} session_rows=#{session_rows} adhoc_rows=#{adhoc_rows} " \
+      "feature_rows=#{feature_rows} skipped=#{skipped_lines}"
     end
   end
 
@@ -55,34 +56,54 @@ class TokenUsageIngestionService
   # @param modified_since [Time, nil] only scan files touched since this time.
   #   nil scans everything, which is what the backfill wants.
   # @param logger [Logger]
-  def initialize(root: self.class.default_root, modified_since: nil, logger: Rails.logger)
+  # @param attribute_features [Boolean] also estimate which context-management
+  #   feature each request's tokens paid for. Costs a full JSON parse of every
+  #   transcript line rather than just the assistant ones, which is why it is a
+  #   flag: a run that only wants the totals back can skip it.
+  def initialize(root: self.class.default_root, modified_since: nil, attribute_features: true, logger: Rails.logger)
     @root = root
     @modified_since = modified_since
+    @attribute_features = attribute_features
     @logger = logger
   end
 
   def call
-    result = Result.new(files_scanned: 0, session_rows: 0, adhoc_rows: 0, skipped_lines: 0)
+    result = Result.new(files_scanned: 0, session_rows: 0, adhoc_rows: 0, feature_rows: 0, skipped_lines: 0)
     return result unless File.directory?(@root)
 
     session_batch = []
     adhoc_batch = []
+    feature_batch = []
 
     each_transcript_file do |path|
       result.files_scanned += 1
       attribution = attribute(path)
+      # Feature attribution is only meaningful for agent sessions. Zimmer's own
+      # `claude -p` calls carry none of the context-management machinery this
+      # measures, so scanning them for it would only cost time.
+      features = ContextFeatureAttributor.new if @attribute_features && attribution[:kind] == :session
 
-      scan_file(path) do |record|
+      rows_by_request = {}
+      scan_file(path, features: features) do |record|
         if attribution[:kind] == :session
-          session_batch << session_row(record, attribution, path)
+          row = session_row(record, attribution, path)
+          rows_by_request[record[:request_id]] = row
+          session_batch << row
         else
           adhoc_batch << adhoc_row(record, attribution, path)
         end
       end
 
-      if session_batch.size >= BATCH_SIZE
+      feature_batch.concat(feature_rows(features, rows_by_request)) if features
+
+      # Parents FIRST, always: `token_usage_features.request_id` carries a foreign
+      # key to `session_token_usages.request_id`, so a feature row whose parent is
+      # not yet written would be rejected.
+      if session_batch.size >= BATCH_SIZE || feature_batch.size >= BATCH_SIZE
         result.session_rows += flush(SessionTokenUsage, session_batch)
+        result.feature_rows += flush(TokenUsageFeature, feature_batch, unique_by: %i[request_id feature])
         session_batch = []
+        feature_batch = []
       end
       if adhoc_batch.size >= BATCH_SIZE
         result.adhoc_rows += flush(AdhocTokenUsage, adhoc_batch)
@@ -91,6 +112,7 @@ class TokenUsageIngestionService
     end
 
     result.session_rows += flush(SessionTokenUsage, session_batch)
+    result.feature_rows += flush(TokenUsageFeature, feature_batch, unique_by: %i[request_id feature])
     result.adhoc_rows += flush(AdhocTokenUsage, adhoc_batch)
     result
   end
@@ -109,20 +131,27 @@ class TokenUsageIngestionService
   # Yields one hash per DISTINCT API call in the file. Deduping within the file
   # is not enough on its own — the same call recurs across resumed files too —
   # but it keeps the batch small, and the unique index is the real guarantee.
-  def scan_file(path)
+  def scan_file(path, features: nil)
     seen = Set.new
 
     File.foreach(path) do |line|
-      # Cheap pre-filter: most lines in a transcript are user turns, tool
-      # results, and metadata. Parsing all of them would make a full backfill
-      # several times slower for nothing.
-      next unless line.include?('"type":"assistant"')
+      # Cheap pre-filter. Most lines in a transcript carry no `usage` object, and
+      # parsing them would make a full backfill several times slower for nothing.
+      # Attribution widens the filter rather than dropping it: it has to see user
+      # turns too — the goal block, the tool results and the skill bodies it
+      # measures live there — but a transcript also holds `summary`, `attachment`,
+      # `mode` and `pr-link` lines that neither path can use, and on the backfill
+      # those are lines JSON.parse would build and `observe` would discard on its
+      # first statement.
+      next unless line.include?('"type":"assistant"') || (features && line.include?('"type":"user"'))
 
       begin
         entry = JSON.parse(line)
       rescue JSON::ParserError
         next
       end
+
+      features&.observe(entry)
       next unless entry["type"] == "assistant"
 
       message = entry["message"]
@@ -294,15 +323,38 @@ class TokenUsageIngestionService
     end
   end
 
+  # Attribution rows for the requests this file actually contributed, stamped with
+  # the same denormalized axes as their parent so a by-feature rollup needs no
+  # join. A row whose parent was not stored — a line with no `requestId`, or one
+  # whose volumes were all zero — is dropped rather than orphaned.
+  def feature_rows(features, rows_by_request)
+    now = Time.current
+
+    features.rows.filter_map do |row|
+      parent = rows_by_request[row[:request_id]]
+      next unless parent
+
+      row.merge(
+        session_id: parent[:session_id],
+        agent_root: parent[:agent_root],
+        model: parent[:model],
+        subagent: parent[:subagent],
+        called_at: parent[:called_at],
+        created_at: now,
+        updated_at: now
+      )
+    end
+  end
+
   # `insert_all` with a conflict target makes re-ingestion a no-op rather than an
   # error, which is what lets the recurring job and a backfill run at once.
-  def flush(klass, rows)
+  def flush(klass, rows, unique_by: :request_id)
     return 0 if rows.empty?
 
     # `returning` gives the rows actually written, so the count reports NEW
     # spend rather than lines re-read. On a steady-state run most of a file is
     # already stored and the honest answer is usually zero.
-    klass.insert_all(rows, unique_by: :request_id, returning: [ :id ]).rows.size
+    klass.insert_all(rows, unique_by: unique_by, returning: [ :id ]).rows.size
   end
 
   # The backfill reads through a directory of symlinks so it can control how much

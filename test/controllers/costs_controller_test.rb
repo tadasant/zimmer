@@ -59,14 +59,95 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     get costs_path(days: 100_000)
 
     assert_response :success
-    assert_equal CostsController::MAX_DAYS, @controller.instance_variable_get(:@days)
+    assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).preset_days
   end
 
   test "a non-numeric window falls back to the default" do
     get costs_path(days: "banana")
 
     assert_response :success
-    assert_equal CostsController::DEFAULT_DAYS, @controller.instance_variable_get(:@days)
+    assert_equal CostWindow::DEFAULT_DAYS, @controller.instance_variable_get(:@window).preset_days
+  end
+
+  test "an explicit calendar range is honoured over the preset horizons" do
+    usage(called_at: Time.zone.parse("2026-03-10 12:00"))
+
+    get costs_path(from: "2026-03-09", to: "2026-03-11")
+
+    assert_response :success
+    window = @controller.instance_variable_get(:@window)
+    assert window.custom?, "from/to should produce a custom window"
+    assert_equal Date.new(2026, 3, 9), window.from_date
+    assert_equal Date.new(2026, 3, 11), window.to_date
+    assert_no_match "No usage recorded", response.body
+
+    get costs_path(from: "2026-03-01", to: "2026-03-05")
+    assert_response :success
+    assert_match "No usage recorded", response.body, "a call outside the range must not be counted"
+  end
+
+  test "the calendar range survives a reversed or oversized span" do
+    get costs_path(from: "2026-03-11", to: "2026-03-09")
+    assert_response :success
+    window = @controller.instance_variable_get(:@window)
+    assert_equal Date.new(2026, 3, 9), window.from_date, "a reversed range is swapped, not rejected"
+
+    get costs_path(from: "2019-01-01", to: "2026-03-09")
+    assert_response :success
+    assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).days
+  end
+
+  test "the re-scan button comes back to the window it was pressed from" do
+    # The button used to carry `days: @days`, which the CostWindow rewrite stopped
+    # assigning — so every sweep silently dropped the viewer back to 7 days.
+    post costs_backfill_path(from: "2026-03-09", to: "2026-03-11")
+
+    assert_response :redirect
+    assert_match "from=2026-03-09", response.location
+    assert_match "to=2026-03-11", response.location
+
+    post costs_backfill_path(days: 90)
+
+    assert_response :redirect
+    assert_match "days=90", response.location
+  end
+
+  test "the feature table renders its populated state without telling anyone to run a rake task" do
+    # The empty state of this card is the one a fresh deploy sees, and CLAUDE.md
+    # forbids user-facing copy whose remedy needs a shell on the production box.
+    record = usage
+    TokenUsageFeature.create!(
+      request_id: record.request_id, feature: "goal", session_id: record.session_id,
+      agent_root: record.agent_root, model: record.model, subagent: record.subagent,
+      called_at: record.called_at, cache_read_tokens: 50_000
+    )
+
+    get costs_path(days: 30)
+
+    assert_response :success
+    assert_match "Context features", response.body
+    assert_match "Session goal", response.body
+    assert_match "Unattributed", response.body
+    assert_no_match(/rake token_usage:backfill/, response.body)
+  end
+
+  test "the feature card's empty state also keeps the rake task out of the page" do
+    usage
+
+    get costs_path(days: 30)
+
+    assert_response :success
+    assert_match "No feature attribution stored", response.body
+    assert_no_match(/rake token_usage:backfill/, response.body)
+  end
+
+  test "the picker renders both the presets and the calendar fields" do
+    get costs_path
+
+    assert_response :success
+    assert_select "a[href=?]", costs_path(days: 30)
+    assert_select "input#costs-from[type=date]"
+    assert_select "input#costs-to[type=date]"
   end
 
   test "warns about models it has no price for rather than counting them as free" do

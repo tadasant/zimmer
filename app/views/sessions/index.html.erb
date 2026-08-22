@@ -653,6 +653,7 @@
             <div id="sessions_grid" data-live-region="sync"
                  data-live-page="<%= @search_results.respond_to?(:current_page) ? @search_results.current_page : 1 %>"
                  class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
+              <% preload_session_costs(@search_results) %>
               <% @search_results.each do |session| %>
                 <%= turbo_frame_tag dom_id(session) do %>
                   <%= render "session_card", agent_session: session %>

@@ -116,16 +116,30 @@ module TokenPricing
   # load every record into Ruby to add them up. Kept beside `cost_for` so the two
   # cannot drift: any rate change here changes both.
   #
-  # The two tables this may be asked to price. `cost_sql` interpolates the table
-  # name into SQL, and an allowlist is cheaper than trusting every future caller
-  # to pass a constant — it makes "this string is never user input" a property of
-  # the method rather than a claim about its call sites.
-  PRICEABLE_TABLES = %w[session_token_usages adhoc_token_usages].freeze
+  # The tables this may be asked to price, and whether each carries the
+  # per-request server-tool counters.
+  #
+  # `cost_sql` interpolates the table name into SQL, and an allowlist is cheaper
+  # than trusting every future caller to pass a constant — it makes "this string
+  # is never user input" a property of the method rather than a claim about its
+  # call sites. Keeping the server-tool flag here rather than in a keyword
+  # argument means the call shape stays `cost_sql(table_name)` everywhere, with
+  # one table-shaped fact in one place.
+  #
+  # `token_usage_features` is false: a web search bills per REQUEST, not per
+  # token, so there is no defensible way to split it across the content features
+  # inside that request. It stays on the parent row, which leaves it in the
+  # unattributed residual — the honest place for a charge no feature can claim.
+  PRICEABLE_TABLES = {
+    "session_token_usages" => true,
+    "adhoc_token_usages" => true,
+    "token_usage_features" => false
+  }.freeze
 
   # @param table [String] the table to qualify columns with
   # @raise [ArgumentError] if asked to price a table that is not one of ours
   def cost_sql(table)
-    unless PRICEABLE_TABLES.include?(table.to_s)
+    unless PRICEABLE_TABLES.key?(table.to_s)
       raise ArgumentError, "refusing to build pricing SQL for unknown table #{table.inspect}"
     end
 
@@ -147,9 +161,15 @@ module TokenPricing
       SQL
     end
 
+    server_tools = if PRICEABLE_TABLES.fetch(table.to_s)
+      "+ #{table}.web_search_requests * #{WEB_SEARCH_PER_1K_REQUESTS} / 1000.0"
+    else
+      ""
+    end
+
     <<~SQL.squish
       (CASE #{families.join(" ")} ELSE 0 END) / 1000000.0
-      + #{table}.web_search_requests * #{WEB_SEARCH_PER_1K_REQUESTS} / 1000.0
+      #{server_tools}
     SQL
   end
 end

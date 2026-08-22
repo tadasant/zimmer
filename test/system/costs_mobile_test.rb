@@ -82,6 +82,18 @@ class CostsMobileTest < ApplicationSystemTestCase
       model: "claude-opus-5", called_at: 1.hour.ago,
       input_tokens: 10, output_tokens: 20, cache_read_tokens: 30_000
     )
+
+    # Feature attribution rides on the same rows, so the feature table and the
+    # per-root drilldown have something to render at this width too.
+    SessionTokenUsage.find_each do |record|
+      %w[goal mcp_result skill_body].each_with_index do |feature, index|
+        TokenUsageFeature.create!(
+          request_id: record.request_id, feature: feature, session_id: record.session_id,
+          agent_root: record.agent_root, model: record.model, called_at: record.called_at,
+          cache_read_tokens: 100_000_000 / (index + 1), chars: 10_000, occurrences: 1
+        )
+      end
+    end
   end
 
   test "the costs page fits a phone, with data and without" do
@@ -103,6 +115,7 @@ class CostsMobileTest < ApplicationSystemTestCase
 
     page.save_screenshot("tmp/screenshots/costs-375.png")
   end
+
 
   test "the coverage panel and its button fit a phone, error text and all" do
     seed_spend!
@@ -127,6 +140,67 @@ class CostsMobileTest < ApplicationSystemTestCase
       "the coverage panel pushes something past the right edge at #{MOBILE_WIDTH}px"
 
     page.save_screenshot("tmp/screenshots/costs-coverage-375.png")
+  end
+
+  test "the calendar range is reachable and usable on a phone" do
+    # The picker is the control most likely to run off the edge: two date inputs
+    # and a submit button in a row, at the width where a row of three stops fitting.
+    seed_spend!
+    visit costs_path(days: 30)
+
+    assert_selector "#costs-from"
+    assert_selector "#costs-to"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "form[action='#{costs_path}']")
+
+    fill_in "from", with: 3.days.ago.to_date.iso8601
+    fill_in "to", with: Date.current.iso8601
+    click_button "Apply"
+
+    assert_text "Showing"
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "custom range overflows at #{MOBILE_WIDTH}px"
+  end
+
+  test "the chart and the breakdown rows open their detail on a tap" do
+    # Hover is invisible on a phone. Both drilldowns have to work from a tap, so
+    # both are asserted with a plain click at the phone width.
+    seed_spend!
+    visit costs_path(days: 30)
+    assert_text "Daily spend"
+
+    bars = all("[data-cost-chart-target='bar']")
+    assert_operator bars.length, :>, 1, "need at least two days to prove the readout changes"
+
+    # The chart opens on the most recent day; tapping the first bar must move the
+    # readout to the oldest one. Asserted through the panel's own visibility
+    # rather than through page text, since the dates also appear on the axis.
+    assert_equal 1, all("[data-cost-chart-target='panel']", visible: true).length
+    bars.first.click
+    assert_selector "[data-cost-chart-target='bar'][data-active='true']", count: 1
+    assert_equal bars.first[:"aria-label"].split(":").first,
+      find("[data-cost-chart-target='panel']", visible: true).text.lines.first.strip
+
+    row = first("details > summary")
+    row.click
+    assert_selector "details[open]"
+    assert_text "Estimated context-feature split"
+
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "an opened drilldown overflows at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
+
+    page.save_screenshot("tmp/screenshots/costs-drilldown-375.png")
+  end
+
+  test "the muted session cost fits the card and the detail page" do
+    seed_spend!
+
+    visit root_path
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the dashboard overflows at #{MOBILE_WIDTH}px with the cost badge added"
+
+    visit session_path(Session.order(:id).last)
+    assert_text "$"
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the session detail page overflows at #{MOBILE_WIDTH}px with the cost indicator added"
   end
 
   test "the sessions index nav still fits a phone with Costs added to it" do

@@ -8,14 +8,11 @@
 # spend it on" from our own ledger. They are different questions with different
 # sources, and neither substitutes for the other.
 class CostsController < ApplicationController
-  # Bounded so a hand-typed `?days=100000` cannot ask Postgres to scan the whole
-  # table and time out the page.
-  MAX_DAYS = 365
-  DEFAULT_DAYS = 7
-
   def show
-    @days = requested_days
-    @analytics = CostAnalytics.new(from: @days.days.ago)
+    # One object carries the window whether it came from a one-click preset or the
+    # calendar, so every link on the page can round-trip it with `to_params`.
+    @window = CostWindow.from_params(params)
+    @analytics = @window.analytics
 
     # One cached bundle rather than a dozen separate scans of the same window —
     # see CostAnalytics#snapshot for why that matters at a year of history.
@@ -27,6 +24,7 @@ class CostsController < ApplicationController
     @by_model = snapshot[:by_model]
     @by_thread_kind = snapshot[:by_thread_kind]
     @by_adhoc_source = snapshot[:by_adhoc_source]
+    @by_feature = snapshot[:by_feature]
     @top_sessions = snapshot[:top_sessions]
     @unpriced_models = snapshot[:unpriced_models]
 
@@ -52,15 +50,9 @@ class CostsController < ApplicationController
     # the button does something visible immediately.
     TokenUsageBackfillJob.perform_later
 
-    redirect_to costs_path(days: requested_days),
+    # Back to the window the button was pressed from, preset or calendar range
+    # alike — a sweep is not a reason to change what the viewer was looking at.
+    redirect_to costs_path(CostWindow.from_params(params).to_params),
       notice: "History sweep #{run.status} — progress appears here as it runs."
-  end
-
-  private
-
-  def requested_days
-    value = params[:days].to_i
-    return DEFAULT_DAYS unless value.positive?
-    value.clamp(1, MAX_DAYS)
   end
 end

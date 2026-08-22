@@ -613,6 +613,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
     t.index ["finished_at"], name: "index_token_usage_backfills_on_finished_at"
   end
 
+  create_table "token_usage_features", force: :cascade do |t|
+    t.string "agent_root"
+    t.bigint "cache_creation_1h_tokens", default: 0, null: false
+    t.bigint "cache_creation_5m_tokens", default: 0, null: false
+    t.bigint "cache_creation_tokens", default: 0, null: false
+    t.bigint "cache_read_tokens", default: 0, null: false
+    t.datetime "called_at", null: false
+    t.bigint "chars", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.string "feature", null: false
+    t.bigint "input_tokens", default: 0, null: false
+    t.string "model", null: false
+    t.integer "occurrences", default: 0, null: false
+    t.bigint "output_tokens", default: 0, null: false
+    t.string "request_id", null: false
+    t.bigint "session_id"
+    t.boolean "subagent", default: false, null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_root", "called_at"], name: "index_token_usage_features_on_agent_root_and_called_at"
+    t.index ["called_at"], name: "index_token_usage_features_on_called_at"
+    t.index ["feature", "called_at"], name: "index_token_usage_features_on_feature_and_called_at"
+    t.index ["request_id", "feature"], name: "index_token_usage_features_on_request_id_and_feature", unique: true
+    t.index ["session_id", "called_at"], name: "index_token_usage_features_on_session_id_and_called_at"
+  end
+
   create_table "trigger_conditions", force: :cascade do |t|
     t.string "condition_type", null: false
     t.jsonb "configuration", default: {}, null: false
@@ -711,5 +736,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
   add_foreign_key "sessions", "categories", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
   add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade
+  add_foreign_key "token_usage_features", "session_token_usages", column: "request_id", primary_key: "request_id", on_delete: :cascade
+  add_foreign_key "token_usage_features", "sessions", on_delete: :nullify
   add_foreign_key "trigger_conditions", "triggers"
 end

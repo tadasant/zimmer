@@ -1,0 +1,89 @@
+<%#
+  Where the money went by context-management feature.
+
+  Every figure is an ESTIMATE. The API reports one usage total per request with no
+  per-feature decomposition, so this is derived from transcript content — and the
+  residual it cannot account for is shown as its own line rather than spread
+  across the features. That is not a caveat bolted on; it is the reason the table
+  is trustworthy enough to cut a feature on.
+
+  locals: feature (Hash from CostAnalytics#by_feature)
+%>
+<div class="bg-white shadow rounded-lg overflow-hidden mb-6">
+  <div class="px-4 py-3 border-b border-gray-200">
+    <h2 class="text-sm font-semibold text-gray-900">Context features <span class="font-normal text-gray-400">estimated</span></h2>
+    <p class="text-xs text-gray-500 mt-0.5">
+      What the bytes in each prompt were for. Dollars, not tokens, is the column that decides:
+      a feature re-appended to every turn is cache-written at up to 2&times; base input, while one
+      that lands once in the prefix is read back at a tenth.
+    </p>
+  </div>
+
+  <% if feature[:rows].blank? %>
+    <p class="px-4 py-6 text-sm text-gray-500">
+      No feature attribution stored for this window. It is written by
+      <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">TokenUsageIngestionJob</code>
+      alongside the usage rows, and filled in for older history by the sweep the
+      coverage panel above reports — press <span class="font-medium">Re-scan history</span>
+      there to start one now.
+    </p>
+  <% else %>
+    <% max = feature[:rows].map { |r| r[:cost_usd] }.max || 0 %>
+    <ul class="divide-y divide-gray-100">
+      <% feature[:rows].each do |row| %>
+        <% definition = ContextFeatureRegistry.find(row[:feature]) %>
+        <li class="px-4 py-3">
+          <div class="flex items-baseline justify-between gap-3">
+            <span class="text-sm text-gray-900 truncate min-w-0">
+              <%= definition&.label || row[:feature].humanize %>
+              <% if definition&.zimmer? %>
+                <span class="ml-1 align-middle inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium bg-indigo-50 text-indigo-700">Zimmer</span>
+              <% end %>
+            </span>
+            <span class="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
+              <%= number_to_currency(row[:cost_usd], precision: 2) %>
+              <span class="text-gray-400 font-normal">
+                <%= feature[:total_cost_usd].positive? ? number_to_percentage(row[:cost_usd] / feature[:total_cost_usd] * 100, precision: 1) : "—" %>
+              </span>
+            </span>
+          </div>
+          <div class="mt-1.5 flex items-center gap-2">
+            <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div class="h-full <%= definition&.zimmer? ? "bg-indigo-500" : "bg-gray-400" %> rounded-full"
+                   style="width: <%= max.positive? ? (row[:cost_usd] / max * 100).round(1) : 0 %>%"></div>
+            </div>
+            <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+              <%= number_to_human(row[:tokens], units: { thousand: "K", million: "M", billion: "B" }, precision: 3) %> tok
+            </span>
+          </div>
+          <% if definition&.blurb.present? %>
+            <p class="text-xs text-gray-400 mt-1"><%= definition.blurb %></p>
+          <% end %>
+        </li>
+      <% end %>
+
+      <li class="px-4 py-3 bg-gray-50">
+        <div class="flex items-baseline justify-between gap-3">
+          <span class="text-sm text-gray-600">Unattributed</span>
+          <span class="text-sm font-medium text-gray-600 tabular-nums whitespace-nowrap">
+            <%= number_to_currency(feature[:residual_cost_usd], precision: 2) %>
+            <span class="text-gray-400 font-normal">
+              <%= feature[:total_cost_usd].positive? ? number_to_percentage(feature[:residual_cost_usd] / feature[:total_cost_usd] * 100, precision: 1) : "—" %>
+            </span>
+          </span>
+        </div>
+        <p class="text-xs text-gray-500 mt-1">
+          The fixed prompt prefix — the harness system prompt and the tool schemas of every MCP
+          server attached to the session — plus per-request web-search charges. None of it appears
+          in a transcript, so none of it is guessed at here. It is a per-request constant, which
+          means the way to shrink it is to attach fewer tools, not to write shorter prompts.
+        </p>
+      </li>
+    </ul>
+
+    <div class="px-4 py-2 border-t border-gray-200 text-xs text-gray-400">
+      <%= number_to_percentage(feature[:coverage] * 100, precision: 1) %> of tokens in this window were
+      attributed to a feature. Estimates are scaled so the parts can never exceed a request's real totals.
+    </div>
+  <% end %>
+</div>

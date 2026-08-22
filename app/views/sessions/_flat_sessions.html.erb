@@ -6,6 +6,8 @@
     Locals:
       sessions - a Kaminari-paginated relation, already ordered by the controller
       title    - section heading describing the active sort %>
+<%# One grouped query for every card's cost badge, instead of one per card. %>
+<% preload_session_costs(sessions) %>
 <section class="mb-8" id="flat_sessions">
   <div class="flex items-center gap-2 min-w-0 mb-3">
     <h2 class="text-lg font-semibold text-gray-800 truncate"><%= title %></h2>
