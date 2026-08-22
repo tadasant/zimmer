@@ -223,6 +223,29 @@ class AirCatalogService
       @resolve_failure = nil
     end
 
+    # Test/dev hook: install an already-resolved tree as the in-memory cache
+    # without shelling out to the CLI.
+    #
+    # The test suite resolves the catalog once at boot and re-installs that
+    # snapshot before every test, so no test inherits a cold cache (which sends
+    # the next Session write straight to `air resolve`) or a stubbed fake one
+    # from whatever ran before it in the same worker. See
+    # test/support/air_catalog_cache_warmer.rb.
+    #
+    # This serves the tree the way a successful resolve does, with two deliberate
+    # differences: it writes no CatalogSnapshot, because a tree handed in by a
+    # caller is not evidence of a healthy catalog; and it drops the effective-path
+    # memo, because the caller may have moved air_json_path since it was computed.
+    def seed_cache!(entries)
+      @entries = entries
+      @loaded_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      @last_known_good_at = Time.current
+      @degraded = false
+      @resolve_failure = nil
+      @effective_path = nil
+      @effective_fingerprint = nil
+    end
+
     private
 
     def ensure_loaded
