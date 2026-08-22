@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class AppSettingTest < ActiveSupport::TestCase
   test "blank runtime and model are valid (no override)" do
@@ -152,6 +153,14 @@ class AppSettingTest < ActiveSupport::TestCase
     end
 
     assert setting.mcp_tool_search_enabled?
+  end
+
+  test "class-level mcp_tool_search_enabled? falls back to the default when the row can't be read" do
+    # The claim the rescue makes: a database the spawn path cannot query resolves
+    # to the shipped default rather than raising mid-spawn.
+    AppSetting.stubs(:current).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+    assert AppSetting.mcp_tool_search_enabled?
   end
 
   test "the NULL stand-in resolves MCP tool search to the shipped default" do
