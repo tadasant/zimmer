@@ -102,7 +102,10 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
             # deliver the newer value the wait is waiting for, and the "wait" is
             # a metronome that ran for three hours on 2026-08-22. When the sync
             # is the thing that is stuck, this is terminal and needs a human.
-            if sync_outcome == :corrupt
+            # `sync_outcome` describes the CURRENT account's sync and nothing
+            # else — a non-current account is never synced from the shared file,
+            # so a corrupt file says nothing about why its refresh was rejected.
+            if sync_outcome == :corrupt && account.is_current?
               escalate_wedged_stale_refresh(account)
             else
               Rails.logger.warn "[RefreshRuntimeAuthTokens] #{account.email} presented a spent refresh token value; " \

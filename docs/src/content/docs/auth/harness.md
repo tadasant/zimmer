@@ -100,10 +100,10 @@ sequenceDiagram
     participant V as Vendor (Anthropic/OpenAI)
 
     C->>P: for each registered provider
-    P->>FS: ClaudeCredentialHealth.self_heal!
-    Note over P,FS: rewrite a corrupt credentials file from the DB<br/>before anything tries to read it
     P->>FS: reconcile_filesystem_identity!
     Note over P,FS: adopt a manual `claude /login` switch into the DB
+    P->>FS: ClaudeCredentialHealth.self_heal!
+    Note over P,FS: rewrite a corrupt credentials file from the DB —<br/>after reconcile, because it reads the owner marker<br/>reconcile may just have re-pointed
     P->>FS: sync_current_account_tokens!
     Note over P,FS: the CLI refreshes tokens on its own, mid-session —<br/>scrape them back or our DB copy goes stale
     P->>DB: needs_reauth_recovery_candidates
@@ -259,9 +259,15 @@ That state now has all three of the things the 2026-08-22 corruption had none of
 
 - **a surface** — the *Agent Authentication* card on `/health`, critical while the file is corrupt,
   and folded into the dashboard's overall status.
-- **a repair** — `ClaudeCredentialHealth.self_heal!` runs at the top of every
+- **a repair** — `ClaudeCredentialHealth.self_heal!` runs on every
   `RefreshRuntimeAuthTokensJob` sweep and rewrites a corrupt file from the owning account's stored
-  credentials. A corrupt file has no tokens to lose, so the write cannot destroy anything.
+  credentials. A corrupt file has no tokens to lose, so the write cannot destroy anything. It
+  declines when the stored copy is *itself* incomplete, and — less obviously — when the stored copy
+  has been **rejected as spent within the strike window**. Restoring a spent pair would put the file
+  back into `:ok`, silence the alarm, and hand the CLI a token Anthropic refuses, which is how the
+  CLI blanked its own tokens in the first place; on a five-minute cron that is Zimmer fighting the
+  CLI rather than healing it. The health card reports the decline reason rather than promising a
+  repair, because those two cases need different things from the operator.
 - **an escalation** — when the repair *cannot* work (the stored copy is broken too) and the same
   account's refresh is then rejected as stale, both halves of the deadlock are true at once: the
   value Zimmer holds is spent and the sync that would replace it is being skipped every sweep. The
