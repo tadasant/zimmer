@@ -402,6 +402,8 @@ module Mcp
           raise ToolError, "Session cannot be restarted from current status: #{session.status}"
         end
 
+        refuse_if_paused!(session)
+
         # Setup never completed (e.g. the git clone failed), so re-run the whole
         # setup pipeline instead of prompting a clone that does not exist.
         return restart_from_scratch(session) if session.failed_before_initial_prompt? && !session.setup_complete?
@@ -430,6 +432,8 @@ module Mcp
       def restart_from_scratch(session)
         raise ToolError, "No git_root configured for restart from scratch" if session.git_root.blank?
 
+        refuse_if_paused!(session)
+
         cleaned_metadata = (session.metadata || {}).except(
           *Session::STALE_RETRY_METADATA_KEYS,
           *Session::SETUP_ARTIFACT_KEYS,
@@ -451,6 +455,34 @@ module Mcp
         end
 
         summary("Session Restarted", session.reload, status_label: "New Status", message: "Session restarted from scratch")
+      end
+
+      # A pause outranks every reason an agent has to start this session.
+      #
+      # `restart` is the start path in the awaken-waiting-sessions skill, which is
+      # how the fleet-maintenance session hands out compute after a quota recovery.
+      # It works the ranked queue in precedence order, and precedence says nothing
+      # about whether a session asked to be left alone — so without this, the wake
+      # starts a paused session the moment its rank comes up.
+      #
+      # Refusing rather than silently no-opping, and refusing HERE rather than
+      # further down: `restart` resumes the session before it enqueues anything,
+      # and `resume`'s cancel_pending_one_time_wake_triggers callback consumes the
+      # pause on the way past. By the time a job could decline, the pause is gone.
+      # The error names the next move, because the caller is an agent working a
+      # queue and "skip it and take the next one" is exactly what it should do.
+      #
+      # Deliberately not applied to the web UI's Restart button or to `follow_up`:
+      # a person driving one session, or an agent addressing one directly, is
+      # taking it over, and consuming the now-moot wake is the documented
+      # behaviour. This is about a selector working a list.
+      def refuse_if_paused!(session)
+        return unless session.paused_until_scheduled_time?
+
+        raise ToolError,
+          "Session #{session.id} is asleep on a wake-up it has not reached yet (#{session.pending_wake_phrase}). " \
+          "A pause outranks precedence and scheduling class, so this session does not start early — " \
+          "skip it and take the next candidate. It wakes on its own schedule."
       end
 
       def archive(session, args)

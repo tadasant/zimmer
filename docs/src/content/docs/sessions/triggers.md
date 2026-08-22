@@ -834,6 +834,15 @@ replaced the per-session auth-outage retry triggers with a `quota_available` eve
 **Loop prevention.** A session whose `metadata["trigger_id"]` equals the trigger will never
 re-fire that trigger.
 
+**An armed wake makes the session unstartable.** Auto-sleep puts the session in `waiting`, which is
+also where every queued session sits, so nothing about the row says "leave this alone" — and the
+sweeps that start `waiting` sessions used to read it as runnable. They no longer do: while a one-time
+wake is still ahead of the session, `AgentSessionJob` refuses a first start and both quota sweeps skip
+it, whatever its precedence or scheduling class. Without that, the ranked spot queue and
+`AuthOutageParkService` would each start a paused session early — and the second would consume the
+pause on the way past, since `resume!` cancels pending one-time wakes. See
+[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence).
+
 ### One scheduler, two front doors
 
 `Sessions::ScheduleWakeUp` is the whole of it: validate the time, create the trigger, and let

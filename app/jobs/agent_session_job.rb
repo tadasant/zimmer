@@ -150,6 +150,12 @@ class AgentSessionJob < ApplicationJob
   # The delay keeps the replay out of the shutdown window that killed the original,
   # and the jitter stops a backlog interrupted by one deploy from re-landing in
   # lockstep.
+  # How long a start waits before re-asking whether the session is paused, when the
+  # trigger table could not be read. Short: this is a transient-database retry, not
+  # a backoff — the question it re-asks is cheap and the session is stalled until it
+  # gets an answer.
+  PAUSE_CHECK_RETRY_DELAY = 1.minute
+
   MAX_INTERRUPTED_START_REQUEUES = 20
   INTERRUPTED_START_REQUEUE_DELAY = 30.seconds
   INTERRUPTED_START_REQUEUE_JITTER = 30.seconds
@@ -325,6 +331,44 @@ class AgentSessionJob < ApplicationJob
             return
           end
         end
+      end
+
+      # A pause outranks every reason there is to start this session.
+      #
+      # This is the backstop the whole "Pause Until wins" contract rests on. Above
+      # it sit callers that each decide, on their own evidence, that a `waiting`
+      # session should run now: the spot-hold re-check timer, the ceiling sweep,
+      # the auth-outage un-park, a fleet-maintenance agent working the ranked
+      # queue, a REST client. A paused session is `waiting` and carries a
+      # precedence like any other, so nothing in what those callers read tells
+      # them apart — and the fleet selector is an AGENT reading a skill, which is
+      # a judgement rather than a guarantee. Refusing here makes a paused session
+      # unstartable EARLY no matter who asks or why.
+      #
+      # Only a FIRST START is refused, which is the same narrowing the spot gate
+      # below takes and for the same reason. A wake firing on time delivers a
+      # follow-up prompt; `resume_monitoring` re-attaches to a process that is
+      # already running; `clone_only` prepares a clone without spending a turn.
+      # None of those is an early start, and blocking them would strand the very
+      # wake this guard exists to protect.
+      #
+      # Standing down does NOT re-enqueue. The armed wake is the next event in
+      # this session's life, and re-arming the re-check timer alongside it would
+      # only re-ask a question already answered.
+      #
+      # What happens WHEN that wake fires is deliberately not decided here. The wake
+      # delivers a prompt, and a prompt-carrying turn answers to the spot gate like
+      # any other: a pause says "not before this time", never "and then run
+      # regardless of the queue". The spot queue stays the scheduler for spot work.
+      #
+      # Reading `paused_until_scheduled_time?` rather than the broader
+      # `awaiting_scheduled_wake?` matters too. A wall-clock pause expires; an
+      # `ao_event` watcher on a session that never transitions again does not, and
+      # refusing on that would leave this session with no next event at all.
+      if !resume_monitoring && !clone_only && follow_up_prompt.blank? && session.waiting? &&
+         paused_until_scheduled_time?(session, log_buffer)
+        log_buffer.flush
+        return
       end
 
       # Hold a spot session at the starting line when a Claude Code quota window
@@ -2093,6 +2137,42 @@ class AgentSessionJob < ApplicationJob
                "so recovery left it alone.",
       level: "info"
     )
+  end
+
+  # Whether this start must stand down for a pause, recording why when it must.
+  #
+  # The DB error is handled here rather than inside the predicate, because the two
+  # possible wrong answers are not symmetrical on a start path. Answering "paused"
+  # on an unreadable trigger table would strand the session: standing down does not
+  # re-enqueue, and the log line would claim a pause that may not exist. Answering
+  # "not paused" would start a session somebody asked to leave alone. So neither is
+  # taken — the job re-enqueues itself and asks again shortly, which is the one
+  # response that decides nothing.
+  def paused_until_scheduled_time?(session, log_buffer)
+    return false unless session.paused_until_scheduled_time?
+
+    # A session log rather than only a Rails log: "why did my paused session not
+    # start" is asked from the session page, and the answer has to be there.
+    phrase = session.pending_wake_phrase
+    Rails.logger.info("[AgentSessionJob] Session #{session.id} not started: #{phrase}")
+    log_buffer&.add(
+      "Not starting this session: #{phrase}. A pause outranks precedence and scheduling class — " \
+      "the session stays dormant and starts when its wake-up fires.",
+      level: "info"
+    )
+
+    # The re-check chain ends here, so the hold record would sit on the session
+    # promising a re-check that never comes. The wake is what starts this session
+    # now, and it starts it as a fresh admission.
+    SpotSessionHold.clear(session)
+    true
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.warn(
+      "[AgentSessionJob] Could not read pending wake-ups for session #{session.id} (#{e.message}) — " \
+      "re-enqueuing rather than deciding"
+    )
+    AgentSessionJob.enqueue_new_session(session.id, delay: PAUSE_CHECK_RETRY_DELAY)
+    true
   end
 
   # Re-transition a session to running for a prompt this job is already carrying.
