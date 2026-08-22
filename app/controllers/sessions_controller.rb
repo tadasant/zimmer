@@ -1929,7 +1929,7 @@ class SessionsController < ApplicationController
       return
     end
 
-    SessionStatusSummaryJob.perform_later(@session.id, force: true)
+    SessionStatusSummaryJob.set(priority: SessionStatusSummaryJob::FORCED_PRIORITY).perform_later(@session.id, force: true)
 
     respond_to do |format|
       format.turbo_stream { render turbo_stream: status_panel_replacement(generating: true) }

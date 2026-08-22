@@ -32,10 +32,7 @@ class GithubTriggerHealthCheckJob < ApplicationJob
 
   # Singleton: at most one check unfinished at a time, matching the other periodic
   # monitors. A check is cheap; this just prevents overlapping cron ticks from stacking.
-  good_job_control_concurrency_with(
-    key: -> { "github_trigger_health_check" },
-    total_limit: 1
-  )
+  include SingletonSweep
 
   # How long the poller may go without a single successful poll before we page. The
   # poller runs every minute, so this is ~15 consecutive missed/failed ticks — far

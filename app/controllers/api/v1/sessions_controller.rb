@@ -493,7 +493,7 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    SessionStatusSummaryJob.perform_later(@session.id, force: true)
+    SessionStatusSummaryJob.set(priority: SessionStatusSummaryJob::FORCED_PRIORITY).perform_later(@session.id, force: true)
 
     render json: {
       session_id: @session.id,
