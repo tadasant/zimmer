@@ -20,12 +20,14 @@ module SessionsHelper
     ExceptionMessageHighlighter.highlights(exception_message)
   end
 
-  # The scheduled retry time for a session parked by AuthOutageParkService.
-  # Returns nil when the session isn't parked or the stored value isn't a
-  # parseable timestamp, so the banner can fall back rather than raise on
-  # metadata written by an older release.
-  def auth_outage_retry_time(agent_session)
-    raw = agent_session.metadata&.dig("auth_outage_retry_at")
+  # When the account pool that parked this session is expected to roll over, as
+  # AuthOutageParkService estimated it at park time. An estimate for the banner —
+  # nothing fires at it. Returns nil when the session isn't parked, when no reset
+  # time was knowable, or when the stored value isn't a parseable timestamp, so
+  # the banner falls back rather than raising on metadata written by an older
+  # release.
+  def auth_outage_pool_recovery_time(agent_session)
+    raw = agent_session.metadata&.dig("auth_outage_pool_recovers_at")
     return nil if raw.blank?
 
     Time.iso8601(raw.to_s)

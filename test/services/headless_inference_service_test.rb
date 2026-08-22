@@ -171,4 +171,59 @@ class HeadlessInferenceServiceTest < ActiveSupport::TestCase
   test "default timeout is 30 seconds" do
     assert_equal 30, HeadlessInferenceService::DEFAULT_TIMEOUT
   end
+
+  # THE GUARD THAT KEEPS A CLI ERROR OUT OF A COMPLETION.
+  #
+  # `claude -p` prints its own errors to STDOUT and exits non-zero — a usage
+  # limit, a credit balance, an API error blob. A consumer reading only the text
+  # would store the error as though it were the answer, and a status summary
+  # stored that way is stamped CURRENT and never replaced. The exit status is the
+  # wording-independent evidence, so it is checked before the text is believed.
+  test "output from a backend that exited non-zero is discarded" do
+    @mock_process_manager.spawn_hook = ->(_command, options) do
+      target = options[:out].is_a?(Array) ? options[:out][0] : options[:out]
+      File.write(target, "Claude AI usage limit reached|1755792000")
+    end
+    @mock_process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(1) ] }
+
+    assert_nil @service.generate("Write the Status panel for this session")
+  end
+
+  # A backend that cannot report an exit code at all (the PTY transport drives a
+  # TUI, not a one-shot process) leaves it nil, and nil must read as "unknown"
+  # rather than "failed" — otherwise enabling that extension would silently
+  # discard every completion.
+  test "a backend that reports no exit status at all is still believed" do
+    runner = Object.new
+    runner.define_singleton_method(:run) do |prompt:, timeout:|
+      ClaudePrintRunner::Result.new(text: "A real answer.", usage: nil, exit_status: nil)
+    end
+    ClaudePrintRunner.stub(:build, runner) do
+      assert_equal "A real answer.", @service.generate("anything")
+    end
+  end
+
+  # A `claude -p` that fails prints its OWN error to stdout — a usage limit, a
+  # credit balance, an API error blob — and exits non-zero. Returning that text
+  # would hand the caller an error dressed as a completion, which for the status
+  # summary means storing it as the blurb and stamping it current.
+  test "a non-zero exit discards whatever the backend printed" do
+    @mock_process_manager.spawn_hook = ->(_command, options) do
+      target = options[:out].is_a?(Array) ? options[:out][0] : options[:out]
+      File.write(target, "Claude AI usage limit reached|1755792000")
+    end
+    @mock_process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(1) ] }
+
+    assert_nil @service.generate("Summarize this session")
+  end
+
+  test "a zero exit returns the text as usual" do
+    @mock_process_manager.spawn_hook = ->(_command, options) do
+      target = options[:out].is_a?(Array) ? options[:out][0] : options[:out]
+      File.write(target, "A real answer.")
+    end
+    @mock_process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    assert_equal "A real answer.", @service.generate("Summarize this session")
+  end
 end

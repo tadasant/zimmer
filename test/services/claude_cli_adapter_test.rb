@@ -1508,7 +1508,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     # send it there rather than to the headless agent.
     non_nil_vars = env_vars.reject { |_k, v| v.nil? }
     assert_equal({
-      "ENABLE_TOOL_SEARCH" => "false",
+      "ENABLE_TOOL_SEARCH" => "true",
       "CLAUDE_CODE_DISABLE_CRON" => "1",
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY" => "1",
       "CLAUDE_CODE_AUTO_COMPACT_WINDOW" => "1000000",
@@ -2076,16 +2076,14 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   end
 
   # ===== ENABLE_TOOL_SEARCH / extension spawn-env seam =====
-  # Zimmer's baseline sets ENABLE_TOOL_SEARCH=false; the mcp_tool_search extension
-  # flips it on by contributing the var through the spawn-env seam. The baseline
-  # (false-by-default) is a core adapter behavior and holds even with every
-  # extension deleted. The "extension flips it on" case is exercised with a FAKE
-  # contributing extension so it tests the adapter's seam, not the deletable
-  # mcp_tool_search — whose own ENABLE_TOOL_SEARCH=true contribution is covered in
-  # test/extensions/mcp_tool_search/.
+  # ENABLE_TOOL_SEARCH tracks the global MCP tool search setting (Settings →
+  # Experimental), which is ON by default. An enabled extension can still
+  # override it through the spawn-env seam; that case uses a FAKE contributing
+  # extension so it tests the adapter's seam rather than any concrete (deletable)
+  # extension.
   class FakeEnvContribExtension < Zimmer::Extension
     def id = "fake_env_contrib"
-    def spawn_env_contribution(context = {}) = (context[:runtime].to_s == "claude_code") ? { "ENABLE_TOOL_SEARCH" => "true" } : {}
+    def spawn_env_contribution(context = {}) = (context[:runtime].to_s == "claude_code") ? { "ENABLE_TOOL_SEARCH" => "false" } : {}
   end
 
   test "spawn_process exports SSH_PRIVATE_KEY_PATH so the ssh-* MCP servers find the operator key" do
@@ -2166,7 +2164,35 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal "/custom/key", env_vars["SSH_PRIVATE_KEY_PATH"]
   end
 
-  test "spawn_process sets ENABLE_TOOL_SEARCH to false by default" do
+  test "spawn_process sets ENABLE_TOOL_SEARCH to true by default" do
+    AppSetting.delete_all
+
+    command = [ "claude", "test" ]
+    @adapter.send(:spawn_process, command, working_dir: @test_dir)
+
+    spawned = @mock_process_manager.spawned_processes.first
+    env_vars = spawned[:env]
+
+    assert_equal "true", env_vars["ENABLE_TOOL_SEARCH"]
+  end
+
+  test "spawn_process_with_stdin sets ENABLE_TOOL_SEARCH to true by default" do
+    AppSetting.delete_all
+
+    command = [ "claude", "-p", "--input-format", "stream-json" ]
+    stdin_content = '{"type":"user","message":{}}'
+    @adapter.send(:spawn_process_with_stdin, command, working_dir: @test_dir, stdin_content: stdin_content)
+
+    spawned = @mock_process_manager.spawned_processes.first
+    env_vars = spawned[:env]
+
+    assert_equal "true", env_vars["ENABLE_TOOL_SEARCH"]
+  end
+
+  test "spawn_process sets ENABLE_TOOL_SEARCH to false when the setting is turned off" do
+    AppSetting.delete_all
+    AppSetting.create!(mcp_tool_search_enabled: false)
+
     command = [ "claude", "test" ]
     @adapter.send(:spawn_process, command, working_dir: @test_dir)
 
@@ -2174,9 +2200,14 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     env_vars = spawned[:env]
 
     assert_equal "false", env_vars["ENABLE_TOOL_SEARCH"]
+  ensure
+    AppSetting.delete_all
   end
 
-  test "spawn_process_with_stdin sets ENABLE_TOOL_SEARCH to false by default" do
+  test "spawn_process_with_stdin sets ENABLE_TOOL_SEARCH to false when the setting is turned off" do
+    AppSetting.delete_all
+    AppSetting.create!(mcp_tool_search_enabled: false)
+
     command = [ "claude", "-p", "--input-format", "stream-json" ]
     stdin_content = '{"type":"user","message":{}}'
     @adapter.send(:spawn_process_with_stdin, command, working_dir: @test_dir, stdin_content: stdin_content)
@@ -2185,9 +2216,11 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     env_vars = spawned[:env]
 
     assert_equal "false", env_vars["ENABLE_TOOL_SEARCH"]
+  ensure
+    AppSetting.delete_all
   end
 
-  test "spawn_process merges an enabled extension's spawn-env contribution over the baseline" do
+  test "spawn_process merges an enabled extension's spawn-env contribution over the setting" do
     AppSetting.delete_all
     Zimmer::ExtensionRegistry.register(FakeEnvContribExtension.new)
     AppSetting.editable.tap { |s| s.set_extension_enabled("fake_env_contrib", true); s.save! }
@@ -2198,7 +2231,8 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     spawned = @mock_process_manager.spawned_processes.first
     env_vars = spawned[:env]
 
-    assert_equal "true", env_vars["ENABLE_TOOL_SEARCH"]
+    # The setting resolves to true; the extension's contribution wins.
+    assert_equal "false", env_vars["ENABLE_TOOL_SEARCH"]
   ensure
     AppSetting.delete_all
     Zimmer::ExtensionRegistry.reset!

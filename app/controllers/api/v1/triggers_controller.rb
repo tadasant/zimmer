@@ -203,7 +203,7 @@ class Api::V1::TriggersController < Api::BaseController
     permitted = params.permit(
       :name, :status, :agent_root_name, :goal,
       :prompt_template, :reuse_session, :enqueue_messages, :resuscitate_archived,
-      :last_session_id, :max_sessions_per_minute, :scheduling_class,
+      :last_session_id, :max_sessions_per_minute, :scheduling_class, :precedence,
       mcp_servers: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
@@ -234,6 +234,7 @@ class Api::V1::TriggersController < Api::BaseController
       # conditions derive.
       scheduling_class: trigger.scheduling_class,
       effective_scheduling_class: trigger.effective_scheduling_class,
+      precedence: trigger.precedence,
       mcp_servers: trigger.mcp_servers,
       conditions: trigger.trigger_conditions.map { |c| condition_json(c) },
       last_session_id: trigger.last_session_id,

@@ -4,9 +4,11 @@
   stand, and does it want me right now?" before the reader has clicked anything.
 
   Two or three sentences, written by an agent (SessionStatusSummaryGenerator
-  forks the session and asks the fork), cached on SessionStatusSummary, and
-  deliberately link-heavy: a detail worth more than a clause becomes a link to
-  the transcript message, PR, or session where it lives.
+  forks the session and asks the fork — or, when no login-pool account is free
+  to run a fork on, asks for the same blurb in one headless completion), cached
+  on SessionStatusSummary, and deliberately link-heavy: a detail worth more than
+  a clause becomes a link to the transcript message, PR, or session where it
+  lives.
 
   Rendering this NEVER generates. A stale summary shows the cached text plus how
   many messages have landed since, and waits. `unavailable_reason` reads the
@@ -93,7 +95,7 @@
         <p class="mt-2 text-xs text-gray-500">This cannot be regenerated. <%= unavailable %></p>
       <% end %>
     <% elsif generating %>
-      <p class="text-sm text-gray-500">Forking this session to write a summary. It will appear here when the fork's turn finishes.</p>
+      <p class="text-sm text-gray-500">Writing a summary of this session. It will appear here when the generation finishes.</p>
     <% elsif summary&.failed? %>
       <p class="text-sm text-gray-700">No summary yet — the last attempt failed.</p>
       <p class="mt-1 text-xs text-red-700"><%= summary.error.presence || "No reason recorded." %></p>
