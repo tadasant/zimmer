@@ -705,14 +705,25 @@ fails the deploy if the worker does not claim and finish each one inside a bound
 The job it enqueues is `app/jobs/canary_job.rb` — a no-op that logs its token and returns. Everything
 about it is a constraint rather than a feature:
 
-- **It does nothing.** A query, an HTTP call or a shell-out inside it is a way for a liveness gate to
-  fail for a non-liveness reason, on every production cutover.
-- **It declares no concurrency control.** A job under `good_job_control_concurrency_with` is
-  *deferred* rather than run, which the gate cannot tell apart from a dead queue — it would fail
-  deploys of a healthy fleet.
-- **It is not dead code, and its name is load-bearing.** The gate resolves the class by name; before
-  this job existed it fell back to `CleanupExpiredElicitationsJob`, which coupled a deploy gate to a
-  business job that could later grow a slow query or a concurrency limit.
+- **It touches no database, no network and no shell.** Anything it starts touching is a way for a
+  liveness gate to fail for a non-liveness reason, on every production cutover.
+- **It declares no concurrency control.** A `total_limit`/`enqueue_limit` rule makes GoodJob
+  `throw :abort` at enqueue time, so no row is ever written; a `perform_limit` writes a row that is
+  deferred rather than run. The gate cannot tell either from a dead queue — it would fail deploys of
+  a healthy fleet.
+- **It is not dead code, and its name is load-bearing.** The gate resolves the class by name and
+  falls back to a business job if it is absent. That fallback was
+  `CleanupExpiredElicitationsJob`, which is a singleton sweep
+  (`include SingletonSweep` → `total_limit: 1`) that runs every five minutes — so a canary enqueued
+  onto it during a tick it was already running produces no row at all, and the gate reds a healthy
+  deploy. Renaming or deleting `CanaryJob` reinstates exactly that.
+
+One thing the gate still cannot see:
+[queue recovery mode](/operate/background-jobs/#queue-recovery-mode) pauses `default`, `pollers` and
+`triggers` via `GoodJob.pause`, and that pause is persisted in `good_job_settings`, so it survives a
+deploy. A cutover that lands while recovery mode is active fails the drain check on three of its four
+queues with a perfectly healthy worker. The gate is the piece that has to learn to read
+`GoodJob.paused(:queues)` and skip rather than fail; nothing in this repo can do it for it.
 
 `test/jobs/canary_job_test.rb` holds each of those lines, including a round trip through a real
 GoodJob row on all four queues.
