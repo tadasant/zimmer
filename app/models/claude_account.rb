@@ -66,6 +66,16 @@ class ClaudeAccount < ApplicationRecord
   # AccountRotationService converges by writing one.
   UNOWNED_CREDENTIALS_MARKER = "unwritten@zimmer.invalid"
 
+  # An `expiresAt` this far in the future is not a credential Anthropic issued.
+  # Access tokens live 8 hours; refresh chains are re-minted continuously. A
+  # value beyond this horizon is corrupt bookkeeping, and the only thing that
+  # reads it for a decision — #newer_on_disk?, which compares two credential
+  # sets to decide which one is live — must not let a garbage timestamp win a
+  # comparison against a real one. See issue #618, hole 8: one account row
+  # acquired an `expiresAt` decoding to the year 2286 by a mechanism nobody has
+  # explained, and while the cause is still unknown this bounds the damage.
+  CREDIBLE_EXPIRY_HORIZON = 30.days
+
   # A second stale rejection this soon after the last one is the same episode.
   # refresh_token! has nine call sites — the quotas page, rotation, activation,
   # the quota-reset checker and the 5-minute sweep — and several of them can
@@ -261,7 +271,16 @@ class ClaudeAccount < ApplicationRecord
     end
 
     oauth_config = {}
-    oauth_config["claude_json"] = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH)) if File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+    # The identity file is adopted only when it names the same account the
+    # credentials do. `fs_email` now comes from the shared owner marker, which
+    # can legitimately disagree with the container-local ~/.claude.json — and
+    # grafting one account's identity onto another account's row is the exact
+    # contamination the marker exists to prevent.
+    if File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+      claude_json = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
+      identity_email = extract_oauth_email(claude_json["oauthAccount"])
+      oauth_config["claude_json"] = claude_json if identity_email.blank? || identity_email.casecmp?(fs_email)
+    end
     credentials_json = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
     oauth_config["credentials_json"] = credentials_json
 
@@ -297,9 +316,40 @@ class ClaudeAccount < ApplicationRecord
     nil
   end
 
-  # Returns the email address currently present in ~/.claude.json's
-  # oauthAccount field, or nil if the file is missing/unparseable.
+  # Whose tokens are in the SHARED ~/.claude/.credentials.json, as best Zimmer
+  # can tell.
+  #
+  # The owner marker answers this and the container-local ~/.claude.json only
+  # looks like it does. The two files have different durability: the marker sits
+  # in the same shared volume as the credentials it describes, while
+  # ~/.claude.json lives in the container's writable layer and is destroyed every
+  # time the container is replaced — which keeps the tokens and loses the
+  # identity. Trusting the identity file therefore lets a container replacement
+  # produce a confident, wrong answer about a credentials file that did not
+  # change. See issue #618, addendum B.
+  #
+  # The identity file is consulted only when there is NO marker at all: the
+  # bootstrap window before Zimmer has ever written credentials, which is also
+  # the one case the file is being read for its actual purpose (an operator ran
+  # `claude /login` on a fresh worker). After a container replacement that
+  # window looks the same but the file is gone, so the fallback answers nil —
+  # the safe answer — rather than a stale identity.
+  #
+  # @return [String, nil]
   def self.filesystem_oauth_email
+    marker = credentials_owner_email
+    return nil if marker == UNOWNED_CREDENTIALS_MARKER
+    return marker if marker.present?
+
+    filesystem_identity_email
+  end
+
+  # The email in the container-local ~/.claude.json's oauthAccount field, or nil
+  # if the file is missing/unparseable. Deliberately private-by-convention: the
+  # only caller that should reach for it is #filesystem_oauth_email's bootstrap
+  # fallback, and #backfill_identity_from_filesystem!, which uses it under an
+  # email match rather than as an authority.
+  def self.filesystem_identity_email
     return nil unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
     config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
