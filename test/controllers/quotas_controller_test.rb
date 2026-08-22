@@ -608,6 +608,61 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_not unconfigured.reload.is_current?
   end
 
+  # ── issue #618: holes 3, 4 and 12 ──────────────────────────────────
+
+  test "the current account offers Re-activate, so the one live credential set can be rewritten from the UI" do
+    get quotas_path
+    assert_response :success
+    assert_select "form[action=?]", switch_account_path(claude_accounts(:primary)) do
+      assert_select "input[value=?]", "Re-activate"
+    end
+  end
+
+  test "re-activating the current account rewrites its credentials without recording a rotation" do
+    primary = claude_accounts(:primary)
+
+    assert_no_difference "AccountRotationEvent.count" do
+      post switch_account_path(primary)
+    end
+
+    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_match "Re-activated", flash[:notice]
+    assert primary.reload.is_current?
+    assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH),
+      "re-activation must reach the filesystem — that is the whole point of the control"
+  end
+
+  test "switch_account admits an account on a working access token without spending its refresh token" do
+    secondary = claude_accounts(:secondary)
+
+    # Any refresh attempt would be a bug: the access token already answered the
+    # question, and refresh tokens are single-use.
+    ClaudeAccount.any_instance.expects(:refresh_token!).never
+
+    post switch_account_path(secondary)
+
+    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert secondary.reload.is_current?
+  end
+
+  test "loading /quotas does not reconcile the filesystem identity" do
+    # A GET on a diagnostic page must not change which account production runs
+    # under. See issue #618, hole 12.
+    RuntimeAuthProvider.any_instance.expects(:reconcile_filesystem_identity!).never
+
+    get quotas_path
+    assert_response :success
+  end
+
+  test "the filesystem banner never instructs a production shell command" do
+    ClaudeAccount.stubs(:filesystem_oauth_email).returns("nobody@tadasant.com")
+
+    get quotas_path
+
+    assert_response :success
+    assert_no_match(/bin\/rails/, response.body)
+  end
+
   test "should route POST /quotas/switch_account/:id" do
     assert_routing(
       { method: :post, path: "/quotas/switch_account/1" },
@@ -643,6 +698,15 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "switch_account rejects account when token refresh fails" do
     secondary = claude_accounts(:secondary)
 
+    # The admission check now asks the cheap question first: does Anthropic still
+    # honour this account's stored ACCESS token? A dead account fails both probes,
+    # so make the access-token probe fail too — otherwise the setup's blanket
+    # success stub would answer "this account works right now", which for a real
+    # dead credential it would not. See issue #618, hole 4.
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, error_message: "Unauthorized", unreachable: false)
+    )
+
     failed_response = Net::HTTPUnauthorized.new("1.1", "401", "Unauthorized")
     failed_response.stubs(:code).returns("401")
     failed_response.stubs(:body).returns({ error: "invalid_grant" }.to_json)
@@ -662,6 +726,15 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     # check would skip validation and switch to a bogus account, eventually
     # writing garbage to ~/.claude/.credentials.json on next session.
     secondary = claude_accounts(:secondary)
+
+    # The admission check now asks the cheap question first: does Anthropic still
+    # honour this account's stored ACCESS token? A dead account fails both probes,
+    # so make the access-token probe fail too — otherwise the setup's blanket
+    # success stub would answer "this account works right now", which for a real
+    # dead credential it would not. See issue #618, hole 4.
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, error_message: "Unauthorized", unreachable: false)
+    )
 
     failed_response = Net::HTTPBadRequest.new("1.1", "400", "Bad Request")
     failed_response.stubs(:code).returns("400")

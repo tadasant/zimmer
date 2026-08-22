@@ -275,6 +275,54 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
 
   private
 
+  # ---------------------------------------------- hole 2: capture! reaches disk
+
+  test "capture! writes the shared credentials file when the account is current" do
+    tmp_home = Dir.mktmpdir
+    original_claude_json = ClaudeAuthProvider::CLAUDE_JSON_PATH
+    original_credentials = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, File.join(tmp_home, "claude.json"))
+    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(tmp_home, ".credentials.json"))
+
+    # The trap this closes: the account being re-authenticated IS the one whose
+    # credentials are live, and the live file holds the CLI's blanked tokens.
+    # Before the fix, capture! wrote only the DB and every session kept reading
+    # the broken file while the UI reported success.
+    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
+      JSON.generate({ "claudeAiOauth" => { "accessToken" => "", "refreshToken" => "", "expiresAt" => 0 } }))
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    ClaudeAccount.for_runtime("claude_code").update_all(is_current: false)
+    @account.update!(is_current: true)
+
+    Dir.mktmpdir do |dir|
+      write_claude_config(dir, email: @account.email)
+      @driver.capture!(dir, @account)
+    end
+
+    on_disk = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+    assert_equal "at-1", on_disk.dig("claudeAiOauth", "accessToken")
+    assert_equal "rt-1", on_disk.dig("claudeAiOauth", "refreshToken")
+    assert_equal @account.email, ClaudeAccount.credentials_owner_email
+  ensure
+    FileUtils.rm_rf(tmp_home)
+    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, original_claude_json)
+    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
+    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, original_credentials)
+  end
+
+  test "capture! leaves the filesystem alone for an account that is not current" do
+    AccountRotationService.any_instance.expects(:write_config!).never
+
+    Dir.mktmpdir do |dir|
+      write_claude_config(dir, email: @account.email)
+      @driver.capture!(dir, @account)
+    end
+  end
+
   def write_claude_config(dir, email:)
     write_identity(dir, email: email)
     File.write(File.join(dir, ".credentials.json"),

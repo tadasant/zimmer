@@ -1408,4 +1408,36 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     process.update_column(:updated_at, seconds_since_heartbeat.seconds.ago)
     process
   end
+  # ── issue #618, hole 5: corruption had no health surface ─────────────
+
+  test "auth_health reports a corrupt worker credentials file as critical" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :corrupt, detail: "tokens blanked", owner_email: "a@b.com", checked_at: Time.current)
+    )
+
+    auth = HealthMonitorService.new.auth_health
+
+    assert auth[:status].critical?
+    assert_equal :corrupt, auth[:credentials_state]
+    assert_equal "a@b.com", auth[:credentials_owner]
+  end
+
+  test "auth_health is healthy when the file is intact and the pool has an account" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :ok, detail: "fine", owner_email: "a@b.com", checked_at: Time.current)
+    )
+
+    auth = HealthMonitorService.new.auth_health
+
+    assert auth[:status].healthy?
+    assert auth[:available_accounts].positive?
+  end
+
+  test "a corrupt credentials file makes the overall status critical" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :corrupt, detail: "tokens blanked", owner_email: "a@b.com", checked_at: Time.current)
+    )
+
+    assert HealthMonitorService.new.full_health_report[:overall_status].critical?
+  end
 end
