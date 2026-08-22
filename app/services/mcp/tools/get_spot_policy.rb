@@ -26,10 +26,11 @@ module Mcp
         `waiting` and comes back on its own — a paused one once utilization falls a few points below the
         target, a held one at the re-check its `spot_hold_retry_at` names.
         Every running session counts toward the concurrency limit, priority included, but only spot
-        sessions are held by it — priority work is meant to crowd spot work out. The concurrency limit
-        holds first starts only: a session resuming is already counted in the running fleet. A held spot
-        session is deferred, never cancelled: it stays `waiting`, and the prompt that woke it is queued
-        with the re-check rather than dropped.
+        sessions are held by it — priority work is meant to crowd spot work out. The concurrency limit is
+        skipped only for a session that is ALREADY running when the gate runs, since it is counted in the
+        fleet itself; a turn already deferred once is dormant and holds no slot, so the limit applies to
+        its re-check in full. A held spot session is deferred, never cancelled: it stays `waiting`, and
+        the prompt that woke it is queued with the re-check rather than dropped.
 
         A session's class is whichever of these speaks first: a class named for that session at spawn,
         the `scheduling_class` on the trigger that fired it, or the default for its **genesis** — where

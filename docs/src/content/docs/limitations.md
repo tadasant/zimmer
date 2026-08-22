@@ -2876,6 +2876,13 @@ whenever its own timer says so.
 Two things still pass the gate, both deliberately: `clone_only` (sets up a clone, spawns no agent)
 and `resume_monitoring` (re-attaches to a process already running). Neither spends anything.
 
+One narrow edge comes with returning a refused turn to `waiting`. If the job that reached the gate
+had just superseded a dead job whose CLI process was somehow still alive, the session goes dormant
+while that process keeps running — and both sweeps that would have noticed
+(`CleanupOrphanedSessionsJob#recover_running_orphans` and `SpotSessionPause.pausable_sessions`) scan
+`status: running` only, so nothing looks at it until the hold's re-check fires. The gate does not
+terminate processes; `SpotSessionPause` is the half of the policy that does.
+
 ---
 
 ## Genesis backfill cannot recover what was never recorded
