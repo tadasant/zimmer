@@ -589,6 +589,41 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-ranked-queue-1400.png")
   end
 
+  # A card footer is one wrapping flex row: the PR button on the left, the actions
+  # (overflow menu, Trash, View) pushed right. Nothing overflows when it wraps -- the
+  # row just becomes two rows and the card grows a line, which is what "the buttons
+  # stack" looks like on a phone. So this is a geometry assertion the two probes
+  # above cannot make: the PR button and the action group share a line.
+  test "a session card's PR button shares the footer's line with the action buttons on a phone" do
+    url = "https://github.com/owner/repo/pull/603"
+    session = create_session(status: :needs_input)
+    session.update!(custom_metadata: {
+      "github_pull_request_urls" => [ url ],
+      "github_pull_request_statuses" => { url => "open" },
+      "github_pull_request_ci_statuses" => { url => "pass" }
+    })
+
+    visit root_path
+    assert_selector "a[href='#{url}']"
+
+    assert_no_horizontal_overflow("sessions index with a PR button")
+
+    # Compare the two groups' vertical centres rather than their tops: the buttons
+    # are a pixel apart in height, so equal tops would be a stricter claim than
+    # "same line" and would fail on a layout that is perfectly fine.
+    centre_gap = page.evaluate_script(<<~JS)
+      (function () {
+        const row = document.querySelector("a[href='#{url}']").closest("div.justify-between");
+        const [left, right] = Array.from(row.children).map((el) => el.getBoundingClientRect());
+        return Math.abs((left.top + left.height / 2) - (right.top + right.height / 2));
+      })()
+    JS
+
+    assert centre_gap <= 2,
+      "the PR button wrapped onto its own line at #{MOBILE_WIDTH}px: the footer's two " \
+      "groups are #{centre_gap}px apart vertically"
+  end
+
   # The desktop layout has to keep working: these same pages are read on a laptop,
   # and `flex-wrap` / stacked-on-mobile fixes are exactly the kind of change that
   # silently reflows a wide screen.
