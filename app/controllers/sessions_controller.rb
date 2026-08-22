@@ -2117,6 +2117,73 @@ class SessionsController < ApplicationController
     end
   end
 
+  # "Pause Until": sleep this session now and schedule a one-time trigger to wake
+  # it at the chosen time. The web-UI counterpart of the wake_me_up_later MCP
+  # tool — both go through Sessions::ScheduleWakeUp, so both reject a past-dated
+  # or too-soon wake the same way rather than bricking the session.
+  #
+  # The browser sends a naive local wall-clock time plus its own IANA zone
+  # (Intl.DateTimeFormat().resolvedOptions().timeZone). Treating that naive value
+  # as UTC would silently offset every pause by the operator's UTC offset, so the
+  # zone is not optional in practice — it just defaults to UTC for a caller that
+  # genuinely means UTC.
+  def pause_until
+    @session = find_session
+
+    # Narrower than the service's WAKEABLE_STATUSES: a never-started `waiting`
+    # session is queued for spawn, not asleep, and pausing it would arm a wake the
+    # spawn pipeline ignores. Re-checked here because a card rendered before the
+    # session started still carries the button.
+    unless @session.pausable_until?
+      return respond_to do |format|
+        message = "Session #{@session.id} cannot be paused from here (status: #{@session.status})."
+        format.json { render json: { success: false, error: message }, status: :unprocessable_entity }
+        format.html { redirect_to @session, alert: message }
+      end
+    end
+
+    prompt = params[:prompt].presence || AutomatedPrompts::PAUSE_UNTIL_WAKE
+
+    # replace_existing: picking a second time from the UI means "not then, THIS
+    # time". Without it the earlier wake still fires — at the time the operator
+    # just replaced. An agent calling wake_me_up_later keeps the additive
+    # behaviour, which is what the triple-wake pattern depends on.
+    trigger = Sessions::ScheduleWakeUp.call(
+      session: @session,
+      wake_at: params[:wake_at],
+      timezone: params[:timezone].presence || "UTC",
+      prompt: prompt,
+      replace_existing: true
+    )
+
+    condition = trigger.trigger_conditions.first
+    @session.reload
+
+    respond_to do |format|
+      format.json do
+        render json: {
+          success: true,
+          session_id: @session.id,
+          status: @session.status,
+          # A running session does not sleep mid-turn: Trigger's after_create marks
+          # it pending_sleep and it transitions when the turn ends. The UI says so
+          # rather than claiming a state change that has not happened yet.
+          pending_sleep: @session.metadata&.dig("pending_sleep") == true,
+          wake_at: condition.scheduled_at,
+          timezone: condition.schedule_timezone,
+          trigger_id: trigger.id
+        }
+      end
+      format.html { redirect_to @session, notice: "Paused until #{condition.scheduled_at} (#{condition.schedule_timezone})." }
+    end
+  rescue Sessions::ScheduleWakeUp::Error => e
+    message = pause_until_error_message(e)
+    respond_to do |format|
+      format.json { render json: { success: false, error: message }, status: :unprocessable_entity }
+      format.html { redirect_to @session, alert: message }
+    end
+  end
+
   def toggle_favorite
     @session = find_session
 
@@ -3328,6 +3395,16 @@ class SessionsController < ApplicationController
 
   # JSON payload the heartbeat Stimulus controller reads back after toggling the
   # heartbeat or changing its interval.
+  # The scheduler's rejection, restated for someone looking at a popover rather
+  # than at a tool description. Only the too-soon case needs it: the rest of the
+  # messages already read as plain English.
+  def pause_until_error_message(error)
+    return error.message unless error.code == :wake_at_too_soon
+
+    "That time has already passed, or is less than " \
+      "#{Sessions::ScheduleWakeUp::WAKE_AT_GRACE_WINDOW.to_i} seconds away. Pick a later time."
+  end
+
   def heartbeat_json
     {
       success: true,

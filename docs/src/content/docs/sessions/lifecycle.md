@@ -361,10 +361,16 @@ The "wake me up later" path. The session goes dormant and a one-time schedule tr
 resume it. If the wake-up is scheduled while the session is *running*,
 `metadata["pending_sleep"] = true` is set and the actual transition happens on the next `pause`.
 
-Agents reach this through the `wake_me_up_later` MCP tool, but Zimmer also uses it on its own
-behalf: `AuthOutageParkService` parks a session here when the login pool runs dry, which is what
-keeps a quota-blocked session out of the heartbeat sweep's reach. See
-[Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
+Agents reach this through the `wake_me_up_later` MCP tool, and humans through the **Pause Until**
+control on a session card's overflow menu or in the session detail header. Both go through
+`Sessions::ScheduleWakeUp`, so both refuse the same wakes — a time in the past, or inside the
+30-second grace window, would fire-and-drop in the scheduler and leave the session asleep forever.
+Only `needs_input`, `running` and `waiting` sessions are offered the control; from `failed` or
+`archived` the auto-sleep silently no-ops and the trigger would point at a session nothing can wake.
+
+Zimmer also uses this path on its own behalf: `AuthOutageParkService` parks a session here when the
+login pool runs dry, which is what keeps a quota-blocked session out of the heartbeat sweep's reach.
+See [Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
 
 The same service also guards the *exit* paths, not just the moment the wall is hit. A session whose
 turn was never delivered — `active_follow_up_prompt` still set, because `AgentSessionJob` removes it

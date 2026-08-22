@@ -354,6 +354,9 @@ Rails.application.routes.draw do
       post :follow_up
       post :refresh
       post :pause
+      # "Pause Until": sleep the session now and schedule a one-time wake trigger
+      # for the chosen time. The UI counterpart of the wake_me_up_later MCP tool.
+      post :pause_until
       post :restart
       post :touch_activity
       patch :update_title
