@@ -15,6 +15,7 @@
 # data) and prunes old terminal rows so the table doesn't grow without bound.
 class CleanupRuntimeLoginAttemptsJob < ApplicationJob
   include DatabaseRetry
+  include SingletonSweep
 
   queue_as :default
 
