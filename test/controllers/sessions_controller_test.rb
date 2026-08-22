@@ -3182,6 +3182,56 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The banner is the only place a person sees WHY a session is sitting in
+  # `waiting`, and a hold on a wake reads differently from a hold at the starting
+  # line: this session has run before, and the prompt it was woken for is queued.
+  test "the spot hold banner says a NEXT TURN is held when the gate refused a wake" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 2.minutes.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
+      SpotSessionHold::HELD_RETRY_AT => 10.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 1,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-banner] h3", text: /Next turn held for quota headroom/
+    assert_select "[data-spot-hold-banner]", text: /the turn it was woken for is queued/
+    assert_select "[data-spot-hold-banner]", text: /Make this session priority/
+  end
+
+  test "the spot hold banner still says a session was held at the starting line" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 2.minutes.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
+      SpotSessionHold::HELD_RETRY_AT => 10.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 1,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-banner] h3", text: /Held for quota headroom/
+    assert_select "[data-spot-hold-banner]", text: /it will start on its own once the gate lets it/
+  end
+
   test "should use normal restart for pre-prompt failure with complete setup artifacts even if clone deleted" do
     session = Session.create!(
       prompt: "Fix the bug",

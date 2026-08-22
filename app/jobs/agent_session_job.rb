@@ -345,8 +345,8 @@ class AgentSessionJob < ApplicationJob
       # a judgement rather than a guarantee. Refusing here makes a paused session
       # unstartable EARLY no matter who asks or why.
       #
-      # Only a FIRST START is refused, which is the same narrowing the spot gate
-      # below takes and for the same reason. A wake firing on time delivers a
+      # Only a FIRST START is refused, and that narrowing is this guard's own —
+      # the spot gate below no longer shares it. A wake firing on time delivers a
       # follow-up prompt; `resume_monitoring` re-attaches to a process that is
       # already running; `clone_only` prepares a clone without spending a turn.
       # None of those is an early start, and blocking them would strand the very
@@ -371,13 +371,23 @@ class AgentSessionJob < ApplicationJob
         return
       end
 
-      # Hold a spot session at the starting line when a Claude Code quota window
-      # has reached its target or every session slot is taken. Gated here rather than at creation so
-      # the session still exists, is visible, and simply starts later — the job
-      # re-enqueues itself with a delay. Only a first start is gated; a follow-up,
-      # a monitoring resume, and a clone-only setup all pass through.
-      if !resume_monitoring && !clone_only && follow_up_prompt.blank? &&
-         SpotSessionHold.hold_if_needed(session, log_buffer: log_buffer, images: images, files: files)
+      # Hold a spot session when a Claude Code quota window has reached its target
+      # or every session slot is taken. Gated here rather than at creation so the
+      # session still exists, is visible, and simply runs later — the job
+      # re-enqueues itself with a delay, carrying this turn's prompt and
+      # attachments.
+      #
+      # THIS IS THE CHOKE POINT, and it covers every turn rather than only a first
+      # start. Every path that spends Claude quota — the web follow-up form, the
+      # REST and MCP APIs, a fired `wake_me_up_later` backstop, an ao_event wake,
+      # the Slack and GitHub pollers, the heartbeat nudge, restart, and the
+      # recovery sweeps — arrives here, and all but a first start arrive carrying a
+      # prompt. Exempting them let session 7504 wake itself and run a full turn on
+      # 2026-08-22 while this same gate was holding 22 running spot sessions and
+      # 141 queued ones. See SpotSessionHold for what still passes through and why.
+      if !resume_monitoring && !clone_only &&
+         SpotSessionHold.hold_if_needed(session, follow_up_prompt: follow_up_prompt,
+                                        log_buffer: log_buffer, images: images, files: files)
         log_buffer.flush
         return
       end
