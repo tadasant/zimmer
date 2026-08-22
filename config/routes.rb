@@ -368,6 +368,8 @@ Rails.application.routes.draw do
       patch :update_model
       patch :update_auto_compact_window
       patch :update_scheduling_class
+      patch :update_precedence
+      patch :reorder_precedence
       patch :update_goal
       patch :toggle_favorite
       patch :toggle_push_notifications

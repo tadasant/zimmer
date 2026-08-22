@@ -188,10 +188,10 @@ module SessionGenesisClassification
   end
 
   # The session this one descends from: the spawn edge first, then the fork
-  # marker, which is the only lineage a fork records. Memoized because genesis
-  # and scheduling class both inherit from it and neither should cost its own
-  # query. Memoized on `defined?`, because "no parent" is a real answer that has
-  # to be cached too.
+  # marker, which is the only lineage a fork records. Memoized because genesis,
+  # scheduling class and precedence all inherit from it and none should cost its
+  # own query. Memoized on `defined?`, because "no parent" is a real answer that
+  # has to be cached too.
   def genesis_parent_record
     return @genesis_parent_record if defined?(@genesis_parent_record)
 
@@ -200,12 +200,12 @@ module SessionGenesisClassification
 
   def genesis_parent
     if parent_session_id.present?
-      return Session.select(:id, :genesis, :scheduling_class).find_by(id: parent_session_id)
+      return Session.select(:id, :genesis, :scheduling_class, :precedence).find_by(id: parent_session_id)
     end
 
     forked_from = (metadata || {})["forked_from_session_id"]
     return nil if forked_from.blank?
 
-    Session.select(:id, :genesis, :scheduling_class).find_by(id: forked_from)
+    Session.select(:id, :genesis, :scheduling_class, :precedence).find_by(id: forked_from)
   end
 end

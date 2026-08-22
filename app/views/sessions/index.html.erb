@@ -288,6 +288,28 @@
                   class: "text-xs text-gray-500 hover:text-gray-900 underline whitespace-nowrap" %>
           </div>
 
+          <%# Quick filters: the three filter states worth reaching in one click.
+              Plain links rather than form controls, because each one IS a complete
+              filter state — submitting the form's own inputs alongside them would
+              let a half-changed checkbox argue with the button that was pressed.
+              They carry the same `filters=1` marker the form submits, so they
+              persist exactly as an Apply does. %>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-xs text-gray-400">Quick:</span>
+            <% quick_filters = [
+                 [ "All", { SessionsController::FILTERS_SUBMITTED_PARAM => "1" } ],
+                 [ "All Unarchived", { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: SessionsController::UNARCHIVED_STATUSES } ],
+                 [ "All Priority Unarchived", { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: SessionsController::UNARCHIVED_STATUSES, priority_class: SessionGenesis::PRIORITY } ]
+               ] %>
+            <% quick_filters.each do |(label, params_for_link)| %>
+              <%# The view mode rides along so a quick filter does not bounce the
+                  user out of the view they are filtering. %>
+              <%= link_to label, root_path(params_for_link.merge(view: @view_mode)),
+                    data: { turbo_prefetch: false },
+                    class: "inline-flex items-center rounded-full border border-gray-300 bg-white px-2 py-0.5 text-xs font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900" %>
+            <% end %>
+          </div>
+
           <!-- Search Input -->
           <div class="relative">
             <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -580,7 +602,8 @@
             view_modes = [
               [ SessionsController::VIEW_MODE_CATEGORIES, "Categories" ],
               [ SessionsController::VIEW_MODE_LAST_TOUCHED, "Last Touched" ],
-              [ SessionsController::VIEW_MODE_CREATED_DESC, "Created" ]
+              [ SessionsController::VIEW_MODE_CREATED_DESC, "Created" ],
+              [ SessionsController::VIEW_MODE_RANKED, "Ranked" ]
             ]
             view_link_params = ->(mode) { request.query_parameters.except("page").merge("view" => mode) }
           %>
@@ -596,7 +619,16 @@
         </div>
       </div>
 
-      <% if @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
+      <% if @view_mode == SessionsController::VIEW_MODE_RANKED %>
+        <%# The Ranked view: priority above, the spot queue below it in precedence
+            order, both editable in place. Honors the same filters as every other
+            view — with its own default, since a queue of work that has not started
+            is mostly `waiting`. %>
+        <%= render "sessions/ranked_sessions",
+              priority_sessions: @ranked_priority_sessions,
+              spot_sessions: @ranked_spot_sessions,
+              section_limit: @ranked_section_limit %>
+      <% elsif @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
         <%# Flat sort views: a single list sorted solely by the chosen factor
             (last touched, or created desc). No category grouping, no custom/
             per-category ordering, and no pinned favorites float. Honors the same

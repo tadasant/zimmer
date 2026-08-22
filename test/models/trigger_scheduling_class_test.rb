@@ -80,6 +80,51 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
       "the class moved; where the work came from did not"
   end
 
+  # --- the predefined rank ----------------------------------------------------
+
+  test "a trigger predefines no rank by default" do
+    assert_nil @slack.precedence
+  end
+
+  test "a blank rank is stored as NULL rather than zero" do
+    @slack.update!(precedence: "")
+
+    assert_nil @slack.reload.precedence, "an empty form field predefines nothing"
+  end
+
+  test "a trigger with no rank leaves the session on the default" do
+    stub_agent_root_for(@slack)
+
+    assert_equal SessionPrecedence::DEFAULT, @slack.create_session!(prompt: "Test").precedence
+  end
+
+  test "a trigger with a rank stamps it on the sessions it spawns" do
+    @slack.update!(scheduling_class: SessionGenesis::SPOT, precedence: 8_000)
+    stub_agent_root_for(@slack)
+
+    assert_equal 8_000, @slack.create_session!(prompt: "Test").precedence
+  end
+
+  # The class is withheld from an Invoke because a human pressing the button is a
+  # different ORIGIN. The rank is not: it describes how this work ranks against
+  # everything else queued, which is as true of a hand-fired run.
+  test "the rank still applies when a human invokes the trigger" do
+    @slack.update!(precedence: 321)
+    stub_agent_root_for(@slack)
+
+    session = @slack.create_session!(prompt: "Test", genesis: SessionGenesis::WEB_UI)
+
+    assert_equal 321, session.precedence
+    assert_nil session.scheduling_class, "the class is still the Invoke's, not the trigger's"
+  end
+
+  test "a rank beyond the accepted range is rejected" do
+    @slack.precedence = SessionPrecedence::MAX + 1
+
+    assert_not @slack.valid?
+    assert_includes @slack.errors.full_messages.join, "Precedence"
+  end
+
   test "one trigger's selector does not move another trigger of the same genesis" do
     # This is the whole point of moving the selector off the genesis kind: the old
     # per-kind lever would have demoted every Slack trigger at once.

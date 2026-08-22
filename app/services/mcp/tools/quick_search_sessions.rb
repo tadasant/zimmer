@@ -25,6 +25,7 @@ module Mcp
         - Search sessions by title keyword (set query parameter)
         - List all sessions with an optional status filter (one status, or an array to match any)
         - Monitor sessions that need human attention (status: "needs_input")
+        - Read the spot queue in the order it will be worked: `status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`
 
         **Returns:** A list of matching sessions with their status, configuration, and metadata.
 
@@ -68,6 +69,11 @@ module Mcp
             type: "string",
             enum: SessionGenesis::KEYS,
             description: "Filter by genesis — where the session's line of work came from. One of: #{SessionGenesis::KEYS.join(', ')}."
+          },
+          order: {
+            type: "string",
+            enum: [ "created_desc", "precedence" ],
+            description: 'Result ordering. "created_desc" (default) is newest first. "precedence" is the spot queue\'s own order — highest precedence first, oldest first within a tie — which is the order waiting spot sessions are actually started in. Precedence is an absolute scale: 100000 comes before 50.'
           },
           show_archived: {
             type: "boolean",
@@ -125,7 +131,8 @@ module Mcp
         # Status-summary forks are Zimmer's own bookkeeping, not sessions anyone
         # searches for — excluded here for the same reason the dashboard excludes
         # them, so the two surfaces list the same sessions.
-        scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
+        scope = Session.includes(:category).excluding_status_summary_forks
+        scope = args["order"].to_s == "precedence" ? scope.ranked : scope.order(created_at: :desc)
 
         # One status or several: an array matches any of them, the way the
         # dashboard's status filter does.
@@ -198,6 +205,7 @@ module Mcp
 
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
         lines << "- **Genesis:** #{session.genesis_key} (#{session.priority_class(genesis_class_overrides)})"
+        lines << "- **Precedence:** #{session.precedence}"
         lines << "- **Category:** #{session.category.name}" if session.category
         lines << "- **Repository:** #{session.git_root}" if session.git_root.present?
         lines << "- **Branch:** #{session.branch}" if session.branch.present?

@@ -75,6 +75,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
     t.jsonb "genesis_class_overrides", default: {}, null: false
     t.boolean "mcp_tool_search_enabled", default: true, null: false
     t.jsonb "queue_recovery_mode", default: {}, null: false
+    t.boolean "quota_pool_available"
+    t.datetime "quota_pool_available_changed_at"
     t.integer "spot_gate_five_hour_threshold_pct", default: 80, null: false
     t.integer "spot_gate_weekly_threshold_pct", default: 80, null: false
     t.boolean "spot_gating_enabled", default: false, null: false
@@ -525,6 +527,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
     t.json "mcp_servers"
     t.json "metadata", default: {}
     t.bigint "parent_session_id"
+    t.integer "precedence", default: 0, null: false
     t.text "prompt"
     t.boolean "push_notifications_enabled", default: false, null: false
     t.string "repository_name"
@@ -557,6 +560,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"
     t.index ["job_id"], name: "index_sessions_on_job_id"
     t.index ["parent_session_id"], name: "index_sessions_on_parent_session_id"
+    t.index ["precedence", "created_at"], name: "index_sessions_on_precedence_unarchived", where: "(status <> 3)"
     t.index ["scheduling_class"], name: "index_sessions_on_scheduling_class", where: "(scheduling_class IS NOT NULL)"
     t.index ["session_id"], name: "index_sessions_on_session_id", unique: true
     t.index ["slug"], name: "index_sessions_on_slug", unique: true
@@ -641,6 +645,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
     t.integer "max_sessions_per_minute"
     t.jsonb "mcp_servers", default: [], null: false
     t.string "name", null: false
+    t.integer "precedence"
     t.text "prompt_template", null: false
     t.boolean "resuscitate_archived", default: false, null: false
     t.boolean "reuse_session", default: false, null: false
