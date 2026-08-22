@@ -1056,6 +1056,16 @@ And it repairs the tree it finds on the way *in*, so a package that installs bro
 is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
 A session recovers by itself; it does not connect on the first attempt.
 
+### No extension can ship in a built image
+
+`.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
+from the Docker image: `ExtensionRegistry` skips the class that no longer resolves, and every seam
+falls back to native behavior. A deployed Zimmer therefore cannot run any extension, and a setting
+behind one cannot be changed on the deployed app — which is why MCP tool search is a plain
+`AppSetting` column rather than the extension it used to be.
+
+Tracked in [#91](https://github.com/tadasant/zimmer/issues/91).
+
 ### Extension env contributions are unreachable from Codex
 
 `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook
