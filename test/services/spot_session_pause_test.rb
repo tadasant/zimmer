@@ -216,17 +216,33 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert_equal 2, result.held
   end
 
-  test "the oldest pause is resumed first" do
+  # The budget is smaller than the population this usually holds, so the order
+  # decides which spot work gets the recovered headroom — the same question the
+  # ranked queue answers.
+  test "the highest precedence is resumed first" do
     seed(current_5h: 0.70)
     # One free slot, two sleepers: the batch has room for exactly one, which is
     # what makes the ordering observable.
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    ranked = paused_session(paused_at: 1.minute.ago)
+    ranked.update!(precedence: 900)
+    older_but_lower = paused_session(paused_at: 9.hours.ago)
+
+    SpotSessionPause.sweep!
+
+    assert ranked.reload.running?, "the operator's ordering decides, not how long a session has been asleep"
+    assert older_but_lower.reload.waiting?
+  end
+
+  test "the oldest pause is resumed first within a tie" do
+    seed(current_5h: 0.70)
     @setting.update!(spot_max_concurrent_sessions: 1)
     newest = paused_session(paused_at: 1.minute.ago)
     oldest = paused_session(paused_at: 9.hours.ago)
 
     SpotSessionPause.sweep!
 
-    assert oldest.reload.running?
+    assert oldest.reload.running?, "equal-ranked sessions still take turns"
     assert newest.reload.waiting?
   end
 
