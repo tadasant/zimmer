@@ -340,6 +340,27 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     assert_equal SpotSessionHold::TURN_START, session.reload.metadata[SpotSessionHold::HELD_TURN]
   end
 
+  # Issue #589. Every "restart from scratch" path — the Restart button,
+  # `action_session`, `POST /api/v1/sessions/:id/restart` — calls `resume!` and
+  # THEN enqueues a promptless job. A hold that left the session in `running`
+  # with no job handed it straight to CleanupOrphanedSessionsJob, which reads
+  # exactly that as orphaned and reaps it within five minutes — well before the
+  # ten-minute re-check the hold just scheduled.
+  test "a held restart lands in waiting, not running with no job" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running, running_job_id: "job-abc")
+
+    held = SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session)
+    end
+
+    assert held
+    session.reload
+    assert_equal "waiting", session.status,
+                 "a held session must sit in the spot queue, not look like an orphaned run"
+    assert_nil session.running_job_id, "nothing is monitoring it, so nothing may claim to be"
+  end
+
   test "a priority session's resume is never held" do
     session = build_session(SessionGenesis::WEB_UI)
     session.update!(status: :running)

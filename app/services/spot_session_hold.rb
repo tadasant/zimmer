@@ -239,18 +239,23 @@ class SpotSessionHold
         )
       end
 
-      return_to_queue!(session) if resuming
+      return_to_queue!(session)
     end
 
-    # Put a session whose resume was refused back into the dormant `waiting`
-    # state a held session sits in.
+    # Put a session whose turn was refused into the dormant `waiting` state a held
+    # session sits in. A no-op for the ordinary first start, which is already
+    # there.
     #
-    # Whoever delivered the turn already flipped the session to `running` (or is
-    # about to, from `needs_input`). Leaving it there would be a lie with
-    # consequences: it counts against the fleet cap, the orphan sweep sees a
-    # running session with no process, and the session card claims work is
-    # happening. `waiting` makes a deferred turn indistinguishable from a hold at
-    # the starting line, which is exactly what it is.
+    # It is not always there. A resume's deliverer has already flipped the session
+    # to `running`, and so has every "restart from scratch" path — the Restart
+    # button, `action_session`, `POST /api/v1/sessions/:id/restart` — which calls
+    # `resume!` and only then enqueues the job. Leaving it in `running` is a lie
+    # with consequences: it counts against the fleet cap, the session card claims
+    # work is happening, and `CleanupOrphanedSessionsJob` reads "running with a
+    # blank running_job_id" as DEFINITELY orphaned and reaps it on its next
+    # five-minute pass, long before the ten-minute re-check the hold scheduled
+    # (issue #589). `waiting` makes a deferred turn indistinguishable from a hold
+    # at the starting line, which is exactly what it is.
     #
     # Deliberately NOT `pause!`. That event means "a turn ended and the session
     # wants a human": it fires the `session_needs_input` event triggers — waking
