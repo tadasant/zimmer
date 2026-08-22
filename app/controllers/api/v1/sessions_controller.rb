@@ -473,8 +473,9 @@ class Api::V1::SessionsController < Api::BaseController
 
   # POST /api/v1/sessions/:id/regenerate_status_summary
   # Rewrite the session's Status blurb. Forced — it regenerates even when the
-  # cached blurb is current — and asynchronous, because generation forks the
-  # session and spends a whole agent turn.
+  # cached blurb is current — and asynchronous, because generation normally forks
+  # the session and spends a whole agent turn. (With no login-pool account free
+  # it takes the one-shot path instead, which is quicker but still not inline.)
   #
   # An archived session is a normal candidate, and so is one whose clone Zimmer
   # reclaimed when it went to the trash: the fork answers from the conversation,

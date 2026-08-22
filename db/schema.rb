@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_21_170200) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -73,6 +73,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_170200) do
     t.string "default_runtime"
     t.jsonb "extension_states", default: {}, null: false
     t.jsonb "genesis_class_overrides", default: {}, null: false
+    t.boolean "mcp_tool_search_enabled", default: true, null: false
     t.jsonb "queue_recovery_mode", default: {}, null: false
     t.boolean "quota_pool_available"
     t.datetime "quota_pool_available_changed_at"

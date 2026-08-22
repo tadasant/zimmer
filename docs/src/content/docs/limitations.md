@@ -1056,6 +1056,16 @@ And it repairs the tree it finds on the way *in*, so a package that installs bro
 is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
 A session recovers by itself; it does not connect on the first attempt.
 
+### No extension can ship in a built image
+
+`.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
+from the Docker image: `ExtensionRegistry` skips the class that no longer resolves, and every seam
+falls back to native behavior. A deployed Zimmer therefore cannot run any extension, and a setting
+behind one cannot be changed on the deployed app — which is why MCP tool search is a plain
+`AppSetting` column rather than the extension it used to be.
+
+Tracked in [#91](https://github.com/tadasant/zimmer/issues/91).
+
 ### Extension env contributions are unreachable from Codex
 
 `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook
@@ -1319,6 +1329,31 @@ silently skipped by the adapter with a warning nobody reads.
 ([#65](https://github.com/tadasant/zimmer/issues/65)). The body exists now, and the test suites for
 `SkillsConfig` and `HooksConfig` assert every registered artifact really has one — but that is a
 Zimmer-side test, not something AIR enforces.
+
+### AIR parses the config files it just wrote without a guard, and names no file when it fails
+
+`@pulsemcp/air-sdk` `JSON.parse`s each of the adapter's `configFiles` — `.mcp.json` and
+`.claude/settings.json` — with no `try`/`catch` in `transform-runner.js`, and `@pulsemcp/air-core`
+does the same for `air.json` and the catalog indexes. Every parse of those same two config files
+inside the *Claude adapter* is guarded; the SDK's and core's are not. So a failed parse exits 1 with
+Node's bare parse error — no path, no file, nothing to act on.
+
+For the two files in the target directory it is only reachable as a race, which was verified against
+the pinned CLI: neither an already-corrupt `.mcp.json` nor an already-corrupt `.claude/settings.json`
+reproduces it, because the adapter rescues its own parse failure and rewrites both from scratch
+before the SDK reads them. It takes a second writer changing one between the adapter's write and the
+SDK's read, which `air prepare` invites by running over a session directory a previous job may still
+be tearing down. A malformed `air.json` or catalog index reaches the same signature by a different,
+deterministic route.
+
+Zimmer cannot fix the upstream parse, so it treats the signature as transient, retries it, and
+prepends its own description of the target's config files to the error (skipped when AIR's message
+already carries a path). That is a workaround for a message that should have carried one: if AIR ever
+adds it, the enrichment becomes redundant rather than wrong. Tracked upstream of Zimmer's fix in
+[zimmer#590](https://github.com/tadasant/zimmer/issues/590). First seen in production 2026-08-21 (session 6787), which was ~16 hours into a task
+on a clone already prepared many times. The unhandled error failed the whole job; what recovered it
+was Zimmer's orphan cleanup restarting the session ~20s later, at the cost of a full MCP reconnect
+mid-work — not anything the prepare path chose.
 
 ### The environment configs describe a catalog that no longer exists
 

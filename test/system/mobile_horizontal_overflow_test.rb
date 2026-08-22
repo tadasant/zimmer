@@ -305,6 +305,35 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("settings")
   end
 
+  # The Experimental section is a description column beside a fixed-width switch —
+  # the shape that overflows the moment the description stops shrinking. The MCP
+  # tool search row carries the longest copy in the section, so it is the one that
+  # would push the switch off the right edge.
+  test "the experimental MCP tool search toggle is on screen and reachable on a phone" do
+    AppSetting.delete_all
+
+    visit settings_path
+    assert_text "Experimental"
+    assert_text "MCP tool search is"
+
+    toggle = find("#app_setting_mcp_tool_search_enabled", visible: :all)
+    assert toggle.checked?, "MCP tool search should render ON by default"
+
+    # Captured before the assertions so a failing run uploads the broken layout too.
+    scroll_into_center(find("#experimental-settings"))
+    page.save_screenshot("tmp/screenshots/proof-settings-experimental-375.png")
+
+    assert_no_horizontal_overflow("settings with the experimental section")
+
+    # Probe 2: the switch is a fixed-width box at the end of the row, so measure
+    # where it actually is rather than trusting the document not to scroll.
+    past_edge = elements_past_right_edge("#experimental-settings")
+    assert_empty past_edge,
+      "the experimental section ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+  ensure
+    AppSetting.delete_all
+  end
+
   test "triggers index and detail do not overflow horizontally on a phone" do
     trigger = create_trigger
 

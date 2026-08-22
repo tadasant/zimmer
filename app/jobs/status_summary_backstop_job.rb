@@ -22,10 +22,19 @@
 # once per RETRY_INTERVAL rather than once per sweep. Rendering the panel still
 # generates nothing.
 #
-# **It stands down during an auth outage.** A quota-exhausted pool is the single
-# biggest producer of the failures this sweep repairs, and re-forking into an
-# empty pool produces one more parked fork holding one more clone copy. So a
-# runtime with no available account is skipped until the pool recovers.
+# **An auth outage changes HOW it repairs, not whether it does.** A quota-exhausted
+# pool is the single biggest producer of the failures this sweep repairs, and
+# re-forking into an empty pool produces one more parked fork holding one more
+# clone copy — so during an outage the sweep does not fork. It asks for the
+# pool-independent one-shot generation instead (SessionStatusSummaryGenerator's
+# headless mode), which needs no account, no clone and no agent turn.
+#
+# This is the fix for the defect the first version of this sweep still had: it
+# stood down entirely during an outage, which gated the retry on the very
+# resource whose absence caused the failure being retried. On a deployment under
+# sustained quota pressure that meant a session at rest never got its blurb at
+# all — the panel said "the summary fork was parked, it will be retried" for
+# hours, and the retry that would have fixed it was the thing standing down.
 class StatusSummaryBackstopJob < ApplicationJob
   queue_as :default
 
@@ -35,6 +44,15 @@ class StatusSummaryBackstopJob < ApplicationJob
   # steady state it is zero: a session drops out of the candidate set as soon as
   # its summary lands.
   MAX_PER_SWEEP = 5
+
+  # Repairs per sweep on the headless path, which is what an outage uses. Higher
+  # than MAX_PER_SWEEP because the costs are not comparable: a fork copies a
+  # repository and takes an account slot, while this is one small-model
+  # completion. It still has a cap, because an outage makes EVERY session at rest
+  # a candidate at once and a sweep must not turn that into an unbounded burst of
+  # subprocesses. Ten every five minutes clears a backlog of a hundred inside an
+  # hour.
+  MAX_HEADLESS_PER_SWEEP = 10
 
   # How long to leave a session alone after examining it. Longer than
   # SessionStatusSummary::PENDING_TIMEOUT so an in-flight generation is never
@@ -52,35 +70,37 @@ class StatusSummaryBackstopJob < ApplicationJob
   SCAN_LIMIT = 200
 
   def perform
-    repaired = 0
-    held_for_outage = 0
+    forked = 0
+    headless = 0
 
     scanned = candidates.to_a
 
     scanned.each do |session|
-      break if repaired >= MAX_PER_SWEEP
-      # Nothing this sweep can do while the pool is empty, and #pool_exhausted?
-      # is memoized per runtime — so once a whole batch is standing down, stop
-      # walking it rather than confirming the same outage row by row.
-      break if held_for_outage >= MAX_PER_SWEEP
+      # Only when BOTH budgets are spent is there nothing left this sweep can
+      # do. Breaking as soon as EITHER is spent would starve the other path on a
+      # mixed fleet — one runtime's pool exhausted and another's healthy — by
+      # ending the walk on the first session of whichever kind filled up first.
+      break if forked >= MAX_PER_SWEEP && headless >= MAX_HEADLESS_PER_SWEEP
       next if session.blocked_on_elicitation?
 
       record = session.status_summary
       next unless due?(record)
 
-      # An outage is checked BEFORE the session is stamped, so a sweep that
-      # stands down does not also cost every session it skipped its retry
-      # interval — the next sweep after the pool recovers picks them all up.
-      if pool_exhausted?(session.agent_runtime)
-        held_for_outage += 1
-        next
-      end
+      # Which path would repair this session decides which budget it draws on.
+      # #pool_exhausted? is memoized per runtime: one query per sweep, not one
+      # per session.
+      outage = pool_exhausted?(session.agent_runtime)
+
+      # Asked BEFORE the session is stamped, so a session skipped for a spent
+      # budget does not also spend its retry interval on a cap it never got
+      # past — the next sweep picks it up.
+      next if outage ? headless >= MAX_HEADLESS_PER_SWEEP : forked >= MAX_PER_SWEEP
 
       stamp_examined(session, record)
       next unless needs_repair?(session, record)
 
-      SessionStatusSummaryJob.perform_later(session.id)
-      repaired += 1
+      SessionStatusSummaryJob.perform_later(session.id, headless: outage)
+      outage ? headless += 1 : forked += 1
     end
 
     if scanned.length >= SCAN_LIMIT
@@ -90,10 +110,10 @@ class StatusSummaryBackstopJob < ApplicationJob
       )
     end
 
-    return if repaired.zero? && held_for_outage.zero?
+    return if forked.zero? && headless.zero?
 
     Rails.logger.info(
-      "[StatusSummaryBackstopJob] enqueued=#{repaired} held_for_auth_outage=#{held_for_outage}"
+      "[StatusSummaryBackstopJob] enqueued_forks=#{forked} enqueued_headless=#{headless}"
     )
   end
 
@@ -179,7 +199,8 @@ class StatusSummaryBackstopJob < ApplicationJob
   # single row that needs it.
   def transcript_of(session) = Session.where(id: session.id).pick(:transcript)
 
-  # Whether the runtime's login pool has nothing left to run a fork on.
+  # Whether the runtime's login pool has nothing left to run a fork on — which
+  # is what picks the repair mode for every session on that runtime this sweep.
   # Memoized per sweep: one query per distinct runtime, not one per session.
   def pool_exhausted?(runtime)
     @pool_exhausted ||= {}
