@@ -26,6 +26,7 @@ class SettingsController < ApplicationController
     # registered experimental extension — so a dropped extension disappears from
     # the UI with no view edit.
     @mcp_tool_search_enabled = @app_setting.mcp_tool_search_enabled?
+    @mcp_tool_search_default = AppSetting::DEFAULT_MCP_TOOL_SEARCH_ENABLED
     @extensions = Zimmer::ExtensionRegistry.experimental
   end
 end

@@ -25,10 +25,10 @@ module Zimmer
     # removed extension directory is skipped rather than raising. Order is the
     # resolution order for first-wins hooks (cli_adapter_override, print backend).
     #
-    # Empty today: the one extension that shipped (`mcp_tool_search`) became a
-    # first-class AppSetting, because `.dockerignore` excludes /app/extensions/*/
-    # and an extension therefore cannot govern anything in a deployed image. The
-    # seam stays — add a class name here to register one.
+    # No built-in extensions are registered. `.dockerignore` excludes
+    # /app/extensions/*/, so an extension cannot govern anything in a deployed
+    # image; a setting an operator must be able to change on the deployed app
+    # belongs on AppSetting instead. Add a class name here to register one.
     BUILTIN_EXTENSION_CLASSES = [].freeze
 
     @mutex = Mutex.new

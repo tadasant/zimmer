@@ -68,6 +68,46 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
     AppSetting.delete_all
   end
 
+  # The banner names the recommended state, and MCP tool search is the one row
+  # whose recommendation is ON — so an inverted comparison in the shared partial
+  # would label the deviating setting as the recommended one, which is worse than
+  # no label at all.
+  test "the MCP tool search banner marks ON as the recommended default and OFF as a deviation" do
+    AppSetting.delete_all
+
+    get settings_url
+    assert_select "#experimental-settings", text: /MCP tool search is\s+ON \(recommended default\)/
+
+    AppSetting.create!(mcp_tool_search_enabled: false)
+    get settings_url
+    assert_select "#experimental-settings", text: /MCP tool search is\s+OFF\./
+    assert_select "#experimental-settings", text: /MCP tool search is\s+OFF \(recommended default\)/, count: 0
+  ensure
+    AppSetting.delete_all
+  end
+
+  # The mirrored case: an extension's recommendation is its own default_enabled?,
+  # which is OFF — so the same partial has to label the opposite state.
+  test "an experimental extension banner marks its own default as recommended" do
+    Zimmer::ExtensionRegistry.register(Class.new(Zimmer::Extension) do
+      def id = "fake_experiment"
+      def title = "Fake experiment"
+    end.new)
+    AppSetting.delete_all
+
+    get settings_url
+    assert_select "#experimental-settings", text: /Fake experiment is\s+OFF \(recommended default\)/
+
+    AppSetting.editable.tap { |s| s.set_extension_enabled("fake_experiment", true) }.save!
+    get settings_url
+    assert_select "#experimental-settings", text: /Fake experiment is\s+ON\./
+    assert_select "#experimental-settings", text: /Fake experiment is\s+ON \(recommended default\)/, count: 0
+  ensure
+    AppSetting.delete_all
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
+  end
+
   test "renders a row for each registered experimental extension" do
     ext = Class.new(Zimmer::Extension) do
       def id = "fake_experiment"

@@ -88,7 +88,7 @@ the (now deleted) docs. The old doc's "Verifying removability" section told you 
 `id → bool`). No migration per extension. Or from a console:
 
 ```ruby
-AppSetting.first_or_create!.set_extension_enabled("my_thing", true)
+AppSetting.first_or_create!.tap { |s| s.set_extension_enabled("my_thing", true) }.save!
 ```
 
 With no extension registered, that section of the page renders only the first-class experimental

@@ -28,6 +28,9 @@ class AddMcpToolSearchEnabledToAppSettings < ActiveRecord::Migration[8.0]
     SQL
   end
 
+  # Best-effort, and lossy in the same direction `up` is: the restored extension
+  # state is whatever the column currently says, so a rollback hands the retired
+  # extension the setting's value rather than the value it had before `up` ran.
   def down
     execute <<~SQL.squish
       UPDATE app_settings
