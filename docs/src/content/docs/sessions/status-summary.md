@@ -258,6 +258,12 @@ It is reached from the three places a fork is known not to be able to deliver:
   and none of them consults the pool, so the generator re-checks it rather than trusting the caller.
   It fails *open*: a pool it cannot read is not evidence of an outage.
 
+- **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
+  re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
+  panel's **Regenerate** button, `POST /api/v1/sessions/:id/regenerate_status_summary`, and the MCP
+  `action_session` regenerate action — do not consult it. Without that check, pressing Regenerate
+  during an outage paid for a clone copy, watched the fork park, and reported a failure.
+
 Concurrency is bounded at `BlockingInferenceBounded::PERFORM_LIMIT`, a ceiling this job shares with
 `SessionTitleJob` — see [Bounding blocking inference](/operate/background-jobs/#bounding-blocking-inference).
 A headless run blocks a worker thread on a subprocess for up to `HEADLESS_TIMEOUT` and `default` has
@@ -269,12 +275,6 @@ whether a generation blocks — the generator does, on `headless || pool_exhaust
 enqueued as a fork by a `pause` transition becomes a blocking subprocess the moment the pool runs
 dry. A bound that read the argument would describe the caller's intent rather than the work, and
 would stop binding during exactly the outage it exists for.
-- **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
-  re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
-  panel's **Regenerate** button, `POST /api/v1/sessions/:id/regenerate_status_summary`, and the MCP
-  `action_session` regenerate action — do not consult it. Without that check, pressing Regenerate
-  during an outage paid for a clone copy, watched the fork park, and reported a failure.
-
 Two properties keep it honest:
 
 - **A refusal never becomes a blurb**, and the guard has two halves because the wording half is not

@@ -12,6 +12,22 @@ require "test_helper"
 class RecurringSweepConcurrencyTest < ActiveSupport::TestCase
   PRODUCTION_ENV_FILE = Rails.root.join("config/environments/production.rb")
 
+  # Recurring `default` jobs that must NOT be keyed on their class, each with the
+  # reason. An arity check cannot express this — every one of these takes
+  # arguments, but so do jobs that should be guarded, and `CertExpiryMonitorJob`
+  # slipped through such a check for a whole review cycle because its arguments
+  # are test-injection seams. So the exemption is written down instead of
+  # inferred, and adding to this list means writing the reason.
+  EXEMPT = {
+    "RefreshRuntimeAuthTokensJob" =>
+      "re-enqueues itself with retry_account_ids/attempt to chain a retry; a " \
+      "class-wide key would block the chain behind the cron copy",
+    "RefreshMcpOauthTokensJob" =>
+      "re-enqueues itself with retry_credential_ids/attempt to chain a retry",
+    "RefreshXOauthTokensJob" =>
+      "re-enqueues itself with retry_credential_ids/attempt to chain a retry"
+  }.freeze
+
   # The production cron table is a literal hash in the environment file, which no
   # test environment loads. Reading the class names out of it directly is what
   # keeps this test honest about the schedule that actually ships.
@@ -22,13 +38,6 @@ class RecurringSweepConcurrencyTest < ActiveSupport::TestCase
     names
   end
 
-  # A sweep that takes arguments re-enqueues itself with them to chain retries,
-  # and a class-wide key would block that chain behind the cron copy. So the
-  # guarantee is scoped to the argument-less ones.
-  def self.argument_less?(klass)
-    klass.instance_method(:perform).parameters.empty?
-  end
-
   test "every recurring job named in the production cron table resolves" do
     unresolvable = self.class.cron_job_class_names.reject { |name| name.safe_constantize }
 
@@ -37,26 +46,38 @@ class RecurringSweepConcurrencyTest < ActiveSupport::TestCase
                  "#{unresolvable.join(', ')}"
   end
 
-  test "every argument-less recurring sweep on the default queue is a singleton" do
+  test "every recurring sweep on the default queue is a singleton or a documented exemption" do
     unguarded = self.class.cron_job_class_names.filter_map do |name|
       klass = name.safe_constantize
       next unless klass
       next unless klass.new.queue_name == "default"
-      next unless self.class.argument_less?(klass)
+      next if EXEMPT.key?(name)
       next if klass.good_job_concurrency_config[:total_limit] == 1
 
       name
     end
 
     assert_empty unguarded, <<~MESSAGE
-      These recurring sweeps run on the shared `default` queue, take no arguments, and are
-      not singletons, so cron will stack copies of them whenever the queue is congested:
+      These recurring sweeps run on the shared `default` queue and are not singletons, so
+      cron will stack copies of them whenever the queue is congested:
 
         #{unguarded.join("\n  ")}
 
-      Add `include SingletonSweep` to each. If a sweep genuinely needs to overlap with
-      itself, give it arguments that distinguish the runs — do not silence this test.
+      Add `include SingletonSweep`. If a sweep genuinely needs to overlap with itself — it
+      re-enqueues itself with arguments to chain a retry, say — add it to EXEMPT above with
+      the reason, rather than silencing this test.
     MESSAGE
+  end
+
+  test "every exemption still names a job that is actually scheduled" do
+    # An exemption for a job that no longer exists is a hole nobody can see.
+    scheduled = self.class.cron_job_class_names
+
+    EXEMPT.each_key do |name|
+      assert_includes scheduled, name,
+                      "#{name} is exempted but no longer appears in the production cron table"
+      assert EXEMPT[name].present?, "#{name}'s exemption must carry a reason"
+    end
   end
 
   test "SingletonSweep keys each sweep by its own class so sweeps do not block each other" do

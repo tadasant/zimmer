@@ -37,6 +37,17 @@ class SessionStatusSummaryJob < ApplicationJob
   # it was written for.
   include BlockingInferenceBounded
 
+  # Queue priority for a generation an operator asked for by hand — the panel's
+  # Regenerate button, the REST endpoint, the MCP action.
+  #
+  # Sharing one perform limit with the automatic refreshes and the title jobs
+  # means a forced run can lose the race for a slot, and a human is watching the
+  # panel for that one. GoodJob orders `priority ASC NULLS LAST` and admits the
+  # oldest claims first, so a lower number is claimed sooner and therefore takes
+  # the next free slot ahead of the unforced work. Negative rather than zero
+  # because the default is nil, which sorts last.
+  FORCED_PRIORITY = -10
+
   # @param headless [Boolean] write the blurb with one pool-independent
   #   `claude -p` completion instead of forking. Passed by the two callers that
   #   know a fork cannot deliver right now: the repair sweep during an auth
