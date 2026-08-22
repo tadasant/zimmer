@@ -24,12 +24,11 @@
 # behind them age.
 #
 # **What the bound does to the surplus.** GoodJob answers an exceeded
-# `perform_limit` with ConcurrencyExceededError, which ApplicationJob's inherited
-# `retry_on` re-schedules with polynomial backoff. So the surplus waits in
-# `scheduled` — future-dated, not ready — instead of holding a thread. Summaries
-# and titles land late during an outage, which is the correct trade: they are
-# best-effort, and StatusSummaryBackstopJob repairs a generation that never
-# landed.
+# `perform_limit` with ConcurrencyExceededError and re-schedules the job, so the
+# surplus waits in `scheduled` — future-dated, not ready — instead of holding a
+# thread. Summaries and titles land late during an outage, which is the correct
+# trade: they are best-effort, and StatusSummaryBackstopJob repairs a generation
+# that never landed.
 module BlockingInferenceBounded
   extend ActiveSupport::Concern
 
@@ -41,6 +40,18 @@ module BlockingInferenceBounded
   # that guarantee was zero.
   PERFORM_LIMIT = 2
 
+  # Longest a job may wait between attempts after losing the race for a slot.
+  #
+  # GoodJob's own handler for ConcurrencyExceededError backs off polynomially and
+  # uncapped (`(attempt ** 4) + 2` seconds), which reaches ~10 minutes by the
+  # fifth attempt and over an hour by the eighth. That curve suits a job
+  # contending with itself; it is wrong for a slot that frees every time an
+  # inference call returns. A session whose summary lost the race three times
+  # would still be waiting an hour after the queue drained, and an operator's
+  # forced Regenerate — a button press, with a human watching the panel — would
+  # wear the same delay.
+  MAX_RETRY_INTERVAL = 60.seconds
+
   included do
     # `perform_limit` only, deliberately — NOT `enqueue_limit` or `total_limit`.
     # These jobs carry a session id and are not interchangeable, so refusing an
@@ -49,6 +60,18 @@ module BlockingInferenceBounded
     good_job_control_concurrency_with(
       key: -> { CONCURRENCY_KEY },
       perform_limit: PERFORM_LIMIT
+    )
+
+    # Registered AFTER the handler GoodJob installs on ApplicationJob, so it wins:
+    # ActiveSupport resolves rescue handlers last-registered-wins, the same
+    # mechanism ApplicationJob.discard_interrupt_quietly documents. Attempts stay
+    # unbounded — the work should still happen, just not on a held thread — and
+    # the quadratic ramp keeps the retry cheap while the cap keeps a drained
+    # queue from sitting idle behind a backoff earned during the outage.
+    retry_on(
+      GoodJob::ActiveJobExtensions::Concurrency::ConcurrencyExceededError,
+      attempts: Float::INFINITY,
+      wait: ->(executions) { [ executions**2, MAX_RETRY_INTERVAL.to_i ].min.seconds }
     )
   end
 end

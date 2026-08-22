@@ -60,4 +60,25 @@ class BlockingInferenceBoundedTest < ActiveSupport::TestCase
       assert_equal "default", klass.new(1).queue_name
     end
   end
+
+  test "a job that loses the race for a slot retries within a bounded interval" do
+    # GoodJob's own curve is `(attempt ** 4) + 2` seconds, uncapped — over an hour
+    # by the eighth attempt. A slot here frees every time an inference call
+    # returns, so a job must not still be waiting long after the queue drained.
+    waiter = SessionStatusSummaryJob.rescue_handlers.find do |class_name, _|
+      class_name == "GoodJob::ActiveJobExtensions::Concurrency::ConcurrencyExceededError"
+    end
+
+    assert waiter, "the concern should register its own handler for ConcurrencyExceededError"
+
+    wait = BlockingInferenceBounded::MAX_RETRY_INTERVAL
+
+    assert_operator wait, :<=, 60.seconds
+    # The ramp is quadratic up to the cap, then flat — check both halves.
+    curve = ->(executions) { [ executions**2, wait.to_i ].min }
+
+    assert_equal 1, curve.call(1)
+    assert_equal 49, curve.call(7)
+    assert_equal wait.to_i, curve.call(100)
+  end
 end
