@@ -694,6 +694,29 @@ Two things follow from this that did not used to be true:
   `claude_home`, `codex_home`, `gh_config`, `claude_local`), which are re-attached to each new
   container instead of being destroyed with the droplet.
 
+### `CanaryJob` is what the post-deploy drain gate enqueues
+
+`/up/deep` proves the web process can reach its backing services. It says nothing about whether the
+`worker` container is claiming jobs — and on 2026-08-13 a deploy passed every automated check while
+production processed zero background jobs for ten hours. The post-deploy drain gate closes that hole:
+it enqueues a canary onto `default`, `pollers`, `triggers` and `agents` at negative priority, and
+fails the deploy if the worker does not claim and finish each one inside a bounded timeout.
+
+The job it enqueues is `app/jobs/canary_job.rb` — a no-op that logs its token and returns. Everything
+about it is a constraint rather than a feature:
+
+- **It does nothing.** A query, an HTTP call or a shell-out inside it is a way for a liveness gate to
+  fail for a non-liveness reason, on every production cutover.
+- **It declares no concurrency control.** A job under `good_job_control_concurrency_with` is
+  *deferred* rather than run, which the gate cannot tell apart from a dead queue — it would fail
+  deploys of a healthy fleet.
+- **It is not dead code, and its name is load-bearing.** The gate resolves the class by name; before
+  this job existed it fell back to `CleanupExpiredElicitationsJob`, which coupled a deploy gate to a
+  business job that could later grow a slow query or a concurrency limit.
+
+`test/jobs/canary_job_test.rb` holds each of those lines, including a round trip through a real
+GoodJob row on all four queues.
+
 ### The worker watchdog is converged on every deploy
 
 Everything above proves the deploy is healthy *at the moment it finishes*. `Install the worker
