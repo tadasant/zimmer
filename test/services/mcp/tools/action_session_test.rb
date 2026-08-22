@@ -908,4 +908,38 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       assert_nil failed.reload.transcript, "the restarted session's transcript must be left for its new job"
     end
   end
+  # MCP parity for the web UI's "Pause Until → Spot Queue": an agent that has no
+  # time worth naming can park itself in the queue instead of inventing one.
+  test "pause_into_spot_queue parks a session with no wake trigger" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    output = assert_no_difference "Trigger.count" do
+      @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id)
+    end
+
+    assert_includes output, "Parked In The Spot Queue"
+    assert_includes output, "precedence #{session.precedence}"
+    session.reload
+    assert session.waiting?
+    assert session.spot?, "a priority session cannot sit in the queue"
+    assert SpotSessionPause.queued_by_user?(session)
+    assert_not session.awaiting_scheduled_wake?
+  end
+
+  test "pause_into_spot_queue keeps a resume prompt for the sweep" do
+    session = sessions(:needs_input)
+
+    @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id, "prompt" => "Pick the migration back up")
+
+    assert_equal "Pick the migration back up", session.reload.metadata[SpotSessionPause::QUEUED_PROMPT]
+  end
+
+  test "pause_into_spot_queue refuses a session that cannot be slept" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "pause_into_spot_queue", "session_id" => sessions(:archived).id)
+    end
+
+    assert_match(/cannot be put in the spot queue/, error.message)
+  end
 end

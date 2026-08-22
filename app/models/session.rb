@@ -428,6 +428,14 @@ class Session < ApplicationRecord
     { key: "monday", label: "Monday, 9 AM" }
   ].freeze
 
+  # The one choice in the same panel that is not a time, and therefore not a
+  # preset: "Spot Queue" sleeps the session and slots it into the spot queue
+  # instead of arming a wake-up (Sessions::PauseIntoSpotQueue). It is deliberately
+  # NOT in PAUSE_UNTIL_PRESETS — every entry there is a key the browser resolves
+  # to an absolute instant, and there is no instant to resolve here. The value is
+  # the `mode` SessionsController#pause_until switches on.
+  PAUSE_UNTIL_SPOT_QUEUE_MODE = "spot_queue"
+
   # Validations
   # Prompt is now optional to allow for "clone only" sessions
   validates :prompt, length: { maximum: PROMPT_MAX_LENGTH, message: "is too long (maximum #{PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_blank: true

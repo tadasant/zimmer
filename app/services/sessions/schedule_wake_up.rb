@@ -116,39 +116,11 @@ module Sessions
     #
     # The web UI's "Pause Until" is the opposite gesture. A human picking a second
     # time means "not then, THIS time" — and leaving the first wake armed would fire
-    # at whichever is earlier, which is precisely the time they just replaced.
-    #
-    # Only triggers whose SOLE condition is an unfired one-time schedule are
-    # destroyed: a trigger carrying other conditions (OR semantics) does other work,
-    # and a session-scoped ao_event wake answers a different question ("when X
-    # happens") that a chosen wall-clock time does not supersede.
+    # at whichever is earlier, which is precisely the time they just replaced. The
+    # spot-queue choice in the same panel is the same gesture and runs the same
+    # service, which is why the query lives in Sessions::SupersedePendingWakes.
     def supersede_existing_wakes!
-      # preload, NOT includes. `includes` alongside `joins` + a `trigger_conditions`
-      # WHERE turns this into a single eager-loading LEFT JOIN, so
-      # `trigger.trigger_conditions` would come back holding only the conditions
-      # that matched the filter. Both things below then break: a multi-condition
-      # trigger looks single-condition and gets selected, and `destroy!` cascades
-      # over the truncated association, leaving the unloaded rows behind to
-      # violate their foreign key. preload issues a second, unfiltered query.
-      candidates = Trigger
-        .joins(:trigger_conditions)
-        .where(reuse_session: true, last_session_id: session.id, status: "enabled")
-        .where(trigger_conditions: { condition_type: "schedule", last_triggered_at: nil })
-        .distinct
-        .preload(:trigger_conditions)
-        .select { |trigger| trigger.trigger_conditions.one? && trigger.trigger_conditions.sole.one_time_schedule? }
-
-      return if candidates.empty?
-
-      destroyed = candidates.map do |trigger|
-        trigger.destroy!
-        trigger.id
-      end
-
-      session.logs.create!(
-        content: "[Pause Until] Superseded pending wake-up trigger(s) #{destroyed.join(', ')}",
-        level: "info"
-      )
+      SupersedePendingWakes.call(session: session)
     end
 
     # Minute-precision is accepted, but the value is stored on the trigger
