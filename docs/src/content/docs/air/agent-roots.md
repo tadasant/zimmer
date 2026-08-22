@@ -67,13 +67,14 @@ Two things are deliberately outside that rule:
   declare `default_subagent_roots`) are added by `SelfSessionInjector`, not by this resolution. A
   session spawned with `mcp_servers: []` still receives them, by design.
 
-## The ten roots that ship
+## The eleven roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
-| `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. All 5 skills default here. |
+| `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. Every skill but `awaken-waiting-sessions` defaults here. |
 | `zimmer-router` | ❌ | `tadasant/zimmer` | The baseline router. `Session::ROUTER_AGENT_ROOT`; every quick-router / chat-bubble submission is created against it. Ships with no default artifacts — it cannot yet dispatch downstream sessions ([why](/limitations/#the-baseline-zimmer-router-root-cant-spawn-downstream-sessions-out-of-the-box)). |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
+| `fleet-maintenance` | ❌ | `tadasant/zimmer` | The deployment's own scheduler. The `quota_available` trigger dispatches it; it runs `awaken-waiting-sessions` and starts parked spot work in precedence order. Defaults to the `zimmer-fleet` server, which is the only thing that gives it the tools that skill calls. |
 | `agent-orchestrator` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents/agent-orchestrator` |
 | `agents` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents` — the catalog artifacts |
 | `catalog-management` | ❌ | `tadasant/zimmer-catalog` | Lead root; fans out to the four below |

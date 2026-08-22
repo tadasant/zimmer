@@ -2,7 +2,7 @@
 
 # The ranked index, built the way the query actually reads it.
 #
-# `Session.ranked` orders `precedence DESC, created_at ASC`. The original index
+# `Session.ranked` orders `precedence DESC, created_at ASC, id ASC`. The original index
 # was `(precedence ASC, created_at ASC)`, and Postgres cannot serve a
 # mixed-direction sort from a same-direction index — so the index the ranked view
 # was built for could not answer the ranked view's own query, and every render

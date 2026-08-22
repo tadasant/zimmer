@@ -298,7 +298,7 @@ class SpotSessionPause
     # to sort would cost a round trip for a list this size.
     def rank(sessions)
       sessions.sort_by do |session|
-        [ -session.precedence.to_i, session.metadata&.dig("spot_pause_at").to_s, session.id ]
+        [ -session.precedence.to_i, session.metadata&.dig(PAUSED_AT).to_s, session.id ]
       end
     end
 
