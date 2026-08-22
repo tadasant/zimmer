@@ -145,6 +145,8 @@
 
       <%= render "feature_table", feature: @by_feature %>
 
+      <%= render "experiment_table", reports: @by_experiment, window: @window %>
+
       <%= render "bar_table", rows: @by_model, label_key: :model,
             title: "By model", empty: "No spend in this window.",
             max: max_cost.call(@by_model), total: @totals[:cost_usd] %>

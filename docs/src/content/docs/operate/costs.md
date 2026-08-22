@@ -309,6 +309,83 @@ bin/rails token_usage:attribution_report DAYS=30
 bin/rails token_usage:calibrate_chars_per_token
 ```
 
+## Experimental settings
+
+An **experimental setting** is a global switch that changes how Zimmer drives its agents —
+MCP tool search is the first, `Settings → Experimental` is where they live, and
+`ExperimentalSettingsRegistry` is the catalogue. Every session is tagged with what each one
+was **when it started** and **when it last ran**, and the Costs page compares the cohorts
+that tagging produces.
+
+The registry is the single edit point. One entry there gives a setting its toggle on the
+settings page, its write path in `AppSettingsController`, its per-session tag, and its
+section in the report. A setting cannot be togglable and untracked.
+
+### Two values, not one
+
+`session_experimental_flags` stores `value_at_start` and `value_at_end` per (session,
+setting). Intermediate toggles are deliberately not tracked; the pair exists to answer a
+different question — *is this session's cohort label safe?* A session whose two ends
+disagree ran under both values of the setting, so it is bucketed as `mixed` and excluded
+from both cohorts rather than rounded into one.
+
+### Observed, not derived
+
+The value could be re-derived at read time from the session's date and the date the setting
+shipped. That works exactly once, for the single step change a setting makes when it lands,
+and stops working the moment the setting is toggled back. Storing what was actually observed
+is what lets cohorts interleave in time — which is the difference between an A/B test and a
+before/after chart.
+
+The date-derived path exists only for history that predates the table.
+`ExperimentalFlagBackfillJob` labels those sessions from `landed_at` in the registry entry:
+`created_at` decides the start value, the session's last recorded API call decides the end
+value, and rows written that way are marked `source = "backfilled"`. The report shows how
+many of each it is reading.
+
+**The job cannot reach forward past the first live observation**, and that bound is
+load-bearing. `landed_at` describes exactly one step change, so it knows nothing about a later
+toggle. Without the cutoff, a session parked in `waiting` would be labelled from its creation
+date, then run under whatever the setting had since become, and land in `mixed` — the backfill
+would silently destroy exactly the interleaved cohort a deliberate toggle was flipped to
+collect. The cutoff is `MIN(first_observed_at)` over the observed rows, falling back to an hour
+ago on the one tick where nothing has been observed yet and every session really is history.
+
+For `mcp_tool_search` the boundary is **2026-08-22 13:55:34 UTC** (`b59d9ad7`, which shipped
+it on for everyone).
+
+### Why the report hedges as hard as it does
+
+The settings are global, so nothing is randomized and a cohort is "whoever ran while it was
+on". For a backfilled setting the cohorts are literally *before this date* and *after this
+date*, which perfectly confounds the setting with everything else that changed around then —
+including other merges landing the same afternoon. That is stated on screen, next to the
+number, rather than in a footnote.
+
+Three things follow from it:
+
+- **Cost per API call is the headline**, not cost per session. Per-session cost mostly
+  measures how long sessions happened to be, which is task mix. Per-session is still shown —
+  it is what the bill feels like — and labelled as the confounded one.
+- **Sample sizes are always on screen**, and a side thinner than 5 sessions or 50 API calls
+  in the window prints no percentage at all. A dramatic-looking delta over four sessions
+  reads exactly like a real one, which is the failure this refuses.
+- **The same agent root is compared against itself** in a drilldown, using only roots present
+  on both sides. Holding the root constant removes the largest single source of task mix. It
+  does not remove the rest.
+
+The honest reading of a thin report is that the data cannot yet support a claim. That is a
+correct outcome, not a broken page.
+
+### Adding a setting
+
+Append an entry to `ExperimentalSettingsRegistry::BUILT_INS` with the `AppSetting` boolean
+column that backs it, plus a migration for the column. Set `landed_at` only when the setting
+shipped as a step change for everyone; leave it nil and only sessions from then on get
+tagged, which is the more honest default for a setting that ships off. A Zimmer Extension
+flagged experimental needs nothing at all — it is picked up from
+`Zimmer::ExtensionRegistry.experimental` automatically.
+
 ## Reading it back
 
 - **Web:** the Costs page, alongside Quotas.
@@ -317,7 +394,8 @@ bin/rails token_usage:calibrate_chars_per_token
   [the REST API](/extend/rest-api/).
 - **MCP:** the `get_costs` tool, in the `health` group. Fleet-wide by default; scopeable to
   one agent root or one session, and windowed by `days` or by an explicit `from`/`to`. Every
-  report carries the context-feature split, always labelled as an estimate.
+  report carries the context-feature split, always labelled as an estimate, and the
+  experimental-setting cohorts, always labelled as observational.
 
 ## What the dollar figures are not
 

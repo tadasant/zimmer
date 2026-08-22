@@ -36,6 +36,9 @@ module Mcp
         - spend by **context-management feature** — the injected goal block, the session hierarchy,
           MCP responses, skill bodies, thinking, tool output — with the share it could not account
           for stated as its own line
+        - spend split by **experimental setting** — every session is tagged with what each
+          experimental toggle was when it started and when it last ran, and the two cohorts are
+          compared
         - the most expensive individual sessions
         - any model seen in the window that has no price configured
         - how complete the ledger is: whether the one-time historical sweep has finished, and the
@@ -50,6 +53,16 @@ module Mcp
         rather than spread across the features — most of it is the harness system prompt and the tool
         schemas, which never appear in a transcript. Do not present an estimated feature cost as a
         measurement, and do not recommend cutting a feature on a thin margin.
+
+        **The experiment cohorts are OBSERVATIONAL, and must be quoted as such.** The settings are
+        global, so a cohort is "every session that ran while it was on" — nothing is randomized. For
+        a setting labelled from the date it landed, the cohorts are literally "before this date" and
+        "after this date", which perfectly confounds the setting with everything else that changed
+        around then. Cost per API call is reported as the headline because it divides out session
+        length; per-session cost is reported too and is mostly task mix. Sessions whose start and
+        end values disagree are excluded from both cohorts rather than averaged in. Do not report a
+        cohort difference as an effect of the setting, and do not report one at all when the tool
+        says the sides are too small to compare.
 
         **Use cases:**
         - Find which agent root or session a spend spike came from
@@ -150,6 +163,7 @@ module Mcp
 
         lines.concat(coverage_lines)
         lines.concat(feature_lines(analytics.by_feature))
+        lines.concat(experiment_lines(analytics.by_experiment))
         lines.concat(by_day_lines(analytics))
         lines.concat(top_sessions_lines(analytics))
         lines.concat(unpriced_lines(analytics))
@@ -212,6 +226,63 @@ module Mcp
           "(#{number(totals[:cache_creation_1h_tokens])} at the 1h TTL) |",
           *feature_lines(analytics.feature_breakdown(session_id: session_id))
         ].join("\n")
+      end
+
+      # The experimental-setting cohorts, with the reasons not to trust them
+      # attached. An agent quoting a delta downstream will quote whatever framing
+      # rides with it, so the framing is in the table, not below it.
+      def experiment_lines(reports)
+        reports = Array(reports).reject { |r| r[:tagged_sessions].to_i.zero? }
+        return [] if reports.empty?
+
+        lines = [ "", "### Experimental settings (observational, not randomized)", "" ]
+
+        reports.each do |report|
+          off = report[:cohorts]["off"]
+          on = report[:cohorts]["on"]
+          comparison = report[:comparison]
+
+          lines << "**#{report[:title]}** — currently " \
+                   "#{report[:current_value].nil? ? "unknown" : (report[:current_value] ? "ON" : "OFF")}"
+          lines << ""
+          lines << "| Cohort | Sessions | Calls | Cost | Per call | Per session |"
+          lines << "|---|---:|---:|---:|---:|---:|"
+          %w[off on].each do |cohort|
+            side = report[:cohorts][cohort]
+            lines << "| #{cohort} | #{number(side[:sessions])} | #{number(side[:api_calls])} | " \
+                     "#{money(side[:cost_usd])} | #{per_call(side[:cost_per_call])} | " \
+                     "#{side[:cost_per_session] ? money(side[:cost_per_session]) : "—"} |"
+          end
+          lines << ""
+
+          if comparison[:comparable]
+            direction = comparison[:cost_per_call_change].negative? ? "lower" : "higher"
+            lines << "Cost per API call is #{pct(comparison[:cost_per_call_change].abs)} #{direction} with " \
+                     "the setting on. This is an association, not a measured effect."
+          elsif comparison[:reason] == :no_baseline
+            lines << "No baseline to compare against: the off cohort priced at $0.00, so every model it " \
+                     "ran is missing a rate. Do not quote a difference from these figures."
+          else
+            lines << "Too few sessions to compare: a side needs at least #{comparison[:min_sessions]} " \
+                     "sessions and #{comparison[:min_calls]} API calls in this window. " \
+                     "Do not quote a difference from these figures."
+          end
+
+          mixed = report[:cohorts]["mixed"]
+          if mixed[:sessions].positive?
+            lines << "#{number(mixed[:sessions])} session(s) had the setting toggled mid-run and are in neither cohort."
+          end
+
+          if report[:landed_at]
+            lines << "Cohorts are temporal: the setting landed #{report[:landed_at].utc.iso8601}, so " \
+                     "\"off\" is every session before that and \"on\" is every session after. " \
+                     "#{number(report[:tagged_by_source]["backfilled"].to_i)} of " \
+                     "#{number(report[:tagged_sessions])} labels were inferred from dates rather than observed."
+          end
+          lines << ""
+        end
+
+        lines
       end
 
       # The context-feature split, with its residual. Reported as an estimate every
@@ -333,6 +404,10 @@ module Mcp
       end
       def number(value) = ActiveSupport::NumberHelper.number_to_delimited(value.to_i)
       def pct(fraction) = "#{(fraction.to_f * 100).round(1)}%"
+
+      # Per-call cost is cents-and-below on every real window, so `money`'s two
+      # decimal places would round the whole column to $0.00.
+      def per_call(value) = value.nil? ? "—" : "$#{format("%.4f", value.to_f)}"
     end
   end
 end

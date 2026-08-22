@@ -113,6 +113,7 @@ module SessionStateMachine
         transitions from: :waiting, to: :running, guard: :can_start?
         after do
           reset_elapsed_time_counter
+          record_experimental_setting_flags
           log_state_change("Session started")
         end
       end
@@ -173,6 +174,7 @@ module SessionStateMachine
           clear_lost_elicitation_marker
           clear_pending_sleep
           reset_elapsed_time_counter
+          record_experimental_setting_flags
           mark_notifications_stale
           cancel_pending_one_time_wake_triggers
           log_state_change("Session resumed")
@@ -697,6 +699,32 @@ module SessionStateMachine
     # date from. A session archived with a nil archived_at is inconsistent
     # persistent state and nothing back-fills it.
     report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Tag this session with what every experimental setting is right now.
+  #
+  # Called from `start` and `resume` and NOWHERE ELSE, because those are the two
+  # transitions at which an agent process is about to spawn — and a setting like
+  # MCP tool search takes effect in the spawn environment. Observing here records
+  # what the session actually ran with. The first call fixes the start-of-life
+  # value; every later one moves the end-of-life value, so a setting toggled
+  # between two turns shows up as a disagreement between the two.
+  #
+  # The terminal transitions look like the natural place for the end-of-life
+  # value and are the wrong one. `archive` and `fail` fire at bookkeeping
+  # moments that can land arbitrarily long after the session last ran —
+  # HealthMonitorService#archive_old_sessions archives everything untouched for
+  # seven days in a loop — so recording there would re-stamp an old session's end
+  # value with today's setting, flip it to `mixed`, and quietly drain the control
+  # cohort of the very comparison this exists to support.
+  #
+  # Never raises: SessionExperimentalFlag.record! swallows its own errors, and
+  # this rescue covers the constant lookup that reaches it. A cohort label is
+  # bookkeeping, and bookkeeping must not be able to stop a session starting.
+  def record_experimental_setting_flags
+    SessionExperimentalFlag.record!(self)
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to tag experimental settings: #{e.message}"
   end
 
   # Say so when a session whose goal is about opening a pull request reaches a
