@@ -113,6 +113,7 @@ module SessionStateMachine
         transitions from: :waiting, to: :running, guard: :can_start?
         after do
           reset_elapsed_time_counter
+          record_experimental_setting_flags
           log_state_change("Session started")
         end
       end
@@ -132,6 +133,7 @@ module SessionStateMachine
         transitions from: :running, to: :needs_input
         after do
           log_state_change("Session paused, waiting for input")
+          record_experimental_setting_flags
           warn_if_pr_goal_captured_no_url
           cleanup_running_job
           clear_auth_recovery_budget
@@ -173,6 +175,7 @@ module SessionStateMachine
           clear_lost_elicitation_marker
           clear_pending_sleep
           reset_elapsed_time_counter
+          record_experimental_setting_flags
           mark_notifications_stale
           cancel_pending_one_time_wake_triggers
           log_state_change("Session resumed")
@@ -231,6 +234,7 @@ module SessionStateMachine
         transitions from: [ :waiting, :running, :needs_input ], to: :failed
         after do
           log_state_change("Session failed: #{metadata['failure_reason']}")
+          record_experimental_setting_flags
           cleanup_running_job
           preserve_debug_info
           if status_summary_fork?
@@ -268,6 +272,7 @@ module SessionStateMachine
           # the first caller's override.
           self.archive_actor = nil
           self.archive_forced = nil
+          record_experimental_setting_flags
           cleanup_running_job
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
@@ -689,6 +694,26 @@ module SessionStateMachine
     # date from. A session archived with a nil archived_at is inconsistent
     # persistent state and nothing back-fills it.
     report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Tag this session with what every experimental setting is right now.
+  #
+  # Called from `start` and `resume` — where the value the agent process actually
+  # spawns with is fixed — and from `pause`, `fail` and `archive`, the three
+  # transitions after which nothing runs unless someone comes back. The first
+  # call fixes the session's start-of-life value; every call moves its
+  # end-of-life value, so a setting toggled between two turns of the same session
+  # shows up as a disagreement between the two instead of silently landing in one
+  # cohort.
+  #
+  # Never raises: SessionExperimentalFlag.record! swallows its own errors, and
+  # this rescue covers the constant lookup that reaches it. A cohort label is
+  # bookkeeping, and bookkeeping must not be able to stop a session starting or
+  # abort a transition that is cleaning up.
+  def record_experimental_setting_flags
+    SessionExperimentalFlag.record!(self)
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to tag experimental settings: #{e.message}"
   end
 
   # Say so when a session whose goal is about opening a pull request reaches a

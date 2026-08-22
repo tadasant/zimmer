@@ -59,6 +59,7 @@ class CostAnalytics
         by_thread_kind: by_thread_kind,
         by_adhoc_source: by_adhoc_source,
         by_feature: by_feature,
+        by_experiment: by_experiment,
         top_sessions: top_sessions,
         unpriced_models: unpriced_models
       }
@@ -71,9 +72,9 @@ class CostAnalytics
   # added, which moves no maximum.
   def cache_key
     [
-      "cost-analytics/v2", from.to_i, to.to_i,
+      "cost-analytics/v3", from.to_i, to.to_i,
       SessionTokenUsage.maximum(:id).to_i, AdhocTokenUsage.maximum(:id).to_i,
-      TokenUsageFeature.maximum(:id).to_i
+      TokenUsageFeature.maximum(:id).to_i, SessionExperimentalFlag.maximum(:id).to_i
     ].join("/")
   end
 
@@ -230,6 +231,17 @@ class CostAnalytics
       coverage: session[:total_tokens].positive? ? (attributed.sum { |r| r[:tokens] }.to_f / session[:total_tokens]) : 0.0
     }
   end
+
+  # What each experimental setting looks like to have done to spend, with every
+  # reason not to trust it attached.
+  #
+  # This is the crude A/B test Zimmer can actually run: the settings are global
+  # and the cohorts are whoever ran while each one was on, so the comparison is
+  # observational and — for a setting backfilled from the date it landed —
+  # purely temporal. ExperimentAnalytics documents what it does about that and
+  # what it cannot. The view is expected to print the caveats next to the number,
+  # not underneath a fold.
+  def by_experiment = ExperimentAnalytics.new(session_scope).reports
 
   # The feature split for one agent root or one session, for a drilldown that has
   # already narrowed. Same shape as `by_feature`, scoped.

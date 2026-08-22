@@ -83,7 +83,8 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     snapshot = CostAnalytics.new(from: 7.days.ago).snapshot
 
     assert_equal %i[totals cost_breakdown by_day by_agent_root by_model
-                    by_thread_kind by_adhoc_source by_feature top_sessions unpriced_models].sort,
+                    by_thread_kind by_adhoc_source by_feature by_experiment
+                    top_sessions unpriced_models].sort,
       snapshot.keys.sort
   end
 
