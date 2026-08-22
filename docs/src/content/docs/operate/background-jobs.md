@@ -393,11 +393,18 @@ Arrival peaks exactly when service is worst.
 
 The bound is on `perform`, not `enqueue`. These jobs carry a session id and are not interchangeable,
 so refusing an enqueue would drop that session's work rather than delay it. GoodJob answers an
-exceeded `perform_limit` with `ConcurrencyExceededError`, which `ApplicationJob`'s inherited
-`retry_on` reschedules with polynomial backoff — so the surplus waits in `scheduled`, future-dated
-and out of the ready backlog, instead of holding a thread. Titles and summaries land late during an
-outage, which is the right trade: they are best-effort, and `StatusSummaryBackstopJob` repairs a
-generation that never landed.
+exceeded `perform_limit` with `ConcurrencyExceededError` and reschedules the job — so the surplus
+waits in `scheduled`, future-dated and out of the ready backlog, instead of holding a thread. Titles
+and summaries land late during an outage, which is the right trade: they are best-effort, and
+`StatusSummaryBackstopJob` repairs a generation that never landed.
+
+`BlockingInferenceBounded` replaces GoodJob's backoff for that error with a quadratic ramp capped at
+`MAX_RETRY_INTERVAL` (60s). GoodJob's own curve is `(attempt ** 4) + 2` seconds and uncapped — about
+10 minutes by the fifth attempt and over an hour by the eighth. That curve suits a job contending
+with itself, but a slot here frees every time an inference call returns, so uncapped it would leave a
+session's summary waiting an hour after the queue had drained, and would put the same delay on an
+operator's forced **Regenerate** — a button press, with a human watching the panel. Attempts stay
+unbounded; only the interval is capped.
 
 ## Queue recovery mode
 
