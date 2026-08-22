@@ -229,6 +229,11 @@ class SpotSessionPause
     # polls, and stops.
     def pause!(session, decision, overrides, logger)
       return false unless session.running?
+      # A session a human just parked into the queue is already on its way here:
+      # it carries the queue record and sleeps at the end of its turn. Pausing it
+      # would terminate that turn mid-flight — the one thing the panel promised
+      # would not happen — and overwrite its story with the ceiling's.
+      return false if queued_by_user?(session)
 
       terminate_process(session, logger)
 

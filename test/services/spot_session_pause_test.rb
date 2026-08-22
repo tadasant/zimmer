@@ -282,6 +282,35 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert_equal session.id, job[:args][0]
   end
 
+  # The panel promises "sleeps when this turn ends". A ceiling sweep landing in
+  # that window would terminate the turn instead, and rewrite the session's story
+  # as a casualty of the ceiling.
+  test "the ceiling leaves a running session already on its way to the queue alone" do
+    seed(current_5h: 0.95)
+    session = running_session
+    Sessions::PauseIntoSpotQueue.call(session: session)
+
+    result = SpotSessionPause.sweep!
+
+    assert_equal 0, result.paused
+    session.reload
+    assert session.running?, "its own turn end is what parks it, not a SIGTERM"
+    assert_equal SpotSessionPause::QUEUED_REASON, session.metadata[SpotSessionPause::PAUSED_REASON]
+  end
+
+  # The wording branches now, so the ceiling's own story has to be pinned too.
+  test "a ceiling-paused session is still told the window came back down" do
+    seed(current_5h: 0.10)
+    session = paused_session
+
+    SpotSessionPause.sweep!
+
+    job = enqueued_jobs.find { |j| j[:job] == AgentSessionJob }
+    assert_match(/utilization has since come back down/, job[:args][1])
+    assert_equal session.id, job[:args][0]
+    assert session.reload.logs.any? { |log| log.content.include?("Utilization came back down") }
+  end
+
   # The count /quotas and get_spot_policy report is about what the CEILING cost,
   # so a session nobody interrupted must not inflate it.
   test "a queued session is not counted as paused by the ceiling" do

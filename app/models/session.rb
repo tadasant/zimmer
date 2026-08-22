@@ -276,6 +276,13 @@ class Session < ApplicationRecord
   # sweep has already resumed one session on a changed account pool, and it has
   # to outlive the resume it paid for or it would never bound anything. See
   # AuthOutageParkService::EARLY_WAKE_LOG_KEY.
+  #
+  # SpotSessionPause::METADATA_KEYS are on the list for the same reason
+  # `paused_by` is: they say the session is dormant in the spot queue, and a
+  # session somebody restarted, continued or unarchived is not. Left behind, the
+  # record outlives the park — and the next ordinary "Pause Until 9 AM" on that
+  # session would land in `waiting` still matching SpotSessionPause.paused?, so
+  # the ceiling sweep would resume it long before the time its human chose.
   STALE_RETRY_METADATA_KEYS = (SIGTERM_RETRY_METADATA_KEYS + %w[
     failure_reason
     exit_status
@@ -310,7 +317,7 @@ class Session < ApplicationRecord
     transcript_reading_started_logged
     interrupted_start_requeue_count
     recovery_continue_attempts
-  ]).freeze
+  ] + SpotSessionPause::METADATA_KEYS).freeze
 
   # Metadata keys rendered by the session metadata partial. A change to any of them is
   # what makes a metadata write worth broadcasting.

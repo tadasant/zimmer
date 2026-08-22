@@ -74,9 +74,17 @@ module Sessions
     attr_reader :session, :prompt
 
     def call
-      unless ScheduleWakeUp::WAKEABLE_STATUSES.include?(session.status.to_s)
+      # Session#pausable_until? rather than the service's own WAKEABLE_STATUSES,
+      # and deliberately: a `waiting` session that has never started is queued
+      # for SPAWN, not asleep, and parking one writes a queue record over a
+      # session the spawn pipeline still owns — the sweep would then "resume" a
+      # session that has no runtime session to resume. The web UI checks the same
+      # predicate before it gets here; keeping it in the service is what stops
+      # the MCP surface from being the one path that skips it.
+      unless session.pausable_until?
         raise Error, "Session #{session.id} is in \"#{session.status}\" state and cannot be put in the " \
-                     "spot queue. Only sessions in #{ScheduleWakeUp::WAKEABLE_STATUSES.join(', ')} can be."
+                     "spot queue. Only a session that has started and is in " \
+                     "#{ScheduleWakeUp::WAKEABLE_STATUSES.join(', ')} can be."
       end
 
       pinned = false
@@ -87,17 +95,24 @@ module Sessions
       Session.transaction do
         # "Not at that time, THIS instead" — the same gesture as picking a second
         # time in the panel, so it supersedes an earlier Pause Until the same way.
-        SupersedePendingWakes.call(session: session)
+        SupersedePendingWakes.call(session: session, note: "Pause Until → Spot Queue")
 
         pinned = pin_to_spot!
         park!
+        session.logs.create!(level: "info", content: log_line(pinned))
       end
 
       session.reload
-      session.logs.create!(level: "info", content: log_line(pinned))
 
       Result.new(session: session, pending_sleep: session.metadata&.dig("pending_sleep") == true,
                  pinned_to_spot: pinned)
+    rescue ActiveRecord::RecordInvalid => e
+      # Chiefly the catalog coupling: a session whose agent root or skills no
+      # longer resolve fails its own validations, and a park that raised
+      # RecordInvalid would surface as a 500 in the panel and a raw exception in
+      # the MCP tool. Nothing was committed — the transaction saw to that.
+      raise Error, "Could not park session #{session.id} in the spot queue: " \
+                   "#{e.record.errors.full_messages.join(', ')}. No changes were made."
     end
 
     private
@@ -115,18 +130,37 @@ module Sessions
     # carry it needs_input → waiting once the turn ends, which is the same
     # deferral a time-based Pause Until gets. A `waiting` session is already
     # dormant and only needs the record.
+    #
+    # `merge_metadata!` rather than a whole-column write: the session may be
+    # RUNNING, and AgentSessionJob is writing its own keys to the same column
+    # from another process. A read-modify-write of the hash this request happens
+    # to be holding would drop whatever the job wrote in between. It also skips
+    # validations, which is what keeps a park working on a session whose catalog
+    # has since gone stale.
     def park!
-      metadata = (session.metadata || {}).merge(
+      updates = {
         SpotSessionPause::PAUSED_AT => Time.current.utc.iso8601,
         SpotSessionPause::PAUSED_REASON => SpotSessionPause::QUEUED_REASON,
         SpotSessionPause::PAUSED_DETAIL => DETAIL,
-        SpotSessionPause::PAUSED_COUNT => (session.metadata || {})[SpotSessionPause::PAUSED_COUNT].to_i + 1,
         "paused_by" => SpotSessionPause::PAUSED_BY
-      )
-      metadata[SpotSessionPause::QUEUED_PROMPT] = prompt if prompt.present?
-      metadata["pending_sleep"] = true if session.running?
+      }
+      updates[SpotSessionPause::QUEUED_PROMPT] = prompt if prompt.present?
+      updates["pending_sleep"] = true if session.running?
 
-      session.update!(metadata: metadata)
+      # PENDING_SLEEP_REQUIRES_WAKE goes, and it is not housekeeping: it means
+      # "sleep only if something is still armed to wake you", and this park has
+      # just destroyed every armed wake and creates none. Left in place, a
+      # session carrying it from a system-recovery resume would reach its turn
+      # end, find nothing armed, DROP the sleep, and come to rest in needs_input
+      # holding a queue record no sweep can act on. A deliberate sleep is
+      # unconditional — see SessionStateMachine#execute_pending_sleep.
+      #
+      # A stale QUEUED_PROMPT goes too when the box was left empty, or a park
+      # made after an earlier one would silently resume on the earlier text.
+      removals = [ SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE ]
+      removals << SpotSessionPause::QUEUED_PROMPT if prompt.blank?
+
+      session.merge_metadata!(updates, removals)
       session.sleep! if session.needs_input? && session.may_sleep?
     end
 

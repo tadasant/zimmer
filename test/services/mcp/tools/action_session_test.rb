@@ -935,6 +935,20 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "Pick the migration back up", session.reload.metadata[SpotSessionPause::QUEUED_PROMPT]
   end
 
+  # The gate the web UI enforces, enforced here too: a `waiting` session with no
+  # session_id has never started — it is queued for spawn, not asleep.
+  test "pause_into_spot_queue refuses a session that has never started" do
+    queued = sessions(:waiting)
+    assert_nil queued.session_id
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "pause_into_spot_queue", "session_id" => queued.id)
+    end
+
+    assert_match(/cannot be put in the spot queue/, error.message)
+    assert_nil (queued.reload.metadata || {})[SpotSessionPause::PAUSED_REASON]
+  end
+
   test "pause_into_spot_queue refuses a session that cannot be slept" do
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "pause_into_spot_queue", "session_id" => sessions(:archived).id)
