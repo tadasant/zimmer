@@ -24,6 +24,10 @@
 class CertExpiryMonitorJob < ApplicationJob
   queue_as :default
 
+  # Cron passes no arguments — `hosts:` and `checker:` are test-injection seams
+  # with defaults — so a tick is fully redundant with an outstanding one.
+  include SingletonSweep
+
   ERROR_THRESHOLD_DAYS = 14
   WARN_THRESHOLD_DAYS = 21
 

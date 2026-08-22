@@ -369,17 +369,18 @@ So every recurring job that runs on `default` and takes **no arguments** now car
 redundancy.
 
 The scope is deliberate. A sweep that *takes* arguments re-enqueues itself with them to chain retries
-(`RefreshRuntimeAuthTokensJob`, `RefreshMcpOauthTokensJob`, `CertExpiryMonitorJob`), and a class-wide
+(`RefreshRuntimeAuthTokensJob`, `RefreshMcpOauthTokensJob`, `RefreshXOauthTokensJob`), and a class-wide
 key would block that chain behind the cron copy. `test/jobs/recurring_sweep_concurrency_test.rb`
 walks the production cron table and fails if an argument-less `default` sweep is left unguarded, so
 the next one added cannot quietly reopen the gap.
 
 ### Bounding blocking inference
 
-`default` also carries every job that makes a **blocking one-shot inference call** — `SessionTitleJob`
-(30s timeout) and `SessionStatusSummaryJob` (90s). Each one shells out to the runtime CLI and holds
-its worker thread until the answer lands or the timeout expires, and `default` has four threads
-(`ConnectionBudget::GOOD_JOB_DEFAULT_THREADS`) shared with three dozen other job classes.
+`default` also carries every job that makes a **blocking one-shot inference call**:
+`SendPushNotificationJob` (15s timeout), `SessionTitleJob` (30s) and `SessionStatusSummaryJob` (90s).
+Each one shells out to the runtime CLI and holds its worker thread until the answer lands or the
+timeout expires, and `default` has four threads (`ConnectionBudget::GOOD_JOB_DEFAULT_THREADS`) shared
+with three dozen other job classes.
 
 `BlockingInferenceBounded` gives them **one shared `perform_limit`** across all of them, so at most
 half of `default`'s threads can be inside an inference call at once and the rest of the queue always
@@ -388,8 +389,20 @@ is the queue's thread count, and a per-class limit of two would let two classes 
 
 This binds hardest during an account-quota outage, which is when inference is least likely to answer
 and most likely to burn its whole timeout — and simultaneously when the most work arrives, because
-every parked session takes a `pause` transition and `pause` enqueues a status-summary refresh.
-Arrival peaks exactly when service is worst.
+every parked session takes a `pause` transition and `pause` enqueues *both* a status-summary refresh
+and a push notification, each of which makes its own blocking call. Arrival peaks exactly when
+service is worst.
+
+`PERFORM_LIMIT` is derived from the queue's thread count rather than written as a literal, so raising
+or lowering `GOOD_JOB_DEFAULT_THREADS` moves the bound with it instead of silently erasing the
+half-the-queue guarantee.
+
+One thing does get to jump the queue: a generation an operator asked for by hand — the panel's
+**Regenerate** button, the REST endpoint, the MCP action — is enqueued at
+`SessionStatusSummaryJob::FORCED_PRIORITY`. Sharing one limit means a forced run can lose the race
+for a slot, and a human is watching the panel for that one. GoodJob orders `priority ASC NULLS LAST`
+and admits the oldest claims first, so a lower number takes the next free slot ahead of the unforced
+refreshes and titles.
 
 The bound is on `perform`, not `enqueue`. These jobs carry a session id and are not interchangeable,
 so refusing an enqueue would drop that session's work rather than delay it. GoodJob answers an
@@ -399,12 +412,17 @@ and summaries land late during an outage, which is the right trade: they are bes
 `StatusSummaryBackstopJob` repairs a generation that never landed.
 
 `BlockingInferenceBounded` replaces GoodJob's backoff for that error with a quadratic ramp capped at
-`MAX_RETRY_INTERVAL` (60s). GoodJob's own curve is `(attempt ** 4) + 2` seconds and uncapped — about
+`MAX_RETRY_INTERVAL` (60s), jittered. GoodJob's own curve is `(attempt ** 4) + 2` seconds and uncapped — about
 10 minutes by the fifth attempt and over an hour by the eighth. That curve suits a job contending
 with itself, but a slot here frees every time an inference call returns, so uncapped it would leave a
 session's summary waiting an hour after the queue had drained, and would put the same delay on an
 operator's forced **Regenerate** — a button press, with a human watching the panel. Attempts stay
 unbounded; only the interval is capped.
+
+The jitter is not decoration. ActiveJob applies its configured `retry_jitter` to the
+`:polynomially_longer` and Duration forms of `wait:` but **not** to a Proc, so a Proc that does not
+jitter itself silently loses it — and every job bounced off the same slot would come back in lockstep,
+each taking `pg_advisory_xact_lock` on the one shared key, during exactly the outage this is for.
 
 ## Queue recovery mode
 
