@@ -95,8 +95,14 @@ module Sessions
 
       raise Error.new("A wake-up prompt is required.", code: :missing_prompt) if prompt.blank?
 
-      supersede_existing_wakes! if @replace_existing
-      create_wake_trigger!
+      # One transaction: superseding the old wake and arming the new one are the
+      # same act. Splitting them means a create that fails after the destroy
+      # leaves an already-sleeping session with nothing armed at all — while the
+      # error it raises says no changes were made.
+      Trigger.transaction do
+        supersede_existing_wakes! if @replace_existing
+        create_wake_trigger!
+      end
     end
 
     private
@@ -117,12 +123,19 @@ module Sessions
     # and a session-scoped ao_event wake answers a different question ("when X
     # happens") that a chosen wall-clock time does not supersede.
     def supersede_existing_wakes!
+      # preload, NOT includes. `includes` alongside `joins` + a `trigger_conditions`
+      # WHERE turns this into a single eager-loading LEFT JOIN, so
+      # `trigger.trigger_conditions` would come back holding only the conditions
+      # that matched the filter. Both things below then break: a multi-condition
+      # trigger looks single-condition and gets selected, and `destroy!` cascades
+      # over the truncated association, leaving the unloaded rows behind to
+      # violate their foreign key. preload issues a second, unfiltered query.
       candidates = Trigger
         .joins(:trigger_conditions)
         .where(reuse_session: true, last_session_id: session.id, status: "enabled")
         .where(trigger_conditions: { condition_type: "schedule", last_triggered_at: nil })
         .distinct
-        .includes(:trigger_conditions)
+        .preload(:trigger_conditions)
         .select { |trigger| trigger.trigger_conditions.one? && trigger.trigger_conditions.sole.one_time_schedule? }
 
       return if candidates.empty?

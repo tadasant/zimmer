@@ -154,8 +154,7 @@
               Sits immediately left of Trash / Restore, opens upward (bottom-full) so
               a card low on the page does not push its menu off the bottom, and is
               omitted entirely when it would be empty. %>
-          <% pause_until_available = Sessions::ScheduleWakeUp::WAKEABLE_STATUSES.include?(agent_session.status.to_s) %>
-          <% if pause_until_available %>
+          <% if agent_session.pausable_until? %>
             <div data-controller="overflow-menu" data-action="pause-until:scheduled->overflow-menu#close">
               <button type="button"
                       data-overflow-menu-target="button"

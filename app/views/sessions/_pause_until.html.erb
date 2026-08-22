@@ -4,22 +4,42 @@
 
     Locals:
       agent_session — the session to pause
-      variant       — :button    (session detail header: a pill with a popover)
-                      :menu_item (session card overflow menu: a full-width row
-                                  whose panel expands inline, so the card never
-                                  has to nest one popover inside another)
+      variant       — :button     (session detail header: a pill with a popover)
+                      :menu_item  (session card overflow menu: a full-width row
+                                   whose panel expands inline, so the card never
+                                   has to nest one popover inside another)
+                      :sheet_item (the mobile bottom sheet on the detail page,
+                                   which is what a phone gets instead of the
+                                   `hidden md:block` header — same inline panel,
+                                   styled to match the sheet's other rows)
 
-    Only wakeable sessions get the control. A failed or archived session would
-    take the trigger and never sleep, leaving a wake pointed at a session that
-    cannot be woken — SessionsController#pause_until re-checks server-side, since
-    a stale card is exactly the case where the button outlives the state. %>
+    Session#pausable_until? decides who gets the control. A failed or archived
+    session would take the trigger and never sleep, leaving a wake pointed at a
+    session that cannot be woken — and a never-started `waiting` one is queued for
+    spawn rather than asleep. SessionsController#pause_until re-checks
+    server-side, since a stale card is exactly the case where the button outlives
+    the state it was rendered for. %>
 <% variant ||= :button %>
-<% if Sessions::ScheduleWakeUp::WAKEABLE_STATUSES.include?(agent_session.status.to_s) %>
-  <div class="<%= variant == :menu_item ? "block" : "relative inline-flex" %>"
+<% if agent_session.pausable_until? %>
+  <% inline_variant = variant != :button %>
+  <div class="<%= inline_variant ? "block" : "inline-flex" %>"
        data-controller="pause-until"
        data-pause-until-url-value="<%= pause_until_session_path(agent_session) %>"
-       data-pause-until-inline-value="<%= variant == :menu_item %>">
-    <% if variant == :menu_item %>
+       data-pause-until-inline-value="<%= inline_variant %>">
+    <% if variant == :sheet_item %>
+      <button type="button"
+              data-action="pause-until#toggle"
+              data-pause-until-target="button"
+              aria-expanded="false"
+              class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100">
+        <span class="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 inline-flex items-center justify-center mr-3">
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </span>
+        <span class="flex-1 font-medium">Pause Until…</span>
+      </button>
+    <% elsif variant == :menu_item %>
       <button type="button"
               data-action="pause-until#toggle"
               data-pause-until-target="button"
@@ -48,7 +68,7 @@
         already has its own positioned box; an absolutely-positioned popover on the
         detail header. max-w keeps it on screen at a 375px phone viewport. %>
     <div data-pause-until-target="panel"
-         class="hidden <%= variant == :menu_item ? "border-t border-gray-100 px-3 py-3" : "absolute right-0 top-12 z-40 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white shadow-lg p-3" %> text-left">
+         class="hidden <%= inline_variant ? "border-t border-gray-100 #{variant == :sheet_item ? "px-4 py-3" : "px-3 py-3"}" : "absolute right-0 top-full mt-2 z-40 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white shadow-lg p-3" %> text-left">
       <div class="flex items-center justify-between mb-2">
         <span class="text-sm font-semibold text-gray-900">Pause until</span>
         <span data-pause-until-target="zone" class="text-[10px] text-gray-400 font-mono truncate max-w-[9rem]"></span>

@@ -145,6 +145,57 @@ class PauseUntilTest < ApplicationSystemTestCase
     assert_no_button "Pause Until"
   end
 
+  test "the detail page panel opens fully on screen at a phone width" do
+    session = create_session
+    page.driver.browser.manage.window.resize_to(375, 812)
+
+    visit session_path(session)
+    # A phone gets the joystick's bottom sheet, not the `hidden md:block` header.
+    # The sheet is revealed directly rather than by driving the press-and-hold
+    # gesture: what is under test here is the panel this partial renders, and the
+    # gesture has its own coverage.
+    assert_selector "[data-joystick-menu-target='sheet']", visible: :all
+    page.execute_script(<<~JS)
+      const sheet = document.querySelector("[data-joystick-menu-target='sheet']");
+      sheet.classList.remove("translate-y-full", "opacity-0");
+    JS
+    click_on "Pause Until…"
+    assert_text "In 1 hour"
+
+    left, past_right, doc_overflow = page.evaluate_script(<<~JS)
+      (function () {
+        const p = document.querySelector("[data-pause-until-target='panel']:not(.hidden)");
+        const b = p.getBoundingClientRect();
+        return [Math.round(b.left), Math.round(b.right - document.documentElement.clientWidth),
+                document.documentElement.scrollWidth - document.documentElement.clientWidth];
+      })()
+    JS
+
+    assert left >= 0, "the Pause Until panel starts #{-left}px off the left edge at 375px"
+    assert past_right <= 1, "the Pause Until panel runs #{past_right}px past the right edge at 375px"
+    assert doc_overflow <= 0, "opening the panel makes the page scroll sideways by #{doc_overflow}px"
+  ensure
+    page.driver.browser.manage.window.resize_to(1400, 900)
+  end
+
+  test "a session queued for spawn is offered no control, on either surface" do
+    # `waiting` is also the AASM initial state. Such a session is not asleep — it
+    # is waiting to be started — and pausing it would arm a wake `start` never
+    # consumes.
+    queued = create_session(title: "Queued behind the clone", status: :waiting)
+    assert_nil queued.session_id
+
+    visit session_path(queued)
+    assert_text "Queued behind the clone"
+    assert_no_button "Pause Until"
+
+    visit root_path
+    check "status-filter-waiting", allow_label_click: true
+    click_on "Apply filters"
+    assert_text "Queued behind the clone"
+    assert_no_selector "##{ActionView::RecordIdentifier.dom_id(queued)} button[aria-label='More actions for session #{queued.id}']"
+  end
+
   test "the card menu opens fully on screen at a phone width" do
     session = create_session
     page.driver.browser.manage.window.resize_to(375, 812)
