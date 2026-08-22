@@ -248,6 +248,11 @@
       <% end %>
 
       <%# Session-state actions %>
+      <%# The phone's counterpart to the detail header's Pause Until pill — that
+          header is `hidden md:block`, so this sheet is the only place a phone can
+          reach it. The panel expands inline; the sheet scrolls. %>
+      <%= render "sessions/pause_until", agent_session: @session, variant: :sheet_item %>
+
       <% if @session.archived? %>
         <button type="button" data-action="click->joystick-menu#fire" data-petal-key="restore" class="flex items-center w-full px-4 py-3 text-left text-sm text-green-700 hover:bg-green-50 active:bg-green-100">
           <span class="w-9 h-9 rounded-full bg-green-50 text-green-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "restore" %></span>

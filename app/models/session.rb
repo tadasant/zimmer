@@ -397,6 +397,36 @@ class Session < ApplicationRecord
     [ "1 hour", 3600 ]
   ].freeze
 
+  # Whether the web UI should offer "Pause Until" for this session.
+  #
+  # Narrower than Sessions::ScheduleWakeUp::WAKEABLE_STATUSES, which is the
+  # question an agent asks about itself. A `waiting` session that has never
+  # started is not asleep — it is queued for spawn, and `waiting` is simply the
+  # AASM initial state. Arming a wake there tells the operator the session is
+  # paused while the spawn pipeline goes right on starting it: `start` (unlike
+  # `resume`) does not consume the wake, so the trigger is left armed behind a
+  # session that is already running.
+  def pausable_until?
+    return false unless Sessions::ScheduleWakeUp::WAKEABLE_STATUSES.include?(status.to_s)
+    return false if waiting? && session_id.blank?
+
+    true
+  end
+
+  # Choices offered by the "Pause Until" control, in order. `key` is the contract
+  # with pause_until_controller.js, which resolves each one to an absolute time in
+  # the BROWSER's timezone — the wall-clock presets ("Tomorrow, 9:00 AM") mean the
+  # operator's morning, not the server's, and only the browser knows which that is.
+  # Anything not on this list goes through the datetime picker instead.
+  PAUSE_UNTIL_PRESETS = [
+    { key: "15m", label: "In 15 minutes" },
+    { key: "1h", label: "In 1 hour" },
+    { key: "3h", label: "In 3 hours" },
+    { key: "tonight", label: "Tonight, 6 PM" },
+    { key: "tomorrow", label: "Tomorrow, 9 AM" },
+    { key: "monday", label: "Monday, 9 AM" }
+  ].freeze
+
   # Validations
   # Prompt is now optional to allow for "clone only" sessions
   validates :prompt, length: { maximum: PROMPT_MAX_LENGTH, message: "is too long (maximum #{PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_blank: true

@@ -771,7 +771,8 @@ Neither auto-deletes a one-time trigger on a suppressed fire.
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"
 and "wake me up when that other session changes state." Zimmer schedules the same one-time
 triggers on its own behalf — `AuthOutageParkService` uses one to retry a session parked because
-the login pool ran dry. Two mechanisms make this reliable:
+the login pool ran dry — and so does a human clicking **Pause Until** in the web UI. Two mechanisms
+make this reliable:
 
 **Auto-sleep.** `Trigger#sleep_target_session_if_applicable` runs on trigger creation. If the
 target session is `needs_input`, it sleeps immediately (`needs_input → waiting`). If it's
@@ -797,6 +798,28 @@ fires usefully."* It's a correct design given the primitives, but it means a sin
 
 **Loop prevention.** A session whose `metadata["trigger_id"]` equals the trigger will never
 re-fire that trigger.
+
+### One scheduler, two front doors
+
+`Sessions::ScheduleWakeUp` is the whole of it: validate the time, create the trigger, and let
+`Trigger`'s `after_create` do the sleeping. `Mcp::Tools::WakeMeUpLater` and
+`SessionsController#pause_until` are both thin wrappers over it — the tool adds a rendered
+description and a markdown receipt, the controller adds JSON and a redirect.
+
+That matters because of what the validation prevents. A `wake_at` in the past, or inside the
+30-second grace window, is not merely ignored: `TriggerCondition#schedule_due?` sees it as due on
+the next tick, the fire consumes the one-shot, and the session it just put to sleep is never woken.
+Splitting the check across two surfaces would mean one of them eventually drifts, so neither owns it.
+
+The web surface adds one thing the tool does not need: a **timezone**. A browser's
+`datetime-local` yields a naive local wall-clock string, and "Tomorrow, 9:00 AM" means the
+operator's morning. `pause_until_controller.js` sends
+`Intl.DateTimeFormat().resolvedOptions().timeZone` alongside it; reading the naive value as UTC
+would silently offset every pause by the operator's UTC offset.
+
+The resume prompt defaults to `AutomatedPrompts::PAUSE_UNTIL_WAKE`, which says plainly that Zimmer
+resumed the session on a schedule a human set earlier and that no human is present now. The panel
+takes a replacement if the operator wants to be specific about what to come back to.
 
 ## Everything is polled
 

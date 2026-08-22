@@ -120,6 +120,25 @@ module AutomatedPrompts
     If you are genuinely blocked and there is nothing you can do without human input, use your Zimmer tools to turn off this session's heartbeat (set heartbeat_enabled to false) so we don't keep beating over and over.
   PROMPT
 
+  # Prompt sent when a wake-up scheduled from the web UI's "Pause Until" control
+  # fires. A human chose the time, but no human is present when it lands — so the
+  # prompt says so, and points the session at the thing it was parked on rather
+  # than asking an open question it has no one to ask.
+  #
+  # This is the default only. "Pause Until" lets the operator type their own
+  # resume prompt, and a non-blank one is used verbatim in place of this.
+  PAUSE_UNTIL_WAKE = <<~PROMPT.strip
+    [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
+
+    Your human paused this session with Zimmer's "Pause Until" control and the scheduled time has now arrived. This is Zimmer resuming you on that schedule — no human is speaking to you right now.
+
+    If you had work in flight, pick it back up where you left off.
+
+    If you were waiting on something outside this session — a PR to be reviewed, a deploy to finish, an upstream fix to land — re-check it now and act on what you find.
+
+    If you are still blocked and there is genuinely nothing you can do, say so plainly and stop.
+  PROMPT
+
   # Build a merge conflict automated message for a specific PR URL
   #
   # @param pr_url [String] The full GitHub PR URL (e.g., "https://github.com/owner/repo/pull/123")
