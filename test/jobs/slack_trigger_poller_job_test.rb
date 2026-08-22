@@ -105,6 +105,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
 
     SlackService.stubs(:get_messages_since).returns(messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
 
@@ -140,6 +144,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
 
     SlackService.stubs(:get_messages_since).returns(messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
 
     job = SlackTriggerPollerJob.new
 
@@ -211,6 +219,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
 
     SlackService.stubs(:get_messages_since).with("C_GENERAL", since_ts: "1704067000.000000").returns(general_messages)
     SlackService.stubs(:get_messages_since).with("C_TESTING", since_ts: "1704067000.000000").returns(testing_messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
     SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "general"))
@@ -290,6 +302,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
     SlackService.stubs(:get_messages_since).with("C_GENERAL", since_ts: "1704067000.000000").returns(messages)
 
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
+
     job = SlackTriggerPollerJob.new
 
     assert_no_difference("Session.count") do
@@ -315,6 +331,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ]
 
     SlackService.stubs(:get_messages_since).returns(messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
 
@@ -360,6 +380,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
       OpenStruct.new(ts: "1704067300.000000", text: "Hey <@U_BOT_123> help!", bot_id: nil, thread_ts: nil, user: "U222")
     ]
     SlackService.stubs(:get_messages_since).with("C_GOOD", since_ts: "1704067000.000000").returns(good_messages)
+
+    # Thread discovery reads the channel's recent history before the cursor moves;
+    # these channels have no threads.
+    SlackService.stubs(:get_channel_history).returns([])
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
     SlackService.stubs(:get_user_name).returns("Test User")
     SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "good-channel"))
@@ -2345,22 +2369,239 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_includes errors.first, PRODUCTION_429
   end
 
-  # Demotion is a property of the call site, not of the error. `#fetch_recent_history`
-  # is not a unit boundary: it degrades to [] and its callers finish the same sweep
-  # believing that slice was complete, advancing cursors past messages the empty
-  # slice hid. Those are lost rather than deferred, so it keeps its ERROR.
-  test "a rate-limited recent-history fetch keeps its ERROR, because the sweep loses messages" do
+  # `#fetch_recent_history` used to degrade to [], which is why it used to keep an
+  # ERROR: an empty slice is indistinguishable from a quiet channel, so its callers
+  # finished the same sweep believing the slice was complete and advanced cursors
+  # past messages it hid. It raises now (#522), which makes the failure a unit
+  # failure like any other — see the two losses below.
+  test "a rate-limited recent-history fetch raises instead of degrading to an empty slice" do
     job = SlackTriggerPollerJob.new
     SlackService.stubs(:get_channel_history).raises(production_rate_limit)
 
+    assert_raises(SlackService::RateLimitedError) do
+      job.send(:fetch_recent_history, "C_GENERAL")
+    end
+  end
+
+  # --- A failed recent-history fetch must not advance a cursor (#522) ----------
+  #
+  # Both losses are driven end to end — the 429 poll, then the poll that follows it
+  # — because the assertion that matters is not that the fetch was rescued but that
+  # the cursor stayed put and the message still fired afterwards. With the cursor
+  # advancing, the deferred poll started AFTER the messages the empty slice hid and
+  # no later poll ever read them.
+
+  # Path 1: passive channel listening. Zimmer's own post is the only evidence the
+  # channel is engaged, and it lives in the slice the 429 eats — so the sweep saw an
+  # unengaged channel, fired nothing, and moved the cursor past the message anyway.
+  test "a rate-limited history fetch leaves the passive channel cursor where it was" do
+    condition = stub_passive_listening(event_type: "passive_listen_channel")
+    cursor = passive_ts(3.hours)
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => cursor }
+    condition.save!
+
+    new_ts = passive_ts(1.minute)
+    SlackService.stubs(:get_messages_since).with(PASSIVE_CHANNEL, since_ts: cursor)
+                .returns([ passive_message(new_ts) ])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).raises(production_rate_limit)
+
+    job = SlackTriggerPollerJob.new
     lines = capture_log_lines do
-      assert_empty job.send(:fetch_recent_history, "C_GENERAL")
+      assert_no_difference("Session.count") { job.send(:process_condition, condition) }
     end
 
-    assert_equal 1, lines.grep(/^ERROR.*fetching recent history for C_GENERAL/).size,
-      "a failure the deferral cannot undo must still page"
+    assert_equal cursor, condition.reload.channel_timestamps[PASSIVE_CHANNEL],
+      "the cursor must not move past a message this poll never got to judge"
     assert_instance_of SlackService::RateLimitedError, job.instance_variable_get(:@transient_error),
-      "and it must still defer the poll"
+      "and the failure must still defer the poll"
+    assert_empty lines.grep(/^ERROR/),
+      "with the cursor honest this is a unit failure the deferral recovers — WARN, not a page"
+
+    # The deferred poll re-reads the channel from the same cursor: the message is
+    # still there, Zimmer's post is visible again, and it fires.
+    SlackService.unstub(:get_channel_history)
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: passive_ts(10.minutes), text: "Deploy is out", user: "U_BOT_123",
+                     bot_id: "B_ZIMMER", thread_ts: nil, reply_count: 0)
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    assert_equal new_ts, condition.reload.channel_timestamps[PASSIVE_CHANNEL],
+      "and the poll that actually read the channel advances the cursor as before"
+  end
+
+  # Path 2: a bot_mention in a thread nothing has tracked yet. The thread's parent
+  # predates the channel cursor, so only the recent-history read surfaces it — and
+  # the cursor used to advance regardless, which made the reply older than the
+  # baseline a first-sight thread falls back to on the NEXT poll. The mention was
+  # never seen by anything.
+  test "a rate-limited history fetch leaves the all-channels mention cursor where it was" do
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:bot_user_id).returns("U_BOT_123")
+    SlackService.stubs(:list_dm_channels).returns([])
+    SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/thread")
+    SlackService.stubs(:get_user_name).returns("Test User")
+    SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "general"))
+    AgentRootsConfig.stubs(:find!).returns(
+      OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    condition = trigger_conditions(:bot_mention_all_channels_condition)
+    condition.configuration["allowed_user_ids"] = %w[U222]
+    cursor = "1704067000.000000"
+    condition.configuration["channel_timestamps"] = { "C_GENERAL" => cursor }
+    condition.save!
+
+    SlackService.stubs(:list_member_channels)
+                .returns([ OpenStruct.new(id: "C_GENERAL", name: "general", is_member: true) ])
+
+    # A new top-level message, enough on its own to advance the channel cursor.
+    top_level_ts = "1704067300.000000"
+    SlackService.stubs(:get_messages_since).with("C_GENERAL", since_ts: cursor).returns([
+      OpenStruct.new(ts: top_level_ts, text: "unrelated chatter", bot_id: nil,
+                     thread_ts: nil, user: "U222", reply_count: 0)
+    ])
+    SlackService.stubs(:get_channel_history).with("C_GENERAL", limit: 50).raises(production_rate_limit)
+
+    job = SlackTriggerPollerJob.new
+    lines = capture_log_lines do
+      assert_no_difference("Session.count") { job.send(:process_condition, condition) }
+    end
+
+    assert_equal cursor, condition.reload.channel_timestamps["C_GENERAL"],
+      "a poll that never discovered the channel's threads must not move the channel cursor"
+    assert_instance_of SlackService::RateLimitedError, job.instance_variable_get(:@transient_error)
+    assert_empty lines.grep(/^ERROR/)
+
+    # The @mention that was hiding in the eaten slice, older than the top-level
+    # message the failed poll declined to advance past.
+    parent_ts = "1704066000.000000"
+    reply_ts = "1704067200.000000"
+    SlackService.unstub(:get_channel_history)
+    SlackService.stubs(:get_channel_history).with("C_GENERAL", limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, text: "Old thread", reply_count: 3,
+                     latest_reply: reply_ts, bot_id: nil, thread_ts: nil, user: "U222")
+    ])
+    SlackService.stubs(:get_thread_replies).with("C_GENERAL", parent_ts, oldest: nil).returns([
+      OpenStruct.new(ts: reply_ts, text: "<@U_BOT_123> can you take this?", bot_id: nil,
+                     thread_ts: parent_ts, user: "U222")
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    condition.reload
+    assert_equal top_level_ts, condition.channel_timestamps["C_GENERAL"],
+      "and the poll that actually read the channel advances the cursor as before"
+    assert_equal reply_ts, condition.thread_timestamps["C_GENERAL:#{parent_ts}"]
+  end
+
+  # Same loss on the single-channel branch, where last_message_ts is written
+  # directly rather than batched. The cost of the fix is visible here: the @mention
+  # in the top-level slice does not fire on the failed poll either, because thread
+  # discovery runs before anything fires. Nothing is lost — the second half of the
+  # test is that claim, checked — and the alternative is firing on some of a
+  # channel's messages while silently dropping their neighbours.
+  test "a rate-limited history fetch leaves the single-channel mention cursor where it was" do
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:bot_user_id).returns("U_BOT_123")
+    SlackService.stubs(:list_dm_channels).returns([])
+    SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
+    SlackService.stubs(:get_user_name).returns("Test User")
+    SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "eng-support"))
+    AgentRootsConfig.stubs(:find!).returns(
+      OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.configuration["allowed_user_ids"] = %w[U222]
+    condition.save!
+    cursor = condition.last_message_ts
+    mention_ts = "1704067300.000000"
+    # Leave this condition as the only one the sweep will visit.
+    Trigger.where.not(id: condition.trigger_id).update_all(status: "disabled")
+
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: mention_ts, text: "<@U_BOT_123> ping", bot_id: nil,
+                     thread_ts: nil, user: "U222", reply_count: 0)
+    ])
+    SlackService.stubs(:get_channel_history).with(condition.channel_id, limit: 50)
+                .raises(production_rate_limit)
+
+    job = SlackTriggerPollerJob.new
+    AlertService.expects(:raise_alert).never
+    job.expects(:retry_job).with(wait: 30)
+
+    lines = capture_log_lines do
+      assert_no_difference("Session.count") { job.perform_now }
+    end
+
+    assert_equal cursor, condition.reload.last_message_ts,
+      "a poll that never discovered the channel's threads must not move the channel cursor"
+    assert_empty lines.grep(/^ERROR/)
+
+    # The deferred poll re-reads the channel from the same cursor, so the @mention
+    # this one declined to fire is still there — later, not lost.
+    SlackService.unstub(:get_channel_history)
+    SlackService.stubs(:get_channel_history).with(condition.channel_id, limit: 50).returns([])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.perform_now
+    end
+    assert_equal mention_ts, condition.reload.last_message_ts
+  end
+
+  # The same cursor mechanism, reached with no Slack failure at all: on the
+  # single-channel branch last_message_ts is written before the thread scan, so a
+  # baseline re-read after that write would hand a first-sight thread the cursor
+  # this poll just advanced and skip every reply older than it.
+  test "a thread reply older than this poll's newest top-level message still fires" do
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:bot_user_id).returns("U_BOT_123")
+    SlackService.stubs(:list_dm_channels).returns([])
+    SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/thread")
+    SlackService.stubs(:get_user_name).returns("Test User")
+    SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "eng-support"))
+    AgentRootsConfig.stubs(:find!).returns(
+      OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.configuration["allowed_user_ids"] = %w[U222]
+    condition.save!
+
+    # Cursor at ...7200 (fixture). The reply lands at ...7300, the top-level message
+    # at ...7400 — so the reply is new, but older than the cursor this poll writes.
+    parent_ts = "1704066000.000000"
+    reply_ts = "1704067300.000000"
+    top_level_ts = "1704067400.000000"
+
+    SlackService.stubs(:get_messages_since).returns([
+      OpenStruct.new(ts: top_level_ts, text: "unrelated chatter", bot_id: nil,
+                     thread_ts: nil, user: "U222", reply_count: 0)
+    ])
+    SlackService.stubs(:get_channel_history).with(condition.channel_id, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, text: "Old thread", reply_count: 2,
+                     latest_reply: reply_ts, bot_id: nil, thread_ts: nil, user: "U222")
+    ])
+    SlackService.stubs(:get_thread_replies).with(condition.channel_id, parent_ts, oldest: nil).returns([
+      OpenStruct.new(ts: reply_ts, text: "<@U_BOT_123> and this one?", bot_id: nil,
+                     thread_ts: parent_ts, user: "U222")
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    condition.reload
+    assert_equal top_level_ts, condition.last_message_ts
+    assert_equal reply_ts, condition.thread_timestamps["#{condition.channel_id}:#{parent_ts}"]
   end
 
   # Nor is this blanket suppression: only a transient Slack failure is demoted. A

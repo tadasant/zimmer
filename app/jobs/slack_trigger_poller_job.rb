@@ -211,9 +211,9 @@ class SlackTriggerPollerJob < ApplicationJob
   # only artifact both times.
   #
   # That is a property of the CALL SITE, not of the error, so it is only true where a
-  # cursor advances on success alone. #fetch_recent_history and #process_message both
-  # keep their ERROR for exactly that reason — see the comments there — and this
-  # method is not the right home for a rescue that resembles theirs.
+  # cursor advances on success alone. #process_message keeps its ERROR for exactly
+  # that reason — see the comment there — and this method is not the right home for a
+  # rescue that resembles it.
   #
   # The 429 that IS worth paging for is the one that outlives its deferrals, and
   # #defer_poll logs that one at ERROR itself.
@@ -407,16 +407,35 @@ class SlackTriggerPollerJob < ApplicationJob
     message.text.to_s.include?("<@#{bot_id}>")
   end
 
-  # Poll a single configured channel for @bot mentions from allowed users
+  # Poll a single configured channel for @bot mentions from allowed users.
+  #
+  # This method IS the channel's unit of work, so it owns a unit rescue like the
+  # per-channel one in #process_all_channel_mentions. Everything that can fail
+  # against Slack sits above the cursor write or inside a rescue of its own, so a
+  # failure here never leaves a cursor sitting past something unread — and the rest
+  # of the condition (its DMs, its last_polled_at) survives a channel that Slack
+  # will not talk about.
   def process_channel_mentions(condition, bot_id:)
-    all_messages = fetch_new_messages(condition.channel_id, condition.last_message_ts)
+    channel_id = condition.channel_id
+    all_messages = fetch_new_messages(channel_id, condition.last_message_ts)
+
+    # ONE baseline, read before last_message_ts moves and used by both halves of the
+    # thread scan — which threads to visit, and which replies in them are new.
+    # Re-reading it after the write would hand a first-sight thread the cursor this
+    # poll just advanced, and every reply older than that cursor would be skipped
+    # unread: #522's mechanism, reached without any Slack failure at all.
+    baseline_ts = channel_baseline_ts_for(condition, channel_id)
+
+    # Deciding which threads to visit reads the channel's recent history, and that
+    # read can fail — so it happens before anything fires. See #discover_thread_parents.
+    thread_parents = discover_thread_parents(condition, channel_id, all_messages, baseline_ts)
 
     if all_messages.any?
       # Filter to messages that mention the bot AND are from allowed users
       mentions = all_messages.select { |msg| mention_for?(condition, msg, bot_id) }
 
       mentions.each do |message|
-        process_message(condition, message, channel_id: condition.channel_id)
+        process_message(condition, message, channel_id: channel_id)
       end
 
       # Always advance last_message_ts to avoid reprocessing, even if no mentions matched
@@ -426,7 +445,10 @@ class SlackTriggerPollerJob < ApplicationJob
 
     # Check thread replies for @mentions (even when no new top-level messages,
     # since replies to old threads won't appear in conversations.history)
-    check_thread_replies_for_mentions(condition, condition.channel_id, all_messages, bot_id: bot_id)
+    check_thread_replies_for_mentions(condition, channel_id, thread_parents,
+                                      bot_id: bot_id, channel_baseline_ts: baseline_ts)
+  rescue => e
+    note_unit_failure(e, "polling channel #{condition.channel_id} for mentions")
   end
 
   # Poll all channels the bot is a member of for @bot mentions from allowed users.
@@ -440,6 +462,12 @@ class SlackTriggerPollerJob < ApplicationJob
       last_ts = condition.channel_timestamps[channel.id]
 
       all_messages = fetch_new_messages(channel.id, last_ts)
+
+      # One baseline for both halves of the thread scan, read before this channel's
+      # cursor is collected — and deciding which threads to visit reads the channel's
+      # recent history, which can fail. See #discover_thread_parents.
+      baseline_ts = channel_baseline_ts_for(condition, channel.id)
+      thread_parents = discover_thread_parents(condition, channel.id, all_messages, baseline_ts)
 
       if all_messages.any?
         # Filter to messages that mention the bot AND are from allowed users
@@ -455,7 +483,8 @@ class SlackTriggerPollerJob < ApplicationJob
 
       # Check thread replies for @mentions (even when no new top-level messages,
       # since replies to old threads won't appear in conversations.history)
-      check_thread_replies_for_mentions(condition, channel.id, all_messages, bot_id: bot_id)
+      check_thread_replies_for_mentions(condition, channel.id, thread_parents,
+                                        bot_id: bot_id, channel_baseline_ts: baseline_ts)
     rescue => e
       note_unit_failure(e, "polling channel #{channel.id} for mentions")
     end
@@ -468,27 +497,23 @@ class SlackTriggerPollerJob < ApplicationJob
     end
   end
 
-  # Check thread replies in a channel for @bot mentions from allowed users.
+  # The thread parents a poll should visit in a channel: the ones among the
+  # messages it already fetched, the ones a wider recent-history read turns up, and
+  # the tracked threads whose parent has aged out of that window.
   #
-  # For each thread parent in the given messages (identified by reply_count > 0),
-  # fetches new replies since the last checked timestamp and looks for @mentions.
-  # Also scans recent channel history for older threads with new replies.
+  # Deciding this is a Slack read, so it can fail — which is why every caller does it
+  # BEFORE its channel fires anything or moves its cursor (#522). A failed read hides
+  # a thread whose parent predates the channel cursor; if the cursor advanced anyway,
+  # the next poll would hand that thread a first-sight baseline of the advanced
+  # cursor, `reply.ts <= effective_prior_ts` would skip the reply that arrived in
+  # between, and the @mention would never fire. Raising here costs the channel one
+  # poll instead: the unit rescue records the failure, no cursor moves, and the
+  # deferred poll re-reads the whole channel.
   #
-  # Thread timestamps are stored in condition.thread_timestamps as
-  # "channel_id:thread_ts" => last_reply_ts to track what's been checked.
-  # Batches all thread timestamp updates into a single DB write.
-  #
-  # @param condition [TriggerCondition] the trigger condition
-  # @param channel_id [String] the channel being polled
-  # @param recent_messages [Array] messages already fetched from conversations.history
-  # @param bot_id [String] the bot's user ID
-  def check_thread_replies_for_mentions(condition, channel_id, recent_messages, bot_id:)
-    # Skip thread checking on first poll for a channel (no baseline established yet).
-    # For single-channel: check last_message_ts; for all-channels: check channel_timestamps.
-    channel_baseline_ts = condition.last_message_ts.presence || condition.channel_timestamps[channel_id]
-    return if channel_baseline_ts.blank?
-
-    thread_ts_updates = {}
+  # Returns [] for a channel with no baseline, so a first poll only establishes the
+  # cursor — and costs no thread call at all.
+  def discover_thread_parents(condition, channel_id, recent_messages, channel_baseline_ts)
+    return [] if channel_baseline_ts.blank?
 
     # Find thread parents from the messages we already have
     thread_parents = recent_messages.select { |msg| msg.reply_count.to_i > 0 }
@@ -506,7 +531,36 @@ class SlackTriggerPollerJob < ApplicationJob
       end
     end
 
-    thread_parents.concat(aged_out_thread_parents(condition, channel_id, thread_parents))
+    thread_parents + aged_out_thread_parents(condition, channel_id, thread_parents)
+  end
+
+  # The cursor a thread with none of its own falls back to.
+  #
+  # For single-channel: last_message_ts; for all-channels: channel_timestamps.
+  def channel_baseline_ts_for(condition, channel_id)
+    condition.last_message_ts.presence || condition.channel_timestamps[channel_id]
+  end
+
+  # Check thread replies in a channel for @bot mentions from allowed users.
+  #
+  # For each thread parent found by #discover_thread_parents, fetches new replies
+  # since the last checked timestamp and looks for @mentions.
+  #
+  # Thread timestamps are stored in condition.thread_timestamps as
+  # "channel_id:thread_ts" => last_reply_ts to track what's been checked.
+  # Batches all thread timestamp updates into a single DB write.
+  #
+  # @param condition [TriggerCondition] the trigger condition
+  # @param channel_id [String] the channel being polled
+  # @param thread_parents [Array] parents from #discover_thread_parents
+  # @param bot_id [String] the bot's user ID
+  # @param channel_baseline_ts [String, nil] the channel cursor as it stood before this
+  #   poll, which is what a thread with no cursor of its own falls back to
+  def check_thread_replies_for_mentions(condition, channel_id, thread_parents, bot_id:, channel_baseline_ts:)
+    # Skip thread checking on first poll for a channel (no baseline established yet).
+    return if channel_baseline_ts.blank?
+
+    thread_ts_updates = {}
 
     thread_parents.each do |parent|
       thread_key = "#{channel_id}:#{parent.ts}"
@@ -624,6 +678,11 @@ class SlackTriggerPollerJob < ApplicationJob
     # history.
     return { channel_ts: new_messages.map(&:ts).max, bot_activity_ts: nil } if last_ts.blank?
 
+    # Read before anything fires and before the cursors below are returned: this
+    # raises when Slack is unavailable, and the channel rescue in the caller then
+    # records neither cursor. A slice that degraded to [] instead would make the
+    # channel look unengaged — Zimmer's own post was in it — while the returned
+    # channel_ts advanced past the very messages that should have fired (#522).
     history = fetch_recent_history(channel_id)
 
     check_thread_replies_passively(condition, channel_id, history, bot_id: bot_id) if condition.passive_threads?
@@ -866,19 +925,21 @@ class SlackTriggerPollerJob < ApplicationJob
   # needs the raw history (not just the thread parents) to see whether Zimmer has
   # posted in the channel recently.
   #
-  # Deliberately NOT #note_unit_failure, even for a transient failure: this is not a
-  # unit boundary. It degrades to [] and its callers carry on in the SAME sweep with
-  # a history slice they believe is complete, then advance their cursors past
-  # messages the empty slice made invisible — a passive channel that looks unengaged
-  # because Zimmer's own post was in the lost slice, or a mention in a thread whose
-  # parent was only discoverable there. Those messages are gone, not deferred, so
-  # this keeps its ERROR.
+  # RAISES rather than degrading to [], and that is load-bearing (#522). An empty
+  # slice is indistinguishable from a quiet channel, so a caller that accepted one
+  # would finish the SAME sweep believing the slice was complete and advance its
+  # cursor past the messages the slice hid — a passive channel that looks unengaged
+  # because Zimmer's own post was in it, or a mention in a thread whose parent was
+  # only discoverable there. Those are losses, not deferrals: the deferred poll
+  # starts after them.
+  #
+  # So every caller reads this BEFORE it fires anything or moves a cursor for that
+  # channel — #process_channel_passively and #discover_thread_parents — which makes
+  # the failure a unit failure like any other: the channel rescue records it, no
+  # cursor moves, and the deferred poll re-reads the channel whole. Do not put a
+  # rescue back here, and do not add a caller that reads it after a cursor advance.
   def fetch_recent_history(channel_id)
     SlackService.get_channel_history(channel_id, limit: RECENT_HISTORY_LIMIT)
-  rescue => e
-    note_transient(e)
-    Rails.logger.error "[SlackTriggerPollerJob] Error fetching recent history for #{channel_id}: #{e.message}"
-    []
   end
 
   # Poll DM channels with allowed users for any messages.
