@@ -257,6 +257,12 @@ Code account is under both quota targets and a slot is free. It is on the `self_
 because a session waiting on quota rather than on an event is exactly the caller for it. See
 [Spot and priority](/sessions/spot-and-priority/#joining-the-queue-on-purpose).
 
+One thing differs between the two halves, on purpose. On a *running* session the web UI stops the
+turn; the tool lets it finish, because its commonest caller is a session parking itself and a
+session that halted itself would kill the process waiting for the reply. Pass `"halt": true` to get
+the UI's behaviour when you are driving somebody else's running session. The `self_session` variant
+does not expose the option.
+
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
 `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,

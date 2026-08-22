@@ -56,7 +56,7 @@
               data-action="pause-until#toggle"
               data-pause-until-target="button"
               aria-expanded="false"
-              title="Sleep this session and wake it at a chosen time"
+              title="<%= agent_session.running? ? "Stop this session's turn and wake it at a chosen time" : "Sleep this session and wake it at a chosen time" %>"
               class="inline-flex items-center px-4 py-2 border border-indigo-300 text-sm font-medium rounded-md shadow-sm text-indigo-700 bg-indigo-50 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
         <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -76,6 +76,16 @@
         <span class="text-sm font-semibold text-gray-900">Pause until</span>
         <span data-pause-until-target="zone" class="text-[10px] text-gray-400 font-mono truncate max-w-[9rem]"></span>
       </div>
+
+      <%# Said before the click, not after it. On a running session every choice
+          below stops the turn where it stands (Sessions::HaltRunningTurn) — work
+          already written to disk survives, the tool call in flight does not. %>
+      <% if agent_session.running? %>
+        <p class="mb-2 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] leading-snug text-amber-800">
+          This session is running. Any choice below <span class="font-medium">stops the current turn</span>
+          and puts it to sleep now.
+        </p>
+      <% end %>
 
       <div class="space-y-1">
         <% Session::PAUSE_UNTIL_PRESETS.each do |preset| %>

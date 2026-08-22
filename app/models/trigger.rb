@@ -538,6 +538,7 @@ class Trigger < ApplicationRecord
     return unless session
 
     if session.needs_input?
+      clear_stale_user_pause!(session)
       session.sleep!
       session.logs.create!(
         content: "[Trigger##{id}] Session transitioned to waiting for scheduled wake-up",
@@ -630,6 +631,34 @@ class Trigger < ApplicationRecord
     Rails.logger.error(
       "[Trigger#fire_ao_event_immediately_if_state_matches] Failed for trigger #{id}: " \
       "#{e.class}: #{e.message}"
+    )
+  end
+
+  # Drop `paused_by: "user"` from a session this wake is putting to sleep.
+  #
+  # The marker means "a human has taken this session over", and #reusable_session?
+  # refuses to deliver into a session carrying it. That is right for a session
+  # sitting in needs_input where somebody hit Pause — and wrong the moment the
+  # same human arms a wake on it, because the pair says "come back at 9am" and
+  # then guarantees the 9am delivery is dropped. Pause-then-Pause-Until is an
+  # ordinary sequence in the UI (the buttons sit next to each other), and it left
+  # the session asleep forever.
+  #
+  # Only "user" is cleared. `recovery` and `spot_quota` mark sessions their own
+  # sweeps are still responsible for, and this wake does not relieve them of it.
+  #
+  # Nothing else guards a *sleeping* session on this marker: the bulk-refresh
+  # nudge skips a `waiting` session by asking whether a wake is armed
+  # (Session.ids_awaiting_scheduled_wake), which is precisely what has just
+  # become true here.
+  def clear_stale_user_pause!(session)
+    return unless session.metadata&.dig("paused_by") == "user"
+
+    session.update_column(:metadata, session.metadata.except("paused_by"))
+    session.logs.create!(
+      content: "[Trigger##{id}] Cleared the user-pause marker — this session is now asleep on a " \
+               "wake-up rather than held for a human, so the wake can resume it",
+      level: "info"
     )
   end
 

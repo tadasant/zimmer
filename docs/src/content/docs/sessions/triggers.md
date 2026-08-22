@@ -806,6 +806,13 @@ target session is `needs_input`, it sleeps immediately (`needs_input → waiting
 `running`, it sets `metadata["pending_sleep"] = true` and the sleep happens on the next `pause`.
 So an agent can say "wake me in an hour" mid-turn without stranding itself.
 
+It also clears a stale `paused_by: "user"` from a session it is putting to sleep. That marker means
+"a human has taken this session over", and `reusable_session?` refuses to deliver into a session
+carrying it — so a session that was paused by hand and then given a wake-up would have had that
+very wake-up dropped on arrival. Arming a wake is the moment the marker stops being true. Only
+`"user"` is cleared; `recovery` and `spot_quota` name sweeps that are still responsible for the
+session.
+
 **Immediate fire on already-matched state.** `Trigger#fire_ao_event_immediately_if_state_matches`
 row-locks each watched session *inside the creation transaction* and enqueues the job immediately
 if the watched session is already in the target state. This closes the footgun where you
@@ -842,6 +849,29 @@ it, whatever its precedence or scheduling class. Without that, the ranked spot q
 `AuthOutageParkService` would each start a paused session early — and the second would consume the
 pause on the way past, since `resume!` cancels pending one-time wakes. See
 [A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence).
+
+### Pausing a session that is still running
+
+A human clicking **Pause Until** on a `running` session gets something an agent scheduling its own
+wake-up does not: the turn is **stopped**. `Sessions::HaltRunningTurn` terminates the CLI process
+and pauses the session, and the `pending_sleep` the trigger just wrote is what carries it
+`needs_input → waiting` on the way through. All of it lands before the request returns, so the
+badge says `waiting` on the next paint.
+
+The deferral is still the fallback rather than the behaviour. The wake is armed *first* and the
+halt attempted second, which buys two things: a rejected time costs no turn, and a halt that cannot
+land (no process, a turn that ended during SIGTERM grace) leaves the session running with its
+`pending_sleep` intact — degraded to the old end-of-turn sleep, never awake with nothing armed. The
+panel reads the `halted_turn` and `pending_sleep` fields off the response and says which happened.
+
+Halting costs a turn: work already written to disk survives, the tool call in flight does not. The
+panel says so above the presets before the click, not after it.
+
+The MCP side keeps the deferral as its default, and that asymmetry is deliberate. `action_session`'s
+`pause_into_spot_queue` is most often a session parking **itself** — and a session that halted
+itself would terminate the process waiting for the tool call to return. A caller driving somebody
+*else's* running session passes `"halt": true` and gets the web UI's behaviour. The self-session
+variant of the tool does not expose the option at all.
 
 ### One scheduler, two front doors
 

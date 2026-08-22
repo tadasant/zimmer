@@ -1770,6 +1770,54 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal trigger.id, Trigger.find(trigger.id).id # trigger persisted
   end
 
+  # Pause-then-Pause-Until is an ordinary sequence in the web UI — the two buttons
+  # sit next to each other — and it used to leave the session asleep forever:
+  # #pause writes paused_by "user", and #reusable_session? refuses to deliver into
+  # a session carrying it, so the wake this very trigger arms was dropped on
+  # arrival. Arming a wake is the moment that marker stops being true.
+  test "after_create clears a stale user-pause marker so its own wake can be delivered" do
+    target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :needs_input, metadata: { "paused_by" => "user" })
+
+    trigger = Trigger.create!(
+      name: "Per-session wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    target.reload
+    assert_equal "waiting", target.status
+    assert_nil target.metadata["paused_by"]
+    assert trigger.send(:reusable_session?, target), "the wake must be deliverable to the session it was armed on"
+  end
+
+  # Only "user" goes. `recovery` and `spot_quota` name sweeps that are still
+  # responsible for the session, and a wake does not relieve them of it.
+  test "after_create leaves a recovery pause marker alone" do
+    target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :needs_input, metadata: { "paused_by" => "recovery" })
+
+    Trigger.create!(
+      name: "Per-session wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    assert_equal "recovery", target.reload.metadata["paused_by"]
+  end
+
   test "after_create sets pending_sleep on running target session" do
     target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :running)
 
