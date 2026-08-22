@@ -245,7 +245,7 @@ class QuotasController < ApplicationController
     if account
       redirect_to quotas_path, notice: "Captured tokens for #{fs_email}#{account.is_current? ? " (marked current)" : ""}."
     else
-      redirect_to quotas_path, alert: "Filesystem holds tokens for #{fs_email}, but no matching ClaudeAccount exists. Run `bin/rails 'claude_accounts:add[#{fs_email},0]'` first."
+      redirect_to quotas_path, alert: "The worker holds tokens for #{fs_email}, but no matching ClaudeAccount exists. Add #{fs_email} with the \"Add account\" form, then Authenticate it."
     end
   end
 
@@ -420,19 +420,23 @@ class QuotasController < ApplicationController
 
     return [ true, nil ] if account.codex? && account.codex_api_key_account?
 
-    # The non-consuming probe first. A stored access token Anthropic still
-    # honours proves the account can serve sessions right now — which is the
-    # question this method is actually asking — without spending the single-use
-    # refresh token. Gating admission on a refresh round trip is what blocked
-    # repair by the exact failure repair fixes: an account freshly authenticated
-    # through the UI holds a working access token and an unused refresh token,
-    # and demanding a refresh here burned the latter to learn nothing about the
-    # former. See issue #618, hole 4.
-    return [ true, nil ] if account.access_token_honored?
-
     unless account.can_refresh_token?
       return [ false, "Cannot switch to #{account.email} — no refresh token. Re-authenticate the account." ]
     end
+
+    # A stored access token Anthropic still honours is the direct answer to the
+    # question this method is actually asking — can this account serve a session
+    # — and unlike #refresh_token! it does not spend the single-use refresh
+    # token to find out. Gating admission on a refresh ROUND TRIP is what let the
+    # failure block its own repair: an account freshly authenticated through the
+    # UI holds a working access token and an unused refresh token, and demanding
+    # a refresh here burned the latter to learn nothing about the former.
+    #
+    # Sits AFTER the refresh-token existence check on purpose. A pair with no
+    # refresh token is a dead end even while its access token works — in eight
+    # hours nothing can mint another — so "it works right now" must not admit it.
+    # See issue #618, hole 4.
+    return [ true, nil ] if account.access_token_honored?
 
     unless account.refresh_token!
       # A rejection Zimmer could not attribute to a dead credential leaves the

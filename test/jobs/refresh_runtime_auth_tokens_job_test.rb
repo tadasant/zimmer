@@ -591,4 +591,65 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     }.to_json)
     response
   end
+  # ── issue #618, holes 5 and 6 ────────────────────────────────────────
+
+  test "the sweep repairs a corrupt credentials file from the DB before reading it" do
+    primary = claude_accounts(:primary)
+    ClaudeAccount.write_credentials_owner_marker!(primary.email)
+    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
+      JSON.generate({ "claudeAiOauth" => { "accessToken" => "", "refreshToken" => "", "expiresAt" => 0 } }))
+
+    RefreshRuntimeAuthTokensJob.perform_now
+
+    on_disk = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+    assert_equal primary.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken"),
+      on_disk.dig("claudeAiOauth", "refreshToken"),
+      "a corrupt credentials file must be rewritten from the DB rather than logged about forever"
+  end
+
+  test "a spent refresh token plus a sync wedged on corruption escalates instead of waiting for another sweep" do
+    primary = claude_accounts(:primary)
+    config = primary.oauth_config.deep_dup
+    config["credentials_json"]["claudeAiOauth"]["expiresAt"] = ((Time.current + 1.minute).to_f * 1000).to_i
+    primary.update_columns(oauth_config: config)
+
+    # Both halves of the deadlock: the file stays corrupt (self-heal cannot fix
+    # it because the DB copy is broken too) and the refresh is rejected as stale.
+    ClaudeAccount.write_credentials_owner_marker!(primary.email)
+    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
+      JSON.generate({ "claudeAiOauth" => { "accessToken" => "", "refreshToken" => "", "expiresAt" => 0 } }))
+    ClaudeCredentialHealth.stubs(:self_heal!).returns([ :skipped, "stored credentials are incomplete too" ])
+
+    ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
+      RuntimeAuthProvider::Result.new(ok: false, error: :stale)
+    )
+
+    AlertService.expects(:raise_alert).with(
+      "Claude auth deadlocked: spent refresh token and a corrupt credentials file",
+      has_entries(source: "RefreshRuntimeAuthTokensJob")
+    ).at_least_once
+
+    RefreshRuntimeAuthTokensJob.perform_now
+  end
+
+  test "a plain stale refresh with a healthy credentials file does not escalate" do
+    primary = claude_accounts(:primary)
+    config = primary.oauth_config.deep_dup
+    config["credentials_json"]["claudeAiOauth"]["expiresAt"] = ((Time.current + 1.minute).to_f * 1000).to_i
+    primary.update_columns(oauth_config: config)
+
+    ClaudeAccount.write_credentials_owner_marker!(primary.email)
+    FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
+    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(config["credentials_json"]))
+
+    ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
+      RuntimeAuthProvider::Result.new(ok: false, error: :stale)
+    )
+
+    AlertService.expects(:raise_alert).never
+
+    RefreshRuntimeAuthTokensJob.perform_now
+  end
 end

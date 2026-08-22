@@ -123,6 +123,7 @@ class HealthMonitorService
       session_health: session_health,
       system_health: system_health,
       egress_health: egress_health,
+      auth_health: auth_health,
       sigterm_retry_health: sigterm_retry_health,
       api_error_retry_health: api_error_retry_health,
       overall_status: calculate_overall_status,
@@ -350,6 +351,53 @@ class HealthMonitorService
       detail: cached&.dig("detail"),
       degraded_since: cached&.dig("degraded_since"),
       checked_at: cached&.dig("checked_at")
+    }
+  end
+
+  # Agent-runtime authentication health: is the worker's shared Claude
+  # credentials file usable, and does the pool have an account that can serve a
+  # session?
+  #
+  # A corrupt credentials file used to be invisible here. It logged 126 WARN
+  # lines an hour and appeared on no surface at all, so the 2026-08-22 outage was
+  # found by a human reading session transcripts three hours in. Corruption is
+  # critical because it logs out every session on the worker at once; an empty
+  # pool is a warning because sessions park and resume rather than failing.
+  # See https://github.com/tadasant/zimmer/issues/618, hole 5.
+  #
+  # @return [Hash] Auth health data
+  def auth_health
+    credentials = ClaudeCredentialHealth.status
+    available = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).count
+    needs_reauth = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).needs_reauth.count
+
+    status =
+      if credentials.corrupt?
+        HealthStatus.new(status: :critical, message: credentials.detail)
+      elsif available.zero?
+        HealthStatus.new(status: :warning, message: "No Claude account is available to serve sessions")
+      else
+        HealthStatus.new(status: :healthy, message: "#{available} Claude account#{"s" unless available == 1} available")
+      end
+
+    {
+      status: status,
+      credentials_state: credentials.state,
+      credentials_detail: credentials.detail,
+      credentials_owner: credentials.owner_email,
+      available_accounts: available,
+      needs_reauth_accounts: needs_reauth,
+      checked_at: credentials.checked_at
+    }
+  rescue => e
+    {
+      status: HealthStatus.new(status: :warning, message: "Auth health could not be read: #{e.message}"),
+      credentials_state: :unknown,
+      credentials_detail: e.message,
+      credentials_owner: nil,
+      available_accounts: nil,
+      needs_reauth_accounts: nil,
+      checked_at: Time.current
     }
   end
 
@@ -862,8 +910,9 @@ class HealthMonitorService
     session_status = session_health[:status]
     system_status = system_health[:status]
     egress_status = egress_health[:status]
+    auth_status = auth_health[:status]
 
-    statuses = [ process_status, session_status, system_status, egress_status ]
+    statuses = [ process_status, session_status, system_status, egress_status, auth_status ]
 
     if statuses.any?(&:critical?)
       HealthStatus.new(status: :critical, message: "One or more critical issues detected")
