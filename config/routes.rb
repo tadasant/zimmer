@@ -39,6 +39,7 @@ Rails.application.routes.draw do
     resources :session_token_usages, only: [ :index, :show ]
     resources :token_usage_backfills, only: [ :index, :show ]
     resources :token_usage_features, only: [ :index, :show ]
+    resources :session_experimental_flags, only: [ :index, :show ]
     resources :sessions
     # No create: a summary row exists because a session asked for one. Edit is
     # limited to `state` (the dashboard's FORM_ATTRIBUTES), which is how an

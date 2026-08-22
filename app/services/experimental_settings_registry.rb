@@ -49,7 +49,7 @@ class ExperimentalSettingsRegistry
       return extension.enabled? if extension?
 
       AppSetting.current.public_send(:"#{attribute}?")
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError, NoMethodError
+    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
       nil
     end
 

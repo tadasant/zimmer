@@ -25,11 +25,11 @@
 class ExperimentalFlagBackfillJob < ApplicationJob
   queue_as :default
 
-  # A session younger than this is left to the live recorder. Without the grace
-  # period a session created seconds ago — not yet started, so not yet tagged —
-  # would be labelled "backfilled" by a tick that happened to land between its
-  # creation and its first turn, which is provenance the report would then report
-  # wrongly.
+  # How far back the cutoff falls when nothing has been observed yet — the first
+  # tick after this ships, when every session in the table is history and there is
+  # no observation to anchor to. The hour of margin keeps a session created
+  # seconds ago, not yet started and so not yet tagged, from being labelled
+  # "backfilled" by a tick that lands between its creation and its first turn.
   LIVE_RECORDER_GRACE = 1.hour
 
   # One backfill at a time. Two would race on the same unique index for no gain.
@@ -39,10 +39,29 @@ class ExperimentalFlagBackfillJob < ApplicationJob
   )
 
   def perform
-    ExperimentalSettingsRegistry.backfillable.sum { |setting| backfill(setting) }
+    cutoff = tracking_started_at
+    ExperimentalSettingsRegistry.backfillable.sum { |setting| backfill(setting, cutoff) }
   end
 
   private
+
+  # The moment live tracking demonstrably began: the earliest observation any
+  # session carries. Nothing at or after it may be inferred from a date.
+  #
+  # This bound is the difference between labelling history and inventing the
+  # present. `landed_at` describes ONE step change, so a date-derived label is
+  # only ever right for sessions that predate tracking — the instant the operator
+  # toggles a setting by hand, every later toggle is invisible to it. Without the
+  # cutoff, a session parked in `waiting` for an hour would be labelled from its
+  # creation date, run under whatever the setting had since become, and land in
+  # `mixed` — which is to say the backfill would silently destroy exactly the
+  # interleaved cohort a deliberate toggle was flipped to collect.
+  #
+  # Falls back to a grace period before the first observation exists, which is
+  # the one tick where "everything older than an hour" really is all history.
+  def tracking_started_at
+    SessionExperimentalFlag.observed.minimum(:first_observed_at) || LIVE_RECORDER_GRACE.ago
+  end
 
   # One INSERT ... SELECT per setting. Cohort labels come from two timestamps:
   # when the session was created, and when it last billed an API call — the last
@@ -50,7 +69,14 @@ class ExperimentalFlagBackfillJob < ApplicationJob
   # for a cost comparison. A session with no recorded usage falls back to its
   # creation time, which lands it cleanly in one cohort and contributes nothing
   # to any figure anyway.
-  def backfill(setting)
+  #
+  # The last-call lookup is a LATERAL correlated to the row it is deciding, not a
+  # grouped subquery over the whole ledger. An uncorrelated `GROUP BY session_id`
+  # carries no qual from the outer WHERE, so Postgres would aggregate millions of
+  # usage rows on every tick even when the anti-join below yields no candidates at
+  # all. Correlated, it runs once per surviving session — none, at steady state —
+  # and rides index_session_token_usages_on_session_id_and_called_at.
+  def backfill(setting, cutoff)
     rows = SessionExperimentalFlag.connection.exec_update(
       SessionExperimentalFlag.sanitize_sql_array([ INSERT_SQL,
         {
@@ -58,7 +84,7 @@ class ExperimentalFlagBackfillJob < ApplicationJob
           landed_at: setting.landed_at,
           before: setting.value_before,
           after: setting.value_after,
-          created_before: LIVE_RECORDER_GRACE.ago,
+          created_before: cutoff,
           source: SessionExperimentalFlag::BACKFILLED,
           now: Time.current
         } ])
@@ -83,12 +109,11 @@ class ExperimentalFlagBackfillJob < ApplicationJob
       :now,
       :now
     FROM sessions s
-    LEFT JOIN (
-      SELECT session_id, MAX(called_at) AS last_called_at
-      FROM session_token_usages
-      WHERE session_id IS NOT NULL
-      GROUP BY session_id
-    ) u ON u.session_id = s.id
+    CROSS JOIN LATERAL (
+      SELECT MAX(stu.called_at) AS last_called_at
+      FROM session_token_usages stu
+      WHERE stu.session_id = s.id
+    ) u
     WHERE s.created_at < :created_before
       AND NOT EXISTS (
         SELECT 1 FROM session_experimental_flags f

@@ -255,10 +255,13 @@ module Mcp
           end
           lines << ""
 
-          if comparison[:comparable] && comparison[:cost_per_call_change]
+          if comparison[:comparable]
             direction = comparison[:cost_per_call_change].negative? ? "lower" : "higher"
             lines << "Cost per API call is #{pct(comparison[:cost_per_call_change].abs)} #{direction} with " \
                      "the setting on. This is an association, not a measured effect."
+          elsif comparison[:reason] == :no_baseline
+            lines << "No baseline to compare against: the off cohort priced at $0.00, so every model it " \
+                     "ran is missing a rate. Do not quote a difference from these figures."
           else
             lines << "Too few sessions to compare: a side needs at least #{comparison[:min_sessions]} " \
                      "sessions and #{comparison[:min_calls]} API calls in this window. " \

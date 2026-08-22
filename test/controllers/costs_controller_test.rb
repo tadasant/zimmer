@@ -10,6 +10,14 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
                     branch: "main", execution_provider: "local_filesystem")
   end
 
+  # A tagged session with enough calls to clear ExperimentAnalytics' floor.
+  def tagged_usage(title, cohort:, model: "claude-opus-5")
+    session = make_session(title)
+    SessionExperimentalFlag.create!(session: session, setting_key: "mcp_tool_search",
+                                    value_at_start: cohort, value_at_end: cohort)
+    10.times { |i| usage(session_id: session.id, model: model, request_id: "req_#{title}_#{i}") }
+  end
+
   def usage(**overrides)
     SessionTokenUsage.create!({
       request_id: "req_#{SecureRandom.hex(6)}",
@@ -261,5 +269,27 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_match "temporal, not randomized", response.body
     assert_match "inferred from", response.body, "the reader must be able to see which labels were guessed"
+  end
+  test "a registered setting nothing is tagged with says so instead of showing empty cohorts" do
+    usage
+
+    get costs_path
+
+    assert_response :success
+    assert_match "MCP tool search", response.body
+    assert_match "No session is tagged with this setting yet", response.body
+    assert_no_match(/Not enough data to compare/, response.body,
+      "a sample-size panel over two empty cohorts answers a question nobody asked")
+  end
+
+  test "a zero-priced baseline gets its own explanation, not the sample-size one" do
+    6.times { |i| tagged_usage("before-#{i}", cohort: false, model: "claude-not-a-real-model") }
+    6.times { |i| tagged_usage("after-#{i}", cohort: true) }
+
+    get costs_path
+
+    assert_response :success
+    assert_match "No baseline to compare against", response.body
+    assert_no_match(/Not enough data to compare/, response.body)
   end
 end

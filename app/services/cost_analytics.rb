@@ -74,7 +74,12 @@ class CostAnalytics
     [
       "cost-analytics/v3", from.to_i, to.to_i,
       SessionTokenUsage.maximum(:id).to_i, AdhocTokenUsage.maximum(:id).to_i,
-      TokenUsageFeature.maximum(:id).to_i, SessionExperimentalFlag.maximum(:id).to_i
+      TokenUsageFeature.maximum(:id).to_i,
+      # `updated_at`, not `id`: a session's SECOND observation is an update, so a
+      # flag moving on -> mixed changes the report without inserting anything.
+      # One row per session per setting, so the max is a scan of thousands, not
+      # of the millions the usage tables hold.
+      SessionExperimentalFlag.maximum(:updated_at).to_i
     ].join("/")
   end
 

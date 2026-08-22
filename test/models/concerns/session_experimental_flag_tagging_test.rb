@@ -29,35 +29,56 @@ class SessionExperimentalFlagTaggingTest < ActiveSupport::TestCase
     assert_equal SessionExperimentalFlag::OBSERVED, flag.source
   end
 
-  test "pausing records the end value, and a toggle between the two shows up" do
+  test "resuming after a toggle moves the end value, and the session leaves both cohorts" do
+    # The setting takes effect in the spawn environment, so a resume is the moment
+    # the session starts running under a different value. That is what makes the
+    # two ends disagree, and a session that ran under both is evidence for neither.
     set_tool_search(true)
     @session.start!
+    @session.pause!
     set_tool_search(false)
 
-    @session.pause!
+    @session.resume!
 
     assert_equal true, flag.value_at_start
     assert_equal false, flag.value_at_end
-    assert_equal "mixed", flag.cohort, "a setting toggled mid-session belongs to neither cohort"
+    assert_equal "mixed", flag.cohort
   end
 
-  test "a session that fails is still tagged at both ends" do
+  test "a terminal transition long after the session ran does not restamp its end value" do
+    # HealthMonitorService#archive_old_sessions archives everything untouched for
+    # seven days in a loop. Recording there would re-stamp every old session's end
+    # value with today's setting, flip it to `mixed`, and drain the control cohort
+    # of the comparison this data exists to support.
     set_tool_search(false)
     @session.start!
+    @session.pause!
+    set_tool_search(true)
+
+    @session.archive!
+
+    assert_equal false, flag.value_at_end
+    assert_equal "off", flag.cohort
+  end
+
+  test "failing after a toggle does not restamp the end value either" do
+    set_tool_search(false)
+    @session.start!
+    set_tool_search(true)
 
     @session.fail!
 
     assert_equal "off", flag.cohort
   end
 
-  test "archiving records the end value for a session that never paused" do
+  test "a session that only ever started carries the same value at both ends" do
+    # It ran under exactly one spawn, so it ran under exactly one value.
     set_tool_search(true)
     @session.start!
-    set_tool_search(false)
 
-    @session.archive!
-
-    assert_equal false, flag.value_at_end
+    assert_equal true, flag.value_at_start
+    assert_equal true, flag.value_at_end
+    assert_equal "on", flag.cohort
   end
 
   test "a failure to tag never blocks a transition" do

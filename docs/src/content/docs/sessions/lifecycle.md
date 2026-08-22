@@ -69,16 +69,25 @@ experimental-setting flags, and logs.
 
 #### Experimental-setting flags
 
-`start`, `resume`, `pause`, `fail` and `archive` all call `record_experimental_setting_flags`,
+`start` and `resume` — **and no other transition** — call `record_experimental_setting_flags`,
 which writes one row per experimental setting into `session_experimental_flags`. The first call
-fixes the session's start-of-life value; every call moves its end-of-life value. That is what
-makes a setting toggled between two turns of the same session show up as a disagreement between
-the two rather than silently landing in one cohort.
+fixes the session's start-of-life value; every later one moves its end-of-life value. So a setting
+toggled between two turns shows up as a disagreement between the two rather than silently landing
+in one cohort.
+
+Those two are the transitions at which an agent process is about to spawn, and a setting like MCP
+tool search takes effect in the spawn environment — so observing there records what the session
+actually ran with. The terminal transitions look like the natural home for the end-of-life value
+and are the wrong one: `archive` and `fail` fire at bookkeeping moments that can land arbitrarily
+long after the session last ran. `HealthMonitorService#archive_old_sessions` archives everything
+untouched for seven days in a loop, so recording there would re-stamp each old session's end value
+with today's setting, flip it to `mixed`, and quietly drain the control cohort of the comparison
+the labels exist to support.
 
 It is bookkeeping and behaves like it: the write is a single upsert, it swallows its own errors,
 and the caller rescues again around it, so a cohort label can never be the reason a session fails
-to start or a cleaning-up transition aborts. See
-[Experimental settings](/operate/costs/#experimental-settings) for what the labels are for.
+to start. See [Experimental settings](/operate/costs/#experimental-settings) for what the labels
+are for.
 
 ### `pause` — `running → needs_input`
 

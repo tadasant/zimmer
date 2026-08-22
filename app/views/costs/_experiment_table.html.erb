@@ -32,6 +32,7 @@
     <div class="divide-y divide-gray-100">
       <% reports.each do |report| %>
         <% comparison = report[:comparison] %>
+        <% tagged = report[:tagged_sessions].positive? %>
         <div class="px-4 py-4">
           <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <h3 class="text-sm font-medium text-gray-900"><%= report[:title] %></h3>
@@ -45,6 +46,17 @@
 
           <p class="text-xs text-gray-500 mt-1"><%= report[:description] %></p>
 
+          <% unless tagged %>
+            <%# Registered, and nothing carries a label for it yet. Saying so beats
+                rendering two empty cohort cards under a panel about sample sizes —
+                and it is the signal that tracking is live but has seen nothing. %>
+            <p class="text-sm text-gray-500 mt-3 rounded-md bg-gray-50 px-3 py-2">
+              No session is tagged with this setting yet. Sessions are tagged as they start, so
+              this fills in from the next run onward.
+            </p>
+          <% end %>
+
+          <% if tagged %>
           <%# Cohort cards. Stacked on a phone, side by side from `sm` — this is the
               widest thing in the section and the reason it is a grid, not a table. %>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
@@ -75,9 +87,12 @@
             <% end %>
           </div>
 
-          <%# The headline. Printed as a number only when both sides clear the bar. %>
+          <%# The headline. Printed as a number only when both sides clear the bar.
+              The two ways it can fail get different sentences: "widen the window"
+              is the answer to a thin cohort and nonsense in front of a cohort of
+              forty sessions whose models have no price configured. %>
           <div class="mt-3 rounded-md px-3 py-2 <%= comparison[:comparable] ? "bg-gray-50" : "bg-amber-50" %>">
-            <% if comparison[:comparable] && comparison[:cost_per_call_change] %>
+            <% if comparison[:comparable] %>
               <p class="text-sm text-gray-900">
                 Cost per API call is
                 <span class="font-semibold <%= comparison[:cost_per_call_change].negative? ? "text-green-700" : "text-red-700" %>">
@@ -90,6 +105,13 @@
                   <span class="font-medium"><%= number_to_percentage(comparison[:cost_per_session_change].abs * 100, precision: 1) %>
                   <%= comparison[:cost_per_session_change].negative? ? "lower" : "higher" %></span>.
                 <% end %>
+              </p>
+            <% elsif comparison[:reason] == :no_baseline %>
+              <p class="text-sm text-amber-900">
+                <span class="font-semibold">No baseline to compare against.</span>
+                Both sides have enough sessions, but the off cohort priced at
+                <span class="font-medium">$0.00</span> — every model it ran has no rate configured,
+                so there is nothing to express a change against. Add the rate and this fills in.
               </p>
             <% else %>
               <p class="text-sm text-amber-900">
@@ -183,6 +205,7 @@
               Figures above cover <%= window.label %> only.
             </p>
           </div>
+          <% end %>
         </div>
       <% end %>
     </div>

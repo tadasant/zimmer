@@ -453,7 +453,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_22_174500) do
     t.boolean "value_at_end"
     t.boolean "value_at_start"
     t.index ["session_id", "setting_key"], name: "index_session_experimental_flags_on_session_and_key", unique: true
-    t.index ["setting_key", "value_at_start", "value_at_end"], name: "index_session_experimental_flags_on_key_and_values"
+    t.index ["setting_key", "source"], name: "index_session_experimental_flags_on_key_and_source"
   end
 
   create_table "session_status_summaries", force: :cascade do |t|
