@@ -657,4 +657,25 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
 
     RefreshRuntimeAuthTokensJob.perform_now
   end
+  test "a stale refresh on a NON-current account does not claim the credentials file is why" do
+    # sync_outcome describes the current account's sync only. A non-current
+    # account is never synced from that file, so a corrupt file says nothing
+    # about why its refresh was rejected.
+    secondary = claude_accounts(:secondary)
+    config = secondary.oauth_config.deep_dup
+    config["credentials_json"]["claudeAiOauth"]["expiresAt"] = ((Time.current + 1.minute).to_f * 1000).to_i
+    secondary.update_columns(oauth_config: config)
+    assert_not secondary.is_current?
+
+    ClaudeAccount.write_credentials_owner_marker!(claude_accounts(:primary).email)
+    ClaudeCredentialHealth.stubs(:self_heal!).returns([ :skipped, "stored credentials have already been rejected as spent" ])
+    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!).returns(:corrupt)
+    ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
+      RuntimeAuthProvider::Result.new(ok: false, error: :stale)
+    )
+
+    AlertService.expects(:raise_alert).never
+
+    RefreshRuntimeAuthTokensJob.perform_now
+  end
 end

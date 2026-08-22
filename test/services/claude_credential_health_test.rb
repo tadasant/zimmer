@@ -132,4 +132,33 @@ class ClaudeCredentialHealthTest < ActiveSupport::TestCase
     assert_match(/already been rejected as spent/, detail)
     assert ClaudeCredentialHealth.status.corrupt?, "the file must stay corrupt so the condition stays visible"
   end
+
+  test "a stale strike older than the strike window no longer disqualifies self-heal" do
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    @account.update!(oauth_config: @account.oauth_config.merge(
+      "credentials_json" => { "claudeAiOauth" => { "accessToken" => "stored-access", "refreshToken" => "stored-refresh",
+                                                   "expiresAt" => (8.hours.from_now.to_f * 1000).to_i } }
+    ))
+    @account.update_columns(stale_refresh_failures: 1,
+      last_stale_refresh_failure_at: (ClaudeAccount::STALE_REFRESH_STRIKE_WINDOW + 1.hour).ago)
+    write_disk(blanked)
+
+    outcome, detail = ClaudeCredentialHealth.self_heal!
+
+    assert_equal :healed, outcome, detail
+  end
+
+  test "dry_run reports the decision without writing" do
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    @account.update!(oauth_config: @account.oauth_config.merge(
+      "credentials_json" => { "claudeAiOauth" => { "accessToken" => "stored-access", "refreshToken" => "stored-refresh",
+                                                   "expiresAt" => (8.hours.from_now.to_f * 1000).to_i } }
+    ))
+    write_disk(blanked)
+
+    outcome, = ClaudeCredentialHealth.self_heal!(dry_run: true)
+
+    assert_equal :healed, outcome
+    assert ClaudeCredentialHealth.status.corrupt?, "a dry run must not repair anything"
+  end
 end

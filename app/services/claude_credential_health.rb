@@ -81,8 +81,12 @@ class ClaudeCredentialHealth
     # whose DB copy is itself incomplete all return :skipped with a reason, so
     # this is safe to call on every sweep.
     #
+    # @param dry_run [Boolean] make the same decision and report it without
+    #   writing. The health card uses this so what it tells an operator is the
+    #   decision the next sweep will actually take, rather than a second
+    #   implementation of the same rules that can drift from it.
     # @return [Array(Symbol, String)] [:healed | :skipped | :failed, detail]
-    def self_heal!
+    def self_heal!(dry_run: false)
       current = status
       return [ :skipped, "credentials are #{current.state}, nothing to repair" ] unless current.corrupt?
 
@@ -105,10 +109,13 @@ class ClaudeCredentialHealth
       # Leaving the file corrupt is the honest state: it keeps the health surface
       # red and lets the sweep escalate to a human, which is the only thing that
       # can actually fix a spent chain.
-      if account.stale_refresh_failures.positive?
+      if recently_rejected_as_spent?(account)
         return [ :skipped, "#{owner}'s stored credentials have already been rejected as spent " \
-          "(#{account.stale_refresh_failures} strike(s)) — restoring them would hand the CLI a token Anthropic refuses" ]
+          "(#{account.stale_refresh_failures} strike(s)) — restoring them would hand the CLI a token Anthropic refuses. " \
+          "Re-authenticate #{owner} from /quotas." ]
       end
+
+      return [ :healed, "the next sweep will rewrite the credentials file from #{owner}'s stored credentials" ] if dry_run
 
       if account.write_credentials_to_filesystem!(force: true)
         Rails.logger.warn "[ClaudeCredentialHealth] Repaired the corrupt shared credentials file from #{owner}'s stored credentials"
@@ -122,6 +129,17 @@ class ClaudeCredentialHealth
     end
 
     private
+
+    # A strike ages out on the same schedule the strike counter itself uses, so a
+    # single lost race months ago does not disqualify a credential that has been
+    # sitting there working since. Inside the window it is live evidence that the
+    # stored copy is spent.
+    def recently_rejected_as_spent?(account)
+      return false unless account.stale_refresh_failures.positive?
+
+      last = account.last_stale_refresh_failure_at
+      last.blank? || last > ClaudeAccount::STALE_REFRESH_STRIKE_WINDOW.ago
+    end
 
     def corrupt_detail(oauth, owner)
       missing = %w[accessToken refreshToken].reject { |field| oauth[field].present? }

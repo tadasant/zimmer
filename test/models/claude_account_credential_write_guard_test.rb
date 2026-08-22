@@ -195,4 +195,61 @@ class ClaudeAccountCredentialWriteGuardTest < ActiveSupport::TestCase
     assert_equal :synced, @account.sync_tokens_from_filesystem!
     assert_equal "fresh-refresh", @account.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken")
   end
+  # ------------------------------------------------- review findings, #618 PR
+
+  test "declines the rescue when the marker and the container-local identity disagree" do
+    # After a manual `claude /login` as somebody else the CLI rewrites the tokens
+    # and the identity but not the marker, so the marker alone would attribute a
+    # different subscription's credentials to this row.
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
+      JSON.generate("oauthAccount" => { "emailAddress" => "someone-else@tadasant.com" }))
+    store_credentials!(@account, credentials(access: "db-access", refresh: "db-refresh", expires_at: ms(1.hour.from_now)))
+    write_disk(credentials(access: "other-access", refresh: "other-refresh", expires_at: ms(8.hours.from_now)))
+
+    assert @account.write_credentials_to_filesystem!
+    assert_equal "db-refresh", disk.dig("claudeAiOauth", "refreshToken")
+    assert_equal "db-refresh", @account.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken"),
+      "another account's tokens must never be grafted onto this row"
+  end
+
+  test "rescues when the identity file is absent, as it is after a container replacement" do
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    FileUtils.rm_f(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+    store_credentials!(@account, credentials(access: "db-access", refresh: "db-refresh", expires_at: ms(1.hour.from_now)))
+    write_disk(credentials(access: "cli-access", refresh: "cli-refresh", expires_at: ms(8.hours.from_now)))
+
+    assert @account.write_credentials_to_filesystem!
+    assert_equal "cli-refresh", disk.dig("claudeAiOauth", "refreshToken")
+  end
+
+  test "the rescue decision itself never writes the DB" do
+    # It runs inside ClaudeCredentialStore's host-global flock, which has no
+    # timeout and is taken by every session's MCP credential write. A DB write
+    # underneath it would put a row lock inside a file lock on one path
+    # (#write_config!) and outside it on another (#refresh_token!) — a lock-order
+    # inversion Postgres cannot see and cannot break. The capture is persisted by
+    # #write_credentials_to_filesystem! after the lock releases; the test above
+    # pins that it still lands.
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    store_credentials!(@account, credentials(access: "db-access", refresh: "db-refresh", expires_at: ms(1.hour.from_now)))
+    live = credentials(access: "cli-access", refresh: "cli-refresh", expires_at: ms(8.hours.from_now))
+
+    rescued = @account.send(:rescue_live_filesystem_credentials, live)
+
+    assert_equal "cli-refresh", rescued.dig("claudeAiOauth", "refreshToken"), "the decision must still be to adopt the disk copy"
+    assert_equal "db-refresh", @account.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken"),
+      "deciding must not touch the DB while the host-global flock is held"
+  end
+
+  test "sync_from_filesystem! refuses when the marker and the identity file name different accounts" do
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
+      JSON.generate("oauthAccount" => { "emailAddress" => "someone-else@tadasant.com" }))
+    write_disk(credentials(access: "fresh-access", refresh: "fresh-refresh", expires_at: ms(8.hours.from_now)))
+    before = @account.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken")
+
+    assert_nil ClaudeAccount.sync_from_filesystem!
+    assert_equal before, @account.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken")
+  end
 end

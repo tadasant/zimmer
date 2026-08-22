@@ -367,6 +367,14 @@ class HealthMonitorService
   #
   # @return [Hash] Auth health data
   def auth_health
+    @auth_health ||= build_auth_health
+  end
+
+  # Memoised because #full_health_report reads it once for the payload and again
+  # through #calculate_overall_status, and unlike the other sections this one
+  # touches the filesystem — two reads could also disagree mid-repair and render
+  # a card whose badge contradicts its detail.
+  def build_auth_health
     credentials = ClaudeCredentialHealth.status
     available = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).count
     needs_reauth = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).needs_reauth.count
@@ -385,6 +393,11 @@ class HealthMonitorService
       credentials_state: credentials.state,
       credentials_detail: credentials.detail,
       credentials_owner: credentials.owner_email,
+      # What the self-heal path would do about it right now. Only asked when the
+      # file is actually corrupt, because it is the one state that has a repair —
+      # and the operator needs the REASON a repair is declined, not a promise
+      # that one is coming. See issue #618, hole 5.
+      repair_outlook: credentials.corrupt? ? repair_outlook : nil,
       available_accounts: available,
       needs_reauth_accounts: needs_reauth,
       checked_at: credentials.checked_at
@@ -395,10 +408,20 @@ class HealthMonitorService
       credentials_state: :unknown,
       credentials_detail: e.message,
       credentials_owner: nil,
+      repair_outlook: nil,
       available_accounts: nil,
       needs_reauth_accounts: nil,
       checked_at: Time.current
     }
+  end
+
+  # A read-only dry run of the credential repair: the same decision
+  # ClaudeCredentialHealth.self_heal! is about to make on the next sweep, minus
+  # the write. `:healed` means the sweep will fix it; anything else carries the
+  # reason it will not, which is the part an operator has to act on.
+  def repair_outlook
+    outcome, detail = ClaudeCredentialHealth.self_heal!(dry_run: true)
+    { outcome: outcome, detail: detail }
   end
 
   # Clean up orphaned processes
