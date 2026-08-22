@@ -21,6 +21,7 @@ class AdhocTokenUsage < ApplicationRecord
   SOURCES = %w[headless_inference cli_status_probe unknown].freeze
 
   validates :source, presence: true, inclusion: { in: SOURCES }
+  validates :request_id, uniqueness: true
 
   scope :for_source, ->(source) { where(source: source) }
 

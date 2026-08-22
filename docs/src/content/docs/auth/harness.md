@@ -113,8 +113,10 @@ sequenceDiagram
             V-->>P: new access + NEW refresh token
             P->>DB: persist BOTH atomically
             P->>FS: write to disk IF this account is current
-        else 401 / invalid_grant
+        else the credential is dead<br/>(401, 404, expired, revoked)
             P->>DB: status = needs_reauth
+        else the VALUE is stale<br/>(invalid_grant "not found or invalid",<br/>refresh_token_reused)
+            P->>DB: count a strike; condemn only on the<br/>third, spread over 30+ min. No retry —<br/>the same value would be rejected again
         else transient
             P->>C: re-enqueue with backoff (2/4/8 min, max 3)
         end
@@ -265,12 +267,65 @@ in that one method rather than at each of them:
    failure the method re-syncs from disk and compares: if the token of record has moved on from the
    one it presented, this was a lost race, and the account stays `active` instead of going
    `needs_reauth`.
+3. **Strikes, for the failures that check cannot see.** The disk holds one account's credentials at a
+   time, so the lost-race check has evidence only for the account that owns them — for the other five
+   in the pool it answers "not a race" because it has nothing to compare, not because nothing raced.
+   Condemning on that answer condemns on nothing, so it no longer does: see below.
 
-That second one is what makes re-authentication stick. Before it, a re-authed account rejoined the
-pool and the next stampede condemned it again within minutes.
-
-Both are runtime-agnostic — the Codex path has the same single-use semantics and gets the same two
+Both are runtime-agnostic — the Codex path has the same single-use semantics and gets the same
 protections. API-key Codex accounts skip the lock entirely: nothing to rotate, no race to lose.
+
+### A rejected value is not a dead credential
+
+An `invalid_grant` means one of two unrelated things, and the HTTP status cannot tell them apart. The
+**description** can:
+
+| Vendor says | Means | Zimmer does |
+| --- | --- | --- |
+| `invalid_grant` + `Refresh token expired` (or *revoked*), `401`, `404`, `invalid_client`, `unauthorized_client` | the credential is finished | mark `needs_reauth` at once — unless the lost-race check can prove the token moved on disk, which still spares it |
+| `invalid_grant` + `Refresh token not found or invalid`, or OpenAI's `refresh_token_reused` | the **value** we sent is not the current one; the chain behind it is usually alive | count a strike, leave the account `active` |
+| anything else (5xx, an unparseable body) | the refresh path may be broken | log at `.error`, change nothing |
+
+Three strikes condemn the account, and only if they are spread out: `refresh_token!` has nine call
+sites and several of them can present the same spent value within minutes of each other, so a second
+rejection within 15 minutes of the last is the same episode and counts once. Three strikes therefore
+take at least half an hour. A streak expires six hours after its *most recent* strike, and any new
+refresh token — from a successful refresh, a filesystem sync, or a human re-authenticating on
+`/quotas` — resets the count, because a new token is a new chain. The count lives on
+`claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at` and is shown on the
+account's Administrate record page.
+
+A `:stale` rejection is also **not** retried. The 5-minute sweep's retry ladder (2 + 4 + 8 minutes)
+exists for network blips; replaying a value the vendor has already rejected just spends three more
+requests to be told the same thing, and the ladder ends in an `.error` nobody can act on. The
+provider reports `:stale` as its own `Result` error kind and `RefreshRuntimeAuthTokensJob` logs it at
+`.warn` and waits for the next sweep, by which time a filesystem sync or another caller's refresh may
+have moved the row on.
+
+A genuinely dead credential still reaches a human, roughly half an hour later than it used to. A
+healthy account that lost a race no longer reaches one at all — which is the whole point, because
+that was 14 of the 15 accounts condemned over an eleven-day window in production
+([#530](https://github.com/tadasant/zimmer/issues/530)).
+
+### Never lose a token you just minted
+
+The vendor spends the presented token the moment it answers, so between the 200 and the commit, the
+row holds the **only** copy of the credential chain. Persisting it is therefore the step that must not
+fail — and the filesystem write that follows is the step that can (a credential-store lock timeout, a
+full disk). It used to run inside the same transaction, where a raise would roll the new pair back and
+orphan the chain: an account whose stored token is spent forever, which every later refresh reads as
+`invalid_grant` and which no recovery probe can revive. It is now rescued and logged.
+
+Rescuing alone would not be enough, because the file left on disk is the pair Zimmer just spent and
+the owner marker still vouches for it — so the next `sync_tokens_from_filesystem!` would adopt it and
+overwrite the live token with the dead one, arriving at the same orphaned chain by a slower route. So
+the rescue also **disowns the marker**, stamping it with `ClaudeAccount::UNOWNED_CREDENTIALS_MARKER`,
+an address no account can match. Every marker-gated read of the credentials file then declines until a
+successful write re-stamps a real owner, which `ensure_active_account!` does on the next session
+spawn. Codex has no marker, so its sync answers the same question from `auth.json`'s `last_refresh`
+and refuses tokens older than the ones it already holds.
+
+Disk gets reconciled on the next spawn; a lost refresh token never does.
 
 The lock is re-entrant with the outer `account.with_lock` in
 `RuntimeAuthProvider#recover_needs_reauth` and in the sweep, so nesting is safe.
@@ -542,10 +597,80 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 ## Mid-run auth loss
 
-`AuthRecoveryService` watches the transcript for `"Not logged in · Please run /login"` (matched by
-`/not logged in|please run\s*\/login/i`) and, on the **first** match, hands the decision to
-`AuthRecoveryCoordinator` rather than re-spawning. Bounded by `MAX_RECOVERY_ATTEMPTS` attempts
-within `CONSECUTIVE_WINDOW` (15 minutes).
+`AuthRecoveryService` watches the transcript for an authentication failure and, on the **first**
+match, hands the decision to `AuthRecoveryCoordinator` rather than re-spawning. Bounded by
+`MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUTIVE_WINDOW` (15 minutes).
+
+It recognizes the failure two ways, and the order matters:
+
+1. **The error type.** `AUTH_ERROR_TYPES` — `authentication_failed`, `oauth_error` — matched against
+   the transcript entry's `error` field. This is the machine-readable half of the signature and the
+   half that does not move when the prose does.
+2. **The prose.** `AUTH_RECOVERABLE_ERROR_PATTERN` — `not logged in`, `please run /login`, `failed to
+   authenticate`, `oauth/refresh/access token … expired|invalid|revoked`, `invalid_grant` — for the
+   entries the runtime records with an *empty* error type, which is how
+   `"Not logged in · Please run /login"` is recorded.
+
+An entry the API typed as retryable (`api_error`, `rate_limit_error`) is never claimed on prose: a
+transient upstream failure that happens to say *"Authentication failed: 401 from gateway"* belongs on
+the backoff path, not on a path that spends an account rotation. The structured type wins both ways.
+
+The prose net is deliberately wide, because here a false positive costs one rotation and a false
+negative costs a lost turn. That trade does not travel: `SessionStatusSummaryHarvestJob` asks a
+different question — *is this "summary" a refusal?* — where a false positive discards a real summary,
+so it spells out its own two narrow patterns instead of importing this constant.
+
+:::caution[Why the type is read first]
+On 2026-08-20, Claude Code 2.1.237 ended a turn in production session 6412 with
+
+```json
+{"isApiErrorMessage":true,"error":"authentication_failed",
+ "message":{"content":[{"type":"text",
+   "text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]}}
+```
+
+and exited **1** — its "turn finished, awaiting input" convention. The prose matched neither half of
+the pattern Zimmer had, no classifier claimed the entry, and `handle_exit` logged *"Process exited
+successfully"* and parked the session as `needs_input`. A human's message sat unanswered, and the
+only trace was in the transcript. The account pool had already done its job: the refresh token for
+the identity that session was holding had been rejected with `invalid_grant` seven minutes earlier
+and the account marked `needs_reauth`. What failed was recognizing the *runtime's* report of it.
+:::
+
+### A turn that dies on an API error can never look finished
+
+Reading the error type makes *this* wording classifiable. It does nothing about the next one, so
+`handle_exit` also asks a question that has no prose in it at all.
+
+`ApiErrorRetryService#terminal_api_error` answers *did this turn die on an API error?* — is the
+**last conversational entry** in the transcript an `isApiErrorMessage`. Only `user` and `assistant`
+entries count on either side of the question: the runtime writes `last-prompt`, `atis-latch`,
+`attachment` and `queue-operation` bookkeeping after the final message, and `isSidechain` entries
+belong to a subagent whose failure does not end the main turn. Unlike every other transcript reader
+it ignores `api_error_last_checked_line` — that cursor exists to stop a *handled* error being retried
+twice, and a terminal error is by definition the one that just ended this turn.
+
+It does **not** filter by classifier, and that matters. `handle_exit` asks it last, after every
+specific branch has looked at the same exit and declined, so an answer means nobody is handling a
+turn that plainly died — which covers a wording nothing recognises *and* the case where a classifier
+does recognise it but has already spent its cursor on it. That second case is reachable: a 5xx is
+retried, `api_error_last_checked_line` advances past it, the respawn writes nothing and exits 1, and
+every branch now says "not mine" about a transcript whose last word is still that 5xx.
+
+When it answers yes, the session **fails**, loudly, and the prose goes into the session log under the
+`terminal_api_error` failure reason. Whether it also *alerts* is the one thing the recognised/
+unrecognised distinction decides: an unknown wording goes to `UnclassifiedFailureReporter` (deduped
+per runtime, so a fleet-wide wave is one Slack message), while a recognised one has already been
+through its own classifier and is a dead turn rather than an unknown failure mode. Failing is the
+honest verdict either way — the turn is over, its work did not happen, and the prompt is sitting
+unanswered — where `needs_input` said the opposite of all three.
+
+The backstop fires **once per dead turn**: it records the transcript line it fired on in
+`metadata["terminal_api_error_line"]`, so a resume that writes nothing new leaves the same entry
+terminal without re-failing the session and re-alerting on it.
+
+So the next time Anthropic rewords an error, the cost is an alert naming the new wording, not a lost
+message someone finds by reading a transcript.
 
 ### The recovery decision tree
 
@@ -628,91 +753,150 @@ Three exits mean Zimmer has no runway left: a quota hit with no rotation target
 recovery whose rotation finds the same thing, and an auth recovery that exhausts its retry budget.
 All route to `AuthOutageParkService`, which:
 
-1. Writes a session log naming the outage and the retry time.
+1. Writes a session log naming the outage.
 2. Sends a push notification.
-3. Records `auth_outage_reason` / `auth_outage_parked_at` / `auth_outage_retry_at` on the session,
-   which renders the amber outage banner on the session page.
-4. Creates a one-time wake-up trigger — the same `reuse_session` + `last_session_id` shape the
-   `wake_me_up_later` MCP tool uses. Creating the trigger is what puts the session to sleep, so the
-   session lands in `waiting` rather than `needs_input`, and the heartbeat sweep anchors its cadence
+3. Records `auth_outage_reason` / `auth_outage_parked_at` on the session, which renders the amber
+   outage banner on the session page.
+4. Puts the session to sleep. A session still `running` is marked `pending_sleep` and carried
+   `needs_input` → `waiting` by the pause callback; one already at rest is slept outright. Either
+   way it lands in `waiting` rather than `needs_input`, so the heartbeat sweep anchors its cadence
    instead of nudging it back into the same wall.
 
-The retry time is derived from the quota snapshots rather than a blind timer. `QuotaResetCheckerJob`
-clears an account only when **both** windows are clear, so an account frees up at the later of its
-two future resets and the pool frees up at the earliest such account; `RESET_BUFFER` (2 min) is
-added, and the result is clamped between `MIN_RETRY_DELAY` (5 min) and `MAX_RETRY_DELAY` (12 h). An
-auth outage has no published reset clock, so it uses `DEFAULT_RETRY_DELAY` (1 h).
+Nothing is scheduled. A park used to create a one-time wake-up trigger per session — the same
+`reuse_session` + `last_session_id` shape `wake_me_up_later` uses — carrying a retry time derived
+from the quota snapshots, plus a backoff ladder and a jitter window to keep a whole parked cohort
+from waking as a herd. That machinery scaled with the number of PARKED SESSIONS rather than with the
+number of outages: production carried dozens of `Auth outage retry for session #N at …` rows at a
+time, the large majority of the whole trigger list. And a wall clock knows nothing about which
+parked session matters most, so whichever timer fired first won, regardless of
+[precedence](/sessions/spot-and-priority/#precedence-ranking-the-spot-queue).
 
-An account with no *future* reset stamp is only read as "the pool clears now" when
-`windows_clear?` agrees — the same predicate the sweep restores on. The two agree about a stamp that
-has genuinely passed: the sliding window turned over, `.effective_utilization` discounts the counter
-to zero, and the next sweep restores the account. They part company on a snapshot carrying **no
-stamps at all**, which is a real reading — with no reset time to have passed the weekly counter still
-stands, so `seven_day_window_spent?` holds and the sweep correctly leaves the account exceeded.
-Reading that as "now" pinned every parked session to the 5-minute floor and woke them all back into
-the same exhausted pool five minutes later; its reset time is simply unknown, which is what
-`DEFAULT_RETRY_DELAY` means here.
+Two things wake a parked session now, and they cover different populations.
 
-Repeated quota parks also back off. Each consecutive park inside `QUOTA_PARK_WINDOW` (6 h) doubles
-the floor under the retry — 5 m, 10 m, 20 m, and on up to `MAX_RETRY_DELAY`, capped at
-`MAX_QUOTA_PARK_BACKOFF_STEPS` (6) doublings — so a pool that really is about to recover keeps its
-fast first retry while one that is not stops being probed every five minutes by every parked session
-at once. The count lives in `auth_outage_quota_parks`, kept out of `STALE_RETRY_METADATA_KEYS` for
-the same reason the early-wake budget is: it has to outlive the resume it throttles. Every retry also
-carries up to `RETRY_JITTER` (3 min) of random offset, because sessions parked by one outage are
-parked within seconds of each other and would otherwise wake as a herd onto a queue sized for 16
-concurrent agents. On 2026-08-17 the un-jittered, un-backed-off version put 148 sessions through 368
-parks in 40 minutes and 377 jobs into the ready queue, which is what tripped the
-`SystemHealthMonitorJob` backlog page at 14:14 UTC.
+| Population | Woken by | Why |
+| --- | --- | --- |
+| **spot** | the `quota_available` trigger event → one `fleet-maintenance` session running the `awaken-waiting-sessions` skill | spot work is exactly the work whose ORDER matters when quota is scarce, and the skill is what reads precedence, the spot thresholds and the concurrency ceiling to decide who starts. Both artifacts ship in Zimmer's own catalog, so the seeded trigger resolves on a standalone install; a test asserts the root it names exists |
+| **priority** | `AuthOutageParkService.wake_parked_sessions!`, from `QuotaResetCheckerJob` every 15 minutes | priority work is never gated on quota, so making it wait for a spawned session to take its first turn would be a regression — and there is no ordering question to get wrong |
 
-The jitter has to survive the **ceiling** as well as the floor, and that is a separate case. A
-weekly reset or a sentinel expiry sits far enough out that every session in the outage clamps onto
-`MAX_RETRY_DELAY`, and jitter added on top of the ceiling clamps straight back down onto it — so the
-whole cohort lands on one instant twelve hours away, which is exactly the shape the trigger list was
-carrying on 2026-08-17 (two waves at `02:08–02:15Z` and `02:20–02:25Z`, twelve hours after their
-parks). The pre-jitter clamp therefore stops one jitter window short of the ceiling, leaving the
-spread somewhere to go.
+Neither wakes a session that is **also** asleep on a wake-up somebody chose. A park and a pause are
+different states that happen to share `waiting`: the pool recovering answers the park and says
+nothing about the pause. The sweep skips those sessions before its spot/priority branch, so a paused
+spot park is not counted toward the fleet wake it must not be started by, and a paused priority park
+is not resumed — which matters twice over, because that resume goes through `resume!` and would have
+consumed the pause without a trace. See
+[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence).
+
+`QuotaAvailabilityMonitor` owns the event. It runs in the same `QuotaResetCheckerJob` pass, right
+after the accounts are restored, and asks one question: can the pool serve a request at all — is
+there an account that is neither `quota_exceeded` nor waiting on a human to re-authenticate. That is
+the same `accounts.available` predicate a park stops on, which is what makes it the edge that
+un-parks those sessions. It is deliberately **not** the spot gate's question: `SpotGateService`
+answers "is utilization under the operator's targets and is a slot free", and firing on that would
+also fire when a fleet slot opened, which is not a quota recovery. The fleet session reads the gate
+for itself before starting anything.
+
+A fire that delivers **no session** — nothing listening, every fire raised, every one burst-suppressed
+— puts the edge back (`QuotaAvailabilityMonitor.rearm!`), so the next sweep fires again rather than
+spending the one recovery the parked sessions were waiting for.
+
+The event is an **edge**, not a level. `AppSetting#quota_pool_available` stores the last observed
+level, and the event fires only on `false` → `true`; a level would be true on every sweep for as
+long as the pool stayed healthy and would spawn a fleet session every fifteen minutes forever. NULL
+means nobody has looked yet, so the first observation records the level and fires nothing — a deploy
+landing while the pool happens to be healthy is not a recovery. A pool that cannot be read leaves the
+stored level alone, because recording an unreadable pool as an outage would make the next successful
+read fire a recovery nothing recovered from.
+
+Sampling alone is not enough to see the falling edge. `check!` runs every fifteen minutes, so an
+outage that opens and closes inside one tick is never observed as unavailable — the recovery is then
+not an edge, nothing fires, and everything parked in that window waits forever. So the **park itself**
+records it: `park!` calls `QuotaAvailabilityMonitor.record_unavailable!`, which is both the earliest
+moment Zimmer has positive evidence the pool is empty and the most certain.
+
+The sweep can also ask for the wake outright (`request_wake!`). It does that only for a parked SPOT
+session it has found eligible on evidence the pool edge does not carry — an **auth** park whose pool
+credentials changed while `accounts.available` never went false→true. A quota-parked spot session
+never asks, because the pool's own edge already covers it.
+
+Once the edge has been spent the request is a **no-op**, and that is load-bearing rather than
+defensive. The sweep runs in the same fifteen-minute pass as `check!`, so re-arming the level here
+would make the next pass read `false` against a pool that never left, call it a rising edge, and fire
+again — one fleet session every fifteen minutes for as long as a single session stayed parked, each
+burning the quota that just recovered. The level and the job that spends it are written in one
+transaction for the same reason: a job that ran before the level committed would find nothing
+delivered, re-arm against a stale `false`, and silently lose the edge.
+
+`auth_outage_pool_recovers_at` survives as an **estimate** for the banner, and only for a quota park:
+`QuotaResetCheckerJob` clears an account only when both windows are clear, so an account frees up at
+the later of its two future resets and the pool at the earliest such account. Nothing reads it back
+and nothing fires at it. An auth outage has no published reset clock, so it records nothing.
+
+### The park has to survive the paths that do not know about it
+
+Everything above assumes the code that stops a session knows the pool is what stopped it. Three
+paths did not, and on 2026-08-20 a `pr-merge-gate` session (#6597) escaped through all three in
+eight seconds — parked correctly at 04:19, and back in `needs_input` by 09:00:42.
+
+1. **The resume left a window for the orphan sweep.** `resume_parked!` transitioned the session to
+   `running` and *then* enqueued its job, so for a moment it was running with a blank
+   `running_job_id` — which `CleanupOrphanedSessionsJob` calls "DEFINITELY orphaned" with no grace
+   period. The sweep landed in that window, reaped the resume, and replaced it with a
+   resume-monitoring job pointed at a stale pid. The resume now stamps `pending_follow_up_prompt`
+   inside the same transaction as the transition (the marker that sweep already honours) and
+   records `running_job_id` as soon as the job exists — the same ordering
+   `Session#deliver_follow_up!` uses, and for the same reason.
+
+2. **The reconnect could not tell our process from a stranger.** `ProcessLifecycleManager#resume_monitoring`
+   adopted a pid on `Process.kill(0, pid)`, which answers "some process holds this number", not
+   "the process we spawned is still there". It confirmed a recovery onto a pid that had been
+   SIGKILLed nine seconds earlier. `AgentProcessLiveness` already recorded the boot id, PID
+   namespace and start-time ticks needed to tell those apart, but was wired only into the spawn
+   guard; `.adoptable?` is the read-only half, and refuses `:dead` and `:recycled` while standing
+   down on `:unknown` so macOS development still reconnects.
+
+3. **The exit paths read a dead process as a finished turn.** With the adopted process gone, the
+   monitoring loop's fallbacks answered with `pause!` — `needs_input` — while
+   `active_follow_up_prompt` still held the recovery turn Zimmer never delivered and the pool was
+   still empty (two status-summary forks parked `quota_exhausted` three and eleven minutes later).
+   `AuthOutageParkService.park_undelivered_turn!` now guards those exits: an undelivered turn plus a
+   pool with no available account is the outage, so it parks into `waiting` instead.
+
+The tempting test for "undelivered" is that `active_follow_up_prompt` is still set, and it is the
+wrong one. `AgentSessionJob` removes that key in exactly **one** place — the `:needs_input` branch of
+the exit decision — and the paths this guard protects are the *fallbacks*, which never clear it. So a
+turn that ran to completion and exited through one of them still carries the marker; on the
+`end_turn`-plus-dead-process fallback that marker sits next to the strongest evidence available that
+the turn *did* complete. Parking on it would sleep a finished session and then nudge an agent with
+nothing left to do.
+
+`park_undelivered_turn!` therefore asks for positive evidence, and refuses on every one of these:
+
+| It declines when… | Because |
+| --- | --- |
+| the prompt appears in the persisted transcript | the turn ran — the same comparison `TranscriptPollerService` makes to decide a follow-up landed. 6597's transcript never grew past the 115 messages it held before the park |
+| the session is not `running` | a user pause terminates the process *before* transitioning, so these exits are reachable for a session a human already stopped |
+| `paused_by` is `"user"` | same reason, stated directly — putting the session back to sleep would undo their decision |
+| `auth_outage_reason` is already set | two of the three call sites can be reached in one pass through the monitoring loop, and a double park sends two push notifications for one stop |
+| the pool could not be *read* | an unreadable pool is not an empty one. `.runtime_has_available_account?` rescues to `false` meaning "do not wake", which is conservative; the same `false` here would mean "park", which is not — and a runtime with no accounts at all would then park, time out, finish and park again for as long as it lived |
 
 ### The sweep wakes a batch, not the fleet
 
-Spreading the timer does nothing for the other way a parked session wakes.
 `wake_parked_sessions!` resumes on "the runtime has an available account again", which is a fact
 about the **pool**: it becomes true for every session parked on that pool in the same instant, and
 the sweep resumed every one of them in a single pass. One restored account therefore put the whole
 parked population back onto a pool with one account in it, which they re-drained in seconds and
-re-parked together — a cohort that leaves the trigger list in waves.
+re-parked together.
 
 So a sweep resumes at most `MAX_WAKES_PER_SWEEP` (5) **per runtime**, oldest park first, and logs
 how many it held. Per runtime because the hazard is per pool: a fleet of `claude_code` parks must
 not hold back the `codex` sessions whose own pool just recovered. The throttle closes its own loop —
 the next sweep is 15 minutes away and re-reads the pool, so if the batch that went first drained it
-again, nobody else is woken. Held sessions lose nothing: each still carries its own jittered timer,
-and each leads the next sweep's queue. The ordering is a lexicographic sort over
-`auth_outage_parked_at`, which is why that stamp is written explicitly in UTC.
+again, nobody else is woken. Held sessions lose nothing: each leads the next sweep's queue. The
+ordering is a lexicographic sort over `auth_outage_parked_at`, which is why that stamp is written
+explicitly in UTC.
 
-### One retry trigger per session
-
-A resume consumes the wake-up **condition** — `SessionStateMachine#cancel_pending_one_time_wake_triggers`
-stamps `last_triggered_at` — but leaves the trigger row `enabled`, having created no session.
-`ScheduleTriggerJob`'s auto-delete only runs on a trigger that actually **fires**, so it never sees
-these, and `CleanupStaleTriggersJob` reaps them an hour after a `scheduled_at` that can be twelve
-hours out. Across a park/resume/re-park loop that is a column of identical dead rows, each surviving
-about thirteen hours, indistinguishable in the UI from armed ones.
-
-So the row goes with the condition. `cancel_pending_one_time_wake_triggers` discards the session's
-auth-outage retries on **every** deliberate resume — the sweep, a user follow-up, a poller, the
-trigger firing — and a new park discards the ones it supersedes. A system-recovery resume is the
-exception on both counts, because it deliberately *preserves* its wake-ups: the session did not
-choose to wake, so its retry is not moot.
-
-Three things are deliberately out of scope of that sweep. A `wake_me_up_later` wake the *user* set
-up for the same session, which has an identical `reuse_session` + `last_session_id` shape and is
-told apart only by the `Auth outage retry for session #N at …` name Zimmer itself writes. A trigger
-in `failed`, which `ScheduleTriggerJob` parked there as a tombstone so the operator could see the
-wake did not fire and re-arm it — only they clear that. And the successor of a park in progress: the
-new trigger is created *before* the old ones are destroyed, so a create that fails leaves the
-session the backstop it already had rather than none at all. The cleanup itself is best-effort — a
-park whose cleanup fails is still a park.
+Spot sessions are skipped entirely — see the table above. They stay parked with their outage
+metadata intact, which is exactly what the fleet wake needs to find them.
 
 Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
 arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing
@@ -722,9 +906,10 @@ anyway, which is a credentials problem a human has to look at. `ProcessLifecycle
 for the budget-exhaustion park too, so running out of tries during a quota drain no longer produces
 the "re-authenticate an account" instruction.
 
-For a **quota** park the trigger is only the backstop: `QuotaResetCheckerJob` usually restores the
-accounts first and wakes those sessions in the same sweep, and only for a runtime that has an
-available account again, so a session is never woken into the pool that was still empty.
+For a **quota** park the sweep's evidence is the pool itself: `QuotaResetCheckerJob` restores the
+accounts first and wakes the priority sessions blocked on them in the same pass, and only for a
+runtime that has an available account again, so a session is never woken into a pool that is still
+empty.
 
 An **auth** park gets the same fast path on different evidence. "An account is available" is the
 whole story for a quota park — the pool was empty and now is not. It is no evidence at all for an
@@ -746,8 +931,8 @@ It is a coarse signal, not a repair detector, and the code says so. The same dig
 rotated on disk for the current account — which says nothing about a parked session's identity
 problem. So the fingerprint decides *whether there is anything new to try*, and a budget decides
 *how often one session may act on it*: `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h). The
-timer alone would wake a parked session roughly six times in that window, so the fast path is a
-bounded multiple of the spawn rate the session already had rather than an open loop.
+window is what keeps the bound meaningful: without one, a pool whose credentials churn — a token
+sync, an account added and removed — would re-wake the same broken identity indefinitely.
 
 The budget lives in `auth_outage_early_wakes` — a list of wake timestamps, pruned to the window on
 every write, and the one `auth_outage_*` key deliberately kept out of `STALE_RETRY_METADATA_KEYS`.
@@ -755,7 +940,8 @@ It has to outlive the resume it paid for, or a re-park would hand the session a 
 cap would bound nothing. It is charged inside `resume_parked!`'s transaction, under the same row
 lock as the resume: charging afterwards would race the job that resume enqueues for the metadata
 column, and a failed charge would silently un-bound the cap. Past the budget — and for a park with
-no recorded fingerprint at all — the session falls back to its timer, which is what it had before.
+no recorded fingerprint at all — the session stays parked until a human resumes it or the pool
+changes again.
 
 ## Logging in from the UI
 

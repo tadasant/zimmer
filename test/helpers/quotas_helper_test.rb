@@ -346,34 +346,97 @@ class QuotasHelperTest < ActionView::TestCase
 
   # The Account Pool's "we're blocked until X" notes.
 
-  test "pool_five_hour_reset_line names the reset and the wait" do
-    line = pool_five_hour_reset_line(measure(next_five_hour_reset: 90.minutes.from_now))
+  test "pool_capacity_banner counts down to the moment the pool has capacity" do
+    banner = pool_capacity_banner(measure(next_capacity_at: 90.minutes.from_now, blocked_count: 2))
 
-    assert_match "Next usable 5-hour reset", line
-    assert_match(/in 1h \d+m/, line)
-    assert_match "UTC", line
-    assert_match(/data-controller="local-time"/, line)
+    assert_match "Work unblocked in", banner
+    assert_match(/1:29:5\d|1:30:00/, banner)
+    assert_match "room on both its 5-hour and 7-day windows", banner
+    assert_match "All 2 accounts with a reading are out of capacity.", banner
+    assert_match "UTC", banner
+    assert_match(/data-controller="local-time"/, banner)
   end
 
-  # The case the whole distinction exists for: no 5-hour reset frees anything
-  # while every account's week is gone, and the note has to say that rather than
-  # go quiet.
-  test "pool_five_hour_reset_line says so when every account's 7-day window is spent" do
-    line = pool_five_hour_reset_line(
-      measure(next_five_hour_reset: nil, next_weekly_reset: 2.days.from_now,
-              read_count: 3, weekly_spent_count: 3)
+  # The tick is driven off the absolute instant in the markup, not off the
+  # duration rendered beside it — a page left open would otherwise keep showing
+  # the wait as it stood when the server drew it.
+  test "pool_capacity_banner hands the browser an absolute deadline to tick from" do
+    at = 2.hours.from_now.change(usec: 0)
+
+    banner = pool_capacity_banner(measure(next_capacity_at: at, read_count: 1, blocked_count: 1))
+
+    assert_match(/data-controller="unblock-countdown"/, banner)
+    assert_match "data-unblock-countdown-deadline-value=\"#{at.utc.iso8601}\"", banner
+    assert_match 'data-unblock-countdown-target="remaining"', banner
+    assert_match 'data-unblock-countdown-target="label"', banner
+    assert_match 'data-unblock-countdown-target="passed"', banner
+  end
+
+  # There is nothing to count down to when the pool is already serving, and a
+  # clock ticking toward the next rollover would read as a wait that isn't one.
+  test "pool_capacity_banner says the pool is not blocked when an account has room" do
+    banner = pool_capacity_banner(measure(read_count: 3, blocked_count: 1))
+
+    assert_match "Work is not blocked", banner
+    assert_match "2 accounts of 3 with a reading have room on both windows", banner
+    assert_no_match(/unblock-countdown/, banner)
+  end
+
+  test "pool_capacity_banner reads singly when one account is serving" do
+    banner = pool_capacity_banner(measure(read_count: 2, blocked_count: 1))
+
+    assert_match "1 account of 2 with a reading has room on both windows", banner
+  end
+
+  # Blocked with no recorded reset anywhere: a zeroed clock would read as "any
+  # moment now", so the banner says the page cannot tell.
+  test "pool_capacity_banner owns up to a blocked pool with no recorded reset" do
+    banner = pool_capacity_banner(
+      measure(next_capacity_at: nil, read_count: 3, blocked_count: 3, weekly_spent_count: 3)
     )
 
-    assert_match "No 5-hour reset frees capacity", line
-    assert_match "blocked until the 7-day reset", line
-    assert_no_match(/Next usable 5-hour reset/, line)
+    assert_match "Nothing here says when work resumes", banner
+    assert_match "All 3 accounts with a reading are out of capacity.", banner
+    assert_no_match(/unblock-countdown/, banner)
   end
 
-  test "pool_five_hour_reset_line reads calmly when nobody is waiting on a 5-hour reset" do
-    line = pool_five_hour_reset_line(measure(next_five_hour_reset: nil, read_count: 2, weekly_spent_count: 0))
+  # Nothing read means nothing is known, which is not the same as everything
+  # being spent — any banner here would be a claim on no evidence.
+  test "pool_capacity_banner renders nothing for a pool with no readings" do
+    assert_nil pool_capacity_banner(measure(read_count: 0, blocked_count: 0))
+  end
 
-    assert_match "No 5-hour reset pending", line
-    assert_no_match(/blocked/, line)
+  # The measure is taken before the view renders, so the deadline can cross now
+  # in between. The clock says "now" rather than a negative wait, and the
+  # controller reveals the note beside it the moment it connects.
+  test "pool_capacity_banner does not render a negative wait" do
+    banner = pool_capacity_banner(measure(next_capacity_at: 1.second.ago, read_count: 1, blocked_count: 1))
+
+    assert_match "The one account with a reading is out of capacity.", banner
+    assert_match ">now<", banner
+    assert_match ">Work unblocked<", banner
+    # The note is in the markup either way; whether it is hidden is the state.
+    assert_no_match(/hidden="hidden"/, banner)
+  end
+
+  # The counterpart: with the deadline still ahead, the same note ships hidden
+  # and the controller reveals it if the moment passes while the page is open.
+  test "pool_capacity_banner keeps the passed note out of the way while the wait is real" do
+    banner = pool_capacity_banner(measure(next_capacity_at: 20.minutes.from_now, blocked_count: 2))
+
+    assert_match ">Work unblocked in<", banner
+    # The passed note is the only element in the banner that can carry it.
+    assert_match 'hidden="hidden"', banner
+  end
+
+  test "countdown_clock_text ticks in seconds, and grows a unit as the wait does" do
+    freeze_time do
+      assert_equal "0:45", countdown_clock_text(45.seconds.from_now)
+      assert_equal "9:05", countdown_clock_text(545.seconds.from_now)
+      assert_equal "1:30:00", countdown_clock_text(90.minutes.from_now)
+      assert_equal "2d 03:04:05", countdown_clock_text((2.days + 3.hours + 4.minutes + 5.seconds).from_now)
+      assert_equal "now", countdown_clock_text(1.second.ago)
+    end
   end
 
   test "pool_weekly_reset_line names the reset, the wait, and how many accounts are waiting on it" do
@@ -407,37 +470,6 @@ class QuotasHelperTest < ActionView::TestCase
     assert_match 'title="Aug 20, 06:58 UTC"', tag
   end
 
-  # The 5-hour note points at the 7-day one, so it may only do that when there is
-  # a 7-day time to point at.
-  test "pool_five_hour_reset_line does not promise a 7-day reset that was never recorded" do
-    line = pool_five_hour_reset_line(
-      measure(next_five_hour_reset: nil, next_weekly_reset: nil, read_count: 2, weekly_spent_count: 2)
-    )
-
-    assert_match "No 5-hour reset frees capacity", line
-    assert_match "No 7-day reset time is recorded either", line
-    assert_no_match(/blocked until the 7-day reset below/, line)
-  end
-
-  # Nothing read means nothing is known, which is not the same as everything
-  # being spent — the red note would say the pool is blocked on no evidence.
-  test "pool_five_hour_reset_line does not call an unread pool blocked" do
-    line = pool_five_hour_reset_line(measure(next_five_hour_reset: nil, read_count: 0, weekly_spent_count: 0))
-
-    assert_match "No 5-hour reset pending", line
-    assert_no_match(/blocked/, line)
-  end
-
-  # The measure is taken before the view renders, so a reset can cross now in
-  # between. time_until_reset answers that with "Window reset", which would read
-  # as "(in Window reset)" inside the sentence.
-  test "the countdown is dropped for a reset that passed between measure and render" do
-    line = pool_five_hour_reset_line(measure(next_five_hour_reset: 1.second.ago))
-
-    assert_match "Next usable 5-hour reset", line
-    assert_no_match(/\(in /, line)
-  end
-
   private
 
   # A pool measure with only the fields these notes read set to anything
@@ -445,8 +477,8 @@ class QuotasHelperTest < ActionView::TestCase
   def measure(**overrides)
     ClaudeAccountPool::Measure.new(**{
       five_hour: 0.5, weekly: 0.5, worst_five_hour: 0.5, worst_weekly: 0.5,
-      account_count: 2, read_count: 2, weekly_spent_count: 0,
-      next_five_hour_reset: nil, next_weekly_reset: nil
+      account_count: 2, read_count: 2, weekly_spent_count: 0, blocked_count: 2,
+      next_capacity_at: nil, next_weekly_reset: nil
     }.merge(overrides))
   end
 

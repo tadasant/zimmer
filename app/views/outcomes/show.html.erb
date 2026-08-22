@@ -1,0 +1,154 @@
+<% content_for :title, "Outcome analysis — session ##{@session.id}" %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-[100rem] mx-auto px-3 sm:px-6 py-6"
+       data-controller="outcome-flamegraph"
+       data-action="mouseover->outcome-flamegraph#show mousemove->outcome-flamegraph#move mouseleave->outcome-flamegraph#hide click->outcome-flamegraph#select">
+
+    <div class="flex items-start justify-between gap-3 mb-3 flex-wrap">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <%= link_to outcomes_path, class: "text-gray-500 hover:text-gray-700 shrink-0" do %>
+            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+            </svg>
+          <% end %>
+          <h1 class="text-xl font-bold text-gray-900 truncate"><%= @session.title.presence || "Session ##{@session.id}" %></h1>
+          <%= render "outcome_pill", outcome: @analysis.root_outcome %>
+        </div>
+        <p class="mt-1 text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-0.5">
+          <span><%= link_to "session ##{@session.id}", session_path(@session), class: "text-indigo-600 hover:text-indigo-800" %></span>
+          <span>root <%= @analysis.agent_root || "—" %></span>
+          <span><%= RuntimeRegistry.label_for(@analysis.agent_runtime) %></span>
+          <span class="font-mono"><%= @analysis.model || "—" %></span>
+          <span>created <%= @analysis.session_created_at&.strftime("%Y-%m-%d %H:%M") %></span>
+          <span>analyzed <%= time_ago_in_words(@analysis.analyzed_at) %> ago</span>
+          <% if @analysis.analyzer_session_id %>
+            <span>by <%= link_to "##{@analysis.analyzer_session_id}", session_path(@analysis.analyzer_session_id), class: "text-indigo-600 hover:text-indigo-800" %></span>
+          <% end %>
+        </p>
+      </div>
+      <%= button_to "Re-analyze", analyze_outcome_path(@session.id), method: :post,
+          form: { data: { turbo_confirm: "Re-analyze session ##{@session.id}? This analysis is kept but superseded." } },
+          class: "text-sm px-3 py-1.5 border border-gray-300 rounded-md bg-white hover:bg-gray-50 text-gray-700 cursor-pointer" %>
+    </div>
+
+    <% if @analysis.notes.present? %>
+      <p class="mb-3 text-xs text-gray-600 bg-white border border-gray-200 rounded-md px-3 py-2">
+        <span class="font-medium text-gray-500 uppercase tracking-wide text-[10px]">Analyzer note</span>
+        <span class="ml-2"><%= @analysis.notes %></span>
+      </p>
+    <% end %>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+      <% [
+           [ "Segments", @analysis.segment_count, "text-gray-900" ],
+           [ "Failed segments", @analysis.failure_segment_count, @analysis.failure_segment_count.positive? ? "text-red-700" : "text-gray-400" ],
+           [ "Segment success", @analysis.segment_count.zero? ? "—" : number_to_percentage(@analysis.success_segment_count * 100.0 / @analysis.segment_count, precision: 0), "text-emerald-700" ],
+           [ "Max depth", @analysis.max_depth, "text-gray-900" ]
+         ].each do |label, value, color| %>
+        <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+          <div class="text-lg font-bold tabular-nums <%= color %>"><%= value %></div>
+          <div class="text-[11px] text-gray-500 uppercase tracking-wide"><%= label %></div>
+        </div>
+      <% end %>
+    </div>
+
+    <%# --- Flamegraph -----------------------------------------------------
+        One absolutely-positioned cell per Segment, laid out server-side (see
+        OutcomeAnalyses::Flamegraph). Width is subtree size, so a wide cell is a
+        Segment that contained a lot of work — and the red cells inside a green
+        root are the whole point of the picture. %>
+    <div class="bg-white border border-gray-200 rounded-lg p-3 mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold text-gray-900">Segment flamegraph</h2>
+        <div class="flex items-center gap-3 text-[11px] text-gray-500">
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-sm bg-emerald-500 inline-block"></span>Success</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-sm bg-red-500 inline-block"></span>Failure</span>
+          <span class="hidden sm:inline">· hover for why · click to jump to the row</span>
+        </div>
+      </div>
+      <div class="relative w-full select-none" style="height: <%= @flame.height_px %>px" data-outcome-flamegraph-target="graph">
+        <% @flame.cells.each do |cell| %>
+          <div class="absolute overflow-hidden rounded-[2px] cursor-pointer transition-[filter] hover:brightness-110 <%=
+                 cell.failure? ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white' %>"
+               style="left: <%= cell.left %>%; width: calc(<%= cell.width %>% - 1px); top: <%= cell.depth * OutcomeAnalyses::Flamegraph::ROW_HEIGHT_PX %>px; height: <%= OutcomeAnalyses::Flamegraph::ROW_HEIGHT_PX - 2 %>px;"
+               data-segment-id="<%= cell.id %>"
+               data-outcome="<%= cell.outcome %>"
+               data-goal="<%= cell.goal_text %>"
+               data-explanation="<%= cell.explanation %>"
+               data-meta="<%= "#{cell.trigger_kind} · #{cell.trigger_source} · #{cell.goal_kind} · #{cell.subtree_size} #{'segment'.pluralize(cell.subtree_size)}#{cell.model.present? ? " · #{cell.model}" : ''}" %>"
+               aria-label="<%= cell.id %>: <%= cell.outcome %> — <%= cell.explanation %>">
+            <% if cell.labeled? %>
+              <span class="block px-1 text-[10px] leading-[20px] whitespace-nowrap font-medium"><%= cell.goal_text %></span>
+            <% end %>
+          </div>
+        <% end %>
+      </div>
+    </div>
+
+    <%# --- Segment table --------------------------------------------------
+        The flamegraph shows shape; this shows detail. Depth-first, same order as
+        the ids, indented by depth so the trajectory reads top to bottom. %>
+    <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-3 py-2 text-left font-medium w-24 sm:w-32">Segment</th>
+              <th class="px-3 py-2 text-left font-medium">Goal</th>
+              <th class="px-3 py-2 text-left font-medium w-24 hidden sm:table-cell">Trigger</th>
+              <th class="px-3 py-2 text-left font-medium w-20">Outcome</th>
+              <th class="px-3 py-2 text-left font-medium">Why</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% @analysis.each_segment do |segment, depth| %>
+              <% failure = segment.dig("outcome", "kind") == OutcomeAnalyses::SegmentTree::FAILURE %>
+              <tr id="segment-row-<%= segment["id"] %>" class="hover:bg-gray-50 <%= "bg-red-50/40" if failure %>">
+                <td class="px-3 py-1 font-mono text-[11px] text-gray-500 whitespace-nowrap align-top">
+                  <span style="padding-left: <%= depth * 10 %>px" class="inline-block"><%= segment["id"] %></span>
+                </td>
+                <td class="px-3 py-1 align-top break-all">
+                  <span class="text-gray-900"><%= segment.dig("goal", "text") %></span>
+                  <span class="ml-1 text-[10px] px-1 rounded <%= segment.dig("goal", "kind") == "Plan" ? "bg-sky-100 text-sky-800" : "bg-violet-100 text-violet-800" %>"><%= segment.dig("goal", "kind") %></span>
+                </td>
+                <td class="px-3 py-1 text-[11px] text-gray-500 whitespace-nowrap align-top hidden sm:table-cell">
+                  <%= segment.dig("trigger", "kind") %> · <%= segment.dig("trigger", "source") %>
+                </td>
+                <td class="px-3 py-1 align-top"><%= render "outcome_pill", outcome: segment.dig("outcome", "kind") %></td>
+                <td class="px-3 py-1 text-gray-600 text-xs align-top break-all"><%= segment.dig("outcome", "explanation") %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <% if @previous_analyses.any? %>
+      <div class="mt-4 bg-white border border-gray-200 rounded-lg p-3">
+        <h2 class="text-sm font-semibold text-gray-900 mb-1">Superseded analyses</h2>
+        <ul class="text-xs text-gray-600 space-y-0.5">
+          <% @previous_analyses.each do |previous| %>
+            <li class="tabular-nums">
+              <%= previous.analyzed_at&.strftime("%Y-%m-%d %H:%M") %> —
+              <%= previous.root_outcome %>, <%= previous.segment_count %> segments (<%= previous.failure_segment_count %> failed)
+            </li>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <%# One reused tooltip element for the whole graph. Fixed-position so it is
+        never clipped by a cell's own overflow. %>
+    <div data-outcome-flamegraph-target="tooltip"
+         class="hidden fixed z-50 pointer-events-none max-w-sm bg-gray-900 text-white rounded-md shadow-lg px-3 py-2">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="font-mono text-[10px] text-gray-400" data-role="id"></span>
+        <span data-role="outcome"></span>
+      </div>
+      <div class="text-xs font-medium leading-snug" data-role="goal"></div>
+      <div class="text-xs text-gray-300 leading-snug mt-1" data-role="explanation"></div>
+      <div class="text-[10px] text-gray-400 mt-1" data-role="meta"></div>
+    </div>
+  </div>
+</div>

@@ -118,6 +118,76 @@ class SessionsHelperTest < ActionView::TestCase
     assert_equal "Git Status", ot_event_label(event(Types::SYSTEM_EVENT, subtype: "git_status"))
   end
 
+  # === runtime notices (#488) ===
+  #
+  # A line the CLI wrote into its own transcript wearing a user role must not
+  # read as "User" anywhere in the header.
+
+  RUNTIME_MARKERS = {
+    "interruptedByShutdown" => "the CLI was shut down mid-turn",
+    "isMeta" => "CLI-internal scaffolding"
+  }.freeze
+
+  def markers_for(flags)
+    flags&.map { |flag| { "flag" => flag, "reason" => RUNTIME_MARKERS[flag] } }
+  end
+
+  def runtime_notice(text: "[Request interrupted by user for tool use]", markers: [ "interruptedByShutdown" ])
+    markers = markers_for(markers)
+    event(
+      Types::SYSTEM_EVENT,
+      subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,
+      payload: { "text" => text, "markers" => markers }
+    )
+  end
+
+  test "ot_event_label labels a runtime notice distinctly from a user turn" do
+    assert_equal "Runtime Notice", ot_event_label(runtime_notice)
+    refute_equal ot_event_label(event(Types::USER_MESSAGE)), ot_event_label(runtime_notice)
+  end
+
+  test "ot_icon_kind gives a runtime notice the system glyph, not the user glyph" do
+    assert_equal :system, ot_icon_kind(runtime_notice)
+    assert_equal "bg-cyan-100", ot_badge_class(runtime_notice)
+    assert_equal "text-cyan-600", ot_icon_color(runtime_notice)
+  end
+
+  test "ot_runtime_notice? is true only for the runtime-notice subtype" do
+    assert ot_runtime_notice?(runtime_notice)
+    refute ot_runtime_notice?(event(Types::SYSTEM_EVENT, subtype: "queue-operation"))
+    refute ot_runtime_notice?(event(Types::USER_MESSAGE))
+    # A UserMessage that somehow carries the subtype is still a user message.
+    refute ot_runtime_notice?(event(Types::USER_MESSAGE, subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE))
+  end
+
+  test "ot_content_markdown states who wrote a runtime notice above its text" do
+    body = ot_content_markdown(runtime_notice)
+
+    assert_includes body, "not typed by a person"
+    assert_includes body, "the CLI was shut down mid-turn (`interruptedByShutdown`)"
+    assert_includes body, "[Request interrupted by user for tool use]"
+  end
+
+  test "ot_content_markdown names both markers when a notice carries both" do
+    body = ot_content_markdown(runtime_notice(markers: %w[interruptedByShutdown isMeta]))
+
+    assert_includes body, "the CLI was shut down mid-turn (`interruptedByShutdown`)"
+    assert_includes body, "CLI-internal scaffolding (`isMeta`)"
+  end
+
+  test "ot_content_markdown still attributes a runtime notice with no usable payload" do
+    assert_includes ot_content_markdown(runtime_notice(markers: nil)), "not typed by a person"
+    assert_includes ot_content_markdown(event(Types::SYSTEM_EVENT, subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE)),
+      "not typed by a person"
+  end
+
+  test "ot_content_markdown leaves other system events on the generic renderer" do
+    item = event(Types::SYSTEM_EVENT, subtype: "queue-operation", payload: { "operation" => "dequeue" })
+
+    assert_includes ot_content_markdown(item), "**Operation:** Dequeue"
+    refute_includes ot_content_markdown(item), "not typed by a person"
+  end
+
   # === ot_icon_kind / badge / color ===
 
   test "ot_icon_kind maps event type to a glyph" do

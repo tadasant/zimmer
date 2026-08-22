@@ -76,6 +76,50 @@ class ClaudeAccountQuotaSnapshotTest < ActiveSupport::TestCase
     assert snapshot(status_7d: "exceeded", utilization_7d: 0.9, reset_7d: 2.days.from_now).seven_day_window_spent?
   end
 
+  # five_hour_window_spent? — the same question about the other window. Read
+  # alongside its sibling by ClaudeAccountPool to decide when an account, and so
+  # the pool, can serve again.
+
+  test "five_hour_window_spent? is true when the API is rejecting for the 5-hour window" do
+    assert snapshot(status_5h: "rejected", utilization_5h: 0.1, reset_5h: 2.hours.from_now).five_hour_window_spent?,
+      "a rejecting status outranks a counter with headroom on it"
+  end
+
+  test "five_hour_window_spent? is true when the counter reached the cap" do
+    assert snapshot(status_5h: "allowed", utilization_5h: 1.0, reset_5h: 2.hours.from_now).five_hour_window_spent?
+    assert snapshot(status_5h: "allowed", utilization_5h: 1.03, reset_5h: 2.hours.from_now).five_hour_window_spent?
+  end
+
+  test "five_hour_window_spent? is false once the window's reset time has passed" do
+    assert_not snapshot(status_5h: "rejected", utilization_5h: 1.0, reset_5h: 1.minute.ago).five_hour_window_spent?
+  end
+
+  test "five_hour_window_spent? is false for a healthy or merely warning window" do
+    assert_not snapshot(status_5h: "allowed", utilization_5h: 0.3, reset_5h: 2.hours.from_now).five_hour_window_spent?
+    assert_not snapshot(status_5h: "allowed_warning", utilization_5h: 0.9, reset_5h: 2.hours.from_now).five_hour_window_spent?
+  end
+
+  test "five_hour_window_spent? is false when there is no 5-hour data at all" do
+    assert_not snapshot(status_5h: nil, utilization_5h: nil, reset_5h: nil).five_hour_window_spent?
+  end
+
+  test "five_hour_window_spent? treats an unrecognized status as blocking" do
+    assert snapshot(status_5h: "exceeded", utilization_5h: 0.2, reset_5h: 2.hours.from_now).five_hour_window_spent?
+  end
+
+  # The divergence from #windows_clear?, stated so it is a decision rather than
+  # a surprise: a counter at the cap with no reset timestamp is spent here — the
+  # same reading its sibling gives — while #windows_clear? calls that window
+  # clear, because it is deciding whether to put an account back in rotation and
+  # a nil reset is not evidence that it cannot serve.
+  test "five_hour_window_spent? calls a capped counter with no reset time spent" do
+    reading = snapshot(status_5h: "allowed", utilization_5h: 1.0, reset_5h: nil,
+      status_7d: "allowed", utilization_7d: 0.2, reset_7d: 5.days.from_now)
+
+    assert reading.five_hour_window_spent?
+    assert reading.windows_clear?, "windows_clear? answers a different question, conservatively"
+  end
+
   test "effective_utilization zeroes a window whose reset has passed" do
     assert_in_delta 0.0, ClaudeAccountQuotaSnapshot.effective_utilization(0.95, 1.hour.ago)
     assert_in_delta 0.95, ClaudeAccountQuotaSnapshot.effective_utilization(0.95, 1.hour.from_now)

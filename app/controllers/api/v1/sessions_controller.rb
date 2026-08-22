@@ -87,6 +87,8 @@ class Api::V1::SessionsController < Api::BaseController
   #   - custom_metadata: Custom user metadata (JSON)
   #   - scheduling_class: "spot" or "priority" for this session, overriding the class its
   #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one).
+  #   - precedence: where this session sits in the spot queue — higher is handled sooner, on an
+  #     absolute scale. Omit to land one point above the parent, or at the default with no parent.
   def create
     @session = Session.new(session_params.except(:agent_root))
     # Machine-created. When the caller passed a parent_session_id this is an agent
@@ -405,6 +407,8 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
+    return if refuse_restart_of_paused_session
+
     # When setup never completed (e.g., git clone failed), re-run the full setup
     # pipeline instead of trying to send a follow-up prompt to a non-existent clone.
     if @session.failed_before_initial_prompt? && !@session.setup_complete?
@@ -471,8 +475,9 @@ class Api::V1::SessionsController < Api::BaseController
 
   # POST /api/v1/sessions/:id/regenerate_status_summary
   # Rewrite the session's Status blurb. Forced — it regenerates even when the
-  # cached blurb is current — and asynchronous, because generation forks the
-  # session and spends a whole agent turn.
+  # cached blurb is current — and asynchronous, because generation normally forks
+  # the session and spends a whole agent turn. (With no login-pool account free
+  # it takes the one-shot path instead, which is quicker but still not inline.)
   #
   # An archived session is a normal candidate, and so is one whose clone Zimmer
   # reclaimed when it went to the trash: the fork answers from the conversation,
@@ -1081,6 +1086,33 @@ class Api::V1::SessionsController < Api::BaseController
 
   private
 
+  # Refuse a restart while the session is paused until a time it has not reached.
+  #
+  # The twin of Mcp::Tools::ActionSession#refuse_if_paused!, and it has to exist
+  # separately because the two surfaces share no restart code. Both are the
+  # non-interactive door — a script, an integration, an agent working a queue —
+  # where "start this session" is a claim about the queue rather than a person
+  # taking one session over. The web UI's Restart button is the interactive door
+  # and deliberately still consumes the pause.
+  #
+  # It sits ahead of `resume!`, which is the only place it can: `resume`'s
+  # cancel_pending_one_time_wake_triggers callback consumes the pause, so anything
+  # further down would arrive after it was gone.
+  #
+  # @return [Boolean] true when a response has been rendered and the caller must stop
+  def refuse_restart_of_paused_session
+    return false unless @session.paused_until_scheduled_time?
+
+    render_api_error(
+      "Cannot restart",
+      "Session #{@session.id} is asleep on a wake-up it has not reached yet " \
+      "(#{@session.pending_wake_phrase}). A pause outranks precedence and scheduling class, so this " \
+      "session does not start early — it wakes on its own schedule.",
+      status: :unprocessable_entity
+    )
+    true
+  end
+
   # Restart a session from scratch by re-running the full setup pipeline.
   # Used when setup never completed (e.g., git clone failed).
   def restart_from_scratch(session)
@@ -1091,7 +1123,8 @@ class Api::V1::SessionsController < Api::BaseController
 
     cleaned_metadata = (session.metadata || {}).except(
       *Session::STALE_RETRY_METADATA_KEYS,
-      *Session::SETUP_ARTIFACT_KEYS
+      *Session::SETUP_ARTIFACT_KEYS,
+      *SpotSessionHold::METADATA_KEYS
     )
 
     ActiveRecord::Base.transaction do
@@ -1137,7 +1170,7 @@ class Api::V1::SessionsController < Api::BaseController
     params.permit(
       :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
       :title, :slug, :goal, :execution_provider, :is_autonomous,
-      :parent_session_id, :auto_compact_window, :scheduling_class,
+      :parent_session_id, :auto_compact_window, :scheduling_class, :precedence,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
     )
   end
@@ -1213,8 +1246,11 @@ class Api::V1::SessionsController < Api::BaseController
   # held behind the quota gate is still `waiting`, and this is how it gets moved
   # to priority and started without touching the trigger that spawned it or the
   # policy every other session shares. Send null to drop back to derived.
+  #
+  # `precedence` is updatable for the same reason at one remove: a session that
+  # stays spot still needs to be movable within the queue.
   def session_update_params
-    params.permit(:title, :slug, :goal, :is_autonomous, :scheduling_class, custom_metadata: {})
+    params.permit(:title, :slug, :goal, :is_autonomous, :scheduling_class, :precedence, custom_metadata: {})
   end
 
   def regenerate_mcp_config_file(session)

@@ -90,6 +90,54 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_includes output, "- **Agent Root:** zimmer"
   end
 
+  test "creates a trigger with a predefined precedence, and clears it on update" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Ranked Watcher",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "New message: {{link}}",
+      "precedence" => 900,
+      "configuration" => { "channel_id" => "C123", "channel_name" => "alerts" }
+    )
+
+    trigger = Trigger.find_by!(name: "Ranked Watcher")
+    assert_equal 900, trigger.precedence
+    assert_includes output, "- **Precedence:** 900"
+
+    # An explicit null clears it; an omitted key would leave it alone.
+    @tool.call("action" => "update", "id" => trigger.id, "precedence" => nil)
+    assert_nil trigger.reload.precedence
+
+    @tool.call("action" => "update", "id" => trigger.id, "precedence" => 42)
+    assert_equal 42, trigger.reload.precedence
+
+    @tool.call("action" => "update", "id" => trigger.id, "name" => "Ranked Watcher 2")
+    assert_equal 42, trigger.reload.precedence, "an omitted key is no opinion, not a clear"
+  end
+
+  test "a non-integer precedence is a tool error" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Bad Precedence",
+        "trigger_type" => "slack",
+        "agent_root_name" => "zimmer",
+        "prompt_template" => "x",
+        "precedence" => "high",
+        "configuration" => { "channel_id" => "C123", "channel_name" => "alerts" }
+      )
+    end
+    assert_match(/precedence must be an integer/, error.message)
+  end
+
+  test "the precedence description states the absolute scale" do
+    description = Mcp::Tools::ActionTrigger.input_schema.to_h.dig(:properties, :precedence, :description)
+
+    assert_match(/absolute scale/i, description)
+    assert_match(/100000 comes before 50/, description)
+  end
+
   test "creates a trigger with a burst cap, and clears it on update" do
     output = @tool.call(
       "action" => "create",

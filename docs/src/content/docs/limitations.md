@@ -763,7 +763,7 @@ after the servers have already been wired for that run.
 | What | Pattern | File |
 | --- | --- | --- |
 | Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb:116` |
-| Auth lost → adopt/rotate/wait, respawn, then park | `/not logged in\|please run\s*\/login/i` | `auth_recovery_service.rb` |
+| Auth lost → adopt/rotate/wait, respawn, then park | the `error` types `authentication_failed` / `oauth_error`, plus a prose net | `auth_recovery_service.rb` |
 | Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb:44` |
 | Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb:75` |
 | Held runtime session id → resume it, or mint a new one | `/session id\b.*\balready in use/i` | `claude_retry_strategy.rb` |
@@ -780,16 +780,25 @@ transcript text, so the next wording change surfaces as a Slack message rather t
 archaeology session. The same reporter fires when a classifier and its recovery service disagree
 about the same exit.
 
-Two gaps remain inside that, deliberately. The reporter sits on the *failure* branch, so an
-unrecognized error on a Claude exit 0 or 1 — which `normal_completion_exit?` reads as a finished
-turn — still reaches `needs_input` without a word. The held-session-id row above is one of those:
-Claude reports that refusal with exit 1, so if the wording changes the classifier just stops
-matching, silently. What catches it then is not a pattern but a state check — a turn that ended
-with nothing written in either transcript store is restarted rather than parked (see
-[Spawning](/sessions/spawning/)) — which covers the first turn of a session and not a later one. And `CodexRetryStrategy` classifies nothing but
-a missing rollout, so every ordinary Codex failure is by construction an exit no classifier
-matched; it answers `classifies_exits? => false` and gets the loud log without a page, because
-paging on a runtime's designed-for path is how a channel gets ignored.
+The normal-completion branch is covered too. Claude exits 0 or 1 for a finished turn, so an exit
+there is the one a stale classifier can hide behind — on 2026-08-20 a reworded auth failure ended
+production session 6412 that way and left a human's message unanswered with nothing but the
+transcript to find it by. `handle_exit` therefore asks a last question with no prose in it: *is the
+last conversational entry in the transcript an API error?* If it is, the turn did not complete
+however the runtime worded it, and the session fails — with the unmatched text in an alert when the
+wording is one nothing recognises — rather than parking as finished. See
+[Agent harness auth](/auth/harness/#a-turn-that-dies-on-an-api-error-can-never-look-finished).
+
+Two gaps remain inside that, deliberately. A stale classifier still costs a **failed session** rather
+than the recovery it should have got: the held-session-id row above is one of those — Claude reports
+that refusal with exit 1 and writes nothing to the transcript at all, so no terminal API error exists
+for the backstop to see and the only state check that catches it is the empty-turn restart (see
+[Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. And `CodexRetryStrategy` classifies nothing but a missing rollout, so
+every ordinary Codex failure is by construction an exit no classifier matched; it answers
+`classifies_exits? => false` and gets the loud log without a page, because paging on a runtime's
+designed-for path is how a channel gets ignored. The terminal-error backstop reads Claude's
+transcript format and `CodexRetryStrategy` does not answer the question at all, so Codex never
+reaches it.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
@@ -958,34 +967,39 @@ guess, and three of them exhaust the session's budget and park it.
 There is no visibility into *which* session holds the lock; the only signal is the
 `"Pool lock held past the wait"` warning in the waiting session's logs.
 
-### A parked session retries forever, once an hour
+### A parked session waits for one event, and only that event
 
-🟡 When the login pool runs dry, `AuthOutageParkService` parks the session and schedules a wake-up
-(see [Agent harness auth](/auth/harness/#when-the-pool-runs-dry)). If the outage has *not* cleared by
-then, the woken session hits the same wall and parks again. There is no cap on park cycles, so a
-genuinely dead account pool produces a wake → fail → re-park cycle indefinitely, each with its own
-push notification and a fresh `Trigger` row (reaped an hour after its scheduled time by
-`CleanupStaleTriggersJob`). The cycle is hourly for an auth outage; for a quota outage it is however
-long the derived reset says, floored at five minutes.
+🟡 When the login pool runs dry, `AuthOutageParkService` parks the session and creates nothing — no
+timer, no per-session trigger (see [Agent harness auth](/auth/harness/#when-the-pool-runs-dry)). What
+wakes it is the `quota_available` edge, fired once per recovery, which spawns one fleet-maintenance
+session that starts spot work in precedence order. Parked **priority** sessions keep a direct sweep
+of their own every fifteen minutes.
 
-That is deliberate — the alternative is a terminal `failed` that no longer recovers when a human
-finally re-authenticates — but it means a long outage is noisy rather than silent. The signal that
-someone must intervene is the repetition itself, not a distinct state.
+That removes the wake → fail → re-park cycle the timers produced, and with it the dozens of
+`Auth outage retry for session #N` rows the trigger list used to carry. It also concentrates the
+whole spot wake into one event, and the sharp edges are all about that concentration:
 
-Two related sharp edges:
-
-- The retry time is only derived from real reset data for a **quota** outage, and only for Claude:
-  it reads `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d`. An auth outage (a rejected identity)
-  has no published reset clock at all, so it falls back to a blind `DEFAULT_RETRY_DELAY` of one hour.
-- Codex has no quota API, so a parked Codex session always gets that same blind hour.
-- The early wake that saves an auth park from that hour is only as good as its evidence, and the
-  evidence is coarse in both directions. It cannot see an outage that heals on Anthropic's side
-  without touching an account row — that one still waits out the timer. And it fires on credential
-  changes that are not repairs at all: the five-minute `sync_current_account_tokens!` adopting a
-  token the CLI rotated on disk moves the same digest. The budget is what makes that survivable
-  rather than exact — `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h), deliberately not reset by
-  a re-park — so a session broken for a reason of its own can still burn three wakes in 45 minutes
-  and spend the rest of that window on the hourly timer.
+- **A missing or broken fleet trigger stalls the whole spot queue.** The trigger is seeded by a
+  migration and points at the `fleet-maintenance` agent root; if it is deleted, disabled, or its root
+  does not resolve, no spot session wakes. A fire that delivers no session **re-arms** the edge
+  (`QuotaAvailabilityMonitor.rearm!`) so the next sweep tries again rather than spending the one
+  chance — but a permanently broken trigger is a permanently stalled queue, visible only as spot
+  sessions sitting in `waiting`.
+- **An auth park is woken by different evidence than a quota park**, and only the quota one has an
+  edge of its own. `accounts.available` never goes false→true for a rejected identity, so a *spot*
+  session parked `auth_unrecoverable` is woken only because the fifteen-minute sweep notices its pool
+  fingerprint changed and asks for the wake on its behalf. Between sweeps it waits.
+- **The fingerprint is coarse in both directions.** It cannot see an outage that heals on Anthropic's
+  side without touching an account row, and it fires on credential changes that are not repairs at
+  all — the five-minute `sync_current_account_tokens!` adopting a token the CLI rotated on disk moves
+  the same digest. `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h), deliberately not reset by a
+  re-park, is what makes that survivable rather than exact. Past the budget the session stays parked
+  until a human resumes it or the pool changes enough for a later sweep to grant one.
+- **Codex has no quota API**, so a parked Codex session is never woken by a quota edge at all — its
+  pool is read for availability only.
+- **`auth_outage_pool_recovers_at` is an estimate, not a schedule.** It is derived from
+  `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d` for a quota park, shown in the banner, and read
+  by nothing.
 
 ### `CodexRetryStrategy` classifies almost nothing
 
@@ -1072,6 +1086,16 @@ And it repairs the tree it finds on the way *in*, so a package that installs bro
 is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
 A session recovers by itself; it does not connect on the first attempt.
 
+### No extension can ship in a built image
+
+`.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
+from the Docker image: `ExtensionRegistry` skips the class that no longer resolves, and every seam
+falls back to native behavior. A deployed Zimmer therefore cannot run any extension, and a setting
+behind one cannot be changed on the deployed app — which is why MCP tool search is a plain
+`AppSetting` column rather than the extension it used to be.
+
+Tracked in [#91](https://github.com/tadasant/zimmer/issues/91).
+
 ### Extension env contributions are unreachable from Codex
 
 `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook
@@ -1143,10 +1167,36 @@ is a fact about someone else's private code that can change without notice. Last
 8. The CLI sometimes rewrites `.credentials.json` with no `claudeAiOauth` block at all. Adopting it
    blindly would brick the pool.
 9. Token lifetime ~8h — inferred, not specified.
+10. `invalid_grant`'s two meanings are separated only by an `error_description` string. Zimmer keys on
+    `/expired|revoked/i` to tell a dead credential from a spent value; if Anthropic reworded that
+    field tomorrow, every rejection would read as merely stale and a genuinely dead account would take
+    three strikes to surface instead of one. Nothing detects the rewording.
 
 Tracked in [#58](https://github.com/tadasant/zimmer/issues/58). None of this can be *fixed* — there is
 no public API to fix it against — so the issue asks for a canary that fails loudly when one of these
 facts stops being true.
+
+---
+
+## A dead pooled account takes about half an hour to reach you
+
+`ClaudeAccount#refresh_token!` no longer condemns an account on a single `invalid_grant` whose body
+says only that the value it presented was rejected — that mistake accounted for 14 of the 15
+`needs_reauth` marks over an eleven-day window and made Tadas re-authenticate the same live account
+four times in a fortnight ([#530](https://github.com/tadasant/zimmer/issues/530)). It now takes three
+such rejections, spread across at least 15 minutes each, before the account is marked.
+
+The cost is on the other side. An account whose credential really is dead, in the way that does *not*
+say "expired" — revoked out of band, or a chain Zimmer orphaned before the fix landed — stays `active`
+for at least half an hour while the strikes accumulate. Two strikes must be 15 minutes apart and the
+sweep runs every 5 minutes, so the floor is ~30 minutes and the usual case is 30–45. During that
+window rotation can hand a session an account that cannot mint an access token. It is a deliberate
+trade of a slower true positive for far fewer false ones, not an oversight.
+
+The strikes are on `claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at`. They
+are on the account's Administrate record page but **not** on `/quotas`, which is where anyone actually
+looks — so "why is this account still active when every refresh fails?" is a question `/quotas` cannot
+answer.
 
 ---
 
@@ -1309,6 +1359,31 @@ silently skipped by the adapter with a warning nobody reads.
 ([#65](https://github.com/tadasant/zimmer/issues/65)). The body exists now, and the test suites for
 `SkillsConfig` and `HooksConfig` assert every registered artifact really has one — but that is a
 Zimmer-side test, not something AIR enforces.
+
+### AIR parses the config files it just wrote without a guard, and names no file when it fails
+
+`@pulsemcp/air-sdk` `JSON.parse`s each of the adapter's `configFiles` — `.mcp.json` and
+`.claude/settings.json` — with no `try`/`catch` in `transform-runner.js`, and `@pulsemcp/air-core`
+does the same for `air.json` and the catalog indexes. Every parse of those same two config files
+inside the *Claude adapter* is guarded; the SDK's and core's are not. So a failed parse exits 1 with
+Node's bare parse error — no path, no file, nothing to act on.
+
+For the two files in the target directory it is only reachable as a race, which was verified against
+the pinned CLI: neither an already-corrupt `.mcp.json` nor an already-corrupt `.claude/settings.json`
+reproduces it, because the adapter rescues its own parse failure and rewrites both from scratch
+before the SDK reads them. It takes a second writer changing one between the adapter's write and the
+SDK's read, which `air prepare` invites by running over a session directory a previous job may still
+be tearing down. A malformed `air.json` or catalog index reaches the same signature by a different,
+deterministic route.
+
+Zimmer cannot fix the upstream parse, so it treats the signature as transient, retries it, and
+prepends its own description of the target's config files to the error (skipped when AIR's message
+already carries a path). That is a workaround for a message that should have carried one: if AIR ever
+adds it, the enrichment becomes redundant rather than wrong. Tracked upstream of Zimmer's fix in
+[zimmer#590](https://github.com/tadasant/zimmer/issues/590). First seen in production 2026-08-21 (session 6787), which was ~16 hours into a task
+on a clone already prepared many times. The unhandled error failed the whole job; what recovered it
+was Zimmer's orphan cleanup restarting the session ~20s later, at the cost of a full MCP reconnect
+mid-work — not anything the prepare path chose.
 
 ### The environment configs describe a catalog that no longer exists
 
@@ -2750,8 +2825,34 @@ a worker restart or a deploy — but if it is discarded (retries exhausted on an
 a manual queue purge, a failed deserialization), the session sits in `waiting` indefinitely with a
 banner whose "next check" time is permanently in the past. `DeploymentRecoveryJob` will not pick it
 up: that only claims sessions carrying `metadata["paused_by"] == "recovery"`, which a held session
-does not have. `spot_hold_count` is recorded but nothing acts on it. A sweep for `waiting` sessions
-whose `spot_hold_retry_at` is well past would close this.
+does not have. A sweep for `waiting` sessions whose `spot_hold_retry_at` is well past would close
+this.
+
+The backoff on consecutive holds widens the window in which this can go unnoticed: a session pinned
+at the one-hour ceiling has an hour, rather than ten minutes, between the moment its chain breaks
+and the moment anyone could tell from `spot_hold_retry_at` that it has.
+
+---
+
+## A backed-off hold can sleep past the moment it could have started
+
+`SpotSessionHold` doubles the re-check interval on consecutive holds, up to an hour for a
+utilization hold and half an hour for a fleet-cap one. The gate is only ever consulted at a
+re-check, so a condition that clears early is not noticed until the next one: a session pinned at
+the ceiling can sit `waiting` for up to an hour after the pool came back under its target, or up to
+half an hour after a slot freed.
+
+This is the deliberate cost of the fix, not an oversight. A flat interval makes the held population
+an arrival rate that cannot fall when the deployment is struggling, and on 2026-08-20 that rate —
+~80 held sessions re-checking every ~11 minutes — outran the `agents` queue's ability to service it
+and grew a GoodJob backlog until it paged. The ceilings are chosen against how fast each condition
+can actually clear (a pool window comes down over hours; a slot frees unpredictably, hence the
+shorter one), the delay is visible as `spot_hold_retry_at` on the session's detail page, and a human
+who wants a specific session now can make it priority.
+
+What would close it properly is waking held sessions on the event rather than polling for it —
+publishing a signal when a session ends or a window resets — which is a larger change than the
+backoff and is not built.
 
 ---
 
@@ -3150,7 +3251,95 @@ gaps remain, both deliberate:
   carrying `paused_by: "recovery"` — a session at rest with a stale job id is inert, but it is not
   tidied either.
 
+## The historical backfill sweeps forward only, and "complete" means one pass
+
+`TokenUsageBackfillJob` walks transcript directories in sort order and records a cursor. A directory
+created *while a run is in flight* that sorts **before** the cursor is never visited by that run.
+That is deliberate rather than an oversight: a directory created mid-run holds files written
+mid-run, and `TokenUsageIngestionJob`'s two-hour lookback on a 10-minute cron already has them. But
+it does mean the backfill alone is not a coverage proof — the two jobs are, together.
+
+Two consequences worth knowing:
+
+- **`complete` means "one pass finished", not "the ledger is exhaustive".** A transcript that was
+  unreadable when its chunk ran (a permission error, a file deleted mid-scan) is skipped, the chunk
+  still commits, and the run still finishes. `covers_since` on the Costs page is the oldest row
+  actually stored, which is the honest figure; nothing claims every call ever made is in there.
+- **A transcript root that gets emptied is invisible.** If `~/.claude/projects` is wiped, a re-scan
+  completes instantly against nothing and the ledger keeps whatever it already had. The rows are
+  durable, so this loses no history — but a fast, clean "complete" is not evidence that the corpus
+  was read.
+
+`progress_pct` is also approximate while a run is in flight: the denominator is re-derived each
+slice from the directories still ahead of the cursor, so it moves as clones are created and cleaned
+up. It is a progress bar, not an accounting.
+
 ---
+
+---
+
+## Context-feature attribution is an estimate with a large residual
+
+`token_usage_features` says which context-management feature a request's tokens paid for.
+Nothing in the API supports that: the `usage` object is a per-request total with no
+per-content-block decomposition, so every figure in that table is derived from transcript
+content rather than measured.
+
+The estimate is built not to mislead — shares are divided by `max(estimated, actual)` so the
+parts cannot exceed the whole, and the shortfall is carried as an explicit unattributed line
+— but the shortfall is big. On this deployment about **56% of tokens** land there. Three
+things account for most of it, and none is fixable from this side (a fourth, below, is smaller):
+
+- The harness system prompt and the tool schemas of every attached MCP server are in every
+  priced prompt and in no transcript. This is the bulk of it, and it is a per-request
+  *constant*, so it dominates short conversations.
+- Extended thinking is written to the transcript as `thinking: ""` plus a signature. Across
+  955 thinking blocks in the recent corpus, not one retained its text. The signature is
+  counted; the reasoning is not.
+- System reminders — including the injected CLAUDE.md — are usually not persisted either.
+- A turn whose prompt cache has expired re-writes the whole prefix, so its
+  `cache_creation_input_tokens` covers content the attributor is holding as already-carried.
+  The estimate for that turn stays small and the re-write lands in the residual. Those are the
+  expensive turns, and the content being re-written is exactly the always-appended material the
+  page exists to indict, so the residual is understating the very thing it is asked about.
+
+So the table ranks features against each other honestly and does **not** account for the
+majority of the bill. Read it as "of the context I can see, here is the split", and do not
+cut a feature on a thin margin.
+
+## A feature detector can only be backfilled as far as transcripts survive
+
+Adding a detector is one entry in `ContextFeatureRegistry` plus a re-ingest, and because
+ingestion is an idempotent scanner over files on disk, the new detector is applied to
+history for free. That is bounded by Claude Code's own retention of
+`~/.claude/projects`, which on this deployment holds about **30 days** in bulk.
+
+The usage rows themselves are unaffected — they are already stored, and their totals do not
+change. Only the per-feature split is limited: a detector added today cannot explain spend
+from three months ago, because the evidence it would read has been pruned. Nothing warns
+about this; the older part of the window simply shows a larger unattributed share.
+
+## Experimental-setting cohorts are observational, and the first one is purely temporal
+
+The Costs page compares spend on each side of an experimental setting. Nothing about it is a
+controlled experiment, and three limits are worth stating rather than discovering:
+
+- **The settings are global.** A cohort is "every session that ran while the setting was on",
+  not a random assignment. Whatever else changed over the same stretch is inside the cohort.
+- **A backfilled setting's cohorts are a date, not a treatment.** For `mcp_tool_search`, "off"
+  is every session before 2026-08-22 13:55 UTC and "on" is every session after it, so anything
+  that landed the same afternoon — including the token-usage accounting changes in #591, two
+  hours later — is perfectly confounded with the setting. This is stated on screen next to the
+  number, but no amount of stating fixes it: only toggling the setting back and forth, which
+  makes the cohorts interleave in time, produces a comparison the data can carry.
+- **Normalization is partial.** Cost per API call divides out session length. It does not
+  divide out which model ran or what the work was. The paired-by-root drilldown holds the
+  agent root constant; it holds nothing else constant.
+
+The report refuses to print a percentage when a side has fewer than 5 sessions or 50 API calls
+in the window, and it excludes sessions whose start and end values disagree. Those guards stop
+the most obvious wrong readings. They do not turn an observational comparison into a causal
+one, and a thin report saying "not enough data to compare" is the correct output, not a bug.
 
 ## Open questions
 

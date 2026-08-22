@@ -142,6 +142,54 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     assert_includes details, "20 scheduled (future-dated)"
   end
 
+  # The number alone is not triageable. `agents` holds a thread for the whole life
+  # of a session while `default` and `pollers` turn jobs over in milliseconds, so
+  # the same ready count means "one starved queue" or "everything is busy" — and
+  # those want opposite responses. Naming the queue and the job classes in the page
+  # is what makes the next firing readable by a responder with no route to /jobs.
+  test "the alert body names the backlogged queues and job classes" do
+    make_queue_critical
+    insert_jobs(40) do
+      { queue_name: "agents", job_class: "AgentSessionJob",
+        created_at: 20.minutes.ago, updated_at: 20.minutes.ago, scheduled_at: 20.minutes.ago }
+    end
+
+    SystemHealthMonitorJob.perform_now # streak -> 1
+
+    details = ""
+    AlertService.expects(:raise_alert).once.with do |_title, opts|
+      details = opts[:details].to_s
+      true
+    end
+    SystemHealthMonitorJob.perform_now
+
+    assert_includes details, "Ready by queue: default 105, agents 40"
+    assert_includes details, "Ready by job class: PlaceholderJob 105, AgentSessionJob 40"
+  end
+
+  # The breakdown is two extra grouped scans of `good_jobs` at exactly the moment
+  # the database may be the thing going wrong. A depth number that reaches a human
+  # beats a richer one that raises on the way, so the detail degrades and the page
+  # still goes out.
+  test "a breakdown that cannot be read does not stop the page going out" do
+    make_queue_critical
+    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown)
+                        .raises(ActiveRecord::StatementInvalid, "canceling statement due to statement timeout")
+
+    SystemHealthMonitorJob.perform_now # streak -> 1
+
+    details = ""
+    AlertService.expects(:raise_alert).once.with do |_title, opts|
+      details = opts[:details].to_s
+      true
+    end
+    SystemHealthMonitorJob.perform_now
+
+    assert_includes details, "Ready (waiting on a worker): 105"
+    assert_includes details, "Ready by queue: unavailable"
+    assert_includes details, "Ready by job class: unavailable"
+  end
+
   test "does not alert on a deep queue that is still draining" do
     # Depth well past the critical threshold, but the oldest job arrived seconds ago:
     # a busy queue, not a stalled one.

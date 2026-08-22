@@ -150,6 +150,12 @@ class AgentSessionJob < ApplicationJob
   # The delay keeps the replay out of the shutdown window that killed the original,
   # and the jitter stops a backlog interrupted by one deploy from re-landing in
   # lockstep.
+  # How long a start waits before re-asking whether the session is paused, when the
+  # trigger table could not be read. Short: this is a transient-database retry, not
+  # a backoff — the question it re-asks is cheap and the session is stalled until it
+  # gets an answer.
+  PAUSE_CHECK_RETRY_DELAY = 1.minute
+
   MAX_INTERRUPTED_START_REQUEUES = 20
   INTERRUPTED_START_REQUEUE_DELAY = 30.seconds
   INTERRUPTED_START_REQUEUE_JITTER = 30.seconds
@@ -327,6 +333,44 @@ class AgentSessionJob < ApplicationJob
         end
       end
 
+      # A pause outranks every reason there is to start this session.
+      #
+      # This is the backstop the whole "Pause Until wins" contract rests on. Above
+      # it sit callers that each decide, on their own evidence, that a `waiting`
+      # session should run now: the spot-hold re-check timer, the ceiling sweep,
+      # the auth-outage un-park, a fleet-maintenance agent working the ranked
+      # queue, a REST client. A paused session is `waiting` and carries a
+      # precedence like any other, so nothing in what those callers read tells
+      # them apart — and the fleet selector is an AGENT reading a skill, which is
+      # a judgement rather than a guarantee. Refusing here makes a paused session
+      # unstartable EARLY no matter who asks or why.
+      #
+      # Only a FIRST START is refused, which is the same narrowing the spot gate
+      # below takes and for the same reason. A wake firing on time delivers a
+      # follow-up prompt; `resume_monitoring` re-attaches to a process that is
+      # already running; `clone_only` prepares a clone without spending a turn.
+      # None of those is an early start, and blocking them would strand the very
+      # wake this guard exists to protect.
+      #
+      # Standing down does NOT re-enqueue. The armed wake is the next event in
+      # this session's life, and re-arming the re-check timer alongside it would
+      # only re-ask a question already answered.
+      #
+      # What happens WHEN that wake fires is deliberately not decided here. The wake
+      # delivers a prompt, and a prompt-carrying turn answers to the spot gate like
+      # any other: a pause says "not before this time", never "and then run
+      # regardless of the queue". The spot queue stays the scheduler for spot work.
+      #
+      # Reading `paused_until_scheduled_time?` rather than the broader
+      # `awaiting_scheduled_wake?` matters too. A wall-clock pause expires; an
+      # `ao_event` watcher on a session that never transitions again does not, and
+      # refusing on that would leave this session with no next event at all.
+      if !resume_monitoring && !clone_only && follow_up_prompt.blank? && session.waiting? &&
+         paused_until_scheduled_time?(session, log_buffer)
+        log_buffer.flush
+        return
+      end
+
       # Hold a spot session at the starting line when a Claude Code quota window
       # has reached its target or every session slot is taken. Gated here rather than at creation so
       # the session still exists, is visible, and simply starts later — the job
@@ -478,7 +522,8 @@ class AgentSessionJob < ApplicationJob
         # Use lifecycle_manager to resume monitoring
         resume_result = lifecycle_manager.resume_monitoring(
           pid: process_pid,
-          stderr_log_path: stderr_log_path
+          stderr_log_path: stderr_log_path,
+          verify_identity: true
         )
 
         if resume_result.success?
@@ -506,6 +551,17 @@ class AgentSessionJob < ApplicationJob
               level: "info"
             )
             log_buffer.flush
+            return
+          end
+          # The process this job was told to adopt is gone and the turn it was meant to
+          # carry was never delivered. If the pool is still empty, that is the outage
+          # rather than a finished turn: park into `waiting`, and
+          # deliberately WITHOUT the recovery marker below — a parked session must not be
+          # auto-continued into the same exhausted pool by the recovery sweeps.
+          if AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
+            session.update!(running_job_id: nil)
+            session.pause! if session.may_pause?
+            @broadcast_service.session_status(session)
             return
           end
           # Mark as recovery-initiated pause so CleanupOrphanedSessionsJob and
@@ -1482,6 +1538,12 @@ class AgentSessionJob < ApplicationJob
                 "api_error_retries_exhausted"
               when /Signal death resume limit exhausted/i
                 "signal_death_retries_exhausted"
+              when /Turn ended on an API error no recovery path claimed/i
+                # The backstop in ProcessLifecycleManager#handle_exit: a turn that
+                # died on an API error no recovery path claimed. Its own bucket
+                # because it is the one failure class that means a classifier has
+                # gone stale, and the health dashboard is where that shows up.
+                "terminal_api_error"
               when /Clone directory no longer exists/i
                 # Benign terminal case: the clone was GC'd after the session was torn
                 # down, so a continuation re-spawn is impossible (not a system fault).
@@ -1539,6 +1601,10 @@ class AgentSessionJob < ApplicationJob
             log_buffer.flush
             return
           end
+          # A stop with the turn still undelivered and the pool still empty is the outage,
+          # not a completed turn. Parking marks the session pending_sleep, so the pause
+          # below carries it through to `waiting` instead of the human's action queue.
+          AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
           session.pause! if session.may_pause?
           # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
           @broadcast_service.session_status(session)
@@ -1940,11 +2006,17 @@ class AgentSessionJob < ApplicationJob
     # metadata flag, because a session that slept successfully carries none:
     # execute_pending_sleep clears `pending_sleep` once `sleep!` succeeds and
     # writes no `paused_by`. The armed-wake query is the only signal there is.
+    #
+    # A session dormant in the spot queue is case 2 as well and needs its own
+    # signal, because it deliberately arms nothing: SpotSessionPause's record is
+    # what says "asleep on purpose, waiting on the gate". Recovering one would
+    # resume it into the very window that paused it — or, for a session a human
+    # parked there from "Pause Until", straight out of the queue they put it in.
     if session.waiting?
       if session.session_id.blank?
         requeue_interrupted_start(session)
         return
-      elsif session.awaiting_scheduled_wake?
+      elsif session.awaiting_scheduled_wake? || SpotSessionPause.paused?(session)
         stand_down_for_dormant_session(session)
         return
       end
@@ -2054,15 +2126,53 @@ class AgentSessionJob < ApplicationJob
   # Nothing was interrupted; waking it would cancel the sleep it just scheduled
   # and spend a turn telling it about a system event that did not affect it.
   def stand_down_for_dormant_session(session)
+    waiting_on = SpotSessionPause.paused?(session) ? "its turn in the spot queue" : "a scheduled wake-up"
+
     Rails.logger.info(
       "[AgentSessionJob] Skipping InterruptError recovery for session #{session.id}: " \
-      "session is sleeping until a scheduled wake-up"
+      "session is sleeping until #{waiting_on}"
     )
     session.logs.create!(
-      content: "Session was already asleep waiting for a scheduled wake-up — nothing was interrupted, " \
+      content: "Session was already asleep waiting for #{waiting_on} — nothing was interrupted, " \
                "so recovery left it alone.",
       level: "info"
     )
+  end
+
+  # Whether this start must stand down for a pause, recording why when it must.
+  #
+  # The DB error is handled here rather than inside the predicate, because the two
+  # possible wrong answers are not symmetrical on a start path. Answering "paused"
+  # on an unreadable trigger table would strand the session: standing down does not
+  # re-enqueue, and the log line would claim a pause that may not exist. Answering
+  # "not paused" would start a session somebody asked to leave alone. So neither is
+  # taken — the job re-enqueues itself and asks again shortly, which is the one
+  # response that decides nothing.
+  def paused_until_scheduled_time?(session, log_buffer)
+    return false unless session.paused_until_scheduled_time?
+
+    # A session log rather than only a Rails log: "why did my paused session not
+    # start" is asked from the session page, and the answer has to be there.
+    phrase = session.pending_wake_phrase
+    Rails.logger.info("[AgentSessionJob] Session #{session.id} not started: #{phrase}")
+    log_buffer&.add(
+      "Not starting this session: #{phrase}. A pause outranks precedence and scheduling class — " \
+      "the session stays dormant and starts when its wake-up fires.",
+      level: "info"
+    )
+
+    # The re-check chain ends here, so the hold record would sit on the session
+    # promising a re-check that never comes. The wake is what starts this session
+    # now, and it starts it as a fresh admission.
+    SpotSessionHold.clear(session)
+    true
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.warn(
+      "[AgentSessionJob] Could not read pending wake-ups for session #{session.id} (#{e.message}) — " \
+      "re-enqueuing rather than deciding"
+    )
+    AgentSessionJob.enqueue_new_session(session.id, delay: PAUSE_CHECK_RETRY_DELAY)
+    true
   end
 
   # Re-transition a session to running for a prompt this job is already carrying.
@@ -2435,6 +2545,12 @@ class AgentSessionJob < ApplicationJob
           return
         end
 
+        # The transcript's last end_turn can predate the turn this job was delivering —
+        # that is exactly the shape of a resume whose process died before it wrote
+        # anything. When the undelivered prompt is still in metadata and the pool is
+        # still empty, this is the outage, so park into `waiting` rather than reporting
+        # a completed turn.
+        AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
         session.pause! if session.may_pause?
         # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
         @broadcast_service.session_status(session)

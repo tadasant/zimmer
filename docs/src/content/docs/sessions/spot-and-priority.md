@@ -13,9 +13,9 @@ Zimmer's answer is to classify sessions by where they came from, and to let the 
 | Class | Behavior |
 | --- | --- |
 | **priority** | Starts whenever it is ready. Never consulted about quota or concurrency. |
-| **spot** | Starts while the Claude Code account pool averages under both window targets and a session slot is free. Otherwise it waits and starts later. |
+| **spot** | Starts while the Claude Code account pool averages under both window targets and a session slot is free. Otherwise it waits and starts later. **And stops if a window reaches its target while it is running.** |
 
-A held spot session is **deferred, never cancelled**. Nothing is lost.
+A held or paused spot session is **deferred, never cancelled**. Nothing is lost.
 
 The targets on `/quotas` are a **level to reach, not a line to stay clear of**. A deployment sitting
 idle should be idle because its windows are at 80%, never because the gate was being careful.
@@ -135,6 +135,9 @@ There is no rate, no projection and no horizon. The gate holds work when a windo
 its target, not when it might. Utilization falls on its own — Anthropic's counters are sliding
 windows — so the pause ends when the number does, on the next re-check.
 
+The same two checks decide for a session that is **already running**, which is what makes a target a
+ceiling rather than only a starting line — see [The target is a ceiling](#the-target-is-a-ceiling).
+
 ### The concurrency limit
 
 **Max sessions at once** (default 10) is what bounds how fast the quota can be spent, and its
@@ -180,27 +183,51 @@ gate falls open on `no_snapshot`.
 
 ### When the pool comes back
 
-The Account Pool section answers "we're blocked until when?" beside each average, as a wall-clock
-time and a countdown. Both come off the same `ClaudeAccountPool` measure as the figures above them,
-and each names the reset that actually returns capacity on its window rather than the soonest reset
-of that kind anywhere in the pool:
+The Account Pool section leads with the answer to "when does work get unblocked?", as a clock
+ticking down by the second to a wall-clock time. It comes off the same `ClaudeAccountPool` measure
+as the figures below it.
 
-- **Next usable 5-hour reset** is measured only over accounts whose weekly allowance is still there.
-  An account whose week is spent does not start serving again when its 5-hour window rolls over, so
-  including it would report the pool as recovering hours before it does — the same trap the
-  *effective* qualifier on the 5-hour average exists to avoid. It names that rollover whether or not
-  the pool is currently short of headroom, so on a healthy pool it reads as the next 5-hour boundary
-  rather than as a wait. When every account with a reading has spent its week there is no such time,
-  and the note says so instead: the pool is blocked until the 7-day reset, or — if no weekly reset
-  time is recorded either — that nothing on the page says when it comes back. When the servable
-  accounts simply are not waiting on a rollover, it says that too.
-- **Next 7-day reset** is measured only over accounts whose week *is* spent, because those are the
-  ones a weekly rollover returns to service. When no account is weekly-blocked the note says that
-  rather than naming a rollover on an account that was never blocked. It reports the soonest reset
-  *recorded* among the spent accounts and counts them separately, because a spent window does not
-  always carry a reset timestamp — when none of them does, the note is the count alone.
+An account can serve a request when **both** of its windows have room, so the moment it comes back
+is the later of the two resets it is actually waiting on — a window that already has room
+contributes nothing, because that room is there now. The pool's moment is the earliest of those
+across its accounts.
 
-Neither figure counts a reset time that has already passed. A past timestamp describes a window that
+That is the whole of the rule, and it is worth being concrete about why it is not two separate
+answers. An account sitting on an empty 5-hour window with its week spent comes back the moment its
+week does, whatever its 5-hour window is doing; an account over its 5-hour cap with plenty of week
+left comes back when the 5-hour window rolls. Measuring the two windows separately — a "next usable
+5-hour reset" over the accounts with weekly allowance left, and a 7-day reset over the rest — cannot
+express the first of those, so a pool whose soonest relief was a weekly reset twenty minutes out
+would advertise a 5-hour rollover hours later.
+
+The banner has three states, and the empty ones say which emptiness they are:
+
+- **A countdown**, when every account with a reading is out of capacity and at least one of them can
+  say when it returns. It names the wall-clock moment beside the clock and how many accounts are
+  out.
+- **"Work is not blocked"**, when an account has room on both windows right now. There is nothing to
+  count down to, and a clock ticking toward the next rollover would read as a wait that is not one.
+- **"Nothing here says when work resumes"**, when everything with a reading is out and none of them
+  recorded a reset time. A zeroed clock would read as "any moment now".
+
+The tick is driven in the browser from an absolute ISO-8601 instant in the markup
+(`unblock_countdown_controller.js`), not from a duration the server rendered — /quotas is a page
+people leave open, and "in 22m" is right for one second and wrong for every second after it. The
+server renders the same clock string from the same instant, so the first paint is already correct
+and the page still tells the truth if JavaScript never runs. When the deadline passes while the page
+is open the clock stops at `now` and says the reading is stale rather than counting into a negative
+wait.
+
+Under the weekly average, **Next 7-day reset** still describes its own window: it is measured only
+over accounts whose week *is* spent, because those are the ones a weekly rollover returns to
+service. It is the detail behind the headline, not the headline — an account whose week returns at
+noon but whose 5-hour window is spent until 2pm is not servable at noon. When no account is
+weekly-blocked the note says that rather than naming a rollover on an account that was never
+blocked. It reports the soonest reset *recorded* among the spent accounts and counts them
+separately, because a spent window does not always carry a reset timestamp — when none of them does,
+the note is the count alone.
+
+Nothing here counts a reset time that has already passed. A past timestamp describes a window that
 has already rolled over, which is the same rule the counters follow, so it is not something the pool
 is waiting for.
 
@@ -243,6 +270,50 @@ session for good.
 The jitter matters at a backlog: without it, sessions held in the same minute re-check in the same
 minute forever, every one of them reading the same fleet size before any of them has started.
 
+#### Consecutive holds back off
+
+Jitter spreads a held population out. It does not make it smaller — and the size is what matters to
+the queue. A flat ten-minute interval means *N* held sessions put a fixed *N* / 10 min of
+`AgentSessionJob` work onto the `agents` queue for as long as the hold lasts, an arrival rate that
+cannot fall when the deployment is struggling. That is what it is for: on 2026-08-20, ~80
+quota-held sessions re-checking every ~11 minutes held a standing ~8 jobs/min against sixteen
+`agents` threads, eleven of them occupied for hours by live sessions. When a host-latency episode
+pushed each re-check into the tens of seconds, arrivals outran service and the GoodJob ready queue
+grew without draining until `SystemHealthMonitorJob` paged.
+
+So each *consecutive* hold doubles the interval — 10m, 20m, then on until the ceiling clamps it — and
+the ceiling depends on why the session is held, because the two reasons clear on very different
+timescales:
+
+| Hold reason | Ceiling | Why |
+| --- | --- | --- |
+| `at_utilization_limit` | 1 hour | A pool window comes back down over hours. Re-checking more often than this cannot learn anything new, and this is the reason that produces the long-lived holds. |
+| `fleet_at_cap` | 30 minutes | A slot frees whenever any running session ends, which is unpredictable and often soon. |
+
+So a utilization ladder runs 10m, 20m, 40m, 60m, 60m…, and a fleet-cap one 10m, 20m, 30m, 30m….
+
+Jitter is added *after* the ceiling, so a population pinned at the ceiling still spreads out. The
+ladder resets in two situations, and both are the caller saying so rather than anything inferred
+here:
+
+- **The session gets through.** `spot_hold_count` is one of the `spot_hold_*` metadata keys cleared
+  on start, so the next outage begins again at ten minutes rather than resuming where the last one
+  left off.
+- **A person asks for this session directly.** Restart, `action_session`'s `restart_from_scratch`
+  and `POST /api/v1/sessions/:id/restart` all except the same keys from the metadata they carry
+  forward. They have to: those paths re-enter the gate looking *exactly* like a scheduled re-check —
+  no prompt, no resume flag — so without it they would read as another consecutive hold and push the
+  ladder up, making someone who asked for the session now wait longer than if they had left it
+  alone.
+
+Restarting resets the ladder; it does not *bypass* the gate. A session the gate still refuses is
+held again, back at ten minutes. The lever that starts it now is **Make this session priority**.
+
+The cost is real and is not hidden: a session can now sleep longer than it strictly had to, up to
+its ceiling, if the condition clears early. That is bounded, visible as `spot_hold_retry_at` on the
+session's detail page, and a human who wants it now can make the one session priority — which is
+what the hold banner already says.
+
 Refusing instead would mean the gate silently deletes work: a `github_issue` trigger that fires once
 during a busy afternoon would never run at all.
 
@@ -254,12 +325,241 @@ is the intent — the pause is meant to last exactly as long as the utilization 
 for considerably longer, which is the cost of a hard stop and is visible on `/quotas` the whole time.
 Promoting one session to priority is the lever for a single piece of work that cannot wait.
 
-**Only a session's first start is gated.** Follow-ups, monitoring resumes and clone-only setups pass
-straight through. Interrupting a conversation already underway strands it half-done and wastes the
-tokens already spent on it — the decision point that means something is "should this work begin".
+**Only a session's first start is gated at the starting line.** Follow-ups, monitoring resumes and
+clone-only setups pass straight through the admission check. What stops an already-running spot
+session is the ceiling sweep below, which acts only when a window has actually reached its target —
+so an ordinary follow-up is never held for a pool with headroom.
 
 The session detail page shows a **Held for quota headroom** banner naming the reason, the next check
 time, and how to start it now.
+
+## The target is a ceiling
+
+Admission alone made the target a **floor under when new spot work stops**, not a ceiling on what
+spot work spends. A session admitted at 79% goes on running, and a fleet of them carries the window
+straight past the line: on 2026-08-20 the spot gate card read *"Holding spot sessions: 5-hour window
+at 89% of its 80% target"* while twelve sessions ran and three accounts sat in `quota_exceeded`. The
+gate had stopped admitting at 80% and then watched the work already in flight climb toward 100%.
+
+So `SpotCeilingSweepJob` re-evaluates the same decision every five minutes and applies it to running
+sessions:
+
+| The gate says | What happens to running spot sessions |
+| --- | --- |
+| `at_utilization_limit` | Every running spot session is **paused**. |
+| `fleet_at_cap` | Nothing. A running session already holds its slot; pausing it would free that slot only for another spot session the same cap would hold. |
+| anything else | Sessions dormant in the queue are **resumed**, highest precedence first (oldest pause first within a tie). |
+
+Priority sessions are never paused, on any reading. Nor are Codex sessions (they spend nothing
+against a Claude window) or status-summary forks (Zimmer's own seconds-long bookkeeping).
+
+### What a pause does
+
+The session's CLI process is terminated and the session goes dormant in **`waiting`** — the same
+shape a `wake_me_up_later` sleep leaves behind, reached the same way (`pending_sleep` is set, and the
+pause callback carries it needs_input → waiting).
+
+`waiting`, not `needs_input`, is deliberate: a session in `needs_input` lands on the homepage action
+queue, which is for work a human must act on. A quota pause is not — and ten of them at once would
+bury the sessions that genuinely need a person.
+
+Pausing interrupts a turn. What the agent had already written to disk stays written; the tool call in
+flight is lost, along with any reasoning not yet flushed to the transcript. That cost is paid once
+per pause, and it is recorded rather than silent:
+
+| Where | What it says |
+| --- | --- |
+| `metadata` | `spot_pause_at`, `spot_pause_reason`, `spot_pause_detail` (the gate's own sentence), `spot_pause_count`, and `paused_by: spot_quota` |
+| The session log | A warning line naming the window, the target, and what brings the session back |
+| The session page | A **Paused mid-run for quota headroom** banner, with the same **Make this session priority** button the hold banner carries |
+| MCP | `get_session` reports the pause, why, and when it resumes |
+
+`paused_by: spot_quota` is what keeps the recovery sweeps out of it: it is neither `user` (which stops
+auto-continues) nor `recovery` (which would have `DeploymentRecoveryJob` resume the session straight
+back into the window that stopped it). A **Refresh all** on the dashboard skips these sessions for the
+same reason.
+
+### What brings it back
+
+The next sweep that finds the gate open resumes them, with the standard system-recovery nudge telling
+the agent to pick up where it left off. Two things shape which and how many:
+
+- **A resume margin.** Resumption decides against targets lowered by `SpotGateService::RESUME_MARGIN_PCT`
+  (5 points): with an 80% target, a paused session resumes when the pool reaches **75%**. Holding a
+  session that never started costs nothing, so admission uses the plain target; resuming one that was
+  interrupted mid-turn costs a lost tool call, so it waits for real headroom rather than resuming at
+  79.9% and pushing the window straight back over.
+- **A batch of five per sweep**, and never more than the free slots under **Max sessions at once**. A
+  window that has just come back down is at its most fragile — every session resumed starts spending
+  again immediately — so the fleet walks back up over successive sweeps rather than restoring all at
+  once. Sessions past the batch keep their place at the front of the next one.
+
+A session someone promotes to **priority** while it sleeps is resumed by the next sweep whatever the
+windows say, because priority work is never gated on quota.
+
+One thing outranks even that: a session with a **wake-up still ahead of it** is left alone. See
+[A pause outranks precedence](#a-pause-outranks-precedence) below.
+
+### Joining the queue on purpose
+
+The same dormancy is reachable deliberately, and it is the answer to "this session should wait, and
+no time I could name is the right one". **Pause Until → Spot Queue** on a session card, in the
+detail header, or in the phone's bottom sheet — `pause_into_spot_queue` on `action_session` for an
+agent — sleeps the session and hands it to this sweep with **no wake-up trigger and no wall-clock
+time at all**.
+
+It is the same record and the same resume path as a ceiling pause, with three differences, because
+nothing interrupted this session:
+
+- `spot_pause_reason` is `user_spot_queue`, so the banner, `get_session` and the session log all say
+  a human parked it rather than describing a turn it never lost. It is also left out of the
+  "paused mid-run" count on `/quotas`, which is about what the ceiling cost.
+- A session that resolves to **priority** is set to `spot`, since the sweep resumes a non-spot
+  sleeper on its very next pass. **Make this session priority** on the banner reverses it, and that
+  next sweep resumes the session — which is the intended way back out.
+- The panel's **Resume with** box still applies: with no trigger to hang the prompt on, it rides on
+  the session and is delivered when the sweep reaches it, in place of the recovery nudge.
+
+Its place in line is whatever `precedence` the session already carries — parking it does not
+re-rank it. Any unfired wake-up armed from the same control is cancelled, because picking the queue
+after picking a time means "not then, this instead".
+
+The sweep runs every five minutes, but what bounds how fast the ceiling reacts is the **reading**, not
+the sweep: utilization comes from quota snapshots, which land when `ClaudeUsageSamplerJob` samples
+(every 15 minutes), when an account rotates, and when someone opens `/quotas`.
+
+## Precedence: ranking the spot queue
+
+`scheduling_class` answers "does this session wait for quota headroom". It says nothing about which
+of the waiting ones goes first — and with a permanently long spot queue that is the question that
+actually decides what gets done.
+
+`precedence` is that ordering. Every session carries one; only spot sessions are ordered by it.
+
+- **Higher is handled sooner, on an absolute scale.** 100000 comes before 50, and 50 comes before 0.
+  It is not a 1..N rank and nothing renumbers it — values are sparse on purpose, so there is always
+  room to slot work between two existing entries. Ties break on `created_at`, oldest first.
+- **It lives on every session, priority ones included.** A priority session demoted to spot has to
+  land somewhere sensible, and a spot session promoted to priority has to keep its place for when it
+  is demoted back. A column populated for half the rows would lose that on every round trip.
+- **A spawn lands just above its parent.** `start_session` with no `precedence` puts the new session
+  one point above the session named in `parent_session_id`, so the child that finishes its parent's
+  job runs before unrelated work queued beneath it and a tree of work stays contiguous. Name a value
+  only when you mean to move the work relative to everything else in the queue.
+- **A trigger can predefine one**, alongside the class it already carries, so a feed is ranked once
+  rather than one spawned session at a time.
+
+### A pause outranks precedence
+
+Precedence answers *which* waiting session goes first. It does not answer *whether* a session may
+start at all, and one thing overrides it unconditionally: a **wall-clock pause**.
+
+A session that a human paused until a time with **Pause Until**, or that an agent slept with
+`wake_me_up_later`, sits in `waiting` and keeps whatever precedence it had. Nothing in the columns
+distinguishes it from a session merely queued behind the gate — both are `waiting` spot sessions with
+a number. So the rule is enforced on the *start*, not on the ordering:
+
+**A session paused until a time it has not reached does not start, whatever its precedence and
+whatever its scheduling class.** It stays in the queue, at its rank, and the selector takes the next
+candidate.
+
+:::note[A pause is a floor, not a promotion]
+"Not before this time" is the whole of what a pause says. It does not say "and then run regardless of
+the queue" — the spot queue stays the scheduler for spot work. When the wake comes due it delivers a
+prompt like any other turn, and that turn answers to the spot gate: a spot session whose window is at
+its target is held and stays dormant in `waiting`, to be started by the queue in precedence order,
+while a priority session goes straight through because priority work is never gated on quota.
+
+So the two mechanisms compose in one direction only. A pause can keep a session out of a queue slot
+it would otherwise have taken; it can never take one the queue was not going to give.
+:::
+
+Five places could otherwise have started it early, and each declines:
+
+| Who | What it does instead |
+| --- | --- |
+| `AgentSessionJob` (a first start — a spot-hold re-check, a fleet slot opening) | Stands down and logs why, without re-arming the re-check timer. The armed wake is the next event in the session's life. |
+| `SpotSessionPause` (the ceiling sweep, every 5 minutes) | Skips it *before* the promotion branch, so promoting a paused session to priority does not start it either. Counted as `held`. |
+| `AuthOutageParkService` (the un-park sweep, every 15 minutes) | Skips it. This one matters twice over: its resume goes through `resume!`, whose `cancel_pending_one_time_wake_triggers` callback would have destroyed the pause without a trace. |
+| `action_session restart` — the start path in the `awaken-waiting-sessions` skill | Refuses with an error naming the pause and telling the caller to take the next candidate. |
+| `POST /api/v1/sessions/:id/restart` — the same door for a script or an integration | Refuses the same way, with the same sentence. |
+| A fleet-maintenance agent working the ranked queue | `quick_search_sessions` marks the row `**Paused:** yes` with the wake time, so the agent skips it deliberately — and the two rows above refuse regardless of what the agent decides. |
+
+The last row is the reason the guards are code rather than only prompt text. The fleet-wake
+selector is an agent reading a skill, which is a judgement; the refusals are a guarantee that holds
+for any caller — the skill, a script, a future integration.
+
+Both `restart` doors refuse at the surface rather than deeper down, because each resumes the session
+*before* it enqueues anything and `resume`'s `cancel_pending_one_time_wake_triggers` callback consumes
+the pause on the way past. A guard further in would arrive after the pause was already gone.
+
+Two paths deliberately still consume the pause, because both mean *a caller is taking this session
+over* rather than a selector working a list: the web UI's **Restart** button, and a `follow_up`
+addressed to the session directly.
+
+The pause is a **deferral, not a cancellation**, and its expiry is what makes that true. Past its
+moment the wake is no longer "ahead of" the session, every guard above stops applying, and the
+session is an ordinary queue candidate again — reachable both by its own wake firing and by the spot
+sweep, whichever gets there first. Sleeping means *the scheduler has yet to reach it*, read through
+the same `TriggerCondition#schedule_due?` the firing path uses, so an overdue wake describes a stuck
+session rather than a resting one.
+
+**Only a wall-clock pause blocks a start.** `Session#awaiting_scheduled_wake?` — the broader reading
+a [refresh](/sessions/lifecycle/#refreshing-a-waiting-session-nudges-it) uses — also counts a
+session-scoped `ao_event` watcher, and that one has no time component at all: if the watched session
+fails or is archived it is "still ahead" forever. Declining to *nudge* on that is free; declining to
+*start* on it would put a session permanently beyond every automated path on the strength of one dead
+watcher. So the start guards read `Session#paused_until_scheduled_time?`, which counts only unfired
+one-time schedules.
+
+### The Ranked view
+
+`/?view=ranked` — a fourth dashboard view beside Categories, Last Touched and Created, and the only
+one that is a management screen rather than a reading one. Priority sessions stack above the queue,
+the spot queue is listed under them highest-precedence first, and both halves are editable in place:
+
+| Do this | And | Which means |
+| --- | --- | --- |
+| Type a number in a row's precedence field and press **Enter** | the row moves to its new position immediately, with no page load | `PATCH /sessions/:id/update_precedence` |
+| **Drag** a row between two others | it takes the **midpoint** of the two values it was dropped between | `PATCH /sessions/:id/reorder_precedence`, which is handed the two neighbours and derives the value |
+| Drag between two **adjacent** values, where no midpoint exists | the neighbours are nudged one apart each, and the dropped row takes the middle of the gap that opens | the same request — 21 and 20 become 22 and 19 |
+| Press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
+| Press **Promote** on a spot row | it moves up to the priority section, keeping its rank for a later demotion | the same endpoint |
+
+Every write is optimistic: the row moves first and the server's answer corrects the numbers behind
+it, including any neighbour that was nudged. A write that fails rolls the row back and reloads,
+because the server's order is the only one that counts.
+
+The nudge is what keeps an integer column usable without a renumbering pass — one extra write per
+drag, and no global compaction ever. A nudge can push a neighbour onto the value of the row beyond
+it; that is left alone deliberately, since equal precedence is legal and cascading the nudge upward
+would turn one drag into an unbounded write. The next drag into that spot separates them.
+
+The Ranked view opens on `waiting`, `running`, `needs_input` and `failed` rather than the dashboard's
+usual `needs_input`-only default: its whole subject is work that has not started. An explicitly
+chosen filter still wins, as everywhere else.
+
+### Precedence decides who gets the headroom back
+
+Two sweeps hand out recovered capacity, and both read precedence:
+
+- The **fleet wake** starts quota-parked spot sessions, in precedence order — see
+  [When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
+- **`SpotSessionPause`** puts back the spot sessions the ceiling paused mid-run when a window comes
+  back down, highest precedence first, oldest pause within a tie. Its budget is bounded by the free
+  slots and `MAX_RESUMES_PER_SWEEP`, and that budget is usually smaller than the population it holds
+  — so the order is what decides which work resumes, which is the same question the ranked queue
+  answers.
+
+The two populations are different (`auth_outage_reason` parks versus `paused_by: "spot_quota"`) and
+neither can start the other's sessions.
+
+### Quick filters
+
+Three one-click filter states sit above the search box, because they are the ones worth reaching
+without touching five checkboxes: **All** (every status, both classes), **All Unarchived** (every
+status but the trash), and **All Priority Unarchived**. Each is a complete filter state rather than a
+control that combines with the others, and each persists exactly as pressing **Apply filters** does.
 
 ## MCP parity
 
@@ -268,6 +568,8 @@ time, and how to start it now.
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
 | Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
+| Read how many running spot sessions the ceiling has paused | Spot gate card on `/quotas` | `get_spot_policy` |
+| Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
 | Toggle gating, set the window targets, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
 | One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
 | Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
@@ -275,6 +577,12 @@ time, and how to start it now.
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
+| Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
+| Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and demote button | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
+| Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
+| Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |
+| Read a session's rank | Ranked view, session detail page | `get_session`, `quick_search_sessions` |
+| Read the spot queue in the order it will be worked | Ranked view | `quick_search_sessions` (`status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`) |
 
 The page and the tool render the **same** decision — `SpotGateService.evaluate`, of which there is
 exactly one — so the card's badge and the tool's answer cannot disagree.

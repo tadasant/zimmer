@@ -1,0 +1,78 @@
+<%#
+  Daily spend, with the breakdown behind each day revealed on hover or tap.
+
+  locals: by_day (Array<Hash>)
+%>
+<% max_day = by_day.map { |d| d[:cost_usd] }.max || 0 %>
+<div class="bg-white shadow rounded-lg overflow-hidden mb-6" data-controller="cost-chart">
+  <div class="px-4 py-3 border-b border-gray-200">
+    <h2 class="text-sm font-semibold text-gray-900">Daily spend</h2>
+    <p class="text-xs text-gray-500 mt-0.5">Hover or tap a bar for the breakdown behind it.</p>
+  </div>
+  <div class="px-4 py-4 overflow-x-auto">
+    <div class="flex items-end gap-1 h-32 min-w-max">
+      <% by_day.each do |day| %>
+        <% height = max_day.positive? ? (day[:cost_usd] / max_day * 100).round(1) : 0 %>
+        <button type="button"
+                data-cost-chart-target="bar"
+                data-action="mouseenter->cost-chart#preview mouseleave->cost-chart#restore click->cost-chart#select focus->cost-chart#select"
+                aria-pressed="false"
+                class="group flex flex-col items-center justify-end h-full w-6 sm:w-8 shrink-0 focus:outline-none focus:ring-2 focus:ring-indigo-400 rounded-t"
+                aria-label="<%= day[:day] %>: <%= number_to_currency(day[:cost_usd], precision: 2) %>">
+          <div class="w-full rounded-t bg-indigo-300 group-hover:bg-indigo-500 group-data-[active=true]:bg-indigo-600"
+               style="height: <%= [ height, 1 ].max %>%"></div>
+        </button>
+      <% end %>
+    </div>
+    <div class="flex justify-between mt-2 text-xs text-gray-400">
+      <span><%= by_day.first&.dig(:day) %></span>
+      <span><%= by_day.last&.dig(:day) %></span>
+    </div>
+  </div>
+
+  <%# One pre-rendered panel per day, all hidden but the selected one. Rendering
+      them server-side keeps every value HTML-escaped by ERB — see
+      cost_chart_controller.js for why nothing here is written as innerHTML. %>
+  <div class="border-t border-gray-200 bg-gray-50 px-4 py-3 min-h-[5.5rem]">
+    <% by_day.each_with_index do |day, index| %>
+      <div data-cost-chart-target="panel" class="<%= "hidden" unless index == by_day.length - 1 %>">
+        <div class="flex items-baseline justify-between gap-3 mb-2">
+          <span class="text-sm font-medium text-gray-900"><%= day[:day] %></span>
+          <span class="text-sm font-semibold text-gray-900 tabular-nums"><%= number_to_currency(day[:cost_usd], precision: 2) %></span>
+        </div>
+        <dl class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-2">
+          <div>
+            <dt class="text-gray-500">Sessions</dt>
+            <dd class="text-gray-900 tabular-nums"><%= number_to_currency(day[:session_cost_usd], precision: 2) %></dd>
+          </div>
+          <div>
+            <dt class="text-gray-500">Ad hoc</dt>
+            <dd class="text-gray-900 tabular-nums"><%= number_to_currency(day[:adhoc_cost_usd], precision: 2) %></dd>
+          </div>
+          <div>
+            <dt class="text-gray-500">Tokens</dt>
+            <dd class="text-gray-900 tabular-nums"><%= number_to_human(day[:tokens], units: { thousand: "K", million: "M", billion: "B" }, precision: 3) %></dd>
+          </div>
+          <div>
+            <dt class="text-gray-500">Calls</dt>
+            <dd class="text-gray-900 tabular-nums"><%= number_with_delimiter(day[:api_calls]) %></dd>
+          </div>
+        </dl>
+        <% if day[:roots].present? %>
+          <%# Agent-root names are long unbroken strings — "tadasant-internal/artifacts-agent-roots-…"
+              — and a chip wider than the column sets the container's width however much the row
+              wraps. min-w-0 lets the chip shrink and truncate takes the name; the figure keeps
+              its own width with shrink-0 so the money is never the thing that gets cut. %>
+          <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-600">
+            <% day[:roots].each do |root| %>
+              <span class="flex items-baseline gap-1 min-w-0 max-w-full">
+                <span class="text-gray-500 truncate" title="<%= root[:name] %>"><%= root[:name] %></span>
+                <span class="tabular-nums text-gray-900 shrink-0"><%= number_to_currency(root[:cost_usd], precision: 2) %></span>
+              </span>
+            <% end %>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+</div>

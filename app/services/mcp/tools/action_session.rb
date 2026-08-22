@@ -16,9 +16,9 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
 
-      SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares.'
+      SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" leaves the session wherever its existing rank puts it, which is usually the bottom — pass both when you mean it to be worked on soon.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
       FORCE_DESC = 'Optional for the "archive" and "bulk_archive" actions. Archiving a session discards any message still queued for it — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Set this to true ONLY when you have read those messages and are deliberately throwing them away. It is not the recommended path: the usual reason a message is sitting in the queue is that it arrived while the session was working and the session has not seen it yet, in which case the right move is to NOT archive, let the turn end, and let the message be delivered as the next turn. On "bulk_archive" it applies to every session in the batch, not one of them.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
@@ -43,9 +43,12 @@ module Mcp
 
       ACTING_SESSION_ID_DESC = 'Optional for "follow_up" and "archive". On "archive" it is provenance and nothing else: the archived session\'s timeline names you as the actor, so a human reading it later can tell an agent archiving that session from a human clicking Trash. Set it whenever an agent session drives an archive — including archiving yourself. On "follow_up", if you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value records no edge, and an undeclared archive is logged as exactly that.'
 
+      PRECEDENCE_DESC = PrecedenceDocs::ACTION_SESSION
+
       ACTIONS = %w[
         follow_up
         pause
+        pause_into_spot_queue
         restart
         archive
         unarchive
@@ -57,6 +60,7 @@ module Mcp
         change_goal
         change_auto_compact_window
         change_scheduling_class
+        change_precedence
         change_category
         toggle_push_notifications
         set_heartbeat
@@ -100,6 +104,7 @@ module Mcp
         **Actions:**
         - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
+        - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of "Pause Until → Spot Queue" in the web UI, and the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately.
         - **unarchive**: Restore an archived session to idle "needs_input" status
@@ -110,7 +115,8 @@ module Mcp
         - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected.
         - **change_goal**: Update the goal for a session (requires "goal" parameter; empty string clears it)
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
-        - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived)
+        - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived). Optionally takes "precedence" to place it in the spot queue in the same call — which is what a demotion usually wants, since a demoted session otherwise keeps whatever rank it already had.
+        - **change_precedence**: Set where this session sits in the spot queue (requires "precedence"). Higher is handled sooner, on an absolute scale — 100000 comes before 50.
         - **change_category**: Assign the session's organizational category (requires "category_id"; null moves it to Uncategorized)
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
@@ -158,6 +164,7 @@ module Mcp
             enum: SessionGenesis::CLASSES + [ nil ],
             description: SCHEDULING_CLASS_DESC
           },
+          precedence: { type: "integer", description: PRECEDENCE_DESC },
           category_id: { type: [ "number", "null" ], description: CATEGORY_ID_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
@@ -199,6 +206,7 @@ module Mcp
         case action
         when "follow_up" then follow_up(find_session(args["session_id"]), args)
         when "pause" then pause(find_session(args["session_id"]))
+        when "pause_into_spot_queue" then pause_into_spot_queue(find_session(args["session_id"]), args)
         when "restart" then restart(find_session(args["session_id"]))
         when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
@@ -208,6 +216,7 @@ module Mcp
         when "change_goal" then change_goal(find_session(args["session_id"]), args)
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
         when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
+        when "change_precedence" then change_precedence(find_session(args["session_id"]), args)
         when "change_category" then change_category(find_session(args["session_id"]), args)
         when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
         when "set_heartbeat" then set_heartbeat(find_session(args["session_id"]), args)
@@ -365,10 +374,35 @@ module Mcp
         summary("Session Paused", session, status_label: "New Status")
       end
 
+      # The web UI's "Pause Until → Spot Queue", for an agent. Everything about
+      # the park lives in the service, including which of `needs_input` /
+      # `running` / `waiting` it is being applied to; this is the tool surface.
+      def pause_into_spot_queue(session, args)
+        was = session.priority_class
+        result = Sessions::PauseIntoSpotQueue.call(session: session, prompt: args["prompt"])
+
+        [
+          "## Parked In The Spot Queue",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Status:** #{session.status}#{" (sleeps when the current turn ends)" if result.pending_sleep}",
+          "- **Scheduling class:** #{session.priority_class}#{" (was #{was})" if result.pinned_to_spot}",
+          "- **Queue position:** precedence #{session.precedence} (higher is handled sooner)",
+          "- **Resumes when:** a Claude Code account is under both quota targets and a session slot " \
+          "is free. No wake-up time is set — use \"change_scheduling_class\" with \"priority\" to " \
+          "take it out of the queue, or \"change_precedence\" to move it up."
+        ].join("\n")
+      rescue Sessions::PauseIntoSpotQueue::Error => e
+        raise ToolError, e.message
+      end
+
       def restart(session)
         unless session.may_resume?
           raise ToolError, "Session cannot be restarted from current status: #{session.status}"
         end
+
+        refuse_if_paused!(session)
 
         # Setup never completed (e.g. the git clone failed), so re-run the whole
         # setup pipeline instead of prompting a clone that does not exist.
@@ -398,9 +432,12 @@ module Mcp
       def restart_from_scratch(session)
         raise ToolError, "No git_root configured for restart from scratch" if session.git_root.blank?
 
+        refuse_if_paused!(session)
+
         cleaned_metadata = (session.metadata || {}).except(
           *Session::STALE_RETRY_METADATA_KEYS,
-          *Session::SETUP_ARTIFACT_KEYS
+          *Session::SETUP_ARTIFACT_KEYS,
+          *SpotSessionHold::METADATA_KEYS
         )
 
         ActiveRecord::Base.transaction do
@@ -418,6 +455,34 @@ module Mcp
         end
 
         summary("Session Restarted", session.reload, status_label: "New Status", message: "Session restarted from scratch")
+      end
+
+      # A pause outranks every reason an agent has to start this session.
+      #
+      # `restart` is the start path in the awaken-waiting-sessions skill, which is
+      # how the fleet-maintenance session hands out compute after a quota recovery.
+      # It works the ranked queue in precedence order, and precedence says nothing
+      # about whether a session asked to be left alone — so without this, the wake
+      # starts a paused session the moment its rank comes up.
+      #
+      # Refusing rather than silently no-opping, and refusing HERE rather than
+      # further down: `restart` resumes the session before it enqueues anything,
+      # and `resume`'s cancel_pending_one_time_wake_triggers callback consumes the
+      # pause on the way past. By the time a job could decline, the pause is gone.
+      # The error names the next move, because the caller is an agent working a
+      # queue and "skip it and take the next one" is exactly what it should do.
+      #
+      # Deliberately not applied to the web UI's Restart button or to `follow_up`:
+      # a person driving one session, or an agent addressing one directly, is
+      # taking it over, and consuming the now-moot wake is the documented
+      # behaviour. This is about a selector working a list.
+      def refuse_if_paused!(session)
+        return unless session.paused_until_scheduled_time?
+
+        raise ToolError,
+          "Session #{session.id} is asleep on a wake-up it has not reached yet (#{session.pending_wake_phrase}). " \
+          "A pause outranks precedence and scheduling class, so this session does not start early — " \
+          "skip it and take the next candidate. It wakes on its own schedule."
       end
 
       def archive(session, args)
@@ -649,9 +714,17 @@ module Mcp
         end
 
         previous = session.priority_class
-        session.update!(scheduling_class: klass.presence)
+        previous_precedence = session.precedence
+
+        attrs = { scheduling_class: klass.presence }
+        attrs[:precedence] = precedence_arg(args) if args.key?("precedence")
+        session.update!(attrs)
+
         if previous != session.priority_class
           session.logs.create!(content: "Scheduling class set via MCP to #{session.priority_class} (was #{previous})", level: "info")
+        end
+        if previous_precedence != session.precedence
+          session.logs.create!(content: "Precedence set via MCP to #{session.precedence} (was #{previous_precedence})", level: "info")
         end
 
         [
@@ -660,8 +733,50 @@ module Mcp
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **Scheduling class:** #{session.priority_class} (was #{previous})",
-          "- **Source:** #{session.scheduling_class_source}"
+          "- **Source:** #{session.scheduling_class_source}",
+          "- **Precedence:** #{session.precedence}#{" (was #{previous_precedence})" if previous_precedence != session.precedence}"
         ].join("\n")
+      end
+
+      # Where this session sits in the spot queue. Answered for every session,
+      # priority included: the value is carried on the row either way, and a
+      # priority session that is later demoted lands on the rank it is holding.
+      def change_precedence(session, args)
+        unless args.key?("precedence")
+          raise ToolError, "The \"precedence\" parameter is required for the \"change_precedence\" action."
+        end
+
+        previous = session.precedence
+        session.update!(precedence: precedence_arg(args))
+
+        if previous != session.precedence
+          session.logs.create!(content: "Precedence set via MCP to #{session.precedence} (was #{previous})", level: "info")
+        end
+
+        [
+          "## Precedence Updated",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Precedence:** #{session.precedence} (was #{previous})",
+          "- **Scheduling class:** #{session.priority_class}",
+          ("- Note: this session is priority, so precedence does not affect when it starts — " \
+           "it applies if the session is later demoted to spot." if session.priority?)
+        ].compact.join("\n")
+      end
+
+      def precedence_arg(args)
+        value = args["precedence"]
+        unless value.is_a?(Integer) || value.to_s.match?(/\A-?\d+\z/)
+          raise ToolError, "precedence must be an integer (got #{value.inspect})"
+        end
+
+        value = value.to_i
+        unless value.between?(SessionPrecedence::MIN, SessionPrecedence::MAX)
+          raise ToolError, "precedence must be between #{SessionPrecedence::MIN} and #{SessionPrecedence::MAX}"
+        end
+
+        value
       end
 
       def change_auto_compact_window(session, args)
@@ -780,8 +895,10 @@ module Mcp
       end
 
       # The MCP twin of the Status panel's "Regenerate" button. Enqueued rather
-      # than run inline: generation forks the session and waits on a whole agent
-      # turn, which is far longer than a tool call should block.
+      # than run inline: generation normally forks the session and waits on a
+      # whole agent turn, which is far longer than a tool call should block.
+      # (With no login-pool account free it takes the one-shot path instead —
+      # still not something to block a tool call on.)
       def regenerate_status_summary(session)
         # Refused up front rather than by the job, which has nowhere to report a
         # refusal to. An archived session is fine, and so is one whose clone has
@@ -797,7 +914,7 @@ module Mcp
           "## Status Summary Regenerating",
           "",
           "- **Session:** ##{session.id}",
-          "- **Message:** A fork was queued to rewrite the status summary. Read it back with get_session once the fork's turn finishes."
+          "- **Message:** A generation was queued to rewrite the status summary. Read it back with get_session once it finishes."
         ].join("\n")
       end
 

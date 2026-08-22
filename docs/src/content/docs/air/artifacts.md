@@ -22,6 +22,7 @@ declares.
 | `zimmer-start-dev-server` | Bring up a local instance for e2e verification. |
 | `zimmer-deploy-staging` | Drive the staging deploy workflow. |
 | `zimmer-change-ai-artifact` | The guide to changing the catalog itself. |
+| `awaken-waiting-sessions` | The wake policy for quota-parked spot work. Defaults into `fleet-maintenance` only, and is not user-invocable — the `quota_available` trigger is what runs it. |
 
 The generic workflow skills are vendored here too, under `category: workflow`:
 

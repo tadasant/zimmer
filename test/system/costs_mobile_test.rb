@@ -82,6 +82,18 @@ class CostsMobileTest < ApplicationSystemTestCase
       model: "claude-opus-5", called_at: 1.hour.ago,
       input_tokens: 10, output_tokens: 20, cache_read_tokens: 30_000
     )
+
+    # Feature attribution rides on the same rows, so the feature table and the
+    # per-root drilldown have something to render at this width too.
+    SessionTokenUsage.find_each do |record|
+      %w[goal mcp_result skill_body].each_with_index do |feature, index|
+        TokenUsageFeature.create!(
+          request_id: record.request_id, feature: feature, session_id: record.session_id,
+          agent_root: record.agent_root, model: record.model, called_at: record.called_at,
+          cache_read_tokens: 100_000_000 / (index + 1), chars: 10_000, occurrences: 1
+        )
+      end
+    end
   end
 
   test "the costs page fits a phone, with data and without" do
@@ -102,6 +114,93 @@ class CostsMobileTest < ApplicationSystemTestCase
       "elements extend past the right edge at #{MOBILE_WIDTH}px"
 
     page.save_screenshot("tmp/screenshots/costs-375.png")
+  end
+
+
+  test "the coverage panel and its button fit a phone, error text and all" do
+    seed_spend!
+    # A sweep in flight, stuck on the kind of error the ledger actually stores:
+    # a class name and a file path, with nothing to break on. Signature 4.
+    TokenUsageBackfill.create!(
+      transcript_root: "/home/rails/.claude/projects",
+      started_at: 20.minutes.ago, last_ran_at: 1.minute.ago,
+      directories_total: 3_182, directories_done: 914,
+      last_error: "Errno::EACCES: Permission denied @ rb_sysopen - " \
+                  "/home/rails/.claude/projects/-home-rails--zimmer-clones-zimmer-main-1786989710-abcdef12/" \
+                  "0f3c9d21-6b4e-4a77-9a11-5c2f7de91b40.jsonl"
+    )
+
+    visit costs_path(days: 30)
+    assert_text "Backfilling history"
+    assert_text "Sweep now"
+
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the coverage panel overflows the viewport at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+      "the coverage panel pushes something past the right edge at #{MOBILE_WIDTH}px"
+
+    page.save_screenshot("tmp/screenshots/costs-coverage-375.png")
+  end
+
+  test "the calendar range is reachable and usable on a phone" do
+    # The picker is the control most likely to run off the edge: two date inputs
+    # and a submit button in a row, at the width where a row of three stops fitting.
+    seed_spend!
+    visit costs_path(days: 30)
+
+    assert_selector "#costs-from"
+    assert_selector "#costs-to"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "form[action='#{costs_path}']")
+
+    fill_in "from", with: 3.days.ago.to_date.iso8601
+    fill_in "to", with: Date.current.iso8601
+    click_button "Apply"
+
+    assert_text "Showing"
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "custom range overflows at #{MOBILE_WIDTH}px"
+  end
+
+  test "the chart and the breakdown rows open their detail on a tap" do
+    # Hover is invisible on a phone. Both drilldowns have to work from a tap, so
+    # both are asserted with a plain click at the phone width.
+    seed_spend!
+    visit costs_path(days: 30)
+    assert_text "Daily spend"
+
+    bars = all("[data-cost-chart-target='bar']")
+    assert_operator bars.length, :>, 1, "need at least two days to prove the readout changes"
+
+    # The chart opens on the most recent day; tapping the first bar must move the
+    # readout to the oldest one. Asserted through the panel's own visibility
+    # rather than through page text, since the dates also appear on the axis.
+    assert_equal 1, all("[data-cost-chart-target='panel']", visible: true).length
+    bars.first.click
+    assert_selector "[data-cost-chart-target='bar'][data-active='true']", count: 1
+    assert_equal bars.first[:"aria-label"].split(":").first,
+      find("[data-cost-chart-target='panel']", visible: true).text.lines.first.strip
+
+    row = first("details > summary")
+    row.click
+    assert_selector "details[open]"
+    assert_text "Estimated context-feature split"
+
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "an opened drilldown overflows at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
+
+    page.save_screenshot("tmp/screenshots/costs-drilldown-375.png")
+  end
+
+  test "the muted session cost fits the card and the detail page" do
+    seed_spend!
+
+    visit root_path
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the dashboard overflows at #{MOBILE_WIDTH}px with the cost badge added"
+
+    visit session_path(Session.order(:id).last)
+    assert_text "$"
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the session detail page overflows at #{MOBILE_WIDTH}px with the cost indicator added"
   end
 
   test "the sessions index nav still fits a phone with Costs added to it" do
@@ -125,6 +224,61 @@ class CostsMobileTest < ApplicationSystemTestCase
     assert_text "Where the money goes"
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "Costs page overflows at 320px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
+  end
+  # Cohort-tagged sessions on both sides of the setting, with a root that ran on
+  # both so the paired drilldown has a row to open.
+  def seed_cohorts!
+    %w[off on].each_with_index do |cohort, side|
+      6.times do |i|
+        session = Session.create!(
+          prompt: "p", status: :waiting, agent_runtime: "claude_code",
+          git_root: "https://github.com/test/repo.git", branch: "main", title: "#{cohort}-#{i}"
+        )
+        SessionExperimentalFlag.create!(
+          session: session, setting_key: "mcp_tool_search",
+          value_at_start: cohort == "on", value_at_end: cohort == "on",
+          source: SessionExperimentalFlag::BACKFILLED
+        )
+        10.times do |call|
+          SessionTokenUsage.create!(
+            request_id: "req_#{cohort}_#{i}_#{call}", session_id: session.id,
+            model: "claude-opus-4-5-20251101",
+            agent_root: "tadasant-internal/artifacts-agent-roots-issue-work-gate",
+            called_at: 2.hours.ago, input_tokens: 1_000,
+            output_tokens: 250_000 / (side + 1), cache_read_tokens: 900_000_000 / (side + 1)
+          )
+        end
+      end
+    end
+  end
+
+  test "the experiment report fits a phone, cohort cards and paired roots and all" do
+    # Two stat cards side by side and a per-root comparison row carrying a long
+    # agent-root name: signature 1 (a grid child that will not shrink) and
+    # signature 4 (an unbreakable string) in the same section.
+    seed_cohorts!
+
+    visit costs_path(days: 30)
+    assert_text "Experimental settings"
+    assert_text "MCP tool search"
+
+    find("summary", text: "Same agent root").click
+    assert_text "Only roots that ran on both sides"
+
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the experiment report overflows the viewport at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+      "the experiment report pushes something past the right edge at #{MOBILE_WIDTH}px"
+
+    page.save_screenshot("tmp/screenshots/costs-experiments-375.png")
+
+    # And at the narrowest phone still in use, where the cohort cards are the
+    # first thing that would stop fitting.
+    page.driver.browser.manage.window.resize_to(320, 800)
+    visit costs_path(days: 30)
+    assert_text "MCP tool search"
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "the experiment report overflows at 320px"
     assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
   end
 end

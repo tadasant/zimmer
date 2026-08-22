@@ -21,9 +21,12 @@ class SettingsController < ApplicationController
     @selected_runtime = @app_setting.default_runtime.presence || RuntimeRegistry::DEFAULT_RUNTIME
     @selected_model = @app_setting.default_model.presence || ModelCatalog.default_for(@selected_runtime)
 
-    # The "Experimental" section is data-driven from the extension registry, so a
-    # dropped extension disappears from the UI with no view edit. Each entry knows
-    # its own id/title/description and current enablement.
-    @extensions = Zimmer::ExtensionRegistry.experimental
+    # The "Experimental" section is rendered entirely from
+    # ExperimentalSettingsRegistry — the first-class AppSetting-backed toggles and
+    # any registered experimental extension, in one list. That registry is also
+    # what tags every session with the setting's value and what the Costs page
+    # compares cohorts by, so a setting cannot be togglable here and invisible
+    # there.
+    @experimental_settings = ExperimentalSettingsRegistry.all
   end
 end

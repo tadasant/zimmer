@@ -1,40 +1,106 @@
 <%#
-  A breakdown table with an inline proportional bar.
+  A breakdown table with an inline proportional bar, and the detail behind each
+  row one hover or tap away.
 
   Deliberately not a chart library: the whole page is rank-ordered "where did it
   go" tables, a bar-in-a-cell reads at a glance, and it costs no JS and survives
   a 375px viewport where a canvas chart would not.
 
+  Each row is a <details>. That is what gives the drilldown a working touch
+  story — tap opens it, keyboard opens it, JavaScript off still opens it — with
+  hover-to-open layered on top for pointer devices by hover_details_controller.
+
   locals: rows (Array<Hash>), label_key (Symbol), title (String),
-          empty (String), max (Float)
+          empty (String), max (Float), total (Float)
+  optional: subtitle (String), detail_key (Symbol) — the key holding the row's
+            drilldown rows, and detail_label (Symbol) — the key naming each one.
 %>
+<% detail_key = local_assigns.fetch(:detail_key, nil) %>
+<% detail_label = local_assigns.fetch(:detail_label, :name) %>
+<% total = local_assigns.fetch(:total, nil) %>
 <div class="bg-white shadow rounded-lg overflow-hidden mb-6">
   <div class="px-4 py-3 border-b border-gray-200">
     <h2 class="text-sm font-semibold text-gray-900"><%= title %></h2>
+    <% if local_assigns[:subtitle].present? %>
+      <p class="text-xs text-gray-500 mt-0.5"><%= subtitle %></p>
+    <% end %>
   </div>
   <% if rows.blank? %>
     <p class="px-4 py-6 text-sm text-gray-500"><%= empty %></p>
   <% else %>
-    <ul class="divide-y divide-gray-100">
+    <ul class="divide-y divide-gray-100" data-controller="hover-details">
       <% rows.each do |row| %>
         <% share = max.to_f.positive? ? (row[:cost_usd] / max.to_f) : 0 %>
-        <li class="px-4 py-3">
-          <div class="flex items-baseline justify-between gap-3">
-            <span class="text-sm text-gray-900 truncate min-w-0" title="<%= row[label_key] %>">
-              <%= row[label_key] %>
-            </span>
-            <span class="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
-              <%= number_to_currency(row[:cost_usd], precision: 2) %>
-            </span>
-          </div>
-          <div class="mt-1.5 flex items-center gap-2">
-            <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-              <div class="h-full bg-indigo-500 rounded-full" style="width: <%= (share * 100).round(1) %>%"></div>
+        <% details = detail_key ? Array(row[detail_key]) : [] %>
+        <li>
+          <details class="group"
+                   data-action="mouseenter->hover-details#open mouseleave->hover-details#close">
+            <summary data-action="click->hover-details#pin"
+                     class="px-4 py-3 cursor-pointer list-none marker:content-none hover:bg-gray-50 focus:outline-none focus:bg-gray-50">
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="text-sm text-gray-900 truncate min-w-0 flex items-baseline gap-1.5">
+                  <svg class="h-3 w-3 shrink-0 self-center text-gray-300 transition-transform group-open:rotate-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+                  </svg>
+                  <span class="truncate" title="<%= row[label_key] %>"><%= row[label_key] %></span>
+                </span>
+                <span class="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
+                  <%= number_to_currency(row[:cost_usd], precision: 2) %>
+                </span>
+              </div>
+              <div class="mt-1.5 flex items-center gap-2">
+                <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div class="h-full bg-indigo-500 rounded-full" style="width: <%= (share * 100).round(1) %>%"></div>
+                </div>
+                <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">
+                  <%= number_with_delimiter(row[:api_calls]) %> calls
+                </span>
+              </div>
+            </summary>
+
+            <div class="px-4 pb-3 pt-1 bg-gray-50 border-t border-gray-100">
+              <dl class="grid grid-cols-3 gap-2 text-xs mb-2">
+                <div>
+                  <dt class="text-gray-500">Tokens</dt>
+                  <dd class="text-gray-900 tabular-nums"><%= number_to_human(row[:tokens], units: { thousand: "K", million: "M", billion: "B" }, precision: 3) %></dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Per call</dt>
+                  <dd class="text-gray-900 tabular-nums"><%= number_to_currency(row[:api_calls].to_i.positive? ? row[:cost_usd] / row[:api_calls] : 0, precision: 4) %></dd>
+                </div>
+                <div>
+                  <dt class="text-gray-500">Share</dt>
+                  <dd class="text-gray-900 tabular-nums">
+                    <%= total.to_f.positive? ? number_to_percentage(row[:cost_usd] / total * 100, precision: 1) : "—" %>
+                  </dd>
+                </div>
+              </dl>
+
+              <% if details.any? %>
+                <p class="text-xs font-medium text-gray-500 mb-1">
+                  <%= detail_key == :features ? "Estimated context-feature split" : "Biggest contributors" %>
+                </p>
+                <ul class="space-y-1">
+                  <% details.each do |detail| %>
+                    <% name = detail_key == :features ? ContextFeatureRegistry.label_for(detail[detail_label]) : detail[detail_label] %>
+                    <li class="flex items-baseline justify-between gap-2 text-xs">
+                      <span class="text-gray-600 truncate min-w-0"><%= name %></span>
+                      <span class="text-gray-900 tabular-nums whitespace-nowrap">
+                        <%= number_to_currency(detail[:cost_usd], precision: 2) %>
+                        <span class="text-gray-400"><%= row[:cost_usd].positive? ? number_to_percentage(detail[:cost_usd] / row[:cost_usd] * 100, precision: 0) : "" %></span>
+                      </span>
+                    </li>
+                  <% end %>
+                </ul>
+                <% if detail_key == :features %>
+                  <p class="text-xs text-gray-400 mt-1.5">
+                    Estimated from transcript content, not measured. The rest of this row is the
+                    fixed prompt prefix and anything else the transcript does not record.
+                  </p>
+                <% end %>
+              <% end %>
             </div>
-            <span class="text-xs text-gray-500 tabular-nums whitespace-nowrap">
-              <%= number_with_delimiter(row[:api_calls]) %> calls
-            </span>
-          </div>
+          </details>
         </li>
       <% end %>
     </ul>

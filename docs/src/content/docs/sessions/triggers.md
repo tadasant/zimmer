@@ -10,14 +10,15 @@ trigger creates a new session — or resumes an existing one.
 
 Conditions on a trigger are ORed. Any one firing fires the trigger.
 
-## The five condition types
+## The six condition types
 
 ```mermaid
 flowchart LR
     subgraph conditions["TriggerCondition"]
         SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention | dm_message |<br/>passive_listen_thread | passive_listen_channel)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
-        AO["ao_event<br/>session_needs_input | session_failed | session_archived<br/>account_needs_reauth"]
+        AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived<br/>account_needs_reauth"]
+        SE["system_event<br/>quota_available"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
         GI["github_issue<br/>repos + exclude_labels"]
     end
@@ -25,6 +26,7 @@ flowchart LR
     SL -->|"SlackTriggerPollerJob<br/>(cron, every minute)"| T["Trigger"]
     SC -->|"ScheduleTriggerJob<br/>(cron, every minute)"| T
     AO -->|"AoEventTriggerJob<br/>(enqueued from state machine callbacks)"| T
+    SE -->|"SystemEventTriggerJob<br/>(enqueued from QuotaAvailabilityMonitor)"| T
     GL -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
     GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
 
@@ -429,6 +431,25 @@ session; the alert warns against it rather than inviting it.
 covers both one-shot shapes — a one-time schedule and a session-scoped `ao_event`. A predicate that
 saw only schedules would offer every parked state-change wake a "Re-arm" button with no caveat.
 
+### `system_event`
+
+Fires when the **deployment** changes state, rather than a session. One event today:
+`quota_available`, the account pool going from serving nothing to serving something.
+
+It is a separate condition type rather than a fourth `AO_EVENT_NAMES` entry because every decision
+`ao_event` makes is about a session — watched-session scoping, the `is_autonomous` filter, the guard
+that stops a trigger firing on the session it created. A fleet-wide event has no session at all.
+
+`QuotaAvailabilityMonitor` owns the edge detection and `SystemEventTriggerJob` does the firing.
+System events are broadcast and recurring by nature: every enabled trigger carrying a matching
+condition fires, the condition is never spent, and the trigger is never auto-deleted. A fire that
+raises alerts and stays enabled — parking it would silently stop every future recovery wake.
+
+This is what wakes quota-parked spot sessions. The shipped trigger spawns one `fleet-maintenance`
+session running the `awaken-waiting-sessions` skill, which decides — in precedence order, against the
+spot thresholds and the concurrency ceiling — which `waiting` sessions start. See
+[When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
+
 ### `github_label`
 
 Fires when one of the watched labels is **added** to a pull request or an issue in one of the
@@ -719,6 +740,12 @@ not move sessions the trigger already spawned** — including ones still `waitin
 gate. To move one of those, move that session: the button on its hold banner, the selector on its
 detail page, or `action_session`'s `change_scheduling_class`.
 
+A trigger can also predefine the **precedence** its sessions get (`Trigger#precedence`, same three
+surfaces). Higher is worked first, on an absolute scale — 100000 comes before 50 — and it orders the
+spot queue. Leave it blank to predefine nothing. Unlike the class it is *not* withheld from a
+hand-fired Invoke: a precedence describes how this trigger's work ranks against everything else
+queued, which is as true of a hand-fired run as of a scheduled one.
+
 Full detail in [Spot and priority](/sessions/spot-and-priority/).
 
 ## Burst control
@@ -802,7 +829,8 @@ Neither auto-deletes a one-time trigger on a suppressed fire.
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"
 and "wake me up when that other session changes state." Zimmer schedules the same one-time
 triggers on its own behalf — `AuthOutageParkService` uses one to retry a session parked because
-the login pool ran dry. Two mechanisms make this reliable:
+the login pool ran dry — and so does a human clicking **Pause Until** in the web UI. Two mechanisms
+make this reliable:
 
 **Auto-sleep.** `Trigger#sleep_target_session_if_applicable` runs on trigger creation. If the
 target session is `needs_input`, it sleeps immediately (`needs_input → waiting`). If it's
@@ -826,8 +854,47 @@ fires usefully."* It's a correct design given the primitives, but it means a sin
 "wait for that session" creates four trigger rows.
 :::
 
+**A sleep with no trigger at all.** "Pause Until" has one choice that creates nothing: **Spot
+Queue** sleeps the session and leaves it for the spot scheduler
+(`Sessions::PauseIntoSpotQueue`), which is the right shape whenever the honest answer to "when
+should this come back" is "whenever there is quota headroom for it" rather than a wall-clock
+time. It is also what stops the trigger table filling up with guesses — the same reasoning that
+replaced the per-session auth-outage retry triggers with a `quota_available` event. See
+[Spot and priority](/sessions/spot-and-priority/).
+
 **Loop prevention.** A session whose `metadata["trigger_id"]` equals the trigger will never
 re-fire that trigger.
+
+**An armed wake makes the session unstartable.** Auto-sleep puts the session in `waiting`, which is
+also where every queued session sits, so nothing about the row says "leave this alone" — and the
+sweeps that start `waiting` sessions used to read it as runnable. They no longer do: while a one-time
+wake is still ahead of the session, `AgentSessionJob` refuses a first start and both quota sweeps skip
+it, whatever its precedence or scheduling class. Without that, the ranked spot queue and
+`AuthOutageParkService` would each start a paused session early — and the second would consume the
+pause on the way past, since `resume!` cancels pending one-time wakes. See
+[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence).
+
+### One scheduler, two front doors
+
+`Sessions::ScheduleWakeUp` is the whole of it: validate the time, create the trigger, and let
+`Trigger`'s `after_create` do the sleeping. `Mcp::Tools::WakeMeUpLater` and
+`SessionsController#pause_until` are both thin wrappers over it — the tool adds a rendered
+description and a markdown receipt, the controller adds JSON and a redirect.
+
+That matters because of what the validation prevents. A `wake_at` in the past, or inside the
+30-second grace window, is not merely ignored: `TriggerCondition#schedule_due?` sees it as due on
+the next tick, the fire consumes the one-shot, and the session it just put to sleep is never woken.
+Splitting the check across two surfaces would mean one of them eventually drifts, so neither owns it.
+
+The web surface adds one thing the tool does not need: a **timezone**. A browser's
+`datetime-local` yields a naive local wall-clock string, and "Tomorrow, 9:00 AM" means the
+operator's morning. `pause_until_controller.js` sends
+`Intl.DateTimeFormat().resolvedOptions().timeZone` alongside it; reading the naive value as UTC
+would silently offset every pause by the operator's UTC offset.
+
+The resume prompt defaults to `AutomatedPrompts::PAUSE_UNTIL_WAKE`, which says plainly that Zimmer
+resumed the session on a schedule a human set earlier and that no human is present now. The panel
+takes a replacement if the operator wants to be specific about what to come back to.
 
 ## Everything is polled
 

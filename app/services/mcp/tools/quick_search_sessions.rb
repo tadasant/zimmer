@@ -25,6 +25,11 @@ module Mcp
         - Search sessions by title keyword (set query parameter)
         - List all sessions with an optional status filter (one status, or an array to match any)
         - Monitor sessions that need human attention (status: "needs_input")
+        - Read the spot queue in the order it will be worked: `status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`
+
+        **Paused sessions.** A result carrying `**Paused:** yes` is asleep until a time somebody chose. It is
+        still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
+        a pause outranks precedence and scheduling class. Skip it and take the next candidate.
 
         **Returns:** A list of matching sessions with their status, configuration, and metadata.
 
@@ -69,6 +74,11 @@ module Mcp
             enum: SessionGenesis::KEYS,
             description: "Filter by genesis — where the session's line of work came from. One of: #{SessionGenesis::KEYS.join(', ')}."
           },
+          order: {
+            type: "string",
+            enum: [ "created_desc", "precedence" ],
+            description: 'Result ordering. "created_desc" (default) is newest first. "precedence" is the spot queue\'s own order — highest precedence first, oldest first within a tie — which is the order waiting spot sessions are actually started in. Precedence is an absolute scale: 100000 comes before 50.'
+          },
           show_archived: {
             type: "boolean",
             description: "Include archived sessions in results. Default: false"
@@ -89,7 +99,10 @@ module Mcp
       })
 
       def call(args)
-        return "## Session Found\n\n#{format_session(find_session(args['id']))}" unless args["id"].nil?
+        unless args["id"].nil?
+          session = find_session(args["id"])
+          return "## Session Found\n\n#{format_session(session, paused: session.paused_until_scheduled_time?)}"
+        end
 
         scope = filtered_scope(args)
         page, per_page = pagination_params(args)
@@ -106,8 +119,13 @@ module Mcp
           ""
         ]
 
+        # One batched read for the page rather than one query per row: a paused
+        # session must be visibly paused in the queue listing, and the ranked
+        # queue is exactly the listing a fleet-maintenance agent pages through.
+        sleeping = Session.ids_paused_until_scheduled_time(sessions.map(&:id))
+
         sessions.each do |session|
-          lines << format_session(session)
+          lines << format_session(session, paused: sleeping.include?(session.id))
           lines << ""
         end
 
@@ -125,7 +143,8 @@ module Mcp
         # Status-summary forks are Zimmer's own bookkeeping, not sessions anyone
         # searches for — excluded here for the same reason the dashboard excludes
         # them, so the two surfaces list the same sessions.
-        scope = Session.includes(:category).excluding_status_summary_forks.order(created_at: :desc)
+        scope = Session.includes(:category).excluding_status_summary_forks
+        scope = args["order"].to_s == "precedence" ? scope.ranked : scope.order(created_at: :desc)
 
         # One status or several: an array matches any of them, the way the
         # dashboard's status filter does.
@@ -188,7 +207,12 @@ module Mcp
         @genesis_class_overrides ||= AppSetting.current.genesis_class_overrides || {}
       end
 
-      def format_session(session)
+      # `paused` is passed in rather than derived here so the list path can answer
+      # it for a whole page in one query. It is the one fact about a `waiting`
+      # session that the columns cannot carry: a session somebody paused until a
+      # chosen time and a session merely queued behind the quota gate are the same
+      # row, and only the armed wake tells them apart.
+      def format_session(session, paused: false)
         lines = [
           "### #{session.title} (ID: #{session.id})",
           "",
@@ -196,8 +220,16 @@ module Mcp
           "- **Agent Runtime:** #{session.agent_runtime}"
         ]
 
+        if paused
+          at = session.pending_wake_at
+          when_phrase = at ? "until #{at.utc.iso8601}" : "on a pending wake-up"
+          lines << "- **Paused:** yes — asleep #{when_phrase}. Zimmer will not start it before then, " \
+                   "whatever its precedence or scheduling class. Skip it and take the next candidate."
+        end
+
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
         lines << "- **Genesis:** #{session.genesis_key} (#{session.priority_class(genesis_class_overrides)})"
+        lines << "- **Precedence:** #{session.precedence}"
         lines << "- **Category:** #{session.category.name}" if session.category
         lines << "- **Repository:** #{session.git_root}" if session.git_root.present?
         lines << "- **Branch:** #{session.branch}" if session.branch.present?

@@ -310,6 +310,25 @@
       </p>
     </div>
 
+    <!-- Precedence -->
+    <div class="mb-4">
+      <%= f.label :precedence, class: "block text-sm font-medium text-gray-700" do %>
+        Precedence
+      <% end %>
+      <%= f.number_field :precedence,
+          step: 1,
+          placeholder: "None",
+          class: "mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-32 sm:text-sm border-gray-300 rounded-md" %>
+      <p class="mt-1 text-sm text-gray-500">
+        Where the sessions this trigger spawns sit in the spot queue. Higher is worked first, on an
+        absolute scale — 100000 comes before 50 — and nothing renumbers, so leave gaps to slot work
+        in later. Leave blank to predefine nothing. It only orders spot sessions, but it is carried on
+        every session the trigger spawns, so one later demoted to spot keeps the rank set here. See the
+        <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), class: "text-indigo-600 hover:text-indigo-500" %>
+        for the queue this feeds.
+      </p>
+    </div>
+
     <!-- Burst control -->
     <div class="mb-4">
       <%= f.label :max_sessions_per_minute, class: "block text-sm font-medium text-gray-700" do %>

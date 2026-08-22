@@ -401,6 +401,49 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal :idle, manager.current_state
   end
 
+  # zimmer#6597: `running?` is signal 0, which answers "some process holds this
+  # number". A recovery job adopted a pid that had been SIGKILLed nine seconds
+  # earlier, logged "recovery confirmed", and then read that absence as the
+  # session's turn completing. The recorded identity is what distinguishes the
+  # process we spawned from a stranger wearing its number.
+  test "resume_monitoring refuses a pid the recorded identity disowns" do
+    @mock_process_manager.running_hook = ->(pid) { pid == 54321 }
+    AgentProcessLiveness.stubs(:adoptable?).with(@session, 54321).returns(false)
+
+    manager = create_manager
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log", verify_identity: true)
+
+    assert_not result.success?,
+      "A recovery must not adopt a process it cannot prove is the one it spawned"
+    assert_match(/not the process this session spawned/, result.error)
+    assert_equal :idle, manager.current_state,
+      "A refused adoption must leave the manager free to spawn instead"
+  end
+
+  test "resume_monitoring adopts a pid the recorded identity confirms" do
+    @mock_process_manager.running_hook = ->(pid) { pid == 54321 }
+    AgentProcessLiveness.stubs(:adoptable?).with(@session, 54321).returns(true)
+
+    manager = create_manager
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log", verify_identity: true)
+
+    assert result.success?
+    assert_equal :running, manager.current_state
+  end
+
+  # SessionsController calls resume_monitoring purely to load the manager with a pid so
+  # #terminate can kill it. A refusal there would skip the kill and orphan a live agent, so
+  # the guard is opt-in and off by default.
+  test "resume_monitoring does not check identity unless the caller asks" do
+    @mock_process_manager.running_hook = ->(pid) { pid == 54321 }
+    AgentProcessLiveness.expects(:adoptable?).never
+
+    manager = create_manager
+    result = manager.resume_monitoring(pid: 54321, stderr_log_path: "/tmp/stderr.log")
+
+    assert result.success?, "The termination path must still be able to load a pid"
+  end
+
   test "resume_monitoring fails when not in idle state" do
     @mock_cli_adapter.execute_hook = ->(opts) do
       { pid: 12345, stderr_log_path: "/tmp/stderr.log" }
@@ -2384,12 +2427,13 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "Must not re-spawn when there is no account to recover to"
 
     # The bare needs_input is not enough on its own — the session must be parked
-    # with an explanation and a scheduled retry.
+    # with an explanation, and marked to go dormant rather than sitting on the
+    # human's action queue.
     @session.reload
     assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, @session.metadata["auth_outage_reason"]
-    assert_not_nil @session.metadata["auth_outage_retry_at"]
-    assert_not_nil Trigger.find_by(last_session_id: @session.id),
-      "A wake-up trigger must be scheduled so the session retries on its own"
+    assert_equal true, @session.metadata["pending_sleep"]
+    assert_empty Trigger.where(last_session_id: @session.id),
+      "waking is the quota_available fleet event's job now, not a per-session timer"
   end
 
   test "handle_exit parks the session for retry when auth recovery is exhausted" do
@@ -2520,6 +2564,245 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     log_contents = @session.logs.pluck(:content).join("\n")
     assert_match(/Not logged in detected/, log_contents,
       "Most-recent-error-wins: a fresh auth error after a 5xx routes to auth recovery, not API retry")
+  end
+
+  # ===========================================================================
+  # The 2026-08-20 incident: a turn that dies on an auth error must never be
+  # indistinguishable from a turn that completed (production session 6412).
+  # ===========================================================================
+
+  # Reproduce-and-fix. Before this change every classifier said "not mine" for
+  # the entry below, so handle_exit fell through to `Process exited successfully`
+  # → needs_input, and a human's message sat unanswered with nothing in the logs.
+  test "handle_exit routes a dead OAuth session to auth recovery instead of parking it as a completed turn" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_oauth_expiry_error
+    stub_auth_provider_returning(fake_account("rotated@example.com"))
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 54321, stderr_log_path: "/tmp/stderr2.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    # Exit 1 — Claude's "turn finished, awaiting input" convention, which is what
+    # made the failure look like an ordinary completion.
+    status = MockProcessManager::MockStatus.new(1)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action,
+      "A dead OAuth session must rotate and resume, not park as if the turn had finished"
+    assert_equal 1, @mock_cli_adapter.resumed_sessions.length
+
+    @log_buffer.flush
+    log_contents = @session.logs.pluck(:content).join("\n")
+    assert_match(/Not logged in detected on successful exit/, log_contents)
+    assert_no_match(/Process exited successfully/, log_contents,
+      "The turn did not complete, so nothing may report that it did")
+  end
+
+  # The structural backstop, and the half that matters more: even for an error
+  # NO classifier knows, a turn that ends on one can never be reported as done.
+  test "handle_exit fails loudly when a turn ends on an API error no classifier recognizes" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_ending_with_api_error(
+      "Your quantum entitlement has decohered",
+      error_type: "wording_nobody_has_written_yet"
+    )
+
+    reported = nil
+    UnclassifiedFailureReporter.stubs(:report).returns(true).with do |*args, **kwargs|
+      reported = kwargs.presence || args.first
+      true
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    status = MockProcessManager::MockStatus.new(1)
+    decision = manager.handle_exit(status, working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action,
+      "A turn that ended on an unrecognized API error must fail loudly, not park as needs_input"
+    assert_match(/Your quantum entitlement has decohered/, decision.error_message)
+    # AgentSessionJob greps this exact phrase out of error_message to bucket the
+    # failure as `terminal_api_error` on the health dashboard. Reword the message
+    # without reworking that `case` and the failure silently lands in
+    # `process_failed` — so pin the coupling here rather than discovering it in prod.
+    assert_match(/Turn ended on an API error no recovery path claimed/, decision.error_message)
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length
+
+    @log_buffer.flush
+    log_contents = @session.logs.pluck(:content).join("\n")
+    assert_match(/Turn ended on an API error and no recovery path claimed it/, log_contents)
+
+    assert_equal "terminal API error", reported[:kind], "The unknown must announce itself"
+    assert_match(/Your quantum entitlement has decohered/, reported[:output],
+      "The alert must carry the prose no pattern matched, so the next wording change is a Slack message"
+    )
+    assert_no_match(/#{@session.id}/, reported[:summary],
+      "The summary is the dedup key — a fleet-wide wave must collapse into one alert"
+    )
+  end
+
+  # The runtime writes bookkeeping entries (last-prompt, atis-latch) AFTER the
+  # final message of a turn. Reading "the last line" rather than "the last
+  # message" would let those hide the error the turn died on — which is exactly
+  # how the real session 6412 transcript is shaped.
+  test "handle_exit still sees a terminal API error behind the runtime's trailing bookkeeping entries" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Unrecognized meltdown", error_type: "novel_failure")}
+      {"type": "last-prompt", "prompt": "Hello"}
+      {"type": "atis-latch", "value": 1}
+    JSONL
+
+    UnclassifiedFailureReporter.stubs(:report).returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action,
+      "Trailing bookkeeping entries must not be mistaken for the turn making progress"
+  end
+
+  # The guard on the guard: an unrecognized error the turn RECOVERED from is not
+  # a terminal error, and must still park normally.
+  test "handle_exit still returns needs_input when real output follows an unrecognized API error" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json("Unrecognized hiccup", error_type: "novel_failure")}
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Recovered and finished the work."}]}}
+    JSONL
+
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "An error the turn recovered from must not fail a turn that really did complete"
+  end
+
+  # A subagent's API error does not end the main turn.
+  test "handle_exit ignores a sidechain API error when deciding whether the turn died" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    sidechain_error = JSON.parse(api_error_json("Subagent blew up", error_type: "novel_failure"))
+      .merge("isSidechain" => true)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "All done."}]}}
+      #{JSON.generate(sidechain_error)}
+    JSONL
+
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "A subagent's failure must not be read as the main turn dying"
+  end
+
+  # The hole the first cut of this backstop left: a RECOGNIZED error whose
+  # classifier has already spent its cursor still ends a turn, and still has to
+  # fail rather than park. It just must not page as an unknown wording.
+  test "handle_exit fails a turn that ended on a recognized error no classifier will act on" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_ending_with_api_error("500 Internal Server Error", error_type: "api_error")
+    # The retry path already handled this entry and advanced its cursor, so
+    # api_error_for_retry? now declines — leaving the turn dead and unclaimed.
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
+
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action,
+      "A dead turn is a dead turn even when something recognizes the wording"
+    @log_buffer.flush
+    assert_match(/no recovery path claimed it/, @session.logs.pluck(:content).join("\n"))
+  end
+
+  # Fire once per dead turn. A resume that writes nothing new leaves the same
+  # entry terminal; re-failing on it would turn one bad turn into a loop.
+  test "handle_exit does not fail twice on the same terminal API error" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_ending_with_api_error("Novel meltdown", error_type: "novel_failure")
+    UnclassifiedFailureReporter.stubs(:report).returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    first = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+    assert_equal :failed, first.action
+
+    @session.update!(status: :running)
+    manager2 = create_manager
+    manager2.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    second = manager2.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, second.action,
+      "The same dead turn must not be failed and alerted on again"
+  end
+
+  # A backstop that cannot answer must not become the thing that breaks exit
+  # handling — it sits on the hot path for every normal completion.
+  test "handle_exit parks as before when the terminal-error check raises" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_regular_message("All done")
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    manager.send(:retry_strategy).stubs(:terminal_api_error).raises(RuntimeError, "transcript on fire")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "A raising backstop falls through to the pre-existing park rather than breaking exit handling"
+  end
+
+  # Exactly the entry Claude Code 2.1.237 wrote into production session 6412.
+  def setup_transcript_with_oauth_expiry_error
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "btw i think you misunderstood my ask"}]}}
+      #{api_error_json("Failed to authenticate: OAuth session expired and could not be refreshed", error_type: "authentication_failed")}
+    JSONL
+  end
+
+  def setup_transcript_ending_with_api_error(message, error_type:)
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+      #{api_error_json(message, error_type: error_type)}
+    JSONL
   end
 
   # Auth-error transcript entry, recorded exactly as Claude Code writes the
@@ -2684,7 +2967,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # Pool exhaustion — quota hit with nothing left to rotate into
   # ===========================================================================
 
-  test "quota exhaustion with no rotation target parks the session with a scheduled retry" do
+  test "quota exhaustion with no rotation target parks the session" do
     provider = Object.new
     provider.define_singleton_method(:rotate_for_quota!) do |triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil|
       { success: false, reason: "no_available_accounts" }
@@ -2703,7 +2986,6 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     @session.reload
     assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"]
-    assert_not_nil @session.metadata["auth_outage_retry_at"]
     assert_equal true, @session.metadata["pending_sleep"]
 
     @log_buffer.flush

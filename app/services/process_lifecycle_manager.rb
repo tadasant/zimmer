@@ -263,13 +263,35 @@ class ProcessLifecycleManager
   #
   # @param pid [Integer] Process ID to monitor
   # @param stderr_log_path [String, nil] Path to stderr log
+  # @param verify_identity [Boolean] whether to refuse a pid the session's recorded process
+  #   identity disowns. Only the recovery path wants this. SessionsController calls this
+  #   method purely to load the manager with a pid so #terminate can kill it, and there a
+  #   refusal would skip the kill and orphan a live agent that keeps burning quota — so it
+  #   defaults off and the caller that is adopting opts in.
   # @return [SpawnResult] Result indicating if monitoring was established
-  def resume_monitoring(pid:, stderr_log_path: nil)
+  def resume_monitoring(pid:, stderr_log_path: nil, verify_identity: false)
     @mutex.synchronize do
       return SpawnResult.new(success: false, error: "Cannot resume monitoring: state is #{@state}") unless @state == :idle
 
       unless @process_manager.running?(pid)
         return SpawnResult.new(success: false, error: "Process #{pid} is not running")
+      end
+
+      # `running?` is signal 0, which answers "some process holds this number", not "the
+      # process we spawned is still there". In a container whose pids recycle quickly the
+      # difference is the whole ballgame: a turn terminated seconds ago can have its
+      # number reissued, and adopting it reports a recovery that did not happen. The
+      # monitoring loop then reads that stranger's exit as this session's turn completing
+      # and pauses to needs_input, discarding the turn Zimmer never actually delivered.
+      #
+      # #spawn's guard deliberately skips this path so it does not kill the process the
+      # path exists to adopt. This is the read-only half of the same question: it refuses
+      # to adopt, and never signals anything.
+      if verify_identity && !AgentProcessLiveness.adoptable?(session, pid)
+        return SpawnResult.new(
+          success: false,
+          error: "Process #{pid} is not the process this session spawned (exited, or its pid was recycled)"
+        )
       end
 
       @current_pid = pid
@@ -440,6 +462,27 @@ class ProcessLifecycleManager
         # instead of parking it with an empty transcript for a human to notice.
         if empty_turn_recovery_needed?(working_dir)
           return handle_empty_turn(working_dir)
+        end
+
+        # The invariant that makes a silently-absorbed turn impossible: a turn
+        # whose LAST conversational entry is an API error did not complete, no
+        # matter how the runtime worded that error.
+        #
+        # Every branch above is a *specific* diagnosis matched against the
+        # runtime's prose, and every one of them can go stale. This one asks a
+        # structural question instead, and asks it LAST — so an answer here means
+        # not one of those branches claimed a turn that plainly died. That covers
+        # both halves of the failure: a wording nobody knows, and a wording some
+        # classifier does know but has already spent its retry cursor on.
+        #
+        # This is the 2026-08-20 incident (session 6412): Claude Code recorded
+        # `"error":"authentication_failed"` / "Failed to authenticate: OAuth
+        # session expired and could not be refreshed", exited 1 — its
+        # turn-finished convention — and Zimmer parked the session as `needs_input`
+        # with "Process exited successfully", leaving a human's message unanswered
+        # and nothing in the logs to find it by.
+        if (terminal_error = unhandled_terminal_api_error(working_dir))
+          return handle_terminal_api_error(terminal_error)
         end
 
         add_log("Process exited successfully", level: "info")
@@ -1312,6 +1355,88 @@ class ProcessLifecycleManager
     @logger.error("Failed to report unclassified process exit", error: e.message)
   end
 
+  # Session metadata key holding the transcript line the backstop last fired on.
+  # A dead turn is failed once; a resume that writes nothing new leaves the same
+  # entry terminal, and re-failing on it would turn one bad turn into a loop of
+  # failures and alerts.
+  TERMINAL_API_ERROR_LINE_KEY = "terminal_api_error_line"
+
+  # A turn that ended on an API error nobody is handling. Fails the session and,
+  # when the wording is one no classifier knows, alerts.
+  #
+  # Failing is the honest verdict: the turn is over, the work in it did not
+  # happen, and the human's prompt is sitting unanswered in the transcript. A
+  # failed session says all three on the homepage and stays resumable, where
+  # `needs_input` said the opposite of all three.
+  def handle_terminal_api_error(terminal)
+    add_log(
+      "Turn ended on an API error and no recovery path claimed it, so it did not complete — failing " \
+        "loudly rather than parking it as finished. The runtime said: #{terminal.text}",
+      level: "error"
+    )
+    @log_buffer&.flush
+    @logger.error("Turn ended on an unhandled API error",
+      unmatched_output: terminal.text, recognized: terminal.recognized?)
+
+    remember_terminal_api_error_line(terminal.line)
+
+    # Only an unrecognized wording is news. A recognized error that got here has
+    # already been through its own classifier, which declined — that is a dead
+    # turn, but not an unknown failure mode, and paging on it would be noise.
+    report_terminal_api_error(terminal.text) unless terminal.recognized?
+
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(
+      action: :failed,
+      error_message: "Turn ended on an API error no recovery path claimed: #{terminal.text.truncate(300)}"
+    )
+  end
+
+  def report_terminal_api_error(error_text)
+    return unless runtime_classifies_exits?
+
+    UnclassifiedFailureReporter.report(
+      kind: "terminal API error",
+      # Low-cardinality by construction: the summary IS the dedup key, so it
+      # carries the runtime and not the error text, session id, or timestamp.
+      summary: "#{session&.agent_runtime.presence || "unknown runtime"} turn ended on an API error no classifier matched",
+      source: "ProcessLifecycleManager#handle_exit",
+      session: session,
+      output: error_text,
+      logger: @logger
+    )
+  rescue => e
+    @logger.error("Failed to report a terminal API error", error: e.message)
+  end
+
+  # The API error this turn died on, unless it is the same one a previous exit
+  # already failed for. Runtimes whose strategy does not answer the question
+  # (Codex) never route here.
+  def unhandled_terminal_api_error(working_dir)
+    return nil unless retry_strategy.respond_to?(:terminal_api_error)
+
+    terminal = retry_strategy.terminal_api_error(working_dir: working_dir)
+    return nil unless terminal
+    return nil if terminal.line == session.metadata&.dig(TERMINAL_API_ERROR_LINE_KEY)
+
+    terminal
+  rescue => e
+    # A backstop that cannot answer must not become the thing that breaks exit
+    # handling; fall through to the pre-existing park.
+    @logger.error("Failed to check for a terminal API error", error: e.message)
+    nil
+  end
+
+  def remember_terminal_api_error_line(line)
+    with_db_retry do
+      session.update!(metadata: (session.metadata || {}).merge(TERMINAL_API_ERROR_LINE_KEY => line))
+    end
+  rescue => e
+    # Worst case the same dead turn is failed twice; that must not stop it being
+    # failed once.
+    @logger.error("Failed to record the terminal API error line", error: e.message)
+  end
+
   # Whether this runtime's strategy answers real questions about an exit, so that
   # "nothing matched" is genuinely informative. Strategies predating the question
   # are assumed to classify — the conservative answer, since it keeps alerting.
@@ -1410,7 +1535,7 @@ class ProcessLifecycleManager
       return rotation_result if rotation_result
 
       # Nothing left to rotate into. Park the session with an explicit warning
-      # and a scheduled retry instead of dropping it into a bare needs_input
+      # and put to sleep, instead of dropping it into a bare needs_input
       # whose only visible artifact is the runtime's own error text.
       park_for_auth_outage(AuthOutageParkService::QUOTA_EXHAUSTED)
 
@@ -1476,7 +1601,8 @@ class ProcessLifecycleManager
       # Every account is over quota with nothing to rotate into. Same verdict the
       # quota path reaches, reached on the FIRST auth failure instead of after
       # three re-spawns into the same wall — and with the reset-derived retry
-      # time rather than AUTH_UNRECOVERABLE's flat one-hour guess.
+      # reason, so the session log and the banner name the outage the pool is
+      # actually in.
       park_for_auth_outage(AuthOutageParkService::QUOTA_EXHAUSTED)
 
       @mutex.synchronize { @state = :idle }
@@ -1513,18 +1639,18 @@ class ProcessLifecycleManager
     if reason == AuthOutageParkService::QUOTA_EXHAUSTED
       "Auth recovery exhausted with every account over quota — session parked until quota resets"
     else
-      "Auth recovery retry limit exhausted — session parked for automatic retry"
+      "Auth recovery retry limit exhausted — session parked until the login pool recovers"
     end
   end
 
   # Park the session for an auth/quota outage: explain it in the session log,
-  # notify the user, and schedule the wake-up that resumes the work once the
-  # outage plausibly clears. See AuthOutageParkService.
+  # notify the user, and put the session to sleep until the pool recovers. See
+  # AuthOutageParkService.
   #
-  # Creating the wake-up trigger sets pending_sleep on this still-running
-  # session, so the needs_input the caller returns is immediately followed by a
-  # transition to waiting — which is also what stops the heartbeat sweep from
-  # nudging the session straight back into the same wall.
+  # Parking sets pending_sleep on this still-running session, so the needs_input
+  # the caller returns is immediately followed by a transition to waiting — which
+  # is also what stops the heartbeat sweep from nudging the session straight back
+  # into the same wall.
   def park_for_auth_outage(reason)
     return unless @session
 

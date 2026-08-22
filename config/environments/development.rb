@@ -84,6 +84,11 @@ Rails.application.configure do
       class: "CleanupOrphanedSessionsJob",
       description: "Cleanup orphaned sessions every 5 minutes"
     },
+    outcome_analysis_batch_pump: {
+      cron: "* * * * *", # Every minute — the engine behind "Analyze All" concurrency
+      class: "OutcomeAnalysisBatchPumpJob",
+      description: "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
+    },
     heartbeat_sweep: {
       cron: "*/30 * * * * *", # Every 30 seconds
       class: "HeartbeatSweepJob",
@@ -117,6 +122,11 @@ Rails.application.configure do
       cron: "*/2 * * * *", # Every 2 minutes (merge conflicts are less time-sensitive than CI status)
       class: "GitHubMergeConflictPollerJob",
       description: "Poll GitHub PRs for merge conflicts and notify sessions"
+    },
+    experimental_flag_backfill: {
+      cron: "*/15 * * * *", # Every 15 minutes; an indexed anti-join that writes nothing once history is labelled
+      class: "ExperimentalFlagBackfillJob",
+      description: "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
     },
     cli_status_refresh: {
       cron: "*/2 * * * *", # Every 2 minutes

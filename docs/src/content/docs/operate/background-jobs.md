@@ -35,11 +35,14 @@ From `config.good_job.cron`:
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks (leaving a banner that says the round-trip was lost) |
 | 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint (production and staging only — see below) |
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
+| 5m | `SpotCeilingSweepJob` | Apply the spot policy to sessions that are already running: pause every running spot session while a quota window sits at its target, and resume them (5 a sweep, highest precedence first) once utilization has fallen 5 points below it — along with any session a human parked there from **Pause Until → Spot Queue**. Priority sessions are never paused. See [Spot and priority](/sessions/spot-and-priority/#the-target-is-a-ceiling). |
 | 5m | `StatusSummaryBackstopJob` | Re-run a Status-summary generation that never landed, for a session already at rest — capped at 5 repairs a sweep, each session examined at most once per 30 minutes, and stood down entirely while the runtime's login pool is exhausted. See [The Status summary](/sessions/status-summary/#the-repair-sweep-behind-it). |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` |
-| 10m | `TokenUsageIngestionJob` | Sweep recent transcripts into the token-spend ledger. Scans only files touched in the last two hours; the lookback overlaps the interval generously because ingestion is idempotent on `request_id`, so a missed run closes itself on the next pass. History that predates the job is loaded once by `rake token_usage:backfill`. See [Token spend](/operate/costs/). |
+| 10m | `TokenUsageIngestionJob` | Sweep recent transcripts into the token-spend ledger. Scans only files touched in the last two hours; the lookback overlaps the interval generously because ingestion is idempotent on `request_id`, so a missed run closes itself on the next pass. History that predates the job is swept once by `TokenUsageBackfillJob`. See [Token spend](/operate/costs/). |
+| 5m | `TokenUsageBackfillJob` | Sweep the WHOLE transcript corpus into the ledger, once, in two-minute slices against a `token_usage_backfills` run that records the cursor. Starts itself on the first tick after a deploy when no sweep has ever finished, and costs one indexed lookup per tick forever after. Runs on `default`, not `pollers`: it holds its thread for minutes and must not delay the latency-sensitive pollers. See [Token spend](/operate/costs/). |
+| 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
-| 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts, then resume the sessions parked on them — at most 5 per sweep, oldest park first, so a recovered pool is not re-drained by the whole cohort at once. See [The Claude Code harness](/auth/harness/). |
+| 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts; fire the `quota_available` event if that was the pool's rising edge (which spawns one fleet-maintenance session to wake spot work in precedence order); then resume the parked **priority** sessions directly — at most 5 per sweep, oldest park first, so a recovered pool is not re-drained by the whole cohort at once. See [The Claude Code harness](/auth/harness/). |
 | 15m | `ClaudeUsageSamplerJob` | Read the serving Claude account's quota, so the spot gate decides on a fresh number — `QuotaResetCheckerJob` samples only *exceeded* accounts, and a healthy one is otherwise read only when somebody opens /quotas. See [Spot and priority](/sessions/spot-and-priority/). |
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
@@ -528,6 +531,45 @@ future-dated rows, so a locked row dated in the future is counted once, as claim
 `oldest_ready_age_seconds` dates a job from `scheduled_at` when it had one and `created_at`
 otherwise, so a wake-up trigger enqueued yesterday starts accruing wait when it comes due rather
 than looking like a day-old stall the moment it becomes runnable.
+
+### The page says which queue, and of what
+
+A ready count on its own is not triageable. Zimmer runs four queues with very different shapes — an
+`agents` thread is held for the entire life of a session, while `default` and `pollers` turn jobs
+over in milliseconds — so the same number is equally consistent with "one queue is starved" and
+"everything is busy", and those want opposite responses. Worse, the healthy-looking signals stay
+healthy in the starved case: the other queues keep draining, and `processing_rate_per_hour` is a
+*trailing* hour, so it lags a stall by many minutes.
+
+So the alert body carries two more lines, from `HealthMonitorService#ready_backlog_breakdown`:
+
+```
+• Ready by queue: agents 231, default 18, pollers 2
+• Ready by job class: AgentSessionJob 231, SessionTitleJob 12, HeartbeatSweepJob 6, other (3 more) 10
+```
+
+Both are taken over the same population as `ready_count` and both add up to it, biggest first with
+ties broken by name, capped at `READY_BREAKDOWN_LIMIT` (5) entries each. Whatever the cap cuts comes
+back as an `other (N more)` remainder rather than vanishing — five job classes with no total look the same
+whether they are the whole backlog or a tenth of it, and telling those apart is the entire question
+below. A row with no `job_class` is counted under `(unknown)`. Read them this way:
+
+- **Concentrated in one queue** — that queue is starving. Its threads are all held, or blocked on a
+  long external wait.
+- **Spread across every queue** — the worker itself: down, restarting, or starved of database
+  round-trips.
+
+This is deliberately *not* folded into `queue_statistics`, which runs on every `/health` render;
+these are two extra grouped scans of `good_jobs` and are only worth paying for when something is
+about to page. And if they raise — plausible, since the database may be the thing going wrong — the
+lines read `unavailable` and the page still goes out. A depth number that reaches a human beats a
+richer one that raises on the way. `unavailable` and `none` are deliberately different words: a
+query that never answered and a queue that read as empty are different facts about an incident.
+
+The breakdown has to be *in* the page rather than a pointer to the GoodJob dashboard at `/jobs`,
+because the reader most likely to be reading it cannot open that dashboard: an agent triage session
+has no shell on the production host. The same split is on the `get_system_health` MCP tool for the
+same reason.
 
 ### "N active / M registered" workers
 

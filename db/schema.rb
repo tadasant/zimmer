@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_22_174500) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -73,7 +73,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.string "default_runtime"
     t.jsonb "extension_states", default: {}, null: false
     t.jsonb "genesis_class_overrides", default: {}, null: false
+    t.boolean "mcp_tool_search_enabled", default: true, null: false
     t.jsonb "queue_recovery_mode", default: {}, null: false
+    t.boolean "quota_pool_available"
+    t.datetime "quota_pool_available_changed_at"
     t.integer "spot_gate_five_hour_threshold_pct", default: 80, null: false
     t.integer "spot_gate_weekly_threshold_pct", default: 80, null: false
     t.boolean "spot_gating_enabled", default: false, null: false
@@ -135,11 +138,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.string "email", null: false
     t.boolean "is_current", default: false, null: false
     t.datetime "last_rotated_to_at"
+    t.datetime "last_stale_refresh_failure_at"
     t.jsonb "oauth_config", default: {}
     t.integer "priority", default: 0, null: false
     t.integer "quota_hit_count", default: 0, null: false
     t.datetime "reauth_alerted_at"
     t.string "runtime", default: "claude_code", null: false
+    t.integer "stale_refresh_failures", default: 0, null: false
     t.integer "status", default: 0, null: false
     t.datetime "updated_at", null: false
     t.index ["email", "runtime"], name: "index_claude_accounts_on_email_and_runtime", unique: true
@@ -358,6 +363,57 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.index ["stale"], name: "index_notifications_on_stale"
   end
 
+  create_table "outcome_analyses", force: :cascade do |t|
+    t.string "agent_root"
+    t.string "agent_runtime", null: false
+    t.datetime "analyzed_at", null: false
+    t.bigint "analyzer_session_id"
+    t.datetime "created_at", null: false
+    t.integer "failure_segment_count", default: 0, null: false
+    t.integer "max_depth", default: 0, null: false
+    t.string "model"
+    t.text "notes"
+    t.jsonb "root", null: false
+    t.string "root_outcome", null: false
+    t.string "schema_version", default: "1", null: false
+    t.integer "segment_count", default: 0, null: false
+    t.datetime "session_created_at", null: false
+    t.bigint "session_id", null: false
+    t.datetime "superseded_at"
+    t.datetime "updated_at", null: false
+    t.index ["analyzer_session_id"], name: "index_outcome_analyses_on_analyzer_session_id", where: "(analyzer_session_id IS NOT NULL)"
+    t.index ["session_created_at", "agent_runtime", "model", "agent_root"], name: "index_outcome_analyses_stats", where: "(superseded_at IS NULL)"
+    t.index ["session_id", "analyzed_at"], name: "index_outcome_analyses_on_session_and_analyzed_at"
+    t.index ["session_id"], name: "index_outcome_analyses_current_per_session", unique: true, where: "(superseded_at IS NULL)"
+  end
+
+  create_table "outcome_analysis_batch_items", force: :cascade do |t|
+    t.bigint "analysis_session_id"
+    t.datetime "created_at", null: false
+    t.text "error"
+    t.datetime "finished_at"
+    t.bigint "outcome_analysis_batch_id", null: false
+    t.integer "position", default: 0, null: false
+    t.bigint "session_id", null: false
+    t.datetime "started_at"
+    t.string "state", default: "queued", null: false
+    t.datetime "updated_at", null: false
+    t.index ["analysis_session_id"], name: "index_outcome_analysis_batch_items_on_analysis_session_id", where: "(analysis_session_id IS NOT NULL)"
+    t.index ["outcome_analysis_batch_id", "session_id"], name: "index_outcome_batch_items_on_batch_session", unique: true
+    t.index ["outcome_analysis_batch_id", "state", "position"], name: "index_outcome_batch_items_on_batch_state_position"
+  end
+
+  create_table "outcome_analysis_batches", force: :cascade do |t|
+    t.integer "concurrency", default: 1, null: false
+    t.datetime "created_at", null: false
+    t.jsonb "filters", default: {}, null: false
+    t.datetime "finished_at"
+    t.string "status", default: "running", null: false
+    t.integer "total_count", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["status", "id"], name: "index_outcome_analysis_batches_on_status_and_id"
+  end
+
   create_table "push_subscriptions", force: :cascade do |t|
     t.string "auth_key", null: false
     t.datetime "created_at", null: false
@@ -385,6 +441,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.index ["claude_account_id", "created_at"], name: "idx_on_claude_account_id_created_at_edf6f8e6f6"
     t.index ["claude_account_id"], name: "index_runtime_login_attempts_on_claude_account_id"
     t.index ["status"], name: "index_runtime_login_attempts_on_status"
+  end
+
+  create_table "session_experimental_flags", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "first_observed_at"
+    t.datetime "last_observed_at"
+    t.bigint "session_id", null: false
+    t.string "setting_key", null: false
+    t.string "source", default: "observed", null: false
+    t.datetime "updated_at", null: false
+    t.boolean "value_at_end"
+    t.boolean "value_at_start"
+    t.index ["session_id", "setting_key"], name: "index_session_experimental_flags_on_session_and_key", unique: true
+    t.index ["setting_key", "source"], name: "index_session_experimental_flags_on_key_and_source"
   end
 
   create_table "session_status_summaries", force: :cascade do |t|
@@ -472,6 +542,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.json "mcp_servers"
     t.json "metadata", default: {}
     t.bigint "parent_session_id"
+    t.integer "precedence", default: 0, null: false
     t.text "prompt"
     t.boolean "push_notifications_enabled", default: false, null: false
     t.string "repository_name"
@@ -488,8 +559,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.json "transcript"
     t.datetime "trash_after"
     t.datetime "updated_at", null: false
+    t.index "((config ->> 'model'::text))", name: "index_sessions_on_config_model"
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
     t.index "((custom_metadata ->> 'router_session_id'::text))", name: "index_sessions_on_router_session_id"
+    t.index "((metadata ->> 'agent_root_key'::text))", name: "index_sessions_on_agent_root_key"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
     t.index ["category_id"], name: "index_sessions_on_category_id"
@@ -502,6 +575,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"
     t.index ["job_id"], name: "index_sessions_on_job_id"
     t.index ["parent_session_id"], name: "index_sessions_on_parent_session_id"
+    t.index ["precedence", "created_at", "id"], name: "index_sessions_on_precedence_ranked", order: { precedence: :desc }, where: "(status <> 3)"
     t.index ["scheduling_class"], name: "index_sessions_on_scheduling_class", where: "(scheduling_class IS NOT NULL)"
     t.index ["session_id"], name: "index_sessions_on_session_id", unique: true
     t.index ["slug"], name: "index_sessions_on_slug", unique: true
@@ -532,6 +606,51 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.index ["session_id", "agent_id"], name: "index_subagent_transcripts_on_session_id_and_agent_id", unique: true
     t.index ["session_id"], name: "index_subagent_transcripts_on_session_id"
     t.index ["tool_use_id"], name: "index_subagent_transcripts_on_tool_use_id"
+  end
+
+  create_table "token_usage_backfills", force: :cascade do |t|
+    t.bigint "adhoc_rows", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.string "cursor"
+    t.integer "directories_done", default: 0, null: false
+    t.integer "directories_total", default: 0, null: false
+    t.bigint "files_scanned", default: 0, null: false
+    t.datetime "finished_at"
+    t.text "last_error"
+    t.datetime "last_ran_at"
+    t.bigint "session_rows", default: 0, null: false
+    t.datetime "started_at"
+    t.string "transcript_root", null: false
+    t.string "trigger", default: "automatic", null: false
+    t.datetime "updated_at", null: false
+    t.index "((finished_at IS NULL))", name: "index_token_usage_backfills_one_unfinished", unique: true, where: "(finished_at IS NULL)"
+    t.index ["created_at"], name: "index_token_usage_backfills_on_created_at"
+    t.index ["finished_at"], name: "index_token_usage_backfills_on_finished_at"
+  end
+
+  create_table "token_usage_features", force: :cascade do |t|
+    t.string "agent_root"
+    t.bigint "cache_creation_1h_tokens", default: 0, null: false
+    t.bigint "cache_creation_5m_tokens", default: 0, null: false
+    t.bigint "cache_creation_tokens", default: 0, null: false
+    t.bigint "cache_read_tokens", default: 0, null: false
+    t.datetime "called_at", null: false
+    t.bigint "chars", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.string "feature", null: false
+    t.bigint "input_tokens", default: 0, null: false
+    t.string "model", null: false
+    t.integer "occurrences", default: 0, null: false
+    t.bigint "output_tokens", default: 0, null: false
+    t.string "request_id", null: false
+    t.bigint "session_id"
+    t.boolean "subagent", default: false, null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_root", "called_at"], name: "index_token_usage_features_on_agent_root_and_called_at"
+    t.index ["called_at"], name: "index_token_usage_features_on_called_at"
+    t.index ["feature", "called_at"], name: "index_token_usage_features_on_feature_and_called_at"
+    t.index ["request_id", "feature"], name: "index_token_usage_features_on_request_id_and_feature", unique: true
+    t.index ["session_id", "called_at"], name: "index_token_usage_features_on_session_id_and_called_at"
   end
 
   create_table "trigger_conditions", force: :cascade do |t|
@@ -566,6 +685,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
     t.integer "max_sessions_per_minute"
     t.jsonb "mcp_servers", default: [], null: false
     t.string "name", null: false
+    t.integer "precedence"
     t.text "prompt_template", null: false
     t.boolean "resuscitate_archived", default: false, null: false
     t.boolean "reuse_session", default: false, null: false
@@ -617,7 +737,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
+  add_foreign_key "outcome_analyses", "sessions", column: "analyzer_session_id", on_delete: :nullify
+  add_foreign_key "outcome_analyses", "sessions", on_delete: :cascade
+  add_foreign_key "outcome_analysis_batch_items", "outcome_analysis_batches", on_delete: :cascade
+  add_foreign_key "outcome_analysis_batch_items", "sessions", column: "analysis_session_id", on_delete: :nullify
+  add_foreign_key "outcome_analysis_batch_items", "sessions", on_delete: :cascade
   add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
+  add_foreign_key "session_experimental_flags", "sessions", on_delete: :cascade
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
   add_foreign_key "session_token_usages", "sessions", on_delete: :nullify
@@ -626,5 +752,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_010100) do
   add_foreign_key "sessions", "categories", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
   add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade
+  add_foreign_key "token_usage_features", "session_token_usages", column: "request_id", primary_key: "request_id", on_delete: :cascade
+  add_foreign_key "token_usage_features", "sessions", on_delete: :nullify
   add_foreign_key "trigger_conditions", "triggers"
 end

@@ -27,6 +27,34 @@ landing it quietly.
   `bin/rails test test/models/session_test.rb`
 - Lint with `bin/rubocop`, security-scan with `bin/brakeman`.
 
+## No production box access — ops actions ship with the deploy
+
+**Design every feature so that operating it needs no shell on the production box.** If finishing
+your change leaves behind a step like "and then someone runs `rake …` on prod", the change is not
+finished: that step is part of the feature and has to ship with it.
+
+This is not a preference about ergonomics. Agent sessions run *on* the production droplet, the
+operator key is not authorized as root there, and the SSH agent root is excluded from the catalog
+baked into the image. An ops step that needs a shell is one no agent can take and a human has to be
+interrupted for.
+
+Deliver ops actions one of three ways, in this order:
+
+1. **A deploy** — a migration, or a one-shot idempotent job that a cron entry starts and that goes
+   idle once its work is done.
+2. **A scheduled idempotent job** — for anything that has to keep converging.
+3. **The app's own surfaces** — a button in the web UI, a REST endpoint, an MCP action — for
+   anything an operator triggers deliberately.
+
+Two obligations come with running unattended: the action must be **safe to run repeatedly** (a
+unique key, an upsert, a completion marker — something that makes a second run a no-op), and it must
+give an **observable answer** to "has it run, and what does it cover" through a surface a human can
+reach without SSH. A rake task is fine as a developer convenience; it is not the delivery mechanism.
+
+`TokenUsageBackfillJob` is the worked example — see
+[Token spend](docs/src/content/docs/operate/costs.md) and
+[Ops actions ship with the deploy](docs/src/content/docs/operate/deploying.md).
+
 ## Documentation lives in `docs/` — update it in the same PR
 
 `docs/` is the Zimmer documentation site (Astro Starlight, deployed to Cloudflare
@@ -52,6 +80,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | sshd, the firewall, `admin_ssh_pubkeys`, Tailscale SSH | `operate/ssh-access.md` |
 | `config/goals.json`, `app/services/orchestrator_system_prompt_builder.rb` | `sessions/goals.md` |
 | any cron job | `operate/background-jobs.md` |
+| an ops action that would otherwise need a prod shell | `operate/deploying.md` (Ops actions ship with the deploy) |
 | `config/initializers/otel_logs_exporter.rb`, `config/initializers/sentry.rb`, `lib/tasks/obs.rake` | `operate/observability.md` |
 | `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
 | `config.public_file_server.headers` | `operate/deploying.md` |

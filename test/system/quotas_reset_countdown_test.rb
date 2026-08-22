@@ -1,6 +1,8 @@
 require "application_system_test_case"
 
-# The "Resets in" line on a /quotas account card, rendered in a real browser.
+# The /quotas time displays, rendered in a real browser: the "Resets in" line on
+# an account card, and the Account Pool's countdown to the moment work is
+# unblocked.
 #
 # The reported bug: a card showed the label "Resets in" with nothing after it.
 # `time_until_reset` reported days, hours and minutes, so the last minute before
@@ -13,8 +15,10 @@ require "application_system_test_case"
 # "Exceeded" badge sitting beside the 0.0% and the green "Window reset" line the
 # same snapshot produced.
 #
-# Both are one card away from each other in the shape the bug was reported in,
-# so one page render covers them.
+# The first two are one card away from each other in the shape the bug was
+# reported in, so one page render covers them. The third is the pool banner
+# above those cards, and needs a pool that is out of capacity rather than a
+# single card, so it renders its own page.
 class QuotasResetCountdownTest < ApplicationSystemTestCase
   # Alongside the failure screenshots Rails writes, so CI's artifact upload
   # picks them up.
@@ -121,7 +125,119 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
     end
   end
 
+  # Part two of the same report: "add a dynamic countdown timer ... ticking down
+  # by second". A clock that only ticks in a unit test is a clock nobody
+  # watched, so this runs it in a real browser — at a phone width, because that
+  # is where Zimmer gets read and where a 30px number is most likely to overrun
+  # the screen.
+  test "the Account Pool counts down, second by second, to the moment work is unblocked" do
+    ClaudeAccountQuotaSnapshot.delete_all
+    account = claude_accounts(:primary)
+    # The shape Tadas reported: the 5-hour window is already empty, the week is
+    # spent, and the week is what the pool is waiting for. Three minutes out, so
+    # the clock reads minutes and seconds and each tick is visible.
+    deadline = 3.minutes.from_now
+    account.quota_snapshots.create!(
+      subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 0.0, status_5h: "allowed", reset_5h: 90.minutes.from_now,
+      utilization_7d: 1.0, status_7d: "rejected", reset_7d: deadline,
+      trigger: "page_view"
+    )
+
+    at_phone_width do
+      visit quotas_url
+
+      banner = find("[data-controller='unblock-countdown']")
+      # Matched case-insensitively: the label is `uppercase` in CSS, and
+      # Capybara reads the rendered text, not the source.
+      assert banner.has_text?(/work unblocked in/i),
+             "the pool should say what the clock is counting down to, got: #{banner.text.inspect}"
+      # Driven off the absolute instant, not off a remaining-duration string —
+      # a page left open must not freeze on the wait as the server rendered it.
+      assert_equal deadline.utc.iso8601,
+                   banner["data-unblock-countdown-deadline-value"]
+
+      readings = [ banner.find("[data-unblock-countdown-target='remaining']").text ]
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      3.times { readings << next_reading(banner, readings.last) }
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      seconds = readings.map { |text| clock_seconds(text) }
+      assert_equal seconds.sort.reverse, seconds,
+                   "the clock should count down, not up or sideways: #{readings.inspect}"
+      # A second of wall clock is a second off the clock — the tick is the real
+      # rate, not an animation.
+      assert_in_delta elapsed, seconds.first - seconds.last, 2,
+                      "the clock should track wall time: #{readings.inspect} over #{elapsed.round(1)}s"
+      # Nothing has passed yet, so the note about it stays out of the way.
+      banner.assert_no_text("That moment has passed")
+
+      # The clock is the widest thing this change adds; if it fits a phone, the
+      # banner does.
+      overflow = page.evaluate_script(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+      )
+      assert_equal 0, overflow, "the page should not scroll horizontally at 375px"
+      past_edge = page.evaluate_script(<<~JS)
+        (function () {
+          const limit = document.documentElement.clientWidth;
+          return Array.from(document.querySelectorAll("[data-controller='unblock-countdown'] *"))
+            .filter((el) => el.getBoundingClientRect().right > limit + 1)
+            .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value}`);
+        })()
+      JS
+      assert_equal [], past_edge, "nothing in the countdown may sit past the right edge"
+
+      capture("quotas-unblock-countdown-375", banner)
+
+      # The deadline crossing while the page is open. Handed to the live
+      # controller rather than waited out, so the assertion is about what it
+      # does at zero — say the moment passed — rather than about how long the
+      # test is willing to sit there.
+      page.execute_script(<<~JS)
+        const el = document.querySelector("[data-controller='unblock-countdown']");
+        const controller = window.Stimulus.getControllerForElementAndIdentifier(el, "unblock-countdown");
+        controller.deadline = new Date(Date.now() - 1000);
+        controller.tick();
+      JS
+
+      assert_equal "work unblocked",
+                   banner.find("[data-unblock-countdown-target='label']").text.downcase
+      assert_equal "now", banner.find("[data-unblock-countdown-target='remaining']").text,
+                   "a passed deadline should stop at the moment rather than run negative"
+      assert banner.has_text?("That moment has passed"),
+             "and should say the reading is stale rather than freezing on 0:00"
+      # And it stopped: no interval is left running to count up past zero.
+      assert page.evaluate_script(<<~JS), "the expired clock should clear its interval"
+        (function () {
+          const el = document.querySelector("[data-controller='unblock-countdown']");
+          const controller = window.Stimulus.getControllerForElementAndIdentifier(el, "unblock-countdown");
+          return controller.interval === null;
+        })()
+      JS
+    end
+  end
+
   private
+
+  # The next reading after `previous`, waited for rather than slept through:
+  # Capybara blocks until the element's text actually changes, so a repaint that
+  # lands late is a slower sample rather than a duplicate one, and a clock that
+  # never ticks fails here with its own message instead of quietly passing a
+  # uniqueness check.
+  def next_reading(banner, previous)
+    banner.assert_no_selector("[data-unblock-countdown-target='remaining']",
+      exact_text: previous, wait: 5)
+    banner.find("[data-unblock-countdown-target='remaining']").text
+  end
+
+  # "1:59" or "2:04:31" or "1d 02:04:31" back to seconds, for asserting the
+  # direction and the rate of the tick.
+  def clock_seconds(text)
+    days, _, rest = text.rpartition("d ")
+    parts = rest.split(":").map(&:to_i)
+    parts.reduce(0) { |total, part| (total * 60) + part } + (days.to_i * 86_400)
+  end
 
   # Render at a phone viewport and put the window back however the block exits.
   # Workers reuse one browser across tests, so a width left behind here is a

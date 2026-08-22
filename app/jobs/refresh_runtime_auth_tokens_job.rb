@@ -75,12 +75,21 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
           refreshed += 1
         else
           failed += 1
-          if result.error == :needs_reauth
+          case result.error
+          when :needs_reauth
             # The account is already marked needs_reauth and rotated out of the
             # active pool — this is a known-permanent, gracefully-handled outcome
             # (the human re-authenticates to recover). Log at .warn, not .error,
             # so it does not page on a recoverable, non-alerting condition.
             Rails.logger.warn "[RefreshRuntimeAuthTokens] Permanent failure for #{account.email}, marked needs_reauth"
+          when :stale
+            # The vendor rejected the token VALUE. A retry would present the same
+            # value and be rejected the same way, so the ladder is three wasted
+            # requests that end in an .error nobody can act on. Wait for the next
+            # sweep instead — by then a filesystem sync or another caller's
+            # refresh may have moved the row on. See ClaudeAccount#530 handling.
+            Rails.logger.warn "[RefreshRuntimeAuthTokens] #{account.email} presented a spent refresh token value; " \
+              "not retrying it with the same value, waiting for the next sweep"
           else
             retry_ids << account.id
           end
@@ -125,6 +134,11 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
           # needs_reauth and rotated out). Log at .warn, not .error — see the
           # matching branch in #perform.
           Rails.logger.warn "[RefreshRuntimeAuthTokens] Permanent failure for #{account.email} on retry #{attempt}, marked needs_reauth"
+        elsif result.error == :stale
+          # Same reasoning as #perform: the value is spent, so the rest of the
+          # ladder would present it again. Stop climbing.
+          Rails.logger.warn "[RefreshRuntimeAuthTokens] #{account.email} presented a spent refresh token value on retry #{attempt}; " \
+            "abandoning the retry ladder rather than replaying it"
         else
           still_failing_ids << account.id
         end

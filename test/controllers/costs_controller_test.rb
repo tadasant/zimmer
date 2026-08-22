@@ -3,6 +3,21 @@
 require "test_helper"
 
 class CostsControllerTest < ActionDispatch::IntegrationTest
+  # Not `create_session`: ActionDispatch::Integration::Runner already defines a
+  # method by that name, and it builds a Rack test session, not this one.
+  def make_session(title)
+    Session.create!(title: title, prompt: "x", git_root: "https://github.com/test/repo.git",
+                    branch: "main", execution_provider: "local_filesystem")
+  end
+
+  # A tagged session with enough calls to clear ExperimentAnalytics' floor.
+  def tagged_usage(title, cohort:, model: "claude-opus-5")
+    session = make_session(title)
+    SessionExperimentalFlag.create!(session: session, setting_key: "mcp_tool_search",
+                                    value_at_start: cohort, value_at_end: cohort)
+    10.times { |i| usage(session_id: session.id, model: model, request_id: "req_#{title}_#{i}") }
+  end
+
   def usage(**overrides)
     SessionTokenUsage.create!({
       request_id: "req_#{SecureRandom.hex(6)}",
@@ -22,7 +37,8 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_match "No usage recorded", response.body
-    assert_match "token_usage:backfill", response.body, "the empty state should say how to load history"
+    assert_match "TokenUsageBackfillJob", response.body, "the empty state should say what loads history"
+    assert_no_match(/rake token_usage:backfill/, response.body, "nothing on this page should require a shell on the box")
   end
 
   test "renders totals and breakdowns once usage exists" do
@@ -58,14 +74,95 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     get costs_path(days: 100_000)
 
     assert_response :success
-    assert_equal CostsController::MAX_DAYS, @controller.instance_variable_get(:@days)
+    assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).preset_days
   end
 
   test "a non-numeric window falls back to the default" do
     get costs_path(days: "banana")
 
     assert_response :success
-    assert_equal CostsController::DEFAULT_DAYS, @controller.instance_variable_get(:@days)
+    assert_equal CostWindow::DEFAULT_DAYS, @controller.instance_variable_get(:@window).preset_days
+  end
+
+  test "an explicit calendar range is honoured over the preset horizons" do
+    usage(called_at: Time.zone.parse("2026-03-10 12:00"))
+
+    get costs_path(from: "2026-03-09", to: "2026-03-11")
+
+    assert_response :success
+    window = @controller.instance_variable_get(:@window)
+    assert window.custom?, "from/to should produce a custom window"
+    assert_equal Date.new(2026, 3, 9), window.from_date
+    assert_equal Date.new(2026, 3, 11), window.to_date
+    assert_no_match "No usage recorded", response.body
+
+    get costs_path(from: "2026-03-01", to: "2026-03-05")
+    assert_response :success
+    assert_match "No usage recorded", response.body, "a call outside the range must not be counted"
+  end
+
+  test "the calendar range survives a reversed or oversized span" do
+    get costs_path(from: "2026-03-11", to: "2026-03-09")
+    assert_response :success
+    window = @controller.instance_variable_get(:@window)
+    assert_equal Date.new(2026, 3, 9), window.from_date, "a reversed range is swapped, not rejected"
+
+    get costs_path(from: "2019-01-01", to: "2026-03-09")
+    assert_response :success
+    assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).days
+  end
+
+  test "the re-scan button comes back to the window it was pressed from" do
+    # The button used to carry `days: @days`, which the CostWindow rewrite stopped
+    # assigning — so every sweep silently dropped the viewer back to 7 days.
+    post costs_backfill_path(from: "2026-03-09", to: "2026-03-11")
+
+    assert_response :redirect
+    assert_match "from=2026-03-09", response.location
+    assert_match "to=2026-03-11", response.location
+
+    post costs_backfill_path(days: 90)
+
+    assert_response :redirect
+    assert_match "days=90", response.location
+  end
+
+  test "the feature table renders its populated state without telling anyone to run a rake task" do
+    # The empty state of this card is the one a fresh deploy sees, and CLAUDE.md
+    # forbids user-facing copy whose remedy needs a shell on the production box.
+    record = usage
+    TokenUsageFeature.create!(
+      request_id: record.request_id, feature: "goal", session_id: record.session_id,
+      agent_root: record.agent_root, model: record.model, subagent: record.subagent,
+      called_at: record.called_at, cache_read_tokens: 50_000
+    )
+
+    get costs_path(days: 30)
+
+    assert_response :success
+    assert_match "Context features", response.body
+    assert_match "Session goal", response.body
+    assert_match "Unattributed", response.body
+    assert_no_match(/rake token_usage:backfill/, response.body)
+  end
+
+  test "the feature card's empty state also keeps the rake task out of the page" do
+    usage
+
+    get costs_path(days: 30)
+
+    assert_response :success
+    assert_match "No feature attribution stored", response.body
+    assert_no_match(/rake token_usage:backfill/, response.body)
+  end
+
+  test "the picker renders both the presets and the calendar fields" do
+    get costs_path
+
+    assert_response :success
+    assert_select "a[href=?]", costs_path(days: 30)
+    assert_select "input#costs-from[type=date]"
+    assert_select "input#costs-to[type=date]"
   end
 
   test "warns about models it has no price for rather than counting them as free" do
@@ -83,5 +180,116 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "a[href=?]", costs_path
+  end
+
+  test "says how complete the ledger is before any sweep has run" do
+    usage
+
+    get costs_path
+
+    assert_response :success
+    assert_match "History not backfilled yet", response.body
+    assert_match "Sweep now", response.body
+  end
+
+  test "says the ledger is backfilled, and how far back it goes, once a sweep finished" do
+    usage(called_at: Time.zone.parse("2026-02-03T10:00:00Z"))
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago,
+                               finished_at: 1.hour.ago, files_scanned: 4_120)
+
+    get costs_path(days: 365)
+
+    assert_response :success
+    assert_match "History backfilled", response.body
+    assert_match "Feb 3, 2026", response.body
+    assert_match "Re-scan history", response.body
+  end
+
+  test "a re-scan in flight is not rendered as a finished sweep" do
+    usage(called_at: Time.zone.parse("2026-02-03T10:00:00Z"))
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 3.hours.ago, finished_at: 2.hours.ago)
+    TokenUsageBackfill.create!(transcript_root: "/tmp/projects", trigger: "manual",
+                               started_at: 1.minute.ago, directories_total: 100, directories_done: 40)
+
+    get costs_path(days: 365)
+
+    assert_response :success
+    assert_match "Re-scanning history", response.body
+    assert_match "40 of 100", response.body
+    # The finished run's timestamp must not be paired with the running one's counters.
+    assert_no_match(/Swept .* ago/, response.body)
+  end
+
+  test "the re-scan button queues a sweep, and asking twice does not start two" do
+    assert_difference -> { TokenUsageBackfill.count }, 1 do
+      assert_enqueued_with(job: TokenUsageBackfillJob) do
+        post costs_backfill_path
+      end
+    end
+
+    assert_redirected_to costs_path(days: 7)
+
+    assert_no_difference -> { TokenUsageBackfill.count } do
+      post costs_backfill_path
+    end
+
+    assert_equal "manual", TokenUsageBackfill.latest.trigger
+  end
+
+  test "the experiment report prints sample sizes and refuses a percentage on thin data" do
+    # The failure mode this section exists to prevent: a dramatic-looking delta
+    # over a handful of sessions, presented as if it meant something.
+    off = make_session("before")
+    on = make_session("after")
+    SessionExperimentalFlag.create!(session: off, setting_key: "mcp_tool_search",
+                                    value_at_start: false, value_at_end: false)
+    SessionExperimentalFlag.create!(session: on, setting_key: "mcp_tool_search",
+                                    value_at_start: true, value_at_end: true)
+    usage(session_id: off.id, input_tokens: 100_000)
+    usage(session_id: on.id, input_tokens: 10)
+
+    get costs_path
+
+    assert_response :success
+    assert_match "Experimental settings", response.body
+    assert_match "MCP tool search", response.body
+    assert_match "Not enough data to compare", response.body
+    assert_no_match(/lower<\/span>/, response.body, "no delta may be claimed from two sessions")
+  end
+
+  test "the experiment report names the boundary date a temporal cohort came from" do
+    session = make_session("tagged")
+    SessionExperimentalFlag.create!(session: session, setting_key: "mcp_tool_search",
+                                    value_at_start: true, value_at_end: true,
+                                    source: SessionExperimentalFlag::BACKFILLED)
+    usage(session_id: session.id)
+
+    get costs_path
+
+    assert_response :success
+    assert_match "temporal, not randomized", response.body
+    assert_match "inferred from", response.body, "the reader must be able to see which labels were guessed"
+  end
+  test "a registered setting nothing is tagged with says so instead of showing empty cohorts" do
+    usage
+
+    get costs_path
+
+    assert_response :success
+    assert_match "MCP tool search", response.body
+    assert_match "No session is tagged with this setting yet", response.body
+    assert_no_match(/Not enough data to compare/, response.body,
+      "a sample-size panel over two empty cohorts answers a question nobody asked")
+  end
+
+  test "a zero-priced baseline gets its own explanation, not the sample-size one" do
+    6.times { |i| tagged_usage("before-#{i}", cohort: false, model: "claude-not-a-real-model") }
+    6.times { |i| tagged_usage("after-#{i}", cohort: true) }
+
+    get costs_path
+
+    assert_response :success
+    assert_match "No baseline to compare against", response.body
+    assert_no_match(/Not enough data to compare/, response.body)
   end
 end

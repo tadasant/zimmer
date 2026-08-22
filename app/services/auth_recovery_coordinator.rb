@@ -70,9 +70,10 @@
 # that succeeds leaves it quota_exceeded (a reset will). The pool's resulting
 # shape is what #park_reason_for_pool reads.
 #
-# This adds NO new string matching. The one fragile pattern in this subsystem
-# remains AuthRecoveryService::AUTH_RECOVERABLE_ERROR_PATTERN, which matches
-# Anthropic's prose and has broken before when Claude Code changed its wording
+# This adds NO new string matching. What reaches the coordinator is decided by
+# AuthRecoveryService.auth_error?, which reads the transcript entry's structured
+# `error` type first and falls back to prose — because the prose has broken
+# before when Claude Code changed its wording, most recently on 2026-08-20
 # (see docs/src/content/docs/limitations.md).
 class AuthRecoveryCoordinator
   include DatabaseRetry
@@ -251,10 +252,12 @@ class AuthRecoveryCoordinator
     result = auth_provider.refresh!(account)
     return if result.ok?
 
-    # A lost single-use-token race no longer reaches here as :needs_reauth —
-    # ClaudeAccount#refresh_token! serializes on the row and checks, before
-    # condemning anything, whether the token it presented has since moved. So a
-    # :needs_reauth verdict at this point is a real one.
+    # A lost single-use-token race no longer reaches here as :needs_reauth.
+    # ClaudeAccount#refresh_token! serializes on the row and, before condemning
+    # anything, checks whether the token it presented has since moved; and a
+    # rejection it cannot attribute to a dead credential collects a strike rather
+    # than a verdict. So a :needs_reauth at this point is a real one, and a
+    # rejected-but-unproven value arrives as :stale.
     if result.error == :needs_reauth
       @logger.warn("Outgoing account's credentials are permanently invalid", account: account.email)
     else

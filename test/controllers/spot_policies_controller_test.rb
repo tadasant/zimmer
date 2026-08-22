@@ -108,7 +108,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
 
   test "saving the spot policy leaves the session defaults and extensions alone" do
     AppSetting.editable.update!(default_runtime: "codex", default_model: "gpt-5.5")
-    AppSetting.editable.tap { |s| s.set_extension_enabled("mcp_tool_search", true) }.save!
+    AppSetting.editable.tap { |s| s.set_extension_enabled("some_experiment", true) }.save!
 
     patch spot_policy_path, params: { app_setting: {
       spot_gating_enabled: "1",
@@ -119,6 +119,6 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
     setting = AppSetting.current
     assert_equal "codex", setting.default_runtime
     assert_equal "gpt-5.5", setting.default_model
-    assert AppSetting.extension_enabled?("mcp_tool_search")
+    assert AppSetting.extension_enabled?("some_experiment")
   end
 end

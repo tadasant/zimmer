@@ -6,6 +6,20 @@
     </svg>
     <span data-timestamp="<%= agent_session.created_at.iso8601 %>" data-controller="timestamp-updater">Created <%= time_ago_in_words(agent_session.created_at) %> ago</span>
   </div>
+  <%# Muted on purpose. A spend figure belongs on this page — it is the first
+      question after "what did this session do" — but it is not what the page is
+      about, so it sits in the meta row in gray beside the clock and the root. %>
+  <% session_cost = session_cost_usd(agent_session) %>
+  <% if session_cost.positive? %>
+    <div class="flex items-center gap-1 text-gray-400"
+         title="Estimated inference cost for this session, priced at current Anthropic list rates from Zimmer's own ledger. List price is not a bill.">
+      <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-1 1v.092a3 3 0 000 5.816V15a1 1 0 102 0v-.092a3 3 0 000-5.816V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+      </svg>
+      <span class="tabular-nums"><%= number_to_currency(session_cost, precision: session_cost < 1 ? 3 : 2) %></span>
+      <%= link_to "cost", costs_path, class: "text-gray-400 hover:text-gray-600 underline decoration-dotted" %>
+    </div>
+  <% end %>
   <% agent_root_key = agent_session.agent_root_key %>
   <% if agent_root_key.present? %>
     <% clone_copy_path = agent_session.metadata&.dig("full_clone_path").presence || agent_session.metadata&.dig("clone_path") %>
@@ -627,6 +641,30 @@
               class: "inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 cursor-pointer" %>
       <% end %>
       <span class="text-gray-400">now <%= agent_session.priority_class %>, <%= agent_session.scheduling_class_source %></span>
+    </div>
+    <%# Precedence sits beside the class it orders. Shown for priority sessions
+        too — the value is carried either way, and it is what a later demotion
+        lands on, so hiding it would make that demotion's placement a surprise. %>
+    <div class="flex flex-wrap items-center gap-1" id="session-precedence">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h8a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h4a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd" />
+      </svg>
+      <strong class="text-gray-700">Precedence:</strong>
+      <%= form_with url: update_precedence_session_path(agent_session), method: :patch,
+            data: { turbo: false }, class: "flex flex-wrap items-center gap-1" do %>
+        <%= number_field_tag :precedence, agent_session.precedence, step: 1,
+              "aria-label": "Precedence",
+              class: "w-24 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md py-1 px-2 text-right tabular-nums" %>
+        <%= submit_tag "Set",
+              class: "inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 cursor-pointer" %>
+      <% end %>
+      <span class="text-gray-400">
+        <% if agent_session.spot? %>
+          higher is worked first — see the <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), class: "text-indigo-600 hover:text-indigo-500" %>
+        <% else %>
+          unused while this session is priority; it applies if it is demoted to spot
+        <% end %>
+      </span>
     </div>
   <% end %>
   <%# Goal: always show on detail page (where goals_for_select is available), or on other pages only if set %>

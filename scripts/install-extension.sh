@@ -12,9 +12,10 @@
 #   scripts/install-extension.sh <extension-id> --path <checkout-dir>
 #   scripts/install-extension.sh --list
 #
-# Examples:
-#   scripts/install-extension.sh mcp_tool_search --container zimmer
-#   scripts/install-extension.sh mcp_tool_search --path /srv/zimmer
+# Examples (run --list first: no extension directories ship in this repo, so
+# there is nothing to install until one is added):
+#   scripts/install-extension.sh <extension-id> --container zimmer
+#   scripts/install-extension.sh <extension-id> --path /srv/zimmer
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +23,12 @@ EXT_SRC_ROOT="$REPO_ROOT/app/extensions"
 
 list_available() {
   echo "Available extensions in this repo:"
-  find "$EXT_SRC_ROOT" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | sed 's/^/  - /'
+  local found
+  # `|| true`: under `set -euo pipefail` a missing app/extensions/ makes find
+  # exit non-zero, which would kill --list after printing only its header.
+  found=$(find "$EXT_SRC_ROOT" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sort | sed 's/^/  - /' || true)
+  # No extension directories ship, so print something rather than a bare header.
+  echo "${found:-  (none)}"
 }
 
 if [[ "${1:-}" == "--list" || $# -eq 0 ]]; then

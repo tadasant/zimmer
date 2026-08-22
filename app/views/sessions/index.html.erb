@@ -140,6 +140,12 @@
                 </svg>
                 Costs
               <% end %>
+              <%= link_to outcomes_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+                <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M3 3a1 1 0 000 2h1v10a2 2 0 002 2h8a2 2 0 002-2V5h1a1 1 0 100-2H3zm4 4a1 1 0 011-1h1a1 1 0 011 1v7a1 1 0 01-1 1H8a1 1 0 01-1-1V7zm5 3a1 1 0 011-1h1a1 1 0 011 1v4a1 1 0 01-1 1h-1a1 1 0 01-1-1v-4z" clip-rule="evenodd" />
+                </svg>
+                Outcomes
+              <% end %>
               <%= link_to quotas_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
                 <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
@@ -227,6 +233,12 @@
           </svg>
           Costs
         <% end %>
+        <%= link_to outcomes_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+          <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M3 3a1 1 0 000 2h1v10a2 2 0 002 2h8a2 2 0 002-2V5h1a1 1 0 100-2H3zm4 4a1 1 0 011-1h1a1 1 0 011 1v7a1 1 0 01-1 1H8a1 1 0 01-1-1V7zm5 3a1 1 0 011-1h1a1 1 0 011 1v4a1 1 0 01-1 1h-1a1 1 0 01-1-1v-4z" clip-rule="evenodd" />
+          </svg>
+          Outcomes
+        <% end %>
         <%= link_to quotas_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
           <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
             <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
@@ -274,6 +286,28 @@
                   id: "reset-filters",
                   data: { turbo_prefetch: false },
                   class: "text-xs text-gray-500 hover:text-gray-900 underline whitespace-nowrap" %>
+          </div>
+
+          <%# Quick filters: the three filter states worth reaching in one click.
+              Plain links rather than form controls, because each one IS a complete
+              filter state — submitting the form's own inputs alongside them would
+              let a half-changed checkbox argue with the button that was pressed.
+              They carry the same `filters=1` marker the form submits, so they
+              persist exactly as an Apply does. %>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-xs text-gray-400">Quick:</span>
+            <% quick_filters = [
+                 [ "All", { SessionsController::FILTERS_SUBMITTED_PARAM => "1" } ],
+                 [ "All Unarchived", { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: SessionsController::UNARCHIVED_STATUSES } ],
+                 [ "All Priority Unarchived", { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: SessionsController::UNARCHIVED_STATUSES, priority_class: SessionGenesis::PRIORITY } ]
+               ] %>
+            <% quick_filters.each do |(label, params_for_link)| %>
+              <%# The view mode rides along so a quick filter does not bounce the
+                  user out of the view they are filtering. %>
+              <%= link_to label, root_path(params_for_link.merge(view: @view_mode)),
+                    data: { turbo_prefetch: false },
+                    class: "inline-flex items-center rounded-full border border-gray-300 bg-white px-2 py-0.5 text-xs font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900" %>
+            <% end %>
           </div>
 
           <!-- Search Input -->
@@ -568,7 +602,8 @@
             view_modes = [
               [ SessionsController::VIEW_MODE_CATEGORIES, "Categories" ],
               [ SessionsController::VIEW_MODE_LAST_TOUCHED, "Last Touched" ],
-              [ SessionsController::VIEW_MODE_CREATED_DESC, "Created" ]
+              [ SessionsController::VIEW_MODE_CREATED_DESC, "Created" ],
+              [ SessionsController::VIEW_MODE_RANKED, "Ranked" ]
             ]
             view_link_params = ->(mode) { request.query_parameters.except("page").merge("view" => mode) }
           %>
@@ -584,7 +619,16 @@
         </div>
       </div>
 
-      <% if @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
+      <% if @view_mode == SessionsController::VIEW_MODE_RANKED %>
+        <%# The Ranked view: priority above, the spot queue below it in precedence
+            order, both editable in place. Honors the same filters as every other
+            view — with its own default, since a queue of work that has not started
+            is mostly `waiting`. %>
+        <%= render "sessions/ranked_sessions",
+              priority_sessions: @ranked_priority_sessions,
+              spot_sessions: @ranked_spot_sessions,
+              section_limit: @ranked_section_limit %>
+      <% elsif @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
         <%# Flat sort views: a single list sorted solely by the chosen factor
             (last touched, or created desc). No category grouping, no custom/
             per-category ordering, and no pinned favorites float. Honors the same
@@ -609,6 +653,7 @@
             <div id="sessions_grid" data-live-region="sync"
                  data-live-page="<%= @search_results.respond_to?(:current_page) ? @search_results.current_page : 1 %>"
                  class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
+              <% preload_session_costs(@search_results) %>
               <% @search_results.each do |session| %>
                 <%= turbo_frame_tag dom_id(session) do %>
                   <%= render "session_card", agent_session: session %>

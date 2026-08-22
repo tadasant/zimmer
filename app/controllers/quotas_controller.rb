@@ -344,6 +344,10 @@ class QuotasController < ApplicationController
   def load_spot_gate
     @app_setting = AppSetting.current
     @spot_decision = SpotGateService.evaluate
+    # Running spot sessions the ceiling has stopped. The decision above says what
+    # would happen to a session STARTING now; this says what already happened to
+    # the ones that were in flight when a window arrived at its target.
+    @spot_paused_count = SpotSessionPause.paused_count
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
   end
@@ -410,7 +414,14 @@ class QuotasController < ApplicationController
     end
 
     unless account.refresh_token!
-      return [ false, "Cannot switch to #{account.email} — token validation failed. Re-authenticate the account." ]
+      # A rejection Zimmer could not attribute to a dead credential leaves the
+      # account active on purpose (#530), so telling the human to re-authenticate
+      # would be telling them to fix something that is probably not broken.
+      if account.reload.needs_reauth?
+        return [ false, "Cannot switch to #{account.email} — token validation failed. Re-authenticate the account." ]
+      end
+
+      return [ false, "Cannot switch to #{account.email} — its stored token was rejected as out of date. Try again shortly, or re-authenticate if it keeps failing." ]
     end
 
     [ true, nil ]

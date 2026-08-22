@@ -45,6 +45,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
                        when "slack" then { "channel_id" => "C123", "channel_name" => "test" }
                        when "schedule" then { "unit" => "minutes", "interval" => 5 }
                        when "ao_event" then { "event_name" => "session_needs_input" }
+                       when "system_event" then { "event_name" => "quota_available" }
                        when "github_label" then { "repos" => [ "tadasant/zimmer" ], "target" => "pull_request", "labels" => [ "ready to merge" ] }
                        when "github_issue" then { "repos" => [ "tadasant/zimmer" ] }
                        end

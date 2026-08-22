@@ -178,29 +178,73 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
   # ── the pool's reset notes ──
 
-  test "show names the next usable 5-hour reset and the next 7-day reset" do
-    # The shape from production: the account with 5-hour headroom to come back to
-    # is not the one whose 5-hour window resets soonest, because that one's week
-    # is spent and its rollover returns nothing.
-    spent_5h = 20.minutes.from_now
-    servable_5h = 3.hours.from_now
-    spent_7d = 30.hours.from_now
+  # The reported bug, through the page. The account that unblocks the pool
+  # soonest is the one whose 5-hour window is *already* free and whose week is
+  # spent — and the old headline could not name it, because it was measured only
+  # over accounts with weekly allowance left. It advertised the other account's
+  # 5-hour rollover, hours later.
+  test "show counts down to the weekly reset that frees an already-free 5-hour window" do
+    weekly_back = 22.minutes.from_now
+    five_hour_back = 232.minutes.from_now
 
     seed_aggregate_snapshots(
-      { utilization_5h: 0.05, status_5h: "allowed", reset_5h: spent_5h,
-        utilization_7d: 1.0, status_7d: "rejected", reset_7d: spent_7d },
-      { utilization_5h: 0.60, status_5h: "allowed", reset_5h: servable_5h,
-        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 6.days.from_now }
+      { utilization_5h: 0.0, status_5h: "allowed", reset_5h: 40.minutes.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: weekly_back },
+      { utilization_5h: 1.03, status_5h: "rejected", reset_5h: five_hour_back,
+        utilization_7d: 0.79, status_7d: "allowed", reset_7d: 5.days.from_now }
     )
 
     get quotas_url
 
     assert_response :success
     stats = aggregate_stats_text
-    assert_match "Next usable 5-hour reset: #{utc_reset_text(servable_5h)}", stats
-    assert_no_match(/#{Regexp.escape(utc_reset_text(spent_5h))}/, stats)
-    assert_match "Next 7-day reset: #{utc_reset_text(spent_7d)}", stats
-    assert_match "the soonest recorded among 1 account whose 7-day window is spent", stats
+    assert_match "Work unblocked in", stats
+    assert_match "room on both its 5-hour and 7-day windows: #{utc_reset_text(weekly_back)}", stats
+    # The other account's 5-hour rollover, which is not when work resumes.
+    assert_no_match(/#{Regexp.escape(utc_reset_text(five_hour_back))}/, stats)
+    assert_match "All 2 accounts with a reading are out of capacity.", stats
+    # The 7-day note below still describes its own window, over the accounts
+    # whose week is spent.
+    assert_match "Next 7-day reset: #{utc_reset_text(weekly_back)}", stats
+  end
+
+  # The tick is driven off an absolute instant in the markup, so a page left
+  # open counts down to the right moment instead of freezing on the server's
+  # string.
+  test "show hands the countdown an absolute deadline to tick from" do
+    weekly_back = 35.minutes.from_now
+
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.0, status_5h: "allowed", reset_5h: 40.minutes.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: weekly_back },
+      { utilization_5h: 1.0, status_5h: "rejected", reset_5h: 4.hours.from_now,
+        utilization_7d: 0.20, status_7d: "allowed", reset_7d: 5.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    assert_select "[data-controller=?]", "unblock-countdown"
+    assert_select "[data-unblock-countdown-deadline-value^=?]",
+      weekly_back.utc.strftime("%Y-%m-%dT%H:%M")
+  end
+
+  test "show says work is not blocked while an account has room on both windows" do
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.20, status_5h: "allowed", reset_5h: 40.minutes.from_now,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now },
+      { utilization_5h: 1.0, status_5h: "rejected", reset_5h: 2.hours.from_now,
+        utilization_7d: 0.20, status_7d: "allowed", reset_7d: 5.days.from_now }
+    )
+
+    get quotas_url
+
+    assert_response :success
+    stats = aggregate_stats_text
+    assert_match "Work is not blocked", stats
+    assert_match "1 account of 2 with a reading has room on both windows", stats
+    # Nothing to count down to, so no clock.
+    assert_select "[data-controller='unblock-countdown']", count: 0
   end
 
   test "show says nothing is waiting on a 7-day reset when no week is spent" do
@@ -628,7 +672,10 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     post switch_account_path(secondary)
 
     assert_redirected_to quotas_path(runtime: "claude_code")
-    assert_match "token validation failed", flash[:alert]
+    # The probe rejected the stored value without proving the credential is dead,
+    # so the account is still active and the message says so rather than sending
+    # the human off to re-authenticate something that probably works (#530).
+    assert_match "rejected as out of date", flash[:alert]
     assert_not secondary.reload.is_current?, "Switch must not succeed when probe rejects the tokens"
     assert claude_accounts(:primary).reload.is_current?
   end
@@ -967,7 +1014,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     post switch_account_path(oauth_account)
 
     assert_redirected_to quotas_path(runtime: "codex")
-    assert_match "token validation failed", flash[:alert]
+    assert_match "rejected as out of date", flash[:alert]
     assert_not oauth_account.reload.is_current?
     assert claude_accounts(:codex_primary).reload.is_current?
   end

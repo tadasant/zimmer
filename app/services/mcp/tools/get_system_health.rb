@@ -42,6 +42,7 @@ module Mcp
           "- **Environment:** #{Rails.env}",
           "- **Ruby Version:** #{RUBY_VERSION}",
           *queue_recovery_mode_lines,
+          *ready_backlog_lines,
           "",
           "### Health Details",
           "```json",
@@ -55,6 +56,39 @@ module Mcp
       end
 
       private
+
+      # What the backlog is MADE OF, not just how deep it is.
+      #
+      # `system_health` below already carries `ready_count`, and a bare count
+      # cannot tell a starved queue from a busy one — Zimmer's four queues have
+      # very different thread counts and job durations. The Slack backlog page
+      # carries the same split, and this is the tool an agent triaging that page
+      # actually has: the GoodJob dashboard needs a browser session on the
+      # production host, which an agent session does not have. Without it the
+      # agent-facing surface answers a strictly weaker question than the
+      # human-facing one.
+      #
+      # Read from `ready_backlog_breakdown` directly rather than folded into
+      # `full_health_report`: that report also serves GET /api/v1/health and the
+      # /health page, which render far more often than anyone asks this question.
+      #
+      # Silent when nothing is waiting — a breakdown of an empty queue is a line
+      # of noise on every healthy call. But NOT silent when the read fails: these
+      # are two grouped scans of `good_jobs`, and the caller most likely to hit a
+      # database that cannot serve them is the one triaging a database that is
+      # struggling. Saying so beats raising and losing the whole health report.
+      def ready_backlog_lines
+        breakdown = HealthMonitorService.new.ready_backlog_breakdown
+        return [] if breakdown[:by_queue].blank?
+
+        [
+          "- **Ready backlog by queue:** #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
+          "- **Ready backlog by job class:** #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}"
+        ]
+      rescue StandardError => e
+        Rails.logger.warn("[GetSystemHealth] Could not read the backlog breakdown: #{e.message}")
+        [ "- **Ready backlog breakdown:** unavailable (#{e.class})" ]
+      end
 
       # Stated up front, and stated in BOTH directions. A pending queue depth means
       # something completely different depending on whether the queues are

@@ -35,7 +35,7 @@ module Mcp
       # (wake_me_up_when_session_changes_state) remain the right way to create a
       # SESSION-scoped one-shot wake; what this opens up is the broadcast form, and
       # the account events, which no wake tool covers.
-      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
+      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event].freeze
 
       # The cap applied to a BROADCAST SESSION ao_event trigger created here when the
       # caller names none.
@@ -115,6 +115,7 @@ module Mcp
         - **ao_event**: Triggered by an internal Zimmer event (requires configuration with event_name)
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
         - **github_issue**: Triggered when a new issue is opened in a watched repo
+        - **system_event**: Triggered when the DEPLOYMENT changes state, not a session. One event today: `{"event_name": "quota_available"}`, the account pool going from serving nothing to serving something. Broadcast and recurring. This is what wakes quota-parked spot sessions, so there is normally exactly one such trigger and it is seeded by a migration — create another only deliberately.
 
         **Burst control:**
         - **max_sessions_per_minute**: caps how many sessions the trigger may spawn per minute.
@@ -130,6 +131,10 @@ module Mcp
           the default for the trigger's condition type: slack is priority, and github_issue,
           github_label, schedule and ao_event are spot. Setting it applies to sessions the trigger
           spawns from now on; ones it already spawned keep the class they started with.
+        - **precedence**: where the sessions this trigger spawns sit in the spot queue. Higher is
+          handled sooner, on an ABSOLUTE scale — 100000 comes before 50 — not a 1..N rank, and
+          nothing renumbers it. Omit (or send null) to predefine nothing. Like the class, it
+          applies to sessions spawned from now on.
 
         **Schedule configuration:**
         - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units
@@ -201,6 +206,10 @@ module Mcp
             enum: SessionGenesis::CLASSES + [ nil ],
             description: "Spot/priority class for sessions this trigger spawns. Null (default) derives it " \
                          "from the trigger's condition type."
+          },
+          precedence: {
+            type: [ "integer", "null" ],
+            description: PrecedenceDocs::ACTION_TRIGGER
           },
           mcp_servers: {
             type: "array",
@@ -292,6 +301,7 @@ module Mcp
           reuse_session: args.fetch("reuse_session", false),
           max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
+          precedence: trigger_precedence(args),
           mcp_servers: args["mcp_servers"] || [],
           trigger_conditions_attributes: created_condition_attributes(args)
         )
@@ -307,6 +317,7 @@ module Mcp
           - **Agent Root:** #{trigger.agent_root_name}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
+          - **Precedence:** #{precedence_summary(trigger)}
 
           #{condition_detail(trigger)}
         TEXT
@@ -349,6 +360,8 @@ module Mcp
         # Same omitted-vs-null rule: an explicit null returns the trigger to the
         # class its conditions derive, an omitted key leaves the choice alone.
         attributes[:scheduling_class] = args["scheduling_class"].presence if args.key?("scheduling_class")
+        # And again for the predefined rank: null clears it, an omitted key leaves it.
+        attributes[:precedence] = trigger_precedence(args) if args.key?("precedence")
         # Only assign artifact lists the caller actually sent: an omitted key means
         # "no opinion", never "clear the trigger's servers".
         attributes[:mcp_servers] = args["mcp_servers"] if args["mcp_servers"].is_a?(Array)
@@ -372,6 +385,7 @@ module Mcp
           - **Status:** #{trigger.status}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
+          - **Precedence:** #{precedence_summary(trigger)}
 
           #{condition_detail(trigger)}
         TEXT
@@ -699,6 +713,29 @@ module Mcp
         trigger = Trigger.includes(:trigger_conditions).find_by(id: id.to_i)
         raise ToolError, "Trigger not found: #{id}" unless trigger
         trigger
+      end
+
+      # The predefined rank, or nil when the caller cleared it / said nothing.
+      def trigger_precedence(args)
+        value = args["precedence"]
+        return nil if value.nil?
+
+        unless value.is_a?(Integer) || value.to_s.match?(/\A-?\d+\z/)
+          raise ToolError, "precedence must be an integer (got #{value.inspect})"
+        end
+
+        value = value.to_i
+        unless value.between?(SessionPrecedence::MIN, SessionPrecedence::MAX)
+          raise ToolError, "precedence must be between #{SessionPrecedence::MIN} and #{SessionPrecedence::MAX}"
+        end
+
+        value
+      end
+
+      def precedence_summary(trigger)
+        return "(none predefined)" if trigger.precedence.nil?
+
+        trigger.precedence.to_s
       end
 
       # "spot" / "priority", and whether that came from the trigger or from the

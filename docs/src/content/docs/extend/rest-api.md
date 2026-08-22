@@ -130,7 +130,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` filters as `/sessions`. Missing/oversized `q` → 400 (the only 400 in the API). Status-summary forks are never listed |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201. See below. |
-| `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `custom_metadata` |
+| `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `custom_metadata` |
 | `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}`. **422** while any message is still queued for the session, since archiving discards it; `force: true` overrides deliberately and the discarded messages are retired to `undelivered` — see [lifecycle](/sessions/lifecycle/) |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
@@ -164,7 +164,7 @@ left half-queued, and the call answers 404, 409, 422, or 500.
 
 Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
 `title`, `slug`, `goal`, `execution_provider`, `is_autonomous`, `parent_session_id`,
-`auto_compact_window`, `scheduling_class`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`,
+`auto_compact_window`, `scheduling_class`, `precedence`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`,
 `catalog_plugins[]`, `config{}`, `custom_metadata{}`.
 
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
@@ -189,8 +189,14 @@ matches nothing is not the same kind of mistake as a session created in the wron
 permitted on `PATCH /sessions/:id`, which is how a spot session already held behind the quota gate is
 moved to priority without touching the trigger that spawned it; send `null` to go back to derived.
 
+`precedence` is caller-supplied too, on both `POST /sessions` and `PATCH /sessions/:id`. It ranks the
+session within the spot queue — higher is handled sooner, on an absolute scale, so 100000 comes before
+50 — and it is carried on every session, priority ones included. Omit it on create and the session
+lands one point above the session named in `parent_session_id`, or at 0 with no parent.
+
 See [Spot and priority](/sessions/spot-and-priority/). Every session object carries `genesis`,
-`scheduling_class` (the explicit choice, usually `null`) and `priority_class` (the resolved answer).
+`scheduling_class` (the explicit choice, usually `null`), `priority_class` (the resolved answer) and
+`precedence`.
 
 `agent_root` is not a Session column — it names a catalog entry that expands into `git_root`,
 `branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
@@ -391,6 +397,9 @@ default — derives it from the trigger's condition type. The payload reports bo
 (what was chosen, usually `null`) and `effective_scheduling_class` (what its sessions actually get).
 Changing it applies to sessions the trigger spawns from then on.
 
+`precedence` (an integer, or `null`) predefines the rank the trigger's sessions land on in the spot
+queue. Same absolute scale, same "applies to sessions spawned from now on" rule as the class.
+
 `status` is one of `enabled`, `disabled`, or `failed`, and all three work as `?status=` filters.
 `failed` is Zimmer's to set: a one-shot fire raised and the trigger was
 [parked rather than destroyed](/sessions/triggers/#when-a-one-time-fire-fails) — either a one-time
@@ -453,7 +462,17 @@ unthrottled. `GET /health` is unaffected. See
 or `source`. This is the export path for cost-versus-performance analysis — the app deliberately
 does not try to do that analysis itself.
 
-Both responses carry a `pricing` object: the per-MTok rates and cache multipliers used to produce
+`POST /api/v1/costs/backfill` → queue a sweep of every transcript on disk into the ledger. This is
+an **ops action with an endpoint rather than a shell**: getting history into the ledger must not
+require SSH onto the production box. Idempotent — it returns the run already in flight rather than
+starting a second one, and ingestion upserts on `request_id`, so a re-read directory writes no
+duplicate rows. The same sweep starts itself after a deploy; this is for a re-scan.
+
+`GET /api/v1/costs` also carries `ledger_coverage`: whether the one-time historical sweep has
+finished, how far it has got, and `covers_since` — the oldest call actually stored. A total whose
+coverage is unknown is not interpretable, which is why it travels with the figures.
+
+Both rollup and record responses carry a `pricing` object: the per-MTok rates and cache multipliers used to produce
 every dollar figure in that response. Volumes are stored, prices are applied on read, so a figure
 without its rate table is not reproducible — see [Token spend](/operate/costs/).
 
@@ -511,6 +530,36 @@ rather than as a row — so it is not in the category list the call returns.
 curl -X POST "$BASE_URL/categories/reorder" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"ids": [5, "uncategorized", 3, 8]}'
+```
+
+## Outcome analyses
+
+The write half of the [Outcomes view](/sessions/outcomes/): a Transcript Segment tree saved against
+an archived session. `POST /outcome_analyses` mirrors the `save_outcome_analysis` MCP tool exactly —
+both go through the same validator, so they cannot disagree about what a well-formed tree is.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /outcome_analyses` | Save one. Body: `session_id` (id or slug), `analyzer_session_id`, `schema_version`, `root`, `notes` |
+| `GET /outcome_analyses` | Current analyses, newest first, **without** their trees. Filters: `from`, `to`, `agent_root`, `agent_runtime`, `model`, `outcome` |
+| `GET /outcome_analyses/:id` | One analysis **with** its tree. `:id` is the analyzed session's id or slug, not the analysis row's |
+
+The whole tree is validated before anything is stored — id scheme, enum values, explanation presence
+and its 140-character cap, nesting. A malformed tree is a `422` naming every problem, and nothing is
+written. A session that is not archived is a `422` too: only finished transcripts have outcomes.
+
+Saving twice supersedes rather than duplicating — the earlier reading is kept and stamped
+`superseded_at`, and `superseded_previous` in the response says whether that happened.
+
+```bash
+curl -X POST "$BASE_URL/outcome_analyses" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"session_id": 4021, "schema_version": "1",
+       "root": {"id": "S0",
+                "trigger": {"kind": "New", "source": "user"},
+                "goal": {"text": "Fix the login redirect loop", "kind": "Action"},
+                "outcome": {"kind": "Success", "explanation": "Landed after one failed patch."},
+                "meta": {}, "children": []}}'
 ```
 
 ## The rest

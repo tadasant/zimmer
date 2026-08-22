@@ -144,6 +144,36 @@ Both roles mount the same durable named volumes, so state survives a deploy and 
 - `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
 - The `worker` role additionally mounts `/var/run/docker.sock`, which `DockerCleanupJob` needs.
 
+## Ops actions ship with the deploy
+
+**Nothing Zimmer needs done in production requires a shell on the box.** A feature is not finished
+when the code is deployed and an operator still has to SSH in and run something; that step is part
+of the feature, and it has to ship with it.
+
+There is no fallback here to fall back to. Agent sessions run *on* the production droplet, the
+operator key is deliberately not authorized as root there, and the SSH agent root is excluded from
+the catalog baked into the image — see [SSH access](/operate/ssh-access/). So an ops step that needs
+a shell is a step no agent can take and a human has to be interrupted for.
+
+Three delivery mechanisms, in order of preference:
+
+1. **A deploy.** A migration, a seed, a one-shot job enqueued from a cron entry that goes idle once
+   its work is done. `TokenUsageBackfillJob` is the worked example: it starts a sweep on the first
+   tick after the deploy, records its progress in a table, and costs an indexed lookup per tick
+   forever after. See [Token spend](/operate/costs/#why-a-job-and-not-a-rake-task).
+2. **A scheduled idempotent job.** Anything that has to keep converging — refreshes, reconciliation
+   sweeps, cleanups. Idempotence is what makes an unattended cron safe to leave running.
+3. **The app's own surfaces** — a button in the web UI, a REST endpoint, an MCP action. This is
+   where operator-*triggered* actions belong. The Costs page's re-scan button,
+   `POST /api/v1/costs/backfill` and `action_health`'s `backfill_token_usage` are the same request
+   through the three surfaces Zimmer already exposes.
+
+Two obligations come with it. An action that runs unattended must be **safe to run repeatedly** —
+for the backfill that is the unique index on `request_id`, which makes re-ingestion a no-op. And it
+must give an **observable answer** to "did it run, and what does it cover", or an operator has
+traded a shell for a guess. A rake task is still fine as a developer convenience; it is not the
+delivery mechanism.
+
 ## The database connection budget
 
 Managed Postgres hands out a hard, small number of connection slots, and an ActiveRecord pool is a
