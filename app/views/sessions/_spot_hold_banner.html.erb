@@ -11,6 +11,11 @@
 <% pause_detail = agent_session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL) %>
 <% if (hold_detail.present? || pause_detail.present?) && agent_session.waiting? %>
   <% paused_mid_run = hold_detail.blank? %>
+  <%# A third case shares the pause record: a human who chose "Spot Queue" in
+      Pause Until. Nothing interrupted that session and no turn was lost, so it
+      gets its own sentence rather than being described as a casualty of the
+      ceiling. %>
+  <% queued_by_user = SpotSessionPause.queued_by_user?(agent_session) %>
   <% retry_at = agent_session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT) %>
   <%# A data attribute rather than an id: this partial renders twice per page —
       once in the mobile block, once in the desktop header, mirroring
@@ -22,7 +27,9 @@
       </svg>
       <div class="min-w-0">
         <h3 class="text-sm font-medium text-amber-900">
-          <% if paused_mid_run %>
+          <% if queued_by_user %>
+            Waiting in the spot queue
+          <% elsif paused_mid_run %>
             Paused mid-run for quota headroom
           <% else %>
             <%= hold_reason == "fleet_at_cap" ? "Held for a free session slot" : "Held for quota headroom" %>
@@ -33,7 +40,11 @@
           This is a <span class="font-medium">spot</span> session
           (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
           <%= agent_session.scheduling_class_source %>). It has not been cancelled —
-          <% if paused_mid_run %>
+          <% if queued_by_user %>
+            it was paused into the queue from "Pause Until" with no wake-up time, and it resumes
+            when a Claude account is under both quota targets and a slot is free, ahead of everything
+            ranked below precedence <%= agent_session.precedence %>.
+          <% elsif paused_mid_run %>
             it was already running when a window reached its target, and it resumes on its own
             once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
           <% else %>

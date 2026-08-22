@@ -2,9 +2,11 @@ import { Controller } from "@hotwired/stimulus"
 
 // Connects to data-controller="pause-until"
 //
-// "Pause Until": sleep a session now and schedule a one-time trigger to wake it
-// at a chosen time. The web-UI counterpart of the wake_me_up_later MCP tool —
-// SessionsController#pause_until routes both through Sessions::ScheduleWakeUp.
+// "Pause Until": sleep a session now and either schedule a one-time trigger to
+// wake it at a chosen time (the web-UI counterpart of the wake_me_up_later MCP
+// tool — SessionsController#pause_until routes both through
+// Sessions::ScheduleWakeUp) or hand it to the spot queue with no wake-up at all,
+// which is the `mode: "spot_queue"` branch of the same endpoint.
 //
 // Every time this controller computes is a LOCAL time in the browser's zone, and
 // it sends that naive wall-clock string alongside the zone's IANA name. Sending
@@ -49,6 +51,22 @@ export default class extends Controller {
     if (at) this._schedule(this._naiveLocal(at))
   }
 
+  // The one choice that is not a time: sleep the session and hand it to the spot
+  // queue, which arms no trigger at all. It shares the panel's "Resume with"
+  // box — the prompt rides on the session's own record instead of on a trigger.
+  chooseSpotQueue(event) {
+    event.preventDefault()
+    event.stopPropagation()
+    this._post(
+      { mode: event.currentTarget.dataset.mode },
+      (data) =>
+        data.pending_sleep
+          ? "Joins the spot queue when this turn ends."
+          : `Queued for spot (precedence ${data.precedence}).`,
+      "Queuing…"
+    )
+  }
+
   chooseCustom(event) {
     event.preventDefault()
     event.stopPropagation()
@@ -65,11 +83,25 @@ export default class extends Controller {
 
   // --- scheduling ---
 
-  async _schedule(wakeAt) {
-    this._setStatus("Scheduling…")
-    const body = {
-      wake_at: wakeAt,
-      timezone: this._timezone(),
+  _schedule(wakeAt) {
+    return this._post(
+      { wake_at: wakeAt, timezone: this._timezone() },
+      // A running session does not sleep mid-turn: the trigger marks it
+      // pending_sleep and it transitions when the turn ends. Say that rather than
+      // claiming a state change the badge is about to contradict.
+      (data) =>
+        data.pending_sleep
+          ? `Sleeps when this turn ends, then wakes ${this._humanize(wakeAt)}.`
+          : `Paused until ${this._humanize(wakeAt)}.`
+    )
+  }
+
+  // One POST for both halves of the panel. `confirmation` turns the server's
+  // answer into the line the panel shows before it closes.
+  async _post(body, confirmation, pending = "Scheduling…") {
+    this._setStatus(pending)
+    const payload = {
+      ...body,
       prompt: this.hasPromptInputTarget ? this.promptInputTarget.value.trim() : ""
     }
 
@@ -82,7 +114,7 @@ export default class extends Controller {
           "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content,
           "Accept": "application/json"
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(payload)
       })
       data = await response.json()
       if (!response.ok) {
@@ -94,14 +126,7 @@ export default class extends Controller {
       return
     }
 
-    // A running session does not sleep mid-turn: the trigger marks it
-    // pending_sleep and it transitions when the turn ends. Say that rather than
-    // claiming a state change the badge is about to contradict.
-    this._setStatus(
-      data.pending_sleep
-        ? `Sleeps when this turn ends, then wakes ${this._humanize(wakeAt)}.`
-        : `Paused until ${this._humanize(wakeAt)}.`
-    )
+    this._setStatus(confirmation(data))
 
     // Let a wrapping menu close itself; the card and header re-render from the
     // status broadcast the sleep sets off.

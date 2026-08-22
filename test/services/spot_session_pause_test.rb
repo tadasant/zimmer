@@ -216,6 +216,125 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert_equal 2, result.held
   end
 
+  # --- the queue a human can join on purpose ------------------------------------
+
+  def queued_session(prompt: nil, paused_at: 1.hour.ago, precedence: 0)
+    session = Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "work", genesis: SessionGenesis::WEB_UI,
+      status: :needs_input, session_id: "cli-#{SecureRandom.hex(4)}", precedence: precedence
+    )
+    Sessions::PauseIntoSpotQueue.call(session: session, prompt: prompt)
+    session.reload.update_columns(
+      metadata: session.metadata.merge(SpotSessionPause::PAUSED_AT => paused_at.utc.iso8601)
+    )
+    session.reload
+  end
+
+  # The failure this feature could plausibly ship with is "parked forever with
+  # nothing to wake it". This is the end-to-end refutation: a session a human put
+  # in the queue from "Pause Until" is picked up by the same sweep that resumes a
+  # ceiling pause, with no trigger anywhere in the picture.
+  test "a session parked in the queue from Pause Until is resumed by the sweep" do
+    seed(current_5h: 0.10)
+    session = queued_session
+
+    assert_not session.awaiting_scheduled_wake?, "nothing is armed — the sweep is the only way back"
+
+    result = SpotSessionPause.sweep!
+
+    assert_equal 1, result.resumed
+    session.reload
+    assert session.running?
+    assert_nil session.metadata[SpotSessionPause::PAUSED_REASON], "the queue record goes with the resume"
+    assert_equal 1, enqueued_jobs.count { |job| job[:job] == AgentSessionJob }
+  end
+
+  test "the queue holds a parked session while a window is at its target" do
+    seed(current_5h: 0.95)
+    session = queued_session
+
+    result = SpotSessionPause.sweep!
+
+    assert_equal 0, result.resumed
+    assert_equal 1, result.held
+    assert session.reload.waiting?
+  end
+
+  test "a resumed queue session comes back on the prompt its human left" do
+    seed(current_5h: 0.10)
+    session = queued_session(prompt: "Re-check the deploy")
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, "Re-check the deploy" ]) do
+      SpotSessionPause.sweep!
+    end
+  end
+
+  test "a resumed queue session with no prompt is told why it is awake" do
+    seed(current_5h: 0.10)
+    session = queued_session
+
+    SpotSessionPause.sweep!
+
+    job = enqueued_jobs.find { |j| j[:job] == AgentSessionJob.name || j[:job] == AgentSessionJob }
+    prompt = job[:args][1]
+    assert AutomatedPrompts.system_recovery?(prompt)
+    assert_match(/spot queue/, prompt)
+    assert_equal session.id, job[:args][0]
+  end
+
+  # The panel promises "sleeps when this turn ends". A ceiling sweep landing in
+  # that window would terminate the turn instead, and rewrite the session's story
+  # as a casualty of the ceiling.
+  test "the ceiling leaves a running session already on its way to the queue alone" do
+    seed(current_5h: 0.95)
+    session = running_session
+    Sessions::PauseIntoSpotQueue.call(session: session)
+
+    result = SpotSessionPause.sweep!
+
+    assert_equal 0, result.paused
+    session.reload
+    assert session.running?, "its own turn end is what parks it, not a SIGTERM"
+    assert_equal SpotSessionPause::QUEUED_REASON, session.metadata[SpotSessionPause::PAUSED_REASON]
+  end
+
+  # The wording branches now, so the ceiling's own story has to be pinned too.
+  test "a ceiling-paused session is still told the window came back down" do
+    seed(current_5h: 0.10)
+    session = paused_session
+
+    SpotSessionPause.sweep!
+
+    job = enqueued_jobs.find { |j| j[:job] == AgentSessionJob }
+    assert_match(/utilization has since come back down/, job[:args][1])
+    assert_equal session.id, job[:args][0]
+    assert session.reload.logs.any? { |log| log.content.include?("Utilization came back down") }
+  end
+
+  # The count /quotas and get_spot_policy report is about what the CEILING cost,
+  # so a session nobody interrupted must not inflate it.
+  test "a queued session is not counted as paused by the ceiling" do
+    seed(current_5h: 0.95)
+    queued_session
+    paused_session
+
+    assert_equal 1, SpotSessionPause.paused_count
+  end
+
+  # Precedence is what the rest of the queue is ordered by, so the batch has to
+  # spend itself on the session that matters most rather than the oldest sleeper.
+  test "the highest precedence in the queue is resumed first" do
+    seed(current_5h: 0.70)
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    older_but_lower = paused_session(paused_at: 9.hours.ago)
+    ranked = queued_session(paused_at: 1.minute.ago, precedence: 500)
+
+    SpotSessionPause.sweep!
+
+    assert ranked.reload.running?, "precedence 500 goes before an unranked sleeper"
+    assert older_but_lower.reload.waiting?
+  end
+
   # The budget is smaller than the population this usually holds, so the order
   # decides which spot work gets the recovered headroom — the same question the
   # ranked queue answers.

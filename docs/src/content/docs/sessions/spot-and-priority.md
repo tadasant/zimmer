@@ -348,7 +348,7 @@ sessions:
 | --- | --- |
 | `at_utilization_limit` | Every running spot session is **paused**. |
 | `fleet_at_cap` | Nothing. A running session already holds its slot; pausing it would free that slot only for another spot session the same cap would hold. |
-| anything else | Sessions paused by an earlier sweep are **resumed**, oldest pause first. |
+| anything else | Sessions dormant in the queue are **resumed**, highest precedence first (oldest pause first within a tie). |
 
 Priority sessions are never paused, on any reading. Nor are Codex sessions (they spend nothing
 against a Claude window) or status-summary forks (Zimmer's own seconds-long bookkeeping).
@@ -396,6 +396,30 @@ the agent to pick up where it left off. Two things shape which and how many:
 
 A session someone promotes to **priority** while it sleeps is resumed by the next sweep whatever the
 windows say, because priority work is never gated on quota.
+
+### Joining the queue on purpose
+
+The same dormancy is reachable deliberately, and it is the answer to "this session should wait, and
+no time I could name is the right one". **Pause Until → Spot Queue** on a session card, in the
+detail header, or in the phone's bottom sheet — `pause_into_spot_queue` on `action_session` for an
+agent — sleeps the session and hands it to this sweep with **no wake-up trigger and no wall-clock
+time at all**.
+
+It is the same record and the same resume path as a ceiling pause, with three differences, because
+nothing interrupted this session:
+
+- `spot_pause_reason` is `user_spot_queue`, so the banner, `get_session` and the session log all say
+  a human parked it rather than describing a turn it never lost. It is also left out of the
+  "paused mid-run" count on `/quotas`, which is about what the ceiling cost.
+- A session that resolves to **priority** is set to `spot`, since the sweep resumes a non-spot
+  sleeper on its very next pass. **Make this session priority** on the banner reverses it, and that
+  next sweep resumes the session — which is the intended way back out.
+- The panel's **Resume with** box still applies: with no trigger to hang the prompt on, it rides on
+  the session and is delivered when the sweep reaches it, in place of the recovery nudge.
+
+Its place in line is whatever `precedence` the session already carries — parking it does not
+re-rank it. Any unfired wake-up armed from the same control is cancelled, because picking the queue
+after picking a time means "not then, this instead".
 
 The sweep runs every five minutes, but what bounds how fast the ceiling reacts is the **reading**, not
 the sweep: utilization comes from quota snapshots, which land when `ClaudeUsageSamplerJob` samples
@@ -487,6 +511,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
+| Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
 | Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and demote button | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
 | Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
 | Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |

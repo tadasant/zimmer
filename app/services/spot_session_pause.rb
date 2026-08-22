@@ -35,8 +35,8 @@
 # The promise the spot model makes is that spot work is DEFERRED, never
 # cancelled, and a pause with no way back would break it. The same sweep resumes
 # them: when the gate allows spot work again, paused sessions are resumed
-# oldest-pause-first with the recovery nudge, so an interrupted agent is told to
-# pick up where it left off.
+# highest-precedence-first with the recovery nudge, so an interrupted agent is
+# told to pick up where it left off.
 #
 # Resumption uses SpotGateService.resume_decision, which lowers both targets by
 # RESUME_MARGIN_PCT. Without that margin a session resumed at 79.9% pushes the
@@ -59,6 +59,15 @@
 # `paused_by` says `spot_quota` — so a reader can tell this apart from a turn
 # that ended, a deployment restart, and a human hitting Pause.
 #
+# == A human can join the queue on purpose
+#
+# The web UI's "Pause Until" offers "Spot Queue" beside its time presets, and
+# that choice (Sessions::PauseIntoSpotQueue) parks a session here deliberately:
+# same `waiting`, same metadata, same resume sweep — no wake trigger and no wall
+# clock. It carries QUEUED_REASON rather than a gate reason, so every surface
+# that explains a dormant session can say which of the two happened to it, and
+# so the ceiling's own cost is not overstated by counting it.
+#
 # == Priority sessions are never touched
 #
 # Only sessions that resolve to `spot` are eligible, and only on the Claude Code
@@ -72,7 +81,20 @@ class SpotSessionPause
   PAUSED_DETAIL = "spot_pause_detail"
   PAUSED_COUNT = "spot_pause_count"
 
-  METADATA_KEYS = [ PAUSED_AT, PAUSED_REASON, PAUSED_DETAIL, PAUSED_COUNT ].freeze
+  # The resume prompt a human typed into "Pause Until" before choosing the spot
+  # queue. Nothing else carries it: a time-based pause hangs its prompt on the
+  # trigger it arms, and the spot queue arms nothing.
+  QUEUED_PROMPT = "spot_queue_prompt"
+
+  METADATA_KEYS = [ PAUSED_AT, PAUSED_REASON, PAUSED_DETAIL, PAUSED_COUNT, QUEUED_PROMPT ].freeze
+
+  # `spot_pause_reason` when a HUMAN put the session here from the web UI's
+  # "Pause Until" control (Sessions::PauseIntoSpotQueue) rather than the ceiling
+  # interrupting it. The dormancy and the resume path are identical — the same
+  # sweep picks it up on the same gate decision — so it shares every key above;
+  # only the wording differs, and it must, because "paused mid-run because a
+  # quota window hit its target" is not what happened to this one.
+  QUEUED_REASON = "user_spot_queue"
 
   # What `paused_by` says. Deliberately neither "user" (which would stop the
   # recovery sweeps auto-continuing it) nor "recovery" (which would make
@@ -148,9 +170,10 @@ class SpotSessionPause
         .order(:id)
     end
 
-    # Sessions currently dormant because of this service, oldest pause first —
-    # so MAX_RESUMES_PER_SWEEP resumes the session that has been asleep longest
-    # rather than whichever ids happen to sort lowest, sweep after sweep.
+    # Sessions currently dormant in the spot queue, oldest pause first. The order
+    # that decides which of them RUNS is #rank's, applied where the batch is
+    # taken; this one is the stable read of the population.
+    #
     # Ordered lexicographically over the stored string, which is why #pause!
     # writes it in UTC.
     def paused_sessions
@@ -160,16 +183,27 @@ class SpotSessionPause
         .order(Arel.sql("metadata->>'spot_pause_at' ASC NULLS FIRST"))
     end
 
-    # Whether this session is dormant because the spot ceiling paused it.
+    # Whether this session is dormant in the spot queue — paused mid-run by the
+    # ceiling, or parked here by a human from "Pause Until". Both wait on the
+    # same gate and both are resumed by the same sweep.
     def paused?(session)
       session.waiting? && session.metadata&.dig(PAUSED_REASON).present?
+    end
+
+    # Whether a human put this session in the queue rather than the ceiling.
+    def queued_by_user?(session)
+      session.metadata&.dig(PAUSED_REASON) == QUEUED_REASON
     end
 
     # How many sessions are paused for the ceiling right now — the number
     # /quotas and `get_spot_policy` report, so both surfaces can say that
     # holding spot sessions stopped running ones too.
+    #
+    # Deliberately NOT every dormant session in the queue: a session a human
+    # parked there did not have a turn taken away from it, and counting it would
+    # overstate what the ceiling cost.
     def paused_count
-      paused_sessions.count
+      paused_sessions.where.not("metadata->>? = ?", PAUSED_REASON, QUEUED_REASON).count
     rescue ActiveRecord::ActiveRecordError
       0
     end
@@ -195,6 +229,11 @@ class SpotSessionPause
     # polls, and stops.
     def pause!(session, decision, overrides, logger)
       return false unless session.running?
+      # A session a human just parked into the queue is already on its way here:
+      # it carries the queue record and sleeps at the end of its turn. Pausing it
+      # would terminate that turn mid-flight — the one thing the panel promised
+      # would not happen — and overwrite its story with the ceiling's.
+      return false if queued_by_user?(session)
 
       terminate_process(session, logger)
 
@@ -282,12 +321,12 @@ class SpotSessionPause
       end
 
       budget = [ resume_budget(decision), sessions.size ].min
-      resumed = sessions.first(budget).count { |session| resume!(session, resume_message(decision), logger) }
+      resumed = sessions.first(budget).count { |session| resume!(session, resume_message(decision, session), logger) }
       held = sessions.size - resumed
 
       # Named rather than left implicit: a sweep that resumed 5 of 40 must not
       # read as "5 were waiting".
-      logger.info("Resumed spot sessions the ceiling had paused, highest precedence first",
+      logger.info("Resumed spot sessions from the queue, highest precedence first",
         resumed: resumed, still_asleep: held, budget: budget)
 
       [ resumed, held ]
@@ -326,6 +365,10 @@ class SpotSessionPause
     # and strands the children it was watching.
     def resume!(session, message, logger)
       resumed = false
+      # Read before the transaction clears it: a human who parked this session
+      # into the queue may have left the prompt it should come back on.
+      queued = queued_by_user?(session)
+      requested_prompt = session.metadata&.dig(QUEUED_PROMPT).presence
 
       ActiveRecord::Base.transaction do
         session.lock!
@@ -342,14 +385,17 @@ class SpotSessionPause
       return false unless resumed && session.reload.running?
 
       session.logs.create!(level: "info", content: message)
+      # A human queueing the session may have typed what it should come back on;
+      # a ceiling pause has nobody to ask, so it gets the recovery nudge with the
+      # reason that fits how it stopped.
       AgentSessionJob.enqueue_with_prompt(
         session.id,
-        AutomatedPrompts.system_recovery(reason: resume_prompt_reason)
+        requested_prompt || AutomatedPrompts.system_recovery(reason: resume_prompt_reason(queued))
       )
-      logger.info("Resumed a spot session the ceiling had paused", session_id: session.id)
+      logger.info("Resumed a spot session from the queue", session_id: session.id, queued_by_user: queued)
       true
     rescue StandardError => e
-      logger.warn("Could not resume a spot session the ceiling had paused",
+      logger.warn("Could not resume a spot session from the queue",
         session_id: session.id, error: "#{e.class}: #{e.message}")
       false
     end
@@ -362,12 +408,16 @@ class SpotSessionPause
         "the target. Nothing is cancelled. Make it priority and the next sweep resumes it regardless."
     end
 
-    # Two sentences because a resume has two shapes: the window genuinely fell
-    # (the common one), or the gate stopped holding work for some other reason —
-    # somebody turned gating off, or there is no reading to decide on. Naming
-    # the second as if utilization had recovered would be a lie in the log.
-    def resume_message(decision)
-      if decision.reason == "within_limits"
+    # Three sentences because a resume has three shapes: the window genuinely fell
+    # (the common one), the gate stopped holding work for some other reason —
+    # somebody turned gating off, or there is no reading to decide on — or the
+    # session was never paused at all and a human put it in the queue by hand.
+    # Naming any of them as one of the others would be a lie in the log.
+    def resume_message(decision, session)
+      if queued_by_user?(session)
+        "The spot queue reached this session (#{decision.reason}) — resuming it. " \
+          "It was parked here from \"Pause Until\", not paused by the ceiling."
+      elsif decision.reason == "within_limits"
         "Utilization came back down past the resume margin — resuming this spot session automatically."
       else
         "The spot gate is no longer holding spot work (#{decision.reason}) — " \
@@ -379,9 +429,20 @@ class SpotSessionPause
       "This session is priority now, and priority work is never gated on quota — resuming it."
     end
 
-    def resume_prompt_reason
-      "Zimmer paused this spot session mid-run because a Claude Code quota window had reached " \
-        "its target, and utilization has since come back down"
+    # What the resumed agent is told about why it is awake. A queued session was
+    # never interrupted — its human parked it deliberately — so telling it a
+    # quota window had stopped it mid-turn would send it hunting for lost work
+    # that was never lost. It does not name the gate reading either: the promoted
+    # branch resumes a session whatever the windows say, and this sentence is
+    # shared with it.
+    def resume_prompt_reason(queued)
+      if queued
+        "your human parked this session in Zimmer's spot queue from the \"Pause Until\" control, " \
+          "and Zimmer has now resumed it from that queue"
+      else
+        "Zimmer paused this spot session mid-run because a Claude Code quota window had reached " \
+          "its target, and utilization has since come back down"
+      end
     end
   end
 end
