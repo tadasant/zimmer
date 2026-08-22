@@ -427,12 +427,13 @@ class SpotSessionPause
     # What the resumed agent is told about why it is awake. A queued session was
     # never interrupted — its human parked it deliberately — so telling it a
     # quota window had stopped it mid-turn would send it hunting for lost work
-    # that was never lost.
+    # that was never lost. It does not name the gate reading either: the promoted
+    # branch resumes a session whatever the windows say, and this sentence is
+    # shared with it.
     def resume_prompt_reason(queued)
       if queued
         "your human parked this session in Zimmer's spot queue from the \"Pause Until\" control, " \
-          "and the queue has now reached it — a Claude Code account is under both quota targets " \
-          "and a session slot is free"
+          "and Zimmer has now resumed it from that queue"
       else
         "Zimmer paused this spot session mid-run because a Claude Code quota window had reached " \
           "its target, and utilization has since come back down"

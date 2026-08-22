@@ -67,9 +67,11 @@
 
     <%# The panel. Inline (in normal flow) inside the card's overflow menu, which
         already has its own positioned box; an absolutely-positioned popover on the
-        detail header. max-w keeps it on screen at a 375px phone viewport. %>
+        detail header. max-w keeps it on screen at a 375px phone viewport, and
+        max-h keeps the popover's own last control reachable on a short one — the
+        inline variants need neither, since their container scrolls already. %>
     <div data-pause-until-target="panel"
-         class="hidden <%= inline_variant ? "border-t border-gray-100 #{variant == :sheet_item ? "px-4 py-3" : "px-3 py-3"}" : "absolute right-0 top-full mt-2 z-40 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white shadow-lg p-3" %> text-left">
+         class="hidden <%= inline_variant ? "border-t border-gray-100 #{variant == :sheet_item ? "px-4 py-3" : "px-3 py-3"}" : "absolute right-0 top-full mt-2 z-40 w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-8rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg p-3" %> text-left">
       <div class="flex items-center justify-between mb-2">
         <span class="text-sm font-semibold text-gray-900">Pause until</span>
         <span data-pause-until-target="zone" class="text-[10px] text-gray-400 font-mono truncate max-w-[9rem]"></span>
