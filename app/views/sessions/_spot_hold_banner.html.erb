@@ -1,13 +1,17 @@
-<%# A spot session the gate has stopped — either held at the starting line (a
-    quota window at its target, or no free session slot) or paused mid-run once a
-    window arrived at its target with this session already running. Without this
-    the session sits in `waiting` looking indistinguishable from one that is
-    merely queued, and the only record of why would be a line in its log.
+<%# A spot session the gate has stopped, in any of the three ways it can be: held
+    at the starting line (a quota window at its target, or no free session slot),
+    held before its NEXT turn when a wake or a follow-up arrived while a window
+    was at its target, or paused mid-run once a window arrived at its target with
+    this session already running. Without this the session sits in `waiting`
+    looking indistinguishable from one that is merely queued, and the only record
+    of why would be a line in its log.
 
-    One partial for both because a session is only ever in one of the two states:
-    it was either never started or interrupted, never both. %>
+    One partial for all three because a session is only ever in one of them. %>
 <% hold_detail = agent_session.metadata&.dig(SpotSessionHold::HELD_DETAIL) %>
 <% hold_reason = agent_session.metadata&.dig(SpotSessionHold::HELD_REASON) %>
+<%# A hold on a RESUME is a turn that was refused, not a session that never
+    started: the session has run before and is waiting to run its next turn. %>
+<% held_turn = agent_session.metadata&.dig(SpotSessionHold::HELD_TURN) %>
 <% pause_detail = agent_session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL) %>
 <% if (hold_detail.present? || pause_detail.present?) && agent_session.waiting? %>
   <% paused_mid_run = hold_detail.blank? %>
@@ -24,8 +28,12 @@
         <h3 class="text-sm font-medium text-amber-900">
           <% if paused_mid_run %>
             Paused mid-run for quota headroom
+          <% elsif hold_reason == "fleet_at_cap" %>
+            Held for a free session slot
+          <% elsif held_turn == SpotSessionHold::TURN_RESUME %>
+            Next turn held for quota headroom
           <% else %>
-            <%= hold_reason == "fleet_at_cap" ? "Held for a free session slot" : "Held for quota headroom" %>
+            Held for quota headroom
           <% end %>
         </h3>
         <p class="mt-1 text-sm text-amber-800"><%= paused_mid_run ? pause_detail : hold_detail %></p>
@@ -36,6 +44,9 @@
           <% if paused_mid_run %>
             it was already running when a window reached its target, and it resumes on its own
             once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
+          <% elsif held_turn == SpotSessionHold::TURN_RESUME %>
+            the turn it was woken for is queued and runs on its own once the gate lets
+            it<%= ", next check #{retry_at}" if retry_at.present? %>.
           <% else %>
             it will start on its own once the gate lets it<%= ", next check #{retry_at}" if retry_at.present? %>.
           <% end %>
