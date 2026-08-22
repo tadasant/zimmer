@@ -355,6 +355,50 @@ way, and `#fetch_recent_history`, which degrades to an empty slice its callers f
 trusting), and anything that is not transient in the first place. See
 [observability](/operate/observability/#a-failure-the-code-recovered-from-is-logged-at-warn-not-error).
 
+### Recurring sweeps on `default` are singletons too
+
+`pollers` got `total_limit: 1` on every job when it was carved out. `default` did not, and the gap
+showed on 2026-08-22: cron kept stamping `HeartbeatSweepJob` every 30 seconds while the queue was
+congested, 39 ready copies accumulated, and because each copy recomputed the same due-set and took
+`SELECT … FOR UPDATE` on the same rows, they serialized on one another and ran slower than a single
+sweep would have. A congested queue produced more copies, which made it more congested.
+
+So every recurring job that runs on `default` and takes **no arguments** now carries
+`SingletonSweep`, which is `total_limit: 1` keyed on the class name. These sweeps are level-triggered
+— each run reads current state and acts on whatever is due — so refusing a tick loses nothing but the
+redundancy.
+
+The scope is deliberate. A sweep that *takes* arguments re-enqueues itself with them to chain retries
+(`RefreshRuntimeAuthTokensJob`, `RefreshMcpOauthTokensJob`, `CertExpiryMonitorJob`), and a class-wide
+key would block that chain behind the cron copy. `test/jobs/recurring_sweep_concurrency_test.rb`
+walks the production cron table and fails if an argument-less `default` sweep is left unguarded, so
+the next one added cannot quietly reopen the gap.
+
+### Bounding blocking inference
+
+`default` also carries every job that makes a **blocking one-shot inference call** — `SessionTitleJob`
+(30s timeout) and `SessionStatusSummaryJob` (90s). Each one shells out to the runtime CLI and holds
+its worker thread until the answer lands or the timeout expires, and `default` has four threads
+(`ConnectionBudget::GOOD_JOB_DEFAULT_THREADS`) shared with three dozen other job classes.
+
+`BlockingInferenceBounded` gives them **one shared `perform_limit`** across all of them, so at most
+half of `default`'s threads can be inside an inference call at once and the rest of the queue always
+has somewhere to run. The key is shared rather than per-class on purpose: the resource being rationed
+is the queue's thread count, and a per-class limit of two would let two classes take all four.
+
+This binds hardest during an account-quota outage, which is when inference is least likely to answer
+and most likely to burn its whole timeout — and simultaneously when the most work arrives, because
+every parked session takes a `pause` transition and `pause` enqueues a status-summary refresh.
+Arrival peaks exactly when service is worst.
+
+The bound is on `perform`, not `enqueue`. These jobs carry a session id and are not interchangeable,
+so refusing an enqueue would drop that session's work rather than delay it. GoodJob answers an
+exceeded `perform_limit` with `ConcurrencyExceededError`, which `ApplicationJob`'s inherited
+`retry_on` reschedules with polynomial backoff — so the surplus waits in `scheduled`, future-dated
+and out of the ready backlog, instead of holding a thread. Titles and summaries land late during an
+outage, which is the right trade: they are best-effort, and `StatusSummaryBackstopJob` repairs a
+generation that never landed.
+
 ## Queue recovery mode
 
 The escape hatch for a queue that has run away from you. `QueueRecoveryMode` halts job **execution**

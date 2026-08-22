@@ -24,6 +24,7 @@ require "open3"
 #
 class DockerCleanupJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   # Dev-server Compose stacks older than this are considered stale.
   # 6 hours is generous — most sessions complete well within this window,

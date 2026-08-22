@@ -11,6 +11,7 @@
 # expired elicitation disappear in real time.
 class CleanupExpiredElicitationsJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   def perform
     expire_pending_elicitations

@@ -21,6 +21,7 @@
 # the next due beat is a no-op record rather than a second nudge.
 class HeartbeatSweepJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   def perform
     now = Time.current

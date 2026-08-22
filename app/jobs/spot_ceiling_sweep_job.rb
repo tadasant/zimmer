@@ -30,6 +30,8 @@
 # every five minutes whether nothing is paused or forty sessions are, and one
 # reading decides for all of them, which is what a pool-wide condition wants.
 class SpotCeilingSweepJob < ApplicationJob
+  include SingletonSweep
+
   def perform
     logger = StructuredLogger.new({ service: "SpotCeilingSweepJob" })
     result = SpotSessionPause.sweep!(logger: logger)

@@ -67,6 +67,7 @@
 # code being at fault.
 class ZombieReaperJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   # How long a zombie must persist across two observations before we accept that
   # nothing is blocked in waitpid on it. Generous relative to the microseconds a
