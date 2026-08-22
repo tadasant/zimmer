@@ -94,6 +94,14 @@ AirCatalogService.singleton_class.class_eval do
   end
 end
 
+# Snapshot the pre-warmed tree so the global setup below can re-install it before
+# every test. The TTL override above keeps the cache from expiring on its own,
+# but it cannot stop a test from clearing it outright — AirCatalogServiceTest's
+# teardown calls reset!, and every test that draws the next slot in that worker
+# would otherwise inherit a cold cache and shell out. See
+# test/support/air_catalog_cache_warmer.rb.
+AirCatalogCacheWarmer.capture!
+
 # Pre-warm the ActionView template resolver cache once at boot, before
 # parallelize() forks workers. With template-load caching on (reloading
 # disabled), the resolver memoizes each lookup — including empty results — so a
@@ -180,6 +188,14 @@ module ActiveSupport
 
     # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
     fixtures :all
+
+    # Re-install the boot-resolved AIR catalog before every test, so a test that
+    # cleared or faked the process-global cache cannot change what the next test
+    # in that worker sees. Declared here, on the base class, so it runs before
+    # any subclass setup — including AirCatalogServiceTest's, which resets the
+    # cache on purpose and must keep winning. See
+    # test/support/air_catalog_cache_warmer.rb.
+    setup { AirCatalogCacheWarmer.restore! }
 
     # Include test support helpers
     include MockHelpers
