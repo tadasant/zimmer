@@ -17,11 +17,11 @@
     primary_status_text = primary_status.present? ? primary_status.titleize : "Unknown"
 
     if size == :large
-      button_size_classes = "px-4 py-2 text-sm shadow-sm"
+      button_size_classes = "px-4 py-2 text-sm shadow-sm whitespace-nowrap"
       toggle_size_classes = "px-2 py-2 text-sm shadow-sm"
       icon_classes = "mr-1.5"
     else
-      button_size_classes = "px-3 py-1.5 text-xs"
+      button_size_classes = "px-3 py-1.5 text-xs whitespace-nowrap"
       toggle_size_classes = "px-2 py-1.5 text-xs"
       icon_classes = "-ml-0.5 mr-1.5"
     end
@@ -31,12 +31,14 @@
     <%# Single PR - simple button with CI status indicator for open PRs %>
     <%= link_to primary_url, target: "_blank", rel: "noopener noreferrer",
         class: "inline-flex items-center #{button_size_classes} border border-gray-300 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500",
-        title: "View PR on GitHub",
+        title: "View PR on GitHub (#{primary_status_text})",
         data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(agent_session) } do %>
       <svg class="<%= icon_classes %> h-4 w-4 <%= primary_icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor">
         <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
       </svg>
-      PR (<%= primary_status_text %>)
+      <%# State is carried by the icon color (green open / purple merged / red closed); the
+          sr-only span and the title keep it available to anyone who is not reading color. %>
+      PR<span class="sr-only"> (<%= primary_status_text %>)</span>
       <% if primary_status == "open" && primary_ci_status.present? %>
         <span class="ml-1.5 inline-flex items-center" title="CI: <%= primary_ci_status.titleize %>">
           <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(primary_ci_status) %>"></span>
@@ -49,12 +51,12 @@
       <%# Primary button - most recent PR with CI status indicator %>
       <%= link_to primary_url, target: "_blank", rel: "noopener noreferrer",
           class: "inline-flex items-center #{button_size_classes} border border-gray-300 font-medium rounded-l-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500",
-          title: "View most recent PR on GitHub",
+          title: "View most recent PR on GitHub (#{primary_status_text})",
           data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(agent_session) } do %>
         <svg class="<%= icon_classes %> h-4 w-4 <%= primary_icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor">
           <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
         </svg>
-        <%= extract_pr_number(primary_url) %> (<%= primary_status_text %>)
+        <%= extract_pr_number(primary_url) %><span class="sr-only"> (<%= primary_status_text %>)</span>
         <% if primary_status == "open" && primary_ci_status.present? %>
           <span class="ml-1.5 inline-flex items-center" title="CI: <%= primary_ci_status.titleize %>">
             <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(primary_ci_status) %>"></span>
