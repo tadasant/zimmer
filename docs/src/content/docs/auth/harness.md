@@ -744,6 +744,14 @@ Two things wake a parked session now, and they cover different populations.
 | **spot** | the `quota_available` trigger event → one `fleet-maintenance` session running the `awaken-waiting-sessions` skill | spot work is exactly the work whose ORDER matters when quota is scarce, and the skill is what reads precedence, the spot thresholds and the concurrency ceiling to decide who starts. Both artifacts ship in Zimmer's own catalog, so the seeded trigger resolves on a standalone install; a test asserts the root it names exists |
 | **priority** | `AuthOutageParkService.wake_parked_sessions!`, from `QuotaResetCheckerJob` every 15 minutes | priority work is never gated on quota, so making it wait for a spawned session to take its first turn would be a regression — and there is no ordering question to get wrong |
 
+Neither wakes a session that is **also** asleep on a wake-up somebody chose. A park and a pause are
+different states that happen to share `waiting`: the pool recovering answers the park and says
+nothing about the pause. The sweep skips those sessions before its spot/priority branch, so a paused
+spot park is not counted toward the fleet wake it must not be started by, and a paused priority park
+is not resumed — which matters twice over, because that resume goes through `resume!` and would have
+consumed the pause without a trace. See
+[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence).
+
 `QuotaAvailabilityMonitor` owns the event. It runs in the same `QuotaResetCheckerJob` pass, right
 after the accounts are restored, and asks one question: can the pool serve a request at all — is
 there an account that is neither `quota_exceeded` nor waiting on a human to re-authenticate. That is

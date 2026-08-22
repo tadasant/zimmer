@@ -144,19 +144,28 @@ class SpotSessionPause
       # One read of the dormant population, and one read of the class overrides
       # it is classified against, for the whole pass.
       overrides = AppSetting.current.genesis_class_overrides
-      promoted, still_spot = paused_sessions.to_a.partition { |session| !session.spot?(overrides) }
+
+      # A session someone paused until a chosen time is off the table for this
+      # sweep entirely — before the promotion branch, because promotion is the one
+      # resume that happens on EVERY pass regardless of the gate, and a pause
+      # outranks scheduling class just as it outranks precedence. These sessions
+      # are counted as held rather than dropped: a sweep that left 3 of 8 asleep
+      # for a reason must not report having looked at 5.
+      dormant, sleeping_on_a_wake = split_paused_until(paused_sessions.to_a, logger)
+
+      promoted, still_spot = dormant.partition { |session| !session.spot?(overrides) }
       resumed = promoted.count { |session| resume!(session, promoted_message, logger) }
 
       if decision.held? && decision.reason == UTILIZATION_REASON
         # `held` counts the sessions that were already asleep and stay that way,
         # not the ones this pass is putting to sleep — those are `paused`.
         return Result.new(paused: pause_running!(decision, overrides, logger),
-                          resumed: resumed, held: still_spot.size)
+                          resumed: resumed, held: still_spot.size + sleeping_on_a_wake)
       end
 
       resumed_spot, held = resume_spot!(still_spot, logger)
 
-      Result.new(paused: 0, resumed: resumed + resumed_spot, held: held)
+      Result.new(paused: 0, resumed: resumed + resumed_spot, held: held + sleeping_on_a_wake)
     rescue StandardError => e
       logger.warn("Spot ceiling sweep failed", error: "#{e.class}: #{e.message}")
       Result.new(paused: 0, resumed: 0, held: 0)
@@ -193,6 +202,30 @@ class SpotSessionPause
     # Whether a human put this session in the queue rather than the ceiling.
     def queued_by_user?(session)
       session.metadata&.dig(PAUSED_REASON) == QUEUED_REASON
+    end
+
+    # Split the ceiling's sleepers into the ones this sweep may resume and a count
+    # of the ones a human (or an agent, through `wake_me_up_later`) has paused
+    # until a chosen time.
+    #
+    # One batched query for the whole set rather than one per session:
+    # Session.ids_awaiting_scheduled_wake is the same reading the bulk refresh
+    # uses, and it fails safe — an unreadable trigger table treats every candidate
+    # as asleep, which errs toward leaving work dormant rather than trampling a
+    # pause.
+    #
+    # @return [Array(Array<Session>, Integer)] resumable sessions, and how many were paused
+    def split_paused_until(sessions, logger)
+      return [ sessions, 0 ] if sessions.empty?
+
+      sleeping = Session.ids_awaiting_scheduled_wake(sessions.map(&:id))
+      return [ sessions, 0 ] if sleeping.empty?
+
+      resumable = sessions.reject { |session| sleeping.include?(session.id) }
+      logger.info("Left spot sessions asleep on their own wake-ups",
+        paused_until: sessions.size - resumable.size)
+
+      [ resumable, sessions.size - resumable.size ]
     end
 
     # How many sessions are paused for the ceiling right now — the number
@@ -373,6 +406,11 @@ class SpotSessionPause
       ActiveRecord::Base.transaction do
         session.lock!
         raise ActiveRecord::Rollback unless paused?(session) && session.may_resume?
+        # Re-asked under the lock. #sweep! already filtered these out, but a pause
+        # armed between that read and this one would otherwise be trampled by a
+        # sweep that decided before it existed — and this method is the only door
+        # into the resume, so closing it here closes it for every caller.
+        raise ActiveRecord::Rollback if session.awaiting_scheduled_wake?
 
         session.update!(
           running_job_id: nil,
