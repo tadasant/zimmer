@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-# Persists the global session defaults configured on the settings page — the base
-# runtime + model that fill in session creation when nothing more specific applies
-# (no form/API param and no explicit roots.json value).
+# Persists the settings-page fields backed by the AppSetting singleton: the global
+# session defaults (the base runtime + model that fill in session creation when
+# nothing more specific applies — no form/API param and no explicit roots.json
+# value) and the experimental toggles.
 #
 # A blank runtime or model clears that part of the override, deferring to the
 # hardcoded default (Claude Code / the runtime's catalog default). The runtime +
@@ -19,6 +20,12 @@ class AppSettingsController < ApplicationController
     if app_params.key?(:default_runtime) || app_params.key?(:default_model)
       setting.default_runtime = app_params[:default_runtime].to_s.strip.presence
       setting.default_model = app_params[:default_model].to_s.strip.presence
+    end
+
+    # The MCP tool search toggle (Experimental) arrives on its own, from a form
+    # that carries no runtime/model — hence the same key-presence guard as above.
+    if app_params.key?(:mcp_tool_search_enabled)
+      setting.mcp_tool_search_enabled = ActiveModel::Type::Boolean.new.cast(app_params[:mcp_tool_search_enabled])
     end
 
     # Zimmer Extension enablement toggles arrive as app_setting[extensions][<id>].

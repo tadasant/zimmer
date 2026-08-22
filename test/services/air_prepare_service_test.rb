@@ -528,6 +528,239 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_empty sleeps, "no backoff should happen for a non-transient failure"
   end
 
+  # ---------------------------------------------------------------------------
+  # An unparseable config file in the target dir (the "Unexpected end of JSON
+  # input" page — GlitchTip #45 / zimmer#590, session 6787, 2026-08-21)
+  # ---------------------------------------------------------------------------
+
+  test "run_air_prepare_command! retries an unparseable-config failure then succeeds" do
+    sleeps = []
+    attempts = 0
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      attempts += 1
+      if attempts == 1
+        # The exact failure signature observed in the incident. air-sdk parses the
+        # target's config files unguarded, and Node reports no path.
+        [ "", "Error: Unexpected end of JSON input", stub(success?: false, exitstatus: 1) ]
+      else
+        [ "", "", stub(success?: true, exitstatus: 0) ]
+      end
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(s) { sleeps << s }
+      )
+      service.prepare! # must NOT raise — the retry succeeds
+    end
+
+    assert_equal 2, attempts,
+      "a concurrent-writer race must be retried, not raised on the first attempt"
+    assert_equal [ 5 ], sleeps,
+      "should back off once with the first delay before the successful retry"
+  end
+
+  test "run_air_prepare_command! retries the newer Node wording for the same failure" do
+    attempts = 0
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      attempts += 1
+      if attempts == 1
+        [ "", %(Error: Unexpected token '<', "<html>" is not valid JSON), stub(success?: false, exitstatus: 1) ]
+      else
+        [ "", "", stub(success?: true, exitstatus: 0) ]
+      end
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(_s) { }
+      )
+      service.prepare!
+    end
+
+    assert_equal 2, attempts, "the post-Node-20 wording must classify the same way as the old one"
+  end
+
+  test "an unparseable-config failure that outlives its retries reports the target's config files" do
+    sleeps = []
+    attempts = 0
+    @mock_fs.write(File.join(@working_dir, ".mcp.json"), '{"mcpServers":{}}')
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      attempts += 1
+      [ "", "Error: Unexpected end of JSON input", stub(success?: false, exitstatus: 1) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(s) { sleeps << s }
+      )
+      error = assert_raises(AirPrepareService::AirPrepareError) { service.prepare! }
+
+      assert_match(/Unexpected end of JSON input/, error.message,
+        "the original AIR message must survive the enrichment")
+      assert_match(/\.mcp\.json: 17b, parses/, error.message,
+        "AIR names no file, so Zimmer must report the state of the ones it manages")
+      assert_match(%r{\.claude/settings\.json: absent}, error.message,
+        "a file that isn't there must be reported as absent, not omitted")
+    end
+
+    assert_equal 4, attempts, "should attempt once plus three retries, like any other transient failure"
+    assert_equal [ 5, 10, 20 ], sleeps, "should use the full backoff schedule before giving up"
+  end
+
+  test "the config-file report flags a file that does not parse" do
+    @mock_fs.write(File.join(@working_dir, ".mcp.json"), '{"mcpServers": {"a":')
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      [ "", "Error: Unexpected end of JSON input", stub(success?: false, exitstatus: 1) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(_s) { }
+      )
+      error = assert_raises(AirPrepareService::AirPrepareError) { service.prepare! }
+      assert_match(/\.mcp\.json: 20b, UNPARSEABLE/, error.message)
+    end
+  end
+
+  test "the config-file report leaves the target directory untouched" do
+    mcp_path = File.join(@working_dir, ".mcp.json")
+    @mock_fs.write(mcp_path, '{"mcpServers": {"a":')
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      [ "", "Error: Unexpected end of JSON input", stub(success?: false, exitstatus: 1) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(_s) { }
+      )
+      assert_raises(AirPrepareService::AirPrepareError) { service.prepare! }
+    end
+
+    # Deliberately read-only: the adapter already self-repairs both files it
+    # manages before the parse that throws, so deleting one here would be
+    # speculative machinery for a case that cannot arise.
+    assert_equal '{"mcpServers": {"a":', @mock_fs.read(mcp_path),
+      "diagnosis must not mutate the file it is describing"
+  end
+
+  test "JSON_PARSE_FAILURE_PATTERN covers the shapes Node actually emits for a truncated read" do
+    # Produced by JSON.parse on Node 22 (what Dockerfile.base installs) for
+    # truncations at each position a concurrent write can leave one. The
+    # position-bearing family matters most: `.mcp.json` is mostly string values,
+    # so a partial read lands mid-string far more often than at a structural
+    # boundary, and mid-string is "Unterminated string", not "Unexpected end".
+    [
+      "Error: Unexpected end of JSON input",
+      "Unterminated string in JSON at position 24 (line 1 column 25)",
+      "Expected double-quoted property name in JSON at position 7 (line 1 column 8)",
+      "Expected ':' after property name in JSON at position 5 (line 1 column 6)",
+      "Expected ',' or ']' after array element in JSON at position 10 (line 1 column 11)",
+      "Unexpected non-whitespace character after JSON at position 7 (line 1 column 8)",
+      %(Error: Unexpected token '<', "<html>" is not valid JSON)
+    ].each do |message|
+      assert AirPrepareService::JSON_PARSE_FAILURE_PATTERN.match?(message),
+        "must classify #{message.inspect} as a parse failure"
+    end
+
+    [
+      "Error: catalog entry 'foo' not found",
+      %(Error: Root "zimmer" not found. Available roots: @local/obs),
+      "Error: ENOENT: no such file or directory, open '/tmp/x/.mcp.json'"
+    ].each do |message|
+      refute AirPrepareService::JSON_PARSE_FAILURE_PATTERN.match?(message),
+        "must not classify #{message.inspect} as a parse failure"
+    end
+  end
+
+  test "an unresolved variable keeps its no-retry fast path even when the message also carries a parse signature" do
+    # The invariant is the ORDER of the branches, not that the two patterns are
+    # disjoint: whatever else stderr contains, a missing secret must raise the
+    # graceful SecretResolutionError on the first attempt. A plain
+    # AirPrepareError here would page instead, and four retries would delay a
+    # session launch by 35s for a failure no retry can fix.
+    attempts = 0
+    sleeps = []
+    stderr = "Error: Unresolved variable in /tmp/x: ${GITHUB_TOKEN}. Ensure all variables are " \
+             "provided via environment or a secrets transform. Unexpected end of JSON input"
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      attempts += 1
+      [ "", stderr, stub(success?: false, exitstatus: 1) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(s) { sleeps << s }
+      )
+      error = assert_raises(AirPrepareService::SecretResolutionError) { service.prepare! }
+      assert_match(/GITHUB_TOKEN/, error.message)
+    end
+
+    assert_equal 1, attempts, "an unresolved variable must not be retried"
+    assert_empty sleeps
+  end
+
+  test "a root-not-found failure keeps its fast path even when the message also carries a parse signature" do
+    # Same ordering invariant on the other deterministic branch: this must end as
+    # a graceful RootResolutionError, not a plain (paging) AirPrepareError.
+    stderr = %(Error: Root "zimmer" not found. Unexpected end of JSON input)
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      [ "", stderr, stub(success?: false, exitstatus: 1) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(_s) { }
+      )
+      assert_raises(AirPrepareService::RootResolutionError) { service.prepare! }
+    end
+  end
+
+  test "the config-file report is skipped when AIR already named the file it could not parse" do
+    # transform-runner rethrows a HOOK.json parse failure with the path attached.
+    # Appending a report about two unrelated files would contradict the message
+    # it is decorating.
+    named = "Error: Failed to parse /tmp/x/.claude/hooks/foo/HOOK.json: Unexpected end of JSON input"
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      [ "", named, stub(success?: false, exitstatus: 1) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      service = AirPrepareService.new(
+        session: @session,
+        working_directory: @working_dir,
+        file_system: @mock_fs,
+        sleeper: ->(_s) { }
+      )
+      error = assert_raises(AirPrepareService::AirPrepareError) { service.prepare! }
+
+      assert_match(%r{HOOK\.json}, error.message, "AIR's own path must survive")
+      refute_match(/settings\.json: absent/, error.message,
+        "must not append a report about files the message is not about")
+    end
+  end
+
   test "run_air_prepare_command! treats a watchdog TimeoutError as transient and retries" do
     sleeps = []
     attempts = 0

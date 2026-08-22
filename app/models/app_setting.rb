@@ -27,6 +27,13 @@ class AppSetting < ApplicationRecord
   # to it.
   DEFAULT_SPOT_GATE_THRESHOLD_PCT = 80
 
+  # Whether newly spawned Claude Code sessions run with MCP tool search on
+  # (ENABLE_TOOL_SEARCH=true), letting the agent search MCP tools on demand
+  # instead of loading every attached server's tool schemas up front. ON is the
+  # default: with several servers attached, the up-front schema load is a large,
+  # unavoidable context cost at the start of every session.
+  DEFAULT_MCP_TOOL_SEARCH_ENABLED = true
+
   # How many sessions may run at once. The gate admits spot work in parallel up to
   # the concurrency the quota can carry, and this is the brake on that — 10 is the
   # number Tadas named. Every running session counts against it, priority included;
@@ -79,6 +86,12 @@ class AppSetting < ApplicationRecord
     def genesis_class_overrides
       {}
     end
+
+    # No persisted row exists, so tool search resolves to its shipped default.
+    def mcp_tool_search_enabled
+      DEFAULT_MCP_TOOL_SEARCH_ENABLED
+    end
+    alias_method :mcp_tool_search_enabled?, :mcp_tool_search_enabled
   end.new(default_runtime: nil, default_model: nil)
 
   validates :default_runtime,
@@ -121,6 +134,16 @@ class AppSetting < ApplicationRecord
     rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
       default
     end
+
+    # Whether spawned Claude Code sessions get MCP tool search. The single global
+    # lookup ClaudeSpawnEnv consults on the session-spawn hot path, so it falls
+    # back to the shipped default whenever the row can't be read rather than
+    # raising mid-spawn.
+    def mcp_tool_search_enabled?
+      current.mcp_tool_search_enabled?
+    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
+      DEFAULT_MCP_TOOL_SEARCH_ENABLED
+    end
   end
 
   # Whether the extension with `id` is enabled on this row, defaulting to
@@ -142,6 +165,16 @@ class AppSetting < ApplicationRecord
   # any other extension's stored state.
   def set_extension_enabled(id, value)
     self.extension_states = (extension_states || {}).merge(id.to_s => !!value)
+  end
+
+  # Whether MCP tool search is on for this row. Returns the shipped default when
+  # the column isn't present on the record — the window where new code boots
+  # against a schema that predates the migration — so the spawn-env lookup
+  # degrades to the default instead of raising.
+  def mcp_tool_search_enabled?
+    return DEFAULT_MCP_TOOL_SEARCH_ENABLED unless has_attribute?(:mcp_tool_search_enabled)
+
+    !!self[:mcp_tool_search_enabled]
   end
 
   # The configured model when it is valid for `runtime`, otherwise the runtime's
