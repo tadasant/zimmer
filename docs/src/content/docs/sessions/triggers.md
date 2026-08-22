@@ -806,12 +806,19 @@ target session is `needs_input`, it sleeps immediately (`needs_input → waiting
 `running`, it sets `metadata["pending_sleep"] = true` and the sleep happens on the next `pause`.
 So an agent can say "wake me in an hour" mid-turn without stranding itself.
 
-It also clears a stale `paused_by: "user"` from a session it is putting to sleep. That marker means
+It also clears a stale `paused_by: "user"` from a session it is arming a wake on. That marker means
 "a human has taken this session over", and `reusable_session?` refuses to deliver into a session
 carrying it — so a session that was paused by hand and then given a wake-up would have had that
-very wake-up dropped on arrival. Arming a wake is the moment the marker stops being true. Only
-`"user"` is cleared; `recovery` and `spot_quota` name sweeps that are still responsible for the
-session.
+very wake-up dropped on arrival. Arming a wake is the moment the marker stops being true.
+
+Two details decide where it applies. It runs on all three reachable statuses, not just the one that
+sleeps immediately — a `running` session reaches `waiting` later and an already-`waiting` one is
+dormant now, and both would otherwise hold an undeliverable wake. And it runs *after* the status
+work rather than before: `sleep!` can raise, and a session left in `needs_input` with the marker
+already gone is one the bulk refresh auto-continues, resuming work a human deliberately stopped.
+Only `"user"` is cleared, and only on a status `reusable_session?` would accept; `recovery` and
+`spot_quota` name sweeps still responsible for the session, and on a `failed` or `archived` session
+the wake is undeliverable for reasons the marker has nothing to do with.
 
 **Immediate fire on already-matched state.** `Trigger#fire_ao_event_immediately_if_state_matches`
 row-locks each watched session *inside the creation transaction* and enqueues the job immediately
@@ -870,8 +877,13 @@ panel says so above the presets before the click, not after it.
 The MCP side keeps the deferral as its default, and that asymmetry is deliberate. `action_session`'s
 `pause_into_spot_queue` is most often a session parking **itself** — and a session that halted
 itself would terminate the process waiting for the tool call to return. A caller driving somebody
-*else's* running session passes `"halt": true` and gets the web UI's behaviour. The self-session
-variant of the tool does not expose the option at all.
+*else's* running session passes `"halt": true` and gets the web UI's behaviour. `SelfSessionActionSession`
+both omits the option from its schema and strips it from the arguments, so passing it anyway is a
+refusal rather than a loophole.
+
+Stopping a turn skips the queue drain that a turn allowed to end performs, so a message queued behind
+the session waits with it. On the timed path the wake bounds that wait; **Spot Queue arms nothing, so
+nothing bounds it** — the panel names the pending count when there is one.
 
 ### One scheduler, two front doors
 

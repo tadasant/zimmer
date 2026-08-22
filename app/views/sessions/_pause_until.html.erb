@@ -81,9 +81,18 @@
           below stops the turn where it stands (Sessions::HaltRunningTurn) — work
           already written to disk survives, the tool call in flight does not. %>
       <% if agent_session.running? %>
+        <% queued = agent_session.enqueued_messages.pending.count %>
         <p class="mb-2 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] leading-snug text-amber-800">
           This session is running. Any choice below <span class="font-medium">stops the current turn</span>
           and puts it to sleep now.
+          <%# Said here because stopping the turn is what strands them. A turn
+              allowed to end drains its queue first; a turn stopped does not, so
+              the messages wait for the wake — and the Spot Queue choice arms no
+              wake at all, so nothing bounds how long. %>
+          <% if queued.positive? %>
+            <span class="font-medium"><%= pluralize(queued, "queued message") %></span> will wait with it —
+            the Spot Queue choice sets no time, so nothing bounds how long.
+          <% end %>
         </p>
       <% end %>
 

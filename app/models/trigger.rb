@@ -538,7 +538,6 @@ class Trigger < ApplicationRecord
     return unless session
 
     if session.needs_input?
-      clear_stale_user_pause!(session)
       session.sleep!
       session.logs.create!(
         content: "[Trigger##{id}] Session transitioned to waiting for scheduled wake-up",
@@ -556,6 +555,21 @@ class Trigger < ApplicationRecord
         "target session #{session.id} is in #{session.status} state"
       )
     end
+
+    # Outside the branch, and AFTER the status work rather than before it.
+    #
+    # Outside, because every branch reaches a session this wake is now responsible
+    # for: `needs_input` sleeps, `running` sleeps at its turn end, and a session
+    # already `waiting` still has the wake armed against it. A marker cleared on
+    # only one of the three leaves the other two holding a wake that will be
+    # dropped on arrival.
+    #
+    # After, because `sleep!` can raise — aasm's `whiny_persistence` turns a failed
+    # save into an exception, and the rescue below swallows it. A session left in
+    # `needs_input` with the marker already gone is one the bulk refresh will
+    # auto-continue, resuming work a human deliberately stopped. Clearing last
+    # means a failed sleep leaves the session exactly as it was found.
+    clear_stale_user_pause!(session)
   rescue => e
     Rails.logger.error(
       "[Trigger#sleep_target_session_if_applicable] Failed to auto-sleep session #{last_session_id} " \
@@ -651,10 +665,22 @@ class Trigger < ApplicationRecord
   # nudge skips a `waiting` session by asking whether a wake is armed
   # (Session.ids_awaiting_scheduled_wake), which is precisely what has just
   # become true here.
+  #
+  # `remove_metadata!` rather than a whole-column write: a session coming to rest
+  # still has a job writing its own keys to the same column from another process,
+  # and a read-modify-write of the hash this callback happens to be holding would
+  # drop whatever was written in between. It deletes the one key in a single
+  # UPDATE and leaves every other key alone.
   def clear_stale_user_pause!(session)
     return unless session.metadata&.dig("paused_by") == "user"
+    # The same status gate #reusable_session? applies, so this clears the marker
+    # exactly where it is the thing standing between the wake and delivery. On a
+    # `failed` or `archived` session the wake is undeliverable for a reason this
+    # marker has nothing to do with, and clearing it would only lose the record of
+    # who stopped the session.
+    return unless session.needs_input? || session.running? || session.waiting?
 
-    session.update_column(:metadata, session.metadata.except("paused_by"))
+    session.remove_metadata!("paused_by")
     session.logs.create!(
       content: "[Trigger##{id}] Cleared the user-pause marker — this session is now asleep on a " \
                "wake-up rather than held for a human, so the wake can resume it",

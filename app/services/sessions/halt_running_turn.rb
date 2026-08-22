@@ -78,6 +78,7 @@ module Sessions
       return Result.new(halted: false, reason: :could_not_pause) unless pause!
 
       session.reload
+      session.logs.create!(level: "info", content: halted_message)
       # Belt and braces. `pending_sleep` is what normally carries the session
       # needs_input -> waiting, via the pause callback's execute_pending_sleep —
       # which swallows its own failures (it alerts rather than raises). A session
@@ -103,6 +104,16 @@ module Sessions
         # armed) and there is nothing left to pause.
         raise ActiveRecord::Rollback unless session.running? && session.may_pause?
 
+        # Written here rather than trusted from the caller, the way
+        # SpotSessionPause writes its own. `pending_sleep` is what the pause
+        # callback reads to carry the session needs_input -> waiting, and callers
+        # get it as a side effect of arming a wake — a side effect whose own
+        # writer swallows its failures. Re-asserting it under the lock makes the
+        # contract self-enforcing: without it a lost write sends the session
+        # through a fully observable `needs_input`, firing the ao_event watchers
+        # and the queue drain on the way to a sleep it was always going to reach.
+        session.merge_metadata!({ "pending_sleep" => true })
+
         # The job no longer owns a process; leaving the id set makes the session
         # look owned to the orphan sweep. `pause!`'s own cleanup_running_job does
         # this too, but it runs inside the transition and this is the row we hold.
@@ -119,6 +130,21 @@ module Sessions
       false
     end
 
+    # What the session's own timeline calls this. A halt reached from the MCP
+    # tool is not "Pause Until" — that is a web-UI control its caller never
+    # touched — so the line is worded off the reason rather than hardcoded.
+    def log_prefix
+      reason == :pause_into_spot_queue ? "[Spot Queue]" : "[Pause Until]"
+    end
+
+    # Written after the pause lands, and unconditionally: a session whose process
+    # had already gone gets no line from #terminate_process, and would otherwise
+    # have nothing on its timeline saying why its turn stopped.
+    def halted_message
+      "#{log_prefix} A human stopped this turn and put the session to sleep " \
+        "(now #{session.status}). Work already written to disk survives; the tool call in flight does not."
+    end
+
     # Kill the CLI process the session owns. Best effort: a session whose process
     # has already gone still gets paused, which is the state we are trying to
     # reach.
@@ -126,10 +152,7 @@ module Sessions
       pid = session.metadata&.dig("process_pid")
       return if pid.blank?
 
-      session.logs.create!(
-        level: "info",
-        content: "[Pause Until] Halting this turn (terminating process #{pid})"
-      )
+      session.logs.create!(level: "info", content: "#{log_prefix} Terminating process #{pid}")
 
       manager = ProcessLifecycleManager.new(session: session, process_manager: SystemProcessManager.new)
       result = manager.resume_monitoring(pid: pid, stderr_log_path: session.stderr_log_path)

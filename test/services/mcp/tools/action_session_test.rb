@@ -997,6 +997,23 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
   # The self-management surface deliberately does not advertise it: a session
   # halting itself would kill the process waiting for the reply.
+  # The narrowed schema is advertisement; this is the refusal. The action body is
+  # inherited whole and reads args["halt"] directly, and no schema sets
+  # additionalProperties: false — so a self-session caller passing the flag anyway
+  # must not end up terminating the process waiting for the reply.
+  test "the self-session variant refuses halt even when it is passed anyway" do
+    session = sessions(:running)
+    tool = Mcp::Tools::SelfSessionActionSession.new(context: Mcp::Context.new(tool_groups: "self_session"))
+
+    output = tool.call("action" => "pause_into_spot_queue", "session_id" => session.id, "halt" => true)
+
+    assert_includes output, "sleeps when the current turn ends"
+    assert_not_includes output, "its turn was stopped"
+    session.reload
+    assert session.running?, "a session must not be able to halt itself through this surface"
+    assert_equal true, session.metadata["pending_sleep"]
+  end
+
   test "the self-session variant does not offer halt" do
     self_properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h[:properties].keys.map(&:to_s)
     assert_not_includes self_properties, "halt"
