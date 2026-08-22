@@ -397,6 +397,9 @@ the agent to pick up where it left off. Two things shape which and how many:
 A session someone promotes to **priority** while it sleeps is resumed by the next sweep whatever the
 windows say, because priority work is never gated on quota.
 
+One thing outranks even that: a session with a **wake-up still ahead of it** is left alone. See
+[A pause outranks precedence](#a-pause-outranks-precedence) below.
+
 ### Joining the queue on purpose
 
 The same dormancy is reachable deliberately, and it is the answer to "this session should wait, and
@@ -445,6 +448,47 @@ actually decides what gets done.
   only when you mean to move the work relative to everything else in the queue.
 - **A trigger can predefine one**, alongside the class it already carries, so a feed is ranked once
   rather than one spawned session at a time.
+
+### A pause outranks precedence
+
+Precedence answers *which* waiting session goes first. It does not answer *whether* a session may
+start at all, and one thing overrides it unconditionally: a **pending wake-up**.
+
+A session that a human paused with **Pause Until**, or that an agent slept with `wake_me_up_later`,
+sits in `waiting` and keeps whatever precedence it had. Nothing in the columns distinguishes it from
+a session merely queued behind the gate — both are `waiting` spot sessions with a number. So the rule
+is enforced on the *start*, not on the ordering:
+
+**A session with a wake-up still ahead of it does not start, whatever its precedence and whatever its
+scheduling class.** It stays in the queue, at its rank, and the selector takes the next candidate.
+
+Four places could otherwise have started it, and each declines:
+
+| Who | What it does instead |
+| --- | --- |
+| `AgentSessionJob` (a first start — a spot-hold re-check, a fleet slot opening) | Stands down and logs why, without re-arming the re-check timer. The armed wake is the next event in the session's life. |
+| `SpotSessionPause` (the ceiling sweep, every 5 minutes) | Skips it *before* the promotion branch, so promoting a paused session to priority does not start it either. Counted as `held`. |
+| `AuthOutageParkService` (the un-park sweep, every 15 minutes) | Skips it. This one matters twice over: its resume goes through `resume!`, whose `cancel_pending_one_time_wake_triggers` callback would have destroyed the pause without a trace. |
+| `action_session restart` — the start path in the `awaken-waiting-sessions` skill | Refuses with an error naming the pause and telling the caller to take the next candidate. |
+| A fleet-maintenance agent working the ranked queue | `quick_search_sessions` marks the row `**Paused:** yes` with the wake time, so the agent skips it deliberately — and the two rows above refuse regardless of what the agent decides. |
+
+Those last two rows are the reason the guard is code rather than only prompt text. The fleet-wake
+selector is an agent reading a skill, which is a judgement; the refusals are a guarantee that holds
+for any caller — the skill, a script, a future integration.
+
+`restart` has to refuse at the tool rather than deeper down, because it resumes the session *before*
+it enqueues anything and `resume`'s `cancel_pending_one_time_wake_triggers` callback consumes the
+pause on the way past. A guard further in would arrive after the pause was already gone.
+
+Two paths deliberately still consume the pause, because both mean *a caller is taking this session
+over* rather than a selector working a list: the web UI's **Restart** button, and a `follow_up`
+addressed to the session directly.
+
+The pause is a **deferral, not a cancellation**. Past its moment the wake is no longer "ahead of" the
+session, the guard stops applying, and the wake itself fires and starts the session. Sleeping means
+*the scheduler has yet to reach it* — the same narrow reading described in
+[Deliberately asleep](/sessions/lifecycle/#refresh-and-the-sleeping-session), so an overdue wake
+describes a stuck session rather than a resting one.
 
 ### The Ranked view
 

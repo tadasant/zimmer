@@ -327,6 +327,35 @@ class AgentSessionJob < ApplicationJob
         end
       end
 
+      # A pause outranks every reason there is to start this session.
+      #
+      # This is the backstop the whole "Pause Until wins" contract rests on. Above
+      # it sit callers that each decide, on their own evidence, that a `waiting`
+      # session should run now: the spot-hold re-check timer, the ceiling sweep,
+      # the auth-outage un-park, a fleet-maintenance agent working the ranked
+      # queue, a REST client. A paused session is `waiting` and carries a
+      # precedence like any other, so nothing in what those callers read tells
+      # them apart — and the fleet selector is an AGENT reading a skill, which is
+      # a judgement rather than a guarantee. Refusing here makes a paused session
+      # unstartable no matter who asks or why.
+      #
+      # Only a FIRST START is refused, which is the same narrowing the spot gate
+      # below takes and for the same reason. A wake firing on time delivers a
+      # follow-up prompt; `resume_monitoring` re-attaches to a process that is
+      # already running; `clone_only` prepares a clone without spending a turn.
+      # None of those is an early start, and blocking them would strand the very
+      # wake this guard exists to protect.
+      #
+      # Standing down does NOT re-enqueue. The armed wake is the next event in
+      # this session's life, and re-arming the re-check timer alongside it would
+      # only re-ask a question already answered.
+      if !resume_monitoring && !clone_only && follow_up_prompt.blank? &&
+         session.waiting? && session.awaiting_scheduled_wake?
+        stand_down_for_paused_session(session, log_buffer)
+        log_buffer.flush
+        return
+      end
+
       # Hold a spot session at the starting line when a Claude Code quota window
       # has reached its target or every session slot is taken. Gated here rather than at creation so
       # the session still exists, is visible, and simply starts later — the job
@@ -2093,6 +2122,23 @@ class AgentSessionJob < ApplicationJob
                "so recovery left it alone.",
       level: "info"
     )
+  end
+
+  # Record that a first start was refused because the session is asleep on a wake
+  # it has not reached yet.
+  #
+  # A session log rather than only a Rails log: "why did my paused session not
+  # start" is a question asked from the session page, and the answer has to be
+  # there. Best effort — a failure to write the line must not turn a stand-down
+  # into a start.
+  def stand_down_for_paused_session(session, log_buffer)
+    message = "Not starting this session: #{session.pending_wake_phrase}. " \
+              "A pause outranks precedence and scheduling class — the session stays dormant " \
+              "and starts when its wake-up fires."
+    Rails.logger.info("[AgentSessionJob] Session #{session.id} not started: #{session.pending_wake_phrase}")
+    log_buffer&.add(message, level: "info")
+  rescue StandardError => e
+    Rails.logger.warn("[AgentSessionJob] Could not log the stand-down for session #{session.id}: #{e.message}")
   end
 
   # Re-transition a session to running for a prompt this job is already carrying.

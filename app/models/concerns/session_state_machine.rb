@@ -483,6 +483,37 @@ module SessionStateMachine
     true
   end
 
+  # When the earliest pending one-time wake fires, or nil.
+  #
+  # Nil is not "nothing is armed": a session-scoped ao_event wake has no time
+  # component at all (it fires when the watched session transitions), and a
+  # schedule whose timezone or timestamp will not parse has no answer to give.
+  # #awaiting_scheduled_wake? remains the predicate; this is only for the surfaces
+  # that want to SAY when — a log line, the MCP queue listing, an operator banner.
+  #
+  # @return [ActiveSupport::TimeWithZone, nil]
+  def pending_wake_at
+    pending_one_time_wake_conditions
+      .select { |condition| condition.one_time_schedule? && self.class.one_time_wake_pending?(condition) }
+      .filter_map do |condition|
+        zone = ActiveSupport::TimeZone[condition.schedule_timezone]
+        zone&.parse(condition.scheduled_at.to_s) rescue nil
+      end
+      .min
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.error(
+      "[SessionStateMachine] Failed to read the pending wake time for session #{id}: #{e.message}"
+    )
+    nil
+  end
+
+  # The phrase every "we are not starting this session" log line uses, so the
+  # three sweeps that stand down say the same thing about the same condition.
+  def pending_wake_phrase
+    at = pending_wake_at
+    at ? "it is paused until #{at.utc.iso8601}" : "it is asleep on a pending wake-up"
+  end
+
   # Whether a manual refresh of this session should send the automated continue
   # nudge (AutomatedPrompts::SYSTEM_RECOVERY) instead of only re-syncing its
   # transcript. Applies to `waiting` sessions that have a conversation to resume

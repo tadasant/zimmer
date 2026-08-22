@@ -351,6 +351,11 @@ class AuthOutageParkService
     # must not hold back the codex sessions whose own pool just recovered.
     woken_per_runtime = Hash.new(0)
     held = 0
+    paused_until = 0
+
+    # One batched read of "who is asleep on a wake-up they chose" for the whole
+    # sweep, in the same shape as the pool reads above and for the same reason.
+    sleeping = Session.ids_awaiting_scheduled_wake(parked_sessions.pluck(:id))
 
     # `.each`, not `find_each`: find_each imposes its own primary-key order and
     # would discard the oldest-park-first ordering the cap below depends on. The
@@ -366,6 +371,20 @@ class AuthOutageParkService
     spot_eligible = 0
 
     parked_sessions.each do |session|
+      # A pause outranks the un-park, and it outranks being priority. This session
+      # is parked on the pool AND asleep on a wake-up somebody chose; the pool
+      # recovering answers the first and says nothing about the second. Resuming
+      # it here would also destroy the pause without a trace — #resume_parked!
+      # goes through `resume!`, which consumes the session's pending one-time
+      # wakes — so the guard has to sit ahead of every other reason to wake it.
+      #
+      # Ahead of the spot branch below too, so a paused spot park is not counted
+      # as eligible and does not ask for a fleet wake it must not be started by.
+      if sleeping.include?(session.id)
+        paused_until += 1
+        next
+      end
+
       runtime = session.agent_runtime
       next unless available.fetch(runtime) { available[runtime] = runtime_has_available_account?(runtime) }
 
@@ -408,6 +427,10 @@ class AuthOutageParkService
       QuotaAvailabilityMonitor.request_wake!(
         reason: "#{spot_eligible} parked spot session(s) whose pool credentials changed"
       )
+    end
+
+    if paused_until.positive?
+      logger.info("Left parked sessions asleep on their own wake-ups", paused_until: paused_until)
     end
 
     resumed
@@ -524,6 +547,10 @@ class AuthOutageParkService
     ActiveRecord::Base.transaction do
       session.lock!
       raise ActiveRecord::Rollback unless session.waiting? && session.may_resume?
+      # Re-asked under the lock, for a pause armed after the sweep read the set.
+      # `resume!` below consumes the session's pending one-time wakes, so a miss
+      # here does not merely start the session early — it erases the pause.
+      raise ActiveRecord::Rollback if session.awaiting_scheduled_wake?
 
       reason = session.metadata&.dig("auth_outage_reason")
       raise ActiveRecord::Rollback if reason.blank?

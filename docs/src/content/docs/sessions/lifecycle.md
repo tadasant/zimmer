@@ -89,6 +89,19 @@ and the caller rescues again around it, so a cohort label can never be the reaso
 to start. See [Experimental settings](/operate/costs/#experimental-settings) for what the labels
 are for.
 
+`AgentSessionJob` adds a second guard ahead of the transition, and it is the one that makes a pause
+mean something: **a session with a one-time wake-up still ahead of it does not get a first start.**
+`waiting` is both "queued to spawn" and "deliberately asleep", and precedence says nothing about
+which — so without this, every automated starter reads a paused session as a runnable one. The job
+stands down, logs why on the session, and does *not* re-enqueue itself; the armed wake is the next
+event in that session's life.
+
+Only a first start is refused. A wake firing on time arrives as a follow-up prompt, `resume_monitoring`
+re-attaches to a live process, and `clone_only` spends no turn — none of those is an early start, and
+refusing them would strand the wake this guard exists to protect. See
+[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence) for the other
+three callers that decline, and why the guard lives here rather than in a prompt.
+
 ### `pause` — `running → needs_input`
 
 Fired when the agent's turn ends (the process exits normally). This is the workhorse
@@ -408,9 +421,21 @@ agent. Two consequences worth knowing before you click it:
 Its queue position is whatever `precedence` the session is already carrying; the
 [Ranked view](/sessions/spot-and-priority/) is where that is changed.
 
+A sleep with a wake-up armed outranks every automated reason to start the session again — its
+precedence, its scheduling class, a recovered quota pool, a freed fleet slot. The places that would
+otherwise have started it are listed in
+[A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence). A Spot Queue
+park is the deliberate exception: it arms nothing, so the spot sweep resuming it is the whole point.
+
 Zimmer also uses this path on its own behalf: `AuthOutageParkService` parks a session here when the
 login pool runs dry, which is what keeps a quota-blocked session out of the heartbeat sweep's reach.
 See [Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
+
+A session can be in both states at once — parked on the pool *and* asleep on a wake somebody chose.
+The pool recovering answers the first and says nothing about the second, so
+`AuthOutageParkService.wake_parked_sessions!` skips it. That skip is load-bearing: its resume goes
+through `resume!`, and `cancel_pending_one_time_wake_triggers` would have consumed the pause on the
+way past, leaving no record that the session was ever paused.
 
 The same service also guards the *exit* paths, not just the moment the wall is hit. A session whose
 turn was never delivered — `active_follow_up_prompt` still set, because `AgentSessionJob` removes it
