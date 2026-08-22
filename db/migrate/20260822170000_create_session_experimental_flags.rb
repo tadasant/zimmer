@@ -26,9 +26,10 @@ class CreateSessionExperimentalFlags < ActiveRecord::Migration[8.1]
 
     add_index :session_experimental_flags, [ :session_id, :setting_key ], unique: true,
       name: "index_session_experimental_flags_on_session_and_key"
-    # The cohort rollup groups by setting and reads both ends, so both ride along
-    # in the index and the aggregate never touches the heap.
-    add_index :session_experimental_flags, [ :setting_key, :value_at_start, :value_at_end ],
-      name: "index_session_experimental_flags_on_key_and_values"
+    # The cohort rollup joins in on `session_id` and is served by the unique index
+    # above. The only query that filters on `setting_key` alone is the provenance
+    # count, which groups by `source` — so that is the pair worth covering.
+    add_index :session_experimental_flags, [ :setting_key, :source ],
+      name: "index_session_experimental_flags_on_key_and_source"
   end
 end

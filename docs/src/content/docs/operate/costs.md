@@ -341,8 +341,15 @@ The date-derived path exists only for history that predates the table.
 `ExperimentalFlagBackfillJob` labels those sessions from `landed_at` in the registry entry:
 `created_at` decides the start value, the session's last recorded API call decides the end
 value, and rows written that way are marked `source = "backfilled"`. The report shows how
-many of each it is reading. Sessions younger than an hour are left alone — the live recorder
-owns them, and a backfilled row would misreport its own provenance.
+many of each it is reading.
+
+**The job cannot reach forward past the first live observation**, and that bound is
+load-bearing. `landed_at` describes exactly one step change, so it knows nothing about a later
+toggle. Without the cutoff, a session parked in `waiting` would be labelled from its creation
+date, then run under whatever the setting had since become, and land in `mixed` — the backfill
+would silently destroy exactly the interleaved cohort a deliberate toggle was flipped to
+collect. The cutoff is `MIN(first_observed_at)` over the observed rows, falling back to an hour
+ago on the one tick where nothing has been observed yet and every session really is history.
 
 For `mcp_tool_search` the boundary is **2026-08-22 13:55:34 UTC** (`b59d9ad7`, which shipped
 it on for everyone).

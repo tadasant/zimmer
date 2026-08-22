@@ -94,4 +94,36 @@ class ExperimentalFlagBackfillJobTest < ActiveSupport::TestCase
 
     assert_nil flag_for(fresh)
   end
+  test "nothing created after live tracking began is ever inferred from a date" do
+    # The failure this prevents: the operator toggles the setting by hand to
+    # collect a real interleaved cohort. A session parked in `waiting` for an hour
+    # gets labelled from its creation date against `landed_at` — which knows only
+    # the ONE step change and nothing about the toggle — then runs under the new
+    # value and lands in `mixed`. The backfill would silently destroy exactly the
+    # cohort the toggle was flipped to collect.
+    running = session_at(NOW - 3.days)
+    SessionExperimentalFlag.create!(
+      session: running, setting_key: "mcp_tool_search",
+      value_at_start: true, value_at_end: true, source: SessionExperimentalFlag::OBSERVED,
+      first_observed_at: NOW - 3.days, last_observed_at: NOW - 3.days
+    )
+    parked = session_at(NOW - 2.days)
+    history = session_at(NOW - 4.days)
+
+    ExperimentalFlagBackfillJob.new.perform
+
+    assert_nil flag_for(parked), "a session created after tracking began must be left to the recorder"
+    assert flag_for(history), "history older than the first observation is still labelled"
+  end
+
+  test "the first tick, before anything has been observed, still labels all history" do
+    # The bound above must not lock the job out of the one run that matters: the
+    # tick right after this ships, when every session in the table is history and
+    # there is no observation to anchor to.
+    session_at(LANDED - 1.day)
+    session_at(LANDED + 1.day)
+
+    assert_equal 0, SessionExperimentalFlag.observed.count
+    assert_equal 2, ExperimentalFlagBackfillJob.new.perform
+  end
 end

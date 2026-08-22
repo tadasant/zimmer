@@ -24,15 +24,15 @@ class SessionExperimentalFlag < ApplicationRecord
   OBSERVED = "observed"
 
   # SQL that buckets a row into its cohort. Shared by the model and by
-  # CostAnalytics so the page and a row can never disagree about which cohort a
-  # session is in. `alias` is the table alias the expression is used under.
-  def self.cohort_sql(alias_name = "session_experimental_flags")
+  # ExperimentAnalytics so the page and a row can never disagree about which
+  # cohort a session is in.
+  def self.cohort_sql
     <<~SQL.squish
       CASE
-        WHEN #{alias_name}.value_at_start IS NULL THEN 'unknown'
-        WHEN #{alias_name}.value_at_end IS NOT NULL
-             AND #{alias_name}.value_at_end <> #{alias_name}.value_at_start THEN 'mixed'
-        WHEN #{alias_name}.value_at_start THEN 'on'
+        WHEN session_experimental_flags.value_at_start IS NULL THEN 'unknown'
+        WHEN session_experimental_flags.value_at_end IS NOT NULL
+             AND session_experimental_flags.value_at_end <> session_experimental_flags.value_at_start THEN 'mixed'
+        WHEN session_experimental_flags.value_at_start THEN 'on'
         ELSE 'off'
       END
     SQL

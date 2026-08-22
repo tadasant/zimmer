@@ -12,7 +12,7 @@ class ExperimentAnalyticsTest < ActiveSupport::TestCase
 
   # A tagged session with `calls` API calls, each billing `scale` times a fixed
   # volume, so cost per call is directly comparable across cohorts.
-  def tagged_session(start_value:, end_value: nil, calls: 10, scale: 1, root: "zimmer")
+  def tagged_session(start_value:, end_value: nil, calls: 10, scale: 1, root: "zimmer", model: "claude-opus-5")
     session = create_session(title: "s")
     SessionExperimentalFlag.create!(
       session: session, setting_key: KEY,
@@ -21,7 +21,7 @@ class ExperimentAnalyticsTest < ActiveSupport::TestCase
     calls.times do |i|
       SessionTokenUsage.create!(
         request_id: "req_#{session.id}_#{i}", session_id: session.id, agent_root: root,
-        model: "claude-opus-5", called_at: 1.hour.ago,
+        model: model, called_at: 1.hour.ago,
         input_tokens: 1_000 * scale, output_tokens: 500 * scale, cache_read_tokens: 10_000 * scale
       )
     end
@@ -119,5 +119,32 @@ class ExperimentAnalyticsTest < ActiveSupport::TestCase
     assert_nil result[:cohorts]["on"][:cost_per_call]
     refute result[:comparison][:comparable]
     assert_empty result[:paired_roots]
+  end
+  test "a zero-priced baseline is its own reason, not a thin cohort" do
+    # Both sides are plenty big; the off side simply has no rate configured for
+    # any model it ran, so there is nothing to express a change against. Reporting
+    # that as "widen the window" sends the reader after the wrong fix.
+    6.times { tagged_session(start_value: false, model: "claude-not-a-real-model") }
+    6.times { tagged_session(start_value: true) }
+
+    comparison = report[:comparison]
+
+    refute comparison[:comparable]
+    assert_equal :no_baseline, comparison[:reason]
+    assert_nil comparison[:cost_per_call_change]
+  end
+
+  test "a thin cohort reports the thin-cohort reason" do
+    2.times { tagged_session(start_value: false) }
+    6.times { tagged_session(start_value: true) }
+
+    assert_equal :too_few, report[:comparison][:reason]
+  end
+
+  test "a comparable pair carries no reason" do
+    6.times { tagged_session(start_value: false, scale: 4) }
+    6.times { tagged_session(start_value: true) }
+
+    assert_nil report[:comparison][:reason]
   end
 end

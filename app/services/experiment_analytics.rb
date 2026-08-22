@@ -100,18 +100,31 @@ class ExperimentAnalytics
     SessionExperimentalFlag.for_setting(key).group(:source).count
   end
 
+  # Whether the two sides can be compared, and — when they cannot — WHICH of the
+  # two reasons applies. They call for different sentences: "widen the window"
+  # answers a thin cohort and is nonsense in front of a cohort of forty sessions
+  # whose models simply have no price configured. A single `comparable: false`
+  # made the page print the wrong one.
   def comparison(cohorts)
     off = cohorts["off"]
     on = cohorts["on"]
-    comparable = COMPARED.all? do |cohort|
-      cohorts[cohort][:sessions] >= MIN_SESSIONS && cohorts[cohort][:api_calls] >= MIN_CALLS
+    cost_per_call_change = change(off[:cost_per_call], on[:cost_per_call])
+
+    too_few = COMPARED.any? do |cohort|
+      cohorts[cohort][:sessions] < MIN_SESSIONS || cohorts[cohort][:api_calls] < MIN_CALLS
     end
 
+    reason =
+      if too_few then :too_few
+      elsif cost_per_call_change.nil? then :no_baseline
+      end
+
     {
-      comparable: comparable,
+      comparable: reason.nil?,
+      reason: reason,
       min_sessions: MIN_SESSIONS,
       min_calls: MIN_CALLS,
-      cost_per_call_change: change(off[:cost_per_call], on[:cost_per_call]),
+      cost_per_call_change: cost_per_call_change,
       cost_per_session_change: change(off[:cost_per_session], on[:cost_per_session]),
       tokens_per_call_change: change(off[:tokens_per_call], on[:tokens_per_call])
     }

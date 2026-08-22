@@ -133,7 +133,6 @@ module SessionStateMachine
         transitions from: :running, to: :needs_input
         after do
           log_state_change("Session paused, waiting for input")
-          record_experimental_setting_flags
           warn_if_pr_goal_captured_no_url
           cleanup_running_job
           clear_auth_recovery_budget
@@ -234,7 +233,6 @@ module SessionStateMachine
         transitions from: [ :waiting, :running, :needs_input ], to: :failed
         after do
           log_state_change("Session failed: #{metadata['failure_reason']}")
-          record_experimental_setting_flags
           cleanup_running_job
           preserve_debug_info
           if status_summary_fork?
@@ -272,7 +270,6 @@ module SessionStateMachine
           # the first caller's override.
           self.archive_actor = nil
           self.archive_forced = nil
-          record_experimental_setting_flags
           cleanup_running_job
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
@@ -698,18 +695,24 @@ module SessionStateMachine
 
   # Tag this session with what every experimental setting is right now.
   #
-  # Called from `start` and `resume` — where the value the agent process actually
-  # spawns with is fixed — and from `pause`, `fail` and `archive`, the three
-  # transitions after which nothing runs unless someone comes back. The first
-  # call fixes the session's start-of-life value; every call moves its
-  # end-of-life value, so a setting toggled between two turns of the same session
-  # shows up as a disagreement between the two instead of silently landing in one
-  # cohort.
+  # Called from `start` and `resume` and NOWHERE ELSE, because those are the two
+  # transitions at which an agent process is about to spawn — and a setting like
+  # MCP tool search takes effect in the spawn environment. Observing here records
+  # what the session actually ran with. The first call fixes the start-of-life
+  # value; every later one moves the end-of-life value, so a setting toggled
+  # between two turns shows up as a disagreement between the two.
+  #
+  # The terminal transitions look like the natural place for the end-of-life
+  # value and are the wrong one. `archive` and `fail` fire at bookkeeping
+  # moments that can land arbitrarily long after the session last ran —
+  # HealthMonitorService#archive_old_sessions archives everything untouched for
+  # seven days in a loop — so recording there would re-stamp an old session's end
+  # value with today's setting, flip it to `mixed`, and quietly drain the control
+  # cohort of the very comparison this exists to support.
   #
   # Never raises: SessionExperimentalFlag.record! swallows its own errors, and
   # this rescue covers the constant lookup that reaches it. A cohort label is
-  # bookkeeping, and bookkeeping must not be able to stop a session starting or
-  # abort a transition that is cleaning up.
+  # bookkeeping, and bookkeeping must not be able to stop a session starting.
   def record_experimental_setting_flags
     SessionExperimentalFlag.record!(self)
   rescue => e
