@@ -133,6 +133,67 @@ class SessionsControllerPauseUntilTest < ActionDispatch::IntegrationTest
     assert_not Trigger.exists?(first_id), "the replaced wake would still fire an hour early"
     assert Trigger.exists?(JSON.parse(response.body)["trigger_id"])
   end
+  # --- Spot Queue: the choice in the same panel that is not a time ------------
+
+  test "the spot queue mode sleeps the session and arms nothing at all" do
+    session = sessions(:needs_input)
+
+    assert_no_difference "Trigger.count", "the whole point: no wake trigger is created" do
+      post pause_until_session_url(session), params: { mode: "spot_queue" }, as: :json
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert body["success"]
+    assert body["spot_queue"]
+    assert_equal "waiting", body["status"]
+    assert_not body["pending_sleep"]
+
+    session.reload
+    assert session.waiting?
+    assert SpotSessionPause.queued_by_user?(session)
+    assert_not session.awaiting_scheduled_wake?
+  end
+
+  test "the spot queue mode pins a priority session to spot and says so" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    post pause_until_session_url(session), params: { mode: "spot_queue" }, as: :json
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert body["pinned_to_spot"]
+    assert_equal session.precedence, body["precedence"]
+    assert session.reload.spot?
+  end
+
+  test "a running session joins the spot queue when its turn ends" do
+    session = sessions(:running)
+
+    post pause_until_session_url(session), params: { mode: "spot_queue" }, as: :json
+
+    assert_response :success
+    assert JSON.parse(response.body)["pending_sleep"]
+    assert_equal true, session.reload.metadata["pending_sleep"]
+  end
+
+  test "the spot queue mode carries the panel's resume prompt" do
+    post pause_until_session_url(sessions(:needs_input)),
+      params: { mode: "spot_queue", prompt: "Re-check the deploy" }, as: :json
+
+    assert_equal "Re-check the deploy",
+      sessions(:needs_input).reload.metadata[SpotSessionPause::QUEUED_PROMPT]
+  end
+
+  # The same gate the time presets get, before the mode is even read.
+  test "the spot queue mode refuses a session that cannot be paused from here" do
+    post pause_until_session_url(sessions(:archived)), params: { mode: "spot_queue" }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match "cannot be paused from here", JSON.parse(response.body)["error"]
+  end
+
   test "refuses a waiting session that has never started" do
     queued = sessions(:waiting)
     assert_nil queued.session_id, "a queued-for-spawn session has never been issued one"

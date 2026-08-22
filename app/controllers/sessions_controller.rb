@@ -2151,10 +2151,14 @@ class SessionsController < ApplicationController
     end
   end
 
-  # "Pause Until": sleep this session now and schedule a one-time trigger to wake
-  # it at the chosen time. The web-UI counterpart of the wake_me_up_later MCP
-  # tool — both go through Sessions::ScheduleWakeUp, so both reject a past-dated
-  # or too-soon wake the same way rather than bricking the session.
+  # "Pause Until": sleep this session now and either schedule a one-time trigger
+  # to wake it at the chosen time, or hand it to the spot queue with no wake-up
+  # at all (`mode=spot_queue`). The time half is the web-UI counterpart of the
+  # wake_me_up_later MCP tool — both go through Sessions::ScheduleWakeUp, so both
+  # reject a past-dated or too-soon wake the same way rather than bricking the
+  # session. One endpoint for both because it is one control: the gate below, the
+  # session lookup, and the JSON shape the panel reads are shared, and only what
+  # wakes the session again differs.
   #
   # The browser sends a naive local wall-clock time plus its own IANA zone
   # (Intl.DateTimeFormat().resolvedOptions().timeZone). Treating that naive value
@@ -2175,6 +2179,11 @@ class SessionsController < ApplicationController
         format.html { redirect_to @session, alert: message }
       end
     end
+
+    # The one choice in the panel that is not a time. It sleeps the session the
+    # same way and then arms nothing at all: the spot scheduler picks it up when
+    # a Claude Code account is under both quota targets and a slot is free.
+    return pause_into_spot_queue if params[:mode].to_s == Session::PAUSE_UNTIL_SPOT_QUEUE_MODE
 
     prompt = params[:prompt].presence || AutomatedPrompts::PAUSE_UNTIL_WAKE
 
@@ -3564,6 +3573,35 @@ class SessionsController < ApplicationController
 
     "That time has already passed, or is less than " \
       "#{Sessions::ScheduleWakeUp::WAKE_AT_GRACE_WINDOW.to_i} seconds away. Pick a later time."
+  end
+
+  # "Pause Until → Spot Queue". Reached from #pause_until, after the same
+  # pausable_until? gate, because it is the same control and the same gesture —
+  # only the thing that wakes the session again differs.
+  def pause_into_spot_queue
+    result = Sessions::PauseIntoSpotQueue.call(session: @session, prompt: params[:prompt])
+
+    respond_to do |format|
+      format.json do
+        render json: {
+          success: true,
+          session_id: @session.id,
+          status: @session.status,
+          # Same deferral a time-based pause gets: a running session sleeps when
+          # its turn ends, not mid-turn.
+          pending_sleep: result.pending_sleep,
+          spot_queue: true,
+          pinned_to_spot: result.pinned_to_spot,
+          precedence: @session.precedence
+        }
+      end
+      format.html { redirect_to @session, notice: "Queued for the spot queue." }
+    end
+  rescue Sessions::PauseIntoSpotQueue::Error => e
+    respond_to do |format|
+      format.json { render json: { success: false, error: e.message }, status: :unprocessable_entity }
+      format.html { redirect_to @session, alert: e.message }
+    end
   end
 
   def heartbeat_json

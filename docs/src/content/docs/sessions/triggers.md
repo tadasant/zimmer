@@ -823,6 +823,14 @@ fires usefully."* It's a correct design given the primitives, but it means a sin
 "wait for that session" creates four trigger rows.
 :::
 
+**A sleep with no trigger at all.** "Pause Until" has one choice that creates nothing: **Spot
+Queue** sleeps the session and leaves it for the spot scheduler
+(`Sessions::PauseIntoSpotQueue`), which is the right shape whenever the honest answer to "when
+should this come back" is "whenever there is quota headroom for it" rather than a wall-clock
+time. It is also what stops the trigger table filling up with guesses — the same reasoning that
+replaced the per-session auth-outage retry triggers with a `quota_available` event. See
+[Spot and priority](/sessions/spot-and-priority/).
+
 **Loop prevention.** A session whose `metadata["trigger_id"]` equals the trigger will never
 re-fire that trigger.
 

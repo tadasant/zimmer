@@ -21,6 +21,13 @@ class PauseUntilTest < ApplicationSystemTestCase
     find("##{ActionView::RecordIdentifier.dom_id(session)} button[aria-label='More actions for session #{session.id}']").click
   end
 
+  # Capybara's save_screenshot makes the directory it writes into; a raw element
+  # capture does not, and the runner starts without one.
+  def save_element_screenshot(element, path)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.binwrite(path, element.native.screenshot_as(:png))
+  end
+
   # The picker is a native datetime-local control, so its value is set the way the
   # browser would set it and an input event is dispatched for anything listening.
   def set_picker(value)
@@ -196,6 +203,131 @@ class PauseUntilTest < ApplicationSystemTestCase
     assert_no_selector "##{ActionView::RecordIdentifier.dom_id(queued)} button[aria-label='More actions for session #{queued.id}']"
   end
 
+  # The choice in the same panel that is not a time. What makes it worth driving
+  # in a browser is the pair of outcomes: the session sleeps, and NOTHING is
+  # armed to wake it — which is the difference a unit test can assert but only a
+  # real click through the panel can demonstrate.
+  test "Spot Queue parks the session with no trigger, from the card menu" do
+    session = create_session
+    visit root_path
+    assert_text "Waiting on the deploy"
+
+    open_card_menu(session)
+    click_on "Pause Until…"
+    assert_text "Spot Queue"
+
+    assert_no_difference "Trigger.count" do
+      click_on "Spot Queue"
+      assert_selector "##{ActionView::RecordIdentifier.dom_id(session)}", text: "Waiting"
+    end
+
+    session.reload
+    assert session.waiting?
+    assert SpotSessionPause.queued_by_user?(session), "the sweep finds it by this record"
+    assert_not session.awaiting_scheduled_wake?
+    assert session.spot?, "a priority session cannot sit in the spot queue"
+  end
+
+  test "the detail page offers Spot Queue and confirms the park" do
+    session = create_session
+    visit session_path(session)
+
+    click_on "Pause Until"
+    assert_text "Spot Queue"
+    # Evidence for the PR: the panel as the operator sees it on the detail page,
+    # with the new option beside the time presets.
+    page.save_screenshot("tmp/screenshots/proof-spot-queue-detail-desktop.png")
+
+    # The popover grew by a row and a paragraph, and its last control is the one
+    # that would go off the bottom of a short window. It scrolls rather than
+    # spilling, so every control in it stays reachable.
+    panel_bottom, viewport_height = page.evaluate_script(<<~JS)
+      (function () {
+        const p = document.querySelector("[data-pause-until-target='panel']:not(.hidden)");
+        return [Math.round(p.getBoundingClientRect().bottom), window.innerHeight];
+      })()
+    JS
+    assert panel_bottom <= viewport_height + 1,
+      "the Pause Until popover runs #{panel_bottom - viewport_height}px past the bottom of the window"
+
+    assert_no_difference "Trigger.count" do
+      js_click(find("button[data-action='pause-until#chooseSpotQueue']"))
+      # The park broadcasts a replacement header, which tears the panel (and its
+      # confirmation line) out of the DOM — so the badge is what to wait on.
+      assert_selector "#session_#{session.id}_status_badge", text: "Waiting"
+    end
+
+    assert session.reload.waiting?
+
+    # The other half of the evidence: what the session page says about itself
+    # afterwards. A park that left the page looking like any other `waiting`
+    # session would be the failure — the banner is what explains it.
+    visit session_path(session)
+    assert_text "Waiting in the spot queue"
+    page.save_screenshot("tmp/screenshots/proof-spot-queue-banner-desktop.png")
+  end
+
+  test "the mobile sheet offers Spot Queue on screen at a phone width" do
+    session = create_session
+    page.driver.browser.manage.window.resize_to(375, 812)
+
+    visit session_path(session)
+    assert_selector "[data-joystick-menu-target='sheet']", visible: :all
+    page.execute_script(<<~JS)
+      const sheet = document.querySelector("[data-joystick-menu-target='sheet']");
+      sheet.classList.remove("translate-y-full", "opacity-0");
+    JS
+    click_on "Pause Until…"
+    assert_text "Spot Queue"
+    # Scoped to the sheet, and that scoping is the test: the detail page renders
+    # this partial TWICE — once here and once in the `hidden md:block` header —
+    # so an unscoped selector measures the hidden desktop copy, whose rect is all
+    # zeroes, and every assertion below passes without looking at anything.
+    #
+    # The sheet scrolls (max-h-[80vh] overflow-y-auto) and the new row sits below
+    # the time presets, so it is scrolled to before being measured and captured.
+    sheet_button = "[data-joystick-menu-target='sheet'] [data-action='pause-until#chooseSpotQueue']"
+    page.execute_script("document.querySelector(arguments[0]).scrollIntoView({ block: 'center' })", sheet_button)
+    # The panel's own PNG rather than the viewport's. The sheet is a `fixed`,
+    # bottom-anchored scroll container, and a viewport capture of it shows
+    # whatever happened to be at the top of that container — which is the rows
+    # above this one. Capturing the element is what puts the option itself in the
+    # picture.
+    save_element_screenshot(
+      find("[data-joystick-menu-target='sheet'] [data-pause-until-target='panel']:not(.hidden)"),
+      "tmp/screenshots/proof-spot-queue-sheet-375.png"
+    )
+
+    # The option has to be REACHABLE, not merely present: a row past the right
+    # edge, or below the bottom of a sheet that cannot scroll, is a control
+    # nobody on a phone can press.
+    left, past_right, past_bottom, doc_overflow, height = page.evaluate_script(<<~JS, sheet_button)
+      (function (selector) {
+        const b = document.querySelector(selector).getBoundingClientRect();
+        return [Math.round(b.left), Math.round(b.right - document.documentElement.clientWidth),
+                Math.round(b.bottom - window.innerHeight),
+                document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                Math.round(b.height)];
+      })(arguments[0])
+    JS
+
+    assert height.positive?, "the Spot Queue row in the sheet has no box — the selector matched a hidden copy"
+    assert left >= 0, "the Spot Queue row starts #{-left}px off the left edge at 375px"
+    assert past_right <= 1, "the Spot Queue row runs #{past_right}px past the right edge at 375px"
+    assert past_bottom <= 1, "the Spot Queue row sits #{past_bottom}px below the bottom of a 375x812 screen"
+    assert doc_overflow <= 0, "the panel makes the page scroll sideways by #{doc_overflow}px"
+
+    assert_no_difference "Trigger.count" do
+      click_on "Spot Queue"
+      # visible: :all — the detail page's badge lives in the `hidden md:block`
+      # header, which is exactly what a phone does not get.
+      assert_selector "#session_#{session.id}_status_badge", text: "Waiting", visible: :all
+    end
+    assert session.reload.waiting?
+  ensure
+    page.driver.browser.manage.window.resize_to(1400, 900)
+  end
+
   test "the card menu opens fully on screen at a phone width" do
     session = create_session
     page.driver.browser.manage.window.resize_to(375, 812)
@@ -206,6 +338,15 @@ class PauseUntilTest < ApplicationSystemTestCase
     open_card_menu(session)
     click_on "Pause Until…"
     assert_text "In 1 hour"
+
+    # Evidence for the PR: the panel a phone gets from a session card, with the
+    # new option and the sentence saying what choosing it costs. This one is in
+    # the normal page flow, so a viewport capture shows it.
+    page.execute_script(<<~JS)
+      document.querySelector("[data-action='pause-until#chooseSpotQueue']")
+        .scrollIntoView({ block: "center" });
+    JS
+    page.save_screenshot("tmp/screenshots/proof-spot-queue-card-menu-375.png")
 
     # The panel is only usable if it is actually within the viewport — a menu that
     # renders past the right edge on a phone is a control nobody can press.

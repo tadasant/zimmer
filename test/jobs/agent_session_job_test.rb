@@ -1827,6 +1827,37 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the recovery path should have run"
   end
 
+  test "handle_interrupt_error stands down for a session dormant in the spot queue" do
+    # A session parked by "Pause Until → Spot Queue" is `waiting` with NOTHING
+    # armed to wake it — that is the design, not a stall. Without its own signal
+    # the recovery path reads it as case 3 ("waiting, has run, nothing armed"),
+    # resumes it, and pulls it straight back out of the queue.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.pause!
+    Sessions::PauseIntoSpotQueue.call(session: @session.reload)
+    @session.reload
+    assert @session.waiting?
+    assert_not @session.awaiting_scheduled_wake?, "the park arms nothing — that is the point"
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.waiting?, "a queued session must stay queued, got #{@session.status}"
+    assert_equal SpotSessionPause::QUEUED_REASON, @session.metadata[SpotSessionPause::PAUSED_REASON]
+    assert @session.logs.any? { |log| log.content.include?("its turn in the spot queue") },
+      "expected a log naming what it is actually waiting for"
+  end
+
   test "handle_interrupt_error still recovers a session blocked on an MCP elicitation" do
     # block_on_elicitation reaches needs_input from running WITHOUT clearing
     # running_job_id and WITHOUT any paused_by, precisely because the agent process is
