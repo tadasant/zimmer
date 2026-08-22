@@ -97,6 +97,19 @@ class ClaudeCredentialHealth
         return [ :skipped, "#{owner}'s stored credentials are incomplete too — only a human re-authentication can fix this" ]
       end
 
+      # A stored copy the vendor has already rejected as stale is not a repair.
+      # Writing it back would restore the file to "complete", silence the
+      # corruption signal, and hand the CLI a token Anthropic will refuse — which
+      # is how the CLI blanked its own tokens in the first place. Repeat that on a
+      # five-minute cron and Zimmer is fighting the CLI rather than healing it.
+      # Leaving the file corrupt is the honest state: it keeps the health surface
+      # red and lets the sweep escalate to a human, which is the only thing that
+      # can actually fix a spent chain.
+      if account.stale_refresh_failures.positive?
+        return [ :skipped, "#{owner}'s stored credentials have already been rejected as spent " \
+          "(#{account.stale_refresh_failures} strike(s)) — restoring them would hand the CLI a token Anthropic refuses" ]
+      end
+
       if account.write_credentials_to_filesystem!(force: true)
         Rails.logger.warn "[ClaudeCredentialHealth] Repaired the corrupt shared credentials file from #{owner}'s stored credentials"
         [ :healed, "rewrote the credentials file from #{owner}'s stored credentials" ]

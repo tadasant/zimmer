@@ -400,13 +400,15 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
-  test "show auto-adopts filesystem identity when CLI was manually switched" do
+  test "show does NOT adopt a filesystem identity — a GET must not change which account runs" do
+    # The inverse of what this test used to assert. Reconciliation on every page
+    # load meant an operator refreshing /quotas to WATCH an incident could
+    # silently switch the pool, driven by a container-local file a container
+    # replacement leaves stale. The five-minute sweep still reconciles; opening a
+    # diagnostic page no longer does. See issue #618, hole 12.
     primary = claude_accounts(:primary)
     secondary = claude_accounts(:secondary)
 
-    # primary is DB-current; CLI was manually switched to secondary on disk.
-    # Faithful manual `claude /login`: the shared owner marker still names primary
-    # (older mtime), while the CLI wrote secondary's identity + credentials "now".
     primary.update!(last_rotated_to_at: 1.hour.ago)
     ClaudeAccount.write_credentials_owner_marker!(primary.email)
     past = 2.hours.ago.to_time
@@ -419,8 +421,8 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     get quotas_url
 
     assert_response :success
-    assert secondary.reload.is_current?, "show should auto-adopt filesystem identity"
-    assert_not primary.reload.is_current?
+    assert primary.reload.is_current?, "a GET must leave the DB-current account exactly where it was"
+    assert_not secondary.reload.is_current?
   end
 
   test "should route GET /quotas to quotas#show" do
@@ -614,7 +616,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     get quotas_path
     assert_response :success
     assert_select "form[action=?]", switch_account_path(claude_accounts(:primary)) do
-      assert_select "input[value=?]", "Re-activate"
+      assert_select "button", text: "Re-activate"
     end
   end
 
@@ -648,7 +650,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "loading /quotas does not reconcile the filesystem identity" do
     # A GET on a diagnostic page must not change which account production runs
     # under. See issue #618, hole 12.
-    RuntimeAuthProvider.any_instance.expects(:reconcile_filesystem_identity!).never
+    ClaudeAuthProvider.any_instance.expects(:reconcile_filesystem_identity!).never
 
     get quotas_path
     assert_response :success

@@ -620,7 +620,11 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
     File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
       JSON.generate({ "claudeAiOauth" => { "accessToken" => "", "refreshToken" => "", "expiresAt" => 0 } }))
-    ClaudeCredentialHealth.stubs(:self_heal!).returns([ :skipped, "stored credentials are incomplete too" ])
+    ClaudeCredentialHealth.stubs(:self_heal!).returns([ :skipped, "stored credentials have already been rejected as spent" ])
+    # The file-level setup stubs sync_tokens_from_filesystem! to nil so unrelated
+    # tests don't read the real worker's credentials. This test is specifically
+    # about what the sync REPORTS, so it has to say.
+    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!).returns(:corrupt)
 
     ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
       RuntimeAuthProvider::Result.new(ok: false, error: :stale)
@@ -644,6 +648,7 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     FileUtils.mkdir_p(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
     File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(config["credentials_json"]))
 
+    ClaudeAccount.any_instance.stubs(:sync_tokens_from_filesystem!).returns(:synced)
     ClaudeAuthProvider.any_instance.stubs(:refresh!).returns(
       RuntimeAuthProvider::Result.new(ok: false, error: :stale)
     )

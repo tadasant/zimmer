@@ -112,4 +112,24 @@ class ClaudeCredentialHealthTest < ActiveSupport::TestCase
     assert_equal :skipped, outcome
     assert_match(/unowned/, detail)
   end
+
+  test "self_heal! refuses to restore a stored copy the vendor has already rejected as spent" do
+    # Restoring it would silence the corruption signal and hand the CLI a token
+    # Anthropic refuses — which is how the CLI blanked its own tokens in the first
+    # place. Leaving the file corrupt keeps the health surface red and lets the
+    # sweep escalate to a human, which is the only thing that can fix a spent chain.
+    ClaudeAccount.write_credentials_owner_marker!(@account.email)
+    @account.update!(oauth_config: @account.oauth_config.merge(
+      "credentials_json" => { "claudeAiOauth" => { "accessToken" => "spent-access", "refreshToken" => "spent-refresh",
+                                                   "expiresAt" => (8.hours.from_now.to_f * 1000).to_i } }
+    ))
+    @account.update_columns(stale_refresh_failures: 1, last_stale_refresh_failure_at: Time.current)
+    write_disk(blanked)
+
+    outcome, detail = ClaudeCredentialHealth.self_heal!
+
+    assert_equal :skipped, outcome
+    assert_match(/already been rejected as spent/, detail)
+    assert ClaudeCredentialHealth.status.corrupt?, "the file must stay corrupt so the condition stays visible"
+  end
 end
