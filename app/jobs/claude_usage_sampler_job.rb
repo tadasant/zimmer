@@ -25,6 +25,7 @@
 # reading.
 class ClaudeUsageSamplerJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   def perform
     account = serving_account

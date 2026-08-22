@@ -31,6 +31,8 @@
 # ClaudeAccountQuotaSnapshot#windows_clear? this job restores on. See
 # ClaudeAccount#effective_status.
 class QuotaResetCheckerJob < ApplicationJob
+  include SingletonSweep
+
   def perform
     logger = StructuredLogger.new({ service: "QuotaResetCheckerJob" })
 
