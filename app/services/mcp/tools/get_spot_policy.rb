@@ -15,17 +15,21 @@ module Mcp
       description <<~DESC
         Read Zimmer's spot/priority scheduling policy and the live decision the spot gate is making.
 
-        Every session runs as `priority` (always starts) or `spot`. A spot session starts while the
+        Every session runs as `priority` (always starts) or `spot`. A spot session runs while the
         Claude Code account pool is under both window targets ON AVERAGE — across every account, including
         ones in needs_reauth — AND a session slot is free. Nothing is forecast: when a window reaches its
-        target, spot work pauses until utilization comes back down — both the spot sessions trying to
-        start AND the ones already running, which are paused mid-run so the window stops climbing
-        instead of filling to 100%. A paused session goes dormant in `waiting` and resumes on its own
-        once utilization falls a few points below the target.
+        target, spot work stops until utilization comes back down. That covers every spot TURN, not just
+        first starts — a session woken by a trigger, a follow-up, a poller or a restart is deferred the
+        same way, so while a window is at its target the only way a spot-designated session runs is to be
+        promoted to priority first. Spot sessions already running are paused mid-run as well, so the
+        window stops climbing instead of filling to 100%. A held or paused session goes dormant in
+        `waiting` and comes back on its own — a paused one once utilization falls a few points below the
+        target, a held one at the re-check its `spot_hold_retry_at` names.
         Every running session counts toward the concurrency limit, priority included, but only spot
-        sessions are held by it — priority work is meant to crowd spot work out. A held spot session is
-        deferred, never cancelled: it stays `waiting` and starts on its own once a slot frees or the
-        window falls.
+        sessions are held by it — priority work is meant to crowd spot work out. The concurrency limit
+        holds first starts only: a session resuming is already counted in the running fleet. A held spot
+        session is deferred, never cancelled: it stays `waiting`, and the prompt that woke it is queued
+        with the re-check rather than dropped.
 
         A session's class is whichever of these speaks first: a class named for that session at spawn,
         the `scheduling_class` on the trigger that fired it, or the default for its **genesis** — where
@@ -40,7 +44,7 @@ module Mcp
         - every trigger that carries a class of its own
 
         **Use cases:**
-        - Find out why a spot session has not started
+        - Find out why a spot session has not started, or why its next turn has not run
         - Check for room before spawning a batch of automated sessions
         - See which origins are currently classified spot
       DESC
@@ -78,10 +82,10 @@ module Mcp
           "- **Reason:** `#{decision.reason}`",
           "- **Detail:** #{decision.detail}",
           "- **Running Claude Code sessions:** #{decision.active_sessions}",
-          # The decision above is about a session STARTING. This is the same
-          # policy applied to the ones already running, which is what keeps the
-          # target a ceiling on spend rather than a floor under when new work
-          # stops. Same number the /quotas card shows.
+          # The decision above is about a session TAKING A TURN — its first or its
+          # next. This is the same policy applied to the ones already mid-turn,
+          # which is what keeps the target a ceiling on spend rather than a floor
+          # under when new work stops. Same number the /quotas card shows.
           "- **Spot sessions paused mid-run:** #{SpotSessionPause.paused_count} " \
           "(paused while a window sits at its target; they resume automatically once utilization " \
           "falls #{SpotGateService::RESUME_MARGIN_PCT} points below it, and priority sessions are never paused)"
