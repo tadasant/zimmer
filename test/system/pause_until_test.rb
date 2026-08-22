@@ -231,6 +231,18 @@ class PauseUntilTest < ApplicationSystemTestCase
     # with the new option beside the time presets.
     page.save_screenshot("tmp/screenshots/proof-spot-queue-detail-desktop.png")
 
+    # The popover grew by a row and a paragraph, and its last control is the one
+    # that would go off the bottom of a short window. It scrolls rather than
+    # spilling, so every control in it stays reachable.
+    panel_bottom, viewport_height = page.evaluate_script(<<~JS)
+      (function () {
+        const p = document.querySelector("[data-pause-until-target='panel']:not(.hidden)");
+        return [Math.round(p.getBoundingClientRect().bottom), window.innerHeight];
+      })()
+    JS
+    assert panel_bottom <= viewport_height + 1,
+      "the Pause Until popover runs #{panel_bottom - viewport_height}px past the bottom of the window"
+
     assert_no_difference "Trigger.count" do
       js_click(find("button[data-action='pause-until#chooseSpotQueue']"))
       # The park broadcasts a replacement header, which tears the panel (and its
@@ -239,6 +251,13 @@ class PauseUntilTest < ApplicationSystemTestCase
     end
 
     assert session.reload.waiting?
+
+    # The other half of the evidence: what the session page says about itself
+    # afterwards. A park that left the page looking like any other `waiting`
+    # session would be the failure — the banner is what explains it.
+    visit session_path(session)
+    assert_text "Waiting in the spot queue"
+    page.save_screenshot("tmp/screenshots/proof-spot-queue-banner-desktop.png")
   end
 
   test "the mobile sheet offers Spot Queue on screen at a phone width" do
@@ -253,6 +272,13 @@ class PauseUntilTest < ApplicationSystemTestCase
     JS
     click_on "Pause Until…"
     assert_text "Spot Queue"
+    # The sheet scrolls, and the new row sits below the time presets — so scroll
+    # it into view before capturing, or the screenshot proves only that the panel
+    # opened.
+    page.execute_script(<<~JS)
+      document.querySelector("[data-action='pause-until#chooseSpotQueue']")
+        .scrollIntoView({ block: "center" });
+    JS
     page.save_screenshot("tmp/screenshots/proof-spot-queue-sheet-375.png")
 
     # The option has to be reachable, not merely present: a row whose right edge
