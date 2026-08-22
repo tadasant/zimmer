@@ -192,6 +192,10 @@ unavoidable context cost at the start of every session.
 It is a Claude Code flag and nothing else reads it — `CodexRuntimeAdapter` never runs
 `ClaudeSpawnEnv`, so a Codex child never sees the variable at all, whatever the setting says.
 
+Every session is tagged with what this setting was when it started and when it last ran, and the
+Costs page compares the two cohorts. See
+[Experimental settings](/operate/costs/#experimental-settings).
+
 The setting is a plain column rather than a [Zimmer Extension](/extend/extensions/) on purpose. It
 used to be the `mcp_tool_search` extension, which could not work in a deployed container:
 `.dockerignore` excludes `/app/extensions/*/`, so the class was absent from the image and the old

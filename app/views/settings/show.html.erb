@@ -100,30 +100,21 @@
         </div>
         <div class="px-4 py-5 sm:px-6">
           <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
-            <%# First-class experimental settings — these ship in the image, so unlike a
-                Zimmer Extension they are always present and always governable here. %>
-            <%= render "settings/experimental_toggle",
-                  title: "MCP tool search",
-                  description: "Spawn Claude Code sessions with ENABLE_TOOL_SEARCH=true so the agent searches " \
-                               "MCP tools on demand instead of loading every attached server's tool schemas up " \
-                               "front. Claude Code only — Codex ignores it.",
-                  param_name: "app_setting[mcp_tool_search_enabled]",
-                  dom_id: "app_setting_mcp_tool_search_enabled",
-                  on: @mcp_tool_search_enabled,
-                  default_on: @mcp_tool_search_default,
-                  first: true %>
-
-            <%# Zimmer Extensions flagged experimental. Empty in a built image —
-                .dockerignore excludes app/extensions/*/ — so this list is usually blank. %>
-            <% @extensions.each do |extension| %>
+            <%# One list, from ExperimentalSettingsRegistry: the AppSetting-backed
+                toggles that ship in the image, then any registered experimental
+                Zimmer Extension (usually none — .dockerignore excludes
+                app/extensions/*/ from the built image). The same registry tags
+                every session with each setting's value, so anything togglable here
+                shows up in the Costs page's experiment report. %>
+            <% @experimental_settings.each_with_index do |setting, index| %>
               <%= render "settings/experimental_toggle",
-                    title: extension.title,
-                    description: extension.description,
-                    param_name: "app_setting[extensions][#{extension.id}]",
-                    dom_id: "app_setting_extension_#{extension.id}",
-                    on: extension.enabled?,
-                    default_on: extension.default_enabled?,
-                    first: false %>
+                    title: setting.title,
+                    description: setting.description,
+                    param_name: setting.param_name,
+                    dom_id: setting.dom_id,
+                    on: setting.current_value,
+                    default_on: ExperimentalSettingsRegistry.default_on?(setting),
+                    first: index.zero? %>
             <% end %>
 
             <div class="mt-4">

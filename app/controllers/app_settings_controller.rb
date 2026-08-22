@@ -3,7 +3,7 @@
 # Persists the settings-page fields backed by the AppSetting singleton: the global
 # session defaults (the base runtime + model that fill in session creation when
 # nothing more specific applies — no form/API param and no explicit roots.json
-# value) and the experimental toggles.
+# value) and the experimental toggles listed by ExperimentalSettingsRegistry.
 #
 # A blank runtime or model clears that part of the override, deferring to the
 # hardcoded default (Claude Code / the runtime's catalog default). The runtime +
@@ -22,10 +22,18 @@ class AppSettingsController < ApplicationController
       setting.default_model = app_params[:default_model].to_s.strip.presence
     end
 
-    # The MCP tool search toggle (Experimental) arrives on its own, from a form
-    # that carries no runtime/model — hence the same key-presence guard as above.
-    if app_params.key?(:mcp_tool_search_enabled)
-      setting.mcp_tool_search_enabled = ActiveModel::Type::Boolean.new.cast(app_params[:mcp_tool_search_enabled])
+    # The experimental toggles arrive on their own, from a form that carries no
+    # runtime/model — hence the same key-presence guard as above. Driven off
+    # ExperimentalSettingsRegistry rather than named one by one, so adding a
+    # setting is one registry entry plus its migration, and a setting can never be
+    # rendered as a toggle here that this action then ignores.
+    ExperimentalSettingsRegistry.all.reject(&:extension?).each do |experimental|
+      next unless app_params.key?(experimental.attribute)
+
+      setting.public_send(
+        :"#{experimental.attribute}=",
+        ActiveModel::Type::Boolean.new.cast(app_params[experimental.attribute])
+      )
     end
 
     # Zimmer Extension enablement toggles arrive as app_setting[extensions][<id>].
