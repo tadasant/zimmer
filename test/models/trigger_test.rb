@@ -1797,6 +1797,64 @@ class TriggerTest < ActiveSupport::TestCase
     assert trigger.send(:reusable_session?, target), "the wake must be deliverable to the session it was armed on"
   end
 
+  # The marker is cleared on every status the wake can be delivered to, not just
+  # the one branch that sleeps immediately. A running session lands in `waiting`
+  # later (via pending_sleep, or a human stopping the turn), and an already-waiting
+  # one is dormant now — both would otherwise hold a wake that is dropped on
+  # arrival.
+  test "after_create clears a stale user-pause marker on a running target too" do
+    target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :running, metadata: { "paused_by" => "user" })
+
+    Trigger.create!(
+      name: "Per-session wake", status: "enabled", agent_root_name: "zimmer",
+      prompt_template: "Wake up", reuse_session: true, last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    target.reload
+    assert_equal "running", target.status
+    assert_equal true, target.metadata["pending_sleep"]
+    assert_nil target.metadata["paused_by"]
+  end
+
+  test "after_create clears a stale user-pause marker on an already-waiting target" do
+    target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :waiting, session_id: "cli-abc",
+      metadata: { "paused_by" => "user" })
+
+    trigger = Trigger.create!(
+      name: "Per-session wake", status: "enabled", agent_root_name: "zimmer",
+      prompt_template: "Wake up", reuse_session: true, last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    target.reload
+    assert_nil target.metadata["paused_by"]
+    assert trigger.send(:reusable_session?, target)
+  end
+
+  # A `failed` session cannot take the wake for reasons the marker has nothing to
+  # do with, so the record of who stopped it is left intact.
+  test "after_create leaves the marker on a session the wake could not reach anyway" do
+    target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :failed, metadata: { "paused_by" => "user" })
+
+    Trigger.create!(
+      name: "Per-session wake", status: "enabled", agent_root_name: "zimmer",
+      prompt_template: "Wake up", reuse_session: true, last_session_id: target.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 1.hour.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    assert_equal "user", target.reload.metadata["paused_by"]
+  end
+
   # Only "user" goes. `recovery` and `spot_quota` name sweeps that are still
   # responsible for the session, and a wake does not relieve them of it.
   test "after_create leaves a recovery pause marker alone" do
