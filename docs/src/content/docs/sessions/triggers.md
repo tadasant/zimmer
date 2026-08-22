@@ -10,7 +10,7 @@ trigger creates a new session — or resumes an existing one.
 
 Conditions on a trigger are ORed. Any one firing fires the trigger.
 
-## The five condition types
+## The six condition types
 
 ```mermaid
 flowchart LR
@@ -18,6 +18,7 @@ flowchart LR
         SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention | dm_message |<br/>passive_listen_thread | passive_listen_channel)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
         AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived"]
+        SE["system_event<br/>quota_available"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
         GI["github_issue<br/>repos + exclude_labels"]
     end
@@ -25,6 +26,7 @@ flowchart LR
     SL -->|"SlackTriggerPollerJob<br/>(cron, every minute)"| T["Trigger"]
     SC -->|"ScheduleTriggerJob<br/>(cron, every minute)"| T
     AO -->|"AoEventTriggerJob<br/>(enqueued from state machine callbacks)"| T
+    SE -->|"SystemEventTriggerJob<br/>(enqueued from QuotaAvailabilityMonitor)"| T
     GL -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
     GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
 
@@ -398,6 +400,25 @@ session; the alert warns against it rather than inviting it.
 covers both one-shot shapes — a one-time schedule and a session-scoped `ao_event`. A predicate that
 saw only schedules would offer every parked state-change wake a "Re-arm" button with no caveat.
 
+### `system_event`
+
+Fires when the **deployment** changes state, rather than a session. One event today:
+`quota_available`, the account pool going from serving nothing to serving something.
+
+It is a separate condition type rather than a fourth `AO_EVENT_NAMES` entry because every decision
+`ao_event` makes is about a session — watched-session scoping, the `is_autonomous` filter, the guard
+that stops a trigger firing on the session it created. A fleet-wide event has no session at all.
+
+`QuotaAvailabilityMonitor` owns the edge detection and `SystemEventTriggerJob` does the firing.
+System events are broadcast and recurring by nature: every enabled trigger carrying a matching
+condition fires, the condition is never spent, and the trigger is never auto-deleted. A fire that
+raises alerts and stays enabled — parking it would silently stop every future recovery wake.
+
+This is what wakes quota-parked spot sessions. The shipped trigger spawns one `fleet-maintenance`
+session running the `awaken-waiting-sessions` skill, which decides — in precedence order, against the
+spot thresholds and the concurrency ceiling — which `waiting` sessions start. See
+[When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
+
 ### `github_label`
 
 Fires when one of the watched labels is **added** to a pull request or an issue in one of the
@@ -687,6 +708,12 @@ It is read once, when the trigger fires, and stamped on the session it creates. 
 not move sessions the trigger already spawned** — including ones still `waiting` behind the quota
 gate. To move one of those, move that session: the button on its hold banner, the selector on its
 detail page, or `action_session`'s `change_scheduling_class`.
+
+A trigger can also predefine the **precedence** its sessions get (`Trigger#precedence`, same three
+surfaces). Higher is worked first, on an absolute scale — 100000 comes before 50 — and it orders the
+spot queue. Leave it blank to predefine nothing. Unlike the class it is *not* withheld from a
+hand-fired Invoke: a precedence describes how this trigger's work ranks against everything else
+queued, which is as true of a hand-fired run as of a scheduled one.
 
 Full detail in [Spot and priority](/sessions/spot-and-priority/).
 

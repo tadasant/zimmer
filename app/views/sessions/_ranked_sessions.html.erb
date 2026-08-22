@@ -1,0 +1,76 @@
+<%# The Ranked view: the spot queue in the order it will be worked.
+
+    Two sections, because the two halves answer different questions. A PRIORITY
+    session has no rank to compare — it starts whenever it is ready — so it sits
+    above the queue with one button: demote it, which lands it at the head of the
+    spot queue. A SPOT session has a place in line, so its row carries an editable
+    precedence and a drag handle.
+
+    Rows rather than cards: a queue is read down a column, and forty cards in a
+    responsive grid have no readable "next".
+
+    Locals:
+      priority_sessions - priority sessions matching the filters, ranked
+      spot_sessions     - spot sessions matching the filters, ranked
+      section_limit     - how many rows each section renders at most %>
+<section class="mb-8"
+         id="ranked_sessions"
+         data-controller="ranked-queue"
+         data-ranked-queue-slot-gap-value="<%= SessionPrecedence::SLOT_GAP %>">
+  <div class="mb-4">
+    <h2 class="text-lg font-semibold text-gray-800">Ranked</h2>
+    <p class="text-sm text-gray-500">
+      Spot sessions start highest-precedence first. Drag a row to move it, or type a number and press Enter.
+      Precedence is an absolute scale — 100000 comes before 50.
+    </p>
+  </div>
+
+  <%# ---- Priority ---- %>
+  <div class="mb-6">
+    <div class="flex items-center gap-2 mb-2">
+      <h3 class="text-sm font-semibold text-gray-700">Priority</h3>
+      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium px-2 py-0.5"><%= priority_sessions.size %></span>
+      <span class="text-xs text-gray-400">start whenever they are ready — precedence does not gate them</span>
+    </div>
+    <%# Both lists are ALWAYS in the DOM, hidden when empty. They are Stimulus
+        targets, and a target that disappears when a section empties would fail the
+        controller's connect() — taking drag-and-drop and inline editing down on the
+        other section with it. It is also what lets a promote/demote move a row into
+        a section the server rendered empty. %>
+    <ul class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if priority_sessions.empty? %>"
+        data-ranked-queue-target="priorityList">
+      <% priority_sessions.each do |session| %>
+        <%= render "sessions/ranked_row", agent_session: session, draggable_row: false %>
+      <% end %>
+    </ul>
+    <p class="text-sm text-gray-400 rounded-md border border-dashed border-gray-200 px-3 py-4 <%= "hidden" if priority_sessions.any? %>"
+       data-ranked-queue-target="priorityEmpty">No priority sessions match these filters.</p>
+    <% if priority_sessions.size >= section_limit %>
+      <p class="mt-1.5 text-xs text-gray-400">Showing the first <%= section_limit %>. Narrow the filters to see the rest.</p>
+    <% end %>
+  </div>
+
+  <%# ---- Spot ---- %>
+  <div>
+    <div class="flex items-center gap-2 mb-2">
+      <h3 class="text-sm font-semibold text-gray-700">Spot queue</h3>
+      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-amber-100 text-amber-700 text-xs font-medium px-2 py-0.5"><%= spot_sessions.size %></span>
+      <span class="text-xs text-gray-400">highest precedence is worked first</span>
+    </div>
+    <ul class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if spot_sessions.empty? %>"
+        data-ranked-queue-target="spotList">
+      <% spot_sessions.each do |session| %>
+        <%= render "sessions/ranked_row", agent_session: session, draggable_row: true %>
+      <% end %>
+    </ul>
+    <p class="text-sm text-gray-400 rounded-md border border-dashed border-gray-200 px-3 py-4 <%= "hidden" if spot_sessions.any? %>"
+       data-ranked-queue-target="spotEmpty">No spot sessions match these filters.</p>
+    <% if spot_sessions.size >= section_limit %>
+      <p class="mt-1.5 text-xs text-gray-400">Showing the first <%= section_limit %>. Narrow the filters to see the rest.</p>
+    <% end %>
+  </div>
+
+  <%# One live region for the whole view, so a failed write says so without a
+      page reload swallowing the drag the user just made. %>
+  <p class="mt-3 text-sm text-red-600 hidden" role="alert" data-ranked-queue-target="error"></p>
+</section>

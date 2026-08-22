@@ -279,6 +279,7 @@ class TriggersController < ApplicationController
       :resuscitate_archived,
       :max_sessions_per_minute,
       :scheduling_class,
+      :precedence,
       mcp_servers: [],
       catalog_skills: [],
       catalog_hooks: [],

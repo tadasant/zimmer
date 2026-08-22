@@ -719,50 +719,52 @@ Three exits mean Zimmer has no runway left: a quota hit with no rotation target
 recovery whose rotation finds the same thing, and an auth recovery that exhausts its retry budget.
 All route to `AuthOutageParkService`, which:
 
-1. Writes a session log naming the outage and the retry time.
+1. Writes a session log naming the outage.
 2. Sends a push notification.
-3. Records `auth_outage_reason` / `auth_outage_parked_at` / `auth_outage_retry_at` on the session,
-   which renders the amber outage banner on the session page.
-4. Creates a one-time wake-up trigger — the same `reuse_session` + `last_session_id` shape the
-   `wake_me_up_later` MCP tool uses. Creating the trigger is what puts the session to sleep, so the
-   session lands in `waiting` rather than `needs_input`, and the heartbeat sweep anchors its cadence
+3. Records `auth_outage_reason` / `auth_outage_parked_at` on the session, which renders the amber
+   outage banner on the session page.
+4. Puts the session to sleep. A session still `running` is marked `pending_sleep` and carried
+   `needs_input` → `waiting` by the pause callback; one already at rest is slept outright. Either
+   way it lands in `waiting` rather than `needs_input`, so the heartbeat sweep anchors its cadence
    instead of nudging it back into the same wall.
 
-The retry time is derived from the quota snapshots rather than a blind timer. `QuotaResetCheckerJob`
-clears an account only when **both** windows are clear, so an account frees up at the later of its
-two future resets and the pool frees up at the earliest such account; `RESET_BUFFER` (2 min) is
-added, and the result is clamped between `MIN_RETRY_DELAY` (5 min) and `MAX_RETRY_DELAY` (12 h). An
-auth outage has no published reset clock, so it uses `DEFAULT_RETRY_DELAY` (1 h).
+Nothing is scheduled. A park used to create a one-time wake-up trigger per session — the same
+`reuse_session` + `last_session_id` shape `wake_me_up_later` uses — carrying a retry time derived
+from the quota snapshots, plus a backoff ladder and a jitter window to keep a whole parked cohort
+from waking as a herd. That machinery scaled with the number of PARKED SESSIONS rather than with the
+number of outages: production carried dozens of `Auth outage retry for session #N at …` rows at a
+time, the large majority of the whole trigger list. And a wall clock knows nothing about which
+parked session matters most, so whichever timer fired first won, regardless of
+[precedence](/sessions/spot-and-priority/#precedence-ranking-the-spot-queue).
 
-An account with no *future* reset stamp is only read as "the pool clears now" when
-`windows_clear?` agrees — the same predicate the sweep restores on. The two agree about a stamp that
-has genuinely passed: the sliding window turned over, `.effective_utilization` discounts the counter
-to zero, and the next sweep restores the account. They part company on a snapshot carrying **no
-stamps at all**, which is a real reading — with no reset time to have passed the weekly counter still
-stands, so `seven_day_window_spent?` holds and the sweep correctly leaves the account exceeded.
-Reading that as "now" pinned every parked session to the 5-minute floor and woke them all back into
-the same exhausted pool five minutes later; its reset time is simply unknown, which is what
-`DEFAULT_RETRY_DELAY` means here.
+Two things wake a parked session now, and they cover different populations.
 
-Repeated quota parks also back off. Each consecutive park inside `QUOTA_PARK_WINDOW` (6 h) doubles
-the floor under the retry — 5 m, 10 m, 20 m, and on up to `MAX_RETRY_DELAY`, capped at
-`MAX_QUOTA_PARK_BACKOFF_STEPS` (6) doublings — so a pool that really is about to recover keeps its
-fast first retry while one that is not stops being probed every five minutes by every parked session
-at once. The count lives in `auth_outage_quota_parks`, kept out of `STALE_RETRY_METADATA_KEYS` for
-the same reason the early-wake budget is: it has to outlive the resume it throttles. Every retry also
-carries up to `RETRY_JITTER` (3 min) of random offset, because sessions parked by one outage are
-parked within seconds of each other and would otherwise wake as a herd onto a queue sized for 16
-concurrent agents. On 2026-08-17 the un-jittered, un-backed-off version put 148 sessions through 368
-parks in 40 minutes and 377 jobs into the ready queue, which is what tripped the
-`SystemHealthMonitorJob` backlog page at 14:14 UTC.
+| Population | Woken by | Why |
+| --- | --- | --- |
+| **spot** | the `quota_available` trigger event → one `fleet-maintenance` session running the `awaken-waiting-sessions` skill | spot work is exactly the work whose ORDER matters when quota is scarce, and the skill is what reads precedence, the spot thresholds and the concurrency ceiling to decide who starts |
+| **priority** | `AuthOutageParkService.wake_parked_sessions!`, from `QuotaResetCheckerJob` every 15 minutes | priority work is never gated on quota, so making it wait for a spawned session to take its first turn would be a regression — and there is no ordering question to get wrong |
 
-The jitter has to survive the **ceiling** as well as the floor, and that is a separate case. A
-weekly reset or a sentinel expiry sits far enough out that every session in the outage clamps onto
-`MAX_RETRY_DELAY`, and jitter added on top of the ceiling clamps straight back down onto it — so the
-whole cohort lands on one instant twelve hours away, which is exactly the shape the trigger list was
-carrying on 2026-08-17 (two waves at `02:08–02:15Z` and `02:20–02:25Z`, twelve hours after their
-parks). The pre-jitter clamp therefore stops one jitter window short of the ceiling, leaving the
-spread somewhere to go.
+`QuotaAvailabilityMonitor` owns the event. It runs in the same `QuotaResetCheckerJob` pass, right
+after the accounts are restored, and asks one question: can the pool serve a request at all — is
+there an account that is neither `quota_exceeded` nor waiting on a human to re-authenticate. That is
+the same `accounts.available` predicate a park stops on, which is what makes it the edge that
+un-parks those sessions. It is deliberately **not** the spot gate's question: `SpotGateService`
+answers "is utilization under the operator's targets and is a slot free", and firing on that would
+also fire when a fleet slot opened, which is not a quota recovery. The fleet session reads the gate
+for itself before starting anything.
+
+The event is an **edge**, not a level. `AppSetting#quota_pool_available` stores the last observed
+level, and the event fires only on `false` → `true`; a level would be true on every sweep for as
+long as the pool stayed healthy and would spawn a fleet session every fifteen minutes forever. NULL
+means nobody has looked yet, so the first observation records the level and fires nothing — a deploy
+landing while the pool happens to be healthy is not a recovery. A pool that cannot be read leaves the
+stored level alone, because recording an unreadable pool as an outage would make the next successful
+read fire a recovery nothing recovered from.
+
+`auth_outage_pool_recovers_at` survives as an **estimate** for the banner, and only for a quota park:
+`QuotaResetCheckerJob` clears an account only when both windows are clear, so an account frees up at
+the later of its two future resets and the pool at the earliest such account. Nothing reads it back
+and nothing fires at it. An auth outage has no published reset clock, so it records nothing.
 
 ### The park has to survive the paths that do not know about it
 
@@ -792,8 +794,7 @@ eight seconds — parked correctly at 04:19, and back in `needs_input` by 09:00:
    `active_follow_up_prompt` still held the recovery turn Zimmer never delivered and the pool was
    still empty (two status-summary forks parked `quota_exhausted` three and eleven minutes later).
    `AuthOutageParkService.park_undelivered_turn!` now guards those exits: an undelivered turn plus a
-   pool with no available account is the outage, so it parks into `waiting` with a scheduled retry
-   instead.
+   pool with no available account is the outage, so it parks into `waiting` instead.
 
 The tempting test for "undelivered" is that `active_follow_up_prompt` is still set, and it is the
 wrong one. `AgentSessionJob` removes that key in exactly **one** place — the `:needs_input` branch of
@@ -809,50 +810,28 @@ nothing left to do.
 | --- | --- |
 | the prompt appears in the persisted transcript | the turn ran — the same comparison `TranscriptPollerService` makes to decide a follow-up landed. 6597's transcript never grew past the 115 messages it held before the park |
 | the session is not `running` | a user pause terminates the process *before* transitioning, so these exits are reachable for a session a human already stopped |
-| `paused_by` is `"user"` | same reason, stated directly — re-arming a wake trigger would undo their decision |
-| `auth_outage_reason` is already set | two of the three call sites can be reached in one pass through the monitoring loop, and a double park charges one stop twice against the consecutive-park backoff |
+| `paused_by` is `"user"` | same reason, stated directly — putting the session back to sleep would undo their decision |
+| `auth_outage_reason` is already set | two of the three call sites can be reached in one pass through the monitoring loop, and a double park sends two push notifications for one stop |
 | the pool could not be *read* | an unreadable pool is not an empty one. `.runtime_has_available_account?` rescues to `false` meaning "do not wake", which is conservative; the same `false` here would mean "park", which is not — and a runtime with no accounts at all would then park, time out, finish and park again for as long as it lived |
 
 ### The sweep wakes a batch, not the fleet
 
-Spreading the timer does nothing for the other way a parked session wakes.
 `wake_parked_sessions!` resumes on "the runtime has an available account again", which is a fact
 about the **pool**: it becomes true for every session parked on that pool in the same instant, and
 the sweep resumed every one of them in a single pass. One restored account therefore put the whole
 parked population back onto a pool with one account in it, which they re-drained in seconds and
-re-parked together — a cohort that leaves the trigger list in waves.
+re-parked together.
 
 So a sweep resumes at most `MAX_WAKES_PER_SWEEP` (5) **per runtime**, oldest park first, and logs
 how many it held. Per runtime because the hazard is per pool: a fleet of `claude_code` parks must
 not hold back the `codex` sessions whose own pool just recovered. The throttle closes its own loop —
 the next sweep is 15 minutes away and re-reads the pool, so if the batch that went first drained it
-again, nobody else is woken. Held sessions lose nothing: each still carries its own jittered timer,
-and each leads the next sweep's queue. The ordering is a lexicographic sort over
-`auth_outage_parked_at`, which is why that stamp is written explicitly in UTC.
+again, nobody else is woken. Held sessions lose nothing: each leads the next sweep's queue. The
+ordering is a lexicographic sort over `auth_outage_parked_at`, which is why that stamp is written
+explicitly in UTC.
 
-### One retry trigger per session
-
-A resume consumes the wake-up **condition** — `SessionStateMachine#cancel_pending_one_time_wake_triggers`
-stamps `last_triggered_at` — but leaves the trigger row `enabled`, having created no session.
-`ScheduleTriggerJob`'s auto-delete only runs on a trigger that actually **fires**, so it never sees
-these, and `CleanupStaleTriggersJob` reaps them an hour after a `scheduled_at` that can be twelve
-hours out. Across a park/resume/re-park loop that is a column of identical dead rows, each surviving
-about thirteen hours, indistinguishable in the UI from armed ones.
-
-So the row goes with the condition. `cancel_pending_one_time_wake_triggers` discards the session's
-auth-outage retries on **every** deliberate resume — the sweep, a user follow-up, a poller, the
-trigger firing — and a new park discards the ones it supersedes. A system-recovery resume is the
-exception on both counts, because it deliberately *preserves* its wake-ups: the session did not
-choose to wake, so its retry is not moot.
-
-Three things are deliberately out of scope of that sweep. A `wake_me_up_later` wake the *user* set
-up for the same session, which has an identical `reuse_session` + `last_session_id` shape and is
-told apart only by the `Auth outage retry for session #N at …` name Zimmer itself writes. A trigger
-in `failed`, which `ScheduleTriggerJob` parked there as a tombstone so the operator could see the
-wake did not fire and re-arm it — only they clear that. And the successor of a park in progress: the
-new trigger is created *before* the old ones are destroyed, so a create that fails leaves the
-session the backstop it already had rather than none at all. The cleanup itself is best-effort — a
-park whose cleanup fails is still a park.
+Spot sessions are skipped entirely — see the table above. They stay parked with their outage
+metadata intact, which is exactly what the fleet wake needs to find them.
 
 Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
 arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing
@@ -862,9 +841,10 @@ anyway, which is a credentials problem a human has to look at. `ProcessLifecycle
 for the budget-exhaustion park too, so running out of tries during a quota drain no longer produces
 the "re-authenticate an account" instruction.
 
-For a **quota** park the trigger is only the backstop: `QuotaResetCheckerJob` usually restores the
-accounts first and wakes those sessions in the same sweep, and only for a runtime that has an
-available account again, so a session is never woken into the pool that was still empty.
+For a **quota** park the sweep's evidence is the pool itself: `QuotaResetCheckerJob` restores the
+accounts first and wakes the priority sessions blocked on them in the same pass, and only for a
+runtime that has an available account again, so a session is never woken into a pool that is still
+empty.
 
 An **auth** park gets the same fast path on different evidence. "An account is available" is the
 whole story for a quota park — the pool was empty and now is not. It is no evidence at all for an
@@ -886,8 +866,8 @@ It is a coarse signal, not a repair detector, and the code says so. The same dig
 rotated on disk for the current account — which says nothing about a parked session's identity
 problem. So the fingerprint decides *whether there is anything new to try*, and a budget decides
 *how often one session may act on it*: `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h). The
-timer alone would wake a parked session roughly six times in that window, so the fast path is a
-bounded multiple of the spawn rate the session already had rather than an open loop.
+window is what keeps the bound meaningful: without one, a pool whose credentials churn — a token
+sync, an account added and removed — would re-wake the same broken identity indefinitely.
 
 The budget lives in `auth_outage_early_wakes` — a list of wake timestamps, pruned to the window on
 every write, and the one `auth_outage_*` key deliberately kept out of `STALE_RETRY_METADATA_KEYS`.
@@ -895,7 +875,8 @@ It has to outlive the resume it paid for, or a re-park would hand the session a 
 cap would bound nothing. It is charged inside `resume_parked!`'s transaction, under the same row
 lock as the resume: charging afterwards would race the job that resume enqueues for the metadata
 column, and a failed charge would silently un-bound the cap. Past the budget — and for a park with
-no recorded fingerprint at all — the session falls back to its timer, which is what it had before.
+no recorded fingerprint at all — the session stays parked until a human resumes it or the pool
+changes again.
 
 ## Logging in from the UI
 

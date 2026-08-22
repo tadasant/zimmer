@@ -15,17 +15,31 @@ class AuthOutageBannerTest < ApplicationSystemTestCase
       metadata: {
         "auth_outage_reason" => reason,
         "auth_outage_parked_at" => Time.current.iso8601,
-        "auth_outage_retry_at" => 1.hour.from_now.utc.iso8601
+        "auth_outage_pool_recovers_at" => 1.hour.from_now.utc.iso8601
       }
     )
   end
 
-  test "a quota-exhausted session explains the outage and the automatic retry" do
+  test "a quota-exhausted session explains the outage and how it comes back" do
     visit session_path(parked_session(reason: AuthOutageParkService::QUOTA_EXHAUSTED))
 
     assert_text "Quota exceeded across all accounts"
     assert_text "there is nothing to rotate into"
-    assert_text "will resume automatically"
+    assert_text "resumes automatically once the account pool recovers"
+    assert_text "The pool's earliest reset is"
+  end
+
+  # A spot session is woken in precedence order by the fleet wake, not simply
+  # "when the pool recovers" — saying otherwise would promise a wake it does not
+  # necessarily get next.
+  test "a parked spot session says the fleet wake reaches it in precedence order" do
+    session = parked_session(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 640)
+
+    visit session_path(session)
+
+    assert_text "fleet wake reaches it in precedence order"
+    assert_text "640"
   end
 
   test "an auth-outage session names the login failure rather than the raw CLI text" do

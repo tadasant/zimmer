@@ -77,6 +77,49 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_equal SessionGenesis::CLASSES, enum
   end
 
+  # --- precedence -------------------------------------------------------------
+
+  test "an explicit precedence ranks the spawned session" do
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go", "precedence" => 5000)
+
+    assert_equal 5000, Session.order(:id).last.precedence
+  end
+
+  # What the tool description tells agents to rely on: omit it and the child
+  # lands just above its parent, so a tree of work stays contiguous.
+  test "omitting precedence lands the spawn just above its parent" do
+    parent = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", precedence: 700)
+
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+      "parent_session_id" => parent.id)
+
+    assert_equal 701, Session.order(:id).last.precedence
+  end
+
+  test "a non-integer precedence is a tool error" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go", "precedence" => "soon")
+    end
+    assert_match(/precedence must be an integer/, error.message)
+  end
+
+  test "a precedence beyond the accepted range is a tool error" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+        "precedence" => SessionPrecedence::MAX + 1)
+    end
+    assert_match(/precedence must be between/, error.message)
+  end
+
+  # The two things an agent reading the description has to get right.
+  test "the precedence description states the absolute scale and the lineage rule" do
+    description = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :precedence, :description)
+
+    assert_match(/absolute scale/i, description)
+    assert_match(/100000 comes before 50/, description)
+    assert_match(/slightly higher/i, description)
+  end
+
   test "creates a clone-only session when no prompt is given" do
     result = @tool.call("agent_root" => "zimmer", "title" => "Clone only")
 
