@@ -208,17 +208,17 @@ class SpotSessionPause
     # of the ones a human (or an agent, through `wake_me_up_later`) has paused
     # until a chosen time.
     #
-    # One batched query for the whole set rather than one per session:
-    # Session.ids_awaiting_scheduled_wake is the same reading the bulk refresh
-    # uses, and it fails safe — an unreadable trigger table treats every candidate
-    # as asleep, which errs toward leaving work dormant rather than trampling a
-    # pause.
+    # One batched query for the whole set rather than one per session. An
+    # unreadable trigger table raises out of here and #sweep!'s own rescue turns
+    # the pass into a no-op, which is the safe direction: the sweep re-reads
+    # everything from scratch five minutes later, and a pass that resumed nothing
+    # costs a pass, while a pass that trampled a pause costs the pause.
     #
     # @return [Array(Array<Session>, Integer)] resumable sessions, and how many were paused
     def split_paused_until(sessions, logger)
       return [ sessions, 0 ] if sessions.empty?
 
-      sleeping = Session.ids_awaiting_scheduled_wake(sessions.map(&:id))
+      sleeping = Session.ids_paused_until_scheduled_time(sessions.map(&:id))
       return [ sessions, 0 ] if sleeping.empty?
 
       resumable = sessions.reject { |session| sleeping.include?(session.id) }
@@ -410,7 +410,7 @@ class SpotSessionPause
         # armed between that read and this one would otherwise be trampled by a
         # sweep that decided before it existed — and this method is the only door
         # into the resume, so closing it here closes it for every caller.
-        raise ActiveRecord::Rollback if session.awaiting_scheduled_wake?
+        raise ActiveRecord::Rollback if session.paused_until_scheduled_time?
 
         session.update!(
           running_job_id: nil,

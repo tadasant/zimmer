@@ -66,9 +66,15 @@ Until** (a human) and `wake_me_up_later` (the session itself) put a session in
 had — so it appears in your list looking exactly like work you should hand compute
 to.
 
-It is not. A pause outranks precedence and scheduling class unconditionally: that
-session does not start before its wake fires, however high it ranks. Skip it,
-count it as still parked, and move down the list.
+It is not. A pause outranks precedence and scheduling class: that session does not
+start before its wake fires, however high it ranks. Skip it, count it as still
+parked, and move down the list.
+
+The reverse is not true, and it is worth knowing so you do not go looking for it.
+A pause is a floor under when a session may run, not a promotion past this queue
+when the moment arrives — a wake that comes due hands its session back to the same
+gate you are reading, in the same order. Nothing you skip here is being taken out
+of your hands.
 
 You do not have to get this right for it to hold — `action_session restart`
 refuses a paused session and tells you so, and `AgentSessionJob` refuses to start

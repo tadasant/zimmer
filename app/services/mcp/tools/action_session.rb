@@ -477,7 +477,7 @@ module Mcp
       # taking it over, and consuming the now-moot wake is the documented
       # behaviour. This is about a selector working a list.
       def refuse_if_paused!(session)
-        return unless session.awaiting_scheduled_wake?
+        return unless session.paused_until_scheduled_time?
 
         raise ToolError,
           "Session #{session.id} is asleep on a wake-up it has not reached yet (#{session.pending_wake_phrase}). " \
