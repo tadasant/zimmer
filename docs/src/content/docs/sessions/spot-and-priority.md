@@ -578,6 +578,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 | Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
+| Stop a *running* session's turn while parking it | **Pause Until** does it unconditionally | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
 | Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and demote button | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
 | Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
 | Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |

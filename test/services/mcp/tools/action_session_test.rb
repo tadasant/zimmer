@@ -956,4 +956,50 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
     assert_match(/cannot be put in the spot queue/, error.message)
   end
+
+  # The default on a RUNNING session stays "sleeps when the turn ends", and that
+  # is not an oversight: the commonest caller of this tool is a session parking
+  # ITSELF, which cannot terminate the process waiting on this very call.
+  test "pause_into_spot_queue leaves a running session's turn alone by default" do
+    session = sessions(:running)
+
+    output = @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id)
+
+    assert_includes output, "sleeps when the current turn ends"
+    session.reload
+    assert session.running?
+    assert_equal true, session.metadata["pending_sleep"]
+  end
+
+  # ...and the web UI's behaviour is reachable for a caller driving somebody
+  # else's running session, which is the surface the UI actually is.
+  test "pause_into_spot_queue with halt stops the turn the way the web UI does" do
+    session = sessions(:running)
+
+    output = @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id, "halt" => true)
+
+    assert_includes output, "its turn was stopped"
+    assert_not_includes output, "sleeps when the current turn ends"
+    session.reload
+    assert session.waiting?
+    assert_nil session.metadata["pending_sleep"]
+    assert SpotSessionPause.queued_by_user?(session)
+  end
+
+  test "halt is inert on a session that was not running" do
+    session = sessions(:needs_input)
+
+    output = @tool.call("action" => "pause_into_spot_queue", "session_id" => session.id, "halt" => true)
+
+    assert_not_includes output, "its turn was stopped"
+    assert session.reload.waiting?
+  end
+
+  # The self-management surface deliberately does not advertise it: a session
+  # halting itself would kill the process waiting for the reply.
+  test "the self-session variant does not offer halt" do
+    self_properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h[:properties].keys.map(&:to_s)
+    assert_not_includes self_properties, "halt"
+    assert_includes Mcp::Tools::ActionSession.input_schema.to_h[:properties].keys.map(&:to_s), "halt"
+  end
 end

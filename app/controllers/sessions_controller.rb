@@ -2180,10 +2180,15 @@ class SessionsController < ApplicationController
       end
     end
 
+    # Read BEFORE anything arms a wake: the trigger's after_create callback is
+    # what marks a running session `pending_sleep`, and by the time it has run the
+    # answer to "was this a running session" is already half-rewritten.
+    was_running = @session.running?
+
     # The one choice in the panel that is not a time. It sleeps the session the
     # same way and then arms nothing at all: the spot scheduler picks it up when
     # a Claude Code account is under both quota targets and a slot is free.
-    return pause_into_spot_queue if params[:mode].to_s == Session::PAUSE_UNTIL_SPOT_QUEUE_MODE
+    return pause_into_spot_queue(was_running: was_running) if params[:mode].to_s == Session::PAUSE_UNTIL_SPOT_QUEUE_MODE
 
     prompt = params[:prompt].presence || AutomatedPrompts::PAUSE_UNTIL_WAKE
 
@@ -2199,6 +2204,9 @@ class SessionsController < ApplicationController
       replace_existing: true
     )
 
+    # A human pausing a running session means stop — see #halt_running_turn.
+    halted = halt_running_turn(was_running)
+
     condition = trigger.trigger_conditions.first
     @session.reload
 
@@ -2208,10 +2216,12 @@ class SessionsController < ApplicationController
           success: true,
           session_id: @session.id,
           status: @session.status,
-          # A running session does not sleep mid-turn: Trigger's after_create marks
-          # it pending_sleep and it transitions when the turn ends. The UI says so
-          # rather than claiming a state change that has not happened yet.
+          # True only in the degraded case where the halt could not land: the
+          # session is still running and `pending_sleep` will sleep it at the end
+          # of its turn. The UI says so rather than claiming a state change that
+          # has not happened yet.
           pending_sleep: @session.metadata&.dig("pending_sleep") == true,
+          halted_turn: halted,
           wake_at: condition.scheduled_at,
           timezone: condition.schedule_timezone,
           trigger_id: trigger.id
@@ -3578,8 +3588,14 @@ class SessionsController < ApplicationController
   # "Pause Until → Spot Queue". Reached from #pause_until, after the same
   # pausable_until? gate, because it is the same control and the same gesture —
   # only the thing that wakes the session again differs.
-  def pause_into_spot_queue
+  def pause_into_spot_queue(was_running: false)
     result = Sessions::PauseIntoSpotQueue.call(session: @session, prompt: params[:prompt])
+
+    # Same halt a time-based pause gets, for the same reason: both are a human
+    # saying stop, and the queue this parks into is not one a session can wait in
+    # while it is still spending the quota the queue exists to ration.
+    halted = halt_running_turn(was_running, reason: :pause_into_spot_queue)
+    @session.reload
 
     respond_to do |format|
       format.json do
@@ -3587,9 +3603,10 @@ class SessionsController < ApplicationController
           success: true,
           session_id: @session.id,
           status: @session.status,
-          # Same deferral a time-based pause gets: a running session sleeps when
-          # its turn ends, not mid-turn.
-          pending_sleep: result.pending_sleep,
+          # True only in the degraded case where the halt could not land — the
+          # session is still running and sleeps when its turn ends.
+          pending_sleep: @session.metadata&.dig("pending_sleep") == true,
+          halted_turn: halted,
           spot_queue: true,
           pinned_to_spot: result.pinned_to_spot,
           precedence: @session.precedence
@@ -3602,6 +3619,27 @@ class SessionsController < ApplicationController
       format.json { render json: { success: false, error: e.message }, status: :unprocessable_entity }
       format.html { redirect_to @session, alert: e.message }
     end
+  end
+
+  # Stop a running session's turn so a Pause Until actually pauses it.
+  #
+  # Called AFTER the wake is armed, never before. Arming first means a rejected
+  # time costs the operator nothing — no turn has been taken away yet — and it
+  # means a halt that cannot land degrades to the old deferred behaviour instead
+  # of leaving a session awake with nothing to put it to sleep: `pending_sleep`
+  # is already written by then, so the turn's own end still sleeps it.
+  #
+  # @param was_running [Boolean] the status read before the wake was armed
+  # @return [Boolean] whether the turn was actually stopped
+  def halt_running_turn(was_running, reason: :pause_until)
+    return false unless was_running
+
+    # The same courtesy #pause pays: a follow-up the operator sent seconds ago
+    # may still be on its way to the process, and killing it now would lose the
+    # message with no record that it existed.
+    wait_for_pending_message_delivery(@session)
+
+    Sessions::HaltRunningTurn.call(session: @session.reload, reason: reason).halted
   end
 
   def heartbeat_json
