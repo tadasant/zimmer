@@ -11,21 +11,25 @@
 #
 # Rules for anyone tempted to improve this file:
 #
-# - Keep it a no-op. Anything this job touches — a query, an HTTP call, a shell-out —
-#   becomes a way for the liveness gate to fail for a non-liveness reason, on every
-#   production cutover.
-# - Never add `good_job_control_concurrency_with`. A concurrency-limited job is
-#   *deferred* rather than run, which is indistinguishable from a dead queue and
-#   would red healthy deploys.
+# - Keep it a no-op. It touches no database, no network and no shell, and anything
+#   it starts touching becomes a way for the liveness gate to fail for a
+#   non-liveness reason, on every production cutover.
+# - Never add `good_job_control_concurrency_with`. A `total_limit`/`enqueue_limit`
+#   rule makes GoodJob `throw :abort` at enqueue time so no row is ever written; a
+#   `perform_limit` writes a row that is deferred rather than run. Both are
+#   indistinguishable from a dead queue to the gate, and would red healthy deploys.
 # - It is not dead code, and it must not be renamed. The gate resolves the class by
-#   name (`CANDIDATES = %w[CanaryJob CleanupExpiredElicitationsJob]`); deleting or
-#   renaming it silently drops the gate back onto a business job.
+#   name, preferring this one and falling back to a business job if it is absent —
+#   and that fallback is exactly what this job exists to retire. Renaming or
+#   deleting it silently reinstates it.
 class CanaryJob < ApplicationJob
   queue_as :default
 
   # The token is echoed so a human reading worker logs can match a specific canary
-  # to the deploy that enqueued it. Interpolating it is the whole body.
-  def perform(token = nil)
+  # to the deploy that enqueued it. Interpolating it is the whole body. Extra
+  # arguments are swallowed rather than raised on: a gate that grows a second
+  # argument should not red a deploy over an ArgumentError from the canary.
+  def perform(token = nil, *)
     Rails.logger.info("[CanaryJob] #{token}")
   end
 end
