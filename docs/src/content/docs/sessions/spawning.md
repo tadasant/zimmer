@@ -8,6 +8,14 @@ sidebar:
 `app/jobs/agent_session_job.rb` is the biggest file in the repo (~3,000 lines) and it is where
 Zimmer stops being a Rails app and starts being a process supervisor.
 
+Its first decision is whether the turn may run at all. Every path that spends Claude quota — a first
+start, a follow-up, a fired wake trigger, a poller message, a restart — reaches this job, and for a
+**spot** session the job asks `SpotSessionHold` before doing anything else. A refused turn is
+deferred, not dropped: the job re-enqueues itself with the prompt and attachments intact and the
+session goes back to `waiting`. See [Spot and priority](/sessions/spot-and-priority/). Only
+`clone_only` (no agent is spawned) and `resume_monitoring` (re-attaching to a process already
+running) skip the check, because neither spends anything.
+
 ## What gets spawned
 
 **Claude Code:**

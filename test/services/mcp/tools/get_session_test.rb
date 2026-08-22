@@ -82,4 +82,40 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_raises(Mcp::ToolError) { @tool.call("id" => 999_999) }
     assert_raises(Mcp::ToolError) { @tool.call({}) }
   end
+
+  # An agent reading its own session has to be able to tell a deferred turn from a
+  # stuck one — and, when the gate refused a WAKE rather than a first start, that
+  # the prompt it was woken for is still coming.
+  test "a spot session held before its next turn says so, and says the prompt survives" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
+      SpotSessionHold::HELD_RETRY_AT => "2026-08-22T18:30:00Z",
+      SpotSessionHold::HELD_COUNT => 3,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "**Spot gate: next turn held (`at_utilization_limit`):**"
+    assert_includes output, "- **Hold re-check at:** 2026-08-22T18:30:00Z"
+    assert_includes output, "- **Holds so far:** 3"
+    assert_includes output, "The prompt that woke it is not lost"
+  end
+
+  test "a spot session held at the starting line does not claim a queued prompt" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 10 of 10 session slots taken.",
+      SpotSessionHold::HELD_COUNT => 1,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "**Spot gate: start held (`fleet_at_cap`):**"
+    refute_includes output, "The prompt that woke it is not lost"
+  end
 end
