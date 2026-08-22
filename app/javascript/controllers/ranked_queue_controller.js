@@ -22,7 +22,8 @@ import Sortable from "sortablejs"
 // database does not have.
 export default class extends Controller {
   static targets = [
-    "priorityList", "spotList", "priorityEmpty", "spotEmpty", "row", "precedenceInput", "error"
+    "priorityList", "spotList", "priorityEmpty", "spotEmpty", "row",
+    "precedenceInput", "precedenceReadout", "error"
   ]
   static values = { slotGap: Number }
 
@@ -80,6 +81,11 @@ export default class extends Controller {
   // the DOM. The server turns that into a value; the client does not guess one,
   // so the midpoint rule and its nudge have exactly one implementation.
   persistDrop(event) {
+    // SortableJS reports a drop even when the row was released exactly where it
+    // was picked up. Writing then would nudge two neighbours and log a move for
+    // a grab that changed nothing.
+    if (event.oldIndex === event.newIndex) return
+
     const row = event.item
     const above = row.previousElementSibling
     const below = row.nextElementSibling
@@ -139,7 +145,15 @@ export default class extends Controller {
   applyPrecedence(row, value) {
     row.dataset.precedence = String(value)
     const input = row.querySelector("[data-ranked-queue-target='precedenceInput']")
-    if (input) input.value = String(value)
+    if (input) {
+      input.value = String(value)
+      return
+    }
+    // A priority row shows its rank as static text, so the number has to be
+    // written there too — otherwise a demoted row lands at the top of the queue
+    // still displaying the rank it had before the demotion.
+    const readout = row.querySelector("[data-ranked-queue-target='precedenceReadout']")
+    if (readout) readout.textContent = String(value)
   }
 
   // Apply whatever the server confirmed: the edited row, plus any neighbour it
@@ -186,13 +200,28 @@ export default class extends Controller {
   }
 
   // Rebuild a row's rank cell and its button for the section it now lives in.
+  //
+  // The two sections offer different controls, and a row that moves between them
+  // has to gain or lose them: a spot row drags and edits its rank, a priority row
+  // shows it as static text. Both cells are rendered on every row and one of them
+  // is hidden, so this is a toggle rather than a re-render — a row that has just
+  // been demoted is immediately draggable and editable, without a reload.
   setRowMode(row, spot) {
     const handle = row.querySelector("[data-ranked-queue-target='handle']")
     if (handle) handle.classList.toggle("hidden", !spot)
     row.classList.toggle("cursor-grab", spot)
 
     const input = row.querySelector("[data-ranked-queue-target='precedenceInput']")
-    if (input) input.disabled = !spot
+    const readout = row.querySelector("[data-ranked-queue-target='precedenceReadout']")
+    if (input) {
+      input.classList.toggle("hidden", !spot)
+      input.disabled = !spot
+      input.value = row.dataset.precedence
+    }
+    if (readout) {
+      readout.classList.toggle("hidden", spot)
+      readout.textContent = row.dataset.precedence
+    }
 
     const button = row.querySelector("button[data-action]")
     if (!button) return

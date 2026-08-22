@@ -2805,21 +2805,30 @@ class SessionsController < ApplicationController
 
     result = Sessions::ReorderPrecedence.call(session: @session, above: above, below: below)
 
-    @session.logs.create!(
-      content: "Precedence set to #{result.precedence} by drag-and-drop in the Ranked view",
-      level: "info"
-    )
+    # Only when something actually moved. SortableJS reports a drop even when the
+    # row was released where it was picked up, and a log line per grab would bury
+    # the session's real history.
+    if result.changes.any?
+      @session.logs.create!(
+        content: "Precedence set to #{result.precedence} by drag-and-drop in the Ranked view",
+        level: "info"
+      )
+    end
 
     render json: precedence_payload(@session).merge(
       # Every row whose value moved, including a neighbour nudged aside to make
       # room. The client corrects the numbers it rendered optimistically.
       changes: result.changes.map { |id, precedence| { id: id, precedence: precedence } }
     )
-  rescue Sessions::ReorderPrecedence::Error => e
+  # ReorderPrecedence writes the dragged row AND its neighbours, so a lock
+  # timeout or a deadlock between two concurrent drags is a real outcome. The
+  # client can act on any of them — it rolls the row back and reloads — so they
+  # answer with the reason rather than a bare 500.
+  rescue Sessions::ReorderPrecedence::Error, ActiveRecord::RecordInvalid,
+         ActiveRecord::LockWaitTimeout, ActiveRecord::Deadlocked => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
 
-  # PATCH /sessions/:id/update_goal
   # PATCH /sessions/:id/update_goal
   # Update the goal for a session via the web UI.
   def update_goal
@@ -3063,13 +3072,14 @@ class SessionsController < ApplicationController
   end
 
   # A neighbour named by the drag. Missing ids resolve to nil (dropped at an end
-  # of the list), and an id that no longer exists is treated the same way rather
-  # than failing the drop — the row it named has been archived or reclassified
-  # out from under the page, and the remaining neighbour still places it.
+  # of the list), and so does an id that is no longer a row of the spot queue —
+  # archived, or promoted out of it — rather than failing the drop. The remaining
+  # neighbour still places the session, and a stale page cannot nudge the
+  # precedence of a row nobody is looking at.
   def neighbour_session(id)
     return nil if id.blank?
 
-    Session.find_by(id: id)
+    Session.where.not(status: :archived).spot.find_by(id: id)
   end
 
   def scheduling_class_failure(message)

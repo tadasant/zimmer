@@ -18,6 +18,12 @@
 # trigger is never auto-deleted. A fire that raises alerts and leaves the trigger
 # enabled: the next recovery is a fresh chance, and parking the trigger would
 # silently stop every future wake.
+#
+# A pass that delivers NO session — nothing listening, every fire raised, every
+# fire burst-suppressed — puts the edge back through
+# QuotaAvailabilityMonitor.rearm!, so the next sweep fires again. Without that,
+# a deleted or broken fleet trigger would silently consume the one recovery the
+# parked sessions were waiting for.
 class SystemEventTriggerJob < ApplicationJob
   # Same queue as AoEventTriggerJob and for the same reason: a wake that arrives
   # late is a wake that did not happen. The pool recovering is the moment the
@@ -39,12 +45,19 @@ class SystemEventTriggerJob < ApplicationJob
 
     if conditions.empty?
       Rails.logger.info "[SystemEventTriggerJob] No enabled trigger listens for #{event_name}"
-      return
+      return rearm(event_name)
     end
 
+    delivered = 0
     AlertBatcher.with_batch do
-      conditions.find_each { |condition| fire(condition, event_name) }
+      conditions.find_each { |condition| delivered += 1 if fire(condition, event_name) }
     end
+
+    # Nobody acted on the event. For `quota_available` that means the parked
+    # sessions it exists to wake are still parked, so put the edge back rather
+    # than spending it on a fire that delivered nothing — see
+    # QuotaAvailabilityMonitor.rearm!.
+    rearm(event_name) if delivered.zero?
   end
 
   private
@@ -62,7 +75,7 @@ class SystemEventTriggerJob < ApplicationJob
         "[SystemEventTriggerJob] Trigger #{trigger.id} is burst-suppressed for #{event_name} — " \
         "no session created"
       )
-      return
+      return false
     end
 
     condition.update!(last_triggered_at: Time.current)
@@ -70,6 +83,7 @@ class SystemEventTriggerJob < ApplicationJob
       "[SystemEventTriggerJob] Fired trigger #{trigger.id} for #{event_name}, " \
       "created session #{session&.id || 'none'}"
     )
+    session.present?
   rescue => e
     Rails.logger.error(
       "[SystemEventTriggerJob] Error firing trigger #{trigger&.id} for #{event_name}: " \
@@ -85,11 +99,20 @@ class SystemEventTriggerJob < ApplicationJob
       dedup_key: "system_event_trigger_#{trigger&.id}",
       error: e
     )
+    false
   rescue => handler_error
     Rails.logger.error(
       "[SystemEventTriggerJob] Could not report the failed fire of trigger #{trigger&.id}: " \
       "#{handler_error.class}: #{handler_error.message}"
     )
+    false
+  end
+
+  # Only `quota_available` carries an edge that can be spent; a future system
+  # event with no stored level has nothing to put back.
+  def rearm(event_name)
+    QuotaAvailabilityMonitor.rearm! if event_name == QuotaAvailabilityMonitor::EVENT_NAME
+    nil
   end
 
   def event_label(event_name)
