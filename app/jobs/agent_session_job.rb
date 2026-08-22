@@ -1962,11 +1962,17 @@ class AgentSessionJob < ApplicationJob
     # metadata flag, because a session that slept successfully carries none:
     # execute_pending_sleep clears `pending_sleep` once `sleep!` succeeds and
     # writes no `paused_by`. The armed-wake query is the only signal there is.
+    #
+    # A session dormant in the spot queue is case 2 as well and needs its own
+    # signal, because it deliberately arms nothing: SpotSessionPause's record is
+    # what says "asleep on purpose, waiting on the gate". Recovering one would
+    # resume it into the very window that paused it — or, for a session a human
+    # parked there from "Pause Until", straight out of the queue they put it in.
     if session.waiting?
       if session.session_id.blank?
         requeue_interrupted_start(session)
         return
-      elsif session.awaiting_scheduled_wake?
+      elsif session.awaiting_scheduled_wake? || SpotSessionPause.paused?(session)
         stand_down_for_dormant_session(session)
         return
       end
@@ -2076,12 +2082,14 @@ class AgentSessionJob < ApplicationJob
   # Nothing was interrupted; waking it would cancel the sleep it just scheduled
   # and spend a turn telling it about a system event that did not affect it.
   def stand_down_for_dormant_session(session)
+    waiting_on = SpotSessionPause.paused?(session) ? "its turn in the spot queue" : "a scheduled wake-up"
+
     Rails.logger.info(
       "[AgentSessionJob] Skipping InterruptError recovery for session #{session.id}: " \
-      "session is sleeping until a scheduled wake-up"
+      "session is sleeping until #{waiting_on}"
     )
     session.logs.create!(
-      content: "Session was already asleep waiting for a scheduled wake-up — nothing was interrupted, " \
+      content: "Session was already asleep waiting for #{waiting_on} — nothing was interrupted, " \
                "so recovery left it alone.",
       level: "info"
     )

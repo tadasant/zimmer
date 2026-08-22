@@ -9,9 +9,11 @@ module Mcp
     class SelfSessionActionSession < ActionSession
       tool_name "action_session"
 
-      ACTIONS = %w[update_notes update_title set_heartbeat archive].freeze
+      ACTIONS = %w[update_notes update_title set_heartbeat pause_into_spot_queue archive].freeze
 
-      SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "archive"'
+      SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "pause_into_spot_queue", "archive"'
+
+      SELF_QUEUE_PROMPT_DESC = 'Optional for "pause_into_spot_queue": what you want to be resumed with when the queue reaches you, in place of the default nudge. Write it to your future self — you will read it cold, with no memory of this turn beyond the transcript.'
 
       SELF_FORCE_DESC = 'Optional for "archive". Archiving discards any message still queued for this session — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Leave this alone in almost every case: a message sitting in the queue arrived while you were working and you have not seen it, so the right move is to NOT archive, end your turn, and let it be delivered as your next turn — archiving after that succeeds because the queue is empty. Set it to true ONLY when you have read the message in the error and are deliberately throwing it away.'
       SELF_ACTING_SESSION_ID_DESC = 'Optional for "archive": your own session ID, recorded as provenance on the archived session\'s timeline. Set it when you archive yourself, so the line reads as a self-archive rather than as an undeclared caller — that distinction is what lets a human later tell a session that finished its work from one that was archived out from under it by something else.'
@@ -23,12 +25,14 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **set_heartbeat**: Toggle this session's own heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When the heartbeat is enabled and this session sits in needs_input, a recurring nudge prompts it to keep working toward its goal. If you are genuinely blocked or done, set "enabled" to false to stop the nudges.
+        - **pause_into_spot_queue**: Put yourself to sleep in the spot queue instead of at a wall-clock time. Use it in place of `wake_me_up_later` whenever the honest answer to "when should I come back" is "whenever there is quota headroom for me" rather than a time you would be inventing — waiting on nothing in particular, or on work that is not yours and has no deadline. You go dormant in "waiting" with NO wake-up trigger, and Zimmer resumes you when a Claude Code account is under both quota targets and a session slot is free, highest precedence first. It also cancels any one-time wake you had armed, and makes this session "spot" if it was "priority" — a priority session cannot sit in the queue. This is NOT the tool for waiting on a specific event or a deadline: `wake_me_up_later` and `wake_me_up_when_session_changes_state` are, and a session parked here is behind however much of the queue outranks it. End your turn after calling it.
         - **archive**: Archive a session (marks as completed). Refused when a message is still queued for the session — archiving discards it, and nothing delivers a queued message once the session is in the trash. The refusal is almost always right: a message that arrived while you were working is one you have not seen, so end your turn instead and it is delivered as your next turn, after which archiving succeeds. Set "force" to true only when you have read the message and are deliberately throwing it away.
 
         **Use cases:**
         - Update session notes to record progress or context
         - Set a meaningful session title
         - Turn off this session's heartbeat when blocked or finished (set_heartbeat with enabled=false)
+        - Park yourself in the spot queue when there is nothing to wait FOR, only quota to wait ON
         - Archive the session when work is complete
 
         **Archive guidelines:**
@@ -51,6 +55,7 @@ module Mcp
           title: { type: "string", description: TITLE_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
+          prompt: { type: "string", description: SELF_QUEUE_PROMPT_DESC },
           # Carried on this narrowed schema deliberately. A session archiving
           # itself is the caller that meets the queued-message refusal most, and
           # without `force` here it would be the one caller with no way past it.

@@ -88,7 +88,8 @@ group is dropped with a warning rather than failing the connection.
 `self_session` is the important one. It is **auto-injected into every session** (see below) and
 carries `get_session`, `get_configs`, `send_push_notification`, `wake_me_up_later`,
 `wake_me_up_when_session_changes_state`, and a **restricted `action_session`** — the same tool name,
-but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`, and `archive`.
+but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`,
+`pause_into_spot_queue`, and `archive`.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
@@ -248,6 +249,13 @@ trigger and counts toward its fire counter, a `disabled` trigger can still be in
 re-armed by it), and the trigger's [burst cap](/sessions/triggers/#burst-control) still applies — over
 it the tool returns the burst-notice session, or reports that nothing was created. See [firing a
 trigger by hand](/sessions/triggers/#firing-a-trigger-by-hand).
+
+`action_session`'s `pause_into_spot_queue` is the MCP half of **Pause Until → Spot Queue** in the web
+UI, and the counterpart of `wake_me_up_later` for a session with no time worth naming: it sleeps the
+session with no trigger at all and leaves it for the spot scheduler, which resumes it when a Claude
+Code account is under both quota targets and a slot is free. It is on the `self_session` surface too,
+because a session waiting on quota rather than on an event is exactly the caller for it. See
+[Spot and priority](/sessions/spot-and-priority/#joining-the-queue-on-purpose).
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,

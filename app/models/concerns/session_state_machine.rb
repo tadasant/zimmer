@@ -489,10 +489,18 @@ module SessionStateMachine
   # - a session with no `session_id` has never started, so there is nothing to
   #   continue — the spawn pipeline still owns it;
   # - a session with a wake-up still ahead of it is sleeping on purpose, and
-  #   nudging it would fire the work early.
+  #   nudging it would fire the work early;
+  # - a session dormant in the spot queue is also asleep on purpose, and it has
+  #   no wake-up to give it away: nudging one the ceiling paused puts it straight
+  #   back on the window that stopped it, and nudging one a human parked there
+  #   from "Pause Until" undoes the thing they just asked for. Both come back
+  #   through SpotSessionPause's sweep — or immediately, on "Make this session
+  #   priority". The bulk-refresh path already excluded these; this is the same
+  #   rule for a single session.
   def continue_nudge_on_refresh?
     return false unless waiting?
     return false if session_id.blank?
+    return false if SpotSessionPause.paused?(self)
 
     !awaiting_scheduled_wake?
   end

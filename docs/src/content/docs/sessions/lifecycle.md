@@ -368,6 +368,23 @@ control on a session card's overflow menu or in the session detail header. Both 
 Only `needs_input`, `running` and `waiting` sessions are offered the control; from `failed` or
 `archived` the auto-sleep silently no-ops and the trigger would point at a session nothing can wake.
 
+**Spot Queue — the same sleep with no wake-up.** The last choice in that panel is not a time.
+It sleeps the session and hands it to the spot scheduler instead of arming anything:
+`Sessions::PauseIntoSpotQueue` writes the same dormancy record a mid-run ceiling pause writes
+(`SpotSessionPause`), so the sweep that already resumes spot work picks this session up on the
+next pass where a Claude Code account is under both quota targets and a session slot is free —
+highest precedence first. `pause_into_spot_queue` on `action_session` is the same thing for an
+agent. Two consequences worth knowing before you click it:
+
+- **It makes the session spot**, if it was not already, because the sweep resumes a non-spot
+  sleeper on its very next pass. That is reversible and it is the way back out: *Make this session
+  priority* on the banner promotes it, and the next sweep resumes it.
+- **It replaces any wake-up you had already armed** from the same control — picking the queue
+  after picking a time means "not then, this instead".
+
+Its queue position is whatever `precedence` the session is already carrying; the
+[Ranked view](/sessions/spot-and-priority/) is where that is changed.
+
 Zimmer also uses this path on its own behalf: `AuthOutageParkService` parks a session here when the
 login pool runs dry, which is what keeps a quota-blocked session out of the heartbeat sweep's reach.
 See [Agent harness auth](/auth/harness/#when-the-pool-runs-dry).
