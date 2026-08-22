@@ -2,6 +2,7 @@ class CleanupOrphanedSessionsJob < ApplicationJob
   include DatabaseRetry
   include SessionContinuation
   queue_as :default
+  include SingletonSweep
 
   def perform
     recover_running_orphans

@@ -37,6 +37,7 @@
 # hours, and the retry that would have fixed it was the thing standing down.
 class StatusSummaryBackstopJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   # Sessions repaired per sweep. Each repair costs a fork of a repository and an
   # agent turn, so the cap is what keeps a bad day — a fleet-wide outage that

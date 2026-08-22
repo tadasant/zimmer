@@ -29,6 +29,12 @@
 class SendPushNotificationJob < ApplicationJob
   queue_as :default
 
+  # The notification blurb is a blocking inference call (SUMMARY_TIMEOUT), and
+  # `pause` enqueues one of these alongside a status-summary refresh for the same
+  # session — so during an outage this class arrives at the same rate as the
+  # summaries and must draw on the same bounded share of `default`.
+  include BlockingInferenceBounded
+
   # Don't retry if session is not found
   discard_on ActiveRecord::RecordNotFound
 

@@ -21,6 +21,7 @@ class EmptyTrashJob < ApplicationJob
   include DatabaseRetry
   include DurableSessionStorage
   queue_as :default
+  include SingletonSweep
 
   def perform
     expired_sessions = Session.where(status: :archived)

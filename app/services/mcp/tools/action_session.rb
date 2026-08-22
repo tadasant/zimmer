@@ -908,7 +908,7 @@ module Mcp
         unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: session, force: true)
         raise ToolError, unavailable.message if unavailable
 
-        SessionStatusSummaryJob.perform_later(session.id, force: true)
+        SessionStatusSummaryJob.set(priority: SessionStatusSummaryJob::FORCED_PRIORITY).perform_later(session.id, force: true)
 
         [
           "## Status Summary Regenerating",
