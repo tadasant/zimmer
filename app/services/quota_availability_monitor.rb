@@ -71,14 +71,18 @@ class QuotaAvailabilityMonitor
         return false
       end
 
-      # Fire BEFORE recording the level, and only record it once the wake is
-      # enqueued. The level is what makes this an edge, so advancing it first
-      # would spend the edge on a fire that never happened — and nothing else
-      # re-arms it, so every session parked on that outage would wait for the
-      # pool to empty and recover all over again.
+      # One transaction, so the level and the job that spends it commit together.
+      # Advancing the level first would spend the edge on a fire that never
+      # happened; enqueuing first would let a fast worker run the job, find
+      # nothing delivered, and read a level that has not been written yet — so
+      # its re-arm would no-op and the edge would be lost silently. Inside a
+      # transaction the job row is invisible until the level is committed, and a
+      # raising enqueue rolls the level back.
       logger.info("Account pool has capacity again — firing #{EVENT_NAME}")
-      SystemEventTriggerJob.perform_later(EVENT_NAME)
-      record_level!(setting, true)
+      ActiveRecord::Base.transaction do
+        record_level!(setting, true)
+        SystemEventTriggerJob.perform_later(EVENT_NAME)
+      end
       true
     rescue => e
       logger.warn("Could not evaluate quota availability", error: "#{e.class}: #{e.message}")
@@ -95,8 +99,16 @@ class QuotaAvailabilityMonitor
     # fires, and every session parked in that window waits forever. The park is
     # both the earliest and the most certain moment to write it.
     #
+    # Scoped to the runtime this monitor actually watches. `quota_pool_available`
+    # is one global column and `check!` only ever reads the Claude Code pool, so
+    # a Codex park writing `false` here would make the next check see a rising
+    # edge against a Claude pool that was healthy throughout — firing a recovery
+    # nothing recovered from.
+    #
     # Best-effort: a park whose bookkeeping fails is still a park.
-    def record_unavailable!
+    def record_unavailable!(runtime: ClaudeAuthProvider::RUNTIME)
+      return false unless runtime.to_s == ClaudeAuthProvider::RUNTIME
+
       setting = AppSetting.current
       return false if setting.quota_pool_available == false
 
@@ -136,25 +148,33 @@ class QuotaAvailabilityMonitor
     # re-reads everything for itself, so firing it is safe; not firing it leaves
     # that session with no wake path at all.
     #
-    # Deduplicated against the stored level: if the pool is already recorded
-    # available, the edge for this recovery has been spent and the fleet session
-    # has already run, so this would spawn a second one every fifteen minutes for
-    # as long as the session stayed parked. Re-arm instead, and let the next
-    # ordinary check! fire it once.
+    # When the edge has already been spent this is a NO-OP, and that is
+    # load-bearing. Re-arming here instead reads as harmless — "let the next
+    # check! fire it once" — but the sweep runs in the same pass as `check!`, on
+    # the same fifteen-minute cron, so the next pass finds the level `false`
+    # against an available pool, calls that a rising edge, and fires again. A
+    # single spot session the fleet wake legitimately declines to start (the
+    # thresholds are still breached, say) then spawns one fleet session every
+    # fifteen minutes for as long as it stays parked, each burning the quota that
+    # just recovered. That is the exact loop the edge exists to prevent.
+    #
+    # @return [Boolean] true when a wake was fired
     def request_wake!(reason: nil)
       setting = AppSetting.current
 
       if setting.quota_pool_available
         Rails.logger.info(
-          "[QuotaAvailabilityMonitor] Re-arming #{EVENT_NAME} rather than firing a second time#{" (#{reason})" if reason}"
+          "[QuotaAvailabilityMonitor] #{EVENT_NAME} already fired for this recovery" \
+          "#{" (#{reason})" if reason}"
         )
-        record_level!(setting, false)
         return false
       end
 
       Rails.logger.info "[QuotaAvailabilityMonitor] Firing #{EVENT_NAME}#{" (#{reason})" if reason}"
-      SystemEventTriggerJob.perform_later(EVENT_NAME)
-      record_level!(setting, true)
+      ActiveRecord::Base.transaction do
+        record_level!(setting, true)
+        SystemEventTriggerJob.perform_later(EVENT_NAME)
+      end
       true
     rescue => e
       Rails.logger.info "[QuotaAvailabilityMonitor] Could not request a wake: #{e.message}"

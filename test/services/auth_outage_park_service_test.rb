@@ -196,16 +196,17 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "running", @session.reload.status
   end
 
-  # A spot session is not resumed here, but the sweep is the only thing that
-  # noticed it became eligible — so it asks for the ranked wake rather than
-  # leaving that session with no path at all.
-  test "an eligible parked spot session asks for the fleet wake" do
+  # A quota-parked spot session is woken by the POOL's own rising edge, which
+  # QuotaAvailabilityMonitor fires. The sweep asking again would be a second
+  # request for a wake already on its way — and, since the sweep runs in the same
+  # pass as the check, the interplay is what made every later pass re-fire.
+  test "an eligible parked spot QUOTA session leaves the pool edge to fire" do
     create_account(email: "restored@example.com", status: :active)
     @session.update!(status: :needs_input, scheduling_class: SessionGenesis::SPOT)
     park!
     AppSetting.current.update!(quota_pool_available: false)
 
-    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
       assert_equal 0, AuthOutageParkService.wake_parked_sessions!
     end
     assert_equal "waiting", @session.reload.status
