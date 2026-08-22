@@ -191,11 +191,17 @@ module ActiveSupport
 
     # Re-install the boot-resolved AIR catalog before every test, so a test that
     # cleared or faked the process-global cache cannot change what the next test
-    # in that worker sees. Declared here, on the base class, so it runs before
-    # any subclass setup — including AirCatalogServiceTest's, which resets the
-    # cache on purpose and must keep winning. See
-    # test/support/air_catalog_cache_warmer.rb.
-    setup { AirCatalogCacheWarmer.restore! }
+    # in that worker sees. See test/support/air_catalog_cache_warmer.rb.
+    #
+    # prepend: true is what makes that unconditional. Setup callbacks otherwise
+    # run in the order they were declared, and a callback added to a base class
+    # is appended to the chain of every descendant that already exists — so the
+    # framework test cases rails/test_help defines above (ActionController,
+    # ActionView, ActionMailer) would run their own setups first. Prepending puts
+    # the warm-up at the head of every chain regardless of declaration order,
+    # while still leaving AirCatalogServiceTest's setup — which resets the cache
+    # on purpose — to run afterwards and win.
+    setup(prepend: true) { AirCatalogCacheWarmer.restore! }
 
     # Include test support helpers
     include MockHelpers

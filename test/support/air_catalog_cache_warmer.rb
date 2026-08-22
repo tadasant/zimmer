@@ -40,21 +40,31 @@
 # same real, warm catalog no matter what its predecessor did, and the `.never`
 # expectations are guaranteed by construction rather than by seed luck.
 module AirCatalogCacheWarmer
+  # The artifact types the suite's session-creation coupling actually depends on:
+  # Session validates agent_root against :roots and catalog_skills against
+  # :skills. A snapshot missing either would pin every test to a catalog that
+  # fails those validations — see capture!.
+  REQUIRED_TYPES = %i[roots skills].freeze
+
   class << self
     # Snapshot the boot-resolved tree. Called once from test_helper, after the
     # pre-warm and before parallelize() forks, so every worker inherits it.
     #
-    # A snapshot is only taken when the pre-warm actually produced entries: if
-    # catalog resolution is broken, capturing the empty tree would pin every test
-    # to an empty catalog and turn one broken resolve into a suite-wide failure
-    # with no diagnostic. Leaving @snapshot nil makes restore! a no-op, and the
-    # service falls back to its own resolve/last-known-good handling.
+    # The guard demands the types the suite cannot run without, rather than
+    # merely "something resolved". A partial tree — a half-fetched source, an
+    # air.json that drops roots.json, a CatalogSnapshot fallback carrying fewer
+    # types — would otherwise be pinned to every test and produce exactly the
+    # suite-wide ActiveRecord::RecordInvalid wave described in CLAUDE.md's "Known
+    # coupling", except now immune to reset!. Leaving @snapshot nil instead makes
+    # restore! a no-op and hands catalog resolution back to the service's own
+    # fallback handling, which is what the suite did before this module existed.
     def capture!
       tree = AirCatalogService::ARTIFACT_TYPES.index_with { |type| AirCatalogService.entries_for(type) }
-      @snapshot = tree if tree.values.any?(&:present?)
+      return unless REQUIRED_TYPES.all? { |type| tree[type].present? }
+
+      @snapshot = deep_freeze(tree)
     rescue AirCatalogService::CatalogError => e
       warn "[AirCatalogCacheWarmer] could not snapshot the catalog: #{e.message}"
-      @snapshot = nil
     end
 
     # True when a snapshot was captured at boot and restore! has something to do.
@@ -64,13 +74,27 @@ module AirCatalogCacheWarmer
 
     # Re-install the boot snapshot as AirCatalogService's in-memory cache.
     # Cheap enough to run before every test — a handful of ivar writes, no I/O.
-    #
-    # The snapshot object is installed as-is rather than deep-duped: nothing in
-    # the app mutates the tree in place (load! and serve_last_known_good! both
-    # replace it wholesale), and duping it ~10k times would cost more than the
-    # flake.
     def restore!
       AirCatalogService.seed_cache!(@snapshot) if @snapshot
+    end
+
+    private
+
+    # Freeze the tree rather than deep-duping it per test: duping ~10k times
+    # would cost more than the flake, but handing out one shared mutable object
+    # is worse than what it replaces. Before this module, an in-place mutation of
+    # the catalog tree healed itself at the next resolve; now the snapshot IS the
+    # object every test gets, so one mutation would poison the rest of the worker
+    # and reset! could not clear it. Freezing turns that silent poisoning into a
+    # FrozenError at the mutation site. Nothing in the app mutates the tree —
+    # DeploymentInfoService, the one component that transforms catalog data,
+    # deep_dups first — so this should never fire.
+    def deep_freeze(value)
+      case value
+      when Hash then value.each_value { |v| deep_freeze(v) }.freeze
+      when Array then value.each { |v| deep_freeze(v) }.freeze
+      else value.freeze
+      end
     end
   end
 end

@@ -180,7 +180,7 @@ capture output — anything scoped to the object and lifetime under test.
 
 ### Process-global caches leak between tests in the same worker
 
-The second shape is not a stub at all — it is a cache. `AirCatalogService` holds its resolved artifact
+The other in-process shape is not a stub at all — it is a cache. `AirCatalogService` holds its resolved artifact
 tree in ivars on the class, and `test/test_helper.rb` resolves it once at boot so every forked worker
 inherits a warm one. A warm cache is not a nicety here: committing a write to any session attribute the
 sessions index shows broadcasts the session card, and `sessions/_session_card.html.erb` renders
@@ -196,13 +196,21 @@ card resolved the catalog, and the run went red on `main` for a subprocess the t
 test was not wrong. Its premise — a warm cache — was being satisfied by whichever test drew the slot
 before it, so a reshuffled seed moved the failure to a different victim.
 
-`test/support/air_catalog_cache_warmer.rb` snapshots the boot-resolved tree, and a `setup` on
-`ActiveSupport::TestCase` re-installs it before every test. Declared on the base class, it runs before
-any subclass `setup`, so `AirCatalogServiceTest` still gets to reset the cache on purpose. Every other
-test starts from the same real catalog no matter what ran before it, which makes the `.never`
-expectations true by construction rather than by seed luck — and closes the mirror-image leak too, where
-a tree left behind by a stubbed resolve makes an unrelated `catalog_skills` validation reject a skill
-that does exist.
+`test/support/air_catalog_cache_warmer.rb` snapshots the boot-resolved tree, and a
+`setup(prepend: true)` on `ActiveSupport::TestCase` re-installs it before every test. The `prepend` is
+load-bearing: setup callbacks otherwise run in declaration order, and a callback added to a base class is
+merely *appended* to the chain of every descendant that already exists — so the framework test cases
+`rails/test_help` defines would run their own setups first. Prepending puts the warm-up at the head of
+every chain regardless, while still leaving `AirCatalogServiceTest`'s own `setup` to reset the cache on
+purpose afterwards. Every other test starts from the same real catalog no matter what ran before it,
+which makes the `.never` expectations true by construction rather than by seed luck — and closes the
+mirror-image leak too, where a tree left behind by a stubbed resolve makes an unrelated `catalog_skills`
+validation reject a skill that does exist.
+
+The snapshot is deep-frozen rather than deep-duped per test. Duping it ~10,000 times would cost more than
+the flake, but handing every test one shared *mutable* tree would be worse than the state it replaces: an
+in-place mutation used to heal itself at the next resolve, and would now survive `reset!` and poison the
+rest of the worker. Frozen, that mutation is a `FrozenError` at the site that causes it.
 
 The rule that generalizes: **a cache on a class object is suite-wide mutable state.** If a test clears
 or replaces one, something has to put it back before the next test reads it.
