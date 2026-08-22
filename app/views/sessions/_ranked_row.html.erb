@@ -1,0 +1,55 @@
+<%# One row of the Ranked view.
+
+    Locals:
+      agent_session  - the session
+      draggable_row  - true for spot rows (draggable, editable precedence),
+                       false for priority rows (no rank to order by) %>
+<li class="flex items-center gap-3 px-3 py-2 text-sm <%= "cursor-grab" if draggable_row %>"
+    id="ranked_row_<%= agent_session.id %>"
+    data-ranked-queue-target="row"
+    data-session-id="<%= agent_session.id %>"
+    data-precedence="<%= agent_session.precedence %>">
+  <% if draggable_row %>
+    <span class="shrink-0 text-gray-300 hover:text-gray-500" data-ranked-queue-target="handle" aria-hidden="true" title="Drag to reorder">
+      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
+    </span>
+  <% end %>
+
+  <%# Precedence: editable inline for spot rows, shown greyed for priority ones so
+      the number a demotion would land on is never a surprise. %>
+  <% if draggable_row %>
+    <%= number_field_tag "precedence_#{agent_session.id}", agent_session.precedence,
+          id: "precedence_input_#{agent_session.id}",
+          "aria-label": "Precedence for session #{agent_session.id}",
+          data: { ranked_queue_target: "precedenceInput", action: "keydown.enter->ranked-queue#commitPrecedence blur->ranked-queue#revertUncommitted" },
+          class: "w-24 shrink-0 rounded border border-gray-300 px-2 py-1 text-sm text-right tabular-nums focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500" %>
+  <% else %>
+    <span class="w-24 shrink-0 text-right tabular-nums text-xs text-gray-400" title="Precedence, unused while this session is priority"><%= agent_session.precedence %></span>
+  <% end %>
+
+  <%# A compact status pill rather than the shared _status_badge partial: that one
+      carries a fixed DOM id and a live-update region sized for a card, and forty of
+      them in a list is both noisy and a second element claiming the same id when a
+      session appears in another view on the page. %>
+  <span class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium <%= status_badge_classes(agent_session) %>"><%= agent_session.status.humanize %></span>
+
+  <%= link_to agent_session.title.presence || "Untitled session",
+        session_path(agent_session),
+        class: "min-w-0 flex-1 truncate font-medium text-gray-800 hover:text-indigo-600" %>
+
+  <span class="hidden shrink-0 text-xs text-gray-400 sm:inline"><%= agent_session.agent_root_key.presence || agent_session.genesis_key %></span>
+
+  <%# The promote/demote loop, both halves in the same view so the round trip never
+      leaves this screen. %>
+  <% if draggable_row %>
+    <button type="button"
+            class="shrink-0 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            data-action="ranked-queue#promote"
+            data-session-id="<%= agent_session.id %>">Promote</button>
+  <% else %>
+    <button type="button"
+            class="shrink-0 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            data-action="ranked-queue#demote"
+            data-session-id="<%= agent_session.id %>">Demote to spot</button>
+  <% end %>
+</li>

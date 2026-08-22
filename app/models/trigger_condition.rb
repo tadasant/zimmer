@@ -27,7 +27,7 @@
 # it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
-  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
+  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event].freeze
 
   # The passive-listening event types, in the order the UI offers them.
   #
@@ -55,6 +55,18 @@ class TriggerCondition < ApplicationRecord
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
   AO_EVENT_NAMES = %w[session_needs_input session_failed session_archived].freeze
+
+  # Fleet-wide state transitions, as opposed to one session's. An `ao_event`
+  # condition watches a SESSION changing state; a `system_event` condition watches
+  # the deployment itself change, so it carries no session at all — which is
+  # exactly why it needs its own type rather than a fourth AO_EVENT_NAME.
+  #
+  # `quota_available` fires on the edge where the account pool goes from having
+  # nothing that can serve a request to having something: quota-full to
+  # quota-available. It is an edge, not a level, so it fires once per recovery
+  # rather than every time the pool is measured while healthy. See
+  # QuotaAvailabilityMonitor.
+  SYSTEM_EVENT_NAMES = %w[quota_available].freeze
 
   GITHUB_CONDITION_TYPES = %w[github_label github_issue].freeze
   GITHUB_TARGETS = %w[pull_request issue].freeze
@@ -293,6 +305,13 @@ class TriggerCondition < ApplicationRecord
     configuration["event_name"]
   end
 
+  # The fleet-wide event a system_event condition fires on.
+  def system_event_name
+    return nil unless condition_type == "system_event"
+
+    configuration["event_name"]
+  end
+
   # Optional session id this ao_event condition is scoped to. When set, the
   # condition only fires when the specified session transitions to the watched
   # state. When nil, the condition fires for any session transitioning to the
@@ -482,6 +501,13 @@ class TriggerCondition < ApplicationRecord
         "Zimmer Event: #{ao_event_name}"
       end
       session_scoped_ao_event? ? "#{base} (session ##{watched_session_id})" : base
+    when "system_event"
+      case system_event_name
+      when "quota_available"
+        "System Event: Quota available again"
+      else
+        "System Event: #{system_event_name}"
+      end
     when "github_label"
       kind = github_pull_requests? ? "PRs" : "issues"
       quoted = github_labels.map { |label| "'#{label}'" }.join(" or ")
@@ -661,8 +687,22 @@ class TriggerCondition < ApplicationRecord
       validate_schedule_configuration
     when "ao_event"
       validate_ao_event_configuration
+    when "system_event"
+      validate_system_event_configuration
     when "github_label", "github_issue"
       validate_github_configuration
+    end
+  end
+
+  def validate_system_event_configuration
+    event_name = configuration["event_name"]
+    if event_name.blank?
+      errors.add(:configuration, "must include event_name for System Event conditions")
+      return
+    end
+
+    unless SYSTEM_EVENT_NAMES.include?(event_name)
+      errors.add(:configuration, "event_name must be one of: #{SYSTEM_EVENT_NAMES.join(', ')}")
     end
   end
 

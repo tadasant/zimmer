@@ -3,6 +3,7 @@ class Session < ApplicationRecord
   include SessionStateMachine
   include AtomicJsonMetadata
   include SessionGenesisClassification
+  include SessionPrecedence
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
@@ -264,10 +265,10 @@ class Session < ApplicationRecord
   # needs it to tell an adoption from a rotation.
   #
   # The auth_outage_* keys (AuthOutageParkService) describe a session that is
-  # dormant awaiting a scheduled retry. Any resume — the retry firing, a user
-  # follow-up, deployment recovery — ends that state, so they are cleared here
-  # rather than by the one path that knows about them. Leaving them behind would
-  # render an outage banner promising a retry that already happened, and would
+  # dormant because its login pool had nothing usable. Any resume — the fleet
+  # wake, a user follow-up, deployment recovery — ends that state, so they are
+  # cleared here rather than by the one path that knows about them. Leaving them
+  # behind would render an outage banner for an outage that is over, and would
   # keep matching AuthOutageParkService.parked_sessions, so a later ordinary
   # sleep could be force-resumed as if it were still parked.
   #
@@ -299,7 +300,7 @@ class Session < ApplicationRecord
     last_auth_adoption_at
     auth_outage_reason
     auth_outage_parked_at
-    auth_outage_retry_at
+    auth_outage_pool_recovers_at
     auth_outage_pool_fingerprint
     mcp_retry_count
     mcp_last_retry_at
@@ -1125,10 +1126,13 @@ class Session < ApplicationRecord
   # @param parent_session_id [Integer, nil] ID of the parent session (used by the dependency graph and forking)
   # @param scheduling_class [String, nil] "spot"/"priority" for this session; nil
   #   derives it from the genesis
+  # @param precedence [Integer, nil] where this session sits in the spot queue —
+  #   higher is handled sooner, on an absolute scale. nil lands it just above its
+  #   parent, or at the default when it has none. See SessionPrecedence.
   # @param metadata [Hash] additional metadata to store on the session
   # @param custom_metadata [Hash] additional custom metadata
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil)
     agent_root = AgentRootsConfig.find!(agent_root_name)
 
     # An explicit override wins over the root's declared runtime; either way the
@@ -1188,6 +1192,9 @@ class Session < ApplicationRecord
       # nil means nobody chose a spot/priority class for this session, so it
       # derives from the genesis above — see SessionGenesisClassification.
       scheduling_class: scheduling_class,
+      # nil means nobody ranked this session, so SessionPrecedence lands it just
+      # above the session that spawned it.
+      precedence: precedence,
       metadata: metadata.merge("agent_root_key" => agent_root_name),
       custom_metadata: custom_metadata,
       config: { "model" => resolved_model }

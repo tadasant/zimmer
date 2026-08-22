@@ -401,6 +401,61 @@ The sweep runs every five minutes, but what bounds how fast the ceiling reacts i
 the sweep: utilization comes from quota snapshots, which land when `ClaudeUsageSamplerJob` samples
 (every 15 minutes), when an account rotates, and when someone opens `/quotas`.
 
+## Precedence: ranking the spot queue
+
+`scheduling_class` answers "does this session wait for quota headroom". It says nothing about which
+of the waiting ones goes first — and with a permanently long spot queue that is the question that
+actually decides what gets done.
+
+`precedence` is that ordering. Every session carries one; only spot sessions are ordered by it.
+
+- **Higher is handled sooner, on an absolute scale.** 100000 comes before 50, and 50 comes before 0.
+  It is not a 1..N rank and nothing renumbers it — values are sparse on purpose, so there is always
+  room to slot work between two existing entries. Ties break on `created_at`, oldest first.
+- **It lives on every session, priority ones included.** A priority session demoted to spot has to
+  land somewhere sensible, and a spot session promoted to priority has to keep its place for when it
+  is demoted back. A column populated for half the rows would lose that on every round trip.
+- **A spawn lands just above its parent.** `start_session` with no `precedence` puts the new session
+  one point above the session named in `parent_session_id`, so the child that finishes its parent's
+  job runs before unrelated work queued beneath it and a tree of work stays contiguous. Name a value
+  only when you mean to move the work relative to everything else in the queue.
+- **A trigger can predefine one**, alongside the class it already carries, so a feed is ranked once
+  rather than one spawned session at a time.
+
+### The Ranked view
+
+`/?view=ranked` — a fourth dashboard view beside Categories, Last Touched and Created, and the only
+one that is a management screen rather than a reading one. Priority sessions stack above the queue,
+the spot queue is listed under them highest-precedence first, and both halves are editable in place:
+
+| Do this | And | Which means |
+| --- | --- | --- |
+| Type a number in a row's precedence field and press **Enter** | the row moves to its new position immediately, with no page load | `PATCH /sessions/:id/update_precedence` |
+| **Drag** a row between two others | it takes the **midpoint** of the two values it was dropped between | `PATCH /sessions/:id/reorder_precedence`, which is handed the two neighbours and derives the value |
+| Drag between two **adjacent** values, where no midpoint exists | the neighbours are nudged one apart each, and the dropped row takes the middle of the gap that opens | the same request — 21 and 20 become 22 and 19 |
+| Press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
+| Press **Promote** on a spot row | it moves up to the priority section, keeping its rank for a later demotion | the same endpoint |
+
+Every write is optimistic: the row moves first and the server's answer corrects the numbers behind
+it, including any neighbour that was nudged. A write that fails rolls the row back and reloads,
+because the server's order is the only one that counts.
+
+The nudge is what keeps an integer column usable without a renumbering pass — one extra write per
+drag, and no global compaction ever. A nudge can push a neighbour onto the value of the row beyond
+it; that is left alone deliberately, since equal precedence is legal and cascading the nudge upward
+would turn one drag into an unbounded write. The next drag into that spot separates them.
+
+The Ranked view opens on `waiting`, `running`, `needs_input` and `failed` rather than the dashboard's
+usual `needs_input`-only default: its whole subject is work that has not started. An explicitly
+chosen filter still wins, as everywhere else.
+
+### Quick filters
+
+Three one-click filter states sit above the search box, because they are the ones worth reaching
+without touching five checkboxes: **All** (every status, both classes), **All Unarchived** (every
+status but the trash), and **All Priority Unarchived**. Each is a complete filter state rather than a
+control that combines with the others, and each persists exactly as pressing **Apply filters** does.
+
 ## MCP parity
 
 | Capability | Web UI | MCP |
@@ -417,6 +472,11 @@ the sweep: utilization comes from quota snapshots, which land when `ClaudeUsageS
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
+| Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and demote button | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
+| Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
+| Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |
+| Read a session's rank | Ranked view, session detail page | `get_session`, `quick_search_sessions` |
+| Read the spot queue in the order it will be worked | Ranked view | `quick_search_sessions` (`status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`) |
 
 The page and the tool render the **same** decision — `SpotGateService.evaluate`, of which there is
 exactly one — so the card's badge and the tool's answer cannot disagree.

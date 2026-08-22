@@ -9783,9 +9783,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "waiting", @session.status,
       "A session blocked on an empty pool belongs in waiting, not the human's action queue"
     assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"]
-    assert_not_nil @session.metadata["auth_outage_retry_at"]
-    assert_equal 1, AuthOutageParkService.retry_triggers_for(@session).count,
-      "A parked session must carry a scheduled retry"
+    assert_empty Trigger.where(last_session_id: @session.id),
+      "the session waits for the quota_available fleet wake, not for a timer of its own"
   end
 
   # The same exit with a usable pool is an ordinary completed turn and must still

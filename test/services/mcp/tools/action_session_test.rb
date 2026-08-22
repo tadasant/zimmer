@@ -49,6 +49,67 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/Unknown scheduling_class/, error.message)
   end
 
+  # --- precedence -------------------------------------------------------------
+
+  test "change_precedence sets the rank and reports the move" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 10)
+
+    output = @tool.call("action" => "change_precedence", "session_id" => session.id, "precedence" => 900)
+
+    assert_equal 900, session.reload.precedence
+    assert_includes output, "## Precedence Updated"
+    assert_includes output, "- **Precedence:** 900 (was 10)"
+  end
+
+  # A priority session carries a rank it does not currently use. Saying so beats
+  # letting an agent think it has just changed when the session starts.
+  test "change_precedence on a priority session says the rank is not gating it" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    output = @tool.call("action" => "change_precedence", "session_id" => session.id, "precedence" => 5)
+
+    assert_includes output, "this session is priority"
+  end
+
+  test "change_precedence requires the parameter" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_precedence", "session_id" => sessions(:needs_input).id)
+    end
+    assert_match(/"precedence" parameter is required/, error.message)
+  end
+
+  test "change_precedence rejects a non-integer" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_precedence", "session_id" => sessions(:needs_input).id,
+        "precedence" => "urgent")
+    end
+    assert_match(/precedence must be an integer/, error.message)
+  end
+
+  # A demotion that does not also place the session leaves it wherever its old
+  # rank puts it, which is usually the bottom — so one call can do both.
+  test "change_scheduling_class can place the session in the same call" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY, precedence: 0)
+
+    output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+      "scheduling_class" => "spot", "precedence" => 4242)
+
+    session.reload
+    assert session.spot?
+    assert_equal 4242, session.precedence
+    assert_includes output, "- **Precedence:** 4242 (was 0)"
+  end
+
+  test "the precedence description states the absolute scale" do
+    description = Mcp::Tools::ActionSession.input_schema.to_h.dig(:properties, :precedence, :description)
+
+    assert_match(/absolute scale/i, description)
+    assert_match(/100000 comes before 50/, description)
+  end
+
   test "rejects an unknown action" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "self_destruct", "session_id" => sessions(:needs_input).id) }
     assert_match(/Unknown action/, error.message)

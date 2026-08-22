@@ -2427,12 +2427,13 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "Must not re-spawn when there is no account to recover to"
 
     # The bare needs_input is not enough on its own — the session must be parked
-    # with an explanation and a scheduled retry.
+    # with an explanation, and marked to go dormant rather than sitting on the
+    # human's action queue.
     @session.reload
     assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, @session.metadata["auth_outage_reason"]
-    assert_not_nil @session.metadata["auth_outage_retry_at"]
-    assert_not_nil Trigger.find_by(last_session_id: @session.id),
-      "A wake-up trigger must be scheduled so the session retries on its own"
+    assert_equal true, @session.metadata["pending_sleep"]
+    assert_empty Trigger.where(last_session_id: @session.id),
+      "waking is the quota_available fleet event's job now, not a per-session timer"
   end
 
   test "handle_exit parks the session for retry when auth recovery is exhausted" do
@@ -2966,7 +2967,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # Pool exhaustion — quota hit with nothing left to rotate into
   # ===========================================================================
 
-  test "quota exhaustion with no rotation target parks the session with a scheduled retry" do
+  test "quota exhaustion with no rotation target parks the session" do
     provider = Object.new
     provider.define_singleton_method(:rotate_for_quota!) do |triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil|
       { success: false, reason: "no_available_accounts" }
@@ -2985,7 +2986,6 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     @session.reload
     assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"]
-    assert_not_nil @session.metadata["auth_outage_retry_at"]
     assert_equal true, @session.metadata["pending_sleep"]
 
     @log_buffer.flush
