@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_22_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -560,7 +560,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_21_220000) do
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"
     t.index ["job_id"], name: "index_sessions_on_job_id"
     t.index ["parent_session_id"], name: "index_sessions_on_parent_session_id"
-    t.index ["precedence", "created_at"], name: "index_sessions_on_precedence_unarchived", where: "(status <> 3)"
+    t.index ["precedence", "created_at"], name: "index_sessions_on_precedence_desc_unarchived", order: { precedence: :desc }, where: "(status IS DISTINCT FROM 3)"
     t.index ["scheduling_class"], name: "index_sessions_on_scheduling_class", where: "(scheduling_class IS NOT NULL)"
     t.index ["session_id"], name: "index_sessions_on_session_id", unique: true
     t.index ["slug"], name: "index_sessions_on_slug", unique: true

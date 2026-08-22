@@ -147,6 +147,15 @@ class AuthOutageParkService
     log_buffer&.flush
 
     record_outage!(reason, recovers_at)
+
+    # A park is POSITIVE evidence that the pool is empty, and the earliest Zimmer
+    # has it. QuotaAvailabilityMonitor otherwise only samples every fifteen
+    # minutes, so an outage that opens and closes inside one tick is never
+    # observed as unavailable — the recovery is then not an edge, no event fires,
+    # and everything parked in that window waits forever. Recording it here is
+    # what makes the next recovery a real rising edge.
+    QuotaAvailabilityMonitor.record_unavailable! if reason == QUOTA_EXHAUSTED
+
     notify!(reason)
 
     @logger.warn("Session parked for auth outage",
@@ -346,16 +355,28 @@ class AuthOutageParkService
     # `.each`, not `find_each`: find_each imposes its own primary-key order and
     # would discard the oldest-park-first ordering the cap below depends on. The
     # set is bounded by how many sessions can be asleep at once.
-    parked_sessions.each do |session|
-      # Spot work waits for the fleet wake, which ranks it. See the note above.
-      next unless session.priority?
+    # Spot sessions this sweep found eligible but will not resume itself. The
+    # fleet wake is what starts them, in precedence order — but it fires on the
+    # POOL's rising edge, and an auth park is woken by the pool's CREDENTIALS
+    # changing, which is not that edge. Without this, a spot session parked
+    # `auth_unrecoverable` has no wake path at all.
+    spot_eligible = 0
 
+    parked_sessions.each do |session|
       runtime = session.agent_runtime
       next unless available.fetch(runtime) { available[runtime] = runtime_has_available_account?(runtime) }
 
       if session.metadata&.dig("auth_outage_reason") == AUTH_UNRECOVERABLE
         current = fingerprints.fetch(runtime) { fingerprints[runtime] = pool_fingerprint(runtime) }
         next unless auth_park_wakeable?(session, current, logger)
+      end
+
+      # Eligible, but spot: this sweep has no notion of order, and ordering spot
+      # work is the whole point of the fleet wake. Count it and let that session
+      # decide, rather than resuming it here out of order.
+      unless session.priority?
+        spot_eligible += 1
+        next
       end
 
       # Past the cap, and eligible: this session keeps its timer and its place at
@@ -379,6 +400,11 @@ class AuthOutageParkService
         resumed: resumed, held: held, cap: MAX_WAKES_PER_SWEEP)
     end
 
+    if spot_eligible.positive?
+      logger.info("Left parked spot sessions to the ranked fleet wake", count: spot_eligible)
+      QuotaAvailabilityMonitor.request_wake!(reason: "#{spot_eligible} parked spot session(s) became eligible")
+    end
+
     resumed
   end
 
@@ -388,20 +414,29 @@ class AuthOutageParkService
   # @param current [String, nil] the runtime's pool fingerprint right now
   def self.auth_park_wakeable?(session, current, logger)
     parked_fingerprint = session.metadata&.dig(POOL_FINGERPRINT_KEY)
-    # Parked before the fingerprint was recorded (an older park, or one whose
-    # fingerprint could not be computed). There is nothing to compare against,
-    # and "wake anyway" is the resume loop, so the timer remains its way back.
-    return false if parked_fingerprint.blank?
+    # Parked before the fingerprint was recorded — an older park, or one whose
+    # pool could not be read at the time. There is nothing to compare against, so
+    # there is no evidence either way; wake it anyway rather than leave it
+    # dormant forever. Nothing else would: the timer that used to be its way back
+    # no longer exists. The early-wake budget below is what keeps "no evidence"
+    # from becoming a resume loop.
+    return within_early_wake_budget?(session, logger) if parked_fingerprint.blank?
+
     return false if current.blank? || current == parked_fingerprint
 
-    spent = recent_early_wakes(session).size
-    if spent >= MAX_EARLY_WAKES
-      logger.info("Auth-outage park has spent its early wakes — leaving it to the timer",
-        session_id: session.id, early_wakes: spent, window: EARLY_WAKE_WINDOW.inspect)
-      return false
-    end
+    within_early_wake_budget?(session, logger)
+  end
 
-    true
+  # Whether this park may spend another sweep-driven wake inside the window. Past
+  # the budget it stays parked until a human resumes it or the pool changes
+  # enough for a later sweep to grant one.
+  def self.within_early_wake_budget?(session, logger)
+    spent = recent_early_wakes(session).size
+    return true if spent < MAX_EARLY_WAKES
+
+    logger.info("Auth-outage park has spent its early wakes — leaving it parked",
+      session_id: session.id, early_wakes: spent, window: EARLY_WAKE_WINDOW.inspect)
+    false
   end
 
   # The session's sweep-driven wakes still inside the rolling window, oldest
@@ -600,7 +635,7 @@ class AuthOutageParkService
       # #seven_day_window_spent? holds and the account stays exceeded. Calling
       # that "now" pins every parked session to the retry floor and wakes them
       # all back into the same exhausted pool five minutes later. Its reset time
-      # is simply unknown, and DEFAULT_RETRY_DELAY is what unknown means here.
+      # is simply unknown, and an absent estimate is what unknown means here.
       Time.current if snapshot.windows_clear?
     end
 

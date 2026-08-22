@@ -9,7 +9,7 @@ module Mcp
     # fired by one or more conditions (OR semantics), so a type filter matches
     # triggers with at least one condition of that type.
     class SearchTriggers < Tool
-      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue].freeze
+      TRIGGER_TYPES = TriggerCondition::CONDITION_TYPES
       # Referenced, not re-declared: a re-declared copy of a model constant is the
       # drift vector that leaves an agent unable to name a status a human can see.
       # `failed` is Zimmer's to set — a one-shot fire raised and the trigger was

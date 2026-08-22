@@ -181,6 +181,46 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     assert_equal 19, changed[below.id]
   end
 
+  test "a demotion does not land above an archived session's rank" do
+    spot(9_000, title: "archived top", status: :archived)
+    spot(40)
+    session = priority
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::SPOT, place: "top_of_spot" }, as: :json
+
+    assert_equal 40 + SessionPrecedence::SLOT_GAP, session.reload.precedence
+  end
+
+  # A stale page can name a row that has since left the queue. It must not be
+  # nudged: nobody is looking at it, and its rank is what a later demotion or
+  # promotion reads.
+  test "a neighbour that is no longer in the spot queue is ignored" do
+    archived = spot(50, title: "archived neighbour", status: :archived)
+    moved = spot(1)
+
+    patch reorder_precedence_session_url(moved),
+      params: { above_id: nil, below_id: archived.id }, as: :json
+
+    assert_response :success
+    assert_equal 50, archived.reload.precedence, "an archived row must not be nudged"
+    assert_equal SessionPrecedence::DEFAULT, moved.reload.precedence,
+      "with no usable neighbour the drop takes the default"
+  end
+
+  test "a drag that changes nothing writes no log line" do
+    above = spot(100)
+    below = spot(50)
+    moved = spot(75)
+
+    assert_no_difference -> { moved.logs.count } do
+      patch reorder_precedence_session_url(moved),
+        params: { above_id: above.id, below_id: below.id }, as: :json
+    end
+    assert_response :success
+    assert_equal 75, moved.reload.precedence
+  end
+
   test "a neighbour that has since disappeared still places the drop" do
     below = spot(50)
     moved = spot(1)

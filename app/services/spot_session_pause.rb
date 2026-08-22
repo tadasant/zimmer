@@ -258,11 +258,21 @@ class SpotSessionPause
     end
 
     # Put back as many of the still-spot sleepers as the gate and the batch
-    # allow, oldest pause first.
+    # allow, HIGHEST PRECEDENCE FIRST.
+    #
+    # The budget is smaller than the population this usually holds, so the order
+    # decides which spot work runs when a window comes back down — which is the
+    # same question the ranked queue exists to answer. Resuming by pause age
+    # instead would hand the recovered headroom to whichever session happened to
+    # be paused longest, ignoring the operator's ordering exactly where it is
+    # meant to apply. Ties break on the oldest pause, so equal-ranked sessions
+    # still take turns.
     #
     # @return [Array(Integer, Integer)] resumed, and left asleep
     def resume_spot!(sessions, logger)
       return [ 0, 0 ] if sessions.empty?
+
+      sessions = rank(sessions)
 
       decision = SpotGateService.resume_decision
       unless decision.allowed?
@@ -277,10 +287,19 @@ class SpotSessionPause
 
       # Named rather than left implicit: a sweep that resumed 5 of 40 must not
       # read as "5 were waiting".
-      logger.info("Resumed spot sessions the ceiling had paused",
+      logger.info("Resumed spot sessions the ceiling had paused, highest precedence first",
         resumed: resumed, still_asleep: held, budget: budget)
 
       [ resumed, held ]
+    end
+
+    # Highest precedence first, oldest pause within a tie. Sorted in Ruby: the
+    # caller has already loaded and partitioned the population, so re-querying it
+    # to sort would cost a round trip for a list this size.
+    def rank(sessions)
+      sessions.sort_by do |session|
+        [ -session.precedence.to_i, session.metadata&.dig("spot_pause_at").to_s, session.id ]
+      end
     end
 
     # How many sessions this sweep may put back. Bounded by the free slots the

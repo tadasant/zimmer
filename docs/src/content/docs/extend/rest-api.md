@@ -130,7 +130,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` filters as `/sessions`. Missing/oversized `q` → 400 (the only 400 in the API). Status-summary forks are never listed |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201. See below. |
-| `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `custom_metadata` |
+| `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `custom_metadata` |
 | `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}`. **422** while any message is still queued for the session, since archiving discards it; `force: true` overrides deliberately and the discarded messages are retired to `undelivered` — see [lifecycle](/sessions/lifecycle/) |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off |
@@ -164,7 +164,7 @@ left half-queued, and the call answers 404, 409, 422, or 500.
 
 Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
 `title`, `slug`, `goal`, `execution_provider`, `is_autonomous`, `parent_session_id`,
-`auto_compact_window`, `scheduling_class`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`,
+`auto_compact_window`, `scheduling_class`, `precedence`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`,
 `catalog_plugins[]`, `config{}`, `custom_metadata{}`.
 
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
@@ -189,8 +189,14 @@ matches nothing is not the same kind of mistake as a session created in the wron
 permitted on `PATCH /sessions/:id`, which is how a spot session already held behind the quota gate is
 moved to priority without touching the trigger that spawned it; send `null` to go back to derived.
 
+`precedence` is caller-supplied too, on both `POST /sessions` and `PATCH /sessions/:id`. It ranks the
+session within the spot queue — higher is handled sooner, on an absolute scale, so 100000 comes before
+50 — and it is carried on every session, priority ones included. Omit it on create and the session
+lands one point above the session named in `parent_session_id`, or at 0 with no parent.
+
 See [Spot and priority](/sessions/spot-and-priority/). Every session object carries `genesis`,
-`scheduling_class` (the explicit choice, usually `null`) and `priority_class` (the resolved answer).
+`scheduling_class` (the explicit choice, usually `null`), `priority_class` (the resolved answer) and
+`precedence`.
 
 `agent_root` is not a Session column — it names a catalog entry that expands into `git_root`,
 `branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
@@ -390,6 +396,9 @@ priority](/sessions/spot-and-priority/) class of the sessions this trigger spawn
 default — derives it from the trigger's condition type. The payload reports both `scheduling_class`
 (what was chosen, usually `null`) and `effective_scheduling_class` (what its sessions actually get).
 Changing it applies to sessions the trigger spawns from then on.
+
+`precedence` (an integer, or `null`) predefines the rank the trigger's sessions land on in the spot
+queue. Same absolute scale, same "applies to sessions spawned from now on" rule as the class.
 
 `status` is one of `enabled`, `disabled`, or `failed`, and all three work as `?status=` filters.
 `failed` is Zimmer's to set: a one-shot fire raised and the trigger was

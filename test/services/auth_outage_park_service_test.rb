@@ -196,6 +196,57 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "running", @session.reload.status
   end
 
+  # A spot session is not resumed here, but the sweep is the only thing that
+  # noticed it became eligible — so it asks for the ranked wake rather than
+  # leaving that session with no path at all.
+  test "an eligible parked spot session asks for the fleet wake" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::SPOT)
+    park!
+    AppSetting.current.update!(quota_pool_available: false)
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_equal "waiting", @session.reload.status
+  end
+
+  # The reason an auth park needs it: `accounts.available` never goes false→true
+  # for a credentials problem, so the pool's own edge never fires for it.
+  test "a spot auth-outage park asks for the wake once its pool credentials change" do
+    account = create_account(email: "present@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::SPOT)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    AppSetting.current.update!(quota_pool_available: false)
+    create_account(email: "new-identity@example.com", status: :active)
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      AuthOutageParkService.wake_parked_sessions!
+    end
+    assert account.present?
+  end
+
+  test "an ineligible parked spot session asks for nothing" do
+    create_account(email: "still-out@example.com", status: :quota_exceeded)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::SPOT)
+    park!
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+  end
+
+  # A quota park is the earliest positive evidence the pool is empty. Without it
+  # an outage shorter than the 15-minute sweep is never seen as unavailable, so
+  # the recovery is not an edge and nothing wakes.
+  test "a quota park records the pool as unavailable" do
+    AppSetting.current.update!(quota_pool_available: true)
+
+    park!
+
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+  end
+
   test "leaves a parked session alone while the pool is still exhausted" do
     create_account(email: "still-out@example.com", status: :quota_exceeded)
     @session.update!(status: :needs_input)
@@ -378,13 +429,28 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
   # Parked before the fingerprint existed (or by a park whose pool read failed):
   # there is nothing to compare against, and "wake anyway" is the resume loop.
-  test "an auth-outage park with no recorded fingerprint is left to its timer" do
+  # There is nothing to compare against, so there is no evidence either way — and
+  # nothing else would ever pick the session up, since the timer that used to be
+  # its way back no longer exists. The early-wake budget is what keeps "no
+  # evidence" from becoming a resume loop.
+  test "an auth-outage park with no recorded fingerprint is woken anyway" do
     create_account(email: "present@example.com", status: :active)
     @session.update!(status: :needs_input)
     park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
     @session.update!(metadata: @session.metadata.except(AuthOutageParkService::POOL_FINGERPRINT_KEY))
 
-    create_account(email: "freshly-added@example.com", status: :active)
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_equal "running", @session.reload.status
+  end
+
+  test "a fingerprintless auth park still spends its early-wake budget" do
+    create_account(email: "present@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    @session.update!(metadata: @session.metadata
+      .except(AuthOutageParkService::POOL_FINGERPRINT_KEY)
+      .merge(AuthOutageParkService::EARLY_WAKE_LOG_KEY =>
+        Array.new(AuthOutageParkService::MAX_EARLY_WAKES) { 1.minute.ago.utc.iso8601 }))
 
     assert_equal 0, AuthOutageParkService.wake_parked_sessions!
     assert_equal "waiting", @session.reload.status

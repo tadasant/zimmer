@@ -9,23 +9,29 @@
     data-ranked-queue-target="row"
     data-session-id="<%= agent_session.id %>"
     data-precedence="<%= agent_session.precedence %>">
-  <% if draggable_row %>
-    <span class="shrink-0 text-gray-300 hover:text-gray-500" data-ranked-queue-target="handle" aria-hidden="true" title="Drag to reorder">
-      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
-    </span>
-  <% end %>
+  <%# Rendered on every row, hidden on priority ones — see the note on the rank
+      cell below: a row promoted or demoted swaps its controls in place. %>
+  <span class="shrink-0 text-gray-300 hover:text-gray-500 <%= "hidden" unless draggable_row %>"
+        data-ranked-queue-target="handle" aria-hidden="true" title="Drag to reorder">
+    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
+  </span>
 
-  <%# Precedence: editable inline for spot rows, shown greyed for priority ones so
-      the number a demotion would land on is never a surprise. %>
-  <% if draggable_row %>
-    <%= number_field_tag "precedence_#{agent_session.id}", agent_session.precedence,
-          id: "precedence_input_#{agent_session.id}",
-          "aria-label": "Precedence for session #{agent_session.id}",
-          data: { ranked_queue_target: "precedenceInput", action: "keydown.enter->ranked-queue#commitPrecedence blur->ranked-queue#revertUncommitted" },
-          class: "w-24 shrink-0 rounded border border-gray-300 px-2 py-1 text-sm text-right tabular-nums focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500" %>
-  <% else %>
-    <span class="w-24 shrink-0 text-right tabular-nums text-xs text-gray-400" title="Precedence, unused while this session is priority"><%= agent_session.precedence %></span>
-  <% end %>
+  <%# Precedence: editable inline for spot rows, greyed static text for priority
+      ones so the number a demotion would land on is never a surprise.
+
+      BOTH cells are rendered on every row and one of them is hidden. A promote or
+      a demote moves the row between the two sections, and the controller swaps
+      which cell is showing — so a demoted row is immediately draggable and
+      editable, and shows its NEW rank, without waiting for a reload. %>
+  <%= number_field_tag "precedence_#{agent_session.id}", agent_session.precedence,
+        id: "precedence_input_#{agent_session.id}",
+        disabled: !draggable_row,
+        "aria-label": "Precedence for session #{agent_session.id}",
+        data: { ranked_queue_target: "precedenceInput", action: "keydown.enter->ranked-queue#commitPrecedence blur->ranked-queue#revertUncommitted" },
+        class: "w-24 shrink-0 rounded border border-gray-300 px-2 py-1 text-sm text-right tabular-nums focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 #{'hidden' unless draggable_row}" %>
+  <span class="w-24 shrink-0 text-right tabular-nums text-xs text-gray-400 <%= "hidden" if draggable_row %>"
+        data-ranked-queue-target="precedenceReadout"
+        title="Precedence, unused while this session is priority"><%= agent_session.precedence %></span>
 
   <%# A compact status pill rather than the shared _status_badge partial: that one
       carries a fixed DOM id and a live-update region sized for a card, and forty of

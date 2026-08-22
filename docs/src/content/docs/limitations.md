@@ -942,34 +942,39 @@ guess, and three of them exhaust the session's budget and park it.
 There is no visibility into *which* session holds the lock; the only signal is the
 `"Pool lock held past the wait"` warning in the waiting session's logs.
 
-### A parked session retries forever, once an hour
+### A parked session waits for one event, and only that event
 
-🟡 When the login pool runs dry, `AuthOutageParkService` parks the session and schedules a wake-up
-(see [Agent harness auth](/auth/harness/#when-the-pool-runs-dry)). If the outage has *not* cleared by
-then, the woken session hits the same wall and parks again. There is no cap on park cycles, so a
-genuinely dead account pool produces a wake → fail → re-park cycle indefinitely, each with its own
-push notification and a fresh `Trigger` row (reaped an hour after its scheduled time by
-`CleanupStaleTriggersJob`). The cycle is hourly for an auth outage; for a quota outage it is however
-long the derived reset says, floored at five minutes.
+🟡 When the login pool runs dry, `AuthOutageParkService` parks the session and creates nothing — no
+timer, no per-session trigger (see [Agent harness auth](/auth/harness/#when-the-pool-runs-dry)). What
+wakes it is the `quota_available` edge, fired once per recovery, which spawns one fleet-maintenance
+session that starts spot work in precedence order. Parked **priority** sessions keep a direct sweep
+of their own every fifteen minutes.
 
-That is deliberate — the alternative is a terminal `failed` that no longer recovers when a human
-finally re-authenticates — but it means a long outage is noisy rather than silent. The signal that
-someone must intervene is the repetition itself, not a distinct state.
+That removes the wake → fail → re-park cycle the timers produced, and with it the dozens of
+`Auth outage retry for session #N` rows the trigger list used to carry. It also concentrates the
+whole spot wake into one event, and the sharp edges are all about that concentration:
 
-Two related sharp edges:
-
-- The retry time is only derived from real reset data for a **quota** outage, and only for Claude:
-  it reads `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d`. An auth outage (a rejected identity)
-  has no published reset clock at all, so it falls back to a blind `DEFAULT_RETRY_DELAY` of one hour.
-- Codex has no quota API, so a parked Codex session always gets that same blind hour.
-- The early wake that saves an auth park from that hour is only as good as its evidence, and the
-  evidence is coarse in both directions. It cannot see an outage that heals on Anthropic's side
-  without touching an account row — that one still waits out the timer. And it fires on credential
-  changes that are not repairs at all: the five-minute `sync_current_account_tokens!` adopting a
-  token the CLI rotated on disk moves the same digest. The budget is what makes that survivable
-  rather than exact — `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h), deliberately not reset by
-  a re-park — so a session broken for a reason of its own can still burn three wakes in 45 minutes
-  and spend the rest of that window on the hourly timer.
+- **A missing or broken fleet trigger stalls the whole spot queue.** The trigger is seeded by a
+  migration and points at the `fleet-maintenance` agent root; if it is deleted, disabled, or its root
+  does not resolve, no spot session wakes. A fire that delivers no session **re-arms** the edge
+  (`QuotaAvailabilityMonitor.rearm!`) so the next sweep tries again rather than spending the one
+  chance — but a permanently broken trigger is a permanently stalled queue, visible only as spot
+  sessions sitting in `waiting`.
+- **An auth park is woken by different evidence than a quota park**, and only the quota one has an
+  edge of its own. `accounts.available` never goes false→true for a rejected identity, so a *spot*
+  session parked `auth_unrecoverable` is woken only because the fifteen-minute sweep notices its pool
+  fingerprint changed and asks for the wake on its behalf. Between sweeps it waits.
+- **The fingerprint is coarse in both directions.** It cannot see an outage that heals on Anthropic's
+  side without touching an account row, and it fires on credential changes that are not repairs at
+  all — the five-minute `sync_current_account_tokens!` adopting a token the CLI rotated on disk moves
+  the same digest. `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h), deliberately not reset by a
+  re-park, is what makes that survivable rather than exact. Past the budget the session stays parked
+  until a human resumes it or the pool changes enough for a later sweep to grant one.
+- **Codex has no quota API**, so a parked Codex session is never woken by a quota edge at all — its
+  pool is read for availability only.
+- **`auth_outage_pool_recovers_at` is an estimate, not a schedule.** It is derived from
+  `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d` for a quota park, shown in the banner, and read
+  by nothing.
 
 ### `CodexRetryStrategy` classifies almost nothing
 
