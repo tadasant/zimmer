@@ -10,6 +10,11 @@ class Session < ApplicationRecord
   has_many :enqueued_messages, dependent: :destroy
   has_many :notifications, dependent: :destroy
   has_many :mcp_oauth_pending_flows, dependent: :destroy
+  # What each experimental setting was when this session started and when it last
+  # ran — the cohort labels behind the Costs page's experiment report. No
+  # `dependent:`, for the same reason `outcome_analyses` below has none: the
+  # foreign key is ON DELETE CASCADE.
+  has_many :session_experimental_flags
 
   # Outcome analyses OF this session's transcript (the Outcomes view). No
   # `dependent:` — the foreign key is ON DELETE CASCADE, so the database already

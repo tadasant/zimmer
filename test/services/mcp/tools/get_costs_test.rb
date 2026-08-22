@@ -185,4 +185,27 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
     assert_match "Ledger covers", output
     assert_no_match(/Partial history/, output)
   end
+  test "the experiment cohorts are reported with the reasons not to trust them" do
+    # An agent quoting a delta downstream quotes whatever framing rides with it,
+    # so the framing has to be in the output, not only in the tool description.
+    SessionExperimentalFlag.create!(session: @session, setting_key: "mcp_tool_search",
+                                    value_at_start: true, value_at_end: true,
+                                    source: SessionExperimentalFlag::BACKFILLED)
+    usage
+
+    output = @tool.call({})
+
+    assert_match "Experimental settings (observational, not randomized)", output
+    assert_match "MCP tool search", output
+    assert_match "Too few sessions to compare", output
+    assert_match "Cohorts are temporal", output
+  end
+
+  test "no experiment section appears when nothing has been tagged" do
+    usage
+
+    output = @tool.call({})
+
+    assert_no_match(/Experimental settings/, output)
+  end
 end
