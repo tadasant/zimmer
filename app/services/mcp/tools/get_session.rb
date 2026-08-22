@@ -308,6 +308,7 @@ module Mcp
         # is about THIS session and reading it off a tree of one is awkward.
         lines << "- **Genesis:** #{session.genesis_key} (#{session.genesis_label})"
         lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
+        lines << "- **Precedence:** #{session.precedence}#{' — spot sessions start highest first' if session.spot?}"
         lines.concat(spot_hold_lines(session))
         lines.concat(spot_pause_lines(session))
 

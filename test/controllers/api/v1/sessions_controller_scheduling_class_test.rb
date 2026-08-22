@@ -40,6 +40,27 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert_equal "spot", json["priority_class"], "api derives spot"
   end
 
+  test "create accepts a precedence and reports it back" do
+    post "/api/v1/sessions",
+      params: { agent_root: "zimmer", prompt: "Go", precedence: 1234 },
+      headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)["session"]
+    assert_equal 1234, json["precedence"]
+    assert_equal 1234, Session.find(json["id"]).precedence
+  end
+
+  test "update moves a session within the spot queue" do
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", precedence: 5)
+
+    patch "/api/v1/sessions/#{session.id}", params: { precedence: 90 }, headers: @headers
+
+    assert_response :success
+    assert_equal 90, session.reload.precedence
+    assert_equal 90, JSON.parse(response.body)["session"]["precedence"]
+  end
+
   test "an unknown class is a 422 rather than a silent default" do
     post "/api/v1/sessions",
       params: { agent_root: "zimmer", prompt: "Go", scheduling_class: "whenever" },

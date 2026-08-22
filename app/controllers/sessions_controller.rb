@@ -27,7 +27,11 @@ class SessionsController < ApplicationController
   VIEW_MODE_CATEGORIES = "categories".freeze
   VIEW_MODE_LAST_TOUCHED = "last_touched".freeze
   VIEW_MODE_CREATED_DESC = "created_desc".freeze
-  VALID_VIEW_MODES = [ VIEW_MODE_CATEGORIES, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC ].freeze
+  # The spot queue, in the order it will be worked. Not a sort of the same grid:
+  # it is a two-section list (priority above, spot below, ranked) whose rows are
+  # editable — this is where a queue is MANAGED rather than read.
+  VIEW_MODE_RANKED = "ranked".freeze
+  VALID_VIEW_MODES = [ VIEW_MODE_CATEGORIES, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC, VIEW_MODE_RANKED ].freeze
 
   # Cookie that persists an explicitly-chosen view mode across navigation. Only
   # written when the user picks a view via ?view=; absent until then so the
@@ -44,6 +48,21 @@ class SessionsController < ApplicationController
   # an action queue and `needs_input` is the only status that is actually waiting on
   # a human, so every view opens on those cards alone.
   DEFAULT_STATUS_FILTER = %w[needs_input].freeze
+
+  # Every status except the trash, as the "All Unarchived" quick filter selects
+  # them. Derived from the options list so a new status joins it automatically.
+  UNARCHIVED_STATUSES = (STATUS_FILTER_OPTIONS - %w[archived]).freeze
+
+  # …except the Ranked view, whose whole subject is work that has NOT run yet.
+  # Opening it on `needs_input` alone would show an empty queue and hide the
+  # `waiting` sessions it exists to order. Still only a default: an explicitly
+  # submitted filter wins here exactly as it does everywhere else.
+  DEFAULT_RANKED_STATUS_FILTER = %w[waiting running needs_input failed].freeze
+
+  # How many rows each section of the Ranked view renders. There is no paginator
+  # there on purpose — a drag between two rows means nothing if one of them is on
+  # another page — so this is a cap, and the view says when it has truncated.
+  RANKED_SECTION_LIMIT = 200
 
   # Cookie that persists an explicit Filters choice (statuses + scheduling class),
   # so the selection survives a reload and a bare visit to "/" rather than snapping
@@ -130,6 +149,11 @@ class SessionsController < ApplicationController
     @search_active = @search_query.present? || @agent_root_filter.present? ||
                      @genesis_filter.present?
 
+    # Which view the dashboard renders in. Resolved before the filters because the
+    # Ranked view carries a different DEFAULT status filter — it is a queue of work
+    # that has not run yet, so opening it on `needs_input` alone would show nothing.
+    @view_mode = resolve_view_mode
+
     # The Filters section: which statuses to show, and the spot/priority narrowing.
     resolve_filters
 
@@ -167,10 +191,20 @@ class SessionsController < ApplicationController
       sessions = sessions.with_genesis(@genesis_filter)
     end
 
-    # Resolve which view the dashboard renders in: the category-grouped grid, or
-    # one of the two flat sort modes. Persists an explicit choice and applies the
-    # mobile/desktop default otherwise.
-    @view_mode = resolve_view_mode
+    # The Ranked view: the spot queue in the order it will actually be worked,
+    # with the priority sessions that outrank all of it stacked above. Two
+    # sections rather than one list, because the two halves answer different
+    # questions — a priority session has no rank to compare, it simply starts —
+    # and because the demote button only belongs on one of them.
+    if @view_mode == VIEW_MODE_RANKED
+      @ranked_priority_sessions = sessions.priority_classified(SessionGenesis::PRIORITY)
+        .ranked.limit(RANKED_SECTION_LIMIT).to_a
+      @ranked_spot_sessions = sessions.priority_classified(SessionGenesis::SPOT)
+        .ranked.limit(RANKED_SECTION_LIMIT).to_a
+      @ranked_section_limit = RANKED_SECTION_LIMIT
+      @any_sessions = @ranked_priority_sessions.any? || @ranked_spot_sessions.any?
+      return
+    end
 
     # Flat sort views completely flatten the presentation: a single list sorted
     # solely by the chosen factor, honoring the same filters/visibility but
@@ -2616,26 +2650,109 @@ class SessionsController < ApplicationController
 
     klass = params[:scheduling_class].to_s.strip
     if klass.present? && !SessionGenesis::CLASSES.include?(klass)
-      return redirect_back fallback_location: session_path(@session),
-        alert: "Unknown scheduling class: #{klass}"
+      return scheduling_class_failure("Unknown scheduling class: #{klass}")
     end
 
     previous = @session.priority_class
-    if with_db_retry { @session.update(scheduling_class: klass.presence) }
-      if previous != @session.priority_class
-        @session.logs.create!(
-          content: "Scheduling class set to #{@session.priority_class} (was #{previous})",
-          level: "info"
-        )
+    previous_precedence = @session.precedence
+
+    attrs = { scheduling_class: klass.presence }
+    # Demoting to spot lands the session at the HEAD of the spot queue, a few
+    # points above whatever is currently on top. That is the useful default and
+    # the one the ranked view's button asks for: a session you have just decided
+    # is not urgent enough to be priority is still, almost always, the spot work
+    # you care most about — and leaving it on whatever rank it happened to carry
+    # (usually 0, the bottom) would bury it behind the entire queue.
+    if params[:place].to_s == "top_of_spot" && klass == SessionGenesis::SPOT
+      attrs[:precedence] = Session.precedence_above_top_spot(Session.where.not(id: @session.id))
+    elsif params.key?(:precedence)
+      attrs[:precedence] = params[:precedence]
+    end
+
+    unless with_db_retry { @session.update(attrs) }
+      return scheduling_class_failure("Could not update: #{@session.errors.full_messages.join(', ')}")
+    end
+
+    if previous != @session.priority_class
+      @session.logs.create!(
+        content: "Scheduling class set to #{@session.priority_class} (was #{previous})",
+        level: "info"
+      )
+    end
+    if previous_precedence != @session.precedence
+      @session.logs.create!(
+        content: "Precedence set to #{@session.precedence} (was #{previous_precedence})",
+        level: "info"
+      )
+    end
+
+    respond_to do |format|
+      format.json { render json: precedence_payload(@session) }
+      format.html do
+        redirect_back fallback_location: session_path(@session),
+          notice: "This session is now #{@session.priority_class}."
       end
-      redirect_back fallback_location: session_path(@session),
-        notice: "This session is now #{@session.priority_class}."
-    else
-      redirect_back fallback_location: session_path(@session),
-        alert: "Could not update: #{@session.errors.full_messages.join(', ')}"
     end
   end
 
+  # PATCH /sessions/:id/update_precedence
+  # Set one session's rank in the spot queue. JSON for the ranked view, which
+  # re-sorts the row in place; HTML for the session detail page's form.
+  def update_precedence
+    @session = find_session
+
+    previous = @session.precedence
+    unless with_db_retry { @session.update(precedence: params[:precedence]) }
+      message = "Could not update precedence: #{@session.errors.full_messages.join(', ')}"
+      return respond_to do |format|
+        format.json { render json: { error: message }, status: :unprocessable_entity }
+        format.html { redirect_back fallback_location: session_path(@session), alert: message }
+      end
+    end
+
+    if previous != @session.precedence
+      @session.logs.create!(
+        content: "Precedence set to #{@session.precedence} (was #{previous})",
+        level: "info"
+      )
+    end
+
+    respond_to do |format|
+      format.json { render json: precedence_payload(@session) }
+      format.html do
+        redirect_back fallback_location: session_path(@session),
+          notice: "Precedence is now #{@session.precedence}."
+      end
+    end
+  end
+
+  # PATCH /sessions/:id/reorder_precedence
+  # A drag-and-drop landing between two rows. The client names the neighbours it
+  # dropped between and the server derives the value, so the midpoint rule and the
+  # nudge that makes room for it live in one place rather than in JavaScript.
+  def reorder_precedence
+    @session = find_session
+
+    above = neighbour_session(params[:above_id])
+    below = neighbour_session(params[:below_id])
+
+    result = Sessions::ReorderPrecedence.call(session: @session, above: above, below: below)
+
+    @session.logs.create!(
+      content: "Precedence set to #{result.precedence} by drag-and-drop in the Ranked view",
+      level: "info"
+    )
+
+    render json: precedence_payload(@session).merge(
+      # Every row whose value moved, including a neighbour nudged aside to make
+      # room. The client corrects the numbers it rendered optimistically.
+      changes: result.changes.map { |id, precedence| { id: id, precedence: precedence } }
+    )
+  rescue Sessions::ReorderPrecedence::Error => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  end
+
+  # PATCH /sessions/:id/update_goal
   # PATCH /sessions/:id/update_goal
   # Update the goal for a session via the web UI.
   def update_goal
@@ -2864,8 +2981,41 @@ class SessionsController < ApplicationController
       return
     end
 
-    @status_filter = DEFAULT_STATUS_FILTER.dup
+    @status_filter = default_status_filter.dup
     @priority_class_filter = sanitized_priority_class(params[:priority_class])
+  end
+
+  # One session's rank, as the ranked view's JavaScript needs it back.
+  def precedence_payload(session)
+    {
+      id: session.id,
+      precedence: session.precedence,
+      priority_class: session.priority_class,
+      scheduling_class: session.scheduling_class
+    }
+  end
+
+  # A neighbour named by the drag. Missing ids resolve to nil (dropped at an end
+  # of the list), and an id that no longer exists is treated the same way rather
+  # than failing the drop — the row it named has been archived or reclassified
+  # out from under the page, and the remaining neighbour still places it.
+  def neighbour_session(id)
+    return nil if id.blank?
+
+    Session.find_by(id: id)
+  end
+
+  def scheduling_class_failure(message)
+    respond_to do |format|
+      format.json { render json: { error: message }, status: :unprocessable_entity }
+      format.html { redirect_back fallback_location: session_path(@session), alert: message }
+    end
+  end
+
+  # The status filter applied when the user has never chosen one. See
+  # DEFAULT_RANKED_STATUS_FILTER for why the Ranked view differs.
+  def default_status_filter
+    @view_mode == VIEW_MODE_RANKED ? DEFAULT_RANKED_STATUS_FILTER : DEFAULT_STATUS_FILTER
   end
 
   # The persisted Filters choice, or nil when there is none. A cookie a user (or a
@@ -3135,7 +3285,7 @@ class SessionsController < ApplicationController
   end
 
   def session_params
-    params.require(:session).permit(:prompt, :git_root, :subdirectory, :branch, :goal, :auto_compact_window, :scheduling_class, mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: []).tap do |permitted|
+    params.require(:session).permit(:prompt, :git_root, :subdirectory, :branch, :goal, :auto_compact_window, :scheduling_class, :precedence, mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: []).tap do |permitted|
       # Drop a blank auto_compact_window so the column default (1M) applies.
       # Codex (and any non-Claude runtime) disables the field, so it submits
       # empty; an empty string would otherwise fail the numericality validation.
