@@ -449,6 +449,21 @@ The Ranked view opens on `waiting`, `running`, `needs_input` and `failed` rather
 usual `needs_input`-only default: its whole subject is work that has not started. An explicitly
 chosen filter still wins, as everywhere else.
 
+### Precedence decides who gets the headroom back
+
+Two sweeps hand out recovered capacity, and both read precedence:
+
+- The **fleet wake** starts quota-parked spot sessions, in precedence order — see
+  [When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
+- **`SpotSessionPause`** puts back the spot sessions the ceiling paused mid-run when a window comes
+  back down, highest precedence first, oldest pause within a tie. Its budget is bounded by the free
+  slots and `MAX_RESUMES_PER_SWEEP`, and that budget is usually smaller than the population it holds
+  — so the order is what decides which work resumes, which is the same question the ranked queue
+  answers.
+
+The two populations are different (`auth_outage_reason` parks versus `paused_by: "spot_quota"`) and
+neither can start the other's sessions.
+
 ### Quick filters
 
 Three one-click filter states sit above the search box, because they are the ones worth reaching

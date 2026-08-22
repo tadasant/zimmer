@@ -511,7 +511,7 @@ class AgentSessionJob < ApplicationJob
           end
           # The process this job was told to adopt is gone and the turn it was meant to
           # carry was never delivered. If the pool is still empty, that is the outage
-          # rather than a finished turn: park into `waiting` with a scheduled retry, and
+          # rather than a finished turn: park into `waiting`, and
           # deliberately WITHOUT the recovery marker below — a parked session must not be
           # auto-continued into the same exhausted pool by the recovery sweeps.
           if AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)

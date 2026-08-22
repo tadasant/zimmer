@@ -77,8 +77,11 @@ module SessionPrecedence
     # @param scope [ActiveRecord::Relation] the population to land above
     # @return [Integer]
     def precedence_above_top_spot(scope = nil)
-      scope ||= where.not(status: :archived)
-      top = scope.spot.maximum(:precedence)
+      # The archived exclusion is applied to whatever the caller passed, not only
+      # to the default. It is the whole guarantee of the method — a queue whose
+      # top has since been archived must not keep inflating — and applying it to
+      # one branch would void it on the only path that passes a scope.
+      top = (scope || all).where.not(status: :archived).spot.maximum(:precedence)
       return DEFAULT + SLOT_GAP if top.nil?
 
       clamp_precedence(top + SLOT_GAP)

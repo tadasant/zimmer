@@ -1535,7 +1535,7 @@ class ProcessLifecycleManager
       return rotation_result if rotation_result
 
       # Nothing left to rotate into. Park the session with an explicit warning
-      # and a scheduled retry instead of dropping it into a bare needs_input
+      # and put to sleep, instead of dropping it into a bare needs_input
       # whose only visible artifact is the runtime's own error text.
       park_for_auth_outage(AuthOutageParkService::QUOTA_EXHAUSTED)
 
@@ -1601,7 +1601,8 @@ class ProcessLifecycleManager
       # Every account is over quota with nothing to rotate into. Same verdict the
       # quota path reaches, reached on the FIRST auth failure instead of after
       # three re-spawns into the same wall — and with the reset-derived retry
-      # time rather than AUTH_UNRECOVERABLE's flat one-hour guess.
+      # reason, so the session log and the banner name the outage the pool is
+      # actually in.
       park_for_auth_outage(AuthOutageParkService::QUOTA_EXHAUSTED)
 
       @mutex.synchronize { @state = :idle }
@@ -1638,18 +1639,18 @@ class ProcessLifecycleManager
     if reason == AuthOutageParkService::QUOTA_EXHAUSTED
       "Auth recovery exhausted with every account over quota — session parked until quota resets"
     else
-      "Auth recovery retry limit exhausted — session parked for automatic retry"
+      "Auth recovery retry limit exhausted — session parked until the login pool recovers"
     end
   end
 
   # Park the session for an auth/quota outage: explain it in the session log,
-  # notify the user, and schedule the wake-up that resumes the work once the
-  # outage plausibly clears. See AuthOutageParkService.
+  # notify the user, and put the session to sleep until the pool recovers. See
+  # AuthOutageParkService.
   #
-  # Creating the wake-up trigger sets pending_sleep on this still-running
-  # session, so the needs_input the caller returns is immediately followed by a
-  # transition to waiting — which is also what stops the heartbeat sweep from
-  # nudging the session straight back into the same wall.
+  # Parking sets pending_sleep on this still-running session, so the needs_input
+  # the caller returns is immediately followed by a transition to waiting — which
+  # is also what stops the heartbeat sweep from nudging the session straight back
+  # into the same wall.
   def park_for_auth_outage(reason)
     return unless @session
 
