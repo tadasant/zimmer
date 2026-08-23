@@ -1079,6 +1079,77 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal 1, summary[:retry_count]
   end
 
+  # === Retry Budget Health Tests (issue #527) ===
+
+  test "retry_budget_health covers every declared budget, not the two that were wired" do
+    health = @service.retry_budget_health
+
+    assert_equal RetryBudget.all.map(&:name), health[:budgets].map { |b| b[:name] }
+    # The three that no health surface used to report at all.
+    assert_includes health[:budgets].map { |b| b[:name] }, :signal_death
+    assert_includes health[:budgets].map { |b| b[:name] }, :mcp_connection
+    assert_includes health[:budgets].map { |b| b[:name] }, :context_length
+  end
+
+  test "retry_budget_health reports each budget's declared key and maximum" do
+    health = @service.retry_budget_health
+    by_name = health[:budgets].index_by { |b| b[:name] }
+
+    assert_equal "mcp_retry_count", by_name[:mcp_connection][:count_key]
+    assert_equal "mcp_last_retry_at", by_name[:mcp_connection][:stamp_key]
+    assert_equal 3, by_name[:mcp_connection][:max_retries]
+    assert_equal "compact_retry_count", by_name[:context_length][:count_key]
+    assert_equal 2, by_name[:context_length][:max_retries]
+    assert_equal 6, by_name[:api_error][:max_retries]
+  end
+
+  test "retry_budget_health counts spend, recoveries, exhaustion and recency per budget" do
+    Session.create!(
+      prompt: "Recovered from a failed MCP handshake", agent_runtime: "claude_code",
+      status: :running, git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem",
+      metadata: { "mcp_retry_count" => 1, "mcp_last_retry_at" => 2.hours.ago.iso8601 }
+    )
+    Session.create!(
+      prompt: "Burned the whole MCP budget", agent_runtime: "claude_code",
+      status: :failed, git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem",
+      metadata: { "mcp_retry_count" => 3, "mcp_last_retry_at" => 30.hours.ago.iso8601 }
+    )
+
+    budget = @service.retry_budget_health[:budgets].find { |b| b[:name] == :mcp_connection }
+
+    assert_equal 2, budget[:total_sessions]
+    assert_equal 4, budget[:total_retries_attempted]
+    assert_equal 1, budget[:successful_recovery_count]
+    assert_equal 1, budget[:exhausted_retry_count]
+    assert_equal 1, budget[:recent_count], "only the 2-hours-ago attempt is inside the 24h window"
+    assert_equal 1, budget[:recent_sessions].size
+    assert_equal 1, budget[:recent_sessions].first[:retry_count]
+  end
+
+  test "retry_budget_health reads a corrupt timestamp as no recent event rather than raising" do
+    Session.create!(
+      prompt: "Corrupt compact stamp", agent_runtime: "claude_code",
+      status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem",
+      metadata: { "compact_retry_count" => 1, "last_compact_at" => "not-a-valid-timestamp" }
+    )
+
+    budget = @service.retry_budget_health[:budgets].find { |b| b[:name] == :context_length }
+
+    assert_equal 1, budget[:total_sessions]
+    assert_equal 0, budget[:recent_count]
+    assert_empty budget[:recent_sessions]
+  end
+
+  test "full_health_report carries the retry_budget_health section" do
+    report = @service.full_health_report
+
+    assert report.key?(:retry_budget_health)
+    assert_equal 5, report[:retry_budget_health][:budgets].size
+  end
+
   # === API Error Retry Health Tests ===
 
   test "api_error_retry_health returns correct structure" do
