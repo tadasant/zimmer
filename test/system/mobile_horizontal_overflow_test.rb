@@ -364,7 +364,14 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # The panel slides back out only on a successful create — on an error it stays
     # open with the error line — so its closed end-state is a sync point with no
     # timing window, unlike the success badge, which hides itself after 2.5s.
-    assert_selector "[data-chat-bubble-target='panel'].translate-x-full"
+    #
+    # `visible: :all` because this asserts a CLASS, not visibility: the closed panel
+    # carries `opacity-0 pointer-events-none` alongside `translate-x-full`, so
+    # Capybara's default visibility filter rejects the very state being asserted.
+    # The error line is checked too, so a create that failed reports itself here
+    # rather than as a confusing miss on the row read below.
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-full", visible: :all
+    assert_selector "[data-chat-bubble-target='error'].hidden", visible: :all
 
     created = Session.where("prompt LIKE ?", "%Sweep the catalog for dangling references%").last
     assert created, "the Quick Router panel did not create a session"
