@@ -3335,10 +3335,13 @@ class SessionTest < ActiveSupport::TestCase
     assert_empty session.degraded_mcp_servers
   end
 
-  # A deliberate restart re-arms the retry ladder, so the write-off must clear with it —
-  # otherwise a server whose credential was fixed stays written off forever.
-  test "mcp_degraded_servers is cleared on restart alongside mcp_retry_count" do
-    assert_includes Session::STALE_RETRY_METADATA_KEYS, "mcp_degraded_servers"
+  # STALE_RETRY_METADATA_KEYS is cleared by every automatic recovery path, not just a
+  # deliberate restart. A write-off that vanished on a deploy sweep would let the
+  # still-dead server burn the whole ladder again while the agent silently stopped
+  # being told it had lost the capability. Only a server actually reconnecting
+  # retires the record (McpStatusPersisting).
+  test "mcp_degraded_servers survives the automatic recovery paths that clear retry metadata" do
+    assert_not_includes Session::STALE_RETRY_METADATA_KEYS, "mcp_degraded_servers"
     assert_includes Session::STALE_RETRY_METADATA_KEYS, "mcp_retry_count"
   end
 
