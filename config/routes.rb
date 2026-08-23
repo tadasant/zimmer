@@ -16,6 +16,12 @@ Rails.application.routes.draw do
     resources :claude_account_quota_snapshots
     resources :elicitations
     resources :enqueued_messages
+    # Read-only: both tables are derived, and both are re-derived on a cron —
+    # BurnRateRecomputeJob every 20 minutes, QuotaCapacityCalibrationJob every 15.
+    # A hand-edited rate or capacity would be overwritten on the next run, and in
+    # the meantime the spot gate would be spending against a figure the ledger
+    # does not support.
+    resources :harness_model_burn_rates, only: [ :index, :show ]
     # Read-only, with no destroy: a HumanMessage refuses update AND direct
     # destroy, precisely so a record of what a human said cannot be edited or
     # quietly removed after the fact. Hand-authoring one would forge an author,
@@ -33,6 +39,8 @@ Rails.application.routes.draw do
     # No create: a batch exists because someone clicked Analyze All. Edit is
     # limited to `status`/`state` (the dashboards' FORM_ATTRIBUTES) — the escape
     # hatch for a batch or item wedged in `running` that the pump cannot resolve.
+    # Read-only, and derived on the same cron footing as the burn rates above.
+    resources :quota_capacity_estimates, only: [ :index, :show ]
     resources :outcome_analysis_batches, except: [ :new, :create ]
     resources :outcome_analysis_batch_items, except: [ :new, :create ]
     resources :runtime_login_attempts
