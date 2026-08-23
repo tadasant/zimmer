@@ -580,7 +580,6 @@
                    title="Waits for quota room instead of starting now, and lands at the top of the spot queue.">
               <%= check_box_tag :scheduling_class, SessionGenesis::SPOT, false,
                     id: "quick_prompt_desktop_scheduling_class",
-                    data: { quick_prompt_target: "desktopSpot" },
                     class: "h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
               <span class="text-xs text-gray-500">Run as <span class="font-medium text-gray-700">spot</span></span>
             </label>
