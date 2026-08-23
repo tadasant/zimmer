@@ -1,61 +1,115 @@
 <%# One row of the Ranked view.
 
+    The row is mobile-first: DOM order IS the phone layout, and `sm:order-*`
+    restores the desktop reading order (rank, status, title, root, menu) above
+    640px. At phone width the row is two lines —
+
+      ⠿  Some session title that wraps to two lines           ⋮
+         Rank [ 1000 ]  Needs input
+
+    — because a single line at 375px leaves the title about eighty pixels, which
+    is not a title. The meta group is `w-full` below `sm:`, which is what forces
+    the wrap deterministically rather than hoping the content overflows.
+
     Locals:
       agent_session  - the session
       draggable_row  - true for spot rows (draggable, editable precedence),
                        false for priority rows (no rank to order by) %>
-<li class="flex items-center gap-3 px-3 py-2 text-sm <%= "cursor-grab" if draggable_row %>"
+<li class="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 text-sm sm:flex-nowrap sm:gap-x-3 <%= "cursor-grab" if draggable_row %>"
     id="ranked_row_<%= agent_session.id %>"
     data-ranked-queue-target="row"
     data-session-id="<%= agent_session.id %>"
     data-precedence="<%= agent_session.precedence %>">
   <%# Rendered on every row, hidden on priority ones — see the note on the rank
-      cell below: a row promoted or demoted swaps its controls in place. %>
-  <span class="shrink-0 text-gray-300 hover:text-gray-500 <%= "hidden" unless draggable_row %>"
+      cell below: a row promoted or demoted swaps its controls in place.
+
+      Sized as a touch target rather than as an icon: SortableJS only starts a
+      drag from inside this box, and a 16px one on a phone is a box you miss. %>
+  <span class="inline-flex h-9 w-6 shrink-0 items-center justify-center text-gray-300 hover:text-gray-500 sm:order-1 sm:h-5 <%= "hidden" unless draggable_row %>"
         data-ranked-queue-target="handle" aria-hidden="true" title="Drag to reorder">
     <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
   </span>
 
-  <%# Precedence: editable inline for spot rows, greyed static text for priority
-      ones so the number a demotion would land on is never a surprise.
-
-      BOTH cells are rendered on every row and one of them is hidden. A promote or
-      a demote moves the row between the two sections, and the controller swaps
-      which cell is showing — so a demoted row is immediately draggable and
-      editable, and shows its NEW rank, without waiting for a reload. %>
-  <%= number_field_tag "precedence_#{agent_session.id}", agent_session.precedence,
-        id: "precedence_input_#{agent_session.id}",
-        disabled: !draggable_row,
-        "aria-label": "Precedence for session #{agent_session.id}",
-        data: { ranked_queue_target: "precedenceInput", action: "keydown.enter->ranked-queue#commitPrecedence blur->ranked-queue#revertUncommitted" },
-        class: "w-24 shrink-0 rounded border border-gray-300 px-2 py-1 text-sm text-right tabular-nums focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 #{'hidden' unless draggable_row}" %>
-  <span class="w-24 shrink-0 text-right tabular-nums text-xs text-gray-400 <%= "hidden" if draggable_row %>"
-        data-ranked-queue-target="precedenceReadout"
-        title="Precedence, unused while this session is priority"><%= agent_session.precedence %></span>
-
-  <%# A compact status pill rather than the shared _status_badge partial: that one
-      carries a fixed DOM id and a live-update region sized for a card, and forty of
-      them in a list is both noisy and a second element claiming the same id when a
-      session appears in another view on the page. %>
-  <span class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium <%= status_badge_classes(agent_session) %>"><%= agent_session.status.humanize %></span>
-
+  <%# The title leads the row on a phone, because it is the only cell that tells
+      you what the work is. Two clamped lines rather than one truncated one, and
+      `break-words` because Zimmer titles are full of unbreakable tokens
+      (`test_session_state_machine_transitions_...`) that would otherwise set the
+      row's width. Desktop keeps the single truncated line it had. %>
   <%= link_to agent_session.title.presence || "Untitled session",
         session_path(agent_session),
-        class: "min-w-0 flex-1 truncate font-medium text-gray-800 hover:text-indigo-600" %>
+        class: "min-w-0 flex-1 break-words font-medium text-gray-800 hover:text-indigo-600 max-sm:line-clamp-2 sm:order-3 sm:truncate" %>
 
-  <span class="hidden shrink-0 text-xs text-gray-400 sm:inline"><%= agent_session.agent_root_key.presence || agent_session.genesis_key %></span>
+  <%# Row actions behind a "⋮", the same overflow-menu controller the session card
+      uses. Both entries are rendered on every row and one is hidden, for the same
+      reason both rank cells are: a promote or a demote has to swap them in place.
 
-  <%# The promote/demote loop, both halves in the same view so the round trip never
-      leaves this screen. %>
-  <% if draggable_row %>
+      `headroom` is the vertical room the menu asks for beyond its own box before it
+      gives up on opening downward. The card's menu opens a Pause Until panel inside
+      itself and needs 400px of it; this menu opens nothing, so it asks for none —
+      otherwise every row in the top two-thirds of the page would open upward. %>
+  <div class="relative shrink-0 sm:order-5"
+       data-controller="overflow-menu"
+       data-overflow-menu-headroom-value="0"
+       data-overflow-menu-placement-value="down">
     <button type="button"
-            class="shrink-0 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
-            data-action="ranked-queue#promote"
-            data-session-id="<%= agent_session.id %>">Promote</button>
-  <% else %>
-    <button type="button"
-            class="shrink-0 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
-            data-action="ranked-queue#demote"
-            data-session-id="<%= agent_session.id %>">Demote to spot</button>
-  <% end %>
+            data-overflow-menu-target="button"
+            data-action="overflow-menu#toggle"
+            aria-haspopup="true"
+            aria-expanded="false"
+            title="More actions for session <%= agent_session.id %>"
+            aria-label="More actions for session <%= agent_session.id %>"
+            class="inline-flex h-9 w-9 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-500 hover:bg-gray-50 hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 sm:h-8 sm:w-8">
+      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 11.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 17a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
+      </svg>
+    </button>
+    <div data-overflow-menu-target="menu"
+         role="menu"
+         class="hidden absolute right-0 top-full mt-2 z-30 w-56 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+      <button type="button"
+              role="menuitem"
+              data-ranked-queue-target="promoteAction"
+              data-action="ranked-queue#promote overflow-menu#close"
+              data-session-id="<%= agent_session.id %>"
+              class="block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" unless draggable_row %>">Promote to priority</button>
+      <button type="button"
+              role="menuitem"
+              data-ranked-queue-target="demoteAction"
+              data-action="ranked-queue#demote overflow-menu#close"
+              data-session-id="<%= agent_session.id %>"
+              class="block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" if draggable_row %>">Demote to spot</button>
+      <%= link_to "Open session", session_path(agent_session),
+            role: "menuitem",
+            class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
+    </div>
+  </div>
+
+  <%# Rank and status travel together, and on a phone they take the second line —
+      `w-full` is what puts them there. %>
+  <div class="flex w-full min-w-0 items-center gap-2 sm:order-2 sm:w-auto sm:shrink-0">
+    <span class="shrink-0 text-xs uppercase tracking-wide text-gray-400 sm:hidden">Rank</span>
+
+    <%# Precedence: editable inline for spot rows, greyed static text for priority
+        ones so the number a demotion would land on is never a surprise.
+
+        BOTH cells are rendered on every row and one of them is hidden. A promote or
+        a demote moves the row between the two sections, and the controller swaps
+        which cell is showing — so a demoted row is immediately draggable and
+        editable, and shows its NEW rank, without waiting for a reload. %>
+    <%= number_field_tag "precedence_#{agent_session.id}", agent_session.precedence,
+          id: "precedence_input_#{agent_session.id}",
+          disabled: !draggable_row,
+          "aria-label": "Precedence for session #{agent_session.id}",
+          data: { ranked_queue_target: "precedenceInput", action: "keydown.enter->ranked-queue#commitPrecedence blur->ranked-queue#revertUncommitted" },
+          class: "w-24 shrink-0 rounded border border-gray-300 px-2 py-1.5 text-sm text-right tabular-nums focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 sm:py-1 #{'hidden' unless draggable_row}" %>
+    <%# Auto-width on a phone so it reads as "RANK 40" rather than as a number
+        marooned at the end of a column that only exists on a wider screen. %>
+    <span class="shrink-0 text-right tabular-nums text-xs text-gray-400 sm:w-24 <%= "hidden" if draggable_row %>"
+          data-ranked-queue-target="precedenceReadout"
+          title="Precedence, unused while this session is priority"><%= agent_session.precedence %></span>
+
+    <%= render "sessions/ranked_row_status", agent_session: agent_session %>
+  </div>
+
+  <span class="hidden shrink-0 text-xs text-gray-400 sm:order-4 sm:inline"><%= agent_session.agent_root_key.presence || agent_session.genesis_key %></span>
 </li>

@@ -569,8 +569,8 @@ the spot queue is listed under them highest-precedence first, and both halves ar
 | Type a number in a row's precedence field and press **Enter** | the row moves to its new position immediately, with no page load | `PATCH /sessions/:id/update_precedence` |
 | **Drag** a row between two others | it takes the **midpoint** of the two values it was dropped between | `PATCH /sessions/:id/reorder_precedence`, which is handed the two neighbours and derives the value |
 | Drag between two **adjacent** values, where no midpoint exists | the neighbours are nudged one apart each, and the dropped row takes the middle of the gap that opens | the same request — 21 and 20 become 22 and 19 |
-| Press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
-| Press **Promote** on a spot row | it moves up to the priority section, keeping its rank for a later demotion | the same endpoint |
+| Open a row's **⋮** menu and press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
+| Open a row's **⋮** menu and press **Promote to priority** on a spot row | it moves up to the priority section, keeping its rank for a later demotion | the same endpoint |
 
 Every write is optimistic: the row moves first and the server's answer corrects the numbers behind
 it, including any neighbour that was nudged. A write that fails rolls the row back and reloads,
@@ -584,6 +584,37 @@ would turn one drag into an unbounded write. The next drag into that spot separa
 The Ranked view opens on `waiting`, `running`, `needs_input` and `failed` rather than the dashboard's
 usual `needs_input`-only default: its whole subject is work that has not started. An explicitly
 chosen filter still wins, as everywhere else.
+
+Each row carries one visible control — a **⋮** overflow menu holding promote/demote and a link to the
+session. The row itself is the reading surface: a drag handle, the rank, the status and the title. On
+a phone the row is two lines (title above, rank and status below), because a single line at 375px
+leaves the title about eighty pixels.
+
+#### The queue stays live
+
+Rows subscribe to the `sessions_ranked` Turbo Stream, which `Session#broadcast_ranked_row` writes to
+on every status change. It is a separate stream from the card grid's `sessions_index_individual`
+because a ranked row is not a card and is not keyed on `dom_id` — which is exactly why the queue's
+statuses used to go stale until the page was reloaded.
+
+The broadcast replaces **one element per row: the status pill**. That bound is the design, not a
+shortcut. The row around the pill holds two pieces of state the server does not own — a precedence
+the user may be halfway through typing, and the row's position while SortableJS is dragging it — so
+replacing the whole row would let a background status change destroy an interaction in progress.
+
+What it deliberately does not do:
+
+- **No re-sorting.** Precedence, not status, decides the order, and a status change does not move a
+  row.
+- **No re-grouping.** A session whose scheduling class changes in another tab or over MCP stays in
+  the section the page rendered it in until a reload. Moving a row between sections under a pointer
+  that is on it is worse than the staleness.
+- **No inserting.** A session that newly matches the filters appears on the next reload.
+
+The one structural change it makes is **removing a row whose session has been trashed**, mirroring
+what the card grid does on archive. The section header counts and the "nothing here" placeholders are
+recounted by a `MutationObserver` in `ranked_queue_controller.js`, so they stay true whether the row
+left via a broadcast, a promote or a demote.
 
 ### Precedence decides who gets the headroom back
 
@@ -625,7 +656,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 | Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
 | Stop a *running* session's turn while parking it | **Pause Until** does it unconditionally | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
-| Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and demote button | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
+| Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and ⋮ menu | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
 | Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
 | Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |
 | Read a session's rank | Ranked view, session detail page | `get_session`, `quick_search_sessions` |

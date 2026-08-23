@@ -12,12 +12,21 @@ import { Controller } from "@hotwired/stimulus"
 // what pushes controls off the right edge of a 375px viewport, so the panel a menu
 // row opens expands the menu itself instead.
 // Vertical room a menu row's expanded panel needs beyond the closed menu box.
-// Sized to the tallest thing the menu opens today (the Pause Until panel: six
-// presets, a datetime picker and a prompt field).
+// Sized to the tallest thing a card's menu opens (the Pause Until panel: six
+// presets, a datetime picker and a prompt field). A menu whose rows expand into
+// nothing — a ranked row's promote/demote, say — overrides it with 0, or every
+// row in the upper two-thirds of the page would open upward for room it never
+// needs.
 const MENU_EXPANSION_HEADROOM = 400
 
 export default class extends Controller {
   static targets = ["button", "menu"]
+  static values = {
+    headroom: { type: Number, default: MENU_EXPANSION_HEADROOM },
+    // "up" for a menu anchored at the bottom edge of its own box (a card's
+    // footer), "down" for one anchored on a row in a list.
+    placement: { type: String, default: "up" }
+  }
 
   connect() {
     this._outsideClick = this._outsideClick.bind(this)
@@ -58,16 +67,21 @@ export default class extends Controller {
   }
 
   // Open upward by default — a card's actions sit at its bottom edge, and a menu
-  // that drops down covers the card below it. But a card near the top of the
-  // viewport has no room above, and the panel a menu row expands into is taller
-  // than the menu itself, so measure the whole thing rather than the closed box.
+  // that drops down covers the card below it. A menu anchored on a row in a list
+  // has no such edge and reads better downward, which is what `placement: "down"`
+  // asks for. Either way the side with room wins over the preference: a card near
+  // the top of the viewport opens down, a row near the bottom opens up.
   //
   // Runs while the menu is visible but before anything expands inside it, so the
   // budget is the menu's own height plus headroom for the tallest panel it opens.
   _placeMenu() {
     const anchor = this.buttonTarget.getBoundingClientRect()
-    const needed = this.menuTarget.getBoundingClientRect().height + MENU_EXPANSION_HEADROOM
-    const opensUp = anchor.top >= needed || anchor.top > window.innerHeight - anchor.bottom
+    const needed = this.menuTarget.getBoundingClientRect().height + this.headroomValue
+    const roomAbove = anchor.top
+    const roomBelow = window.innerHeight - anchor.bottom
+    const opensUp = this.placementValue === "down"
+      ? !(roomBelow >= needed || roomBelow >= roomAbove)
+      : roomAbove >= needed || roomAbove > roomBelow
 
     this.menuTarget.classList.toggle("bottom-full", opensUp)
     this.menuTarget.classList.toggle("mb-2", opensUp)
