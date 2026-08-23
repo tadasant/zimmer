@@ -60,7 +60,7 @@ module Mcp
       # What the backlog is MADE OF, not just how deep it is.
       #
       # `system_health` below already carries `ready_count`, and a bare count
-      # cannot tell a starved queue from a busy one — Zimmer's four queues have
+      # cannot tell a starved queue from a busy one — Zimmer's five queues have
       # very different thread counts and job durations. The Slack backlog page
       # carries the same split, and this is the tool an agent triaging that page
       # actually has: the GoodJob dashboard needs a browser session on the

@@ -61,7 +61,7 @@ class CodexLoginDriver < RuntimeLoginDriver
 
     # See ClaudeLoginDriver#capture! — a human re-authenticating is the only
     # thing that retires the needs_reauth nag.
-    AccountReauthNotifier.clear(account)
+    account.clear_reauth_alert!
   end
 
   private

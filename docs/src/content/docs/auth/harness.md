@@ -458,11 +458,27 @@ page `#eng-alerts` (a channel alert for a condition only a human can clear is no
 `recover_needs_reauth` re-probes it forever without ever succeeding. The account just sits dead on
 `/quotas` until somebody happens to open the page.
 
-So Zimmer DMs you. When a `ClaudeAccount` crosses **into** `needs_reauth`, an
-`after_update_commit` callback enqueues `AccountReauthAlertJob`, which calls
-`AccountReauthNotifier` → `AlertService.dm_operator`. The DM names the account and the runtime and
-links to `/quotas`. It goes to `OPERATOR_SLACK_USER_ID`; unset, the DM is logged and dropped and
-nothing else changes.
+So Zimmer tells you — but it does not compose the message itself. When a `ClaudeAccount` crosses
+**into** `needs_reauth`, an `after_update_commit` callback emits the `account_needs_reauth`
+[Zimmer event](/sessions/triggers/), and whatever `ao_event` Triggers watch that event fire. The one
+this deployment ships spawns a `general-agent` session holding the `slack-workspace` MCP server, with
+a prompt telling it to DM the operator, name the account, and say that fixing it means pressing
+"Authenticate" on `/quotas`.
+
+The indirection is the point, and it replaced a native DM that never arrived. That path was
+`ClaudeAccount` → `AccountReauthAlertJob` → `AccountReauthNotifier` → `AlertService.dm_operator` →
+`SlackService.send_dm`, and it had three distinct ways to fail — an unset `OPERATOR_SLACK_USER_ID`,
+a bot without the `im:write` scope `conversations.open` needs, and a dedup key stuck from an earlier
+failure — each of which degraded to one `.warn` line and a `false`. Nothing surfaced any of them:
+`AlertService.missing_configuration_details`, the boot-time health check, only ever checked the Slack
+token and the channel id, never `operator_user_id`. A deployment could report itself fully configured
+while dropping every DM it sent.
+
+A Trigger cannot rot the same way. The notification is a session with a transcript you can read at
+`/sessions`, its prompt tells the agent to fall back to the alerts channel and say so if the DM will
+not send, and a fire that raises pages `#eng-alerts` through `AoEventTriggerJob`'s existing failure
+handling. The trigger itself is a row at `/triggers`: editable, disable-able, and visible as a thing
+that exists.
 
 The transition is **latched during the save** (`after_update`) and only acted on after the commit,
 which is not ceremony. `reload` nils `@mutations_before_last_save`, so a commit-time
@@ -487,23 +503,39 @@ writes deliberately do *not* alert, and both fall out of that placement:
   probe itself cannot condemn the account either, since `recovery_probe: true` returns before the
   permanent-failure branch. Without both, every recovery sweep would look like a fresh failure.
 
-On top of that, `AlertService` suppresses a repeat DM about the same account for
-`OPERATOR_DM_DEDUP_WINDOW` (12 hours) — much longer than the hourly window the channel feed uses,
-because a DM is a nag at one person about something that stays broken until they act.
+On top of that, the account itself carries the throttle: `claude_accounts.reauth_alerted_at`, checked
+and stamped by a single conditional `UPDATE` (`ClaudeAccount#claim_reauth_alert_slot!`) that admits
+one event per `REAUTH_ALERT_THROTTLE` (12 hours). Being one statement is what makes two workers
+condemning the same account in the same instant produce one event rather than two.
 
-**Only a human re-authenticating drops that suppression**, from `ClaudeLoginDriver#capture!` and its
-Codex twin — not from the status callback. That looks like the more obvious place and is a trap:
+It lives in the database rather than in `Rails.cache`, where its predecessor lived, because a
+cache-backed suppressor **fails open**: with Redis unreachable, every crossing alerts. Under the old
+design that was a duplicate DM. Under this one it is a spawned agent session per crossing — and an
+account crosses into `needs_reauth` far more often than it breaks, because `sync_from_filesystem!`
+writes `active` back onto a dead row whose credentials file still parses, and `ensure_active_account!`
+runs before every session spawn. The column is also readable after the fact, which a cache key never
+was.
+
+**Only a human re-authenticating releases it** — `ClaudeAccount#clear_reauth_alert!`, called from
+`ClaudeLoginDriver#capture!` and its Codex twin, not from the status callback. That looks like the more obvious place and is a trap:
 `sync_from_filesystem!` resurrects the on-disk credential owner to `active` with a plain `update!`,
 including a `needs_reauth` row whose dead-but-complete tokens are still sitting in the credentials
 file, and `ensure_active_account!` runs that before every session spawn. Clearing there would drop
-the backstop moments before `usable_candidate?` re-condemns the same account — one DM per spawn
-attempt on a drained pool, which is the exact flood the window exists to prevent. The cost of the
-narrower rule is that an account the recovery sweep fixes automatically, which then dies again
-inside 12 hours, waits out the window before it can DM again.
+the backstop moments before `usable_candidate?` re-condemns the same account — one spawned session per
+spawn attempt on a drained pool, which is the exact flood the window exists to prevent. The cost of
+the narrower rule is that an account the recovery sweep fixes automatically, which then dies again
+inside 12 hours, waits out the window before it can alert again.
 
-A failed DM can never take down the auth path: `dm_operator` swallows its own errors and returns
-`false`, the job does no work worth retrying, and the callback rescues anything the enqueue itself
-raises.
+A failed alert can never take down the auth path: the callback rescues anything the enqueue raises,
+and the firing job runs asynchronously on the `triggers` queue.
+
+**The circularity is real and is not solved, only bounded.** Reporting that an account is unusable
+means spawning a session, and spawning a session needs a usable account. One dead account among six
+is fine. A pool where *every* account is dead cannot spawn the session that would say so — and the
+seeded trigger is `priority` rather than the `spot` that `ao_event` derives, precisely so the one
+session whose job is to report a dead pool is not also gated behind a healthy one. When the spawn
+fails anyway, `AoEventTriggerJob#handle_fire_failure` alerts `#eng-alerts`, which needs no account at
+all. That is the floor: a channel post rather than a DM, but not silence.
 
 ```mermaid
 flowchart LR
@@ -511,13 +543,15 @@ flowchart LR
     S --> L[after_update:<br/>latch the transition]
     L -.->|a reload here would erase<br/>the dirty state; the ivar survives| L
     L --> C[after_update_commit]
-    C --> J[AccountReauthAlertJob]
-    J --> N[AccountReauthNotifier]
-    N --> D{suppressed<br/>&lt;12h?}
+    C --> D{claim_reauth_alert_slot!<br/>alerted &lt;12h ago?}
     D -->|yes| X[drop]
-    D -->|no| DM[Slack DM → OPERATOR_SLACK_USER_ID]
+    D -->|no| E[AoEventTriggerJob<br/>account_needs_reauth]
+    E --> T[ao_event Trigger]
+    T --> G[general-agent session<br/>+ slack-workspace MCP]
+    G --> DM[Slack DM to the operator]
+    T -.->|spawn failed:<br/>the pool has nothing left| A[#eng-alerts]
     RC[recover_needs_reauth<br/>restore] -.->|update_columns:<br/>skips callbacks| S
-    H[human re-auths<br/>LoginDriver#capture!] -->|clear_dm_suppression| D
+    H[human re-auths<br/>LoginDriver#capture!] -->|clear_reauth_alert!| D
 ```
 
 ### An account can be capped without ever having been current

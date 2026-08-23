@@ -28,7 +28,32 @@ module Mcp
     # live trigger; an omitted-means-untouched upsert cannot.
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle invoke].freeze
-      TRIGGER_TYPES = %w[slack schedule github_label github_issue system_event].freeze
+      # `ao_event` is creatable here, and it has to be: the /triggers form has
+      # always offered it, so leaving it out made the web UI strictly more capable
+      # than the MCP surface — a human could wire a Zimmer event to a trigger and an
+      # agent session could not. The wake-up tools
+      # (wake_me_up_when_session_changes_state) remain the right way to create a
+      # SESSION-scoped one-shot wake; what this opens up is the broadcast form, and
+      # the account events, which no wake tool covers.
+      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event].freeze
+
+      # The cap applied to a BROADCAST SESSION ao_event trigger created here when the
+      # caller names none.
+      #
+      # A broadcast session event fires on every autonomous session's transition, so
+      # an uncapped one spawns a session per transition indefinitely. Loop prevention
+      # stops a trigger firing on its OWN sessions, but it is per-trigger: two such
+      # triggers — one on needs_input, one on archived — feed each other with nothing
+      # bounding either. Opening ao_event creation to agents is what makes that
+      # reachable, so the default closes it. A caller who wants no cap can still send
+      # max_sessions_per_minute explicitly.
+      #
+      # Deliberately NOT applied to account events: `account_needs_reauth` is already
+      # bounded at source (one event per account per ClaudeAccount::REAUTH_ALERT_THROTTLE),
+      # and a burst cap there could only drop alerts during the mass-failure it exists
+      # to report.
+      BROADCAST_SESSION_AO_EVENT_BURST_CAP = 5
+
       # Derived from the model, not re-declared, so the tool cannot drift behind
       # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
       # and AoEventTriggerJob park a one-shot trigger there when its fire raises,
@@ -88,6 +113,7 @@ module Mcp
         **Trigger types:**
         - **slack**: Triggered by Slack events (requires configuration with channel_id)
         - **schedule**: Triggered on a recurring or one-time schedule
+        - **ao_event**: Triggered by an internal Zimmer event (requires configuration with event_name)
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
         - **github_issue**: Triggered when a new issue is opened in a watched repo
         - **system_event**: Triggered when the DEPLOYMENT changes state, not a session. One event today: `{"event_name": "quota_available"}`, the account pool going from serving nothing to serving something. Broadcast and recurring. This is what wakes quota-parked spot sessions, so there is normally exactly one such trigger and it is seeded by a migration — create another only deliberately.
@@ -114,6 +140,19 @@ module Mcp
         **Schedule configuration:**
         - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
+
+        **Zimmer event configuration:**
+        - `{"event_name": "session_needs_input"}` — also `session_failed`, `session_archived`. These are
+          BROADCAST: they fire for every autonomous session that transitions, so the trigger they hang
+          off spawns a session each time. Add `{"watched_session_id": 1234}` to narrow one to a single
+          session — but to wake yourself on a session you are waiting for, use
+          wake_me_up_when_session_changes_state instead, which creates the one-shot wake AND puts this
+          session to sleep.
+        - `{"event_name": "account_needs_reauth"}` — fires when a runtime account in the pool can no
+          longer refresh its OAuth token and drops out of rotation until a human re-authenticates it.
+          Its subject is an ACCOUNT, not a session, so `watched_session_id` is rejected. Suppressed to
+          at most one fire per account per 12 hours (ClaudeAccount::REAUTH_ALERT_THROTTLE), released
+          when a human completes a login for that account.
 
         **GitHub configuration:**
         - **github_label**: `{"repos": ["owner/a", "owner/b"], "target": "pull_request", "labels": ["ready to merge"]}`
@@ -261,7 +300,7 @@ module Mcp
           status: args["status"].presence || "enabled",
           goal: args["goal"],
           reuse_session: args.fetch("reuse_session", false),
-          max_sessions_per_minute: args["max_sessions_per_minute"].presence,
+          max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
           precedence: trigger_precedence(args),
           mcp_servers: args["mcp_servers"] || [],
@@ -283,6 +322,23 @@ module Mcp
 
           #{condition_detail(trigger)}
         TEXT
+      end
+
+      # An explicit value always wins, including an explicit null for "no cap".
+      def max_sessions_per_minute_for(args)
+        explicit = args["max_sessions_per_minute"].presence
+        return explicit if explicit
+        return nil unless args.key?("conditions") || args["trigger_type"] == "ao_event"
+
+        broadcast = created_condition_attributes(args).any? do |attrs|
+          next false unless attrs[:condition_type] == "ao_event"
+
+          config = attrs[:configuration] || {}
+          TriggerCondition::SESSION_AO_EVENT_NAMES.include?(config["event_name"]) &&
+            config["watched_session_id"].blank?
+        end
+
+        broadcast ? BROADCAST_SESSION_AO_EVENT_BURST_CAP : nil
       end
 
       def update(args)
@@ -552,8 +608,28 @@ module Mcp
 
         case target.condition_type
         when "slack" then reject_widening_slack_configuration!(target, incoming, index)
+        when "ao_event" then reject_widening_ao_event_configuration!(target, incoming, index)
         when "github_issue" then reject_widening_github_issue_configuration!(target, incoming, index)
         end
+      end
+
+      # Dropping `watched_session_id` turns a one-shot wake on ONE session into a
+      # broadcast that spawns a session on every autonomous session's transition —
+      # the widest silent widening available here, and reachable now that ao_event
+      # is creatable through this tool. It is also how the wake_me_up_when_session_
+      # changes_state tool's own rows are shaped, so an ordinary-looking edit to one
+      # of those would do it.
+      def reject_widening_ao_event_configuration!(target, incoming, index)
+        return unless target.session_scoped_ao_event?
+        return if incoming["watched_session_id"].present?
+
+        raise ToolError, "conditions[#{index}] omits \"watched_session_id\" from the configuration of " \
+                         "condition #{target.id}, which currently watches session " \
+                         "##{target.watched_session_id}. configuration replaces the condition's " \
+                         "user-facing keys, so this would widen a one-shot wake into a broadcast that " \
+                         "spawns a session on EVERY autonomous session transition. Send " \
+                         "watched_session_id to keep it, or delete the condition and add a new one if " \
+                         "a broadcast is really what you want."
       end
 
       # Dropping `event_type` is not a small mistake: the reader defaults to

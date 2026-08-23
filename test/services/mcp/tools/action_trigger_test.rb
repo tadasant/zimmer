@@ -587,9 +587,180 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
 
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "update", "id" => trigger.id,
-                 "conditions" => [ { "trigger_type" => "ao_event", "configuration" => { "event_name" => "session_failed" } } ])
+                 "conditions" => [ { "trigger_type" => "carrier_pigeon", "configuration" => { "loft" => "north" } } ])
     end
     assert_match(/unknown trigger_type/, error.message)
+  end
+
+  # === Zimmer event parity ===
+  #
+  # The /triggers form has always offered ao_event, so an MCP surface that could
+  # not create one made the web UI strictly more capable than an agent session.
+  # These are the parity tests for closing that gap.
+
+  test "create accepts an ao_event trigger" do
+    result = @tool.call(
+      "action" => "create",
+      "name" => "Reauth notifier",
+      "trigger_type" => "ao_event",
+      "agent_root_name" => "general-agent",
+      "prompt_template" => "{{event}} — tell someone",
+      "mcp_servers" => [ "slack-workspace" ],
+      "configuration" => { "event_name" => "account_needs_reauth" }
+    )
+
+    created = Trigger.find_by(name: "Reauth notifier")
+    assert_not_nil created, result
+    condition = created.trigger_conditions.sole
+    assert_equal "ao_event", condition.condition_type
+    assert_equal "account_needs_reauth", condition.ao_event_name
+    assert_predicate condition, :account_ao_event?
+  end
+
+  test "create accepts a broadcast session ao_event trigger" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Any session needing input",
+      "trigger_type" => "ao_event",
+      "agent_root_name" => "general-agent",
+      "prompt_template" => "{{event}}",
+      "configuration" => { "event_name" => "session_needs_input" }
+    )
+
+    condition = Trigger.find_by(name: "Any session needing input").trigger_conditions.sole
+    assert_equal "session_needs_input", condition.ao_event_name
+    assert_not condition.session_scoped_ao_event?
+  end
+
+  # Invalid configuration surfaces as RecordInvalid from `trigger.save!`, the same
+  # way a Slack condition with no channel_id does.
+  test "create rejects an ao_event with an event_name Zimmer does not emit" do
+    error = assert_raises(ActiveRecord::RecordInvalid) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Bogus event",
+        "trigger_type" => "ao_event",
+        "agent_root_name" => "general-agent",
+        "prompt_template" => "{{event}}",
+        "configuration" => { "event_name" => "the_vibes_shifted" }
+      )
+    end
+
+    assert_match(/event_name must be one of/, error.message)
+  end
+
+  test "create rejects watched_session_id on an account event" do
+    error = assert_raises(ActiveRecord::RecordInvalid) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Confused event",
+        "trigger_type" => "ao_event",
+        "agent_root_name" => "general-agent",
+        "prompt_template" => "{{event}}",
+        "configuration" => { "event_name" => "account_needs_reauth", "watched_session_id" => sessions(:needs_input).id }
+      )
+    end
+
+    assert_match(/only meaningful for session events/, error.message)
+  end
+
+  # === Guards on the capability opening ao_event creation introduced ===
+
+  test "update refuses to silently widen a session-scoped wake into a broadcast" do
+    trigger = Trigger.create!(
+      name: "One-shot wake",
+      agent_root_name: "zimmer",
+      prompt_template: "{{event}}",
+      trigger_conditions_attributes: [ {
+        condition_type: "ao_event",
+        configuration: { "event_name" => "session_needs_input", "watched_session_id" => sessions(:needs_input).id }
+      } ]
+    )
+    condition = trigger.trigger_conditions.sole
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id,
+                 "conditions" => [ { "id" => condition.id, "configuration" => { "event_name" => "session_needs_input" } } ])
+    end
+
+    assert_match(/watched_session_id/, error.message)
+    assert_match(/broadcast/, error.message)
+    assert_equal sessions(:needs_input).id, condition.reload.watched_session_id
+  end
+
+  test "a broadcast session ao_event created here gets a burst cap by default" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Unbounded broadcast",
+      "trigger_type" => "ao_event",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{event}}",
+      "configuration" => { "event_name" => "session_archived" }
+    )
+
+    assert_equal Mcp::Tools::ActionTrigger::BROADCAST_SESSION_AO_EVENT_BURST_CAP,
+                 Trigger.find_by!(name: "Unbounded broadcast").max_sessions_per_minute
+  end
+
+  test "an explicit cap still wins over the default" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Explicit cap",
+      "trigger_type" => "ao_event",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{event}}",
+      "max_sessions_per_minute" => 20,
+      "configuration" => { "event_name" => "session_archived" }
+    )
+
+    assert_equal 20, Trigger.find_by!(name: "Explicit cap").max_sessions_per_minute
+  end
+
+  # An account event is already bounded at source, and a burst cap there could only
+  # drop alerts during the mass failure it exists to report.
+  test "an account ao_event gets no default cap" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Account watcher",
+      "trigger_type" => "ao_event",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{event}}",
+      "configuration" => { "event_name" => "account_needs_reauth" }
+    )
+
+    assert_nil Trigger.find_by!(name: "Account watcher").max_sessions_per_minute
+  end
+
+  test "a session-scoped ao_event gets no default cap either" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Scoped wake",
+      "trigger_type" => "ao_event",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{event}}",
+      "configuration" => { "event_name" => "session_needs_input", "watched_session_id" => sessions(:needs_input).id }
+    )
+
+    assert_nil Trigger.find_by!(name: "Scoped wake").max_sessions_per_minute
+  end
+
+  test "a non-ao_event trigger is unaffected by the default" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Plain slack",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{link}}",
+      "configuration" => { "channel_id" => "C999", "channel_name" => "plain" }
+    )
+
+    assert_nil Trigger.find_by!(name: "Plain slack").max_sessions_per_minute
+  end
+
+  test "the creatable types match the condition types the model accepts" do
+    # ao_event is the one that drifted. Assert the whole set so the next addition
+    # cannot quietly land in the model and the UI but not here.
+    assert_equal TriggerCondition::CONDITION_TYPES.sort, Mcp::Tools::ActionTrigger::TRIGGER_TYPES.sort
   end
 
   test "an empty conditions array is refused rather than silently ignored" do

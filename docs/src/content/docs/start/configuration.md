@@ -46,7 +46,7 @@ Everything in Zimmer reads them through `AirCatalogService`. Code that reads `ro
 | `RAILS_MASTER_KEY` | Rails credentials | ✅ in a self-hosted production config; on staging it is [optional, and degrades silently when absent](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent) |
 | `SLACK_BOT_TOKEN` | Slack triggers, the channel picker, and `AlertService` | via `mcp_secrets` (encrypted credentials); ENV is the fallback |
 | `ENG_ALERTS_SLACK_CHANNEL_ID` | the channel `AlertService` posts to | via `mcp_secrets`; ENV is the fallback |
-| `OPERATOR_SLACK_USER_ID` | the Slack user `AlertService` DMs for conditions only a human can clear — today, [an account falling into `needs_reauth`](/auth/harness/#a-dead-account-tells-you-so). Unset means those DMs are logged and dropped; everything else keeps working. The bot needs the `im:write` scope | via `mcp_secrets`; ENV is the fallback |
+| `OPERATOR_SLACK_USER_ID` | the Slack user `AlertService.dm_operator` DMs for conditions only a human can clear. Nothing calls it today — [the `needs_reauth` alert](/auth/harness/#a-dead-account-tells-you-so) is a Trigger that spawns an agent holding the Slack MCP server, which finds its own recipient. Unset means any future operator DM is logged and dropped; everything else keeps working. The bot needs the `im:write` scope | via `mcp_secrets`; ENV is the fallback |
 | `ALERTS_ENABLED` | whether this instance may post to that channel. Unset means *production and staging only* — [holding the token is not authorization to page](/operate/background-jobs/#who-is-allowed-to-page). Set `true` on another instance that should page, `false` to mute one that otherwise would. **ENV only** — never put it in `mcp_secrets`, which is copied into every agent clone's `.env` | not set; the default is the environment |
 | `SLACK_BOT_MENTION_ALLOWED_USER_IDS` | comma-separated Slack user IDs allowed to fire `bot_mention`, `dm_message` and passive-listening triggers. **Blank or unset means everyone** — see [the caveat](/limitations/#anyone-in-the-workspace-can-trigger-an-agent-via-bot-mention-by-default) | via `mcp_secrets`; ENV is the fallback |
 | `ZIMMER_ADMIN_USER` | the `users.key` of the human responsible for web UI actions, since Zimmer has no login. Unset falls back to `tadasant`; a value naming no row means web-UI [human messages](/sessions/hierarchy-and-human-messages/#who-is-the-admin) record nothing rather than guessing an author | not set; the default is the seeded admin |
@@ -81,7 +81,7 @@ not in Terraform — Terraform only provisions the host.
 `WEB_CONCURRENCY`, `RAILS_MAX_THREADS`, `REDIS_POOL_SIZE`, `RAILS_LOG_LEVEL`, `PIDFILE`, `PROCESS_*`.
 
 Worker concurrency is per queue: `GOOD_JOB_AGENTS_THREADS`, `GOOD_JOB_POLLERS_THREADS`,
-`GOOD_JOB_TRIGGERS_THREADS`, `GOOD_JOB_DEFAULT_THREADS`. Each of those threads can hold a database
+`GOOD_JOB_TRIGGERS_THREADS`, `GOOD_JOB_AUTH_THREADS`, `GOOD_JOB_DEFAULT_THREADS`. Each of those threads can hold a database
 connection for the whole life of a job, so they size the ActiveRecord pool too — raising one raises
 the number of connections the database must be able to serve. `DB_POOL` and `CABLE_DB_POOL` override
 the derived pools directly, but read [the connection

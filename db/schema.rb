@@ -142,6 +142,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_22_174500) do
     t.jsonb "oauth_config", default: {}
     t.integer "priority", default: 0, null: false
     t.integer "quota_hit_count", default: 0, null: false
+    t.datetime "reauth_alerted_at"
     t.string "runtime", default: "claude_code", null: false
     t.integer "stale_refresh_failures", default: 0, null: false
     t.integer "status", default: 0, null: false

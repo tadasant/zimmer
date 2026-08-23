@@ -310,10 +310,27 @@ duplicate on the next poll rather than a notification that silently never arrive
 
 ## Queues
 
-Most jobs run on `default`. Two are deliberately isolated:
+Most jobs run on `default`. Three are deliberately isolated:
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
+- **`:auth`** — `RuntimeLoginJob` and `CleanupRuntimeLoginAttemptsJob`. The `triggers` argument with
+  a human added: someone is watching the /quotas login panel spin for exactly as long as the job sits
+  unstarted. `default` is four threads shared with around thirty job classes, fifteen of them cron'd
+  as often as every 30 seconds and several running for minutes (bundle install, npm installs,
+  transcript archiving, LLM title and summary calls) — and `RuntimeLoginJob` used to starve *itself*
+  there, because it holds its thread for as long as the login CLI is open, up to
+  `RuntimeLoginJob::MAX_DURATION` (12 minutes). Two earlier logins took half of `default` with them.
+  `RuntimeLoginJob::DISPATCH_LATENCY_WARN_THRESHOLD` is 15s, much tighter than the trigger lane's:
+  a wake delivered a minute late is late, a login started a minute late has already lost the human.
+
+  GoodJob `priority` is not a substitute for a lane. Priority orders the queue at dequeue time; it
+  does not preempt a running job. When all four `default` threads are already inside multi-minute
+  work, the highest-priority job in the system still waits for one to finish.
+
+  Periodic auth work — `RefreshRuntimeAuthTokensJob`, `RefreshMcpOauthTokensJob` — deliberately stays
+  on `default`. Nobody is waiting on it, and it is exactly the bulk character this lane exists to
+  escape.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubCommentPollerJob`, `GitHubPullRequestPollerJob`, `GitHubMergeConflictPollerJob`,
@@ -429,11 +446,14 @@ each taking `pg_advisory_xact_lock` on the one shared key, during exactly the ou
 
 The escape hatch for a queue that has run away from you. `QueueRecoveryMode` halts job **execution**
 on the demand-side queues — `pollers`, `triggers` and `default` — and deliberately leaves `agents`
-running.
+and `auth` running.
 
 That asymmetry is the whole design. Pausing every queue would also pause `agents`, which is where
-`AgentSessionJob` lives, so the mode would halt the very investigation it exists to enable. `agents`
-is not a source of queue demand either: it holds one long-running job per session, and sessions are
+`AgentSessionJob` lives, so the mode would halt the very investigation it exists to enable. `auth`
+is spared for the same shape of reason: a human is watching the /quotas login panel for as long as
+`RuntimeLoginJob` sits unstarted, and re-authenticating a dead account is often exactly what an
+operator is doing while the mode is on — halting it would freeze the fix along with the failure.
+Neither is a source of queue demand: `agents` holds one long-running job per session, and sessions are
 started by a human or by an already-running agent, never by the backlog. So while recovery mode is
 on you can still start a session, and that session can still run, look at `/jobs`, disable a
 stampeding trigger, and archive runaway sessions — with nothing new arriving behind it.
@@ -583,7 +603,7 @@ than looking like a day-old stall the moment it becomes runnable.
 
 ### The page says which queue, and of what
 
-A ready count on its own is not triageable. Zimmer runs four queues with very different shapes — an
+A ready count on its own is not triageable. Zimmer runs five queues with very different shapes — an
 `agents` thread is held for the entire life of a session, while `default` and `pollers` turn jobs
 over in milliseconds — so the same number is equally consistent with "one queue is starved" and
 "everything is busy", and those want opposite responses. Worse, the healthy-looking signals stay
@@ -787,20 +807,17 @@ differs is the destination (`OPERATOR_SLACK_USER_ID`, opened with `conversations
 the bot's `im:write` scope) and the clock.
 
 Reach for it only where a channel post would be the wrong shape: a condition that stays broken until
-one specific human acts, that no amount of retrying will clear. Today that is exactly one caller —
-[an account falling into `needs_reauth`](/auth/harness/#a-dead-account-tells-you-so). A channel alert
-is a feed entry you scroll past; a DM is a nag, and nags spend attention.
+one specific human acts, that no amount of retrying will clear. A channel alert is a feed entry you
+scroll past; a DM is a nag, and nags spend attention.
 
 Two consequences of being a nag:
 
 - **A much longer window.** `OPERATOR_DM_DEDUP_WINDOW` is 12 hours against `DEDUP_WINDOW`'s 1, and
-  the dedup key is caller-owned and required rather than derived from title + source — so two dead
-  accounts are two DMs, not one collapsed one. The caller may call `clear_dm_suppression` when the
+  the dedup key is caller-owned and required rather than derived from title + source — so two broken
+  subjects are two DMs, not one collapsed one. The caller may call `clear_dm_suppression` when the
   condition resolves so a recurrence is not swallowed by the suppression its first occurrence wrote
   — but it should clear on the *narrowest* signal that the problem is actually fixed, not on any
-  signal that it currently looks fixed. See
-  [the needs_reauth case](/auth/harness/#a-dead-account-tells-you-so) for why clearing too eagerly
-  turns the throttle into a flood.
+  signal that it currently looks fixed.
 - **No `AlertBatcher`.** The batcher collapses same-thread bursts of the same alert, which is a
   channel concern. A DM is already throttled per subject.
 
@@ -808,6 +825,18 @@ Unset `OPERATOR_SLACK_USER_ID` means the DM is logged and dropped, exactly like 
 channel. And `dm_operator` swallows every error it can raise and returns `false` — its callers are
 auth and status-transition paths whose job is to keep the account pool running, and a Slack outage
 must not strand one of them.
+
+**`dm_operator` currently has no callers, and that is deliberate.** Its one caller was the
+`needs_reauth` alert, which is now [a Trigger that spawns an agent](/auth/harness/#a-dead-account-tells-you-so)
+holding the Slack MCP server. The swallow-and-return-`false` shape above is exactly why: three
+different failures — an unset `OPERATOR_SLACK_USER_ID`, a bot without `im:write`, a stuck dedup key
+— all degraded to one `.warn` line and a `false`, and `missing_configuration_details` (the boot-time
+health check) never looked at `operator_user_id` at all. So a deployment could report itself fully
+configured while every operator DM it ever sent was dropped. A notification path that cannot fail
+loudly is one you cannot tell from a working one.
+
+The helper is kept because the shape is still right for the next condition that genuinely needs it.
+Anything reaching for it should account for that failure mode first.
 
 ### Why the elicitation probe doesn't run in development
 

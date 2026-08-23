@@ -20,7 +20,30 @@ require "tmpdir"
 # On success the driver captures the scratch credentials onto the account; the
 # user then activates it through the existing Switch flow.
 class RuntimeLoginJob < ApplicationJob
-  queue_as :default
+  # Runs on the dedicated `auth` queue rather than `default`. A human is watching
+  # the /quotas login panel say "Starting the login CLI and waiting for a
+  # verification link..." for exactly as long as this job sits unstarted, and on
+  # `default` it sat behind four threads shared with ~30 other job classes --
+  # fifteen of them cron'd as often as every 30 seconds, several of them (bundle
+  # install, npm installs, transcript archiving, LLM title/summary calls) running
+  # for minutes. Worse, this job used to starve ITSELF: it pins its thread for as
+  # long as the login CLI is open, up to MAX_DURATION, so two earlier logins took
+  # half of `default` with them.
+  #
+  # GoodJob `priority` is not a substitute. Priority orders the queue at dequeue
+  # time; it does not preempt a running job. When all four threads are already
+  # inside multi-minute work, the highest-priority job in the system still waits
+  # for one to finish. Only a scheduler of its own gives an interactive login a
+  # thread it cannot be denied.
+  queue_as :auth
+
+  # How late a login may start before the delay is worth a log line. The whole
+  # point of the `auth` lane is that this job starts promptly; if it ever stops
+  # doing so, that has to be visible rather than inferred from a user complaining
+  # about a spinner. Matches AoEventTriggerJob's threshold in spirit but is much
+  # tighter -- a wake delivered a minute late is late, a login started a minute
+  # late has already lost the human.
+  DISPATCH_LATENCY_WARN_THRESHOLD = 15 # seconds
 
   # Hard ceiling on how long we hold the CLI subprocess open, independent of the
   # attempt's expires_at (which is the user-facing verification window). Keeps a
@@ -42,6 +65,8 @@ class RuntimeLoginJob < ApplicationJob
   HEARTBEAT_INTERVAL = 15.seconds
 
   def perform(attempt_id)
+    warn_on_high_dispatch_latency(attempt_id)
+
     attempt = RuntimeLoginAttempt.find_by(id: attempt_id)
     return unless attempt
     return if attempt.terminal?
@@ -62,6 +87,26 @@ class RuntimeLoginJob < ApplicationJob
   end
 
   private
+
+  # How long this job waited between enqueue and execution. ActiveJob populates
+  # `enqueued_at` at enqueue time and restores it on the worker, so nothing extra
+  # has to be plumbed through. Defensive: a parsing hiccup is swallowed --
+  # observability must never break a login.
+  def warn_on_high_dispatch_latency(attempt_id)
+    return if enqueued_at.blank?
+
+    enqueued = enqueued_at.is_a?(Time) ? enqueued_at : Time.parse(enqueued_at.to_s)
+    latency = Time.current - enqueued
+    return if latency <= DISPATCH_LATENCY_WARN_THRESHOLD
+
+    Rails.logger.warn(
+      "[RuntimeLoginJob] High dispatch latency: #{latency.round(1)}s between enqueue and execution " \
+      "for attempt #{attempt_id}. The `auth` queue is backlogged — someone was watching the /quotas " \
+      "login panel for that whole time. Check for wedged logins holding auth threads."
+    )
+  rescue => e
+    Rails.logger.info "[RuntimeLoginJob] Could not compute dispatch latency: #{e.class}: #{e.message}"
+  end
 
   # Terminal state for an attempt whose account is gone. Also drops the pasted
   # authorization code, which is credential-adjacent and single-use — and the
