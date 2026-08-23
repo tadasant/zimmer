@@ -58,10 +58,6 @@ class GithubCommentPollerJob < ApplicationJob
     total_limit: 1
   )
 
-  # Whitelisted users who can trigger agent responses via comments (case-insensitive)
-  # GitHub usernames are case-insensitive, so we store lowercase and convert before comparison
-  WHITELISTED_USERS = %w[tadasant macoughl].freeze
-
   # Marker that identifies agent-generated comments
   AGENT_COMMENT_MARKER = "[CC Says]"
 
@@ -265,7 +261,7 @@ class GithubCommentPollerJob < ApplicationJob
   # DISPATCH_DEFERRED, or "skipped:<reason>".
   def dispatch_state_for(comment_data, type:, tracking_started_at:)
     return "skipped:self_marker" if comment_data["attribution"] == "self"
-    return "skipped:author_not_whitelisted" unless WHITELISTED_USERS.include?(comment_data["author"].to_s.downcase)
+    return "skipped:author_not_whitelisted" unless GithubCommentAllowlist.include?(comment_data["author"])
 
     ignored = ignored_reason(comment_data)
     return "skipped:#{ignored}" if ignored
