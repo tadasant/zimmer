@@ -381,4 +381,26 @@ class SessionsHelperTest < ActionView::TestCase
     refute_equal timeline_item_dom_id(one), timeline_item_dom_id(two)
     refute_equal timeline_item_dom_id(one), timeline_item_dom_id(later)
   end
+
+  # The PR button's label does not name the PR's state, so the icon has to. Color
+  # alone would leave a reader who cannot distinguish green from red with nothing,
+  # which is why the glyph varies too -- these are Primer's git-pull-request,
+  # git-merge and git-pull-request-closed octicons.
+  test "pr_icon_path gives open, merged and closed distinct glyphs" do
+    paths = [ "open", "merged", "closed" ].map { |status| pr_icon_path(status) }
+
+    assert_equal paths.uniq.count, paths.count, "two PR states share an icon glyph"
+    paths.each { |path| assert_match(/\A[Mm][\d.]/, path, "not an SVG path: #{path.truncate(40)}") }
+  end
+
+  test "pr_icon_path falls back to the open glyph for an unknown status" do
+    assert_equal pr_icon_path("open"), pr_icon_path(nil)
+    assert_equal pr_icon_path("open"), pr_icon_path("draft")
+  end
+
+  test "pr_icon_color_class pairs a distinct color with each PR state" do
+    colors = [ "open", "merged", "closed", nil ].map { |status| pr_icon_color_class(status) }
+
+    assert_equal colors.uniq.count, colors.count, "two PR states share an icon color"
+  end
 end
