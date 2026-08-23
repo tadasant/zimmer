@@ -308,7 +308,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_not mobile_box.checked?, "the spot opt-in must default to off — priority is the default"
     page.save_screenshot("tmp/screenshots/proof-quick-router-spot-mobile-overlay-375.png")
 
-    assert_no_horizontal_overflow("dashboard mobile prompt overlay with the spot opt-in")
+    # Only the per-element probe here, deliberately. The overlay is `fixed inset-0`
+    # and locks the page behind it with `body { overflow: hidden }` while it is
+    # open, so `overflow_report` would walk every element on the dashboard up to a
+    # body that now clips — reporting the view-mode tab strip (legitimately
+    # `overflow-x-auto`) and the off-canvas notes drawer as clipped controls. The
+    # unobstructed dashboard is already covered by the first test in this file;
+    # what this one has to prove is that the overlay's own contents fit.
     past_edge = elements_past_right_edge("[data-quick-prompt-target='mobileOverlay']")
     assert_empty past_edge,
       "the mobile overlay's spot opt-in ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
