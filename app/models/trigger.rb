@@ -342,11 +342,12 @@ class Trigger < ApplicationRecord
       # Resuscitate archived sessions: unarchive and then follow up — but only
       # when there is a conversation to bring back. A session archived before it
       # ever took a turn is not a reuse candidate at all (see
-      # #resuscitatable_session?), and treating it as one bricked the trigger:
-      # UnarchiveSessionService refused it every time, #resuscitate_session!
-      # raised, ScheduleTriggerJob advanced last_triggered_at to stop the retry
-      # loop, and the recurring trigger created nothing — that day or any day
-      # after.
+      # #resuscitatable_session?), and treating it as one bricks the trigger:
+      # UnarchiveSessionService refuses it, #resuscitate_session! raises,
+      # ScheduleTriggerJob advances last_triggered_at to stop the retry loop, and
+      # the recurring trigger creates nothing — on that fire and on every fire
+      # after it, since the candidate never changes. That is the "Daily Fleet
+      # Cleanup" incident of 2026-08-23.
       if session && resuscitate_archived && session.archived?
         if resuscitatable_session?(session)
           resuscitate_session!(session)
@@ -356,11 +357,13 @@ class Trigger < ApplicationRecord
         # Fall through to the no-reusable-session paths below: a recurring
         # trigger spawns a fresh session (and #create_new_session! points
         # last_session_id at it, so the trigger heals itself on this same fire),
-        # and a one-time reuse trigger skips silently as it always has.
+        # while a one-time reuse trigger skips silently, because it means THAT
+        # session and a fresh stranger would be no use to it.
         Rails.logger.warn(
           "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) cannot resuscitate archived session " \
           "#{session.id} — it has no Claude session_id, so it was archived before it ever ran and has no " \
-          "transcript to restore. Falling back to a fresh session."
+          "transcript to restore. Treating it as no reuse candidate: a recurring trigger spawns a fresh " \
+          "session, a one-time reuse trigger skips."
         )
       end
 
@@ -726,9 +729,9 @@ class Trigger < ApplicationRecord
   # resuscitated, on this fire or any later one, so it is not a reuse candidate.
   #
   # This is the state the spot gate produces at scale: a `spot` session held at
-  # the starting line for a whole quota window, never started, then swept into
-  # trash by the archive sweep. A daily trigger pointed at one of those was
-  # permanently dead until someone edited its last_session_id by hand.
+  # the starting line for a whole quota window, never started, then archived. A
+  # trigger that keeps such a session as its candidate is dead for good, because
+  # the candidate never changes and every fire raises the same error.
   #
   # Deliberately narrow. The service's OTHER failures — a clone that would not
   # restore, a DB error, a state the row cannot leave — say nothing about
