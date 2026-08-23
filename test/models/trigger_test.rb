@@ -1129,8 +1129,9 @@ class TriggerTest < ActiveSupport::TestCase
     session = @trigger.create_session!(prompt: "Initial")
     @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: session.id)
 
-    # Archive the session
-    session.update_column(:status, Session.statuses[:archived])
+    # Archive the session. It carries a Claude session_id, so it has a
+    # transcript to restore and is a genuine resuscitation candidate.
+    session.update_columns(session_id: SecureRandom.uuid, status: Session.statuses[:archived])
 
     # Stub UnarchiveSessionService to simulate successful unarchive.
     # The service transitions the session to needs_input as a side effect,
@@ -1184,8 +1185,9 @@ class TriggerTest < ActiveSupport::TestCase
     session = @trigger.create_session!(prompt: "Initial")
     @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: session.id)
 
-    # Archive the session
-    session.update_column(:status, Session.statuses[:archived])
+    # Archive the session. It ran (it has a session_id), so this is a genuine
+    # resuscitation candidate and a service failure must still surface.
+    session.update_columns(session_id: SecureRandom.uuid, status: Session.statuses[:archived])
 
     # Stub UnarchiveSessionService to simulate failure
     UnarchiveSessionService.stubs(:call).with(session: session).returns(
@@ -1237,7 +1239,7 @@ class TriggerTest < ActiveSupport::TestCase
 
     # The trigger's in-memory snapshot sees the session as archived and enters
     # the resuscitate path...
-    session.update_column(:status, Session.statuses[:archived])
+    session.update_columns(session_id: SecureRandom.uuid, status: Session.statuses[:archived])
 
     # ...but the winning fire has already unarchived it and its job advanced the
     # row to running with archived_at cleared. Model that observable effect by
@@ -1260,6 +1262,103 @@ class TriggerTest < ActiveSupport::TestCase
 
     # Follow-up was enqueued against the winner's running session (not dropped).
     assert_equal 1, session.enqueued_messages.where(status: "pending").count
+  end
+
+  # Regression for the "Daily Fleet Cleanup" incident (2026-08-23).
+  #
+  # A recurring trigger's reuse candidate was a `spot` session that was held at
+  # the starting line for a whole quota window, never ran a single turn, and was
+  # then archived. It had no Claude session_id, so UnarchiveSessionService
+  # refused it ("Session has no session_id") and #resuscitate_session! raised.
+  # ScheduleTriggerJob advanced last_triggered_at to stop the retry loop, so the
+  # sweep created nothing — that day, and every day after, because the reuse
+  # candidate never changed.
+  test "create_session! spawns a fresh session when the archived reuse candidate never ran" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    session = @trigger.create_session!(prompt: "Initial")
+    @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: session.id)
+
+    # Never took a turn (no session_id), then archived — exactly session 7456.
+    assert_nil session.session_id
+    session.update_column(:status, Session.statuses[:archived])
+
+    # The unarchive path is not even attempted: there is nothing to restore, and
+    # asking would only produce the raise this fix removes.
+    UnarchiveSessionService.expects(:call).never
+
+    fresh = nil
+    assert_difference("Session.count", 1) do
+      assert_nothing_raised do
+        fresh = @trigger.create_session!(prompt: "Daily sweep")
+      end
+    end
+    assert_not_equal session.id, fresh.id
+
+    # And the trigger heals itself on this same fire: the next run reuses the
+    # fresh session rather than tripping over the archived one again.
+    assert_equal fresh.id, @trigger.reload.last_session_id
+  end
+
+  # The self-perpetuating half of the same incident: without the fix, every
+  # subsequent fire raised on the identical un-resuscitatable candidate.
+  test "create_session! keeps firing on later runs after a never-ran reuse candidate" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = @trigger.create_session!(prompt: "Initial")
+    @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: session.id)
+    session.update_column(:status, Session.statuses[:archived])
+
+    fresh = @trigger.create_session!(prompt: "Day one")
+
+    # Day two: the fresh session is alive, so it is reused as normal.
+    fresh.update_column(:status, Session.statuses[:needs_input])
+    assert_no_difference("Session.count") do
+      reused = @trigger.create_session!(prompt: "Day two")
+      assert_equal fresh.id, reused.id
+    end
+  end
+
+  # A one-time reuse trigger ("wake session 7456 at 9am") means THAT session, so
+  # an un-resuscitatable target is still a silent skip — spawning a fresh session
+  # would deliver the wake to an agent that knows nothing about the work.
+  test "create_session! skips a one-time reuse trigger whose archived target never ran" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    session = @trigger.create_session!(prompt: "Initial")
+    @trigger.trigger_conditions.destroy_all
+    @trigger.trigger_conditions.create!(
+      condition_type: "schedule",
+      configuration: { "scheduled_at" => 5.minutes.from_now.iso8601 }
+    )
+    @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: session.id)
+    session.update_column(:status, Session.statuses[:archived])
+
+    assert @trigger.reload.one_time_reuse_trigger?
+    UnarchiveSessionService.expects(:call).never
+
+    assert_no_difference("Session.count") do
+      assert_nothing_raised { @trigger.create_session!(prompt: "Wake up") }
+    end
   end
 
   test "create_session! creates new session when archived but resuscitate_archived is false" do

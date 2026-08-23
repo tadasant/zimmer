@@ -339,10 +339,29 @@ class Trigger < ApplicationRecord
         return follow_up_session!(session, prompt: prompt)
       end
 
-      # Resuscitate archived sessions: unarchive and then follow up
+      # Resuscitate archived sessions: unarchive and then follow up — but only
+      # when there is a conversation to bring back. A session archived before it
+      # ever took a turn is not a reuse candidate at all (see
+      # #resuscitatable_session?), and treating it as one bricked the trigger:
+      # UnarchiveSessionService refused it every time, #resuscitate_session!
+      # raised, ScheduleTriggerJob advanced last_triggered_at to stop the retry
+      # loop, and the recurring trigger created nothing — that day or any day
+      # after.
       if session && resuscitate_archived && session.archived?
-        resuscitate_session!(session)
-        return follow_up_session!(session, prompt: prompt)
+        if resuscitatable_session?(session)
+          resuscitate_session!(session)
+          return follow_up_session!(session, prompt: prompt)
+        end
+
+        # Fall through to the no-reusable-session paths below: a recurring
+        # trigger spawns a fresh session (and #create_new_session! points
+        # last_session_id at it, so the trigger heals itself on this same fire),
+        # and a one-time reuse trigger skips silently as it always has.
+        Rails.logger.warn(
+          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) cannot resuscitate archived session " \
+          "#{session.id} — it has no Claude session_id, so it was archived before it ever ran and has no " \
+          "transcript to restore. Falling back to a fresh session."
+        )
       end
 
       # One-time reuse triggers are semantically "act on this specific session at
@@ -694,6 +713,29 @@ class Trigger < ApplicationRecord
     when "session_failed" then "failed"
     when "session_archived" then "archived"
     end
+  end
+
+  # Can this archived session be brought back at all?
+  #
+  # Only if there is a conversation to bring back. `session_id` is the runtime
+  # CLI's own conversation id, stamped on the session the first time the agent
+  # takes a turn; blank means it never took one. UnarchiveSessionService exists
+  # to restore that conversation's transcript so the agent can resume, and
+  # refuses a session without the id ("Session has no session_id") — correctly,
+  # since there is no transcript to write. Such a session can never be
+  # resuscitated, on this fire or any later one, so it is not a reuse candidate.
+  #
+  # This is the state the spot gate produces at scale: a `spot` session held at
+  # the starting line for a whole quota window, never started, then swept into
+  # trash by the archive sweep. A daily trigger pointed at one of those was
+  # permanently dead until someone edited its last_session_id by hand.
+  #
+  # Deliberately narrow. The service's OTHER failures — a clone that would not
+  # restore, a DB error, a state the row cannot leave — say nothing about
+  # whether the session holds work worth resuming, so they still raise rather
+  # than quietly spawning a duplicate alongside a session that has real state.
+  def resuscitatable_session?(session)
+    session.session_id.present?
   end
 
   def reusable_session?(session)
