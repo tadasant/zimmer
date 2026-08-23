@@ -49,8 +49,9 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
     session = held_session
     job = queued_turn(session, scheduled_at: 40.minutes.from_now)
 
-    result = assert_no_enqueued_jobs(only: AgentSessionJob) do
-      Sessions::StartNow.call(session)
+    result = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      result = Sessions::StartNow.call(session)
     end
 
     assert result.started?, result.message
@@ -80,8 +81,9 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
     job = queued_turn(session, scheduled_at: 2.minutes.ago)
     was = job.scheduled_at
 
-    result = assert_no_enqueued_jobs(only: AgentSessionJob) do
-      Sessions::StartNow.call(session)
+    result = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      result = Sessions::StartNow.call(session)
     end
 
     assert result.started?, result.message
@@ -134,8 +136,9 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
   test "a session that has run before and has nothing queued is reported, not nudged" do
     session = waiting_session(session_id: "cli-abc")
 
-    result = assert_no_enqueued_jobs(only: AgentSessionJob) do
-      Sessions::StartNow.call(session)
+    result = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      result = Sessions::StartNow.call(session)
     end
 
     assert result.nothing_queued?, result.message
