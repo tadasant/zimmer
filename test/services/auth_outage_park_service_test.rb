@@ -639,6 +639,130 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
+  # zimmer#532 — a wake must not reach a session that already ended, and the
+  # resume must land in the parked session rather than a fresh one.
+  #
+  # The reported failure had both halves: a per-session retry timer fired 1–3
+  # minutes AFTER its session was archived, and what it produced was a brand-new
+  # goalless session whose only prompt was the resume boilerplate. #599 removed
+  # the timer, so the wake is a sweep over #parked_sessions and the resume happens
+  # in place — but nothing pinned either property.
+  #
+  # The park metadata is deliberately NOT cleared on archive: it is cleared on
+  # `resume` (STALE_RETRY_METADATA_KEYS), and a session that archived never
+  # resumed. So a terminal session still looks parked to anything reading
+  # `auth_outage_reason`, and the `status: :waiting` scope on #parked_sessions is
+  # the entire thing standing between main and a recurrence.
+  #
+  # PRIORITY throughout, deliberately: a spot park is skipped by the fleet-wake
+  # branch for a reason that has nothing to do with having ended, so it could not
+  # tell us whether the terminal-state guard works. A priority park is resumed
+  # directly, which leaves the guard as the only thing saying no.
+  # ===========================================================================
+
+  test "an archived session still carrying park metadata is never woken" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::PRIORITY)
+    park!
+    assert_equal "waiting", @session.reload.status
+
+    @session.archive!
+
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED,
+      @session.reload.metadata["auth_outage_reason"],
+      "Archiving leaves the park metadata behind — which is why the wake path has to read status"
+    # Asserted on the scope itself, not merely on the sweep's return value: with
+    # the scope widened, #resume_parked! would still refuse this session under its
+    # own lock and the sweep would still resume 0. Only this says why.
+    assert_not_includes AuthOutageParkService.parked_sessions.pluck(:id), @session.id
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_equal "archived", @session.reload.status
+  end
+
+  # `failed` is the sharper half of the same invariant: `resume` transitions FROM
+  # failed, so #may_resume? is true here and the scope is the only guard left. An
+  # archived session is refused twice over; a failed one only once.
+  test "a failed session still carrying park metadata is never woken" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::PRIORITY)
+    park!
+    assert_equal "waiting", @session.reload.status
+
+    @session.fail!
+    assert @session.reload.may_resume?,
+      "The state machine would happily resume a failed session — only the park scope refuses"
+
+    assert_not_includes AuthOutageParkService.parked_sessions.pluck(:id), @session.id
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_equal "failed", @session.reload.status
+  end
+
+  # The scope is read once per sweep, so a session can end between being read and
+  # being resumed — the exact 1–3 minute race in #532, compressed. The re-check
+  # under the row lock is what closes it, and it is reachable only by calling
+  # #resume_parked! with a record that WAS `waiting` when it was read.
+  test "resume_parked! refuses a session that left waiting after the sweep read it" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::PRIORITY)
+    park!
+    stale = Session.find(@session.id)
+    assert stale.waiting?, "The sweep's copy still says waiting, as it did when the set was read"
+
+    # `failed`, not `archived`, on purpose. #may_resume? is true from failed, so
+    # the explicit `waiting?` re-check is the ONLY thing refusing this resume —
+    # which makes this the test that isolates it. An archived session is refused
+    # by #may_resume? whatever `waiting?` said, and would pin nothing.
+    @session.fail!
+    assert @session.reload.may_resume?,
+      "The state machine would allow this resume — only the waiting? re-check refuses it"
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      assert_not AuthOutageParkService.resume_parked!(stale, StructuredLogger.new({ service: "test" })),
+        "Called with a copy that has gone stale, the under-lock re-check is what refuses"
+    end
+    assert_equal "failed", @session.reload.status
+    assert_nil @session.reload.metadata["pending_follow_up_prompt"]
+  end
+
+  # The second half of #532. The boilerplate says "continue where you left off",
+  # which resolves against a transcript — so it has to be delivered INTO the
+  # parked session. Delivered as the first prompt of a fresh session it resolves
+  # against nothing, which is what burned ~4h of heartbeat nudges per occurrence.
+  test "a parked session resumes into its own record rather than spawning a new one" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::PRIORITY,
+      prompt: "Investigate the flaky payment webhook test")
+    park!
+    ids_before = Session.pluck(:id)
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+
+    # The spawned session's own prompt is in the failure message on purpose: the
+    # #532 artifact is recognisable precisely by being nothing but boilerplate.
+    assert_empty Session.where.not(id: ids_before).pluck(:id, :prompt),
+      "The wake must resume the parked session, not create a goalless new one alongside it"
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_equal "Investigate the flaky payment webhook test", @session.prompt,
+      "The original task stays the session's prompt — the boilerplate is a follow-up, not a goal"
+    stamped = @session.metadata["pending_follow_up_prompt"]
+    assert AutomatedPrompts.system_recovery?(stamped),
+      "The recovery prompt belongs on the parked session, where it has a transcript to resolve against"
+    assert_includes stamped,
+      AuthOutageParkService.resume_prompt_reason(AuthOutageParkService::QUOTA_EXHAUSTED),
+      "and it names the park it is recovering from, rather than arriving as bare boilerplate"
+    assert_nil @session.metadata["forked_from_session_id"],
+      "Resuming in place means there is no fork edge to invent"
+  end
+
+  # ===========================================================================
   # park_undelivered_turn! — the escape path from zimmer#6597
   #
   # 6597 was resumed from a quota park, its recovery turn was killed before it
