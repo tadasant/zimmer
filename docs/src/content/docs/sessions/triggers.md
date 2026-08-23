@@ -33,9 +33,9 @@ flowchart LR
     T --> H["heal stale catalog refs"]
     H --> D{"reuse_session?"}
     D -->|"yes + session is<br/>needs_input/running/waiting"| FU["follow_up_session!"]
-    D -->|"resuscitate_archived<br/>+ archived<br/>+ the session ran"| RS["unarchive + follow up"]
-    D -->|no| NEW["create_new_session!"]
-    D -->|"archived, never ran<br/>(nothing to resuscitate)"| NEW
+    D -->|"resuscitate_archived<br/>+ archived<br/>+ the session started"| RS["unarchive + follow up"]
+    D -->|no| NEW["create_new_session!<br/>(a one-time reuse trigger skips instead)"]
+    D -->|"archived, never started<br/>(nothing to resuscitate)"| NEW
 ```
 
 ### `slack`
@@ -709,28 +709,40 @@ one. The candidate is `last_session_id`, and it is used when the session is aliv
 `resuscitate_archived` extends that to a session already in trash: `UnarchiveSessionService`
 restores its clone and its transcript, and the follow-up lands in the resumed conversation.
 
-### The archived session that never ran
+### The archived session that never started
 
-Resuscitation only works when there is a conversation to bring back. `session_id` — the runtime
-CLI's own conversation id — is stamped on a session the first time its agent takes a turn, and
-`UnarchiveSessionService` refuses a session without one, because a transcript is the thing it exists
-to restore. A session that never took a turn has no transcript, and never will.
+Resuscitation only works when there is something to bring back. `UnarchiveSessionService` restores a
+transcript so the agent can resume, and refuses a session with no `session_id` — that is the name it
+would write the transcript under. A session with neither is refused on every fire, forever.
 
-That is not a hypothetical: a `spot` session can sit at the [spot gate](/operate/costs/) for a whole
-quota window without ever starting, and then be archived. A trigger pointed at one used to raise on
-every fire. `ScheduleTriggerJob` advanced `last_triggered_at` to stop the retry loop, so the
-schedule was consumed and nothing was created — that day and every day after, since the reuse
-candidate never changed. A daily sweep died silently and permanently on one held session.
+That pair is what the [spot gate](/sessions/spot-and-priority/#the-gate) produces at scale: a `spot`
+session can sit at the starting line for a whole quota window without ever starting, and then be
+archived. `session_id` is stamped once the spawn pipeline has the session's clone and *before* the
+runtime is launched (Zimmer passes it to the CLI as `--session-id`), so a blank one means the session
+never got that far — and its transcript is blank for the same reason.
+
+Without a screen for it, such a candidate kills the trigger outright: the fire raises,
+`ScheduleTriggerJob` advances `last_triggered_at` to close the retry loop, and the schedule is
+consumed with nothing created — on that fire and on every one after it, since the candidate never
+changes. A daily sweep dies silently and permanently on one held session.
 
 So a never-started session is not a reuse candidate at all. The trigger logs a warning and falls
-through to the paths it would take with no candidate: a recurring trigger spawns a **fresh** session
-— which repoints `last_session_id` at it, healing the trigger on that same fire — and a one-time
-reuse trigger ("wake *this* session at 9am") still skips silently, because it means that one session
-and a stranger would be no use.
+through to the paths it would take with no candidate — the same paths an archived session takes when
+`resuscitate_archived` is off:
 
-Every other unarchive failure — a clone that will not restore, a database error, a row that cannot
-leave its state — still raises and alerts. Those sessions hold real work, and quietly spawning a
-duplicate alongside them would be the wrong answer.
+- a **recurring** trigger spawns a fresh session, which repoints `last_session_id` at it and so heals
+  the trigger on that same fire;
+- a **one-time reuse** trigger ("wake *this* session at 9am") skips silently, because it means that
+  one session and a fresh stranger would be no use to it. As with any other undeliverable one-time
+  reuse fire, the schedule is still consumed and the trigger auto-deletes along with its sibling
+  wakes — it is not parked as `failed`, because nothing raised.
+
+Every other unarchive failure still raises and alerts. A clone that will not restore, a database
+error, a row that cannot leave its state — and the one case where the id and the transcript come
+apart: a runtime that mints its own conversation id (codex) has that id cleared on a fresh-start
+recovery, so a long-running session can be archived holding a full transcript and no id. It cannot
+be restored either, but it *has* state, so abandoning it quietly and spawning a duplicate alongside
+it would be the wrong answer.
 
 ## Firing a trigger by hand
 

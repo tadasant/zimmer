@@ -361,9 +361,9 @@ class Trigger < ApplicationRecord
         # session and a fresh stranger would be no use to it.
         Rails.logger.warn(
           "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) cannot resuscitate archived session " \
-          "#{session.id} — it has no Claude session_id, so it was archived before it ever ran and has no " \
-          "transcript to restore. Treating it as no reuse candidate: a recurring trigger spawns a fresh " \
-          "session, a one-time reuse trigger skips."
+          "#{session.id} — it has no runtime session id and no transcript, so it was archived before it " \
+          "ever started and there is nothing to restore. Treating it as no reuse candidate: a recurring " \
+          "trigger spawns a fresh session, a one-time reuse trigger skips."
         )
       end
 
@@ -720,25 +720,34 @@ class Trigger < ApplicationRecord
 
   # Can this archived session be brought back at all?
   #
-  # Only if there is a conversation to bring back. `session_id` is the runtime
-  # CLI's own conversation id, stamped on the session the first time the agent
-  # takes a turn; blank means it never took one. UnarchiveSessionService exists
-  # to restore that conversation's transcript so the agent can resume, and
-  # refuses a session without the id ("Session has no session_id") — correctly,
-  # since there is no transcript to write. Such a session can never be
-  # resuscitated, on this fire or any later one, so it is not a reuse candidate.
+  # Only if there is something to bring back. UnarchiveSessionService restores a
+  # transcript so the agent can resume, and refuses a session with no
+  # `session_id` ("Session has no session_id") because that is the name it would
+  # write the transcript under. So a session with neither is refused on this fire
+  # and on every later one — it is not a reuse candidate, and a trigger that
+  # keeps it as one is dead for good, since the candidate never changes and each
+  # fire raises the same error.
   #
-  # This is the state the spot gate produces at scale: a `spot` session held at
-  # the starting line for a whole quota window, never started, then archived. A
-  # trigger that keeps such a session as its candidate is dead for good, because
-  # the candidate never changes and every fire raises the same error.
+  # That pair is the state the spot gate produces at scale: a `spot` session
+  # held at the starting line for a whole quota window, never started, then
+  # archived. `session_id` is stamped once the spawn pipeline has the session's
+  # clone and BEFORE the runtime is launched (AgentSessionJob passes it to the
+  # CLI as `--session-id`), so blank means the session never got that far, and
+  # its transcript is blank for the same reason.
   #
-  # Deliberately narrow. The service's OTHER failures — a clone that would not
-  # restore, a DB error, a state the row cannot leave — say nothing about
-  # whether the session holds work worth resuming, so they still raise rather
-  # than quietly spawning a duplicate alongside a session that has real state.
+  # The transcript is checked as well as the id because the two can come apart:
+  # a runtime that mints its own conversation id (codex) has that id cleared by
+  # ProcessLifecycleManager#release_stale_runtime_session_id! on a fresh-start
+  # recovery, so a long-running session can hold a full transcript with no id.
+  # That session HAS state, and the service still cannot restore it — which is
+  # exactly a failure a human should see. It keeps raising.
+  #
+  # Deliberately narrow for the same reason. The service's other failures — a
+  # clone that would not restore, a DB error, a state the row cannot leave — say
+  # nothing about whether the session holds work worth resuming, so they raise
+  # rather than quietly spawning a duplicate alongside it.
   def resuscitatable_session?(session)
-    session.session_id.present?
+    session.session_id.present? || session.transcript.present?
   end
 
   def reusable_session?(session)
