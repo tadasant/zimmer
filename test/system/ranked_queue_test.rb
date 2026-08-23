@@ -242,9 +242,14 @@ class RankedQueueTest < ApplicationSystemTestCase
 
   # The other half of the same promise, asserted on the guard itself: a click
   # carrying a modifier is left to the browser, which is what makes "open in a new
-  # tab" keep working. A synthetic event is used deliberately — it reaches the
-  # Stimulus action exactly as a real one does, without the driver having to
-  # follow a second tab.
+  # tab" keep working.
+  #
+  # The event is synthetic so the driver never has to chase a second tab, and a
+  # one-shot preventDefault is attached AFTER Stimulus's own listener — dispatching
+  # a click on an <a> follows the link whether the event is trusted or not, and a
+  # navigation here would prove nothing about the drawer either way. Listener order
+  # is what makes that honest: session-drawer#open runs first and gets the real
+  # event, and only then is the browser's own navigation suppressed.
   test "a modifier-click on a row's title is left to the browser" do
     queued = spot(100, title: "Rebuild the AIR catalog index")
 
@@ -255,9 +260,12 @@ class RankedQueueTest < ApplicationSystemTestCase
       const id = arguments[0];
       const link = [...document.querySelectorAll(`#ranked_row_${id} a`)]
         .find((a) => a.getAttribute("data-action") === "click->session-drawer#open");
+      link.addEventListener("click", (event) => event.preventDefault(), { once: true });
       link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, metaKey: true }));
     JS
 
+    # A plain click on this same link opens the drawer synchronously (the test
+    # above), so the panel still being dismissed is the guard having returned.
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
     assert_current_path root_path, ignore_query: true
   end
