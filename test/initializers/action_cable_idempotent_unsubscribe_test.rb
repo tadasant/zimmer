@@ -3,9 +3,9 @@ require "test_helper"
 # Verifies the patch in
 # config/initializers/action_cable_idempotent_unsubscribe.rb: an `unsubscribe`
 # command for a subscription the connection no longer holds must NOT emit an
-# ERROR-level log (that benign client/server race was tripping the prod Grafana
-# `Rails ERROR logs present` alert — see issue pulsemcp/pulsemcp#4285). Every other command error
-# must still log at ERROR.
+# ERROR-level log (that benign client/server race was tripping the critical
+# Grafana `Zimmer backend logging errors (excludes staging)` alert — see issue
+# pulsemcp/pulsemcp#4285). Every other command error must still log at ERROR.
 class ActionCableIdempotentUnsubscribeTest < ActiveSupport::TestCase
   # Records every logged message with its severity so we can assert on level,
   # not just text. We capture all standard severities (Subscriptions itself

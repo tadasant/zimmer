@@ -9,8 +9,8 @@
 # unsubscribe — not a failure we control or can retry. Per the repo logging
 # philosophy (benign/expected -> debug/info; genuinely broken -> error), removing
 # a subscription should be idempotent: a no-op (logged at `.debug`) when the
-# subscription is already gone, rather than an ERROR that trips the
-# `agent-orchestrator-errors` and `Rails ERROR logs present (prod)` alerts.
+# subscription is already gone, rather than an ERROR that trips the critical
+# `Zimmer backend logging errors (excludes staging)` alert.
 #
 # This is scoped to the unsubscribe/remove path only. Every other ActionCable
 # command error — unrecognized commands, and `find` failures on the `message`
