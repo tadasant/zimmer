@@ -144,6 +144,11 @@ export default class extends Controller {
       .then((payload) => {
         this.applyServerValues(payload)
         this.moveToPriority(row)
+        // Promoting a held session starts it. The row's status pill flips to
+        // Running over the ranked stream, so a start that worked needs no
+        // message here — but one the server refused (a session paused until a
+        // chosen time, say) would otherwise look like it had started.
+        if (payload && payload.start_outcome === "refused") this.showError(payload.start_message)
       })
       .catch((error) => this.rollback(error, row))
   }

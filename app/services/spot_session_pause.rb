@@ -220,6 +220,21 @@ class SpotSessionPause
       session.metadata&.dig(PAUSED_REASON) == QUEUED_REASON
     end
 
+    # Resume one dormant session on demand, rather than on the sweep's next pass.
+    #
+    # This is the door Sessions::StartNow comes through when a human presses
+    # Start on a session the ceiling paused, or parked here from "Pause Until".
+    # It is deliberately the SAME resume the sweep performs — the row lock, the
+    # re-check under it, the prompt a human left with the park — because a
+    # session put back by hand and one put back by the sweep must come back the
+    # same way. What differs is only the sentence in its log.
+    #
+    # @return [Boolean] whether the session was resumed
+    def resume_now!(session, actor: "a user", logger: nil)
+      logger ||= StructuredLogger.new({ service: "SpotSessionPause" })
+      resume!(session, "Resumed from the spot queue by #{actor}, ahead of the sweep.", logger)
+    end
+
     # Split the ceiling's sleepers into the ones this sweep may resume and a count
     # of the ones a human (or an agent, through `wake_me_up_later`) has paused
     # until a chosen time.

@@ -16,7 +16,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" leaves the session wherever its existing rank puts it, which is usually the bottom — pass both when you mean it to be worked on soon.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -52,6 +52,7 @@ module Mcp
         pause
         pause_into_spot_queue
         restart
+        start_now
         archive
         unarchive
         change_mcp_servers
@@ -211,6 +212,7 @@ module Mcp
         when "pause" then pause(find_session(args["session_id"]))
         when "pause_into_spot_queue" then pause_into_spot_queue(find_session(args["session_id"]), args)
         when "restart" then restart(find_session(args["session_id"]))
+        when "start_now" then start_now(find_session(args["session_id"]))
         when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
         when "change_mcp_servers" then change_mcp_servers(find_session(args["session_id"]), args)
@@ -496,6 +498,25 @@ module Mcp
       # a person driving one session, or an agent addressing one directly, is
       # taking it over, and consuming the now-moot wake is the documented
       # behaviour. This is about a selector working a list.
+      # "Start it now": take a waiting session's next turn immediately instead of
+      # when the scheduler gets round to it — the tool half of the Ranked view's
+      # ⋮ menu entry. This is what a fleet-maintenance agent working the queue
+      # reaches for when it decides one session should not wait out the gate's
+      # deferred re-check; `change_scheduling_class` to "priority" does it too,
+      # as a side effect of the promotion.
+      def start_now(session)
+        result = Sessions::StartNow.call(session, actor: "an agent through MCP")
+        raise ToolError, result.message if result.refused?
+
+        if result.nothing_queued?
+          raise ToolError,
+            "#{result.message} There is no turn to bring forward: send it a \"follow_up\" prompt, " \
+            "or \"restart\" it if it is stuck."
+        end
+
+        summary("Session Starting Now", session.reload, message: result.message)
+      end
+
       def refuse_if_paused!(session)
         return unless session.paused_until_scheduled_time?
 
@@ -747,6 +768,16 @@ module Mcp
           session.logs.create!(content: "Precedence set via MCP to #{session.precedence} (was #{previous_precedence})", level: "info")
         end
 
+        # Promoting a waiting session starts it, the same as pressing Promote on
+        # the Ranked view. The hold this releases is carrying a deferred re-check
+        # up to an hour out, and "release this one session" is not a request to
+        # keep waiting that long. A session with nothing queued is left alone —
+        # `start_now` is the action for a stranded one, and it says so.
+        start = if previous != SessionGenesis::PRIORITY &&
+                   session.priority_class == SessionGenesis::PRIORITY && session.waiting?
+          Sessions::StartNow.call(session, actor: "an agent promoting it through MCP")
+        end
+
         [
           "## Scheduling Class Updated",
           "",
@@ -754,8 +785,9 @@ module Mcp
           "- **Title:** #{session.title}",
           "- **Scheduling class:** #{session.priority_class} (was #{previous})",
           "- **Source:** #{session.scheduling_class_source}",
-          "- **Precedence:** #{session.precedence}#{" (was #{previous_precedence})" if previous_precedence != session.precedence}"
-        ].join("\n")
+          "- **Precedence:** #{session.precedence}#{" (was #{previous_precedence})" if previous_precedence != session.precedence}",
+          ("- **Start:** #{start.message}" if start && !start.nothing_queued?)
+        ].compact.join("\n")
       end
 
       # Where this session sits in the spot queue. Answered for every session,

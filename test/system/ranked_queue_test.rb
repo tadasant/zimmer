@@ -52,6 +52,25 @@ class RankedQueueTest < ApplicationSystemTestCase
     all("[data-ranked-queue-target='spotList'] > li").map { |li| li[:id] }
   end
 
+  # Screenshots land next to the failure screenshots Rails writes, so CI's
+  # artifact upload picks them up and a PR can show what changed. There is no
+  # Postgres in an agent session's container, so CI's Chrome is the only place a
+  # screenshot of this screen can come from.
+  SCREENSHOT_DIR = Rails.root.join("tmp", "capybara")
+
+  def capture(name)
+    FileUtils.mkdir_p(SCREENSHOT_DIR)
+    page.save_screenshot(SCREENSHOT_DIR.join("proof-#{name}.png"))
+  end
+
+  # The queue sits below the filters panel, so a shot framed on the top of the
+  # document shows the filters and none of the rows. Scroll BEFORE opening a menu
+  # rather than after: overflow-menu decides up-or-down from where the button is
+  # in the viewport at the moment it opens.
+  def scroll_queue_into_view
+    page.execute_script("document.getElementById('ranked_sessions').scrollIntoView({ block: 'start' })")
+  end
+
   test "the queue follows status changes live, and a trashed row leaves it" do
     queued = spot(900, title: "Rebuild the AIR catalog index")
     doomed = spot(100, title: "Second in line")
@@ -160,6 +179,103 @@ class RankedQueueTest < ApplicationSystemTestCase
     click_button "Demote to spot"
     assert_selector "[data-ranked-queue-target='spotList'] #ranked_row_#{top.id}", wait: 5
     assert_not_equal "none", handle_display(top), "a demoted row must gain its handle"
+  end
+
+  # Everything a row can do now lives in the one menu, so the two entries added
+  # last are exercised where a user meets them: in the open menu, on a row.
+  test "the menu trashes a row and starts a session" do
+    doomed = spot(200, title: "Trash me from the menu")
+    queued = spot(100, title: "Rebuild the AIR catalog index")
+
+    visit_queue
+    wait_for_turbo_streams_connected
+    assert_selector "[data-ranked-queue-target='spotCount']", exact_text: "2"
+
+    scroll_queue_into_view
+    kebab_for(queued).click
+    assert_link "Start now"
+    assert_link "Trash"
+    capture("ranked-row-menu")
+
+    # Start hands the session its first turn. The job is enqueued rather than run
+    # (the test adapter holds it), so the session's own log is what says so.
+    click_link "Start now"
+    assert_selector "#flash", text: "next turn is due now"
+    assert queued.logs.reload.any? { |log| log.content.include?("Started now") },
+      "Start now should record itself on the session it started"
+
+    # Trash archives through the same #archive every other Trash affordance posts
+    # to, and the row leaves over the ranked stream rather than by a reload.
+    kebab_for(doomed).click
+    click_link "Trash"
+    assert_no_selector "#ranked_row_#{doomed.id}", wait: 5
+    assert doomed.reload.archived?
+    assert_selector "[data-ranked-queue-target='spotCount']", exact_text: "1"
+  end
+
+  # Promoting a held session is the whole point of promoting it: the deferred
+  # re-check it was carrying is up to an hour out, and the hold banner already
+  # promised that making it priority starts it now.
+  test "promoting a row starts the session it promoted" do
+    queued = spot(100, title: "Held behind the quota gate")
+
+    visit_queue
+    kebab_for(queued).click
+    click_button "Promote to priority"
+
+    assert_selector "[data-ranked-queue-target='priorityList'] #ranked_row_#{queued.id}", wait: 5
+    assert queued.logs.reload.any? { |log| log.content.include?("Started now") },
+      "a promote should start the session rather than leave it waiting out its re-check"
+  end
+
+  # The title is the reading surface of a queue row, and clicking it should not
+  # take the operator off the queue they are managing. It stays a real <a href>,
+  # so middle-click and ⌘/Ctrl-click still open a new tab — session-drawer#open
+  # intercepts the plain left click only.
+  test "clicking a row's title opens the drawer instead of leaving the queue" do
+    queued = spot(100, title: "Rebuild the AIR catalog index")
+
+    visit_queue
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+
+    find("#ranked_row_#{queued.id} a", text: "Rebuild the AIR catalog index").click
+
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
+    assert_current_path root_path, ignore_query: true
+    within "turbo-frame#session_detail" do
+      assert_text "##{queued.id}"
+    end
+    capture("ranked-title-opens-drawer")
+  end
+
+  # The other half of the same promise, asserted on the guard itself: a click
+  # carrying a modifier is left to the browser, which is what makes "open in a new
+  # tab" keep working.
+  #
+  # The event is synthetic so the driver never has to chase a second tab, and a
+  # one-shot preventDefault is attached AFTER Stimulus's own listener — dispatching
+  # a click on an <a> follows the link whether the event is trusted or not, and a
+  # navigation here would prove nothing about the drawer either way. Listener order
+  # is what makes that honest: session-drawer#open runs first and gets the real
+  # event, and only then is the browser's own navigation suppressed.
+  test "a modifier-click on a row's title is left to the browser" do
+    queued = spot(100, title: "Rebuild the AIR catalog index")
+
+    visit_queue
+    assert_selector "#ranked_row_#{queued.id} a", text: "Rebuild the AIR catalog index"
+
+    page.execute_script(<<~JS, queued.id)
+      const id = arguments[0];
+      const link = [...document.querySelectorAll(`#ranked_row_${id} a`)]
+        .find((a) => a.getAttribute("data-action") === "click->session-drawer#open");
+      link.addEventListener("click", (event) => event.preventDefault(), { once: true });
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, metaKey: true }));
+    JS
+
+    # A plain click on this same link opens the drawer synchronously (the test
+    # above), so the panel still being dismissed is the guard having returned.
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+    assert_current_path root_path, ignore_query: true
   end
 
   # The inline rank entry is the other half of this screen, and the row rewrite
