@@ -498,6 +498,19 @@
                 </button>
                 <span data-quick-prompt-target="mobileBadge" class="ml-auto text-xs text-gray-500"></span>
               </div>
+              <%# Spot opt-in. Unchecked submits no scheduling_class at all, which
+                  is exactly today's behavior: the session takes the `web_ui`
+                  genesis default. Native form field — no JS needed to submit it. %>
+              <label class="mb-3 flex items-start gap-2 cursor-pointer">
+                <%= check_box_tag :scheduling_class, SessionGenesis::SPOT, false,
+                      id: "quick_prompt_mobile_scheduling_class",
+                      data: { quick_prompt_target: "mobileSpot" },
+                      class: "mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
+                <span class="text-xs leading-snug text-gray-500">
+                  <span class="font-medium text-gray-700">Run as spot</span> —
+                  waits for quota room instead of starting now, and lands at the top of the spot queue.
+                </span>
+              </label>
               <button type="submit" data-quick-prompt-target="mobileSubmit"
                       class="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 Submit
@@ -560,6 +573,17 @@
               </svg>
             </button>
             <span data-quick-prompt-target="desktopBadge" class="text-xs text-gray-500"></span>
+            <%# Spot opt-in, same contract as the mobile overlay and the chat
+                bubble: checked sends scheduling_class=spot, unchecked sends
+                nothing and the class derives from the `web_ui` genesis. %>
+            <label class="ml-auto flex items-center gap-1.5 cursor-pointer"
+                   title="Waits for quota room instead of starting now, and lands at the top of the spot queue.">
+              <%= check_box_tag :scheduling_class, SessionGenesis::SPOT, false,
+                    id: "quick_prompt_desktop_scheduling_class",
+                    data: { quick_prompt_target: "desktopSpot" },
+                    class: "h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
+              <span class="text-xs text-gray-500">Run as <span class="font-medium text-gray-700">spot</span></span>
+            </label>
           </div>
         <% end %>
       </div>

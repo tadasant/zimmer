@@ -27,6 +27,7 @@ export default class extends Controller {
     "desktopCameraInput",  // desktop camera input (capture="environment")
     "desktopFileInput",    // desktop file picker
     "desktopBadge",        // desktop "N attached" hint
+    "desktopSpot",         // desktop "Run as spot" checkbox
     "mobileOverlay",       // full-screen overlay (mobile)
     "mobileTextarea",      // textarea inside overlay
     "mobileForm",          // form inside overlay
@@ -34,7 +35,8 @@ export default class extends Controller {
     "mobileImageInput",    // mobile image picker
     "mobileCameraInput",   // mobile camera input
     "mobileFileInput",     // mobile file picker
-    "mobileBadge"          // mobile "N attached" hint
+    "mobileBadge",         // mobile "N attached" hint
+    "mobileSpot"           // mobile "Run as spot" checkbox
   ]
 
   static values = {
@@ -103,6 +105,9 @@ export default class extends Controller {
     if (this.hasMobileImageInputTarget) this.mobileImageInputTarget.value = ""
     if (this.hasMobileCameraInputTarget) this.mobileCameraInputTarget.value = ""
     if (this.hasMobileFileInputTarget) this.mobileFileInputTarget.value = ""
+    // The spot opt-in is per-submission, not a sticky preference — the next open
+    // starts back at the default (priority).
+    if (this.hasMobileSpotTarget) this.mobileSpotTarget.checked = false
     this.updateMobileBadge()
   }
 

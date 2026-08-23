@@ -4,6 +4,7 @@ import { Controller } from "@hotwired/stimulus"
 //
 // - Click the bubble icon to open a slide-out panel with a textarea
 // - Cmd/Ctrl+Enter submits in the background (session runs silently)
+// - The "Run as spot" checkbox rides on both submit paths
 // - "Submit & Open" button creates the session and navigates to it
 // - Automatically captures the current page HTML as markdown context
 // - Escape key closes the panel
@@ -19,7 +20,8 @@ export default class extends Controller {
     "imageInput",
     "cameraInput",
     "fileInput",
-    "preview"
+    "preview",
+    "spot"
   ]
 
   static values = {
@@ -389,6 +391,13 @@ export default class extends Controller {
         body.append("parent_session_id", String(sessionId))
       }
 
+      // Read from the checkbox rather than from the button that was clicked, so
+      // Submit and Submit & Open both honor it. Only an explicit opt-in is sent;
+      // an unchecked box sends nothing and the server leaves the class to derive.
+      if (this.hasSpotTarget && this.spotTarget.checked) {
+        body.append("scheduling_class", this.spotTarget.value || "spot")
+      }
+
       for (const f of this.attachedImages) body.append("images[]", f, f.name)
       for (const f of this.attachedFiles) body.append("files[]", f, f.name)
 
@@ -413,6 +422,7 @@ export default class extends Controller {
       this.textareaTarget.value = ""
       this.attachedImages = []
       this.attachedFiles = []
+      if (this.hasSpotTarget) this.spotTarget.checked = false
       this._renderPreview()
       this.close()
 
