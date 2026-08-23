@@ -33,8 +33,9 @@ flowchart LR
     T --> H["heal stale catalog refs"]
     H --> D{"reuse_session?"}
     D -->|"yes + session is<br/>needs_input/running/waiting"| FU["follow_up_session!"]
-    D -->|"resuscitate_archived<br/>+ archived"| RS["unarchive + follow up"]
+    D -->|"resuscitate_archived<br/>+ archived<br/>+ the session ran"| RS["unarchive + follow up"]
     D -->|no| NEW["create_new_session!"]
+    D -->|"archived, never ran<br/>(nothing to resuscitate)"| NEW
 ```
 
 ### `slack`
@@ -698,6 +699,38 @@ about the requests a restart re-issues, so `TRANSIENT_RETRY_DEADLINE` (20s) caps
 new attempt starts once a search has been running that long. Against a healthy API — these searches
 return in well under a second — neither bound is ever reached.
 :::
+
+## Reusing a session
+
+`reuse_session` makes a trigger follow up into the session it last created instead of spawning a new
+one. The candidate is `last_session_id`, and it is used when the session is alive — `needs_input`,
+`running`, or `waiting` — and nobody has taken it over by hand.
+
+`resuscitate_archived` extends that to a session already in trash: `UnarchiveSessionService`
+restores its clone and its transcript, and the follow-up lands in the resumed conversation.
+
+### The archived session that never ran
+
+Resuscitation only works when there is a conversation to bring back. `session_id` — the runtime
+CLI's own conversation id — is stamped on a session the first time its agent takes a turn, and
+`UnarchiveSessionService` refuses a session without one, because a transcript is the thing it exists
+to restore. A session that never took a turn has no transcript, and never will.
+
+That is not a hypothetical: a `spot` session can sit at the [spot gate](/operate/costs/) for a whole
+quota window without ever starting, and then be archived. A trigger pointed at one used to raise on
+every fire. `ScheduleTriggerJob` advanced `last_triggered_at` to stop the retry loop, so the
+schedule was consumed and nothing was created — that day and every day after, since the reuse
+candidate never changed. A daily sweep died silently and permanently on one held session.
+
+So a never-started session is not a reuse candidate at all. The trigger logs a warning and falls
+through to the paths it would take with no candidate: a recurring trigger spawns a **fresh** session
+— which repoints `last_session_id` at it, healing the trigger on that same fire — and a one-time
+reuse trigger ("wake *this* session at 9am") still skips silently, because it means that one session
+and a stranger would be no use.
+
+Every other unarchive failure — a clone that will not restore, a database error, a row that cannot
+leave its state — still raises and alerts. Those sessions hold real work, and quietly spawning a
+duplicate alongside them would be the wrong answer.
 
 ## Firing a trigger by hand
 
