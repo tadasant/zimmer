@@ -3308,6 +3308,43 @@ class SessionTest < ActiveSupport::TestCase
     assert_not session.failed_before_initial_prompt?
   end
 
+  # Tests for degraded MCP servers (GitHub issue #521)
+
+  test "degraded_mcp_servers reads the servers AgentSessionJob wrote off" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test",
+      metadata: { "mcp_degraded_servers" => [
+        { "name" => "pulse-fetch", "error" => "Connection closed", "degraded_at" => "2026-08-23T15:20:54Z" }
+      ] }
+    )
+    assert_equal [ "pulse-fetch" ], session.degraded_mcp_server_names
+    assert_equal "Connection closed", session.degraded_mcp_servers.first["error"]
+  end
+
+  test "degraded_mcp_servers is empty for a session that lost nothing" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test")
+    assert_empty session.degraded_mcp_servers
+    assert_empty session.degraded_mcp_server_names
+  end
+
+  test "degraded_mcp_servers tolerates a malformed metadata value" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test",
+      metadata: { "mcp_degraded_servers" => "pulse-fetch" }
+    )
+    assert_empty session.degraded_mcp_servers
+  end
+
+  # STALE_RETRY_METADATA_KEYS is cleared by every automatic recovery path, not just a
+  # deliberate restart. A write-off that vanished on a deploy sweep would let the
+  # still-dead server burn the whole ladder again while the agent silently stopped
+  # being told it had lost the capability. Only a server actually reconnecting
+  # retires the record (McpStatusPersisting).
+  test "mcp_degraded_servers survives the automatic recovery paths that clear retry metadata" do
+    assert_not_includes Session::STALE_RETRY_METADATA_KEYS, "mcp_degraded_servers"
+    assert_includes Session::STALE_RETRY_METADATA_KEYS, "mcp_retry_count"
+  end
+
   # Tests for failure_summary / failure_detail
 
   test "failure_summary names failed MCP servers for mcp_connection_failed" do

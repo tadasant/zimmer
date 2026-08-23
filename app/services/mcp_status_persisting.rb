@@ -25,6 +25,7 @@ module McpStatusPersisting
 
     any_failed = false
     failed_servers = []
+    reconnected_servers = []
     # Whether this poll actually has something to persist. Polls are frequent and
     # mostly say nothing new, and `updated_metadata` always names
     # `mcp_servers_status`, so without this an unchanged poll would still issue an
@@ -36,6 +37,7 @@ module McpStatusPersisting
       @session.reload
       current_metadata = @session.custom_metadata || {}
       current_mcp_status = current_metadata["mcp_servers_status"] || {}
+      degraded_names = @session.degraded_mcp_server_names.to_set
 
       # Update status for both configured and auto-injected servers so the UI
       # can show real connection state for every server in the runtime config.
@@ -86,6 +88,16 @@ module McpStatusPersisting
           any_failed = true
           failed_servers << { "name" => server_name, "status" => "failed", "error" => new_status[:error] }
         end
+
+        # A server this session had written off has come back. This is the only
+        # signal that is actually true about the outage being over — no restart or
+        # sweep can know it — so it is what retires the write-off, rather than a
+        # timer or a metadata clear on some recovery path. Retiring it stops the
+        # agent's prompt claiming a working server is unavailable, and re-arms the
+        # retry ladder if the server fails again later.
+        if new_status[:status] == "connected" && degraded_names.include?(server_name)
+          reconnected_servers << server_name
+        end
       end
 
       # Only the keys this pass actually computed — a whole-column write from
@@ -110,15 +122,25 @@ module McpStatusPersisting
         # pulsemcp/pulsemcp#4109).
         #
         # Per the logging philosophy (CLAUDE.md), an intermediate attempt that has
-        # downstream retry logic logs at .info; the .error that pages on-call is
-        # reserved for the terminal case (retries exhausted ->
-        # failure_reason: mcp_connection_failed), emitted from AgentSessionJob.
-        # Logging .error here tripped the global prod-ERROR Grafana alert for every
-        # transient, self-healing flap.
+        # downstream retry logic logs at .info. Logging .error here tripped the
+        # global prod-ERROR Grafana alert for every transient, self-healing flap.
+        # No MCP-connect path emits .error any more: exhausting the ladder leaves
+        # the server out and the session running, which AgentSessionJob reports at
+        # .warn because it costs a capability rather than a session.
         @logger.info("MCP server(s) detected as failed; flagging session for retry/failure handling", failed_servers: failed_servers)
       end
 
       @session.merge_custom_metadata!(updated_metadata) if status_changed
+
+      if reconnected_servers.any?
+        remaining = @session.degraded_mcp_servers.reject { |entry| reconnected_servers.include?(entry["name"]) }
+        @logger.info("MCP server(s) reconnected; retiring the degraded record", servers: reconnected_servers)
+        if remaining.any?
+          @session.merge_metadata!("mcp_degraded_servers" => remaining)
+        else
+          @session.remove_metadata!("mcp_degraded_servers")
+        end
+      end
     end
 
     any_failed
