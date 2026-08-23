@@ -35,9 +35,39 @@ class ClaudeMcpCredentialWriter
   # entry is removed, which is why #clear_needs_auth_cache is part of injecting.
   #
   # It lives alongside .credentials.json, and ClaudeCredentialStore's lock guards
-  # the read-modify-write of both — all three derive from the credentials directory
-  # so a test that relocates CLAUDE_CREDENTIALS_PATH relocates the whole set.
+  # the read-modify-write of both — all three derive from #credentials_path, so
+  # relocating that one path relocates the whole set.
   NEEDS_AUTH_CACHE_FILENAME = "mcp-needs-auth-cache.json"
+
+  # Which `.credentials.json` this writer reads and writes.
+  #
+  # Defaults to the host-global file. Under session-scoped credentials (issue
+  # #618) each session gets its own CLAUDE_CONFIG_DIR, so the CLI reads its
+  # `mcpOAuth` map out of that directory instead — and the rotated token it
+  # writes back lands there too. Making the path an instance attribute rather
+  # than a constant is what lets one writer serve both, so the shared-file path
+  # stays byte-for-byte the rollback.
+  #
+  # @return [String]
+  attr_reader :credentials_path
+
+  # @param credentials_path [String] the credentials file to operate on
+  def initialize(credentials_path: CLAUDE_CREDENTIALS_PATH)
+    @credentials_path = credentials_path
+  end
+
+  # The writer a given session's credentials should be routed through: the
+  # session's own CLAUDE_CONFIG_DIR when session-scoped credentials are on, the
+  # host-global file otherwise.
+  #
+  # @param session [Session]
+  # @return [ClaudeMcpCredentialWriter]
+  def self.for_session(session)
+    return new unless AppSetting.session_scoped_credentials_enabled?
+    return new if session&.id.blank?
+
+    new(credentials_path: ClaudeSessionConfigDirectory.credentials_path_for(session.id))
+  end
 
   # Persists the resolved credentials to Claude Code's credential stores.
   # On macOS, writes to both the Keychain (primary) and the file (fallback).
@@ -85,7 +115,7 @@ class ClaudeMcpCredentialWriter
       next if deleted.empty?
 
       deleted.each { |key| entries.delete(key) }
-      write_json_atomically(CLAUDE_CREDENTIALS_PATH, data)
+      write_json_atomically(credentials_path, data)
     end
 
     delete_credentials_from_keychain(keys) if macos?
@@ -171,7 +201,7 @@ class ClaudeMcpCredentialWriter
 
   # Reads and parses ~/.claude/.credentials.json, or {} if absent/corrupt.
   def read_credentials_from_file
-    read_json_file(CLAUDE_CREDENTIALS_PATH)
+    read_json_file(credentials_path)
   end
 
   # Parses a JSON file, or returns {} when it is absent or corrupt. A store we
@@ -186,11 +216,11 @@ class ClaudeMcpCredentialWriter
     ClaudeCredentialStore.write_atomically(path, data)
   end
 
-  # The ~/.claude directory that holds the credential file, the needs-auth cache,
-  # and the lock. Derived from CLAUDE_CREDENTIALS_PATH so relocating that one path
-  # (as tests do) relocates the whole set.
+  # The directory that holds the credential file, the needs-auth cache, and the
+  # lock. Derived from #credentials_path so relocating that one path — a test's
+  # temp dir, or a session's own CLAUDE_CONFIG_DIR — relocates the whole set.
   def claude_dir
-    File.dirname(CLAUDE_CREDENTIALS_PATH)
+    File.dirname(credentials_path)
   end
 
   def needs_auth_cache_path
@@ -202,7 +232,7 @@ class ClaudeMcpCredentialWriter
   # the worker — and against ClaudeAccount#write_credentials_to_filesystem!, which
   # writes the subscription-token block of the same file under the same lock.
   def with_credential_store_lock(&block)
-    ClaudeCredentialStore.with_lock(CLAUDE_CREDENTIALS_PATH, &block)
+    ClaudeCredentialStore.with_lock(credentials_path, &block)
   end
 
   # Converts Claude Code's millisecond-epoch expiresAt to a Time, or nil.
@@ -292,12 +322,12 @@ class ClaudeMcpCredentialWriter
       existing_data["mcpOAuth"] ||= {}
       merge_preserving_fresher!(existing_data["mcpOAuth"], credentials)
 
-      write_json_atomically(CLAUDE_CREDENTIALS_PATH, existing_data)
+      write_json_atomically(credentials_path, existing_data)
     end
 
-    Rails.logger.info "[ClaudeMcpCredentialWriter] Wrote #{credentials.size} credentials to #{CLAUDE_CREDENTIALS_PATH}"
+    Rails.logger.info "[ClaudeMcpCredentialWriter] Wrote #{credentials.size} credentials to #{credentials_path}"
 
-    CLAUDE_CREDENTIALS_PATH
+    credentials_path
   end
 
   # Writes credentials to macOS Keychain where Claude Code reads them on macOS.

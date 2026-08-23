@@ -69,6 +69,6 @@ class ClaudeUsageSamplerJob < ApplicationJob
     end
     return nil if account.token_expired?
 
-    account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken").presence
+    account.claude_access_token
   end
 end

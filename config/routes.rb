@@ -263,7 +263,6 @@ Rails.application.routes.draw do
   post "quotas/switch_account/:id", to: "quotas#switch_account", as: :switch_account
   post "quotas/add_account", to: "quotas#add_account", as: :add_account_quotas
   delete "quotas/account/:id", to: "quotas#destroy_account", as: :destroy_account_quotas
-  post "quotas/sync_from_filesystem", to: "quotas#sync_from_filesystem", as: :sync_from_filesystem_quotas
   # UI-driven OAuth/device-auth login flow (the "Authenticate" button)
   post "quotas/accounts/:id/login", to: "quotas#start_login", as: :start_login_quotas
   get "quotas/login/:attempt_id", to: "quotas#login_status", as: :login_status_quotas

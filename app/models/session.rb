@@ -1445,12 +1445,13 @@ class Session < ApplicationRecord
   # own errors — and wrapped again here so that an unreadable volume cannot turn
   # a completed delete into an exception raised after the row is already gone.
   #
-  # The same three roots are what DurableSessionStorage reaps for the jobs. That
+  # The same roots are what DurableSessionStorage reaps for the jobs. That
   # concern confirms each deletion so a job can write an honest per-session log
   # line; here the row (and its logs) are already gone, so there is nothing left
   # to tell, and the direct calls are the whole of it.
   def reclaim_session_directories
     SessionScratchDirectory.cleanup_for(id)
+    ClaudeSessionConfigDirectory.cleanup_for(id)
     FileStorageService.cleanup_for(id)
     ImageStorageService.cleanup_for(id)
   rescue => e

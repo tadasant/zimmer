@@ -647,6 +647,66 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert secondary.reload.is_current?
   end
 
+  # Issue #618's acceptance criterion, stated as a test: with the DB as the sole
+  # owner there is no second store to disagree with, so nothing on this page may
+  # ask an operator to reconcile, adopt, sync, or choose between stores.
+  test "the page offers no affordance to reconcile between credential stores" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+
+    get quotas_path
+
+    assert_response :success
+    assert_no_match(/Sync from filesystem/i, response.body)
+    assert_no_match(/Filesystem identity mismatch/i, response.body)
+    assert_no_match(/adopt the filesystem identity/i, response.body)
+  end
+
+  # The same, with the setting off — the reconciliation surface is gone in both
+  # worlds, because the rollback restores the credential mechanism, not the UI.
+  test "the reconciliation surface is gone with session-scoped credentials off too" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+
+    get quotas_path
+
+    assert_response :success
+    assert_no_match(/Sync from filesystem/i, response.body)
+    assert_no_match(/Filesystem identity mismatch/i, response.body)
+  end
+
+  # No copy on this page may tell an operator to open a shell on the worker.
+  # Production invariant 11: Zimmer is operated without box access.
+  test "the page never instructs a production shell command" do
+    get quotas_path
+
+    assert_response :success
+    assert_no_match(%r{bin/rails}, response.body)
+  end
+
+  test "an account card offers exactly Authenticate and Switch under session-scoped credentials" do
+    primary = claude_accounts(:primary)
+    primary.update!(is_current: true)
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+
+    get quotas_path
+
+    assert_response :success
+    # The current account's "Re-activate" only ever re-wrote the shared file.
+    # With no file to re-write it would be a control that does nothing.
+    assert_no_match(/Re-activate/, response.body)
+    assert_match(/Authenticate/, response.body)
+  end
+
+  test "Re-activate survives with the setting off, because the file it repairs still exists" do
+    primary = claude_accounts(:primary)
+    primary.update!(is_current: true)
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+
+    get quotas_path
+
+    assert_response :success
+    assert_match(/Re-activate/, response.body)
+  end
+
   test "loading /quotas does not reconcile the filesystem identity" do
     # A GET on a diagnostic page must not change which account production runs
     # under. See issue #618, hole 12.
@@ -654,15 +714,6 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     get quotas_path
     assert_response :success
-  end
-
-  test "the filesystem banner never instructs a production shell command" do
-    ClaudeAccount.stubs(:filesystem_oauth_email).returns("nobody@tadasant.com")
-
-    get quotas_path
-
-    assert_response :success
-    assert_no_match(/bin\/rails/, response.body)
   end
 
   test "should route POST /quotas/switch_account/:id" do
@@ -766,45 +817,6 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to quotas_path(runtime: "claude_code")
     assert_match "no refresh token", flash[:alert]
     assert claude_accounts(:primary).reload.is_current?
-  end
-
-  # ── sync_from_filesystem ───────────────────────────────────────────
-
-  test "sync_from_filesystem redirects with notice when tokens are captured" do
-    ClaudeAccount.stubs(:filesystem_oauth_email).returns("sam@tadasant.com")
-    ClaudeAccount.stubs(:sync_from_filesystem!).returns(claude_accounts(:secondary))
-
-    post sync_from_filesystem_quotas_path
-
-    assert_redirected_to quotas_path
-    assert_match "Captured tokens for sam@tadasant.com", flash[:notice]
-  end
-
-  test "sync_from_filesystem redirects with alert when filesystem has no tokens" do
-    ClaudeAccount.stubs(:filesystem_oauth_email).returns(nil)
-
-    post sync_from_filesystem_quotas_path
-
-    assert_redirected_to quotas_path
-    assert_match "No OAuth tokens detected", flash[:alert]
-  end
-
-  test "sync_from_filesystem redirects with alert when no DB account matches filesystem email" do
-    ClaudeAccount.stubs(:filesystem_oauth_email).returns("unknown@example.com")
-    ClaudeAccount.stubs(:sync_from_filesystem!).returns(nil)
-
-    post sync_from_filesystem_quotas_path
-
-    assert_redirected_to quotas_path
-    assert_match "no matching ClaudeAccount exists", flash[:alert]
-    assert_match "unknown@example.com", flash[:alert]
-  end
-
-  test "should route POST /quotas/sync_from_filesystem" do
-    assert_routing(
-      { method: :post, path: "/quotas/sync_from_filesystem" },
-      { controller: "quotas", action: "sync_from_filesystem" }
-    )
   end
 
   # ── runtime sub-tabs ───────────────────────────────────────────────

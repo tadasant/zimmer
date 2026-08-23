@@ -31,6 +31,14 @@ class ClaudeCredentialHealth
   #                refreshToken is missing or empty. This is the incident shape.
   #                Nothing reads this file successfully; every session on the
   #                worker is logged out until it is repaired.
+  #
+  # Under session-scoped credentials the question changes, because the shared
+  # file stops being the thing sessions authenticate from. The same states are
+  # reported, but about the DB row a session is handed a token out of: :ok when
+  # the current account holds a complete pair, :absent when no account is current
+  # yet, :corrupt when the current account's stored pair is unusable. That last
+  # one is still "every session on the worker is logged out", which is what makes
+  # it the same state rather than a new one.
   STATES = %i[ok absent mcp_only corrupt].freeze
 
   Status = Data.define(:state, :detail, :owner_email, :checked_at) do
@@ -44,6 +52,8 @@ class ClaudeCredentialHealth
     #
     # @return [Status]
     def status
+      return database_status if AppSetting.session_scoped_credentials_enabled?
+
       path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
       owner = ClaudeAccount.credentials_owner_email
 
@@ -87,6 +97,10 @@ class ClaudeCredentialHealth
     #   implementation of the same rules that can drift from it.
     # @return [Array(Symbol, String)] [:healed | :skipped | :failed, detail]
     def self_heal!(dry_run: false)
+      if AppSetting.session_scoped_credentials_enabled?
+        return [ :skipped, "sessions carry their own credentials; there is no shared file to repair" ]
+      end
+
       current = status
       return [ :skipped, "credentials are #{current.state}, nothing to repair" ] unless current.corrupt?
 
@@ -129,6 +143,36 @@ class ClaudeCredentialHealth
     end
 
     private
+
+    # The same question asked of the DB, for when the DB is the only store.
+    #
+    # A session under session-scoped credentials is handed the current account's
+    # access token at spawn and never reads a credentials file, so "can a session
+    # authenticate right now" is answered entirely by that row. Nothing here
+    # touches the filesystem, and there is deliberately no repair: an unusable
+    # stored pair needs a human to re-authenticate from /quotas, and saying so is
+    # more useful than rewriting a file nobody reads.
+    def database_status
+      account = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
+      now = Time.current
+
+      if account.nil?
+        return Status.new(state: :absent,
+          detail: "No Claude account is current. The next session spawn selects one from the pool.",
+          owner_email: nil, checked_at: now)
+      end
+
+      if ClaudeAccount.complete_claude_oauth?(account.oauth_config&.dig("credentials_json"))
+        Status.new(state: :ok,
+          detail: "Sessions authenticate from the database as #{account.email}; no credentials file is in play.",
+          owner_email: account.email, checked_at: now)
+      else
+        Status.new(state: :corrupt,
+          detail: "#{account.email} is the current account but its stored tokens are incomplete — every session " \
+                  "spawned from it is logged out. Re-authenticate #{account.email} from /quotas.",
+          owner_email: account.email, checked_at: now)
+      end
+    end
 
     # A strike ages out on the same schedule the strike counter itself uses, so a
     # single lost race months ago does not disqualify a credential that has been
