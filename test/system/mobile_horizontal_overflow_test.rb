@@ -333,16 +333,22 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # joystick's quick-router petal opens (joystick_menu#_openChatBubble clicks this
     # same FAB), so proving the panel proves the petal.
     find("#chat-bubble button[aria-label='Open quick router']").click
+    # Wait for the panel's open END-STATE class, not just for the checkbox to be
+    # findable. The panel slides in from `translate-x-full` — parked entirely off
+    # the right edge — over 200ms, and WebDriver's displayedness algorithm ignores
+    # the `opacity-0` it travels with, so the checkbox reads as displayed while the
+    # panel is still off screen. Probing then would measure the panel where it
+    # started rather than where it lands.
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
     assert_selector "[data-chat-bubble-target='spot']", visible: true
 
     bubble_box = find("[data-chat-bubble-target='spot']")
     assert_not bubble_box.checked?, "the panel's spot opt-in must default to off too"
     page.save_screenshot("tmp/screenshots/proof-quick-router-spot-chat-bubble-375.png")
 
-    assert_no_horizontal_overflow("chat-bubble Quick Router panel with the spot opt-in")
-    # The panel is `position: fixed`, which contributes nothing to the document's
-    # scrollable overflow — so the page-level check above cannot see it and this
-    # per-element one is the only thing that can.
+    # Per-element only, for the same reason as the overlay above and one more: the
+    # panel is `position: fixed`, so it contributes nothing to the document's
+    # scrollable overflow and a page-level scrollWidth check cannot see it at all.
     panel_past_edge = elements_past_right_edge("[data-chat-bubble-target='panel']")
     assert_empty panel_past_edge,
       "the Quick Router panel ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{panel_past_edge.join("\n  ")}"
