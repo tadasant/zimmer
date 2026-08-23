@@ -831,15 +831,29 @@ what made the message user-visible three times in a row; see
 structured reason, so the coordinator cannot always know *why* the identity failed.
 
 It probes the outgoing account's refresh token before rotating, which separates a dead credential
-(`needs_reauth`) from a live one (`quota_exceeded`), and that is enough to get the **park reason**
-right. It is not enough to distinguish "over quota" from "a transient rejection Anthropic would have
-served on the next call". In the latter case the account is marked `quota_exceeded` and leaves the
-pool until `QuotaResetCheckerJob`'s next sweep sees its snapshot is clear and restores it — up to
-15 minutes of a healthy account sitting out.
+(`needs_reauth`) from a live one, and it takes a live quota reading on the way past. Those are enough
+to get the **park reason** right, and enough that a rotation no longer invents a `quota_exceeded`
+label out of nothing — an account rotated past on `auth_recovery` whose reading is clear stays
+`active` ([A rotation is not evidence about quota](/auth/harness/#a-rotation-is-not-evidence-about-quota)).
 
-That is the deliberate trade: an unnecessary rotation costs one account for one sweep, whereas
+What remains, in three parts. The session still rotates away from an account that may have been
+fine, so the pool moves for a rejection Anthropic might have served on the next call — that costs
+the *session* a re-spawn and moves everyone else onto a different identity, but it no longer costs
+the account its place in the pool. Because the account keeps that place, it is also the top-priority
+candidate for the *next* rotation, so an account the runtime keeps rejecting while its credential
+refreshes cleanly can be handed back and forth; per session that is bounded by
+`AuthRecoveryService::MAX_RECOVERY_ATTEMPTS`, but nothing bounds it across sessions, and there is no
+cooldown on a recently-rotated-away account. And when the reading genuinely does say a window is
+spent, the label outlives the evidence — Claude's windows slide, so the account is servable again
+before `QuotaResetCheckerJob`'s next sweep restores the column, up to 15 minutes of a healthy account
+sitting out. The park decision and `auth_health` look past that last one ([One predicate for "is the
+pool drained"](/auth/harness/#one-predicate-for-is-the-pool-drained)); the paths that pick an account
+to spawn with do not, deliberately.
+
+That is the deliberate trade: an unnecessary rotation costs one session a re-spawn, whereas
 re-injecting a dead identity costs the user three visible auth failures and a park with the wrong
-instruction. Worth revisiting if Anthropic ever exposes a structured reason.
+instruction, and a fabricated `quota_exceeded` costs the whole pool an account. Worth revisiting if
+Anthropic ever exposes a structured reason.
 
 ### An Anthropic outage makes the account probes inconclusive, and they promote anyway
 

@@ -376,14 +376,33 @@ class HealthMonitorService
   # a card whose badge contradicts its detail.
   def build_auth_health
     credentials = ClaudeCredentialHealth.status
+    # Two numbers, because they answer two different questions and the gap
+    # between them is itself the diagnostic.
+    #
+    # `available` is the `status` column: what a session can be spawned on right
+    # now, since every path that picks an account reads that column. `serviceable`
+    # is ClaudeAccount.serviceable_for — the same predicate
+    # AuthRecoveryCoordinator#park_reason_for_pool decides a park on, which looks
+    # past a label the account's own newer reading contradicts.
+    #
+    # Reporting only the column is how this card said "3 Claude accounts
+    # available" seven minutes after the parking decision had concluded the pool
+    # was empty. Reporting only the evidence would be the mirror image: a healthy
+    # card over a pool nothing can spawn against. Reported together, a pool that
+    # is recovering-but-not-yet-restored says so.
     available = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).count
+    serviceable = ClaudeAccount.serviceable_for(ClaudeAuthProvider::RUNTIME).count
     needs_reauth = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).needs_reauth.count
 
     status =
       if credentials.corrupt?
         HealthStatus.new(status: :critical, message: credentials.detail)
-      elsif available.zero?
+      elsif serviceable.zero?
         HealthStatus.new(status: :warning, message: "No Claude account is available to serve sessions")
+      elsif available.zero?
+        HealthStatus.new(status: :warning,
+          message: "No Claude account is active yet — #{serviceable} labelled quota_exceeded over a " \
+            "clear reading, and the reset checker restores them within 15 minutes")
       else
         HealthStatus.new(status: :healthy, message: "#{available} Claude account#{"s" unless available == 1} available")
       end
@@ -404,6 +423,7 @@ class HealthMonitorService
       # that one is coming. See issue #618, hole 5.
       repair_outlook: credentials.corrupt? ? repair_outlook : nil,
       available_accounts: available,
+      serviceable_accounts: serviceable,
       needs_reauth_accounts: needs_reauth,
       checked_at: credentials.checked_at
     }
@@ -416,6 +436,7 @@ class HealthMonitorService
       credentials_owner: nil,
       repair_outlook: nil,
       available_accounts: nil,
+      serviceable_accounts: nil,
       needs_reauth_accounts: nil,
       checked_at: Time.current
     }

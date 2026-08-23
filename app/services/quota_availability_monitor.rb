@@ -20,9 +20,16 @@
 # == What "available" means
 #
 # One question: can the pool serve a request at all — is there an account that is
-# neither quota_exceeded nor waiting on a human to re-authenticate. That is the
-# same predicate AuthOutageParkService parks on (`accounts.available`), which is
-# what makes this the edge that un-parks those sessions.
+# neither quota_exceeded nor waiting on a human to re-authenticate.
+#
+# Deliberately the `status` column (`accounts.available`) rather than the
+# evidence-based ClaudeAccount.any_serviceable_for? the PARK decision asks. The
+# two are asking different questions: the park decision must not put a session to
+# sleep against a label the readings contradict, while this must not announce a
+# recovery the pool cannot yet act on — every path that picks an account to spawn
+# with reads the column. QuotaResetCheckerJob restores the column and then calls
+# this in the same tick, so the level it records is never more than that tick
+# stale.
 #
 # It is deliberately NOT the spot gate's question. SpotGateService asks whether
 # utilization is under the operator's targets and whether a fleet slot is free, and

@@ -152,9 +152,17 @@ class AuthRecoveryCoordinator
   # out, so a budget exhaustion that happens to coincide with a drained pool
   # still tells the user "wait for reset" rather than "go re-authenticate".
   #
+  # "Has the pool got anything left" is asked through
+  # ClaudeAccount.any_serviceable_for?, the same predicate #auth_health counts —
+  # so a park and the health card cannot describe different pools. Asking it
+  # through the `status` column instead answers on labels that only the
+  # 15-minute healer ever clears, which is how a park and a health check minutes
+  # apart came to contradict each other; see [One predicate for "is the pool
+  # drained"] in docs/auth/harness.md.
+  #
   # @return [String] an AuthOutageParkService reason
   def park_reason_for_pool
-    return AuthOutageParkService::AUTH_UNRECOVERABLE if pool.available.exists?
+    return AuthOutageParkService::AUTH_UNRECOVERABLE if ClaudeAccount.any_serviceable_for?(runtime)
     return AuthOutageParkService::QUOTA_EXHAUSTED if pool.quota_exceeded.exists?
 
     AuthOutageParkService::AUTH_UNRECOVERABLE
@@ -200,7 +208,7 @@ class AuthRecoveryCoordinator
     # inject swallows filesystem/IO failures into nil, so "no account" here does
     # not always mean "no account in the pool". Say which, or the park message
     # tells the user to re-authenticate over what is really a disk problem.
-    return park_plan(injection_failed: pool.available.exists?) unless account
+    return park_plan(injection_failed: ClaudeAccount.any_serviceable_for?(runtime)) unless account
 
     self.class.record_identity!(session, account)
     @logger.info("Adopted the pool's current identity", account: account.email, detail: detail)
