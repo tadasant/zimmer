@@ -15,6 +15,11 @@
 # the monitoring loop resets and the health surface enumerates, so a sixth failure class
 # is one declaration rather than twenty copied lines plus two forgotten surfaces.
 #
+# It lives here rather than under `app/models/` because it is a value object over another
+# model's column, not a record: `app/models/*.rb` is exclusively ActiveRecord, and
+# test/contracts/supervisor_coverage_test.rb holds it to that by requiring an Administrate
+# dashboard, a Supervisor controller and a route for everything in it.
+#
 # The values below are load-bearing. A wrong `key` silently counts nothing; a wrong
 # `max` changes whether a real session recovers or fails permanently, and neither shows
 # up until it happens to a long-running session in production.
