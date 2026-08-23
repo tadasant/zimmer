@@ -1014,7 +1014,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "sigterm_retry_health returns max_retries constant" do
     health = @service.sigterm_retry_health
 
-    assert_equal SigtermRetryService::MAX_RETRIES, health[:max_retries]
+    assert_equal RetryBudget::SIGTERM.max, health[:max_retries]
   end
 
   test "sigterm_retry_health reports normal delay mode when not under pressure" do
@@ -1060,7 +1060,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "sigterm_session_summary handles nil timestamp" do
+  test "retry_budget_session_summary handles nil timestamp" do
     session = Session.create!(
       prompt: "No timestamp",
       agent_runtime: "claude_code",
@@ -1073,9 +1073,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       }
     )
 
-    summary = @service.send(:sigterm_session_summary, session)
+    summary = @service.send(:retry_budget_session_summary, session, RetryBudget::SIGTERM)
 
-    assert_nil summary[:last_sigterm_at]
+    assert_nil summary[:last_attempt_at]
     assert_equal 1, summary[:retry_count]
   end
 
@@ -1156,7 +1156,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "api_error_retry_health returns max_retries constant" do
     health = @service.api_error_retry_health
 
-    assert_equal ApiErrorRetryService::MAX_RETRIES, health[:max_retries]
+    assert_equal RetryBudget::API_ERROR.max, health[:max_retries]
   end
 
   test "full_health_report includes api_error_retry_health section" do

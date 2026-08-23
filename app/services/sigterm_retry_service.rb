@@ -33,8 +33,9 @@ require "automated_prompts"
 class SigtermRetryService
   include DatabaseRetry
 
-  # Maximum retry attempts for SIGTERM exits
-  MAX_RETRIES = 3
+  # The SIGTERM budget: how many attempts, which metadata keys they live in, and when
+  # a stable process wins them back. Declared once in RetryBudget.
+  BUDGET = RetryBudget::SIGTERM
 
   # Interval (seconds) for checking session status during long delays
   # For delays > 30s, we check status periodically to avoid wasting time
@@ -62,12 +63,12 @@ class SigtermRetryService
   # @param working_directory [String] The working directory for the session
   # @return [Symbol] :success if retry succeeded, :exhausted if all retries failed, :aborted if session state changed
   def attempt_retry(working_directory)
-    current_retry_count = session.metadata&.dig("sigterm_retry_count") || 0
+    current_retry_count = BUDGET.count_for(session)
     sigterm_retry_timestamps = session.metadata&.dig("sigterm_retry_timestamps") || []
 
     # Check if we've exhausted all retry attempts
-    if current_retry_count >= MAX_RETRIES
-      add_log("SIGTERM retry limit reached (#{MAX_RETRIES} attempts)", level: "warning")
+    if BUDGET.exhausted?(session)
+      add_log("SIGTERM retry limit reached (#{BUDGET.max} attempts)", level: "warning")
       return :exhausted
     end
 
@@ -76,7 +77,7 @@ class SigtermRetryService
 
     # Get adaptive delay based on global rate limit pressure
     retry_delay = rate_limit_tracker.recommended_delay(attempt: current_retry_count)
-    retry_attempt = current_retry_count + 1
+    retry_attempt = BUDGET.next_attempt(session)
 
     # Log rate limit pressure status for visibility
     if rate_limit_tracker.under_pressure?
@@ -88,7 +89,7 @@ class SigtermRetryService
     end
 
     add_log(
-      "Claude CLI exited with SIGTERM (exit code 143) - attempting auto-retry #{retry_attempt}/#{MAX_RETRIES}" +
+      "Claude CLI exited with SIGTERM (exit code 143) - attempting auto-retry #{retry_attempt}/#{BUDGET.max}" +
         (retry_delay.positive? ? " after #{retry_delay}s delay" : ""),
       level: "warning"
     )
@@ -101,10 +102,10 @@ class SigtermRetryService
     # Record retry attempt in metadata
     sigterm_retry_timestamps << Time.current.iso8601
     with_db_retry do
-      session.merge_metadata!(
-        "sigterm_retry_count" => retry_attempt,
-        "sigterm_retry_timestamps" => sigterm_retry_timestamps,
-        "last_sigterm_at" => Time.current.iso8601
+      BUDGET.record!(
+        session,
+        attempt: retry_attempt,
+        extra: { "sigterm_retry_timestamps" => sigterm_retry_timestamps }
       )
     end
 
@@ -204,7 +205,7 @@ class SigtermRetryService
     # Process died during verification - continue to next retry attempt
     attempt_retry(working_directory)
   rescue => e
-    if retry_attempt >= MAX_RETRIES
+    if retry_attempt >= BUDGET.max
       # Final attempt failed and no retries remain — this is a genuine failure,
       # so log at error (which surfaces to GlitchTip, with a backtrace).
       add_log(

@@ -684,7 +684,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
   end
 
   test "uses correct constants" do
-    assert_equal 6, ApiErrorRetryService::MAX_RETRIES
+    assert_equal 6, ApiErrorRetryService::BUDGET.max
     assert_equal 5, ApiErrorRetryService::SUCCESS_THRESHOLD
     assert_equal 10, ApiErrorRetryService::STATUS_CHECK_INTERVAL
     assert_equal 300, ApiErrorRetryService::MAX_SINGLE_DELAY

@@ -32,9 +32,9 @@
 class ContextLengthRetryService
   include DatabaseRetry
 
-  # Maximum compact attempts per session
-  # After 2 attempts, we assume compaction isn't helping and fail the session
-  MAX_RETRIES = 2
+  # The context-length compact budget. After BUDGET.max attempts we assume compaction
+  # isn't helping and fail the session. Declared once in RetryBudget.
+  BUDGET = RetryBudget::CONTEXT_LENGTH
 
   # Minimum time (seconds) a process must run before recovery is considered successful
   SUCCESS_THRESHOLD = 5
@@ -72,18 +72,16 @@ class ContextLengthRetryService
     # Check if this is actually a context length error (in stderr or transcript)
     return :not_applicable unless context_length_error_detected?(stderr_log_path, working_directory)
 
-    current_retry_count = session.metadata&.dig("compact_retry_count") || 0
-
     # Check if we've exhausted all retry attempts
-    if current_retry_count >= MAX_RETRIES
-      add_log("Context length compact limit reached (#{MAX_RETRIES} attempts)", level: "warning")
+    if BUDGET.exhausted?(session)
+      add_log("Context length compact limit reached (#{BUDGET.max} attempts)", level: "warning")
       return :exhausted
     end
 
-    retry_attempt = current_retry_count + 1
+    retry_attempt = BUDGET.next_attempt(session)
 
     add_log(
-      "Context length error detected - attempting auto-compact #{retry_attempt}/#{MAX_RETRIES}",
+      "Context length error detected - attempting auto-compact #{retry_attempt}/#{BUDGET.max}",
       level: "warning"
     )
     log_buffer.flush
@@ -100,13 +98,13 @@ class ContextLengthRetryService
     # Also record the current transcript line count so that subsequent checks
     # for context length errors in the transcript skip already-processed lines
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "compact_retry_count" => retry_attempt,
-          "last_compact_at" => Time.current.iso8601,
+      BUDGET.record!(
+        session,
+        attempt: retry_attempt,
+        extra: {
           "pending_compact_continuation" => true,
           "context_length_last_checked_line" => transcript_line_count
-        )
+        }
       )
     end
 
@@ -407,7 +405,7 @@ class ContextLengthRetryService
     # Process died during verification - continue to next retry attempt
     attempt_recovery_retry(working_directory)
   rescue => e
-    if retry_attempt >= MAX_RETRIES
+    if retry_attempt >= BUDGET.max
       # Final attempt failed and no retries remain — this is a genuine failure,
       # so log at error (which surfaces to GlitchTip, with a backtrace).
       add_log(
@@ -435,17 +433,17 @@ class ContextLengthRetryService
   # @param working_directory [String] The working directory
   # @return [Symbol] :success, :exhausted, or recursive call result
   def attempt_recovery_retry(working_directory)
-    current_retry_count = session.reload.metadata&.dig("compact_retry_count") || 0
+    session.reload
 
-    if current_retry_count >= MAX_RETRIES
+    if BUDGET.exhausted?(session)
       add_log("All compact attempts exhausted", level: "warning")
       return :exhausted
     end
 
-    retry_attempt = current_retry_count + 1
+    retry_attempt = BUDGET.next_attempt(session)
 
     add_log(
-      "Retrying compact after process failure - attempt #{retry_attempt}/#{MAX_RETRIES}",
+      "Retrying compact after process failure - attempt #{retry_attempt}/#{BUDGET.max}",
       level: "warning"
     )
 
@@ -458,13 +456,13 @@ class ContextLengthRetryService
     #
     # Also update the transcript line count to prevent re-detecting old errors
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "compact_retry_count" => retry_attempt,
-          "last_compact_at" => Time.current.iso8601,
+      BUDGET.record!(
+        session,
+        attempt: retry_attempt,
+        extra: {
           "pending_compact_continuation" => true,
           "context_length_last_checked_line" => transcript_line_count
-        )
+        }
       )
     end
 
