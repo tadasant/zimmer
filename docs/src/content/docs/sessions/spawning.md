@@ -347,7 +347,7 @@ flowchart TD
     ET -->|yes| ETR["restart from scratch<br/>(MAX_EMPTY_TURN_RECOVERIES = 2)"]
     ET -->|no| P["pause! → needs_input"]
     N -->|no| C{"context_length_error?<br/>(stderr)"}
-    C -->|yes| CR["ContextLengthRetryService<br/>compact + retry (MAX_RETRIES = 2)"]
+    C -->|yes| CR["ContextLengthRetryService<br/>compact + retry (budget: 2)"]
     C -->|no| A{"auth_recovery_needed?<br/>(transcript)"}
     A -->|yes| AC["AuthRecoveryCoordinator<br/>under the pool lock:<br/>adopt / rotate / wait"]
     AC -->|resolved| AR["AuthRecoveryService<br/>re-spawn (3 attempts / 15 min)"]
@@ -363,7 +363,7 @@ flowchart TD
     Q -->|no| F{"failed_resume_recovery_needed?"}
     F -->|yes| FR["restart from scratch"]
     F -->|no| SD{"signal_death_exit?<br/>(SIGKILL/OOM, non-SIGTERM)"}
-    SD -->|yes| SDR["handle_signal_death<br/>resume same session<br/>(MAX_SIGNAL_DEATH_RETRIES = 3)"]
+    SD -->|yes| SDR["handle_signal_death<br/>resume same session<br/>(budget: 3)"]
     SD -->|no| FAIL["unclassified:<br/>alert #eng-alerts<br/>fail! → failed"]
     CR --> P
     AR --> P
@@ -415,7 +415,7 @@ A non-SIGTERM signaled exit — most commonly a cgroup **OOM kill** (SIGKILL) of
 long-running, large-transcript session — is treated as recoverable rather than
 terminal: `handle_signal_death` resumes the existing runtime session id immediately
 (seconds, versus the ~15-minute stuck-session sweep), bounded by
-`MAX_SIGNAL_DEATH_RETRIES` so an OOM crash-loop can't resume forever. The counter is
+`RetryBudget::SIGNAL_DEATH` so an OOM crash-loop can't resume forever. The counter is
 reset once a resumed process runs stably, so a session that OOMs occasionally gets a
 fresh per-incident budget. Exhausting it fails with `failure_reason:
 signal_death_retries_exhausted`. AO-initiated SIGKILLs (the hung-process terminator
@@ -543,6 +543,42 @@ the defect. One concrete instance of the general problem in
 [#53](https://github.com/tadasant/zimmer/issues/53); the fix is
 [#668](https://github.com/tadasant/zimmer/issues/668).
 :::
+
+## Retry budgets
+
+Five of those recovery branches are bounded, and every one of them is bounded the same
+way: a counter in `session.metadata`, a maximum, a timestamp of the last attempt, and a
+set of keys a reset clears. `RetryBudget` (`app/models/retry_budget.rb`) is where each
+of those is declared, once:
+
+| Budget | Counter key | Max | Last-attempt stamp | Spent by |
+| --- | --- | --- | --- | --- |
+| `RetryBudget::SIGTERM` | `sigterm_retry_count` | 3 | `last_sigterm_at` | `SigtermRetryService` |
+| `RetryBudget::API_ERROR` | `api_error_retry_count` | 6 | `last_api_error_retry_at` | `ApiErrorRetryService` |
+| `RetryBudget::SIGNAL_DEATH` | `signal_death_retry_count` | 3 | `last_signal_death_at` | `ProcessLifecycleManager#handle_signal_death` |
+| `RetryBudget::MCP_CONNECTION` | `mcp_retry_count` | 3 | `mcp_last_retry_at` | `AgentSessionJob#schedule_mcp_retry` |
+| `RetryBudget::CONTEXT_LENGTH` | `compact_retry_count` | 2 | `last_compact_at` | `ContextLengthRetryService` |
+
+**A budget is per-incident, not per-lifetime.** Step 5 of the monitor loop walks
+`RetryBudget.all` every iteration and hands back any budget whose process has run for
+`RetryBudget::DEFAULT_RESET_AFTER` (60 s) without a fresh attempt, logging
+`"<budget> reset (was N) - process stable for Ns"` into the session log. Without that, a
+session alive for days accumulates toward its maximum across unrelated incidents hours
+apart and then fails permanently on one it should have survived.
+
+A reset clears the counter and the stamp and nothing else. State that is *diagnosis* or
+*position* rather than budget survives it deliberately: `mcp_failed_servers` (which
+servers failed), `api_error_last_checked_line` and `context_length_last_checked_line`
+(transcript scan positions — re-reading old errors misclassifies them), and
+`pending_compact_continuation` (a continuation the compact still owes the user).
+
+Failing to *reset* a counter is logged at WARN, not ERROR: the session simply keeps a
+stale budget and the next stable stretch clears it, which is not worth
+[paging anyone](/operate/observability/#a-failure-the-code-recovered-from-is-logged-at-warn-not-error).
+
+Adding a sixth failure class means adding a declaration. That is what puts it in the
+reset loop and on [the health surface](/operate/observability/#retry-budgets-on-the-health-surface)
+— neither is a separate thing to remember.
 
 ## Metadata races
 
