@@ -29,7 +29,7 @@ Three things can decide a session's class. The first one that speaks wins:
 
 | Order | Source | Set it | Scope |
 | --- | --- | --- | --- |
-| 1 | **The session itself** — `sessions.scheduling_class` | `scheduling_class` on `start_session` / `POST /api/v1/sessions`; afterwards `action_session` (`change_scheduling_class`), `PATCH /api/v1/sessions/:id`, or the button on the hold banner | That one session, and anything it spawns |
+| 1 | **The session itself** — `sessions.scheduling_class` | **Scheduling class** on the new-session form, **Run as spot** on any Quick Router surface, `scheduling_class` on `start_session` / `POST /api/v1/sessions`; afterwards `action_session` (`change_scheduling_class`), `PATCH /api/v1/sessions/:id`, or the button on the hold banner | That one session, and anything it spawns |
 | 2 | **The trigger that fired it** — `triggers.scheduling_class` | The trigger's edit form, or `action_trigger` | Every session that trigger spawns from now on |
 | 3 | **Its genesis** — the default for where the work came from | `/quotas` (only for the origins no trigger produces) | Every deriving session of that genesis, past and future |
 
@@ -44,6 +44,41 @@ graph TD
   D -- yes --> E["Stamped on the session<br/>when the trigger fired"]
   D -- no --> F["Derive from genesis,<br/>on every read"]
 ```
+
+### The Quick Router's spot opt-in
+
+The Quick Router is the fastest way into Zimmer, and everything it creates is `web_ui` genesis —
+priority. That is right for the usual case and wrong for the one it kept forcing: a long unattended
+sweep you are not waiting on, typed into the same box, competing for quota with work someone is
+watching.
+
+Every Quick Router surface carries a **Run as spot** checkbox, unchecked by default:
+
+| Surface | Where the checkbox is |
+| --- | --- |
+| The chat-bubble Quick Router panel, on every page | Under the prompt, above **Submit** / **Submit & Open** — both submit paths read it |
+| The dashboard's inline prompt (`md:` and wider) | At the right of the attach-button row |
+| The dashboard's full-screen prompt overlay (phones) | Above the **Submit** button |
+| The mobile joystick's **Quick Router** petal | Opens the chat-bubble panel, so it inherits that one |
+
+Leaving it unchecked submits no class at all: `sessions.scheduling_class` stays NULL and the session
+keeps deriving from `web_ui`, exactly as before — so promoting or demoting `web_ui` on `/quotas`
+still moves these sessions, which stamping "priority" on the row would have quietly stopped. Only an
+explicit tick writes anything.
+
+The choice is per submission rather than a preference. The box clears when the surface closes — a
+submit, the phone overlay closing, the panel being dismissed with Escape, the backdrop or the X. A
+half-typed prompt is kept across a close and the class deliberately is not: re-ticking a box is
+cheap, and a tick left over from an hour ago would silently park the next prompt behind the gate.
+
+**A spot submission lands at the top of the spot queue.** Choosing spot here is a statement about
+quota, not about importance — a human typed this one seconds ago. Leaving it at the default
+precedence of `0` would file it beneath every automated spot session already ranked above `0`, and
+behind every older session tied at `0`, so `SessionsController` ranks it with
+`Session.precedence_above_top_spot` instead: a few points above the highest spot session currently
+queued. Each checkbox says so, and it is re-rankable afterwards from the [Ranked view](#the-ranked-view)
+like any other spot session. An unchecked submission is untouched, including the chat bubble's
+ordinary child-sits-just-above-its-parent bump.
 
 ## Genesis
 
@@ -705,7 +740,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
 | Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
-| Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
+| Choose a class when spawning | **Scheduling class** on the new-session form; **Run as spot** on every Quick Router surface | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 | Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
 | Stop a *running* session's turn while parking it | **Pause Until** does it unconditionally | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |

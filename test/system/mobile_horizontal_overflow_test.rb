@@ -291,6 +291,116 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "the depth indent should be the unchanged 20px per level at desktop width"
   end
 
+  # The Quick Router's spot opt-in is a checkbox with a two-line explanation beside
+  # it — the description-column-next-to-a-fixed-control shape that overflows the
+  # moment the description stops shrinking. It ships on three surfaces, two of them
+  # phone-only, and the panel one is what the mobile joystick's Quick Router petal
+  # opens, so a phone is the primary way it gets used rather than an afterthought.
+  test "the Quick Router spot opt-in is on screen and reachable on a phone" do
+    visit root_path
+    assert_selector "[data-controller='quick-prompt']"
+
+    # Surface 1: the dashboard's full-screen mobile prompt overlay.
+    find("button[data-action='quick-prompt#openMobile']").click
+    assert_selector "#quick_prompt_mobile_scheduling_class", visible: true
+
+    mobile_box = find("#quick_prompt_mobile_scheduling_class")
+    assert_not mobile_box.checked?, "the spot opt-in must default to off — priority is the default"
+    page.save_screenshot("tmp/screenshots/proof-quick-router-spot-mobile-overlay-375.png")
+
+    # Only the per-element probe here, deliberately. The overlay is `fixed inset-0`
+    # and locks the page behind it with `body { overflow: hidden }` while it is
+    # open, so `overflow_report` would walk every element on the dashboard up to a
+    # body that now clips — reporting the view-mode tab strip (legitimately
+    # `overflow-x-auto`) and the off-canvas notes drawer as clipped controls. The
+    # unobstructed dashboard is already covered by the first test in this file;
+    # what this one has to prove is that the overlay's own contents fit.
+    past_edge = elements_past_right_edge("[data-quick-prompt-target='mobileOverlay']")
+    assert_empty past_edge,
+      "the mobile overlay's spot opt-in ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+
+    # It ticks, and it un-ticks again when the overlay is closed: the choice is
+    # per-submission, not a sticky preference the next prompt silently inherits.
+    mobile_box.click
+    assert mobile_box.checked?
+    find("button[data-action='quick-prompt#closeMobile']").click
+    find("button[data-action='quick-prompt#openMobile']").click
+    assert_not find("#quick_prompt_mobile_scheduling_class").checked?,
+      "reopening the overlay should start back at the default"
+    find("button[data-action='quick-prompt#closeMobile']").click
+
+    # Surface 2: the chat-bubble Quick Router panel, which is also what the mobile
+    # joystick's quick-router petal opens (joystick_menu#_openChatBubble clicks this
+    # same FAB), so proving the panel proves the petal.
+    find("#chat-bubble button[aria-label='Open quick router']").click
+    # Wait for the panel's open END-STATE class, not just for the checkbox to be
+    # findable. The panel slides in from `translate-x-full` — parked entirely off
+    # the right edge — over 200ms, and WebDriver's displayedness algorithm ignores
+    # the `opacity-0` it travels with, so the checkbox reads as displayed while the
+    # panel is still off screen. Probing then would measure the panel where it
+    # started rather than where it lands.
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
+    assert_selector "[data-chat-bubble-target='spot']", visible: true
+
+    bubble_box = find("[data-chat-bubble-target='spot']")
+    assert_not bubble_box.checked?, "the panel's spot opt-in must default to off too"
+    page.save_screenshot("tmp/screenshots/proof-quick-router-spot-chat-bubble-375.png")
+
+    # Per-element only, for the same reason as the overlay above and one more: the
+    # panel is `position: fixed`, so it contributes nothing to the document's
+    # scrollable overflow and a page-level scrollWidth check cannot see it at all.
+    panel_past_edge = elements_past_right_edge("[data-chat-bubble-target='panel']")
+    assert_empty panel_past_edge,
+      "the Quick Router panel ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{panel_past_edge.join("\n  ")}"
+
+    # The geometry above proves the control is reachable; this proves it is wired.
+    # The panel submits over `fetch` rather than as a form, so the checkbox only
+    # reaches the server if `chat_bubble#_submit` reads it — the exact "renders but
+    # is dropped" failure the controller tests guard from the other side.
+    bubble_box.click
+    assert bubble_box.checked?
+
+    # Closing the panel drops the choice, however it was closed. The draft text is
+    # kept on purpose and the class is not: re-ticking a box is cheap, and a stale
+    # tick would silently park a later prompt behind the quota gate.
+    find("[data-chat-bubble-target='panel'] button[aria-label='Close']").click
+    find("#chat-bubble button[aria-label='Open quick router']").click
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
+    assert_not find("[data-chat-bubble-target='spot']").checked?,
+      "reopening the panel should start back at the default"
+
+    find("[data-chat-bubble-target='spot']").click
+    find("[data-chat-bubble-target='textarea']").fill_in with: "Sweep the catalog for dangling references"
+    find("[data-chat-bubble-target='submitButton']").click
+    # The panel slides back out only on a successful create — on an error it stays
+    # open with the error line — so its closed end-state is a sync point with no
+    # timing window, unlike the success badge, which hides itself after 2.5s.
+    #
+    # `visible: :all` because this asserts a CLASS, not visibility: the closed panel
+    # carries `opacity-0 pointer-events-none` alongside `translate-x-full`, so
+    # Capybara's default visibility filter rejects the very state being asserted.
+    # The error line is checked too, so a create that failed reports itself here
+    # rather than as a confusing miss on the row read below.
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-full", visible: :all
+    assert_selector "[data-chat-bubble-target='error'].hidden", visible: :all
+
+    created = Session.where("prompt LIKE ?", "%Sweep the catalog for dangling references%").last
+    assert created, "the Quick Router panel did not create a session"
+    assert_equal SessionGenesis::SPOT, created.scheduling_class,
+      "the panel's spot opt-in did not reach the server"
+    assert_equal SessionGenesis::WEB_UI, created.genesis
+
+    # Surface 3 is the dashboard's inline desktop prompt row, hidden below `md:`.
+    # Check it at a laptop width, where it is the last item in the attach-button row
+    # and therefore the one that would land off the edge if the row could not hold it.
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit root_path
+    assert_selector "#quick_prompt_desktop_scheduling_class", visible: true
+    assert_not find("#quick_prompt_desktop_scheduling_class").checked?
+    assert_empty elements_past_right_edge("[data-quick-prompt-target='desktopForm']"),
+      "the desktop prompt row's spot opt-in ends past the 1400px viewport"
+  end
+
   test "new session form does not overflow horizontally on a phone" do
     visit new_session_path
     assert_selector "form"
