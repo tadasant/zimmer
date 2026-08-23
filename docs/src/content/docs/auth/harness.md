@@ -428,7 +428,7 @@ When an account hits its rate limit, Zimmer rotates to the next one by priority:
 
 1. Sync the outgoing account's tokens off disk.
 2. Snapshot its quota state.
-3. `mark_quota_exceeded!`.
+3. Label the outgoing account **on evidence** — see [A rotation is not evidence about quota](#a-rotation-is-not-evidence-about-quota).
 4. `activate_next_account` — which skips a candidate whose latest snapshot says its weekly window is
    spent, then validates the survivor by calling `refresh_token!` before activating it. A broken or
    capped account is skipped before it can be handed to a session.
@@ -449,6 +449,51 @@ accounts died that way in ten days, and `account_rotation_events` carries the fi
 duplicate and triplicate `from → to` pairs seconds apart. Serializing stops the concurrent refresh;
 collapsing stops the serialized racers from each burning one more account.
 See [#242](https://github.com/tadasant/zimmer/issues/242).
+:::
+
+### A rotation is not evidence about quota
+
+Step 3 used to be an unconditional `mark_quota_exceeded!` on whatever account the rotation was
+leaving, whatever it was leaving for. For a rotation on `auth_recovery` that label is a fabrication:
+the runtime said "Not logged in", which says nothing about quota — and because `status` is what
+`ClaudeAccount.available` reads, fabricating it does not merely mislabel one account, it removes it
+from the pool.
+
+So the outgoing account is labelled only when something observed says so:
+
+| Observed | Outcome |
+| --- | --- |
+| already `needs_reauth`, or already `quota_exceeded` | left alone — the two statuses drive different recoveries, and marking twice counts one wall as two quota hits on `/quotas` |
+| the reading step 2 just took says either window is spent | `quota_exceeded`, whatever the rotation was for — a live reading is the strongest evidence there is |
+| the caller rotated **for** a quota wall (`reason: "quota_exceeded"`) | `quota_exceeded` — it watched the runtime refuse the request, which is evidence even when the probe could not be taken |
+| anything else | left `active` |
+
+A reason the list does not recognise falls in the last row. Over-labelling is the failure this rule
+exists to prevent, so a new rotation reason has to opt in rather than be assumed in.
+
+The reading is asked as `!windows_clear?` — the same predicate `effective_status` renders and
+`QuotaResetCheckerJob` restores on — so a label rotation writes is one the rest of the app honours.
+The narrower `five_hour_window_spent?` would write labels `windows_clear?` immediately overrules: a
+mark nothing acts on, over an account every spawn path still refuses.
+
+`CodexAuthProvider#rotate_under_lock` applies the same reason gate, and it is the *only* gate it can
+apply: a Codex account carries no Anthropic quota window to probe, so there is no reading to weigh.
+That also makes the mistake permanent on that side rather than merely slow — `QuotaResetCheckerJob`
+is Claude-only, so nothing ever restores a Codex account labelled by mistake.
+
+:::caution[Without that, one blanked credential read as a drained pool]
+At 02:05Z on 2026-08-23 a Claude account's OAuth tokens were blanked to empty strings, so every
+session on the worker was logged out at once. Each one rotated away from the account it was holding;
+each rotation stamped `quota_exceeded` on the account it left; in about forty seconds every row in
+the pool wore the label with no quota reading behind any of it. `activate_next_account` then ran out
+of candidates, `park_reason_for_pool` read the labels, and four sessions were parked with *"Quota
+exceeded across all Claude Code accounts"* against a noon reset estimate — ten hours out.
+
+The proof the labels were invented: `QuotaResetCheckerJob` restored all three accounts minutes
+later, on their own readings, and it only restores an account whose snapshot is `windows_clear?`.
+The `/quotas` badge had been working around these labels since
+[#426](https://github.com/tadasant/zimmer/issues/426); the parking decision was still reading them
+raw.
 :::
 
 ## Refreshing a token without burning it
@@ -547,13 +592,13 @@ resume in the same sweep — see [When the pool runs dry](#when-the-pool-runs-dr
 15-minute sweep above ever writes `active` back. That makes it a claim about the past, and two things
 routinely leave it stale:
 
-- **Rotation stamps the outgoing account whatever it rotated for.**
-  `AccountRotationService#rotate_under_lock` marks the account it is rotating away from, so one
-  rotated through on `auth_recovery` wears `quota_exceeded` with no quota evidence behind it at all.
-  The mark keeps that account out of the pool for now, but it was never meant to be durable — a
-  restore as soon as the reading is clear is the documented intent, not a leak (see
-  [Auth recovery can rotate away from an account that was fine](/limitations/#auth-recovery-can-rotate-away-from-an-account-that-was-fine)),
-  and what actually protects the next session is that rotation validates a candidate at pick time.
+- **A rotation can still outrun its own evidence.** `AccountRotationService#rotate_under_lock` no
+  longer stamps whatever it rotates past ([A rotation is not evidence about
+  quota](#a-rotation-is-not-evidence-about-quota)), but a rotation that DID have quota evidence at
+  the time still leaves a label behind, and Claude's windows slide — the account is servable again
+  well before the sweep next looks (see [Auth recovery can rotate away from an account that was
+  fine](/limitations/#auth-recovery-can-rotate-away-from-an-account-that-was-fine)). What protects
+  the next session meanwhile is that rotation validates a candidate at pick time.
 - **The sweep is not guaranteed to run.** The deploy that froze every queue for ten hours
   ([#426](https://github.com/tadasant/zimmer/issues/426)) froze every label with them.
 
@@ -568,13 +613,18 @@ says the windows have cleared, and does nothing else: it never marks a healthy a
 `needs_reauth` — which only a human clears — and falls back to the column whenever there is no
 snapshot to judge by, which is every Codex account.
 
-It is also display-only. `ClaudeAccount.available` and `AccountRotationService` keep acting on the
-durable column, because a reading minutes old is not something to hand a session on. The column
-converges separately: `QuotasController#auto_heal_accounts` runs on page load as well as on refresh,
-from the same predicate, so looking at /quotas is the other thing that can restore an account when
-the sweep is the thing that has stopped. Only the account — the sessions parked on it still wait for
-the sweep's `wake_parked_sessions!` or their own timer, because resuming sessions is not something a
+Every path that PICKS an account to spawn with keeps acting on the durable column —
+`ClaudeAccount.available`, `AccountRotationService`, and the wake sweep that is about to start a
+session — because a reading minutes old is not something to hand a session on. The column converges
+separately: `QuotasController#auto_heal_accounts` runs on page load as well as on refresh, from the
+same predicate, so looking at /quotas is the other thing that can restore an account when the sweep
+is the thing that has stopped. Only the account — the sessions parked on it still wait for the
+sweep's `wake_parked_sessions!` or their own timer, because resuming sessions is not something a
 page render should do.
+
+Two decisions read the evidence instead, through `ClaudeAccount.serviceable_for` — the same
+`windows_clear?` rule, applied to the whole pool at once. See [One predicate for "is the pool
+drained"](#one-predicate-for-is-the-pool-drained).
 
 ### A dead account tells you so
 
@@ -897,9 +947,10 @@ flowchart TD
     B -- "no — pool already moved" --> C["adopted:<br/>re-inject, charge nothing"]
     B -- yes --> D["Probe the outgoing token,<br/>then rotate_for_quota!"]
     D -- succeeded --> E["rotated:<br/>re-inject, charge one attempt"]
-    D -- "no_available_accounts" --> G{"Any account<br/>quota_exceeded?"}
-    G -- yes --> H["QUOTA_EXHAUSTED park<br/>(wait for reset)"]
-    G -- no --> I["AUTH_UNRECOVERABLE park<br/>(a human must re-authenticate)"]
+    D -- "no_available_accounts" --> G{"Any account<br/>serviceable on its<br/>own reading?"}
+    G -- yes --> I["AUTH_UNRECOVERABLE park<br/>(a human must re-authenticate)"]
+    G -- "no, and some are<br/>quota_exceeded" --> H["QUOTA_EXHAUSTED park<br/>(wait for reset)"]
+    G -- "no, and none are" --> I
 ```
 
 An **adoption** costs nothing against the retry budget: it is another session's rotation doing this
@@ -913,10 +964,12 @@ never converges is the same unbounded loop the attempt cap exists to stop.
 "Not logged in" is the runtime's word for both *your token is dead* and *you are out of quota*, and
 those two want opposite instructions in the outage banner. So the outgoing account's refresh token
 is probed (`RuntimeAuthProvider#refresh!`) before it is rotated away: a permanent OAuth failure
-marks it `needs_reauth` — which `rotate!` now leaves alone rather than relabelling `quota_exceeded`
-— and anything else leaves it `quota_exceeded`. The pool's resulting shape is what
-`AuthRecoveryCoordinator#park_reason_for_pool` reads to choose the park reason. The distinction is
-made on evidence, not on prose.
+marks it `needs_reauth`, which `rotate!` leaves alone rather than relabelling. Whether the account is
+then labelled `quota_exceeded` is decided by [its own reading and the rotation's
+reason](#a-rotation-is-not-evidence-about-quota), not by the fact a rotation happened. The pool's
+resulting shape is what `AuthRecoveryCoordinator#park_reason_for_pool` reads — through
+[`serviceable_for`](#one-predicate-for-is-the-pool-drained), so it reads the readings rather than the
+labels. The distinction is made on evidence, not on prose.
 
 This coordination adds **no new string matching**; the fragile pattern in this subsystem is still
 the `/not logged in|please run\s*\/login/i` match above.
@@ -965,6 +1018,61 @@ All route to `AuthOutageParkService`, which:
    way it lands in `waiting` rather than `needs_input`, so the heartbeat sweep anchors its cadence
    instead of nudging it back into the same wall.
 
+### One predicate for "is the pool drained"
+
+Parking a session is a claim about the whole pool, and it is expensive: the session sleeps, and a
+human reads *"Quota exceeded across all Claude Code accounts"*. So the claim is made on the accounts'
+own readings, not on their labels.
+
+`ClaudeAccount.serviceable_for(runtime)` is that question, asked once. It takes every account that is
+`active` or `quota_exceeded` and holds credentials, and keeps the ones whose `effective_status` is
+`active` — so an account the column calls exceeded while its own reading says both windows are clear
+**counts**. An account with no reading is taken at its label, which is every Codex account, so for a
+pool with no snapshots this reduces exactly to `.available`.
+
+**Only a reading the label has not already answered.** The reading has to be *newer than the account
+row's last write*, or the column stands. A label written after the newest reading was written by
+something that knew more than the reading does — a runtime-observed quota refusal whose follow-up
+probe failed, say — and overruling it would resurrect an account that every spawn path still refuses
+and that the healer's own fresh probe will decline to restore. Where they disagree in that direction
+the predicate degrades to exactly `.available`, which is the safe floor.
+
+Three callers ask it, and they are the three that must not disagree:
+
+| Caller | What it decides |
+| --- | --- |
+| `AuthRecoveryCoordinator#park_reason_for_pool` | whether an outage is `QUOTA_EXHAUSTED` ("wait for the reset") or `AUTH_UNRECOVERABLE` ("a human must re-authenticate") |
+| `AuthOutageParkService.pool_confirmed_empty?` | whether an undelivered turn may be parked at all |
+| `HealthMonitorService#auth_health` | the `serviceable_accounts` figure on the health report and the `/health` card |
+
+That last row is why this exists. On 2026-08-23 the parking decision concluded at 02:06Z that the
+pool was empty and put four sessions to sleep, while `auth_health` reported *"3 Claude accounts
+available"* at 02:13Z — two code paths in one app contradicting each other about one fact, because
+both were reading a sticky column minutes apart and the healer moved it in between.
+
+`auth_health` reports **both** numbers rather than swapping one for the other, because they answer
+different questions and the gap between them is itself the diagnostic. `available_accounts` is the
+column: what a session can be spawned on this minute, since every path that picks an account reads
+it. `serviceable_accounts` is the predicate above: what the park decision sees. Reporting only the
+column is the contradiction described here; reporting only the evidence would be its mirror image, a
+healthy card over a pool nothing can spawn against. Together, `0 available / 3 serviceable` says
+precisely what is happening — the pool is recovering and the reset checker has not caught up — and
+the card degrades to `warning` in that state rather than claiming health.
+
+The banner's recovery estimate is derived the same way. `AuthOutageParkService#earliest_pool_reset`
+drops any account whose reading says its windows are clear, and lets the accounts that ARE blocked
+set the estimate. A clear window is not waiting for anything, so its reset stamp is when the counter
+next rolls over rather than a recovery time — reading one anyway is how the 02:06Z park told four
+sessions their pool came back at noon. Contributing "now" instead would be the opposite error: it
+would win the pool-wide minimum and promise a recovery the blocked accounts cannot deliver.
+
+Waking is deliberately the opposite. `AuthOutageParkService.runtime_has_available_account?` and
+`QuotaAvailabilityMonitor` both read the durable column, because resuming a session against an
+account the column still calls exceeded starts it into a pool that will not serve it —
+`QuotaResetCheckerJob` restores the column and then calls both in the same tick, which is what keeps
+them in step. Parking must not sleep a session over a stale label; waking must not start one over a
+fresh reading the rest of the pool has not adopted yet.
+
 Nothing is scheduled. A park used to create a one-time wake-up trigger per session — the same
 `reuse_session` + `last_session_id` shape `wake_me_up_later` uses — carrying a retry time derived
 from the quota snapshots, plus a backoff ladder and a jitter window to keep a whole parked cohort
@@ -991,9 +1099,11 @@ consumed the pause without a trace. See
 
 `QuotaAvailabilityMonitor` owns the event. It runs in the same `QuotaResetCheckerJob` pass, right
 after the accounts are restored, and asks one question: can the pool serve a request at all — is
-there an account that is neither `quota_exceeded` nor waiting on a human to re-authenticate. That is
-the same `accounts.available` predicate a park stops on, which is what makes it the edge that
-un-parks those sessions. It is deliberately **not** the spot gate's question: `SpotGateService`
+there an account that is neither `quota_exceeded` nor waiting on a human to re-authenticate. It
+reads the durable column (`accounts.available`), which is the same thing the wake sweep it feeds
+reads, and deliberately not the evidence-based predicate a PARK stops on — see [One predicate for
+"is the pool drained"](#one-predicate-for-is-the-pool-drained). It is deliberately **not** the spot
+gate's question: `SpotGateService`
 answers "is utilization under the operator's targets and is a slot free", and firing on that would
 also fire when a fleet slot opened, which is not a quota recovery. The fleet session reads the gate
 for itself before starting anything.
@@ -1102,10 +1212,11 @@ Spot sessions are skipped entirely — see the table above. They stay parked wit
 metadata intact, which is exactly what the fleet wake needs to find them.
 
 Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
-arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing
-is available and at least one account is `quota_exceeded` (waiting genuinely helps), and
-`AUTH_UNRECOVERABLE` otherwise — including when the pool is healthy and the runtime is rejecting it
-anyway, which is a credentials problem a human has to look at. `ProcessLifecycleManager` consults it
+arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` only when
+nothing is [serviceable](#one-predicate-for-is-the-pool-drained) and at least one account is
+`quota_exceeded` (waiting genuinely helps), and `AUTH_UNRECOVERABLE` otherwise — including when the
+pool can still serve and the runtime is rejecting it anyway, which is a credentials problem a human
+has to look at. `ProcessLifecycleManager` consults it
 for the budget-exhaustion park too, so running out of tries during a quota drain no longer produces
 the "re-authenticate an account" instruction.
 

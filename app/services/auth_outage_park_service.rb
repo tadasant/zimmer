@@ -283,8 +283,14 @@ class AuthOutageParkService
   # finish, and park again for as long as it lived.
   #
   # So read the pool directly and treat an unreadable one as "not confirmed".
+  #
+  # Through ClaudeAccount.any_serviceable_for?, the same predicate
+  # AuthRecoveryCoordinator#park_reason_for_pool and #auth_health ask: an account
+  # whose `status` column says quota_exceeded while its own latest reading says
+  # both windows are clear can serve this turn, and parking a session against it
+  # is the false positive this guard exists to avoid.
   def self.pool_confirmed_empty?(runtime)
-    !RuntimeAuthProvider.for(runtime).accounts.available.exists?
+    !ClaudeAccount.any_serviceable_for?(runtime)
   rescue => e
     Rails.logger.info "[AuthOutageParkService] Could not confirm the pool is empty for " \
       "runtime #{runtime}: #{e.message}"
@@ -518,6 +524,15 @@ class AuthOutageParkService
       .order(Arel.sql("metadata->>'auth_outage_parked_at' ASC NULLS FIRST"))
   end
 
+  # Can the sweep hand this runtime's pool to a session it is about to start?
+  #
+  # The `status` column, deliberately, and not the evidence-based
+  # .pool_confirmed_empty? asks. Waking is the opposite risk from parking: every
+  # path that actually picks an account to spawn with — bootstrap, rotation,
+  # injection — reads the column, so resuming a session against an account the
+  # column still calls quota_exceeded starts it into a pool that will not serve
+  # it. QuotaResetCheckerJob restores the column immediately before calling this
+  # sweep, which is what keeps the two in step.
   def self.runtime_has_available_account?(runtime)
     RuntimeAuthProvider.for(runtime).accounts.available.exists?
   rescue => e
@@ -648,27 +663,32 @@ class AuthOutageParkService
     accounts = ClaudeAccount.quota_exceeded.for_runtime(session.agent_runtime).to_a
     return nil if accounts.empty?
 
+    # One query for the whole pool rather than one per account.
+    snapshots = ClaudeAccountPool.latest_snapshots(accounts)
+
     per_account = accounts.filter_map do |account|
-      snapshot = account.latest_snapshot
+      snapshot = snapshots[account.id]
       next unless snapshot
+
+      # This account is not waiting for anything: its own reading says both
+      # windows are clear, so its reset stamps are merely when the counters next
+      # roll over, not a recovery time. It contributes NOTHING — neither those
+      # stamps, which would put the estimate at a weekly rollover nothing is
+      # actually waiting for, nor a "now" that would win the minimum below and
+      # promise a recovery the accounts that ARE blocked cannot deliver.
+      next if snapshot.windows_clear?
 
       future = [ snapshot.reset_5h, snapshot.reset_7d ].compact.select { |t| t > Time.current }.max
       next future if future
 
-      # No future reset stamp. That reads as "clears now" only if the healer
-      # agrees, because the healer is what would make it true: QuotaResetCheckerJob
-      # restores an account when its snapshot is #windows_clear?.
-      #
-      # For a stamp that has genuinely passed the two agree — the sliding window
-      # turned over, ClaudeAccountQuotaSnapshot.effective_utilization discounts
-      # the counter to zero, and the next tick restores the account. They part
-      # company on a snapshot carrying NO stamps at all, which is a real reading:
-      # with no reset time to have passed, the weekly counter still stands, so
-      # #seven_day_window_spent? holds and the account stays exceeded. Calling
-      # that "now" pins every parked session to the retry floor and wakes them
-      # all back into the same exhausted pool five minutes later. Its reset time
-      # is simply unknown, and an absent estimate is what unknown means here.
-      Time.current if snapshot.windows_clear?
+      # A spent window carrying no future reset stamp — a real reading, and one
+      # with no time in it to name. With no reset to have passed, the weekly
+      # counter still stands, #seven_day_window_spent? holds and the account
+      # stays exceeded; calling that "now" would pin every parked session to the
+      # retry floor and wake them all back into the same exhausted pool five
+      # minutes later. Its reset time is simply unknown, and an absent estimate
+      # is what unknown means here.
+      nil
     end
 
     per_account.min

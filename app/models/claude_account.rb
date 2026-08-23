@@ -121,6 +121,70 @@ class ClaudeAccount < ApplicationRecord
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
+  # The accounts that can serve a request for `runtime`, judged on the same
+  # evidence #effective_status renders and QuotaResetCheckerJob restores on
+  # rather than on the `status` column alone.
+  #
+  # `.available` reads that column, and the column is a claim about the past:
+  # something writes `quota_exceeded` and only the 15-minute healer clears it
+  # again. Two surfaces asking the same question through it, minutes apart, can
+  # answer it opposite ways — see [One predicate for "is the pool drained"] in
+  # docs/auth/harness.md. This is the one predicate the parking decision and
+  # #auth_health ask, so they cannot.
+  #
+  # An account whose column says quota_exceeded while its reading says both
+  # windows are clear counts as serviceable: the healer is about to restore it,
+  # and until it runs the reading is the better evidence.
+  #
+  # **Only a reading the label has not already answered.** A label written AFTER
+  # the newest reading was written by something that knew more than the reading
+  # does — a runtime-observed quota refusal whose follow-up probe failed, say —
+  # so overruling it would resurrect an account every spawn path still refuses,
+  # and the healer's own fresh probe would decline to restore. Where the two
+  # disagree in that direction the column wins, which is exactly `.available`.
+  #
+  # An account with no usable reading is likewise taken at its label. A Codex
+  # account has no Anthropic quota window to read at all, so for a pool with no
+  # snapshots this reduces to `.available` outright.
+  #
+  # @param runtime [String]
+  # @return [Array<ClaudeAccount>] in priority order
+  def self.serviceable_for(runtime)
+    # Through the provider seam, so a blank runtime resolves to Claude Code the
+    # same way every other pool read does. Scoping on the raw column here instead
+    # would answer "no accounts" for a nil runtime, which reads as an outage.
+    candidates = RuntimeAuthProvider.for(runtime).accounts
+      .where(status: [ statuses[:active], statuses[:quota_exceeded] ])
+      .where.not(oauth_config: {})
+      .order(:priority)
+      .to_a
+
+    # Fetched only for the labelled accounts: an `active` one is serviceable on
+    # its column alone, and #effective_status would not look at a reading anyway.
+    labelled = candidates.reject(&:active?)
+    snapshots = labelled.empty? ? {} : ClaudeAccountPool.latest_snapshots(labelled)
+
+    candidates.select do |account|
+      account.active? ||
+        account.effective_status(reading_that_outranks_label(account, snapshots[account.id])) == "active"
+    end
+  end
+
+  # The reading to judge `account`'s label by, or nil when the label is the newer
+  # claim of the two and there is nothing to overrule it with.
+  def self.reading_that_outranks_label(account, snapshot)
+    return nil if snapshot.nil? || account.updated_at.nil?
+
+    snapshot if snapshot.created_at > account.updated_at
+  end
+  private_class_method :reading_that_outranks_label
+
+  # Does `runtime` have anything that can serve a request? The question every
+  # "is the pool drained?" decision actually means to ask.
+  def self.any_serviceable_for?(runtime)
+    serviceable_for(runtime).any?
+  end
+
   # An account that lands in needs_reauth is dead until a human re-authenticates,
   # and nothing else tells them. The transition is latched inside the transaction
   # and acted on after it commits, because the dirty state that identifies it does
@@ -374,10 +438,16 @@ class ClaudeAccount < ApplicationRecord
   # so the badge and the sweep cannot disagree; when they do differ it is only
   # ever because the sweep has not run yet, and the page tells the truth first.
   #
-  # Deliberately display-only. `status` stays load-bearing for
-  # `ClaudeAccount.available` and AccountRotationService, which must keep acting
-  # on the durable column rather than on a reading that may be minutes stale —
-  # QuotasController converges the column separately (#auto_heal_accounts).
+  # `status` stays load-bearing for `ClaudeAccount.available` and
+  # AccountRotationService: every path that picks an account to spawn with must
+  # keep acting on the durable column rather than on a reading that may be
+  # minutes stale, and QuotasController converges the column separately
+  # (#auto_heal_accounts).
+  #
+  # Two decisions read the evidence instead, through `.serviceable_for` — the
+  # park decision and #auth_health — because for them the stale column errs the
+  # dangerous way: it puts a session to sleep, and tells a human the pool is
+  # gone, over a label the account's own newer reading contradicts.
   #
   # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the reading to judge by;
   #   pass the one already loaded for the page to avoid a query per account.

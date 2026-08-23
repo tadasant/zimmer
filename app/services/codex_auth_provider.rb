@@ -211,14 +211,26 @@ class CodexAuthProvider < RuntimeAuthProvider
 
     if current
       sync_current_tokens(current)
-      # Mirrors AccountRotationService#rotate!: never relabel an account already
-      # diagnosed as needs_reauth, so the pool's shape still says whether waiting
-      # can help.
+      # Mirrors AccountRotationService#mark_outgoing!, minus the reading: never
+      # relabel an account already diagnosed as needs_reauth, and never write
+      # `quota_exceeded` for a rotation that is not about quota. A rotation on
+      # `auth_recovery` says the runtime rejected the identity, which is not a
+      # quota fact — and the label is what `accounts.available` reads, so writing
+      # it removes a healthy account from the pool.
+      #
+      # This pool has no evidence branch and cannot have one: Codex accounts
+      # carry no Anthropic quota window to probe, so `reason` is the only signal
+      # there is. That also makes the mistake permanent here where it is merely
+      # slow on the Claude side — QuotaResetCheckerJob is Claude-only, so nothing
+      # ever restores a Codex account labelled by mistake.
       if current.needs_reauth?
         @logger.info("Rotating away from codex account already marked needs_reauth", email: current.email)
-      else
+      elsif AccountRotationService::QUOTA_ROTATION_REASONS.include?(reason)
         current.mark_quota_exceeded!
-        @logger.info("Marked codex account as quota_exceeded", email: current.email)
+        @logger.info("Marked codex account as quota_exceeded", email: current.email, reason: reason)
+      else
+        @logger.info("Rotated codex account away without quota evidence — leaving it active",
+          email: current.email, reason: reason)
       end
     end
 

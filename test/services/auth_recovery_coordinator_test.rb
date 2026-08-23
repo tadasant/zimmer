@@ -72,6 +72,57 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
     AuthRecoveryCoordinator.new(session)
   end
 
+  # A reading that says the account cannot serve: both windows at the cap, both
+  # refused, and both resets still ahead.
+  def spent_reading_for!(account)
+    account.quota_snapshots.create!(
+      subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 1.0, utilization_7d: 1.0,
+      status_5h: "rejected", status_7d: "rejected",
+      reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now,
+      trigger: "rotation"
+    )
+  end
+
+  # The pool as it looks when quota really is what stopped it: every account
+  # labelled quota_exceeded AND carrying a reading that says so.
+  #
+  # Both halves are load-bearing. A `quota_exceeded` label with a clear reading
+  # behind it is exactly the false positive that parked four production sessions
+  # on 2026-08-23, and #park_reason_for_pool now reads the reading — so a test
+  # that sets only the label is not describing a drained pool.
+  def drain_pool_by_quota!(except: nil)
+    ClaudeAccount.for_runtime("claude_code").find_each do |account|
+      next if except && account.id == except.id
+
+      account.update!(status: :quota_exceeded)
+      spent_reading_for!(account)
+    end
+  end
+
+  # A reading, newer than the account's label, that says it can serve.
+  def clear_reading_for!(account)
+    account.quota_snapshots.create!(
+      subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 0.35, utilization_7d: 0.12,
+      status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 26.minutes.from_now, reset_7d: 6.days.from_now,
+      trigger: "page_view"
+    )
+  end
+
+  # Make the live probe report a spent account, so a rotation away from it has
+  # the evidence that justifies labelling it quota_exceeded.
+  def stub_quota_probe_as_spent
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(
+        success: true, subscription_type: "claude_max", rate_limit_tier: "tier_4",
+        utilization_5h: 1.0, utilization_7d: 1.0, status_5h: "rejected", status_7d: "rejected",
+        reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now
+      )
+    )
+  end
+
   def spawned_as!(email)
     @session.update!(metadata: @session.metadata.merge(AuthRecoveryCoordinator::IDENTITY_KEY => email))
   end
@@ -151,8 +202,44 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
       "Re-injecting the account that just failed is the bug this fixes"
     assert plan.consumes_budget?
 
-    assert_equal "quota_exceeded", @primary.reload.status
+    # NOT quota_exceeded. The probe in setup reports this account at 50%/30% and
+    # allowed on both windows, so nothing observed says its quota is gone — and
+    # "Not logged in" says nothing about quota either. Stamping the label anyway
+    # is what emptied the production pool on 2026-08-23.
+    assert_equal "active", @primary.reload.status
     assert plan.account.reload.is_current?
+  end
+
+  # The regression that cost four sessions a ten-hour park. A single blanked
+  # credential logged every session on the worker out; each rotated away from the
+  # account it held; every rotation stamped `quota_exceeded` on the account it
+  # left; and in about forty seconds a pool of healthy accounts read as drained.
+  test "an auth rotation across the whole pool leaves every account serviceable" do
+    ClaudeAccount.for_runtime("claude_code").where.not(id: @primary.id).update_all(is_current: false)
+
+    3.times do
+      session = @session.reload
+      spawned_as!(ClaudeAccount.current_account.email)
+      AuthRecoveryCoordinator.new(session).resolve!("/tmp/test-clone")
+    end
+
+    assert_equal 0, ClaudeAccount.for_runtime("claude_code").quota_exceeded.where.not(id: claude_accounts(:exceeded).id).count,
+      "Rotating away from an account is not evidence about its quota"
+    assert ClaudeAccount.any_serviceable_for?("claude_code"),
+      "A pool of healthy accounts must never read as drained just because sessions rotated through it"
+    assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, coordinator.park_reason_for_pool,
+      "With accounts still serviceable, 'wait ten hours for a quota reset' is the wrong story"
+  end
+
+  # The other direction: a rotation that DOES have quota evidence still labels the
+  # account, so the pool still drains when quota is genuinely what stopped it.
+  test "an auth rotation labels the outgoing account when its own reading says the windows are spent" do
+    stub_quota_probe_as_spent
+    spawned_as!(@primary.email)
+
+    coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal "quota_exceeded", @primary.reload.status
   end
 
   test "records the rotation as auth_recovery so it is distinguishable from a quota rotation" do
@@ -192,7 +279,10 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
   # ===========================================================================
 
   test "parks with quota_exhausted when the last account is rotated away and the rest are over quota" do
-    ClaudeAccount.for_runtime("claude_code").where.not(id: @primary.id).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    drain_pool_by_quota!(except: @primary)
+    # The last account's own probe condemns it too — without that the pool is not
+    # drained by quota, it is just labelled that way.
+    stub_quota_probe_as_spent
     spawned_as!(@primary.email)
 
     plan = coordinator.resolve!("/tmp/test-clone")
@@ -223,9 +313,22 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
   end
 
   test "park_reason_for_pool reports QUOTA_EXHAUSTED once the pool is drained by quota" do
-    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    drain_pool_by_quota!
 
     assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, coordinator.park_reason_for_pool
+  end
+
+  # The false positive itself: labels alone are not evidence. Every account is
+  # stamped quota_exceeded, and every account's own latest reading says both
+  # windows are clear — which is precisely the state the production pool was in at
+  # 02:06Z on 2026-08-23, seven minutes before the health check reported three
+  # accounts available.
+  test "park_reason_for_pool refuses QUOTA_EXHAUSTED when the labels are stale and the readings are clear" do
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime("claude_code").find_each { |account| clear_reading_for!(account) }
+
+    assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, coordinator.park_reason_for_pool,
+      "A pool whose own readings say it can serve must never be called quota-exhausted"
   end
 
   # ===========================================================================

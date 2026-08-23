@@ -2,6 +2,9 @@
 
 require "test_helper"
 require "minitest/mock"
+# The auth_health cases stub with `.stubs`. Without this the file only runs when
+# some other file in the same process has already loaded mocha.
+require "mocha/minitest"
 
 class HealthMonitorServiceTest < ActiveSupport::TestCase
   setup do
@@ -1431,6 +1434,63 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
     assert auth[:status].healthy?
     assert auth[:available_accounts].positive?
+  end
+
+  # The contradiction that started this: at 02:06Z on 2026-08-23 the parking
+  # decision declared the whole pool quota-exhausted and put four sessions to
+  # sleep; at 02:13Z this card reported "3 Claude accounts available". Both were
+  # reading the sticky `status` column, minutes apart, and the healer moved it in
+  # between. They ask one predicate now, so they cannot disagree.
+  test "auth_health and the parking decision answer from the same predicate" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :ok, detail: "fine", owner_email: "a@b.com", checked_at: Time.current)
+    )
+    # Every account labelled quota_exceeded, every account's own reading newer
+    # than the label and clear — the state the production pool was in at 02:06Z.
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime("claude_code").find_each do |account|
+      account.quota_snapshots.create!(trigger: "rotation", status_5h: "allowed", status_7d: "allowed",
+        utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
+        utilization_7d: 0.12, reset_7d: 6.days.from_now)
+    end
+
+    auth = HealthMonitorService.new.auth_health
+
+    assert_equal 0, auth[:available_accounts], "nothing can be spawned on right now"
+    assert auth[:serviceable_accounts].positive?, "but the readings say the pool can serve"
+    assert_equal ClaudeAccount.serviceable_for("claude_code").count, auth[:serviceable_accounts],
+      "the card and the park decision must read one predicate"
+
+    assert auth[:status].warning?,
+      "a pool nothing can spawn against is not healthy, however good its readings are"
+    assert_match(/reset checker restores them/, auth[:status].message)
+  end
+
+  test "auth_health reports a healthy pool from the column, not the evidence" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :ok, detail: "fine", owner_email: "a@b.com", checked_at: Time.current)
+    )
+
+    auth = HealthMonitorService.new.auth_health
+
+    assert auth[:status].healthy?
+    assert_equal ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).count,
+      auth[:available_accounts]
+    assert_match(/Claude accounts? available/, auth[:status].message)
+  end
+
+  test "auth_health warns when nothing is serviceable at all" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :ok, detail: "fine", owner_email: "a@b.com", checked_at: Time.current)
+    )
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME)
+      .update_all(status: ClaudeAccount.statuses[:needs_reauth])
+
+    auth = HealthMonitorService.new.auth_health
+
+    assert auth[:status].warning?
+    assert_equal 0, auth[:serviceable_accounts]
+    assert_match(/No Claude account is available/, auth[:status].message)
   end
 
   test "a corrupt credentials file makes the overall status critical" do
