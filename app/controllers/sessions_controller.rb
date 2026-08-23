@@ -505,7 +505,15 @@ class SessionsController < ApplicationController
       raise
     end
 
-    redirect_to session, notice: "Router session created. The agent will route your request..."
+    # A spot session may not start at all yet — SpotSessionHold parks it behind the
+    # quota gate — so the one place this surface speaks to the user must not promise
+    # routing that has not been scheduled.
+    notice = if scheduling_class == SessionGenesis::SPOT
+      "Router session created as spot. It starts when there is quota room, at the top of the spot queue."
+    else
+      "Router session created. The agent will route your request..."
+    end
+    redirect_to session, notice: notice
   rescue AgentRootsConfig::AgentRootNotFoundError => e
     redirect_to root_path, alert: "Router agent root not configured: #{e.message}"
   rescue ActiveRecord::RecordInvalid => e
@@ -4734,9 +4742,9 @@ class SessionsController < ApplicationController
   #
   # Only an explicit "spot" writes anything. An untouched submission returns nil
   # so the row's `scheduling_class` stays NULL and the class keeps deriving from
-  # the `web_ui` genesis — which is priority today, and still follows the setting
-  # if that genesis is ever moved. Stamping "priority" here instead would freeze
-  # today's default onto every Quick Router session ever created.
+  # the `web_ui` genesis on every read, which is what lets /quotas move these
+  # sessions by moving that genesis. Stamping "priority" here instead would pin
+  # the shipped default onto every Quick Router session and sever that link.
   def quick_router_scheduling_class
     params[:scheduling_class].to_s.strip == SessionGenesis::SPOT ? SessionGenesis::SPOT : nil
   end
@@ -4745,9 +4753,9 @@ class SessionsController < ApplicationController
   #
   # A human typed this one seconds ago and chose to let it wait for quota room —
   # that is a statement about quota, not about importance. Leaving it at the
-  # default precedence of 0 would file it beneath every automated spot session
-  # already ranked above 0, and behind every older session tied at 0, so it goes
-  # to the top of the queue instead; the UI on each surface says so.
+  # default precedence of 0 files it beneath every automated spot session ranked
+  # above 0, and behind every older session tied at 0, so it goes to the top of
+  # the queue instead; the UI on each surface says so.
   #
   # nil for a priority submission, which leaves the ordinary inheritance alone
   # (the chat bubble's child-of-parent bump, DEFAULT everywhere else).

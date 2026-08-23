@@ -66,8 +66,10 @@ keeps deriving from `web_ui`, exactly as before — so promoting or demoting `we
 still moves these sessions, which stamping "priority" on the row would have quietly stopped. Only an
 explicit tick writes anything.
 
-The choice is per submission rather than a preference: the box clears after a submit, and after the
-phone overlay is closed.
+The choice is per submission rather than a preference. The box clears when the surface closes — a
+submit, the phone overlay closing, the panel being dismissed with Escape, the backdrop or the X. A
+half-typed prompt is kept across a close and the class deliberately is not: re-ticking a box is
+cheap, and a tick left over from an hour ago would silently park the next prompt behind the gate.
 
 **A spot submission lands at the top of the spot queue.** Choosing spot here is a statement about
 quota, not about importance — a human typed this one seconds ago. Leaving it at the default
