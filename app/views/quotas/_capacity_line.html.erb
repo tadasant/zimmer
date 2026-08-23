@@ -1,0 +1,33 @@
+<%# The dollar view of one quota window: what a full one is estimated to be
+    worth, how much of it is left, and how much of THAT spot work may touch.
+
+    "$ remaining" is the headline because it is the only figure that answers
+    "how much capacity do we have" — a percentage cannot be compared to a
+    reserve, a burn rate, or a decision about whether one more session fits.
+
+    Rendered only when the model has dollars for this window. On a deployment
+    where the calibration cron has never run there is nothing honest to print,
+    and a $0.00 would read as "exhausted" rather than as "not yet estimated" —
+    so the line says which it is instead. %>
+<% if window.nil? %>
+<% elsif window.dollars? %>
+  <p class="mt-1 text-xs text-gray-600" id="<%= dom_id %>">
+    <strong><%= capacity_money(window.remaining_usd) %> remaining</strong>
+    of an estimated <%= capacity_money(window.capacity_usd) %> window ·
+    <%= capacity_money(window.reserve_usd) %> reserved for priority
+    (<%= window.reserve_pct %>%) ·
+    <strong><%= capacity_money(window.remaining_spot_usd) %></strong> left for spot work.
+    <span class="text-gray-400">
+      Estimated in Opus list price from
+      <%= number_to_currency(window.estimate.sample_cost_usd.to_f, precision: 0) %> of spend at
+      <%= (window.estimate.sample_utilization.to_f * 100).round(1) %>% utilization,
+      <%= time_ago_in_words(window.estimate.computed_at) %> ago.
+    </span>
+  </p>
+<% else %>
+  <p class="mt-1 text-xs text-gray-400" id="<%= dom_id %>">
+    No dollar estimate for this window yet — QuotaCapacityCalibrationJob needs a window with
+    measurable spend and utilization before it can price one. The spot gate paces this window on
+    percentages until then.
+  </p>
+<% end %>

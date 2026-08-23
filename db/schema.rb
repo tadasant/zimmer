@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_23_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_23_030300) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -78,10 +78,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_23_020000) do
     t.boolean "quota_pool_available"
     t.datetime "quota_pool_available_changed_at"
     t.boolean "session_scoped_credentials_enabled", default: false, null: false
-    t.integer "spot_gate_five_hour_threshold_pct", default: 80, null: false
-    t.integer "spot_gate_weekly_threshold_pct", default: 80, null: false
     t.boolean "spot_gating_enabled", default: false, null: false
     t.integer "spot_max_concurrent_sessions", default: 10, null: false
+    t.integer "spot_reserve_five_hour_pct", default: 20, null: false
+    t.integer "spot_reserve_weekly_pct", default: 20, null: false
     t.integer "uncategorized_position", default: 0, null: false
     t.datetime "updated_at", null: false
   end
@@ -282,6 +282,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_23_020000) do
     t.index ["scheduled_at"], name: "index_good_jobs_on_scheduled_at", where: "(finished_at IS NULL)"
   end
 
+  create_table "harness_model_burn_rates", force: :cascade do |t|
+    t.datetime "computed_at", null: false
+    t.datetime "created_at", null: false
+    t.string "harness", null: false
+    t.string "model", null: false
+    t.float "sample_cost_usd", default: 0.0, null: false
+    t.float "sample_minutes", default: 0.0, null: false
+    t.datetime "sample_newest_at"
+    t.datetime "sample_oldest_at"
+    t.integer "sample_session_count", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.float "usd_per_minute", default: 0.0, null: false
+    t.index ["harness", "model"], name: "index_harness_model_burn_rates_on_harness_and_model", unique: true
+    t.index ["usd_per_minute"], name: "index_harness_model_burn_rates_on_usd_per_minute"
+  end
+
   create_table "human_messages", force: :cascade do |t|
     t.string "author", null: false
     t.string "channel", null: false
@@ -423,6 +439,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_23_020000) do
     t.datetime "updated_at", null: false
     t.string "user_agent"
     t.index ["endpoint"], name: "index_push_subscriptions_on_endpoint", unique: true
+  end
+
+  create_table "quota_capacity_estimates", force: :cascade do |t|
+    t.float "capacity_usd"
+    t.datetime "computed_at"
+    t.datetime "created_at", null: false
+    t.integer "observation_count", default: 0, null: false
+    t.float "observed_capacity_usd"
+    t.float "sample_cost_usd"
+    t.float "sample_utilization"
+    t.datetime "updated_at", null: false
+    t.string "window_key", null: false
+    t.index ["window_key"], name: "index_quota_capacity_estimates_on_window_key", unique: true
   end
 
   create_table "runtime_login_attempts", force: :cascade do |t|

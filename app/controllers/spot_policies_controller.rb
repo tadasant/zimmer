@@ -1,9 +1,14 @@
 # frozen_string_literal: true
 
-# The spot gate policy: whether the gate holds spot sessions at all, the two
-# window targets it fills up to, and the ceiling on how many sessions run at
-# once. The card lives on /quotas because the windows it reads are the ones that
-# page reports.
+# The spot gate policy: whether the gate holds spot sessions at all, how much of
+# each window is reserved for priority sessions, and the ceiling on how many
+# sessions run at once. The card lives on /quotas because the windows it reads
+# are the ones that page reports.
+#
+# The reserve is typed as a PERCENTAGE and read back as DOLLARS. A percentage is
+# what a human can reason about setting; the money is derived by
+# QuotaCapacityModel from the calibrated capacity of the window, and is what the
+# gate actually decides on.
 #
 # Separate from AppSettingsController, which persists the settings page's own
 # forms, so each page's forms write only their own fields.
@@ -20,11 +25,11 @@ class SpotPoliciesController < ApplicationController
     if spot_params.key?(:spot_gating_enabled)
       setting.spot_gating_enabled = ActiveModel::Type::Boolean.new.cast(spot_params[:spot_gating_enabled])
     end
-    if spot_params.key?(:spot_gate_five_hour_threshold_pct)
-      setting.spot_gate_five_hour_threshold_pct = spot_params[:spot_gate_five_hour_threshold_pct]
+    if spot_params.key?(:spot_reserve_five_hour_pct)
+      setting.spot_reserve_five_hour_pct = spot_params[:spot_reserve_five_hour_pct]
     end
-    if spot_params.key?(:spot_gate_weekly_threshold_pct)
-      setting.spot_gate_weekly_threshold_pct = spot_params[:spot_gate_weekly_threshold_pct]
+    if spot_params.key?(:spot_reserve_weekly_pct)
+      setting.spot_reserve_weekly_pct = spot_params[:spot_reserve_weekly_pct]
     end
     if spot_params.key?(:spot_max_concurrent_sessions)
       setting.spot_max_concurrent_sessions = spot_params[:spot_max_concurrent_sessions]

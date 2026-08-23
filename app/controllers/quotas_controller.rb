@@ -330,6 +330,10 @@ class QuotasController < ApplicationController
     # would happen to a session STARTING now; this says what already happened to
     # the ones that were in flight when a window arrived at its target.
     @spot_paused_count = SpotSessionPause.paused_count
+    # The capacity model behind the reserve controls: the form types a
+    # percentage and prints the dollars that percentage carves out, and both
+    # come from the same object the decision above was taken on.
+    @spot_windows = QuotaCapacityModel.windows(measure: ClaudeAccountPool.measure, setting: @app_setting)
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
   end

@@ -208,6 +208,33 @@ A per-card lookup would be a per-card round trip on a page that renders hundreds
 A session with no stored usage renders **nothing** rather than `$0.00` — usually it just
 means its transcript has not been swept yet, and a zero would assert it was free.
 
+## Burn rate by harness + model
+
+The Costs page answers "what did we spend"; the scheduler needs "what does a minute of this cost".
+`BurnRateRecomputeJob` derives the second from the first every 20 minutes and writes it to
+`harness_model_burn_rates`, one row per (harness, model).
+
+The rate is **dollars per minute of elapsed session time**: for each of the last
+`HarnessModelBurnRate::SAMPLE_SESSIONS` (25) sessions of that combination, the cost of its calls over
+the span from its first to its last, summed across the sample before dividing. Summing before
+dividing is deliberate — averaging per-session rates would give a two-call session the same weight as
+a two-hour one. A session with a single call is floored at one minute rather than dividing by zero.
+
+`harness` is the **agent root**, the same dimension the by-root table above breaks spend down by,
+because that is what predicts a session's spend shape: a router turn and a merge-gate turn move very
+different money on the same model.
+
+The prices are `TokenPricing`'s, applied through the same `cost_sum_sql` the rest of this page uses.
+There is deliberately no second pricing path — a rate priced differently from the page would make
+"this session burns $0.40 a minute" and "this root spent $6,116 this week" two numbers nobody could
+reconcile.
+
+The [spot gate](/sessions/spot-and-priority/#the-gate) multiplies these by its re-check interval to
+project what admitting one more session will spend before anyone looks again. A combination that has
+never been sampled is priced at the cost-weighted fleet average rather than at nothing, so an unknown
+harness cannot look free; a combination with no spend in the last 30 days has its row dropped rather
+than left to inform the scheduler forever.
+
 ## Context features
 
 `token_usage_features` answers a question the usage tables cannot: not *what did this call

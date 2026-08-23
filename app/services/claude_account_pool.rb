@@ -46,9 +46,23 @@ class ClaudeAccountPool
   #
   # A past timestamp describes a window that has already rolled over, so neither
   # ever reports one.
+  # `five_hour_seconds_remaining` and `weekly_seconds_remaining` are how long
+  # each window has left before it rolls over, averaged across the accounts that
+  # could say. They are the time axis of the pacing curve — QuotaCapacityModel
+  # divides the remaining spot budget by them to get the rate that lands on 100%
+  # exactly at the rollover.
+  #
+  # An AVERAGE, to match the utilization figure beside it: accounts reset at
+  # different moments, and the pool number those seconds are paced against is
+  # itself an average over the same accounts. Only accounts with a reset still
+  # ahead of them contribute — a reset in the past describes a window that has
+  # already rolled, the same rule `effective_utilization` applies to the counter.
+  # Nil when nobody could say, which turns the pacing curve off rather than
+  # guessing at a rollover.
   Measure = Data.define(:five_hour, :weekly, :worst_five_hour, :worst_weekly,
                         :account_count, :read_count, :weekly_spent_count,
-                        :blocked_count, :next_capacity_at, :next_weekly_reset) do
+                        :blocked_count, :next_capacity_at, :next_weekly_reset,
+                        :five_hour_seconds_remaining, :weekly_seconds_remaining) do
     # True when at least one account had something to say.
     def any_readings? = read_count.positive?
 
@@ -91,8 +105,11 @@ class ClaudeAccountPool
   end
 
   def measure
+    now = Time.current
     fives = []
     weeklies = []
+    five_hour_remaining = []
+    weekly_remaining = []
     capacity_times = []
     weekly_resets = []
     read_count = 0
@@ -112,6 +129,8 @@ class ClaudeAccountPool
       read_count += 1
       fives << five if five
       weeklies << weekly if weekly
+      five_hour_remaining << (snapshot.reset_5h - now) if pending?(snapshot.reset_5h)
+      weekly_remaining << (snapshot.reset_7d - now) if pending?(snapshot.reset_7d)
 
       five_spent = snapshot.five_hour_window_spent?
       weekly_spent = snapshot.seven_day_window_spent?
@@ -143,7 +162,9 @@ class ClaudeAccountPool
       weekly_spent_count: weekly_spent_count,
       blocked_count: blocked_count,
       next_capacity_at: serving_now ? nil : capacity_times.min,
-      next_weekly_reset: weekly_resets.min
+      next_weekly_reset: weekly_resets.min,
+      five_hour_seconds_remaining: average(five_hour_remaining)&.round,
+      weekly_seconds_remaining: average(weekly_remaining)&.round
     )
   end
 

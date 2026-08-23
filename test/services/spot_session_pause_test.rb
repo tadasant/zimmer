@@ -24,16 +24,21 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     )
     @setting = AppSetting.editable
     @setting.update!(spot_gating_enabled: true,
-                     spot_gate_five_hour_threshold_pct: 80,
-                     spot_gate_weekly_threshold_pct: 80,
+                     spot_reserve_five_hour_pct: 20,
+                     spot_reserve_weekly_pct: 20,
                      spot_max_concurrent_sessions: 10)
   end
 
+  # Both windows are seeded near their rollover on purpose. This suite is about
+  # the CEILING — which running sessions get paused and when they come back — and
+  # a window early in its cycle would be refused by the pacing curve instead, so
+  # every case would read "held" for a reason these tests are not asking about.
+  # QuotaCapacityModel and SpotGateServiceTest cover the curve itself.
   def seed(current_5h:, current_7d: 0.10)
     ClaudeAccountQuotaSnapshot.create!(
       claude_account: @account,
       utilization_5h: current_5h, utilization_7d: current_7d,
-      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+      reset_5h: 5.minutes.from_now, reset_7d: 1.hour.from_now,
       active_session_count: 1, trigger: "usage_sample"
     )
   end
@@ -72,7 +77,7 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert_equal "at_utilization_limit", session.metadata[SpotSessionPause::PAUSED_REASON]
     assert_equal SpotSessionPause::PAUSED_BY, session.metadata["paused_by"]
     assert_equal 1, session.metadata[SpotSessionPause::PAUSED_COUNT]
-    assert session.metadata[SpotSessionPause::PAUSED_DETAIL].include?("80% target"),
+    assert session.metadata[SpotSessionPause::PAUSED_DETAIL].include?("80% spot budget"),
       "the gate's own sentence is what tells a reader why the turn stopped"
     assert session.logs.where(level: "warning").any? { |log| log.content.include?("paused mid-run") }
   end
