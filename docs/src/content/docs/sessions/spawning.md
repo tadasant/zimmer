@@ -617,3 +617,40 @@ retry, compaction, the API-error retry — and each is right only while this job
 Once `running_job_id` names another job, the exit being handled is very often one that job *caused*
 (the spawn guard terminating this turn's process is exactly that), so a respawn would put a second
 agent back on the clone the guard just cleared. `handle_exit` stands down with `:aborted` instead.
+
+### The owner that replaces nothing
+
+The monitoring loop's backstop rests on a premise: the job that took `running_job_id` did so because
+it is running a turn of its own, so this turn's process is surplus. That premise fails for exactly
+one kind of owner — a job enqueued with `resume_monitoring: true`, which spawns nothing and exists
+only to re-attach to a process someone else started. Terminating for one of those does not prevent an
+orphan; it destroys the only live agent on the session, and the adopting job then reports a
+reconnection to a process that is already gone.
+
+That is what [#489](https://github.com/tadasant/zimmer/issues/489) recorded. Orphan detection spawned
+a fresh turn; a recovery sweep, reading the session a moment earlier, saw the *pre-deploy* pid and
+enqueued a monitoring job for it; the monitoring job's ownership claim fired the backstop, which
+SIGTERMed the turn that had been running for thirty-five seconds; and the session settled into
+`needs_input` having produced nothing — indistinguishable, from the outside, from a turn that
+finished.
+
+Three things hold it shut, at the three points the race passes through:
+
+- **The backstop asks what the new owner is for.** `AgentJobIntent.monitor_only?`
+  (`app/services/agent_job_intent.rb`) reads the successor's own serialized arguments — intent fixed
+  at enqueue time, not inferred from session state, which is the thing that is racing. For a
+  monitoring owner the loop still exits, so only one job ever supervises a process, but it leaves the
+  process running to be adopted. Any unknown answer is `false`, which is the pre-existing kill.
+- **A monitoring job is pinned to a pid.** `AgentSessionJob.enqueue_for_monitoring` takes
+  `monitor_pid:` — the pid its enqueuer looked at when it decided there was something to adopt.
+  `metadata["process_pid"]` is a single slot that the next spawn overwrites, so a job that re-reads it
+  seconds later can adopt a process nobody decided about. If the two disagree when the job runs, it
+  stands down *before* claiming ownership, and touches nothing.
+- **Recovery takes ownership conditionally.** `SessionRecoveryService` claims `running_job_id` for the
+  job it enqueues, because the session it is rescuing is by definition recorded as owned by a job that
+  is gone. That claim is now a compare-and-set on both facts the decision was made from — the owning
+  job and the process pid. If either moved, another job is driving the session, and recovery stands
+  down and leaves it alone. The next sweep re-decides against current state.
+
+Adoption itself is still refused for a pid the recorded `process_identity` disowns, so a monitoring
+job that does reach a dead or recycled process reports the failure rather than a reconnection.
