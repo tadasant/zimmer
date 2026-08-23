@@ -6001,6 +6001,41 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
   end
 
+  # schedule_mcp_retry stamps mcp_last_retry_at and only THEN waits out a 30/60/120s
+  # backoff before a fresh job spawns a new process. Seeding the reset clock from that
+  # stamp alone would put the second attempt onward already past the 60s threshold on
+  # the new job's first iteration — handing the budget back before the new process had
+  # attempted a handshake, so it never reaches its maximum and a session with a broken
+  # MCP server ping-pongs paused -> running forever instead of failing loudly.
+  test "a budget's stability clock never predates the process the reset is measuring" do
+    stamped_before_a_120s_backoff = 130.seconds.ago
+    monitoring_started_at = Time.current
+
+    clock = RetryBudget.all.index_with do |budget|
+      last_attempt = budget.last_attempt_at(@session)
+      last_attempt && [ last_attempt, monitoring_started_at ].max
+    end
+    assert(clock.values.all?(&:nil?), "an unspent budget has no clock to floor")
+
+    @session.update!(metadata: {
+      "mcp_retry_count" => 2,
+      "mcp_last_retry_at" => stamped_before_a_120s_backoff.iso8601
+    })
+    budget = RetryBudget::MCP_CONNECTION
+    floored = [ budget.last_attempt_at(@session), monitoring_started_at ].max
+
+    assert_equal monitoring_started_at.to_i, floored.to_i,
+      "the clock must start when this process did, not when the pre-backoff stamp was written"
+    assert_nil budget.reset_if_stable!(@session, since: floored),
+      "a process that has only just started has not earned the budget back"
+    assert_equal 2, @session.reload.metadata["mcp_retry_count"]
+
+    # And it still resets once the new process really has been stable for the threshold.
+    reset = budget.reset_if_stable!(@session, since: floored, now: monitoring_started_at + 61.seconds)
+    assert_equal 2, reset.previous_count
+    assert_nil @session.reload.metadata["mcp_retry_count"]
+  end
+
   test "a failed budget reset logs at warn, not error" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)

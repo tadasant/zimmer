@@ -548,7 +548,7 @@ the defect. One concrete instance of the general problem in
 
 Five of those recovery branches are bounded, and every one of them is bounded the same
 way: a counter in `session.metadata`, a maximum, a timestamp of the last attempt, and a
-set of keys a reset clears. `RetryBudget` (`app/models/retry_budget.rb`) is where each
+set of keys a reset clears. `RetryBudget` (`app/services/retry_budget.rb`) is where each
 of those is declared, once:
 
 | Budget | Counter key | Max | Last-attempt stamp | Spent by |

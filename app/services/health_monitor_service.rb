@@ -826,6 +826,18 @@ class HealthMonitorService
   # @param threshold [Time] how far back "recent" reaches
   # @return [Hash]
   def retry_budget_stats(budget, threshold: 24.hours.ago)
+    # Memoised per service instance because `full_health_report` asks for the same
+    # budget more than once: the generic section walks all five, and the SIGTERM and
+    # API-error panels each read their own again. Unmemoised that is seven passes —
+    # ~28 queries plus seven unbounded loads — on a page that refreshes every 30s.
+    # A HealthMonitorService is built per request, so the cache cannot go stale.
+    @retry_budget_stats ||= {}
+    return @retry_budget_stats[budget] if @retry_budget_stats.key?(budget)
+
+    @retry_budget_stats[budget] = compute_retry_budget_stats(budget, threshold: threshold)
+  end
+
+  def compute_retry_budget_stats(budget, threshold:)
     total_sessions, total_retries_attempted = budget.sessions
       .pluck(
         Arel.sql("COUNT(*)"),
