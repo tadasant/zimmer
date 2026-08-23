@@ -125,11 +125,16 @@ module Sessions
       true
     end
 
-    # The park itself. `needs_input` sleeps immediately; a `running` session does
-    # not sleep mid-turn — `pending_sleep` is what the pause callback reads to
-    # carry it needs_input → waiting once the turn ends, which is the same
-    # deferral a time-based Pause Until gets. A `waiting` session is already
-    # dormant and only needs the record.
+    # The park itself. `needs_input` sleeps immediately; a `running` session gets
+    # `pending_sleep`, which the pause callback reads to carry it needs_input →
+    # waiting once the turn ends. A `waiting` session is already dormant and only
+    # needs the record.
+    #
+    # Whether that turn is allowed to end is the CALLER's choice, not this
+    # service's: the web UI's "Pause Until" stops it immediately
+    # (Sessions::HaltRunningTurn, invoked after this returns), while the MCP tool
+    # defers by default because its commonest caller is a session parking itself.
+    # Either way the deferral written here is what the session falls back on.
     #
     # `merge_metadata!` rather than a whole-column write: the session may be
     # RUNNING, and AgentSessionJob is writing its own keys to the same column
