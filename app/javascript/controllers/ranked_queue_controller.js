@@ -23,7 +23,8 @@ import Sortable from "sortablejs"
 export default class extends Controller {
   static targets = [
     "priorityList", "spotList", "priorityEmpty", "spotEmpty", "row",
-    "precedenceInput", "precedenceReadout", "error"
+    "precedenceInput", "precedenceReadout", "error",
+    "priorityCount", "spotCount", "promoteAction", "demoteAction"
   ]
   static values = { slotGap: Number }
 
@@ -37,10 +38,21 @@ export default class extends Controller {
       handle: "[data-ranked-queue-target='handle']",
       onEnd: (event) => this.persistDrop(event)
     })
+
+    // The section headers and the "nothing here" placeholders are server-rendered
+    // from the row count, and rows now leave on their own: a trashed session is
+    // removed by a Turbo Stream that knows nothing about this controller. Watch
+    // the lists rather than trying to intercept the stream, so the counts stay
+    // true whoever changed them — a broadcast, a promote, or a demote.
+    this.listObserver = new MutationObserver(() => this.refreshCounts())
+    ;[this.priorityListTarget, this.spotListTarget].forEach((list) => {
+      this.listObserver.observe(list, { childList: true })
+    })
   }
 
   disconnect() {
     if (this.sortable) this.sortable.destroy()
+    if (this.listObserver) this.listObserver.disconnect()
   }
 
   // ---- Inline editing -------------------------------------------------------
@@ -188,13 +200,13 @@ export default class extends Controller {
   moveToSpot(row) {
     this.spotListTarget.appendChild(row)
     this.setRowMode(row, true)
-    this.refreshEmptyStates()
+    this.refreshCounts()
   }
 
   moveToPriority(row) {
     this.priorityListTarget.appendChild(row)
     this.setRowMode(row, false)
-    this.refreshEmptyStates()
+    this.refreshCounts()
   }
 
   // Rebuild a row's rank cell and its button for the section it now lives in.
@@ -221,16 +233,28 @@ export default class extends Controller {
       readout.textContent = row.dataset.precedence
     }
 
-    const button = row.querySelector("button[data-action]")
-    if (!button) return
+    // Both entries live in the row's overflow menu and one of them is hidden, the
+    // same shape as the two rank cells above. Swapping visibility rather than
+    // rewriting one button's action keeps the menu's markup static, so a row that
+    // moves sections does not need its Stimulus actions re-registered.
+    const promote = row.querySelector("[data-ranked-queue-target='promoteAction']")
+    const demote = row.querySelector("[data-ranked-queue-target='demoteAction']")
+    if (promote) promote.classList.toggle("hidden", !spot)
+    if (demote) demote.classList.toggle("hidden", spot)
+  }
 
-    if (spot) {
-      button.dataset.action = "ranked-queue#promote"
-      button.textContent = "Promote"
-    } else {
-      button.dataset.action = "ranked-queue#demote"
-      button.textContent = "Demote to spot"
-    }
+  // The header badges count rows, so they have to be recounted whenever the lists
+  // change — including when a Turbo Stream removes a trashed row out from under
+  // the page.
+  refreshCounts() {
+    this.refreshEmptyStates()
+    const pairs = [
+      [this.priorityListTarget, this.hasPriorityCountTarget ? this.priorityCountTarget : null],
+      [this.spotListTarget, this.hasSpotCountTarget ? this.spotCountTarget : null]
+    ]
+    pairs.forEach(([list, badge]) => {
+      if (badge) badge.textContent = String(list.children.length)
+    })
   }
 
   // The "nothing here" placeholders are server-rendered, so a section that has

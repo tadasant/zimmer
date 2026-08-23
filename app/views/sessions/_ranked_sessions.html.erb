@@ -13,6 +13,19 @@
       priority_sessions - priority sessions matching the filters, ranked
       spot_sessions     - spot sessions matching the filters, ranked
       section_limit     - how many rows each section renders at most %>
+<%# A queue that goes stale is a queue you cannot trust, so the rows subscribe to
+    their own stream. `Session#broadcast_ranked_row` replaces ONE element per row —
+    the status pill — which is what keeps a live update from fighting the two
+    interactions on this screen: an arriving status change cannot clobber a
+    precedence the user is halfway through typing, and it cannot renumber or
+    re-seat a row mid-drag, because it never touches the input, the handle, or the
+    row's position. The one structural change it makes is removing a row that has
+    been trashed, mirroring what the card grid does on the other views.
+
+    What it deliberately does NOT do: re-sort the queue, or move a row between the
+    two sections when its scheduling class changes elsewhere. Both would move the
+    row out from under a pointer that is on it. A reload settles those. %>
+<%= turbo_stream_from Session::RANKED_STREAM %>
 <section class="mb-8"
          id="ranked_sessions"
          data-controller="ranked-queue"
@@ -27,10 +40,11 @@
 
   <%# ---- Priority ---- %>
   <div class="mb-6">
-    <div class="flex items-center gap-2 mb-2">
+    <div class="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
       <h3 class="text-sm font-semibold text-gray-700">Priority</h3>
-      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium px-2 py-0.5"><%= priority_sessions.size %></span>
-      <span class="text-xs text-gray-400">start whenever they are ready — precedence does not gate them</span>
+      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium px-2 py-0.5"
+            data-ranked-queue-target="priorityCount"><%= priority_sessions.size %></span>
+      <span class="min-w-0 text-xs text-gray-400">start whenever they are ready — precedence does not gate them</span>
     </div>
     <%# Both lists are ALWAYS in the DOM, hidden when empty. They are Stimulus
         targets, and a target that disappears when a section empties would fail the
@@ -52,10 +66,11 @@
 
   <%# ---- Spot ---- %>
   <div>
-    <div class="flex items-center gap-2 mb-2">
+    <div class="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
       <h3 class="text-sm font-semibold text-gray-700">Spot queue</h3>
-      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-amber-100 text-amber-700 text-xs font-medium px-2 py-0.5"><%= spot_sessions.size %></span>
-      <span class="text-xs text-gray-400">highest precedence is worked first</span>
+      <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-amber-100 text-amber-700 text-xs font-medium px-2 py-0.5"
+            data-ranked-queue-target="spotCount"><%= spot_sessions.size %></span>
+      <span class="min-w-0 text-xs text-gray-400">highest precedence is worked first</span>
     </div>
     <ul class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if spot_sessions.empty? %>"
         data-ranked-queue-target="spotList">

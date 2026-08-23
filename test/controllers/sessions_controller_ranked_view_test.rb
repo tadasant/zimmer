@@ -119,6 +119,82 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     assert_includes spot_row_ids, live.id
   end
 
+  # --- staying live -----------------------------------------------------------
+
+  # The card grid's broadcast replaces `dom_id(session)` with a session card. A
+  # ranked row is neither, so it was never a target of it — which is the whole
+  # reason the queue went stale. These pin the two ends of the replacement: the
+  # page subscribes, and the model publishes something the page has an element for.
+
+  test "the ranked view subscribes to the ranked stream and ids every row's status pill" do
+    session = spot(10)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    assert_response :success
+    assert_select "turbo-cable-stream-source[signed-stream-name=?]",
+      Turbo::StreamsChannel.signed_stream_name(Session::RANKED_STREAM)
+    assert_select "##{"ranked_row_status_#{session.id}"}", text: "Waiting"
+  end
+
+  test "a status change broadcasts just the row's status pill" do
+    session = spot(10)
+
+    streams = capture_turbo_stream_broadcasts(Session::RANKED_STREAM) do
+      session.update!(status: :running)
+    end
+
+    assert_equal 1, streams.size
+    assert_equal "replace", streams.first["action"]
+    assert_equal "ranked_row_status_#{session.id}", streams.first["target"]
+    assert_includes streams.first.to_s, "Running"
+  end
+
+  test "trashing a session removes its row from the queue rather than restyling it" do
+    session = spot(10)
+
+    streams = capture_turbo_stream_broadcasts(Session::RANKED_STREAM) do
+      session.update!(status: :archived)
+    end
+
+    assert_equal 1, streams.size
+    assert_equal "remove", streams.first["action"]
+    assert_equal "ranked_row_#{session.id}", streams.first["target"]
+  end
+
+  # A rank edit is not a status change, and a broadcast landing on a row whose
+  # number the user is mid-way through typing is exactly what this view cannot
+  # afford. Nothing but a status change reaches the queue.
+  test "a precedence write broadcasts nothing to the ranked stream" do
+    session = spot(10)
+
+    streams = capture_turbo_stream_broadcasts(Session::RANKED_STREAM) do
+      patch update_precedence_session_url(session), params: { precedence: 640 }, as: :json
+    end
+
+    assert_response :success
+    assert_empty streams
+  end
+
+  # --- the row's actions ------------------------------------------------------
+
+  test "promote and demote are rendered inside the row's overflow menu, not on the row" do
+    queued = spot(10)
+    top = priority
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    assert_select "#ranked_row_#{top.id} [data-controller='overflow-menu'] button[data-ranked-queue-target='demoteAction']"
+    assert_select "#ranked_row_#{queued.id} [data-controller='overflow-menu'] button[data-ranked-queue-target='promoteAction']"
+
+    # Both entries ride on every row, one of them hidden, so a promote or a demote
+    # can swap them in place without a reload.
+    assert_select "#ranked_row_#{top.id} button[data-ranked-queue-target='promoteAction'].hidden"
+    assert_select "#ranked_row_#{queued.id} button[data-ranked-queue-target='demoteAction'].hidden"
+
+    assert_select "#ranked_row_#{top.id} button[aria-expanded='false'][aria-haspopup='true']"
+  end
+
   # --- editing a rank ---------------------------------------------------------
 
   test "update_precedence sets the value and answers with JSON for the ranked view" do

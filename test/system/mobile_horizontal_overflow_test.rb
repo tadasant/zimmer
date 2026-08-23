@@ -511,6 +511,68 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # The desktop layout has to keep working: these same pages are read on a laptop,
   # and `flex-wrap` / stacked-on-mobile fixes are exactly the kind of change that
   # silently reflows a wide screen.
+  # The Ranked view is the operator's queue screen, and the densest list Zimmer
+  # renders: a drag handle, an editable rank, a status pill, an unbreakable title
+  # and an actions menu, on one row, forty times over. Its "⋮" menu is absolutely
+  # positioned and its rows sit near the right edge, so Probe 1 alone would wave
+  # the menu through — hence the per-element pass over the opened menu too.
+  test "the ranked queue and its row menus stay within the viewport on a phone" do
+    queued = Session.create!(
+      title: LONG_TOKEN_TITLE, prompt: "Investigate the failure and land a fix.",
+      status: :waiting, git_root: "https://github.com/test/repo.git",
+      scheduling_class: SessionGenesis::SPOT, precedence: 123_456
+    )
+    top = with_agent_root(
+      Session.create!(
+        title: "Ship the hotfix", prompt: "x", status: :running,
+        git_root: "https://github.com/test/repo.git",
+        scheduling_class: SessionGenesis::PRIORITY, precedence: 0
+      ),
+      "zimmer-router"
+    )
+
+    visit root_path(view: SessionsController::VIEW_MODE_RANKED)
+    assert_selector "#ranked_row_#{queued.id}"
+
+    scroll_into_center(find("#ranked_sessions"))
+    page.save_screenshot("tmp/screenshots/proof-ranked-queue-375.png")
+
+    assert_no_horizontal_overflow("ranked queue")
+    past_edge = elements_past_right_edge("#ranked_sessions")
+    assert_empty past_edge,
+      "ranked rows end past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+
+    # A phone wraps the title instead of truncating it, so the unbreakable token
+    # is readable rather than cut off mid-word.
+    assert_title_not_clipped(find("#ranked_row_#{queued.id} a", text: LONG_TOKEN_TITLE), "a ranked row title")
+
+    # The row's only control is the menu, and it has to be a thumb-sized target.
+    kebab = find("#ranked_row_#{top.id} button[aria-label='More actions for session #{top.id}']")
+    assert kebab.native.size.height >= 36, "the ⋮ target is only #{kebab.native.size.height}px tall"
+    kebab.click
+    assert_button "Demote to spot"
+    page.save_screenshot("tmp/screenshots/proof-ranked-row-menu-375.png")
+
+    assert_no_horizontal_overflow("ranked queue with a row menu open")
+    past_edge = elements_past_right_edge("#ranked_sessions")
+    assert_empty past_edge,
+      "an open row menu ends past the #{MOBILE_WIDTH}px viewport:\n  #{past_edge.join("\n  ")}"
+
+    # And the laptop keeps the single-line row it had: rank, status, title, root.
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit root_path(view: SessionsController::VIEW_MODE_RANKED)
+    assert_selector "#ranked_row_#{queued.id}"
+
+    assert_empty elements_past_right_edge("#ranked_sessions"),
+      "ranked rows end past the 1400px viewport"
+    # The laptop's row is still one line with a truncated title — the phone layout
+    # is `max-sm:` only, so a fix for the phone cannot have restyled the desktop.
+    assert_equal "nowrap", page.evaluate_script(
+      "getComputedStyle(document.querySelector(#{"#ranked_row_#{queued.id} a".to_json})).whiteSpace"
+    ), "the desktop row should still truncate its title on one line"
+    page.save_screenshot("tmp/screenshots/proof-ranked-queue-1400.png")
+  end
+
   test "fixed pages still lay out without overflow at desktop width" do
     create_session
     trigger = create_trigger
