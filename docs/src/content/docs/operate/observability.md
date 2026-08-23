@@ -106,6 +106,32 @@ Nothing is suppressed and no message content is dropped: Slack's own words, the 
 the thread stay in the line. Only the severity changes, which is what makes the ERROR that
 does appear worth reading.
 
+### A client that has already disconnected is logged at DEBUG, not ERROR
+
+ActionCable applies the same reasoning to WebSockets, and upstream Rails logs three benign
+client-disconnect races at ERROR. Each one is a browser tab that went away — a navigation, a
+laptop sleeping, a reconnect — with the server still mid-operation. Nothing is broken, nothing
+is retryable, and the ActionCable consumer re-subscribes on its own when the client comes back.
+Three initializers downgrade them, each preserving upstream's log text verbatim so only the
+severity changes:
+
+| Race | Upstream method | Initializer |
+| --- | --- | --- |
+| A write to a socket the peer already closed (`Errno::EPIPE`, `ECONNRESET`, `EOFError`, …) | `Connection::Base#on_error` | `action_cable_benign_socket_error_log_level.rb` |
+| An inbound frame dispatched off the async worker pool after the socket closed | `Connection::Base#dispatch_websocket_message` | `action_cable_benign_socket_error_log_level.rb` |
+| A stale or duplicate `unsubscribe` for a subscription the connection no longer holds | `Connection::Subscriptions#remove` | `action_cable_idempotent_unsubscribe.rb` |
+
+The middle row is the one that bites hardest, because it is not one line per disconnect.
+`#receive` hands every frame to `send_async :dispatch_websocket_message`, so a tab that drops
+its socket with *n* frames in flight logs *n* ERRORs in a single burst — a session page with
+three `turbo_stream_from` streams, re-subscribing on reconnect, produced six inside 10 ms
+([#624](https://github.com/tadasant/zimmer/issues/624)).
+
+Only the benign set moves. A genuine WebSocket error, an unrecognized command, and a `find`
+failure on the `perform_action` path all still log at ERROR. Each override is pinned to the
+actioncable version in `Gemfile.lock` and covered by a test in `test/initializers/`, so a
+Rails upgrade that changes one of these methods is a prompt to re-check the patch.
+
 ## How environments are told apart
 
 Every batch carries two resource attributes:

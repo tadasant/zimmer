@@ -1,12 +1,18 @@
 require "test_helper"
 
 # Verifies the patch in
-# config/initializers/action_cable_benign_socket_error_log_level.rb: a benign
-# client disconnect surfaced through `Connection::Base#on_error` (a peer that
-# closed the socket mid-write -> Errno::EPIPE "Broken pipe", ECONNRESET, etc.)
-# must NOT emit an ERROR-level log. That single line trips the prod ERROR-logs
-# alert even though nothing is broken. Every genuine, non-disconnect WebSocket
-# error must still log at ERROR.
+# config/initializers/action_cable_benign_socket_error_log_level.rb, which covers
+# two benign client-disconnect races on `Connection::Base`:
+#
+#   * `#on_error` — a peer that closed the socket mid-write (Errno::EPIPE
+#     "Broken pipe", ECONNRESET, etc.)
+#   * `#dispatch_websocket_message` — an inbound frame dispatched off the async
+#     worker pool after the socket had already closed
+#
+# Neither may emit an ERROR-level log: a single such line trips the critical
+# `Zimmer backend logging errors (excludes staging)` alert even though nothing is
+# broken. Every genuine, non-disconnect WebSocket error must still log at ERROR,
+# and a live socket must still dispatch its frames.
 class ActionCableBenignSocketErrorLogLevelTest < ActiveSupport::TestCase
   # Records every logged message with its severity so we can assert on level,
   # not just text.
@@ -108,5 +114,77 @@ class ActionCableBenignSocketErrorLogLevelTest < ActiveSupport::TestCase
 
     assert @logger.errors.any? { |_, msg| msg == "WebSocket error occurred: " },
       "a nil message must not raise and must default to ERROR, got: #{@logger.messages.inspect}"
+  end
+
+  # --- #dispatch_websocket_message ------------------------------------------
+
+  # Stand-in for the `websocket` a Connection::Base holds. Only #alive? matters
+  # to the patched method.
+  class FakeWebSocket
+    def initialize(alive:)
+      @alive = alive
+    end
+
+    def alive?
+      @alive
+    end
+  end
+
+  # Minimal stand-in exercising the real #dispatch_websocket_message the
+  # initializer overrides. It depends on #websocket, #logger, #decode and
+  # #handle_channel_command; we record the last two so both branches are
+  # observable.
+  def build_dispatch_connection(logger, alive:)
+    connection = ActionCable::Connection::Base.allocate
+    websocket = FakeWebSocket.new(alive: alive)
+    handled = []
+    decoded = []
+    connection.define_singleton_method(:logger) { logger }
+    connection.define_singleton_method(:websocket) { websocket }
+    connection.define_singleton_method(:decode) do |message|
+      decoded << message
+      ActiveSupport::JSON.decode(message)
+    end
+    connection.define_singleton_method(:handle_channel_command) { |payload| handled << payload }
+    connection.define_singleton_method(:handled) { handled }
+    connection.define_singleton_method(:decoded) { decoded }
+    connection
+  end
+
+  SUBSCRIBE_FRAME = { "command" => "subscribe", "identifier" => '{"channel":"Turbo::StreamsChannel"}' }.to_json
+
+  test "a frame dispatched after the socket closed logs at debug, not error" do
+    connection = build_dispatch_connection(@logger, alive: false)
+
+    connection.dispatch_websocket_message(SUBSCRIBE_FRAME)
+
+    assert_empty @logger.errors, "expected no ERROR logs, got: #{@logger.messages.inspect}"
+    assert_empty connection.handled, "a closed socket must not dispatch the frame"
+    assert @logger.debugs.any? { |_, msg| msg.include?("Ignoring message processed after the WebSocket was closed") },
+      "expected a DEBUG log for the closed-socket frame, got: #{@logger.messages.inspect}"
+  end
+
+  test "the closed-socket log preserves upstream's message text verbatim" do
+    # Upstream actioncable 8.1.3 emits a stray trailing `)` after the inspected
+    # message. The patch changes the level only, so the text — parenthesis and
+    # all — must match byte for byte.
+    connection = build_dispatch_connection(@logger, alive: false)
+
+    connection.dispatch_websocket_message(SUBSCRIBE_FRAME)
+
+    expected = "Ignoring message processed after the WebSocket was closed: #{SUBSCRIBE_FRAME.inspect})"
+    assert @logger.debugs.any? { |_, msg| msg == expected },
+      "expected #{expected.inspect}, got: #{@logger.messages.inspect}"
+  end
+
+  test "a frame on a live socket is still decoded and dispatched, with no log" do
+    connection = build_dispatch_connection(@logger, alive: true)
+
+    connection.dispatch_websocket_message(SUBSCRIBE_FRAME)
+
+    assert_equal [ SUBSCRIBE_FRAME ], connection.decoded, "the frame must be decoded on the happy path"
+    assert_equal [ ActiveSupport::JSON.decode(SUBSCRIBE_FRAME) ], connection.handled,
+      "a live socket must dispatch the decoded payload to handle_channel_command"
+    assert_empty @logger.messages, "the happy path must not log at all, got: #{@logger.messages.inspect}"
   end
 end
