@@ -1382,6 +1382,16 @@ class Session < ApplicationRecord
   # Minimum interval between broadcasts triggered by last_timeline_entry_at changes
   BROADCAST_THROTTLE_INTERVAL = 30.seconds
 
+  # The Turbo Stream the Ranked view (/?view=ranked) listens on. It is separate
+  # from "sessions_index_individual" because the two carry different things: that
+  # one replaces a whole session card keyed on dom_id, and a ranked row is neither
+  # a card nor keyed on dom_id, so a ranked row was simply never a target of it —
+  # which is why the queue's statuses went stale until the page was reloaded.
+  #
+  # Its own stream rather than a second payload on the index one, so a dashboard
+  # in Categories view does not receive a message it has no element for.
+  RANKED_STREAM = "sessions_ranked".freeze
+
   # Postgres advisory lock namespace for per-session serialization. Different
   # numerical "classes" let us reuse the bigint key space across unrelated
   # subsystems without collisions; we hash with the session_id to produce a
@@ -1776,6 +1786,7 @@ class Session < ApplicationRecord
     # This ensures that if one broadcast fails (e.g., due to rendering error),
     # the remaining broadcasts still execute.
     broadcast_status_badge
+    broadcast_ranked_row
     broadcast_follow_up_form
     broadcast_running_loader
     broadcast_header_actions
@@ -1794,6 +1805,34 @@ class Session < ApplicationRecord
   rescue => e
     Rails.logger.error "[Session] Broadcast status badge failed for session #{id}: #{e.message}"
     ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "status_badge" })
+  end
+
+  # Keep an open Ranked view honest about this session's status.
+  #
+  # Replaces the status pill alone. The row around it holds two pieces of state
+  # the server does not own — the precedence the user may be mid-edit on, and the
+  # row's position while SortableJS is dragging it — so replacing the whole row
+  # would let a background status change destroy an interaction in progress. The
+  # pill is the only part of the row a status change can actually stale.
+  #
+  # A trashed session leaves instead: the Ranked view's default filter excludes
+  # archived work, and the card grid already removes rather than replaces on
+  # archive, so the two views agree. The row does not come back on unarchive
+  # without a reload, which is the same deal the card grid offers.
+  def broadcast_ranked_row
+    if archived?
+      broadcast_remove_to(RANKED_STREAM, target: "ranked_row_#{id}")
+    else
+      broadcast_replace_to(
+        RANKED_STREAM,
+        target: "ranked_row_status_#{id}",
+        partial: "sessions/ranked_row_status",
+        locals: { agent_session: self }
+      )
+    end
+  rescue => e
+    Rails.logger.error "[Session] Broadcast ranked row failed for session #{id}: #{e.message}"
+    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "ranked_row" })
   end
 
   def broadcast_follow_up_form
