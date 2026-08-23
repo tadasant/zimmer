@@ -99,7 +99,26 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
   # earliest reset is 2026-08-23T12:00:00Z", ten hours out, derived from the
   # 7-day stamp of an account whose own reading said both windows were clear. A
   # clear window is not waiting for anything, so its stamp is not a recovery time.
-  test "an exceeded account whose reading is clear does not push the estimate out to its next rollover" do
+  test "an exceeded account whose reading is clear contributes nothing to the estimate" do
+    clear = create_account(email: "mislabelled@example.com", status: :quota_exceeded)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: clear, status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 26.minutes.from_now, reset_7d: 10.hours.from_now,
+      utilization_5h: 0.35, utilization_7d: 0.12)
+    blocked = create_account(email: "spent@example.com", status: :quota_exceeded)
+    blocked_reset = 3.hours.from_now
+    ClaudeAccountQuotaSnapshot.create!(claude_account: blocked, status_5h: "rejected", status_7d: "rejected",
+      reset_5h: 1.hour.from_now, reset_7d: blocked_reset,
+      utilization_5h: 1.0, utilization_7d: 1.0)
+
+    park!
+
+    recorded = Time.iso8601(@session.reload.metadata["auth_outage_pool_recovers_at"])
+    assert_in_delta blocked_reset.to_i, recorded.to_i, 5,
+      "The accounts that are actually blocked set the estimate — a clear account's " \
+      "next weekly rollover is not a recovery time, and neither is a 'now' it cannot deliver"
+  end
+
+  test "a pool whose every exceeded account reads clear records no estimate at all" do
     account = create_account(email: "mislabelled@example.com", status: :quota_exceeded)
     ClaudeAccountQuotaSnapshot.create!(claude_account: account, status_5h: "allowed", status_7d: "allowed",
       reset_5h: 26.minutes.from_now, reset_7d: 10.hours.from_now,
@@ -107,9 +126,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     park!
 
-    recorded = Time.iso8601(@session.reload.metadata["auth_outage_pool_recovers_at"])
-    assert_in_delta Time.current.to_i, recorded.to_i, 5,
-      "An account that can serve now must not be reported as recovering in ten hours"
+    assert_nil @session.reload.metadata["auth_outage_pool_recovers_at"]
   end
 
   test "records no recovery estimate for an auth outage, which has no published clock" do

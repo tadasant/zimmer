@@ -153,12 +153,12 @@ class AuthRecoveryCoordinator
   # still tells the user "wait for reset" rather than "go re-authenticate".
   #
   # "Has the pool got anything left" is asked through
-  # ClaudeAccount.any_serviceable_for?, which is also what #auth_health counts.
-  # Asking it through the `status` column instead is what made this method answer
-  # QUOTA_EXHAUSTED at 02:06Z on 2026-08-23 while the health check reported three
-  # accounts available seven minutes later: the column had been stamped by
-  # rotations that carried no quota evidence, and only the 15-minute healer ever
-  # unstamps it. One predicate, so the two surfaces cannot disagree again.
+  # ClaudeAccount.any_serviceable_for?, the same predicate #auth_health counts —
+  # so a park and the health card cannot describe different pools. Asking it
+  # through the `status` column instead answers on labels that only the
+  # 15-minute healer ever clears, which is how a park and a health check minutes
+  # apart came to contradict each other; see [One predicate for "is the pool
+  # drained"] in docs/auth/harness.md.
   #
   # @return [String] an AuthOutageParkService reason
   def park_reason_for_pool

@@ -121,29 +121,31 @@ class ClaudeAccount < ApplicationRecord
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
-  # The accounts that can serve a request for `runtime` RIGHT NOW, judged on the
-  # same evidence #effective_status renders and QuotaResetCheckerJob restores on
+  # The accounts that can serve a request for `runtime`, judged on the same
+  # evidence #effective_status renders and QuotaResetCheckerJob restores on
   # rather than on the `status` column alone.
   #
   # `.available` reads that column, and the column is a claim about the past:
-  # something wrote `quota_exceeded` and only the 15-minute healer clears it
-  # again. On 2026-08-23 two surfaces asked the same question and got opposite
-  # answers through it — the parking decision saw an empty pool at 02:06Z and put
-  # four sessions to sleep against a noon reset estimate, while the health check
-  # reported three accounts available at 02:13Z. Both were reading `status`; the
-  # labels were simply stale, and the healer cleared all three on their own
-  # readings in between.
+  # something writes `quota_exceeded` and only the 15-minute healer clears it
+  # again. Two surfaces asking the same question through it, minutes apart, can
+  # answer it opposite ways — see [One predicate for "is the pool drained"] in
+  # docs/auth/harness.md. This is the one predicate the parking decision and
+  # #auth_health ask, so they cannot.
   #
-  # This is the one predicate the parking decision and #auth_health ask now, so
-  # they cannot answer it differently. An account whose column says
-  # quota_exceeded while its latest reading says both windows are clear counts as
-  # serviceable: the healer is about to restore it, and until it runs the
-  # evidence is what tells the truth.
+  # An account whose column says quota_exceeded while its reading says both
+  # windows are clear counts as serviceable: the healer is about to restore it,
+  # and until it runs the reading is the better evidence.
   #
-  # An account with no reading is taken at its label — there is nothing to judge
-  # by, and a Codex account (which has no Anthropic quota window to read) is
-  # exactly that case, so this reduces to `.available` for a pool with no
-  # snapshots.
+  # **Only a reading the label has not already answered.** A label written AFTER
+  # the newest reading was written by something that knew more than the reading
+  # does — a runtime-observed quota refusal whose follow-up probe failed, say —
+  # so overruling it would resurrect an account every spawn path still refuses,
+  # and the healer's own fresh probe would decline to restore. Where the two
+  # disagree in that direction the column wins, which is exactly `.available`.
+  #
+  # An account with no usable reading is likewise taken at its label. A Codex
+  # account has no Anthropic quota window to read at all, so for a pool with no
+  # snapshots this reduces to `.available` outright.
   #
   # @param runtime [String]
   # @return [Array<ClaudeAccount>] in priority order
@@ -156,14 +158,29 @@ class ClaudeAccount < ApplicationRecord
       .where.not(oauth_config: {})
       .order(:priority)
       .to_a
-    return [] if candidates.empty?
 
-    snapshots = ClaudeAccountPool.latest_snapshots(candidates)
-    candidates.select { |account| account.effective_status(snapshots[account.id]) == "active" }
+    # Fetched only for the labelled accounts: an `active` one is serviceable on
+    # its column alone, and #effective_status would not look at a reading anyway.
+    labelled = candidates.reject(&:active?)
+    snapshots = labelled.empty? ? {} : ClaudeAccountPool.latest_snapshots(labelled)
+
+    candidates.select do |account|
+      account.active? ||
+        account.effective_status(reading_that_outranks_label(account, snapshots[account.id])) == "active"
+    end
   end
 
-  # Does `runtime` have anything that can serve a request right now? The question
-  # every "is the pool drained?" decision actually means to ask.
+  # The reading to judge `account`'s label by, or nil when the label is the newer
+  # claim of the two and there is nothing to overrule it with.
+  def self.reading_that_outranks_label(account, snapshot)
+    return nil if snapshot.nil? || account.updated_at.nil?
+
+    snapshot if snapshot.created_at > account.updated_at
+  end
+  private_class_method :reading_that_outranks_label
+
+  # Does `runtime` have anything that can serve a request? The question every
+  # "is the pool drained?" decision actually means to ask.
   def self.any_serviceable_for?(runtime)
     serviceable_for(runtime).any?
   end
@@ -430,7 +447,7 @@ class ClaudeAccount < ApplicationRecord
   # Two decisions read the evidence instead, through `.serviceable_for` — the
   # park decision and #auth_health — because for them the stale column errs the
   # dangerous way: it puts a session to sleep, and tells a human the pool is
-  # gone, over a label the account's own reading contradicts.
+  # gone, over a label the account's own newer reading contradicts.
   #
   # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the reading to judge by;
   #   pass the one already loaded for the page to avoid a query per account.
