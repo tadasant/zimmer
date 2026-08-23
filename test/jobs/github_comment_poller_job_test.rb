@@ -179,10 +179,28 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "WHITELISTED_USERS contains expected usernames" do
-    assert_includes GithubCommentPollerJob::WHITELISTED_USERS, "tadasant"
-    assert_includes GithubCommentPollerJob::WHITELISTED_USERS, "macoughl"
-    assert_equal 2, GithubCommentPollerJob::WHITELISTED_USERS.size
+  test "the dispatch gate reads the shared allowlist so it cannot diverge from prompt context" do
+    assert_includes GithubCommentAllowlist::USERS, "tadasant"
+    assert_includes GithubCommentAllowlist::USERS, "macoughl"
+    assert_equal 2, GithubCommentAllowlist::USERS.size
+
+    # The job holds no list of its own: dispatch and GithubCommentPromptBuilder's
+    # thread context must always answer "is this author trusted?" the same way.
+    refute GithubCommentPollerJob.const_defined?(:WHITELISTED_USERS, false),
+      "GithubCommentPollerJob must not keep a second copy of the allowlist"
+
+    GithubCommentAllowlist.stubs(:trusted?).returns(false)
+    GithubCommentAllowlist.stubs(:trusted?).with("someone-new").returns(true)
+
+    job = GithubCommentPollerJob.new
+
+    dispatchable = { "author" => "someone-new", "attribution" => "someone-new", "id" => 1, "body" => "hi", "created_at" => 1.hour.ago.iso8601 }
+    refute_equal "skipped:author_not_whitelisted",
+      job.send(:dispatch_state_for, dispatchable, type: "pr", tracking_started_at: nil)
+
+    formerly_trusted = { "author" => "tadasant", "attribution" => "tadasant", "id" => 2, "body" => "hi", "created_at" => 1.hour.ago.iso8601 }
+    assert_equal "skipped:author_not_whitelisted",
+      job.send(:dispatch_state_for, formerly_trusted, type: "pr", tracking_started_at: nil)
   end
 
   test "AGENT_COMMENT_MARKER is the expected string" do
