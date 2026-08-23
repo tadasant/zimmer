@@ -353,6 +353,25 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_empty panel_past_edge,
       "the Quick Router panel ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{panel_past_edge.join("\n  ")}"
 
+    # The geometry above proves the control is reachable; this proves it is wired.
+    # The panel submits over `fetch` rather than as a form, so the checkbox only
+    # reaches the server if `chat_bubble#_submit` reads it — the exact "renders but
+    # is dropped" failure the controller tests guard from the other side.
+    bubble_box.click
+    assert bubble_box.checked?
+    find("[data-chat-bubble-target='textarea']").fill_in with: "Sweep the catalog for dangling references"
+    find("[data-chat-bubble-target='submitButton']").click
+    # The panel slides back out only on a successful create — on an error it stays
+    # open with the error line — so its closed end-state is a sync point with no
+    # timing window, unlike the success badge, which hides itself after 2.5s.
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-full"
+
+    created = Session.where("prompt LIKE ?", "%Sweep the catalog for dangling references%").last
+    assert created, "the Quick Router panel did not create a session"
+    assert_equal SessionGenesis::SPOT, created.scheduling_class,
+      "the panel's spot opt-in did not reach the server"
+    assert_equal SessionGenesis::WEB_UI, created.genesis
+
     # Surface 3 is the dashboard's inline desktop prompt row, hidden below `md:`.
     # Check it at a laptop width, where it is the last item in the attach-button row
     # and therefore the one that would land off the edge if the row could not hold it.
