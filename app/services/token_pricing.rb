@@ -136,16 +136,38 @@ module TokenPricing
     "token_usage_features" => false
   }.freeze
 
+  # The family every quota figure is denominated in.
+  #
+  # Anthropic reports quota as a bare percentage, so turning it into money needs
+  # a unit — and the only unit that means anything on this deployment is Opus,
+  # which is what more than 99% of the fleet's spend runs on. QuotaCapacity\
+  # Calibrator re-prices every stored volume at this family's rate before
+  # dividing by utilization, so "the weekly window is worth $26k" reads as "$26k
+  # of Opus", not as an average over whatever model mix happened to run.
+  QUOTA_DENOMINATION_FAMILY = "opus"
+
   # @param table [String] the table to qualify columns with
-  # @raise [ArgumentError] if asked to price a table that is not one of ours
-  def cost_sql(table)
+  # @param as_family [String, nil] price every row at this family's rate instead
+  #   of the row's own model. Nil is the honest bill; a family is the
+  #   counterfactual — "what would these volumes have cost on Opus" — which is
+  #   what a quota figure denominated in one model needs.
+  # @raise [ArgumentError] if asked to price a table that is not one of ours, or
+  #   to denominate in a family with no rate
+  def cost_sql(table, as_family: nil)
     unless PRICEABLE_TABLES.key?(table.to_s)
       raise ArgumentError, "refusing to build pricing SQL for unknown table #{table.inspect}"
+    end
+    if as_family && !RATES.key?(as_family.to_s)
+      raise ArgumentError, "no rate for family #{as_family.inspect}"
     end
 
     # Longest key first, mirroring `family_for`: SQL CASE takes the first match,
     # so a future family key that is a substring of another must not shadow it.
     families = RATES.sort_by { |family, _| -family.length }.map do |family, rate|
+      # Denominating replaces the RATE, never the MATCH: a row still has to be a
+      # model we recognize to be priced at all, so an unpriced model stays
+      # visibly unpriced instead of quietly inheriting Opus money.
+      rate = RATES.fetch(as_family.to_s) if as_family
       <<~SQL.squish
         WHEN POSITION('#{family}' IN LOWER(#{table}.model)) > 0 THEN (
           #{table}.input_tokens * #{rate.input}

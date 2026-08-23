@@ -1,0 +1,55 @@
+<%# The scheduler's view of this same ledger: what a minute of each harness +
+    model combination costs.
+
+    It belongs on this page because it is a costing figure derived from these
+    very rows at these very prices — but it is the number the spot gate acts on,
+    so the card says so and links to where that happens.
+
+    Deliberately NOT scoped to the window picker above. These are the current
+    rates as BurnRateRecomputeJob last computed them, over a fixed sample of
+    recent sessions per combination; re-deriving them for "last 90 days" would
+    answer a different question under the same heading. %>
+<div class="bg-white shadow rounded-lg overflow-hidden mb-6" id="burn-rates">
+  <div class="px-4 py-3 border-b border-gray-200">
+    <h2 class="text-sm font-semibold text-gray-900">Burn rate by harness + model</h2>
+    <p class="mt-1 text-xs text-gray-500">
+      Dollars per minute of elapsed session time, measured over the last
+      <%= HarnessModelBurnRate::SAMPLE_SESSIONS %> sessions of each combination. The
+      <%= link_to "spot gate", quotas_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>
+      multiplies these by how long until it next looks to decide whether one more session fits
+      inside the quota window's remaining non-reserved capacity. Current rates, not rates for the
+      window selected above.
+    </p>
+  </div>
+  <% if rates.blank? %>
+    <p class="px-4 py-6 text-sm text-gray-500">
+      No rates computed yet — BurnRateRecomputeJob needs sessions in the ledger before it can
+      measure one.
+    </p>
+  <% else %>
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th scope="col" class="px-4 py-2 text-left font-medium text-gray-500">Harness</th>
+            <th scope="col" class="px-4 py-2 text-left font-medium text-gray-500">Model</th>
+            <th scope="col" class="px-4 py-2 text-right font-medium text-gray-500">$/min</th>
+            <th scope="col" class="px-4 py-2 text-right font-medium text-gray-500">$/hr</th>
+            <th scope="col" class="px-4 py-2 text-right font-medium text-gray-500">Sessions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 bg-white">
+          <% rates.each do |rate| %>
+            <tr>
+              <td class="px-4 py-2 text-gray-900 font-medium break-all"><%= rate.harness %></td>
+              <td class="px-4 py-2 text-gray-500 font-mono text-xs break-all"><%= rate.model %></td>
+              <td class="px-4 py-2 text-right text-gray-900 tabular-nums"><%= number_to_currency(rate.usd_per_minute, precision: 3) %></td>
+              <td class="px-4 py-2 text-right text-gray-500 tabular-nums"><%= number_to_currency(rate.usd_per_hour, precision: 2) %></td>
+              <td class="px-4 py-2 text-right text-gray-500 tabular-nums"><%= rate.sample_session_count %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</div>

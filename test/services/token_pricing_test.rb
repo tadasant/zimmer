@@ -81,6 +81,46 @@ class TokenPricingTest < ActiveSupport::TestCase
     assert TokenPricing.cost_sql("session_token_usages").present?
   end
 
+  # --- denominating in one model ------------------------------------------------
+
+  test "refuses to denominate in a family it has no rate for" do
+    assert_raises(ArgumentError) { TokenPricing.cost_sql("session_token_usages", as_family: "gpt") }
+    assert TokenPricing.cost_sql("session_token_usages", as_family: "opus").present?
+  end
+
+  # Denominating replaces the RATE, never the MATCH. A quota figure expressed
+  # "in Opus dollars" has to re-price a Haiku row at Opus money — and still leave
+  # a model nothing knows how to price contributing zero, rather than quietly
+  # inheriting Opus's rate and inflating the estimate.
+  test "denominating re-prices every known model at one family's rate" do
+    usage = SessionTokenUsage.create!(
+      request_id: "req_#{SecureRandom.hex(6)}", model: "claude-haiku-4-5",
+      agent_root: "zimmer", called_at: 1.hour.ago,
+      input_tokens: 0, output_tokens: 1_000_000, cache_read_tokens: 0, cache_creation_tokens: 0
+    )
+    scope = SessionTokenUsage.where(id: usage.id)
+
+    billed = scope.pick(Arel.sql("SUM(#{TokenPricing.cost_sql('session_token_usages')})")).to_f
+    in_opus = scope.pick(Arel.sql("SUM(#{TokenPricing.cost_sql('session_token_usages', as_family: 'opus')})")).to_f
+
+    assert_in_delta 5.0, billed, 0.0001, "1M Haiku output tokens bill at $5/M"
+    assert_in_delta 25.0, in_opus, 0.0001, "…and re-price at Opus's $25/M"
+  end
+
+  test "denominating leaves an unpriced model at zero" do
+    usage = SessionTokenUsage.create!(
+      request_id: "req_#{SecureRandom.hex(6)}", model: "some-future-model",
+      agent_root: "zimmer", called_at: 1.hour.ago,
+      input_tokens: 0, output_tokens: 1_000_000, cache_read_tokens: 0, cache_creation_tokens: 0
+    )
+
+    in_opus = SessionTokenUsage.where(id: usage.id)
+      .pick(Arel.sql("SUM(#{TokenPricing.cost_sql('session_token_usages', as_family: 'opus')})")).to_f
+
+    assert_in_delta 0.0, in_opus, 0.0001,
+      "a model with no rate must stay visibly unpriced rather than inherit Opus money"
+  end
+
   test "the SQL expression agrees with the Ruby one" do
     # These two must never diverge: the page totals come from SQL and the
     # per-row figures from Ruby, and a mismatch would show as a page whose parts

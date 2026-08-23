@@ -19,6 +19,13 @@
       max_5h = pool.worst_five_hour
       max_7d = pool.worst_weekly
       weekly_spent_count = pool.weekly_spent_count
+
+      # The dollar view of the same two windows. One model, read here and by the
+      # spot gate below, so the "$ remaining" on this card and the budget the
+      # gate decides on cannot be different numbers — see QuotaCapacityModel.
+      capacity_windows = QuotaCapacityModel.windows(measure: pool, setting: setting)
+      window_5h = capacity_windows[QuotaCapacityEstimate::FIVE_HOUR]
+      window_7d = capacity_windows[QuotaCapacityEstimate::WEEKLY]
     %>
 
     <div class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6">
@@ -67,6 +74,7 @@
               <% if max_5h %>
                 <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_5h) %></p>
               <% end %>
+              <%= render "quotas/capacity_line", window: window_5h, dom_id: "capacity-5h" %>
               <% if avg_5h %>
                 <p class="mt-1 text-xs text-gray-500">
                   Accounts whose 7-day window is spent count as 100% here: their 5-hour headroom can't be served.
@@ -87,6 +95,7 @@
               <% if max_7d %>
                 <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_7d) %></p>
               <% end %>
+              <%= render "quotas/capacity_line", window: window_7d, dom_id: "capacity-7d" %>
               <%= pool_weekly_reset_line(pool) %>
             </div>
           </div>

@@ -2872,16 +2872,31 @@ backoff and is not built.
 
 ## A spot session has no starvation escape, by design
 
-While the pool average sits at a window target, spot work waits — with no deadline and no
-override. A 5-hour window falls within hours, but a weekly window pinned near its target can hold a
-queue for a long time, and the queue will not drain on its own until the number comes down. That is
-the behaviour the deployment asked for: the pause is meant to last exactly as long as the utilization
-that caused it.
+While a window's non-reserved budget is spent, spot work waits — with no deadline and no override.
+The pacing curve makes most waits short (a window merely ahead of pace is back inside it as the clock
+moves), but a window whose budget is genuinely gone waits for the rollover, and a week's budget spent
+early holds a queue for a long time. That is the behaviour the deployment asked for: the reserve is
+what protects priority work, and spending it would defeat the point.
 
-The levers, when one piece of work genuinely cannot wait, are per-session rather than global:
-promote that session to priority from its hold banner, or raise the target on `/quotas`. `/quotas`
-shows the held state and the reason the whole time, so a queue waiting on a window is visible rather
-than mysterious.
+The levers, when one piece of work genuinely cannot wait, are per-session rather than global: promote
+that session to priority from its hold banner, or lower the priority reserve on `/quotas`. `/quotas`
+shows the held state, the reason, and how many dollars are left the whole time, so a queue waiting on
+a window is visible rather than mysterious.
+
+---
+
+## Quota capacity in dollars is an estimate, not a measurement
+
+`QuotaCapacityCalibrator` divides Zimmer's own Opus-denominated spend over a window by the pool's
+average utilization of it. Three approximations ride along: Zimmer's ledger is list-price spend read
+from transcripts while Anthropic's counter is its own accounting of the same calls; "the last five
+hours of spend" is not exactly "the spend inside each account's own five-hour window", because
+accounts reset at different moments; and spend from a transcript Zimmer could not read is missing
+from the numerator but present in Anthropic's counter.
+
+The figure is smoothed rather than trusted point to point, every surface labels it an estimate, and
+the gate degrades to reasoning in percentages when no usable estimate exists rather than pretending.
+But "$412 of spot budget left" is a model output, not a bill, and should be read as one.
 
 ---
 
