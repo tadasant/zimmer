@@ -260,7 +260,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to session_path(session)
-    assert_match(/starting now/i, flash[:notice])
+    assert_match(/next turn is due now/, flash[:notice])
   end
 
   test "start_now says why it will not start a session that is already running" do

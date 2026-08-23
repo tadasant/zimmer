@@ -2821,11 +2821,13 @@ class SessionsController < ApplicationController
   def start_now
     @session = find_session
 
-    # Starting is a deliberate user interaction, the same as Refresh and Restart:
-    # put the session's GitHub-poll cadence back at the fast end.
-    reset_poll_backoff(@session)
-
     result = Sessions::StartNow.call(@session, actor: "a user in the web UI")
+
+    # Starting is a deliberate user interaction, the same as Refresh and Restart:
+    # put the session's GitHub-poll cadence back at the fast end. Only when the
+    # session is actually going to take a turn — a refused start changed nothing
+    # about how often this session is worth polling.
+    reset_poll_backoff(@session) if result.started?
 
     # Nothing is queued and the session has run before, so there is no turn to
     # pull forward — it is stranded rather than waiting. Nudging it is what the

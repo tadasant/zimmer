@@ -133,11 +133,16 @@ class Api::V1::SessionsController < Api::BaseController
       # this releases carries a deferred re-check up to an hour out, and nothing
       # else would bring it forward. Only on the transition INTO priority, so an
       # unrelated PATCH cannot restart a session by touching its title.
-      if !was_priority && @session.priority_class == SessionGenesis::PRIORITY && @session.waiting?
+      start = if !was_priority && @session.priority_class == SessionGenesis::PRIORITY && @session.waiting?
         Sessions::StartNow.call(@session, actor: "the REST API promoting it")
       end
 
-      render json: { session: session_json(@session) }
+      # Reported rather than swallowed: a start this refuses (a session asleep on
+      # an armed wake, say) is something the caller has to be able to see.
+      payload = { session: session_json(@session) }
+      payload[:start] = { outcome: start.outcome, message: start.message } if start && !start.nothing_queued?
+
+      render json: payload
     else
       render_api_error("Validation failed", @session.errors.full_messages, status: :unprocessable_entity)
     end

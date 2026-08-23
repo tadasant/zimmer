@@ -33,6 +33,20 @@ module Sessions
   # `reschedule_job`, which takes the row's lock and refuses a finished job. One
   # job, one turn, the prompt intact.
   #
+  # One narrow gap is left, and named rather than papered over: a hold job that
+  # is mid-execution is excluded by `performed_at: nil`, so a session whose only
+  # queued turn is that job looks empty here. A session that has never run then
+  # takes the enqueue branch and can end up with two. AgentSessionJob's
+  # concurrency guard covers the overlap while the first job holds
+  # `running_job_id`; nothing covers the case where it has already let go.
+  #
+  # Moving a turn is not the same as passing the gate. A spot session's turn
+  # answers to SpotSessionHold whenever it runs, so this changes WHEN it is asked
+  # and not WHETHER it is allowed — a window still over its target holds it
+  # again, back at the bottom of the backoff ladder. The message says so rather
+  # than claiming a start it cannot promise; promotion, which the hold banner
+  # already points at, is what removes the gate.
+  #
   # == Paused mid-run, or parked from "Pause Until → Spot Queue": resume it
   #
   # Those sessions have no queued job at all — the ceiling took their turn away
@@ -94,17 +108,30 @@ module Sessions
 
       return resume_from_the_queue if SpotSessionPause.paused?(session)
 
-      # The hold's re-check time is what the banner promises, and it is no longer
-      # what starts this session. Dropping it also resets the backoff ladder,
-      # which is what SpotSessionHold already says an explicit start should do.
-      SpotSessionHold.clear(session)
+      # A read that FAILED must not be mistaken for "nothing is queued": that is
+      # the one confusion that produces the second turn this class exists to
+      # prevent, and a held first-turn session — blank session_id, deferred job
+      # pending — is precisely the shape it would hit.
+      queued = queued_turns
+      if queued.nil?
+        return Result.new(
+          outcome: :refused,
+          message: "Could not read what is queued for session #{session.id}, so nothing was touched. Try again."
+        )
+      end
 
       # A turn that is already due is a turn on its way, so it is left where it
       # is rather than being enqueued a second time. Only one that is scheduled
       # into the future is moved.
-      queued = queued_turns.to_a
       if queued.any?
-        pulled = pull_forward(queued)
+        pulled, failed = pull_forward(queued)
+        if failed
+          return Result.new(
+            outcome: :refused,
+            message: "Could not bring session #{session.id}'s queued turn forward. It still runs at its scheduled time."
+          )
+        end
+
         return started(pulled.positive? ? "its queued turn was pulled forward" : "its queued turn is already due")
       end
 
@@ -146,7 +173,7 @@ module Sessions
 
     def resume_from_the_queue
       if SpotSessionPause.resume_now!(session, actor: actor)
-        Result.new(outcome: :started, message: "Session #{session.id} is starting now: resumed from the spot queue.")
+        Result.new(outcome: :started, message: "Session #{session.id}'s next turn is due now: resumed from the spot queue.")
       else
         Result.new(
           outcome: :refused,
@@ -155,42 +182,78 @@ module Sessions
       end
     end
 
-    # @return [Integer] how many of these queued turns were brought forward
+    # Per job rather than around the loop: one job that finished between the read
+    # and the write says nothing about the next one, and a rescue that spans the
+    # whole loop would abandon the rest and still report a tidy zero.
+    #
+    # @return [Array(Integer, Boolean)] how many were brought forward, and whether
+    #   anything failed for a reason other than "that turn is already under way"
     def pull_forward(jobs)
       now = Time.current
-      jobs.count do |job|
-        next false if job.scheduled_at.present? && job.scheduled_at <= now
+      pulled = 0
 
-        job.reschedule_job(now)
-        true
+      jobs.each do |job|
+        next if job.scheduled_at.present? && job.scheduled_at <= now
+
+        begin
+          job.reschedule_job(now)
+          pulled += 1
+        rescue GoodJob::Job::ActionForStateMismatchError
+          # It finished while we were looking at it, which is the thing that was
+          # asked for.
+          next
+        rescue StandardError => e
+          Rails.logger.warn(
+            "[Sessions::StartNow] Could not reschedule a queued turn for session #{session.id}: #{e.class}: #{e.message}"
+          )
+          return [ pulled, true ]
+        end
       end
-    rescue StandardError => e
-      # A job that finished between the query and the reschedule is a turn that
-      # is already under way, which is what was asked for; anything else leaves
-      # the deferred re-check exactly where it was.
-      Rails.logger.warn(
-        "[Sessions::StartNow] Could not reschedule a queued turn for session #{session.id}: #{e.class}: #{e.message}"
-      )
-      0
+
+      [ pulled, false ]
     end
 
+    # @return [Array<GoodJob::Job>, nil] nil when the queue could not be read —
+    #   which is NOT the same answer as an empty list, and must not be treated
+    #   as one
     def queued_turns
       TURN_TAKING_CONDITIONS.reduce(
         GoodJob::Job.where(finished_at: nil, performed_at: nil, job_class: "AgentSessionJob")
                     .where("serialized_params->'arguments'->0 = ?", session.id.to_json)
-      ) { |scope, condition| scope.where(condition) }
+      ) { |scope, condition| scope.where(condition) }.to_a
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.warn("[Sessions::StartNow] Could not read queued turns for session #{session.id}: #{e.message}")
-      GoodJob::Job.none
+      nil
     end
 
+    # Only once a turn is actually on its way. Clearing the hold on a session
+    # that turned out to have nothing queued would strip the banner explaining
+    # why it is dormant and put nothing in its place.
+    #
+    # Dropping HELD_COUNT with it resets the backoff ladder, which is what
+    # SpotSessionHold says an explicit request to start should do — the same
+    # reset the Restart button gets.
     def started(how)
-      message = "Session #{session.id} is starting now: #{how}."
+      message = start_message(how)
+      SpotSessionHold.clear(session)
       session.logs.create!(level: "info", content: "Started now by #{actor} — #{how}.")
       Result.new(outcome: :started, message: message)
     rescue ActiveRecord::ActiveRecordError => e
-      Rails.logger.warn("[Sessions::StartNow] Could not log the start of session #{session.id}: #{e.message}")
+      Rails.logger.warn("[Sessions::StartNow] Could not finish starting session #{session.id}: #{e.message}")
       Result.new(outcome: :started, message: message)
+    end
+
+    # A spot session's turn answers to the gate whenever it runs, and this moves
+    # WHEN it is asked, not WHETHER it is allowed. Saying "starting now" to a
+    # queue of sessions the gate is holding would be a row of buttons that each
+    # claim a start and deliver a re-check — so a spot row is told what it
+    # actually got. A promote reaches this having already made the session
+    # priority, so it gets the plain sentence.
+    def start_message(how)
+      base = "Session #{session.id}'s next turn is due now: #{how}."
+      return base unless session.spot?
+
+      "#{base} It stays spot, so the gate decides whether it runs — a window still over its target holds it again."
     end
   end
 end

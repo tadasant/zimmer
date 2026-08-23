@@ -652,6 +652,7 @@ A waiting session is dormant in one of three shapes, and each has its own door b
 | Shape | What starts it |
 | --- | --- |
 | Held at the starting line by [SpotSessionHold](#what-hold-does) | its **already-queued** delayed `AgentSessionJob` is rescheduled to now, through GoodJob's own `reschedule_job` |
+| …and it is still `spot` | the gate is asked again *now* rather than in forty minutes — it is not bypassed. A window still over its target holds the session again, and the message says so rather than claiming a start it cannot promise. Promotion is what removes the gate, which is what the hold banner has always pointed at |
 | Paused mid-run by the ceiling, or parked from **Pause Until → Spot Queue** | `SpotSessionPause`'s own resume — the same locked re-check the sweep performs, restoring the prompt a human left with the park |
 | Neither: it has run before and has nothing scheduled | nothing, from a promote. It is stranded rather than queued, so **Start now** sends it the same continue nudge Refresh does |
 
@@ -667,6 +668,12 @@ it at one job, one turn, prompt intact.
 A session **asleep on a wake-up it has not reached** is refused rather than started. The wake is that
 session's next event and it carries its own prompt; starting underneath it would race the two.
 `AgentSessionJob` refuses such a start on its own — this only says so before the click.
+
+So is a session whose queue could not be **read**. An unreadable queue looks exactly like an empty
+one, and a held session that has never run would then take the "enqueue its first turn" branch on the
+strength of it — producing the second turn the whole design exists to avoid. The hold record is left
+alone on every path that does not actually start something, so a session that turns out to have
+nothing queued keeps the banner explaining why it is dormant.
 
 #### The queue stays live
 
