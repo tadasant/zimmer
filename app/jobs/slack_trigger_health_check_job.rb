@@ -20,6 +20,7 @@
 # stalled and we raise an alert so a human can investigate before days pass.
 class SlackTriggerHealthCheckJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   # How far behind the newest available message a condition may fall before we
   # consider its feed stalled. Generous enough to never flag the normal

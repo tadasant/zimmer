@@ -17,11 +17,8 @@ require "open3"
 class ClaudeCodeUpdateJob < ApplicationJob
   queue_as :default
 
-  # Singleton: only one update at a time
-  good_job_control_concurrency_with(
-    key: -> { "claude_code_update" },
-    total_limit: 1
-  )
+  # Singleton: only one update at a time.
+  include SingletonSweep
 
   # 2-minute timeout for the update command
   UPDATE_TIMEOUT = 120

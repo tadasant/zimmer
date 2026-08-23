@@ -9,10 +9,13 @@
     <h2 class="text-lg font-medium text-gray-900">Spot vs priority</h2>
     <p class="mt-1 text-sm text-gray-500">
       Every session runs as <strong>priority</strong> or <strong>spot</strong>. Priority sessions always
-      start. A spot session starts while the Claude Code account pool is under both targets below on average
+      start. A spot session runs while the Claude Code account pool is under both targets below on average
       and a session slot is free — a target is a level to reach, not a line to stay clear of. Once a
-      window reaches its target, or every slot is taken, a spot session waits and starts later; it is
-      never cancelled. A session's class is the one chosen for it, or the one its trigger carries, or
+      window reaches its target, or every slot is taken, a spot session waits and runs later; it is
+      never cancelled. That holds
+      for every turn, not just the first: a spot session woken by a trigger, a follow-up or a restart
+      waits too, so while a window sits at its target the only way to run one is to make it priority.
+      A session's class is the one chosen for it, or the one its trigger carries, or
       failing both the default for its <strong>genesis</strong> — where the work came from.
     </p>
   </div>

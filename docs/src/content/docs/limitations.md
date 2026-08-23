@@ -2883,13 +2883,30 @@ with a large table should expect the lock.
 
 ---
 
-## Only a session's first start is gated
+## The spot gate holds turns, but not queue position
 
-`SpotSessionHold` runs on the new-session path only. A follow-up, a monitoring resume and a
-clone-only setup all pass through regardless of the gate, so a long-running spot session keeps
-spending after the gate has closed behind it. Interrupting a conversation already underway would
-strand it half-done and waste the tokens already spent, so this is the intended trade — but "spot
-sessions are held" means "not started", not "not running".
+`SpotSessionHold` gates every turn that would spend Claude quota — a first start, a fired wake
+trigger, a follow-up, a poller message, a restart — so while a window sits at its target a
+spot-designated session cannot run without being promoted to priority. What it does **not** consult
+is `precedence`. The gate answers "is there headroom?", not "is this session next": once the window
+falls back below its target, whichever held session's re-check fires first runs, even if it sits at
+the bottom of the ranked queue and a hundred higher-ranked sessions are still asleep. Precedence
+decides the order in two narrower places — the ceiling sweep's resumes (`SpotSessionPause#rank`) and
+the fleet-maintenance session the `quota_available` event spawns — and nowhere else.
+
+The practical effect is that the ranked queue is an ordering over *recovery*, not an admission
+queue. A spot session already in flight (one with a wake armed, or a follow-up queued) re-enters
+whenever its own timer says so.
+
+Two things still pass the gate, both deliberately: `clone_only` (sets up a clone, spawns no agent)
+and `resume_monitoring` (re-attaches to a process already running). Neither spends anything.
+
+One narrow edge comes with returning a refused turn to `waiting`. If the job that reached the gate
+had just superseded a dead job whose CLI process was somehow still alive, the session goes dormant
+while that process keeps running — and both sweeps that would have noticed
+(`CleanupOrphanedSessionsJob#recover_running_orphans` and `SpotSessionPause.pausable_sessions`) scan
+`status: running` only, so nothing looks at it until the hold's re-check fires. The gate does not
+terminate processes; `SpotSessionPause` is the half of the policy that does.
 
 ---
 

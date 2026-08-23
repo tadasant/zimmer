@@ -8,12 +8,14 @@ class QuotasController < ApplicationController
   # The runtime sub-tab (Claude Code / Codex) is selected via ?runtime=. Each
   # runtime keeps its own account pool, current account, and rotation history.
   def show
-    # Auto-adopt filesystem identity changes (e.g., from `claude /login` on
-    # the worker) so the DB stays in sync without requiring a session spawn
-    # or an explicit Sync click. The provider hook is a no-op for runtimes
-    # that don't support manual re-login reconciliation.
-    RuntimeAuthProvider.for(current_runtime).reconcile_filesystem_identity!
-
+    # Deliberately does NOT reconcile the filesystem identity. Loading a
+    # diagnostic page must not change which account production runs under, and
+    # this one did: #reconcile_filesystem_identity! can mark a different account
+    # current, driven by a container-local file that a container replacement
+    # leaves stale. An operator refreshing /quotas to WATCH an incident was
+    # silently mutating it. The 5-minute sweep in RefreshRuntimeAuthTokensJob
+    # still runs the same reconciliation, so nothing stops converging — it just
+    # no longer happens as a side effect of a GET. See issue #618, hole 12.
     @accounts = ClaudeAccount.for_runtime(current_runtime).order(:priority)
     @current_account = ClaudeAccount.current_account(current_runtime)
     @snapshots = latest_snapshots_for(@accounts)
@@ -208,14 +210,23 @@ class QuotasController < ApplicationController
     # account's credentials until reconciliation kicked in.
     RuntimeAuthProvider.for(runtime).activate!(account)
 
-    AccountRotationEvent.create(
-      rotated_from: current,
-      rotated_to: account,
-      reason: "manual_switch",
-      source: "manual"
-    )
+    # Re-activating the account that is already current is a repair, not a
+    # rotation: it rewrites the live credential files from the DB copy. Recording
+    # it as a rotation from an account to itself would put a meaningless row in
+    # the history operators read to understand rotations.
+    reactivation = current&.id == account.id
 
-    redirect_to quotas_path(runtime: runtime), notice: "Switched to #{account.email}"
+    unless reactivation
+      AccountRotationEvent.create(
+        rotated_from: current,
+        rotated_to: account,
+        reason: "manual_switch",
+        source: "manual"
+      )
+    end
+
+    notice = reactivation ? "Re-activated #{account.email} — its credentials were rewritten to the worker." : "Switched to #{account.email}"
+    redirect_to quotas_path(runtime: runtime), notice: notice
   end
 
   # POST: Read the worker's ~/.claude.json + .credentials.json and populate
@@ -234,7 +245,7 @@ class QuotasController < ApplicationController
     if account
       redirect_to quotas_path, notice: "Captured tokens for #{fs_email}#{account.is_current? ? " (marked current)" : ""}."
     else
-      redirect_to quotas_path, alert: "Filesystem holds tokens for #{fs_email}, but no matching ClaudeAccount exists. Run `bin/rails 'claude_accounts:add[#{fs_email},0]'` first."
+      redirect_to quotas_path, alert: "The worker holds tokens for #{fs_email}, but no matching ClaudeAccount exists. Add #{fs_email} with the \"Add account\" form, then Authenticate it."
     end
   end
 
@@ -412,6 +423,20 @@ class QuotasController < ApplicationController
     unless account.can_refresh_token?
       return [ false, "Cannot switch to #{account.email} — no refresh token. Re-authenticate the account." ]
     end
+
+    # A stored access token Anthropic still honours is the direct answer to the
+    # question this method is actually asking — can this account serve a session
+    # — and unlike #refresh_token! it does not spend the single-use refresh
+    # token to find out. Gating admission on a refresh ROUND TRIP is what let the
+    # failure block its own repair: an account freshly authenticated through the
+    # UI holds a working access token and an unused refresh token, and demanding
+    # a refresh here burned the latter to learn nothing about the former.
+    #
+    # Sits AFTER the refresh-token existence check on purpose. A pair with no
+    # refresh token is a dead end even while its access token works — in eight
+    # hours nothing can mint another — so "it works right now" must not admit it.
+    # See issue #618, hole 4.
+    return [ true, nil ] if account.access_token_honored?
 
     unless account.refresh_token!
       # A rejection Zimmer could not attribute to a dead credential leaves the

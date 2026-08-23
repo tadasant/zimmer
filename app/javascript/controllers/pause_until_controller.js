@@ -62,7 +62,7 @@ export default class extends Controller {
       (data) =>
         data.pending_sleep
           ? "Joins the spot queue when this turn ends."
-          : `Queued for spot (precedence ${data.precedence}).`,
+          : `${data.halted_turn ? "Turn stopped. " : ""}Queued for spot (precedence ${data.precedence}).`,
       "Queuing…"
     )
   }
@@ -86,13 +86,14 @@ export default class extends Controller {
   _schedule(wakeAt) {
     return this._post(
       { wake_at: wakeAt, timezone: this._timezone() },
-      // A running session does not sleep mid-turn: the trigger marks it
-      // pending_sleep and it transitions when the turn ends. Say that rather than
-      // claiming a state change the badge is about to contradict.
+      // A running session is stopped in the same gesture, so the usual answer is
+      // the plain one. `pending_sleep` comes back only when the halt could not
+      // land and the session is still running — say that rather than claiming a
+      // state change the badge is about to contradict.
       (data) =>
         data.pending_sleep
           ? `Sleeps when this turn ends, then wakes ${this._humanize(wakeAt)}.`
-          : `Paused until ${this._humanize(wakeAt)}.`
+          : `${data.halted_turn ? "Turn stopped. " : ""}Paused until ${this._humanize(wakeAt)}.`
     )
   }
 

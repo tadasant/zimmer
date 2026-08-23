@@ -61,13 +61,82 @@ class SessionsControllerPauseUntilTest < ActionDispatch::IntegrationTest
     assert_equal "America/New_York", condition.schedule_timezone
   end
 
-  test "a running session is marked pending_sleep and says so" do
+  # The bug this file's running-session cases exist for: the control used to arm a
+  # wake, mark the session `pending_sleep`, and leave it running. An agent turn
+  # lasts minutes or hours, so from the operator's chair nothing happened at all.
+  test "a running session is stopped and asleep by the time the request returns" do
     session = sessions(:running)
 
     post pause_until_session_url(session), params: { wake_at: future_wake_at }, as: :json
 
     assert_response :success
     body = JSON.parse(response.body)
+    assert body["halted_turn"], "the turn should have been stopped"
+    assert_equal "waiting", body["status"]
+    assert session.reload.waiting?
+    # Consumed by execute_pending_sleep on the way through needs_input, not left
+    # behind to surprise-sleep the session after some later turn.
+    assert_nil session.metadata["pending_sleep"]
+    assert_not body["pending_sleep"]
+  end
+
+  # Stopping a turn skips the queue drain that a turn allowed to end performs, so
+  # the messages wait with the session — unbounded on the Spot Queue path, which
+  # arms no wake. The panel says so before the click rather than after it.
+  test "the panel warns a running session's operator about messages left queued" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Also check the migration", status: "pending", position: 1)
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "p.bg-amber-50", /stops the current turn/
+    assert_select "p.bg-amber-50", /1 queued message will wait with it/
+  end
+
+  test "the panel says nothing about a queue that is empty" do
+    get session_url(sessions(:running))
+
+    assert_response :success
+    assert_select "p.bg-amber-50", /stops the current turn/
+    assert_select "p.bg-amber-50", { text: /queued message/, count: 0 }
+  end
+
+  # The warning is about stopping a turn, so an idle session must not carry it.
+  test "the panel does not warn an idle session about a turn it is not taking" do
+    get session_url(sessions(:needs_input))
+
+    assert_response :success
+    assert_select "p.bg-amber-50", false
+  end
+
+  test "halting a running session leaves the wake armed and deliverable" do
+    session = sessions(:running)
+
+    post pause_until_session_url(session), params: { wake_at: future_wake_at }, as: :json
+
+    trigger = Trigger.find(JSON.parse(response.body)["trigger_id"])
+    assert trigger.enabled?
+    assert_equal session.id, trigger.last_session_id
+    assert trigger.reuse_session
+    # The marker that would make Trigger#reusable_session? drop the wake on
+    # arrival. A Pause Until is not "a human took this session over".
+    assert_not_equal "user", session.reload.metadata["paused_by"]
+    assert session.paused_until_scheduled_time?
+  end
+
+  # The degraded path is still the old one: if the halt cannot land, the session
+  # keeps its pending_sleep and sleeps when the turn ends rather than staying
+  # awake with a wake armed and nothing to trip it.
+  test "a running session whose turn cannot be stopped falls back to sleeping at turn end" do
+    session = sessions(:running)
+    Sessions::HaltRunningTurn.stub(:call, Sessions::HaltRunningTurn::Result.new(halted: false, reason: :could_not_pause)) do
+      post pause_until_session_url(session), params: { wake_at: future_wake_at }, as: :json
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_not body["halted_turn"]
     assert body["pending_sleep"]
     assert_equal "running", body["status"]
     assert_equal true, session.reload.metadata["pending_sleep"]
@@ -168,14 +237,19 @@ class SessionsControllerPauseUntilTest < ActionDispatch::IntegrationTest
     assert session.reload.spot?
   end
 
-  test "a running session joins the spot queue when its turn ends" do
+  test "a running session is stopped and in the spot queue by the time the request returns" do
     session = sessions(:running)
 
     post pause_until_session_url(session), params: { mode: "spot_queue" }, as: :json
 
     assert_response :success
-    assert JSON.parse(response.body)["pending_sleep"]
-    assert_equal true, session.reload.metadata["pending_sleep"]
+    body = JSON.parse(response.body)
+    assert body["halted_turn"], "the turn should have been stopped"
+    assert_not body["pending_sleep"]
+    assert_equal "waiting", body["status"]
+    assert session.reload.waiting?
+    assert_nil session.metadata["pending_sleep"]
+    assert SpotSessionPause.paused?(session)
   end
 
   test "the spot queue mode carries the panel's resume prompt" do

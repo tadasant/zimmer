@@ -54,6 +54,11 @@ class CodexLoginDriver < RuntimeLoginDriver
 
     account.update!(oauth_config: { "auth_json" => auth_json }, status: :active)
 
+    # See ClaudeLoginDriver#capture! — re-authenticating the account whose
+    # credentials are live has to reach the filesystem too, or the UI reports a
+    # success that no session can observe.
+    account.write_codex_auth_to_filesystem! if account.is_current?
+
     # See ClaudeLoginDriver#capture! — a human re-authenticating is the only
     # thing that retires the needs_reauth nag.
     account.clear_reauth_alert!
