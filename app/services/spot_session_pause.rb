@@ -1,22 +1,26 @@
 # frozen_string_literal: true
 
-# Pauses spot sessions that are ALREADY RUNNING when a quota window reaches its
-# target, and resumes them once it has come back down.
+# Pauses spot sessions that are ALREADY RUNNING when a quota window's
+# non-reserved budget is spent, and resumes them once it has room again.
 #
 # == Why the admission gate was not enough
 #
 # SpotSessionHold answers "should this work begin at all", once, at the starting
-# line. That makes the target a floor under when new spot work stops, not a
+# line. That makes the budget a floor under when new spot work stops, not a
 # ceiling on what spot work spends: the sessions admitted just under the line go
 # on running, and a fleet of them carries the window well past it. On 2026-08-20
 # the /quotas card read "Holding spot sessions: 5-hour window at 89% of its 80%
-# target" while twelve sessions ran — the gate had stopped admitting at 80% and
+# target" while twelve sessions ran — the gate had stopped admitting and
 # then watched the ones already in flight take the pool toward 100%, with three
 # accounts already `quota_exceeded`.
 #
 # So the same decision is re-evaluated while sessions are in flight.
 # SpotCeilingSweepJob calls .sweep! on a cron; when SpotGateService says a
-# window is at its target, every RUNNING spot session is paused.
+# window's spot budget is spent, every RUNNING spot session is paused.
+#
+# Only the budget, never the pacing curve. A fleet merely ahead of the curve is
+# throttled at the door — see SpotGateService::Reading#stops_running_work? for
+# why interrupting a turn to enforce a curve protects nothing.
 #
 # == What a pause is
 #
@@ -38,7 +42,7 @@
 # highest-precedence-first with the recovery nudge, so an interrupted agent is
 # told to pick up where it left off.
 #
-# Resumption uses SpotGateService.resume_decision, which lowers both targets by
+# Resumption uses SpotGateService.resume_decision, which widens both reserves by
 # RESUME_MARGIN_PCT. Without that margin a session resumed at 79.9% pushes the
 # window back over 80% within minutes and the next sweep pauses it again — a
 # flap that costs a lost turn each way. It also inherits the fleet cap for free:
@@ -93,7 +97,7 @@ class SpotSessionPause
   # interrupting it. The dormancy and the resume path are identical — the same
   # sweep picks it up on the same gate decision — so it shares every key above;
   # only the wording differs, and it must, because "paused mid-run because a
-  # quota window hit its target" is not what happened to this one.
+  # quota window ran out of spot budget" is not what happened to this one.
   QUEUED_REASON = "user_spot_queue"
 
   # What `paused_by` says. Deliberately neither "user" (which would stop the
@@ -121,7 +125,7 @@ class SpotSessionPause
   end
 
   class << self
-    # One pass: pause running spot sessions if a window is at its target,
+    # One pass: pause running spot sessions if a window's spot budget is spent,
     # otherwise resume the ones a previous pass paused.
     #
     # A session someone made priority while it slept is resumed on EVERY pass,
@@ -139,7 +143,11 @@ class SpotSessionPause
     # @return [Result]
     def sweep!(logger: nil)
       logger ||= StructuredLogger.new({ service: "SpotSessionPause" })
-      decision = SpotGateService.evaluate
+      # The FLEET's decision, not an admission decision: this sweep asks whether
+      # what is already running is over the line, so it must not have a
+      # hypothetical extra session's burn added to the projection. See
+      # SpotGateService.fleet_decision.
+      decision = SpotGateService.fleet_decision
 
       # One read of the dormant population, and one read of the class overrides
       # it is classified against, for the whole pass.
@@ -156,7 +164,15 @@ class SpotSessionPause
       promoted, still_spot = dormant.partition { |session| !session.spot?(overrides) }
       resumed = promoted.count { |session| resume!(session, promoted_message, logger) }
 
-      if decision.held? && decision.reason == UTILIZATION_REASON
+      # Only a SPENT BUDGET stops running work — never a fleet that is merely
+      # ahead of the pacing curve. The cap protects the priority reserve, which
+      # is worth interrupting a turn for; the pace decides how fast new work is
+      # released, and killing a running turn to enforce it would spend a lost
+      # tool call protecting nothing. It is also what keeps the idle-fleet waiver
+      # coherent: without this the sweep would pause the very session the waiver
+      # had just admitted, and the two would flap. See
+      # SpotGateService::Reading#stops_running_work?.
+      if decision.stops_running_work?
         # `held` counts the sessions that were already asleep and stay that way,
         # not the ones this pass is putting to sleep — those are `paused`.
         return Result.new(paused: pause_running!(decision, overrides, logger),
@@ -247,7 +263,7 @@ class SpotSessionPause
       sessions = pausable_sessions.to_a
       return 0 if sessions.empty?
 
-      logger.info("A window reached its target — pausing running spot sessions",
+      logger.info("A window's spot budget is spent — pausing running spot sessions",
         candidates: sessions.size, reason: decision.reason, detail: decision.detail)
 
       sessions.count { |session| pause!(session, decision, overrides, logger) }
@@ -443,10 +459,11 @@ class SpotSessionPause
 
     def pause_message(decision)
       "Spot session paused mid-run: #{decision.detail} " \
-        "Running spot sessions are paused at the target, not just new ones, so the window stops " \
-        "climbing rather than filling to 100%. This session is dormant (waiting) and resumes " \
-        "automatically once utilization falls #{SpotGateService::RESUME_MARGIN_PCT} points below " \
-        "the target. Nothing is cancelled. Make it priority and the next sweep resumes it regardless."
+        "Running spot sessions are paused when a window's non-reserved budget is spent, not just new " \
+        "ones, so the window stops climbing rather than eating the reserve priority work is held out " \
+        "of. This session is dormant (waiting) and resumes automatically once the fleet is back inside " \
+        "the budget with #{SpotGateService::RESUME_MARGIN_PCT} points of the window to spare. Nothing " \
+        "is cancelled. Make it priority and the next sweep resumes it regardless."
     end
 
     # Three sentences because a resume has three shapes: the window genuinely fell
@@ -459,7 +476,7 @@ class SpotSessionPause
         "The spot queue reached this session (#{decision.reason}) — resuming it. " \
           "It was parked here from \"Pause Until\", not paused by the ceiling."
       elsif decision.reason == "within_limits"
-        "Utilization came back down past the resume margin — resuming this spot session automatically."
+        "The window has room again past the resume margin — resuming this spot session automatically."
       else
         "The spot gate is no longer holding spot work (#{decision.reason}) — " \
           "resuming this spot session automatically."
@@ -481,8 +498,8 @@ class SpotSessionPause
         "your human parked this session in Zimmer's spot queue from the \"Pause Until\" control, " \
           "and Zimmer has now resumed it from that queue"
       else
-        "Zimmer paused this spot session mid-run because a Claude Code quota window had reached " \
-          "its target, and utilization has since come back down"
+        "Zimmer paused this spot session mid-run because a Claude Code quota window had spent the " \
+          "part of itself that spot work may use, and it has room again"
       end
     end
   end

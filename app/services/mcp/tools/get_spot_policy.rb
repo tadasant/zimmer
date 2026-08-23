@@ -112,7 +112,7 @@ module Mcp
           "or the fleet average when that combination has never been sampled)",
           # The decision above is about a session TAKING A TURN — its first or its
           # next. This is the same policy applied to the ones already mid-turn,
-          # which is what keeps the target a ceiling on spend rather than a floor
+          # which is what keeps the budget a ceiling on spend rather than a floor
           # under when new work stops. Same number the /quotas card shows.
           "- **Spot sessions paused mid-run:** #{SpotSessionPause.paused_count} " \
           "(paused while a window has no room for them; they resume automatically once the fleet is back " \
@@ -193,8 +193,12 @@ module Mcp
 
       def money(value)
         return "unknown" if value.nil?
+        return "unknown" if value.respond_to?(:infinite?) && value.infinite?
 
-        "$#{ActiveSupport::NumberHelper.number_to_delimited(value.round(2))}"
+        # `format` before delimiting, so $1,234.50 keeps its trailing zero —
+        # `number_to_delimited(1234.5)` renders "1,234.5", which reads as a
+        # truncated figure rather than as money.
+        "$#{ActiveSupport::NumberHelper.number_to_delimited(format("%.2f", value))}"
       end
 
       def rate(value)

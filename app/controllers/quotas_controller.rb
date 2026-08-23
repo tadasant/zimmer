@@ -32,6 +32,11 @@ class QuotasController < ApplicationController
 
     @rotation_events = rotation_events_for(current_runtime)
 
+    # Read on every tab, not just the Claude one: the Account Pool section
+    # renders the dollar capacity model from it, and that section is above the
+    # spot gate card `load_spot_gate` sets up.
+    @app_setting = AppSetting.current
+
     load_spot_gate if current_runtime == ClaudeAuthProvider::RUNTIME
   end
 
@@ -58,7 +63,8 @@ class QuotasController < ApplicationController
       @snapshots = latest_snapshots_for(@accounts)
       auto_heal_accounts
       aggregate_html = render_to_string(partial: "quotas/aggregate_stats", formats: [ :html ], locals: {
-        accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account
+        accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account,
+        setting: AppSetting.current
       })
       yielder << turbo_stream.replace("aggregate_stats", html: aggregate_html)
       spot_gate_stream(yielder)
@@ -85,7 +91,8 @@ class QuotasController < ApplicationController
             html: render_account_card(account.reload, snapshot, error)),
           turbo_stream.replace("aggregate_stats",
             html: render_to_string(partial: "quotas/aggregate_stats", formats: [ :html ], locals: {
-              accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account
+              accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account,
+              setting: AppSetting.current
             }))
         ]
         spot_gate_stream(streams, runtime: account.runtime)
@@ -324,7 +331,7 @@ class QuotasController < ApplicationController
   # `get_spot_policy` renders the same call, so the page and the tool cannot
   # disagree about whether a spot session would start.
   def load_spot_gate
-    @app_setting = AppSetting.current
+    @app_setting ||= AppSetting.current
     @spot_decision = SpotGateService.evaluate
     # Running spot sessions the ceiling has stopped. The decision above says what
     # would happen to a session STARTING now; this says what already happened to

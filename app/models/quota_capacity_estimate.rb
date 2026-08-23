@@ -103,7 +103,9 @@ class QuotaCapacityEstimate < ApplicationRecord
   # @param observed [Float] this run's capacity ratio, in USD
   # @param sample_cost_usd [Float] the numerator it came from
   # @param sample_utilization [Float] the denominator it came from
-  def absorb(observed:, sample_cost_usd:, sample_utilization:)
+  # @param now [Time] the clock the calibration run is using, threaded through
+  #   rather than re-read, so one run's two windows carry the same timestamp.
+  def absorb(observed:, sample_cost_usd:, sample_utilization:, now: Time.current)
     blended = capacity_usd.to_f.positive? ? (SMOOTHING * observed) + ((1 - SMOOTHING) * capacity_usd) : observed
 
     assign_attributes(
@@ -112,7 +114,7 @@ class QuotaCapacityEstimate < ApplicationRecord
       sample_cost_usd: sample_cost_usd,
       sample_utilization: sample_utilization,
       observation_count: observation_count.to_i + 1,
-      computed_at: Time.current
+      computed_at: now
     )
     self
   end

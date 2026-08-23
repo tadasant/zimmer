@@ -28,9 +28,12 @@ class QuotaCapacityCalibratorTest < ActiveSupport::TestCase
     )
   end
 
-  def measure(five_hour:, weekly:)
+  # `five_hour_uncorrected` defaults to the same figure; the one test that cares
+  # about the difference passes them apart.
+  def measure(five_hour:, weekly:, five_hour_uncorrected: nil)
     ClaudeAccountPool::Measure.new(
-      five_hour: five_hour, weekly: weekly, worst_five_hour: five_hour, worst_weekly: weekly,
+      five_hour: five_hour, five_hour_uncorrected: five_hour_uncorrected || five_hour,
+      weekly: weekly, worst_five_hour: five_hour, worst_weekly: weekly,
       account_count: 3, read_count: 3, weekly_spent_count: 0, blocked_count: 0,
       next_capacity_at: nil, next_weekly_reset: nil,
       five_hour_seconds_remaining: 1.hour.to_i, weekly_seconds_remaining: 1.day.to_i
@@ -100,6 +103,24 @@ class QuotaCapacityCalibratorTest < ActiveSupport::TestCase
 
     assert_in_delta 100.0, observation.cost_usd, 0.01
     assert_in_delta 200.0, observation.capacity_usd, 0.01
+  end
+
+  # The pooled 5-hour figure counts an account whose WEEK is spent as 100%, which
+  # is right for deciding whether work can be served and wrong for dividing spend
+  # by. Calibrating off it would inflate the denominator and under-report the
+  # window, shrinking the budget the gate paces against.
+  test "the 5-hour window calibrates off the uncorrected average, not the servability-corrected one" do
+    spend(usd: 400.0, at: 1.hour.ago)
+
+    # The pool reads 80% only because a weekly-spent account is counted as 100%;
+    # the accounts' own 5-hour counters average 50%.
+    observation = QuotaCapacityCalibrator.observe(
+      FIVE_HOUR, measure(five_hour: 0.80, five_hour_uncorrected: 0.50, weekly: 0.10)
+    )
+
+    assert_in_delta 0.50, observation.utilization, 0.0001
+    assert_in_delta 800.0, observation.capacity_usd, 0.01,
+      "dividing by the corrected 0.80 would have said $500 — a fifth less budget than there is"
   end
 
   # --- the observations it refuses ----------------------------------------------

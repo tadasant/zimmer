@@ -58,7 +58,8 @@ class QuotaCapacityCalibrator
         record.absorb(
           observed: observation.capacity_usd,
           sample_cost_usd: observation.cost_usd,
-          sample_utilization: observation.utilization
+          sample_utilization: observation.utilization,
+          now: now
         ).save!
 
         observation
@@ -70,7 +71,12 @@ class QuotaCapacityCalibrator
     # @param measure [ClaudeAccountPool::Measure]
     # @return [Observation]
     def observe(window_key, measure, now: Time.current)
-      utilization = window_key == QuotaCapacityEstimate::WEEKLY ? measure.weekly : measure.five_hour
+      # The UNCORRECTED 5-hour average, not the pooled one the gate decides on:
+      # `pool_utilization_5h` counts an account whose WEEK is spent as 100%,
+      # which is the right correction for servability and the wrong denominator
+      # for a capacity ratio — it would inflate the divisor and under-report what
+      # the window is worth. See ClaudeAccountPool::Measure.
+      utilization = window_key == QuotaCapacityEstimate::WEEKLY ? measure.weekly : measure.five_hour_uncorrected
       seconds = QuotaCapacityEstimate.window_seconds(window_key)
 
       if utilization.nil?

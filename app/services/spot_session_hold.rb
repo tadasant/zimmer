@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Holds a spot session at the starting line when a quota window has reached its
-# target or every session slot is taken, and re-queues it to try again.
+# Holds a spot session at the starting line when a quota window has no room for
+# it or every session slot is taken, and re-queues it to try again.
 #
 # A held session is left in `waiting` — Zimmer's existing "created, not started"
 # status — and AgentSessionJob is re-enqueued with a delay. GoodJob persists a
@@ -60,7 +60,7 @@
 # that spends fresh quota. On 2026-08-22, session 7504 — spot, precedence 75,
 # 141 spot sessions queued behind it — woke on its own backstop trigger and ran
 # a full turn at 17:30Z while this gate was reporting HELD at 87% of a 65%
-# 5-hour target and force-pausing 22 running spot sessions. It was not far down
+# 5-hour target, force-pausing 22 running spot sessions. It was not far down
 # the queue by accident; it never consulted the queue at all.
 #
 # So the gate is a choke point on turns. What still passes through spends

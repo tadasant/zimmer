@@ -121,9 +121,24 @@ class SpotGateService
     def label = window.label
     def dollars? = window.dollars?
 
-    # True when this window refuses the session. A waived pace (nothing is
+    # True when this window refuses to ADMIT a session. A waived pace (nothing is
     # running, see QuotaCapacityModel) leaves only the cap.
     def at_limit? = !within_cap || (!pace_waived && !within_pace)
+
+    # True when this window refuses to let work that is ALREADY RUNNING continue.
+    #
+    # Only the cap, never the pace. The cap protects the priority reserve, which
+    # is a hard invariant worth interrupting a turn for. The pace is an
+    # ADMISSION device — it decides how fast new work is released — and killing a
+    # running turn to enforce a curve costs a lost tool call while protecting
+    # nothing: the same money is spent either way, just later.
+    #
+    # Keeping them apart is also what makes the idle-fleet waiver coherent. The
+    # waiver admits one session precisely when the sustainable rate is below a
+    # single session's burn; if the ceiling sweep then paused it for being ahead
+    # of the curve, the pair would flap — admit, pause, resume, admit — and the
+    # duty cycle the waiver exists to produce would never happen.
+    def stops_running_work? = !within_cap
 
     # The pool's utilization of this window, as a fraction and as a percentage.
     def current = window.utilization
@@ -132,6 +147,11 @@ class SpotGateService
     # Where the pacing curve says the window should be by now, as a percentage
     # of the window. This is what replaced the flat target: it moves with the
     # clock instead of sitting still.
+    # The burn this reading was tested against, or nil when no rate could be
+    # read at all. Nil is not zero: "we cannot price the fleet" and "the fleet
+    # costs nothing" are opposite claims, and only one of them is ever true.
+    def burn_known? = !burn_units_per_minute.nil?
+
     def pace_pct
       elapsed = window.elapsed_fraction
       return nil if elapsed.nil?
@@ -174,6 +194,10 @@ class SpotGateService
 
     def at_limit? = at_limit.any?
 
+    # The windows that refuse to let RUNNING work continue — see
+    # Reading#stops_running_work?.
+    def stops_running_work = labelled.select { |_label, reading| reading.stops_running_work? }
+
     # How the average was taken, for the sentence that reports it. Says "3 of 4"
     # only when they differ, because an account with no reading at all is the
     # case worth naming — the pool figure is quietly over a smaller set.
@@ -188,6 +212,17 @@ class SpotGateService
                          :fleet_burn_usd_per_minute, :candidate_burn_usd_per_minute) do
     def allowed? = allowed
     def held? = !allowed
+
+    # Whether this decision is one that should stop work ALREADY RUNNING, as
+    # opposed to one that merely declines to start more. Only a spent budget
+    # qualifies — see Reading#stops_running_work?. SpotSessionPause reads this
+    # rather than `held?`, so a fleet that is merely ahead of the pacing curve is
+    # throttled at the door instead of interrupted mid-turn.
+    def stops_running_work?
+      return false unless reason == UTILIZATION_REASON
+
+      [ five_hour, weekly ].compact.any?(&:stops_running_work?)
+    end
 
     # What the whole fleet plus one more session is projected to burn, in $/min.
     # Nil when no burn rate could be read at all.
@@ -242,6 +277,16 @@ class SpotGateService
       evaluate(candidate: session)
     end
 
+    # The decision about the fleet AS IT STANDS, with no extra session projected.
+    #
+    # SpotSessionPause asks a different question from every other caller: not
+    # "does one more fit" but "is what is already running over the line". Adding
+    # a hypothetical session's burn to that projection would pause running work
+    # roughly one session's burn early on every sweep.
+    def fleet_decision
+      new(candidate: :none).evaluate
+    end
+
     # The decision, for a candidate session and for every surface that reports on
     # the gate. There is exactly one — /quotas, `get_spot_policy` and
     # `start_decision` all come through here — so the page, the tool and the
@@ -269,6 +314,12 @@ class SpotGateService
   # @param candidate [Session, nil] the session being admitted, whose own burn
   #   rate is projected. Nil means "some spot session", priced at the fleet
   #   default.
+  # @param margin_pct [Numeric] percentage points of the window to hold back on
+  #   top of the reserve. Zero for every admission decision.
+  # @param candidate [Session, :none, nil] the session being admitted, whose own
+  #   burn rate is projected. Nil means "some spot session", priced at the fleet
+  #   default; `:none` projects no extra session at all, which is what asking
+  #   about the running fleet means.
   def initialize(margin_pct: 0, candidate: nil)
     @margin_pct = margin_pct
     @candidate = candidate
@@ -331,6 +382,8 @@ class SpotGateService
   # it is a hypothetical one, or when its own combination has never been sampled.
   def candidate_burn_usd_per_minute
     return @candidate_burn if defined?(@candidate_burn)
+
+    return @candidate_burn = 0.0 if @candidate == :none
 
     default = HarnessModelBurnRate.fleet_default_usd_per_minute
     @candidate_burn = if @candidate.nil?
@@ -424,12 +477,12 @@ class SpotGateService
   # of the window when it does not.
   def limit_phrase(reading)
     window = reading.window
-    return "has spent its $#{money(window.spent_units)} against a $#{money(window.spot_budget_usd)} spot budget" if !reading.within_cap && window.dollars?
+    return "has spent $#{money(window.spent_units)} of its $#{money(window.spot_budget_usd)} spot budget" if !reading.within_cap && window.dollars?
     return "is at #{reading.current_pct.round}% of the #{reading.spot_budget_pct.round}% spot budget" unless reading.within_cap
 
     pace = reading.pace_pct
     rate = window.sustainable_units_per_minute
-    if window.dollars? && rate
+    if window.dollars? && rate && reading.burn_known?
       "is burning $#{money(reading.burn_units_per_minute)}/min against $#{money(rate)}/min sustainable"
     else
       "is at #{reading.current_pct.round}% against a pacing curve at #{pace&.round}%"
@@ -451,7 +504,7 @@ class SpotGateService
   # /quotas card and in `get_spot_policy`: "$2437.62" is a number to decode and
   # "$2,437.62" is one to read.
   def money(value)
-    return "0.00" if value.nil?
+    return "—" if value.nil?
     return "∞" if value.infinite?
 
     ActiveSupport::NumberHelper.number_to_delimited(format("%.2f", value))
@@ -504,7 +557,7 @@ class SpotGateService
       # would wave it through on the strength of capacity it has already spent.
       # Dollar mode needs no such rule: the projection is what makes the
       # comparison strict there.
-      Reading.new(window: window, burn_units_per_minute: 0.0,
+      Reading.new(window: window, burn_units_per_minute: nil,
                   within_cap: window.spent_units < window.spot_budget_units,
                   within_pace: window.spent_units < allowance,
                   pace_waived: pace_waived)

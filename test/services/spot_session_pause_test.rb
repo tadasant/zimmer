@@ -179,7 +179,7 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert session.running?
     assert_nil session.metadata[SpotSessionPause::PAUSED_REASON], "the pause record goes with the pause"
     assert_nil session.metadata["paused_by"]
-    assert session.logs.any? { |log| log.content.include?("Utilization came back down") }
+    assert session.logs.any? { |log| log.content.include?("The window has room again") }
   end
 
   # The hysteresis. Admission resumes at the target; a session that was
@@ -304,16 +304,16 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
   end
 
   # The wording branches now, so the ceiling's own story has to be pinned too.
-  test "a ceiling-paused session is still told the window came back down" do
+  test "a ceiling-paused session is still told the window has room again" do
     seed(current_5h: 0.10)
     session = paused_session
 
     SpotSessionPause.sweep!
 
     job = enqueued_jobs.find { |j| j[:job] == AgentSessionJob }
-    assert_match(/utilization has since come back down/, job[:args][1])
+    assert_match(/spent the part of itself that spot work may use, and it has room again/, job[:args][1])
     assert_equal session.id, job[:args][0]
-    assert session.reload.logs.any? { |log| log.content.include?("Utilization came back down") }
+    assert session.reload.logs.any? { |log| log.content.include?("The window has room again") }
   end
 
   # The count /quotas and get_spot_policy report is about what the CEILING cost,
@@ -446,7 +446,7 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     seed(current_5h: 0.89)
     session = running_session
 
-    SpotGateService.stub(:evaluate, ->(*) { raise ActiveRecord::ConnectionNotEstablished }) do
+    SpotGateService.stub(:fleet_decision, ->(*) { raise ActiveRecord::ConnectionNotEstablished }) do
       result = SpotSessionPause.sweep!
       assert_equal 0, result.paused
     end

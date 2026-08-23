@@ -223,7 +223,8 @@ class QuotaCapacityModelTest < ActiveSupport::TestCase
   def measure(five_hour:, weekly:, five_hour_seconds_remaining: 2.hours.to_i,
               weekly_seconds_remaining: 2.days.to_i)
     ClaudeAccountPool::Measure.new(
-      five_hour: five_hour, weekly: weekly, worst_five_hour: five_hour, worst_weekly: weekly,
+      five_hour: five_hour, five_hour_uncorrected: five_hour, weekly: weekly,
+      worst_five_hour: five_hour, worst_weekly: weekly,
       account_count: 1, read_count: 1, weekly_spent_count: 0, blocked_count: 0,
       next_capacity_at: nil, next_weekly_reset: nil,
       five_hour_seconds_remaining: five_hour_seconds_remaining,

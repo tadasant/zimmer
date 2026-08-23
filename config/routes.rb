@@ -39,10 +39,10 @@ Rails.application.routes.draw do
     # No create: a batch exists because someone clicked Analyze All. Edit is
     # limited to `status`/`state` (the dashboards' FORM_ATTRIBUTES) — the escape
     # hatch for a batch or item wedged in `running` that the pump cannot resolve.
-    # Read-only, and derived on the same cron footing as the burn rates above.
-    resources :quota_capacity_estimates, only: [ :index, :show ]
     resources :outcome_analysis_batches, except: [ :new, :create ]
     resources :outcome_analysis_batch_items, except: [ :new, :create ]
+    # Read-only, and derived on the same cron footing as the burn rates above.
+    resources :quota_capacity_estimates, only: [ :index, :show ]
     resources :runtime_login_attempts
     resources :session_token_usages, only: [ :index, :show ]
     resources :token_usage_backfills, only: [ :index, :show ]
