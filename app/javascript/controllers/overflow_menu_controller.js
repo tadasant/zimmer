@@ -59,9 +59,16 @@ export default class extends Controller {
     }, 0)
   }
 
+  // Focus comes back to the "⋮" the menu belongs to whenever the thing that was
+  // focused is inside the menu being hidden. Without it a keyboard user who
+  // activates a menu item lands on <body>, because the element they were on has
+  // just become display:none — which on a queue of two hundred rows means being
+  // dumped at the top of the document after every promote.
   close() {
+    const hadFocus = this.menuTarget.contains(document.activeElement)
     this.menuTarget.classList.add("hidden")
     this.buttonTarget.setAttribute("aria-expanded", "false")
+    if (hadFocus) this.buttonTarget.focus()
     document.removeEventListener("click", this._outsideClick)
     document.removeEventListener("keydown", this._onKeydown)
   }

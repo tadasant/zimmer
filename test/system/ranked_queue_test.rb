@@ -40,6 +40,14 @@ class RankedQueueTest < ApplicationSystemTestCase
     )
   end
 
+  # The computed `display` of one of a row's two menu entries. The menu itself is
+  # hidden, so this reads the entry's own display rather than its visibility.
+  def menu_item_display(session, target)
+    page.evaluate_script(
+      "getComputedStyle(document.querySelector(#{"#ranked_row_#{session.id} [data-ranked-queue-target='#{target}']".to_json})).display"
+    )
+  end
+
   def spot_row_ids
     all("[data-ranked-queue-target='spotList'] > li").map { |li| li[:id] }
   end
@@ -122,6 +130,7 @@ class RankedQueueTest < ApplicationSystemTestCase
     click_button "Promote to priority"
     assert_selector "[data-ranked-queue-target='priorityList'] #ranked_row_#{top.id}", wait: 5
     assert_selector "[data-ranked-queue-target='spotCount']", exact_text: "1"
+    assert_selector "[data-ranked-queue-target='priorityCount']", exact_text: "1"
     assert_equal [ "ranked_row_#{queued.id}" ], spot_row_ids
   end
 
@@ -139,6 +148,11 @@ class RankedQueueTest < ApplicationSystemTestCase
     assert_selector "#ranked_row_#{top.id}"
 
     assert_equal "none", handle_display(top), "a priority row must not show a drag handle"
+    # Same shape, same guard: a display utility next to the conditional `hidden`
+    # on either menu entry would show both, and a class-list assertion would not
+    # notice.
+    assert_equal "none", menu_item_display(top, "promoteAction"), "a priority row must not offer Promote"
+    assert_equal "none", menu_item_display(queued, "demoteAction"), "a spot row must not offer Demote"
     assert_not_equal "none", handle_display(queued), "a spot row must show its drag handle"
 
     # And the handle follows the row when it changes sections, without a reload.

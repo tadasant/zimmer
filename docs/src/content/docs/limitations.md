@@ -2461,6 +2461,16 @@ Also:
   session is prepended into a grid that filters it out. Both correct themselves on the next reload.
   Fixing it properly means either per-filter stream names or a client that re-evaluates the filter
   on each broadcast.
+- **The Ranked view's live update is deliberately narrow.** `/?view=ranked` broadcasts one element
+  per row — the status pill — because the row also holds a precedence the user may be mid-edit on
+  and a position SortableJS may be dragging, and replacing the whole row would destroy either. So a
+  status change never re-sorts the queue, never moves a row between the Priority and Spot sections
+  when its scheduling class changes elsewhere, and never inserts a session that has newly started
+  matching the filters. A trashed row does leave — which, like the card grid above, ignores the
+  status filter: an operator who ticked "Archived" specifically to see the trash watches the row
+  vanish, and a reload puts it back reading "Trashed". Everything in this paragraph is corrected by
+  a reload, and by the reopen backfill: both lists are `data-live-region="sync"`, so a page whose
+  socket died is reconciled against a fresh render on reconnect.
 - Notes autosave as you type (a 1.5s debounce) and flush again on disconnect via a keepalive
   `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
   keystrokes — not the note.

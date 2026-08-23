@@ -612,9 +612,18 @@ What it deliberately does not do:
 - **No inserting.** A session that newly matches the filters appears on the next reload.
 
 The one structural change it makes is **removing a row whose session has been trashed**, mirroring
-what the card grid does on archive. The section header counts and the "nothing here" placeholders are
-recounted by a `MutationObserver` in `ranked_queue_controller.js`, so they stay true whether the row
-left via a broadcast, a promote or a demote.
+what the card grid does on archive — including the card grid's blind spot: the server cannot know
+which statuses a given browser has ticked, so an operator who selected "Archived" to see the trash
+watches the row vanish anyway, and a reload puts it back reading "Trashed". The section header counts
+and the "nothing here" placeholders are recounted by a `MutationObserver` in
+`ranked_queue_controller.js`, so they stay true whether the row left via a broadcast, a promote or a
+demote.
+
+None of that staleness is permanent. Both lists are `data-live-region="sync"`, so a page whose socket
+died — every reopen of the installed iOS PWA — is reconciled against a fresh render on reconnect,
+which recovers the order, the grouping and any row the stream never delivered. The reconciler skips
+a row holding focus or a dirty field, so it cannot eat a precedence someone is halfway through typing
+either. See [the reopen backfill](/sessions/lifecycle/#the-reopen-backfill).
 
 ### Precedence decides who gets the headroom back
 

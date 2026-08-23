@@ -176,6 +176,27 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     assert_empty streams
   end
 
+  # A broadcast is fire-and-forget: a page whose socket died missed every update
+  # sent while it was away, and re-subscribing cannot replay them. The dashboard
+  # already reconciles against a fresh render on reconnect — but only for regions
+  # marked `data-live-region`, and a region it cannot find is silently reported as
+  # clean. Unmarked, the ranked view would come back from an iOS PWA suspend just
+  # as stale as before this change, with nothing reporting a problem.
+  test "the ranked lists are live regions, so a page that missed broadcasts recovers them" do
+    spot(10)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    # `sync` rather than `replace`: rows are added, swapped AND removed here, and
+    # it reconciles children by id, which is what the rows carry.
+    assert_select "ul#ranked_spot_list[data-live-region=?]", "sync"
+    assert_select "ul#ranked_priority_list[data-live-region=?]", "sync"
+    # backfillLiveRegions only walks `[data-live-region][id]`, so the id is not
+    # decoration.
+    assert_select "[data-live-region]:not([id])", false,
+      "a live region without an id is skipped by the backfill"
+  end
+
   # --- the row's actions ------------------------------------------------------
 
   test "promote and demote are rendered inside the row's overflow menu, not on the row" do

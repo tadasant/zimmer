@@ -8,5 +8,5 @@
 
     Locals:
       agent_session - the session %>
-<span id="ranked_row_status_<%= agent_session.id %>"
+<span id="ranked_row_status_<%= agent_session.id %>" data-live-region="replace"
       class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium <%= status_badge_classes(agent_session) %>"><%= agent_session.archived? ? "Trashed" : agent_session.status.humanize %></span>
