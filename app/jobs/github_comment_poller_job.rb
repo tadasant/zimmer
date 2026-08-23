@@ -261,7 +261,7 @@ class GithubCommentPollerJob < ApplicationJob
   # DISPATCH_DEFERRED, or "skipped:<reason>".
   def dispatch_state_for(comment_data, type:, tracking_started_at:)
     return "skipped:self_marker" if comment_data["attribution"] == "self"
-    return "skipped:author_not_whitelisted" unless GithubCommentAllowlist.include?(comment_data["author"])
+    return "skipped:author_not_whitelisted" unless GithubCommentAllowlist.trusted?(comment_data["author"])
 
     ignored = ignored_reason(comment_data)
     return "skipped:#{ignored}" if ignored
