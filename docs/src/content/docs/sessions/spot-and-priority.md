@@ -13,12 +13,15 @@ Zimmer's answer is to classify sessions by where they came from, and to let the 
 | Class | Behavior |
 | --- | --- |
 | **priority** | Starts whenever it is ready. Never consulted about quota or concurrency. |
-| **spot** | Starts while the Claude Code account pool averages under both window targets and a session slot is free. Otherwise it waits and starts later. **And stops if a window reaches its target while it is running.** |
+| **spot** | Starts while every quota window has non-reserved capacity for it, the fleet's burn rate is inside that window's pacing curve, and a session slot is free. Otherwise it waits and starts later. **And stops if a window runs out of room while it is running.** |
 
 A held or paused spot session is **deferred, never cancelled**. Nothing is lost.
 
-The targets on `/quotas` are a **level to reach, not a line to stay clear of**. A deployment sitting
-idle should be idle because its windows are at 80%, never because the gate was being careful.
+Zimmer models each quota window in **dollars**: a calibrated estimate of what a full window is worth
+in Opus spend, a **priority reserve** carved out of it, and a non-reserved remainder that spot work is
+expected to consume *in full* before the window rolls over. The operator sets the reserve as a
+percentage on `/quotas`; the dollar figure beside it is derived. A deployment sitting idle should be
+idle because it has genuinely spent its budget, never because the gate was being careful.
 
 ## Where the class comes from
 
@@ -123,20 +126,54 @@ the **Scheduling class** selector on its detail page, `action_session` with
 
 ## The gate
 
-With gating on, a spot session takes a turn — its first or its next — while **both** of these hold.
-Neither is a forecast: both are statements about numbers that have already been read.
+With gating on, a spot session takes a turn — its first or its next — while **all three** of these
+hold, for **both** windows.
 
 | Check | What it means | Reason when it fails |
 | --- | --- | --- |
-| **Under the targets** | The Claude Code account pool averages below the 5-hour *and* weekly targets, as last read. When either average reaches its target, spot work pauses until utilization comes back down. | `at_utilization_limit` |
+| **The cap** | What the fleet plus this session is projected to spend over the next ten minutes keeps total spend inside the window's non-reserved budget. This is what protects the priority reserve, and it is absolute. | `at_utilization_limit` |
+| **The pace** | The fleet's burn rate, including this session's, is inside `remaining spot budget / time left in the window` — the rate that reaches 100% of the budget exactly as the window rolls over. | `at_utilization_limit` |
 | **A free slot** | Fewer sessions are running than **Max sessions at once**. Skipped only for a session that is *already* `running` when the gate runs — it is counted in the fleet itself. | `fleet_at_cap` |
 
-There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
-its target, not when it might. Utilization falls on its own — Anthropic's counters are sliding
-windows — so the pause ends when the number does, on the next re-check.
+### Why a curve rather than a target
 
-The same two checks decide for a session that is **already running**, which is what makes a target a
-ceiling rather than only a starting line — see [The target is a ceiling](#the-target-is-a-ceiling).
+The gate used to compare pooled utilization against a flat target percentage: under it, spot work ran
+flat out; at it, everything stopped. Three problems followed.
+
+A percentage says nothing about **how much capacity is left** — "76% of a 65% target" cannot be
+compared to "keep $200 back for priority work", so a reserve could not be expressed at all. A hard
+target **wastes capacity**: work burned through the allowance early and then idled for hours. And it
+**bursts and then idles**, when what is wanted is some work happening at every hour of the day.
+
+The pacing curve is self-correcting in both directions, because its numerator is what is *left* and
+its denominator is the time *left to spend it in*. Spend below the curve and the sustainable rate
+rises, releasing more work; run ahead of it and the rate falls, holding work back until the window
+catches up. No cliff at either end.
+
+### There is always room for one session
+
+A session is not infinitely divisible. If the sustainable rate were below what a single session
+burns, the pace check alone would admit nothing and leave the whole budget unspent — the opposite of
+what the model is for. So **when nothing at all is running, the pace check is waived** and only the
+cap applies: one session runs, gets ahead of the curve, and the next admission waits for the curve to
+catch up. A duty cycle rather than an outage.
+
+The waiver keys on the whole fleet being idle, not on spot sessions being idle — priority work
+running *is* work happening, and it spends against the same window. And the **reserve is never
+waived**: an idle fleet facing a spent budget is still held.
+
+### Before the first calibration
+
+`QuotaCapacityCalibrationJob` needs a window with measurable spend and utilization before it can
+price one. Until then a window has no dollar figure, and the model reasons in **fractions of the
+window** instead: every quantity means the same thing on a 0–1 scale, the cap and the curve work
+identically, and only the burn-rate projection is unavailable. Every surface says which mode a window
+is in — an estimate is never presented as a measurement, and "not calibrated" is never rendered as
+`$0.00`.
+
+The same checks decide for a session that is **already running**, which is what makes the budget a
+ceiling rather than only a starting line — see [The budget is a
+ceiling](#the-budget-is-a-ceiling).
 
 ### The concurrency limit
 
@@ -248,8 +285,8 @@ Every uncertain condition **allows** the session, and the reason is named so the
 | `gating_disabled` | The toggle is off. |
 | `no_snapshot` | No Claude Code quota reading to decide on. |
 | `unavailable` | The gate could not be evaluated at all. |
-| `within_limits` | The pool is under both targets, with a slot free. |
-| `at_utilization_limit` | **Held.** A window's pool average has reached its target; spot work waits for utilization to come down. |
+| `within_limits` | Both windows have room and are inside their curves, with a slot free. |
+| `at_utilization_limit` | **Held.** A window's non-reserved budget is spent, or the fleet is running ahead of that window's pacing curve. |
 | `fleet_at_cap` | **Held.** Every session slot is taken — by spot work, priority work, or both. |
 
 A monitoring gap must not become an outage of all automated work.
@@ -259,7 +296,7 @@ A monitoring gap must not become an outage of all automated work.
 A held session stays in `waiting` — the status Zimmer already uses for "created, not started" — and
 `AgentSessionJob` re-enqueues itself after ten minutes plus a little jitter. GoodJob persists the
 delayed job in Postgres, so the retry survives a worker restart or a deploy. When a slot frees, or
-utilization falls back under the target, the same job starts the session normally.
+the curve catches up, the same job starts the session normally.
 
 A re-check job that a worker shutdown catches *mid-pickup* is re-enqueued verbatim rather than
 treated as an interrupted session — see [`waiting` is two different situations, and neither is a
@@ -319,11 +356,12 @@ during a busy afternoon would never run at all.
 
 ### A hold lasts as long as the number does
 
-There is no escape hatch and no deadline: while the pool average sits at a target, spot work waits. That
-is the intent — the pause is meant to last exactly as long as the utilization that caused it. The
-5-hour window falls on its own within hours; a weekly window pinned near its target can hold a queue
-for considerably longer, which is the cost of a hard stop and is visible on `/quotas` the whole time.
-Promoting one session to priority is the lever for a single piece of work that cannot wait.
+There is no escape hatch and no deadline: while a window is ahead of its curve or out of budget, spot
+work waits. That is the intent — but the curve is what makes the wait short. A window ahead of pace
+is back inside it as soon as the clock moves far enough, which is minutes rather than hours, and a
+window whose budget is genuinely spent waits for the rollover. Both are visible on `/quotas` the
+whole time, in dollars. Promoting one session to priority is the lever for a single piece of work
+that cannot wait.
 
 ### Every turn is gated, not just the first
 
@@ -334,7 +372,7 @@ begins a **new turn that spends fresh quota**. On 2026-08-22 a spot session woke
 trigger and ran a full turn while this gate was reporting `at_utilization_limit` at 87% of a 65%
 target, force-pausing 22 running spot sessions and holding 141 more at the starting line.
 
-So the admission check covers every turn. While a window sits at its target, the only way a
+So the admission check covers every turn. While a window has no room for spot work, the only way a
 spot-designated session runs is to be **promoted to priority first**. Two things still pass through,
 because neither spends anything:
 
@@ -379,13 +417,14 @@ headroom** when it was a resume — naming the reason, the next check time, and 
 `get_session` reports the same through `spot_hold_reason` / `spot_hold_retry_at` /
 `spot_hold_count`, and says explicitly that the queued prompt is still coming.
 
-## The target is a ceiling
+## The budget is a ceiling
 
-Admission alone made the target a **floor under when new spot work stops**, not a ceiling on what
-spot work spends. A session admitted at 79% goes on running, and a fleet of them carries the window
-straight past the line: on 2026-08-20 the spot gate card read *"Holding spot sessions: 5-hour window
-at 89% of its 80% target"* while twelve sessions ran and three accounts sat in `quota_exceeded`. The
-gate had stopped admitting at 80% and then watched the work already in flight climb toward 100%.
+Admission alone made the budget a **floor under when new spot work stops**, not a ceiling on what
+spot work spends. A session admitted with room to spare goes on running, and a fleet of them carries
+the window straight past the line: on 2026-08-20 the spot gate card read *"Holding spot sessions:
+5-hour window at 89% of its 80% target"* while twelve sessions ran and three accounts sat in
+`quota_exceeded`. The gate had stopped admitting and then watched the work already in flight climb
+toward 100%.
 
 So `SpotCeilingSweepJob` re-evaluates the same decision every five minutes and applies it to running
 sessions:
@@ -416,7 +455,7 @@ per pause, and it is recorded rather than silent:
 | Where | What it says |
 | --- | --- |
 | `metadata` | `spot_pause_at`, `spot_pause_reason`, `spot_pause_detail` (the gate's own sentence), `spot_pause_count`, and `paused_by: spot_quota` |
-| The session log | A warning line naming the window, the target, and what brings the session back |
+| The session log | A warning line naming the window, what it ran out of, and what brings the session back |
 | The session page | A **Paused mid-run for quota headroom** banner, with the same **Make this session priority** button the hold banner carries |
 | MCP | `get_session` reports the pause, why, and when it resumes |
 
@@ -430,11 +469,13 @@ same reason.
 The next sweep that finds the gate open resumes them, with the standard system-recovery nudge telling
 the agent to pick up where it left off. Two things shape which and how many:
 
-- **A resume margin.** Resumption decides against targets lowered by `SpotGateService::RESUME_MARGIN_PCT`
-  (5 points): with an 80% target, a paused session resumes when the pool reaches **75%**. Holding a
-  session that never started costs nothing, so admission uses the plain target; resuming one that was
-  interrupted mid-turn costs a lost tool call, so it waits for real headroom rather than resuming at
-  79.9% and pushing the window straight back over.
+- **A resume margin.** Resumption decides against a reserve WIDENED by `SpotGateService::RESUME_MARGIN_PCT`
+  (5 points of the window): with a 20% reserve, a paused session resumes only once the fleet is inside
+  a **25%** reserve. Holding a session that never started costs nothing, so admission uses the plain
+  reserve; resuming one that was interrupted mid-turn costs a lost tool call, so it waits for real
+  headroom rather than resuming the instant the fleet dips under the curve and pushing it straight
+  back over. The margin is applied as extra reserve, so the money it protects is the same money the
+  reserve protects — and the reserve the page shows is still the one the operator set.
 - **A batch of five per sweep**, and never more than the free slots under **Max sessions at once**. A
   window that has just come back down is at its most fragile — every session resumed starts spending
   again immediately — so the fleet walks back up over successive sweeps rather than restoring all at
@@ -512,8 +553,8 @@ candidate.
 :::note[A pause is a floor, not a promotion]
 "Not before this time" is the whole of what a pause says. It does not say "and then run regardless of
 the queue" — the spot queue stays the scheduler for spot work. When the wake comes due it delivers a
-prompt like any other turn, and that turn answers to the spot gate: a spot session whose window is at
-its target is held and stays dormant in `waiting`, to be started by the queue in precedence order,
+prompt like any other turn, and that turn answers to the spot gate: a spot session whose window has
+no room for it is held and stays dormant in `waiting`, to be started by the queue in precedence order,
 while a priority session goes straight through because priority work is never gated on quota.
 
 So the two mechanisms compose in one direction only. A pause can keep a session out of a queue slot
@@ -614,9 +655,12 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
 | Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
+| Read each window's estimated capacity, dollars remaining, dollars reserved, and spot budget left | Account Pool section and spot gate card on `/quotas` | `get_spot_policy` |
+| Read the fleet's burn rate and the sustainable rate the curve allows | Spot gate card on `/quotas` | `get_spot_policy` |
+| Read the $/min of each harness + model combination | Burn rate table on `/costs` | `get_costs` |
 | Read how many running spot sessions the ceiling has paused | Spot gate card on `/quotas` | `get_spot_policy` |
 | Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
-| Toggle gating, set the window targets, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
+| Toggle gating, set the two priority reserves, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
 | One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
 | Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
 | Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |

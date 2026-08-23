@@ -478,7 +478,8 @@ class QuotasHelperTest < ActionView::TestCase
     ClaudeAccountPool::Measure.new(**{
       five_hour: 0.5, weekly: 0.5, worst_five_hour: 0.5, worst_weekly: 0.5,
       account_count: 2, read_count: 2, weekly_spent_count: 0, blocked_count: 2,
-      next_capacity_at: nil, next_weekly_reset: nil
+      next_capacity_at: nil, next_weekly_reset: nil,
+      five_hour_seconds_remaining: nil, weekly_seconds_remaining: nil
     }.merge(overrides))
   end
 

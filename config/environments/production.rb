@@ -255,6 +255,16 @@ Rails.application.configure do
       class: "SpotCeilingSweepJob",
       description: "Pause running spot sessions when a quota window reaches its target, and resume them when it falls"
     },
+    burn_rate_recompute: {
+      cron: "*/20 * * * *", # Every 20 minutes — the ledger only lands every 10, so this is not the bound
+      class: "BurnRateRecomputeJob",
+      description: "Recompute the $/min burn rate of every harness+model combination from the token ledger"
+    },
+    quota_capacity_calibration: {
+      cron: "*/15 * * * *", # Every 15 minutes, matching the cadence quota snapshots land at
+      class: "QuotaCapacityCalibrationJob",
+      description: "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window"
+    },
     claude_usage_sampler: {
       cron: "*/15 * * * *", # Every 15 minutes
       class: "ClaudeUsageSamplerJob",

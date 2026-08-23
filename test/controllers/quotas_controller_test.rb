@@ -371,8 +371,8 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_select "#spot-gate"
     assert_select "h2", "Spot vs priority"
     assert_select "form[action=?]", spot_policy_path
-    assert_select "input[name='app_setting[spot_gate_five_hour_threshold_pct]']"
-    assert_select "input[name='app_setting[spot_gate_weekly_threshold_pct]']"
+    assert_select "input[name='app_setting[spot_reserve_five_hour_pct]']"
+    assert_select "input[name='app_setting[spot_reserve_weekly_pct]']"
     assert_select "input[name='app_setting[spot_max_concurrent_sessions]']"
     assert_select "#spot-gate-status"
     assert_select "form[action=?]", reset_genesis_classes_path

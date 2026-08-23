@@ -34,7 +34,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
       trigger: "usage_sample")
     @setting.update!(spot_gating_enabled: true,
-                     spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+                     spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
 
     session = build_session(SessionGenesis::GITHUB_ISSUE)
     refute SpotGateService.allow_start?(session)
@@ -478,16 +478,18 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       allowed: false, reason: "fleet_at_cap",
       detail: "Holding spot sessions: 10 of 10 session slots taken.",
       five_hour: nil, weekly: nil, active_sessions: 10, fleet_cap: 10,
-      accounts_read: 2, pool_size: 2
+      accounts_read: 2, pool_size: 2,
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0
     )
   end
 
   def held_decision
     SpotGateService::Decision.new(
       allowed: false, reason: "at_utilization_limit",
-      detail: "Holding spot sessions: the 5-hour window at 85% of its 80% target, averaged across all 2 accounts.",
+      detail: "Holding spot sessions: the 5-hour window is at 85% of the 80% spot budget, averaged across all 2 accounts.",
       five_hour: nil, weekly: nil, active_sessions: 3, fleet_cap: 10,
-      accounts_read: 2, pool_size: 2
+      accounts_read: 2, pool_size: 2,
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0
     )
   end
 
@@ -496,7 +498,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       allowed: true, reason: "within_limits",
       detail: "1 of 10 session slots taken, and 5-hour at 12% of its 80% target, averaged across all 2 accounts.",
       five_hour: nil, weekly: nil, active_sessions: 1, fleet_cap: 10,
-      accounts_read: 2, pool_size: 2
+      accounts_read: 2, pool_size: 2,
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0
     )
   end
 end

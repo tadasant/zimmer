@@ -4,120 +4,165 @@
 #
 # == The rule
 #
-# Two checks, both against numbers that have already been measured. A spot
-# session starts while BOTH hold:
+# A spot session starts while all three hold:
 #
-#   1. **The account pool is under both targets, in aggregate.** Utilization as
-#      last read, averaged across every account, not a projection of it. Once a
-#      window reaches its target, spot work pauses until utilization comes back
-#      down — the 5-hour window falls on its own as its sliding window ages
-#      events out, and the weekly one behind it.
-#   2. **The fleet has a free slot.** `spot_max_concurrent_sessions` (10 by
-#      default, set on /quotas) caps how many sessions run at once, which is
-#      what bounds how fast the quota can be spent.
-#
-# Nothing is forecast. The targets on /quotas are a level to **reach** — spot
-# work fills the fleet up to the cap and runs until a window arrives at its
-# target, rather than backing off from a projection of where it might land. A
-# deployment sitting idle should be idle because its windows are at 80%.
+#   1. **Every window's non-reserved capacity has room for it.** Not "is
+#      utilization under a target" — "would the money this session is about to
+#      spend take the window past the part of it spot work is allowed to touch".
+#      QuotaCapacityModel holds that arithmetic; the reserve is the part of the
+#      window kept back for priority sessions, and everything above it is meant
+#      to be consumed rather than left on the table.
+#   2. **The fleet's burn rate is inside the pacing curve.** The remaining spot
+#      budget divided by the time left in the window is the rate that reaches
+#      100% utilization exactly as the window rolls over. Running faster than
+#      that is what holds a session — not a percentage cliff.
+#   3. **The fleet has a free slot.** `spot_max_concurrent_sessions` (set on
+#      /quotas) caps how many sessions run at once.
 #
 # Priority sessions are never consulted about any of this. They start.
 #
+# == Why this replaced the percentage targets
+#
+# The gate used to compare pooled utilization against a target percentage: under
+# it, spot work ran flat out; at it, everything stopped. That has three problems
+# the dollar model fixes.
+#
+# A percentage says nothing about **how much capacity is left**. "76% of a 65%
+# target" cannot be compared to "keep $200 back for priority work", so a reserve
+# could not be expressed at all.
+#
+# A hard target **wastes capacity**. Under the line the gate admitted everything
+# it could, and the fleet burned through the allowance early; at the line
+# everything slammed to a halt for hours. On 2026-08-23 that was 21 spot sessions
+# paused mid-run against a 5-hour window sitting at 76% of its 65% target — a
+# backlog stalled at a cliff rather than paced into the room that was left.
+#
+# And a hard target **bursts and then idles**. What is wanted is some work
+# happening at all hours, which is what a rate-based curve produces and a level
+# comparison cannot.
+#
+# == The curve is self-correcting, and it always leaves room for one session
+#
+# Because the sustainable rate is "what is LEFT over the time left to spend it",
+# a quiet window releases work faster and a busy one throttles — no cliff at
+# either end. And because a session is not infinitely divisible, the pace
+# condition is waived when nothing at all is running, so a deployment whose
+# single-session burn rate exceeds its sustainable rate still does work in a duty
+# cycle instead of doing none. QuotaCapacityModel documents both.
+#
 # == The cap counts everything, and holds only spot
 #
-# Every running Claude Code session counts against the cap, priority included,
-# but only spot sessions are held by it. Ten running priority sessions therefore
-# leave zero spot slots, which is the intent: priority work crowds spot work out
-# of the slots rather than queueing behind it.
-#
-# The count is checked when a session **starts** and never again. A running
-# session is not reconsidered when the fleet grows or a window fills; the
-# decision point that means something is "should this work begin at all".
+# Every running Claude Code session counts against the concurrency cap and
+# against the projected burn, priority included, but only spot sessions are held.
+# Priority work crowds spot work out of the slots and out of the budget, which is
+# the intent: that is what the reserve is protecting.
 #
 # == The pool decides, not one account
 #
-# The targets are read across the whole pool — `ClaudeAccountPool`, the same
-# average /quotas renders as "Avg 5-Hour Utilization (effective)". One account
-# at its cap therefore does not stop the fleet while the rest of the pool has
-# room, which is what a pool is for: rotation moves work off a refused account
-# onto the accounts that still have headroom, so the quota the deployment can
-# actually spend is the pool's, not whichever account happens to be serving this
-# minute.
+# Utilization is read across the whole pool — `ClaudeAccountPool`, the same
+# average /quotas renders — and so is the time left in each window. One account
+# at its cap does not stop the fleet while the rest has room.
 #
-# **Every account counts, whatever its status** — active, quota_exceeded, and
-# needs_reauth alike. A needs_reauth account is one Zimmer cannot serve from
-# right now, not one whose quota is spent: its windows keep draining while it
-# waits for a human, and its headroom is real again the moment they log back in.
-# Dropping it would shrink the denominator to the serving accounts and make the
-# average jump every time an account fell out of the pool or came back.
-#
-# The average carries one correction, and it is the page's, not a second rule
-# invented here: an account whose 7-day window is spent counts as 100% in the
-# 5-hour figure, because its 5-hour headroom cannot be served. That is the whole
-# reason the aggregate does not simply hand a dead account's empty 5-hour
-# counter back as room to spend.
+# **Every account counts, whatever its status.** A needs_reauth account is one
+# Zimmer cannot serve from right now, not one whose quota is spent: its windows
+# keep draining while it waits for a human. The average carries one correction,
+# the page's: an account whose 7-day window is spent counts as 100% in the
+# 5-hour figure, because its 5-hour headroom cannot be served.
 #
 # == "Hold" means DEFER, not refuse
 #
-# A held session is not rejected and nothing is lost. It stays `waiting` — the
-# status Zimmer already uses for "created, not started" — and AgentSessionJob
-# re-enqueues itself to re-check. When a slot frees or the window resets, the
-# same job starts the session normally.
+# A held session stays `waiting` and AgentSessionJob re-enqueues itself to
+# re-check. Nothing is cancelled and no prompt is lost — see SpotSessionHold.
 #
-# Refusing instead would mean the gate silently deletes work: a github_issue
-# trigger that fires once during a busy afternoon would never run at all, and
-# nothing in the UI would say why. Deferral costs a row in `waiting` and buys
-# back the entire premise of the feature — spot work is work you are happy to
-# have later, not work you are happy to lose.
+# == The budget is a ceiling, not just a starting line
 #
-# == The target is a ceiling, not just a starting line
-#
-# Admission is only half of it. A session admitted at 79% goes on spending, and
-# a fleet of them carries the window past the target it was supposed to stop at
-# — which is what 89% against an 80% target looked like on 2026-08-20, with the
-# gate correctly reporting itself as holding the whole time. So the same
-# decision is re-evaluated while sessions are in flight: SpotSessionPause pauses
-# the spot sessions that are already RUNNING when a window arrives at its
-# target, and resumes them when it comes back down. This service stays the only
-# place that decides; the sweep only acts on what `evaluate` answers.
+# Admission is only half of it. A session admitted with room to spare goes on
+# spending, so SpotSessionPause re-evaluates the same decision for the sessions
+# already RUNNING and pauses them when the fleet runs past what the window can
+# carry. This service stays the only place that decides.
 #
 # == Fail-open
 #
-# Every uncertain condition allows the session: gating off, no quota readings,
-# an unreadable AppSetting. A monitoring gap must not become an outage of all
-# automated work. `#reason` names which case applied so the UI and MCP can say
-# so rather than showing a bare "allowed".
+# Every uncertain condition allows the session: gating off, no quota readings, an
+# unreadable AppSetting. A monitoring gap must not become an outage of all
+# automated work. `#reason` names which case applied.
 class SpotGateService
-  # How long a held session waits before re-checking. Short enough that a freed
-  # slot is noticed promptly; long enough that a held fleet is not re-evaluating
-  # every few seconds.
+  # How long a held session waits before re-checking. Short enough that freed
+  # capacity is noticed promptly; long enough that a held fleet is not
+  # re-evaluating every few seconds. It is also the horizon the cap projects
+  # over — QuotaCapacityModel::LOOKAHEAD — because a decision has to hold until
+  # the next one.
   RETRY_DELAY = 10.minutes
 
-  # How far below its target a window has to fall before a session that was
-  # PAUSED mid-flight is resumed, in percentage points.
+  # How far below the pacing curve the fleet has to fall before a session that
+  # was PAUSED mid-flight is resumed, in percentage points of the window.
   #
   # Admission needs no such margin: holding a session that has not started costs
-  # nothing, so the plain target is the right line for it. Resuming one that was
-  # interrupted mid-turn costs a lost tool call and a re-orientation prompt, and
-  # a session resumed the instant a window dips to 79.9% pushes it straight back
-  # over — a pause/resume flap that spends tokens on nothing but flapping. The
-  # margin buys the pool a real distance from the target before that work
-  # restarts. Only .resume_decision applies it.
+  # nothing. Resuming one that was interrupted mid-turn costs a lost tool call
+  # and a re-orientation prompt, and a session resumed the instant the fleet dips
+  # under the curve pushes it straight back over — a pause/resume flap that
+  # spends tokens on nothing but flapping. Only .resume_decision applies it, and
+  # it is applied as extra reserve rather than as a lowered target, so the money
+  # it protects is the same money the reserve protects.
   RESUME_MARGIN_PCT = 5
 
-  # One quota window as last read, against the target it is filling toward.
-  Reading = Data.define(:current, :threshold) do
-    def at_limit? = current >= threshold
-    def current_pct = current * 100
-    def threshold_pct = threshold * 100
+  # The one hold reason that describes a window, rather than the fleet. Named
+  # here and read by SpotSessionHold (which backs off differently for it) and
+  # SpotSessionPause (which pauses running sessions for it). It kept its old
+  # spelling through the move to dollars on purpose: production sessions carry
+  # it in their metadata right now, and renaming a string that is already
+  # persisted would make the banners on those sessions unreadable.
+  UTILIZATION_REASON = "at_utilization_limit"
+
+  # One quota window's capacity model, plus what this decision made of it.
+  # Wraps QuotaCapacityModel::Window so a Decision is a value that can be
+  # rendered without re-reading the database.
+  Reading = Data.define(:window, :burn_units_per_minute, :within_cap, :within_pace, :pace_waived) do
+    def label = window.label
+    def dollars? = window.dollars?
+
+    # True when this window refuses the session. A waived pace (nothing is
+    # running, see QuotaCapacityModel) leaves only the cap.
+    def at_limit? = !within_cap || (!pace_waived && !within_pace)
+
+    # The pool's utilization of this window, as a fraction and as a percentage.
+    def current = window.utilization
+    def current_pct = window.utilization * 100
+
+    # Where the pacing curve says the window should be by now, as a percentage
+    # of the window. This is what replaced the flat target: it moves with the
+    # clock instead of sitting still.
+    def pace_pct
+      elapsed = window.elapsed_fraction
+      return nil if elapsed.nil?
+
+      (window.spot_budget_units / window.capacity_units) * elapsed * 100
+    end
+
+    # The share of the window spot work is allowed to consume in total, as a
+    # percentage — the complement of the reserve.
+    def spot_budget_pct = (window.spot_budget_units / window.capacity_units) * 100
+
+    def why_held
+      return "spot budget spent" unless within_cap
+
+      "running ahead of the pacing curve"
+    end
 
     def to_h
-      { current_pct: current_pct, threshold_pct: threshold_pct, at_limit: at_limit? }
+      window.to_h.merge(
+        at_limit: at_limit?,
+        within_cap: within_cap,
+        within_pace: within_pace,
+        pace_waived: pace_waived,
+        pace_pct: pace_pct,
+        spot_budget_pct: spot_budget_pct,
+        projected_burn_usd_per_minute: dollars? ? burn_units_per_minute : nil
+      )
     end
   end
 
-  # The pool's two windows, averaged across every account, and how many accounts
-  # went into that average.
+  # Both windows as this decision read them, and how the average was taken.
   PoolReading = Data.define(:five_hour, :weekly, :account_count, :read_count) do
     # Window label => reading, skipping a window with no usable number. Labelled
     # rather than positional because two windows can hold equal values and Data
@@ -125,7 +170,7 @@ class SpotGateService
     # the wrong one as the reason a session was held.
     def labelled = { "5-hour" => five_hour, "weekly" => weekly }.compact
 
-    def at_limit = labelled.select { |_label, window| window.at_limit? }
+    def at_limit = labelled.select { |_label, reading| reading.at_limit? }
 
     def at_limit? = at_limit.any?
 
@@ -139,9 +184,18 @@ class SpotGateService
   end
 
   Decision = Data.define(:allowed, :reason, :detail, :five_hour, :weekly,
-                         :active_sessions, :fleet_cap, :accounts_read, :pool_size) do
+                         :active_sessions, :fleet_cap, :accounts_read, :pool_size,
+                         :fleet_burn_usd_per_minute, :candidate_burn_usd_per_minute) do
     def allowed? = allowed
     def held? = !allowed
+
+    # What the whole fleet plus one more session is projected to burn, in $/min.
+    # Nil when no burn rate could be read at all.
+    def projected_burn_usd_per_minute
+      return nil if fleet_burn_usd_per_minute.nil? && candidate_burn_usd_per_minute.nil?
+
+      fleet_burn_usd_per_minute.to_f + candidate_burn_usd_per_minute.to_f
+    end
 
     def to_h
       {
@@ -152,6 +206,8 @@ class SpotGateService
         fleet_cap: fleet_cap,
         accounts_read: accounts_read,
         pool_size: pool_size,
+        fleet_burn_usd_per_minute: fleet_burn_usd_per_minute,
+        candidate_burn_usd_per_minute: candidate_burn_usd_per_minute,
         five_hour: five_hour&.to_h,
         weekly: weekly&.to_h
       }
@@ -164,7 +220,8 @@ class SpotGateService
     allowed: true, reason: "priority",
     detail: "Priority sessions are never gated on quota or on the fleet cap.",
     five_hour: nil, weekly: nil, active_sessions: nil, fleet_cap: nil,
-    accounts_read: nil, pool_size: nil
+    accounts_read: nil, pool_size: nil,
+    fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil
   ).freeze
 
   class << self
@@ -182,32 +239,39 @@ class SpotGateService
     def start_decision(session)
       return ALWAYS_ALLOWED unless session.spot?
 
-      evaluate
+      evaluate(candidate: session)
     end
 
-    # The decision, for a spot session and for every surface that reports on it.
-    # There is exactly one — /quotas and `get_spot_policy` both render this — so
-    # the page and the tool cannot answer the same question differently.
-    def evaluate
-      new.evaluate
+    # The decision, for a candidate session and for every surface that reports on
+    # the gate. There is exactly one — /quotas, `get_spot_policy` and
+    # `start_decision` all come through here — so the page, the tool and the
+    # production path cannot answer the same question differently.
+    #
+    # With no candidate the burn of a hypothetical session is the fleet default,
+    # which is what "a spot session starting right now would be…" means.
+    def evaluate(candidate: nil)
+      new(candidate: candidate).evaluate
     end
 
     # The decision for a session that is already RUNNING and paused: the same
-    # evaluation, against targets lowered by RESUME_MARGIN_PCT.
+    # evaluation, with RESUME_MARGIN_PCT held back on top of the reserve.
     #
-    # Deliberately not rendered anywhere. Its `detail` names the lowered target,
+    # Deliberately not rendered anywhere. Its `detail` names the widened reserve,
     # which is the honest description of what it decided on and the wrong number
-    # to show beside the policy the operator set — /quotas and `get_spot_policy`
-    # render `evaluate`.
+    # to show beside the policy the operator set.
     def resume_decision
       new(margin_pct: RESUME_MARGIN_PCT).evaluate
     end
   end
 
-  # @param margin_pct [Integer] percentage points to subtract from both window
-  #   targets before deciding. Zero for every admission decision.
-  def initialize(margin_pct: 0)
+  # @param margin_pct [Numeric] percentage points of the window to hold back on
+  #   top of the reserve. Zero for every admission decision.
+  # @param candidate [Session, nil] the session being admitted, whose own burn
+  #   rate is projected. Nil means "some spot session", priced at the fleet
+  #   default.
+  def initialize(margin_pct: 0, candidate: nil)
     @margin_pct = margin_pct
+    @candidate = candidate
   end
 
   def evaluate
@@ -244,6 +308,47 @@ class SpotGateService
 
   def active_sessions = @active_sessions ||= Session.running_claude_code_count
 
+  # What every Claude Code session running right now is burning, in $/min.
+  #
+  # Every running session counts, priority included: they spend against the same
+  # windows, and a fleet of priority work is exactly the case the reserve exists
+  # for. A session whose harness+model combination has never been sampled is
+  # priced at the fleet default rather than at nothing, so an unknown combination
+  # cannot look free.
+  def fleet_burn_usd_per_minute
+    return @fleet_burn if defined?(@fleet_burn)
+
+    @fleet_burn = begin
+      rates = HarnessModelBurnRate.table
+      default = HarnessModelBurnRate.fleet_default_usd_per_minute
+      return @fleet_burn = nil if rates.empty? && default.nil?
+
+      Session.running_claude_code_burn_keys.sum { |key| rates[key] || default.to_f }
+    end
+  end
+
+  # What the session being admitted is expected to burn. The fleet default when
+  # it is a hypothetical one, or when its own combination has never been sampled.
+  def candidate_burn_usd_per_minute
+    return @candidate_burn if defined?(@candidate_burn)
+
+    default = HarnessModelBurnRate.fleet_default_usd_per_minute
+    @candidate_burn = if @candidate.nil?
+      default
+    else
+      key = [ @candidate.metadata&.dig("agent_root_key").to_s, @candidate.config&.dig("model").to_s ]
+      HarnessModelBurnRate.table[key] || default
+    end
+  end
+
+  # The total burn a window's cap and pacing curve are tested against: the fleet
+  # as it stands, plus the one more session under consideration.
+  def projected_burn_usd_per_minute
+    return nil if fleet_burn_usd_per_minute.nil? && candidate_burn_usd_per_minute.nil?
+
+    fleet_burn_usd_per_minute.to_f + candidate_burn_usd_per_minute.to_f
+  end
+
   # The one decision built without touching the database. Whatever went wrong may
   # well have been the database itself, so re-reading the fleet count here would
   # raise a second time — inside the rescue, where nothing catches it, and on into
@@ -253,7 +358,8 @@ class SpotGateService
       allowed: true, reason: "unavailable",
       detail: "Could not evaluate the spot gate (#{error.class}); allowing the session.",
       five_hour: nil, weekly: nil,
-      active_sessions: @active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil
+      active_sessions: @active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil,
+      fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil
     )
   end
 
@@ -261,7 +367,8 @@ class SpotGateService
     Decision.new(
       allowed: true, reason: reason, detail: detail,
       five_hour: nil, weekly: nil,
-      active_sessions: active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil
+      active_sessions: active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil,
+      fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil
     )
   end
 
@@ -273,17 +380,15 @@ class SpotGateService
     )
   end
 
-  # A window has reached its target across the pool. Spot work pauses until
-  # utilization comes back down; nothing is projected and nothing is cancelled.
+  # A window has no room for this session — either its non-reserved budget is
+  # spent, or the fleet is already running ahead of the curve that fills it.
   def at_limit(pool, fleet_cap)
-    reached = pool.at_limit.map do |label, window|
-      "#{label} window at #{window.current_pct.round}% of its #{window.threshold_pct.round}% target"
-    end
+    reached = pool.at_limit.map { |label, reading| "#{label} window #{limit_phrase(reading)}" }
 
     decision(
-      allowed: false, reason: "at_utilization_limit",
+      allowed: false, reason: UTILIZATION_REASON,
       detail: "Holding spot sessions: #{reached.join(' and ')}, #{pool.accounts_phrase}. " \
-              "Spot work waits for utilization to come back down. Priority sessions are unaffected.",
+              "Spot work resumes as the window's pacing curve catches up. Priority sessions are unaffected.",
       pool: pool, fleet_cap: fleet_cap
     )
   end
@@ -305,7 +410,9 @@ class SpotGateService
       allowed: allowed, reason: reason, detail: detail.squish,
       five_hour: pool.five_hour, weekly: pool.weekly,
       active_sessions: active_sessions, fleet_cap: fleet_cap,
-      accounts_read: pool.read_count, pool_size: pool.account_count
+      accounts_read: pool.read_count, pool_size: pool.account_count,
+      fleet_burn_usd_per_minute: fleet_burn_usd_per_minute,
+      candidate_burn_usd_per_minute: candidate_burn_usd_per_minute
     )
   end
 
@@ -313,35 +420,94 @@ class SpotGateService
     "#{active_sessions} of #{fleet_cap} session #{'slot'.pluralize(fleet_cap)}"
   end
 
+  # Why one window refused, in money when the model has money and in percentages
+  # of the window when it does not.
+  def limit_phrase(reading)
+    window = reading.window
+    return "has spent its $#{money(window.spent_units)} against a $#{money(window.spot_budget_usd)} spot budget" if !reading.within_cap && window.dollars?
+    return "is at #{reading.current_pct.round}% of the #{reading.spot_budget_pct.round}% spot budget" unless reading.within_cap
+
+    pace = reading.pace_pct
+    rate = window.sustainable_units_per_minute
+    if window.dollars? && rate
+      "is burning $#{money(reading.burn_units_per_minute)}/min against $#{money(rate)}/min sustainable"
+    else
+      "is at #{reading.current_pct.round}% against a pacing curve at #{pace&.round}%"
+    end
+  end
+
   def window_phrase(pool)
-    pool.labelled.map do |label, window|
-      "#{label} at #{window.current_pct.round}% of its #{window.threshold_pct.round}% target"
+    pool.labelled.map do |label, reading|
+      window = reading.window
+      if window.dollars?
+        "#{label} has $#{money(window.remaining_spot_units)} of spot budget left"
+      else
+        "#{label} at #{reading.current_pct.round}% of its #{reading.spot_budget_pct.round}% spot budget"
+      end
     end.join(", ")
   end
 
-  # Both windows as the pool is carrying them. A pool where nothing has been read,
-  # or where neither window can be read, leaves nothing to decide on and the gate
-  # falls open.
+  # Delimited, because these figures land in a sentence a human reads on the
+  # /quotas card and in `get_spot_policy`: "$2437.62" is a number to decode and
+  # "$2,437.62" is one to read.
+  def money(value)
+    return "0.00" if value.nil?
+    return "∞" if value.infinite?
+
+    ActiveSupport::NumberHelper.number_to_delimited(format("%.2f", value))
+  end
+
+  # Both windows as the pool is carrying them, wrapped in the capacity model and
+  # tested against the burn this decision projects. A pool where nothing has been
+  # read, or where neither window can be read, leaves nothing to decide on and
+  # the gate falls open.
   def pool_reading(setting)
     measure = ClaudeAccountPool.measure
     return nil unless measure.any_readings?
 
-    five_hour = reading(measure.five_hour, setting.spot_gate_five_hour_threshold_pct)
-    weekly = reading(measure.weekly, setting.spot_gate_weekly_threshold_pct)
-    return nil if five_hour.nil? && weekly.nil?
+    windows = QuotaCapacityModel.windows(measure: measure, setting: setting, margin_pct: @margin_pct)
+    return nil if windows.empty?
 
-    PoolReading.new(five_hour: five_hour, weekly: weekly,
-                    account_count: measure.account_count, read_count: measure.read_count)
+    burn = projected_burn_usd_per_minute
+    # A session is not infinitely divisible: with nothing running at all, the
+    # pacing curve is waived so the deployment still does SOME work whatever its
+    # sustainable rate. The cap is not waived — the reserve is protected either
+    # way. See QuotaCapacityModel.
+    waived = active_sessions.zero?
+
+    PoolReading.new(
+      five_hour: reading(windows[QuotaCapacityEstimate::FIVE_HOUR], burn, waived),
+      weekly: reading(windows[QuotaCapacityEstimate::WEEKLY], burn, waived),
+      account_count: measure.account_count, read_count: measure.read_count
+    )
   end
 
-  # A window's pooled utilization against its target. ClaudeAccountPool has
-  # already applied the reset rule per account — a window past its reset carries
-  # nothing — so what arrives here is the average of numbers that still apply.
-  def reading(current, threshold_pct)
-    return nil if current.nil?
+  # One window's verdict. The burn is in dollars, so a window with no dollar
+  # capacity cannot test it — that window falls back to the cumulative pacing
+  # curve on utilization alone, which is the same shape without the projection.
+  def reading(window, burn_usd_per_minute, pace_waived)
+    return nil if window.nil?
 
-    effective = [ threshold_pct.to_f - @margin_pct.to_f, 0.0 ].max
-
-    Reading.new(current: current, threshold: effective / 100.0)
+    if window.dollars? && burn_usd_per_minute
+      Reading.new(window: window, burn_units_per_minute: burn_usd_per_minute,
+                  within_cap: window.within_cap?(burn_usd_per_minute),
+                  within_pace: window.within_pace?(burn_usd_per_minute),
+                  pace_waived: pace_waived)
+    else
+      # Fraction mode: no rate to project, so the cap is tested against what has
+      # been spent and the pace against where the curve says the window should
+      # be by now. Both still reach 100% of the spot budget at rollover.
+      elapsed = window.elapsed_fraction
+      allowance = elapsed.nil? ? window.spot_budget_units : window.spot_budget_units * elapsed
+      # Strictly under, not at. With no rate to project, a window sitting exactly
+      # on its budget has nothing left for the session being admitted, and `<=`
+      # would wave it through on the strength of capacity it has already spent.
+      # Dollar mode needs no such rule: the projection is what makes the
+      # comparison strict there.
+      Reading.new(window: window, burn_units_per_minute: 0.0,
+                  within_cap: window.spent_units < window.spot_budget_units,
+                  within_pace: window.spent_units < allowance,
+                  pace_waived: pace_waived)
+    end
   end
 end

@@ -9,14 +9,16 @@
     <h2 class="text-lg font-medium text-gray-900">Spot vs priority</h2>
     <p class="mt-1 text-sm text-gray-500">
       Every session runs as <strong>priority</strong> or <strong>spot</strong>. Priority sessions always
-      start. A spot session runs while the Claude Code account pool is under both targets below on average
-      and a session slot is free — a target is a level to reach, not a line to stay clear of. Once a
-      window reaches its target, or every slot is taken, a spot session waits and runs later; it is
-      never cancelled. That holds
-      for every turn, not just the first: a spot session woken by a trigger, a follow-up or a restart
-      waits too, so while a window sits at its target the only way to run one is to make it priority.
-      A session's class is the one chosen for it, or the one its trigger carries, or
-      failing both the default for its <strong>genesis</strong> — where the work came from.
+      start. Spot work fills whatever each quota window has left after the <strong>priority
+      reserve</strong> below is carved out — and it fills it on a curve, released at the rate that
+      reaches 100% of the non-reserved capacity exactly as the window rolls over, so there is work
+      happening at every hour rather than a burst and then an idle stretch. A spot session waits when
+      running it now would spend past that curve, or past the reserve, or when every slot is taken; it
+      is deferred, never cancelled. That holds for every turn, not just the first: a spot session woken
+      by a trigger, a follow-up or a restart waits too, so while a window is ahead of its curve the only
+      way to run one is to make it priority. A session's class is the one chosen for it, or the one its
+      trigger carries, or failing both the default for its <strong>genesis</strong> — where the work
+      came from.
     </p>
   </div>
 
@@ -25,9 +27,9 @@
     <%= form_with url: spot_policy_path, method: :patch, data: { turbo: false } do %>
       <div class="flex items-start justify-between gap-4">
         <div>
-          <div class="text-sm font-medium text-gray-900">Fill up to these targets, then hold spot sessions</div>
+          <div class="text-sm font-medium text-gray-900">Reserve capacity for priority work, and pace spot work into the rest</div>
           <p class="mt-1 text-sm text-gray-500">
-            Off means spot sessions start like any other and the targets are ignored.
+            Off means spot sessions start like any other and the reserve is ignored.
           </p>
         </div>
         <input type="hidden" name="app_setting[spot_gating_enabled]" value="0">
@@ -62,28 +64,44 @@
           </p>
         </div>
         <div>
-          <label for="app_setting_spot_gate_five_hour_threshold_pct" class="block text-sm font-medium text-gray-700 mb-2">
-            5-hour window target (%)
+          <label for="app_setting_spot_reserve_five_hour_pct" class="block text-sm font-medium text-gray-700 mb-2">
+            5-hour priority reserve (%)
           </label>
           <input type="number"
-                 name="app_setting[spot_gate_five_hour_threshold_pct]"
-                 id="app_setting_spot_gate_five_hour_threshold_pct"
-                 value="<%= @app_setting.spot_gate_five_hour_threshold_pct %>"
+                 name="app_setting[spot_reserve_five_hour_pct]"
+                 id="app_setting_spot_reserve_five_hour_pct"
+                 value="<%= @app_setting.spot_reserve_five_hour_pct %>"
                  min="0" max="100" step="1"
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+          <p class="mt-1 text-xs text-gray-500" id="spot-reserve-5h-derived">
+            Holds back
+            <strong><%= capacity_money(@spot_windows[QuotaCapacityEstimate::FIVE_HOUR]&.reserve_usd) %></strong>
+            of every 5-hour window for priority sessions. Spot work fills the rest.
+          </p>
         </div>
         <div>
-          <label for="app_setting_spot_gate_weekly_threshold_pct" class="block text-sm font-medium text-gray-700 mb-2">
-            Weekly window target (%)
+          <label for="app_setting_spot_reserve_weekly_pct" class="block text-sm font-medium text-gray-700 mb-2">
+            Weekly priority reserve (%)
           </label>
           <input type="number"
-                 name="app_setting[spot_gate_weekly_threshold_pct]"
-                 id="app_setting_spot_gate_weekly_threshold_pct"
-                 value="<%= @app_setting.spot_gate_weekly_threshold_pct %>"
+                 name="app_setting[spot_reserve_weekly_pct]"
+                 id="app_setting_spot_reserve_weekly_pct"
+                 value="<%= @app_setting.spot_reserve_weekly_pct %>"
                  min="0" max="100" step="1"
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+          <p class="mt-1 text-xs text-gray-500" id="spot-reserve-7d-derived">
+            Holds back
+            <strong><%= capacity_money(@spot_windows[QuotaCapacityEstimate::WEEKLY]&.reserve_usd) %></strong>
+            of every week for priority sessions. Spot work fills the rest.
+          </p>
         </div>
       </div>
+
+      <p class="mt-3 text-xs text-gray-500">
+        You set the reserve as a percentage; the dollar figure beside it is derived from what each
+        window is estimated to be worth — see the capacity model above. Every figure is an
+        <strong>estimate</strong> in Opus-denominated list price, not a bill.
+      </p>
 
       <div class="mt-4">
         <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -116,16 +134,17 @@
         Running spot sessions paused for the ceiling:
         <strong id="spot-paused-count"><%= @spot_paused_count %></strong>.
         <% if @spot_decision.held? && @spot_decision.reason == SpotSessionPause::UTILIZATION_REASON %>
-          A window is at its target, so running spot sessions are being paused too — they resume
-          on their own once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
+          A window has no room for spot work, so running spot sessions are being paused too — they
+          resume on their own once the fleet is back under the curve with
+          <%= SpotGateService::RESUME_MARGIN_PCT %> points of the window to spare.
         <% else %>
-          Running spot sessions are paused only while a window sits at its target, and resume once
-          utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it. Priority
-          sessions are never paused.
+          Running spot sessions are paused only while a window has no room for them, and resume once
+          the fleet is back under the curve with <%= SpotGateService::RESUME_MARGIN_PCT %> points of
+          the window to spare. Priority sessions are never paused.
         <% end %>
       </p>
 
-      <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 text-sm">
+      <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 text-sm">
         <div>
           <dt class="text-gray-500">Sessions running</dt>
           <dd class="font-medium text-gray-900" id="spot-active-sessions">
@@ -135,33 +154,62 @@
             <% end %>
           </dd>
         </div>
+        <%# What the fleet is projected to burn, and therefore the number the
+            pacing curve is compared against. A dash means no burn rate has been
+            sampled yet, which is a real state on a fresh deployment. %>
         <div>
-          <dt class="text-gray-500">5-hour window</dt>
-          <dd class="font-medium text-gray-900" id="spot-window-5h">
-            <% if @spot_decision.five_hour %>
-              <%= number_with_precision(@spot_decision.five_hour.current_pct, precision: 1) %>%
-              <span class="text-gray-400 font-normal">
-                of <%= @spot_decision.five_hour.threshold_pct.round %>%
-              </span>
-            <% else %>
-              <span class="text-gray-400">—</span>
-            <% end %>
+          <dt class="text-gray-500">Fleet burn rate</dt>
+          <dd class="font-medium text-gray-900" id="spot-fleet-burn">
+            <%= burn_rate_money(@spot_decision.fleet_burn_usd_per_minute) %>
           </dd>
         </div>
-        <div>
-          <dt class="text-gray-500">Weekly window</dt>
-          <dd class="font-medium text-gray-900" id="spot-window-7d">
-            <% if @spot_decision.weekly %>
-              <%= number_with_precision(@spot_decision.weekly.current_pct, precision: 1) %>%
-              <span class="text-gray-400 font-normal">
-                of <%= @spot_decision.weekly.threshold_pct.round %>%
-              </span>
-            <% else %>
-              <span class="text-gray-400">—</span>
-            <% end %>
-          </dd>
-        </div>
+        <% [["5-hour", @spot_decision.five_hour, "5h"], ["Weekly", @spot_decision.weekly, "7d"]].each do |label, reading, slug| %>
+          <div>
+            <dt class="text-gray-500"><%= label %> spot budget left</dt>
+            <dd class="font-medium text-gray-900" id="spot-window-<%= slug %>">
+              <% if reading %>
+                <%= capacity_money(reading.window.remaining_spot_usd) %>
+                <span class="text-gray-400 font-normal">
+                  of <%= capacity_money(reading.window.spot_budget_usd) %>
+                </span>
+                <div class="text-xs text-gray-500 font-normal mt-0.5">
+                  <%= number_with_precision(reading.current_pct, precision: 1) %>% used ·
+                  curve at <%= reading.pace_pct ? "#{reading.pace_pct.round(1)}%" : "—" %>
+                </div>
+              <% else %>
+                <span class="text-gray-400">—</span>
+              <% end %>
+            </dd>
+          </div>
+        <% end %>
       </dl>
+
+      <%# The pacing curve, stated per window: what is left, how long is left to
+          spend it in, and the rate those two imply. This is the whole decision in
+          three numbers, and it is why a window can hold a session at 40% and
+          release one at 80%. %>
+      <div class="mt-3 space-y-2" id="spot-pacing">
+        <% @spot_decision.to_h.values_at(:five_hour, :weekly).compact.each do |w| %>
+          <p class="text-xs text-gray-600">
+            <strong><%= w[:label].capitalize %>:</strong>
+            <% if w[:denominated_in_dollars] %>
+              <%= capacity_money(w[:remaining_spot_usd]) %> of spot budget left
+              <% if w[:sustainable_usd_per_minute] %>
+                over <%= w[:seconds_remaining] ? distance_of_time_in_words(w[:seconds_remaining]) : "an unknown time" %>
+                — sustainable <%= burn_rate_money(w[:sustainable_usd_per_minute].infinite? ? nil : w[:sustainable_usd_per_minute]) %>,
+                fleet + one more projected at <%= burn_rate_money(w[:projected_burn_usd_per_minute]) %>.
+              <% end %>
+              Reserve <%= capacity_money(w[:reserve_usd]) %> (<%= w[:reserve_pct] %>%) of an estimated
+              <%= capacity_money(w[:capacity_usd]) %> window.
+            <% else %>
+              no dollar estimate yet, so this window is paced on percentages:
+              <%= number_with_precision(w[:utilization_pct], precision: 1) %>% used of a
+              <%= w[:spot_budget_pct].round %>% spot budget, curve at
+              <%= w[:pace_pct] ? "#{w[:pace_pct].round(1)}%" : "—" %>.
+            <% end %>
+          </p>
+        <% end %>
+      </div>
       <% if @spot_decision.pool_size %>
         <p class="mt-2 text-xs text-gray-500" id="spot-gate-pool-note">
           Windows averaged across

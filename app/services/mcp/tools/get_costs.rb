@@ -33,6 +33,11 @@ module Mcp
           routinely dominate a bill that looks like it should be about output
         - spend per day, so a spike can be placed in time
         - spend by agent root, by model, by main-thread vs subagent, by ad hoc source
+        - the **$/min burn rate** of every harness + model combination, measured over the last 25
+          sessions of that combination. This is what the spot scheduler multiplies by "how long until
+          I look again" to decide whether one more session fits inside the quota window's remaining
+          non-reserved capacity — see `get_spot_policy`. It is a rate per minute of ELAPSED session
+          time, not of wall clock: the span from a session's first API call to its last.
         - spend by **context-management feature** — the injected goal block, the session hierarchy,
           MCP responses, skill bodies, thinking, tool output — with the share it could not account
           for stated as its own line
@@ -80,6 +85,10 @@ module Mcp
       MAX_DAYS = CostWindow::MAX_DAYS
       DEFAULT_DAYS = CostWindow::DEFAULT_DAYS
       TOP_N = 10
+
+      # Enough combinations to see where the money per minute goes without
+      # turning a spend report into a rate export.
+      BURN_RATE_LIMIT = 15
 
       input_schema({
         type: "object",
@@ -161,6 +170,7 @@ module Mcp
         adhoc = analytics.by_adhoc_source
         lines.concat(table("Ad hoc calls from Zimmer's own code", "Source", adhoc, :source, totals[:cost_usd])) if adhoc.any?
 
+        lines.concat(burn_rate_lines)
         lines.concat(coverage_lines)
         lines.concat(feature_lines(analytics.by_feature))
         lines.concat(experiment_lines(analytics.by_experiment))
@@ -170,6 +180,46 @@ module Mcp
         lines << ""
         lines << "_List price, applied on read. Subscription-billed accounts — a comparable unit, not a bill._"
         lines.join("\n")
+      end
+
+      # The scheduler's view of the same ledger: what a minute of each harness +
+      # model combination costs. Deliberately in this tool rather than a new one
+      # — it is a costing figure computed from these very rows, and the spot gate
+      # is only its first consumer.
+      #
+      # Not scoped to the requested window: these are the CURRENT rates as
+      # BurnRateRecomputeJob last computed them, over a fixed sample of recent
+      # sessions per combination. Saying so beats silently answering a different
+      # question from the tables above.
+      def burn_rate_lines
+        rates = HarnessModelBurnRate.fresh.by_rate.limit(BURN_RATE_LIMIT).to_a
+        total = HarnessModelBurnRate.fresh.count
+        if rates.empty?
+          return [ "", "### Burn rates ($/min per harness + model)", "",
+                  "None computed yet — BurnRateRecomputeJob needs sessions in the ledger before it can " \
+                  "measure a rate. The spot gate falls back to holding nothing on rate grounds until then." ]
+        end
+
+        rows = rates.map do |rate|
+          "| `#{rate.harness}` | `#{rate.model}` | #{money(rate.usd_per_minute)}/min | " \
+          "#{money(rate.usd_per_hour)}/hr | #{rate.sample_session_count} | #{number(rate.sample_minutes.round)} |"
+        end
+        default = HarnessModelBurnRate.fleet_default_usd_per_minute
+        more = total > rates.size ? [ "", "…and #{total - rates.size} more combinations." ] : []
+
+        [
+          "", "### Burn rates ($/min per harness + model)", "",
+          "| Harness | Model | Rate | Per hour | Sessions | Sample minutes |",
+          "|---|---|---:|---:|---:|---:|",
+          *rows,
+          *more,
+          "",
+          "_Measured over the last #{HarnessModelBurnRate::SAMPLE_SESSIONS} sessions of each combination " \
+          "within #{HarnessModelBurnRate::SAMPLE_LOOKBACK.inspect}, at the same list prices as every " \
+          "figure above. A combination with no sample is priced at the fleet average of " \
+          "#{default ? "#{money(default)}/min" : "— (nothing sampled yet)"}. Current rates, not rates " \
+          "for the window this report covers._"
+        ]
       end
 
       def agent_root_report(root, analytics, window)

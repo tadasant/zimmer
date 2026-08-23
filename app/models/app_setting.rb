@@ -22,10 +22,14 @@ class AppSetting < ApplicationRecord
   # historical behavior before the section became reorderable.
   DEFAULT_UNCATEGORIZED_POSITION = 0
 
-  # The utilization a window fills toward before spot work pauses, as a
-  # percentage of the window. 80 is the value Tadas named; both windows default
-  # to it.
-  DEFAULT_SPOT_GATE_THRESHOLD_PCT = 80
+  # How much of a quota window is held back for priority sessions, as a
+  # percentage of the window. The operator sets a percentage; QuotaCapacityModel
+  # turns it into the dollar reserve the gate and the page reason in — see that
+  # class for why the input and the displayed quantity are different units.
+  #
+  # 20 leaves four fifths of every window for spot work to fill, which is the
+  # complement of the 80% fill target this replaced.
+  DEFAULT_SPOT_RESERVE_PCT = 20
 
   # Whether newly spawned Claude Code sessions run with MCP tool search on
   # (ENABLE_TOOL_SEARCH=true), letting the agent search MCP tools on demand
@@ -78,12 +82,12 @@ class AppSetting < ApplicationRecord
     end
     alias_method :spot_gating_enabled?, :spot_gating_enabled
 
-    def spot_gate_five_hour_threshold_pct
-      DEFAULT_SPOT_GATE_THRESHOLD_PCT
+    def spot_reserve_five_hour_pct
+      DEFAULT_SPOT_RESERVE_PCT
     end
 
-    def spot_gate_weekly_threshold_pct
-      DEFAULT_SPOT_GATE_THRESHOLD_PCT
+    def spot_reserve_weekly_pct
+      DEFAULT_SPOT_RESERVE_PCT
     end
 
     def spot_max_concurrent_sessions
@@ -113,7 +117,10 @@ class AppSetting < ApplicationRecord
     allow_blank: true
   validate :default_model_valid_for_runtime
   validate :only_one_row, on: :create
-  validates :spot_gate_five_hour_threshold_pct, :spot_gate_weekly_threshold_pct,
+  # 0 and 100 are both meaningful and both allowed: 0% reserves nothing and lets
+  # spot work fill the entire window, 100% reserves all of it and holds every
+  # spot session. Neither is a mistake to validate away.
+  validates :spot_reserve_five_hour_pct, :spot_reserve_weekly_pct,
     numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
   # At least one: a cap of zero would hold every spot session forever, which is
   # what turning the gate off (or setting a target of 0) is for.
