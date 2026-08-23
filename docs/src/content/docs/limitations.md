@@ -3374,11 +3374,11 @@ is no longer wanted.
 
 Two narrower gaps while both exist:
 
-- **A revoked MCP credential is not removed from a running session's store.**
-  `McpOauthCredentialInjector#delete_runtime_credentials` and `RefreshMcpOauthTokensJob` build their
-  writers with no session, so they target the host-global file. A session that already holds the
-  revoked token keeps it until it ends; new sessions get a fresh directory. The window is one
-  session's lifetime, not indefinite.
+- **A revoked MCP credential is not removed from other sessions' stores.** `RefreshMcpOauthTokensJob`
+  has no session to scope to, so it targets the host-global file. Revoking through
+  `McpOauthCredentialInjector#delete_runtime_credentials` does reach the revoking session's own
+  store, but a *different* session already running keeps its copy until it ends. New sessions get a
+  fresh directory, so the window is one session's lifetime, not indefinite.
 - **A corrupt shared file stays corrupt while the setting is on.** `ClaudeCredentialHealth.self_heal!`
   declines to repair it, because rewriting a file nothing reads on a five-minute cron is noise rather
   than a repair. If the setting is later turned off, the next `ensure_active_account!` rewrites the

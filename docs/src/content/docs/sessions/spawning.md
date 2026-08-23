@@ -187,6 +187,14 @@ a clone-local `NPM_CONFIG_CACHE`, and one filesystem side effect — `NpxBinExec
 the execute bit on any bin target in that cache which lost it
 ([MCP servers](/air/mcp-servers/#timeouts-and-caching)).
 
+With [session-scoped credentials](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)
+on, Claude also sets `CLAUDE_CONFIG_DIR` — a durable per-session directory at
+`~/.zimmer/claude-config/<session_id>`, alongside the scratch dir and reaped on the same schedule —
+and `CLAUDE_CODE_OAUTH_TOKEN`, the current account's subscription **access** token. The child gets
+no refresh token, so it cannot rotate the subscription chain. Both are omitted when the setting is
+off, and omitted together when the pool has no current account holding a token, in which case the
+session reads the shared `~/.claude/.credentials.json` as before.
+
 Codex adds `RUST_LOG=warn,rmcp=info` and `CODEX_HOME`.
 
 ### MCP tool search

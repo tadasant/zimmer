@@ -140,16 +140,20 @@ module ClaudeSpawnEnv
   # access token on it, this leaves both variables unset and the session falls
   # back to the shared file — the same place it would have read from with the
   # setting off. Refusing the spawn instead would turn a momentarily empty pool
-  # into a hard failure on a path that already has its own recovery.
+  # into a hard failure on a path that already has its own recovery. That
+  # condition lives in ClaudeSessionConfigDirectory.active_for? rather than here,
+  # because MCP credential injection has to reach the same answer before the
+  # spawn env is built — see the comment there.
   #
   # Relies on the including adapter exposing `@zimmer_session_id`.
   def apply_session_scoped_credentials(env_vars)
-    return env_vars unless AppSetting.session_scoped_credentials_enabled?
-    return env_vars if @zimmer_session_id.blank?
+    return env_vars unless ClaudeSessionConfigDirectory.active_for?(@zimmer_session_id)
 
-    token = ClaudeAccount.current_account&.claude_access_token
+    token = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)&.claude_access_token
     if token.blank?
-      @logger.warn "Session-scoped credentials are on but no current Claude account holds an access token; " \
+      # active_for? just saw one, so this is a rotation landing between the two
+      # reads. Fall back rather than hand the child a config dir with no token.
+      @logger.warn "The current Claude account lost its access token between the gate and the spawn; " \
         "falling back to the shared credentials file for this spawn"
       return env_vars
     end

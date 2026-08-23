@@ -707,13 +707,20 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Re-activate/, response.body)
   end
 
-  test "loading /quotas does not reconcile the filesystem identity" do
-    # A GET on a diagnostic page must not change which account production runs
-    # under. See issue #618, hole 12.
-    ClaudeAuthProvider.any_instance.expects(:reconcile_filesystem_identity!).never
+  # A GET on a diagnostic page must not change which account production runs
+  # under (#618, hole 12). Claude no longer implements the reconciliation hook at
+  # all, so this asserts the stronger thing: the page writes no account state.
+  test "loading /quotas does not change which account is current" do
+    primary = claude_accounts(:primary)
+    primary.update!(is_current: true)
+    secondary = claude_accounts(:secondary)
+    secondary.update!(is_current: false)
 
     get quotas_path
+
     assert_response :success
+    assert primary.reload.is_current?
+    assert_not secondary.reload.is_current?
   end
 
   test "should route POST /quotas/switch_account/:id" do
