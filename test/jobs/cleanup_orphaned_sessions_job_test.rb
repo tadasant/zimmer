@@ -355,10 +355,11 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     )
 
     # Verify the enqueued job has the correct parameters
-    # Note: nil is required as second arg to ensure resume_monitoring is passed as keyword arg
+    # Note: nil is required as second arg to ensure resume_monitoring is passed as keyword arg.
+    # monitor_pid pins the job to the process this recovery was decided about (zimmer#489).
     assert_enqueued_with(
       job: AgentSessionJob,
-      args: [ @session.id, nil, { resume_monitoring: true } ]
+      args: [ @session.id, nil, { resume_monitoring: true, monitor_pid: Process.pid } ]
     ) do
       CleanupOrphanedSessionsJob.perform_now
     end
