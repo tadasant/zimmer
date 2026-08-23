@@ -306,7 +306,11 @@ class AccountRotationService
   # The credentials write is delegated to the model so the completeness guard and
   # the shared owner-marker stamp are applied in exactly one place — every disk
   # write of credentials goes through ClaudeAccount#write_credentials_to_filesystem!.
-  def write_config!(account)
+  #
+  # @param force [Boolean] passed through to the credential write: skip the
+  #   backwards-write guard because the caller holds a credential newer than
+  #   anything on disk by construction (an interactive login).
+  def write_config!(account, force: false)
     # Write ~/.claude.json (contains oauthAccount field)
     claude_json = account.oauth_config.fetch("claude_json", {})
     if claude_json.present?
@@ -316,7 +320,7 @@ class AccountRotationService
 
     # Write ~/.claude/.credentials.json + the owner marker (model enforces the
     # accessToken+refreshToken completeness guard and refuses incomplete sets).
-    if account.write_credentials_to_filesystem!
+    if account.write_credentials_to_filesystem!(force: force)
       @logger.info("Wrote ~/.claude/.credentials.json", email: account.email)
     else
       @logger.warn("Did not write credentials to filesystem", email: account.email)

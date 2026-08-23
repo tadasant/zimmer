@@ -50,7 +50,7 @@
             <p class="mt-1 text-sm text-yellow-700">
               Worker filesystem holds OAuth tokens for <span class="font-medium"><%= @filesystem_email %></span>.
               <% if fs_account.nil? %>
-                No DB account matches. Run <code class="text-xs bg-yellow-100 px-1 rounded">bin/rails 'claude_accounts:add[<%= @filesystem_email %>,0]'</code> on the worker to create it.
+                No DB account matches. Add <%= @filesystem_email %> with the "Add account" form below, then Authenticate it.
               <% elsif !fs_account_valid %>
                 The DB record exists but has no captured tokens. Click "Sync from filesystem" to populate it.
               <% elsif !fs_is_current %>

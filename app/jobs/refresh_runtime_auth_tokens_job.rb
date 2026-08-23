@@ -50,11 +50,18 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
     # sync targets the right account.
     provider.reconcile_filesystem_identity!
 
+    # Repair a corrupt credentials file before anything reads it. The CLI can
+    # blank its own tokens in place (issue #618); left alone, the file stays
+    # broken, the sync below declines to adopt it every five minutes, and every
+    # session on the worker reports "Not logged in" until a human intervenes.
+    # Rewriting it from the DB copy costs nothing when there is nothing to repair.
+    self_heal_credentials(provider)
+
     # Sync filesystem tokens for the current account before refreshing.
     # The CLI may have rotated the refresh token on the filesystem, making
     # the DB copy stale. Without this sync, the job sends a revoked token
     # to the token server and fails repeatedly.
-    provider.sync_current_account_tokens!
+    sync_outcome = provider.sync_current_account_tokens!
 
     # Attempt to recover needs_reauth accounts whose tokens may have been
     # fixed by re-authentication or manual intervention.
@@ -88,8 +95,22 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
             # requests that end in an .error nobody can act on. Wait for the next
             # sweep instead — by then a filesystem sync or another caller's
             # refresh may have moved the row on. See ClaudeAccount#530 handling.
-            Rails.logger.warn "[RefreshRuntimeAuthTokens] #{account.email} presented a spent refresh token value; " \
-              "not retrying it with the same value, waiting for the next sweep"
+            #
+            # Unless nothing can move the row on. That wait has a liveness
+            # assumption, and the corruption guard on the sync is exactly the
+            # thing that breaks it: a sync being skipped every sweep will never
+            # deliver the newer value the wait is waiting for, and the "wait" is
+            # a metronome that ran for three hours on 2026-08-22. When the sync
+            # is the thing that is stuck, this is terminal and needs a human.
+            # `sync_outcome` describes the CURRENT account's sync and nothing
+            # else — a non-current account is never synced from the shared file,
+            # so a corrupt file says nothing about why its refresh was rejected.
+            if sync_outcome == :corrupt && account.is_current?
+              escalate_wedged_stale_refresh(account)
+            else
+              Rails.logger.warn "[RefreshRuntimeAuthTokens] #{account.email} presented a spent refresh token value; " \
+                "not retrying it with the same value, waiting for the next sweep"
+            end
           else
             retry_ids << account.id
           end
@@ -168,6 +189,46 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
     end
 
     Rails.logger.info "[RefreshRuntimeAuthTokens] Retry #{attempt}/#{MAX_RETRIES} (#{provider.runtime}): #{refreshed} refreshed, #{still_failing_ids.size} still failing"
+  end
+
+  # Repair a corrupt shared credentials file from the DB, for providers that
+  # have one. Never fatal to the sweep — a failed repair is reported and the
+  # sweep continues, because the accounts that are NOT the current one can still
+  # be refreshed while the file is broken.
+  def self_heal_credentials(provider)
+    return unless provider.runtime == ClaudeAuthProvider::RUNTIME
+
+    outcome, detail = ClaudeCredentialHealth.self_heal!
+    return if outcome == :skipped
+
+    if outcome == :healed
+      Rails.logger.warn "[RefreshRuntimeAuthTokens] Self-healed the shared credentials file: #{detail}"
+    else
+      Rails.logger.error "[RefreshRuntimeAuthTokens] Could not self-heal the shared credentials file: #{detail}"
+    end
+  rescue => e
+    Rails.logger.error "[RefreshRuntimeAuthTokens] Credential self-heal raised: #{e.message}"
+  end
+
+  # Both halves of the deadlock are now true at once: the account's stored
+  # refresh token is spent, and the one mechanism that could replace it — the
+  # filesystem sync — is refusing to run because the file it reads is corrupt.
+  # Nothing in Zimmer moves this forward, so say so at .error (where the alerting
+  # pipeline can see it) and raise it to the operator rather than logging another
+  # .warn into the same silence the incident produced 126 times an hour.
+  def escalate_wedged_stale_refresh(account)
+    health = ClaudeCredentialHealth.status
+    details = "#{account.email}'s stored refresh token was rejected as spent, and the filesystem sync that would "       "replace it is being skipped because the worker's credentials file is corrupt. #{health.detail} "       "Nothing in Zimmer can move this account forward — re-authenticate it from /quotas."
+
+    Rails.logger.error "[RefreshRuntimeAuthTokens] Auth deadlock for #{account.email}: #{details}"
+    AlertService.raise_alert(
+      "Claude auth deadlocked: spent refresh token and a corrupt credentials file",
+      details: details,
+      source: "RefreshRuntimeAuthTokensJob",
+      dedup_key: "auth-deadlock:#{account.id}"
+    )
+  rescue => e
+    Rails.logger.error "[RefreshRuntimeAuthTokens] Could not escalate the auth deadlock for #{account.email}: #{e.message}"
   end
 
   # Attempt to recover accounts stuck in needs_reauth by delegating to the
