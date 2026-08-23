@@ -7,10 +7,9 @@
           <div class="flex-shrink-0 flex -space-x-1">
             <%# Icon keys come from the helper so that a condition type without a
                 glyph of its own still renders the fallback, instead of an empty slot. %>
-            <% icon_keys = trigger_condition_icon_keys(trigger.trigger_conditions.map(&:condition_type)) %>
-            <% icon_keys.each do |icon_key| %>
-              <%= render "triggers/condition_icon", key: icon_key %>
-            <% end %>
+            <%= render partial: "triggers/condition_icon",
+                       collection: trigger_condition_icon_keys(trigger.trigger_conditions.map(&:condition_type)),
+                       as: :key %>
           </div>
 
           <!-- Trigger Info -->
