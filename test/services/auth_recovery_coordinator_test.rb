@@ -100,6 +100,17 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
     end
   end
 
+  # A reading, newer than the account's label, that says it can serve.
+  def clear_reading_for!(account)
+    account.quota_snapshots.create!(
+      subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 0.35, utilization_7d: 0.12,
+      status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 26.minutes.from_now, reset_7d: 6.days.from_now,
+      trigger: "page_view"
+    )
+  end
+
   # Make the live probe report a spent account, so a rotation away from it has
   # the evidence that justifies labelling it quota_exceeded.
   def stub_quota_probe_as_spent
@@ -314,6 +325,7 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
   # accounts available.
   test "park_reason_for_pool refuses QUOTA_EXHAUSTED when the labels are stale and the readings are clear" do
     ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime("claude_code").find_each { |account| clear_reading_for!(account) }
 
     assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, coordinator.park_reason_for_pool,
       "A pool whose own readings say it can serve must never be called quota-exhausted"

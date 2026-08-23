@@ -131,25 +131,15 @@ class AccountRotationService
     result
   end
 
-  # Record what rotating away from `current` actually proves about it.
+  # Record what rotating away from `current` proves about it.
   #
-  # This used to stamp `quota_exceeded` on the outgoing account of EVERY
-  # rotation, whatever the rotation was for. For an account rotated past on
-  # `auth_recovery` that label is a fabrication: the runtime said "Not logged
-  # in", which says nothing about quota — and because the label is what
-  # `ClaudeAccount.available` and AuthRecoveryCoordinator#park_reason_for_pool
-  # read, fabricating it does not merely mislabel one account, it removes it from
-  # the pool.
-  #
-  # That is the whole of the 2026-08-23 02:05Z outage. A blanked credential
-  # logged every session on the worker out; each one rotated away from the
-  # account it was holding; in about forty seconds the pool's every row wore a
-  # `quota_exceeded` label with no quota reading behind any of it, rotation ran
-  # out of candidates, and four sessions were parked against a noon reset
-  # estimate. The healer restored all three accounts on their own (clear)
-  # readings minutes later, which is the proof the labels were invented — see
-  # ClaudeAccount#effective_status, which already had to work around them to
-  # render an honest /quotas badge.
+  # A rotation is not, by itself, a statement about the outgoing account's
+  # quota. `auth_recovery` rotates because the runtime said "Not logged in",
+  # which says nothing about quota — and since `status` is what
+  # `ClaudeAccount.available` reads, a `quota_exceeded` label with no reading
+  # behind it does not merely mislabel the account, it removes it from the pool.
+  # One blanked credential is then enough to empty the whole pool in seconds; see
+  # [A rotation is not evidence about quota] in docs/auth/harness.md.
   #
   # So label on evidence, in this order:
   #
@@ -157,16 +147,22 @@ class AccountRotationService
   #     own reading, via QuotaSnapshotService) has already diagnosed it. Leave it
   #     alone: the two statuses drive different recoveries, and marking twice
   #     would count one wall as two quota hits on the page.
-  #   * the fresh reading this rotation just took says a window is spent — the
+  #   * the reading this rotation just took says the account cannot serve — the
   #     strongest evidence available, and it condemns the account whatever the
-  #     rotation was for.
+  #     rotation was for. Asked as `!windows_clear?`, the SAME predicate
+  #     ClaudeAccount#effective_status renders and QuotaResetCheckerJob restores
+  #     on, so a label this writes is one the rest of the app will honour. The
+  #     narrower `five_hour_window_spent?` would write labels `windows_clear?`
+  #     immediately overrules — a mark nothing acts on and every spawn path
+  #     still refuses.
   #   * the caller rotated FOR a quota wall — it watched the runtime refuse the
-  #     request, which is evidence even when the probe could not be taken. This
-  #     keeps the quota path's behaviour exactly as it was.
+  #     request, which is evidence even when the probe could not be taken.
   #
   # Anything else leaves the account active, because nothing observed says
-  # otherwise. Rotating away from an account is not a statement about its quota.
+  # otherwise.
   #
+  # @param current [ClaudeAccount] the account being rotated away from
+  # @param reason [String] why the caller rotated; see QUOTA_ROTATION_REASONS
   # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the reading #take_snapshot
   #   just took, or nil when the account could not be probed
   def mark_outgoing!(current, reason, snapshot)
@@ -180,8 +176,7 @@ class AccountRotationService
       return
     end
 
-    reading_condemns = snapshot.present? &&
-      (snapshot.seven_day_window_spent? || snapshot.five_hour_window_spent?)
+    reading_condemns = snapshot.present? && !snapshot.windows_clear?
 
     unless reading_condemns || QUOTA_ROTATION_REASONS.include?(reason)
       @logger.info("Rotated away without quota evidence — leaving the account active",
@@ -639,6 +634,13 @@ class AccountRotationService
     QuotaSnapshotService.save_snapshot(account, result, trigger: trigger)
   rescue => e
     @logger.error("Failed to take quota snapshot", email: account.email, error: e.message)
+    # Explicit, because #mark_outgoing! reads the return value and
+    # StructuredLogger#error does not answer nil: it ends in
+    # ErrorReporter.report_message, which returns a Sentry::Event whenever a DSN
+    # is configured. That object is `present?` and answers no quota question, so
+    # letting it fall out of here raises NoMethodError under the pool lock — on
+    # the unprobeable-account path, which is exactly the one that must stay safe.
+    nil
   end
 
   # Whether Claude sessions carry their own credentials rather than reading the

@@ -154,6 +154,22 @@ class CodexAuthProviderTest < ActiveSupport::TestCase
     assert_equal "quota_exceeded", event.reason
   end
 
+  # The same rule AccountRotationService#mark_outgoing! applies, and here it is
+  # the only rule available: a Codex account carries no Anthropic quota window to
+  # probe, so `reason` is the whole of the evidence. It also matters more here —
+  # QuotaResetCheckerJob is Claude-only, so a Codex account labelled by mistake
+  # is labelled for good.
+  test "rotate_for_quota! for a non-quota reason leaves the outgoing account active" do
+    ClaudeAccount.any_instance.stubs(:refresh_token!).returns(true)
+
+    result = @provider.rotate_for_quota!(triggered_by: "session:99", reason: "auth_recovery")
+
+    assert result[:success]
+    assert_equal "active", claude_accounts(:codex_primary).reload.status,
+      "Rotating away from a Codex account is not evidence that its quota is spent"
+    assert claude_accounts(:codex_secondary).reload.is_current?
+  end
+
   test "rotate_for_quota! returns no_available_accounts when the pool is exhausted" do
     # Leave only the current account; everything else unavailable.
     claude_accounts(:codex_secondary).update!(status: :quota_exceeded)

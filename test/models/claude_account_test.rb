@@ -162,12 +162,54 @@ class ClaudeAccountTest < ActiveSupport::TestCase
   test "serviceable_for counts an exceeded account whose own reading says the windows are clear" do
     ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
     account = claude_accounts(:exceeded)
+    account.touch
     quota_snapshot_for(account, utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
       utilization_7d: 0.12, reset_7d: 6.days.from_now)
 
     assert_includes ClaudeAccount.serviceable_for("claude_code"), account
     assert ClaudeAccount.any_serviceable_for?("claude_code"),
       "A pool whose readings say it can serve is not an exhausted pool, whatever its labels say"
+  end
+
+  # The reading only outranks the label when it is the newer of the two. A label
+  # written AFTER the newest reading was written by something that knew more than
+  # the reading does — a runtime-observed quota refusal whose follow-up probe
+  # failed — and resurrecting that account would hand back one every spawn path
+  # still refuses and the healer's own fresh probe will not restore.
+  test "serviceable_for keeps a label written after the reading it would be overruled by" do
+    account = claude_accounts(:primary)
+    quota_snapshot_for(account, utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, reset_7d: 6.days.from_now)
+    # The label goes on AFTER that reading — a runtime-observed quota refusal
+    # whose follow-up probe failed looks exactly like this.
+    account.mark_quota_exceeded!
+    ClaudeAccount.for_runtime("claude_code").where.not(id: account.id)
+      .update_all(status: ClaudeAccount.statuses[:needs_reauth])
+
+    assert_not_includes ClaudeAccount.serviceable_for("claude_code"), account
+    assert_not ClaudeAccount.any_serviceable_for?("claude_code"),
+      "Where the label is the newer claim, this degrades to `.available` — the safe floor"
+  end
+
+  test "serviceable_for keeps an active account without asking for a reading" do
+    ClaudeAccountQuotaSnapshot.delete_all
+
+    emails = ClaudeAccount.serviceable_for("claude_code").map(&:email)
+    assert_includes emails, claude_accounts(:primary).email
+  end
+
+  test "serviceable_for returns accounts in priority order" do
+    serviceable = ClaudeAccount.serviceable_for("claude_code")
+
+    assert_equal serviceable.map(&:priority), serviceable.map(&:priority).sort
+  end
+
+  # A blank runtime resolves to Claude Code everywhere else in the app; answering
+  # "no accounts" for one here would read as an outage.
+  test "serviceable_for resolves a blank runtime to the Claude Code pool" do
+    assert_equal ClaudeAccount.serviceable_for("claude_code").map(&:id),
+      ClaudeAccount.serviceable_for(nil).map(&:id)
+    assert ClaudeAccount.any_serviceable_for?("")
   end
 
   test "serviceable_for drops an account the API is still rejecting" do

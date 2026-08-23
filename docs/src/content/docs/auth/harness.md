@@ -471,6 +471,16 @@ So the outgoing account is labelled only when something observed says so:
 A reason the list does not recognise falls in the last row. Over-labelling is the failure this rule
 exists to prevent, so a new rotation reason has to opt in rather than be assumed in.
 
+The reading is asked as `!windows_clear?` — the same predicate `effective_status` renders and
+`QuotaResetCheckerJob` restores on — so a label rotation writes is one the rest of the app honours.
+The narrower `five_hour_window_spent?` would write labels `windows_clear?` immediately overrules: a
+mark nothing acts on, over an account every spawn path still refuses.
+
+`CodexAuthProvider#rotate_under_lock` applies the same reason gate, and it is the *only* gate it can
+apply: a Codex account carries no Anthropic quota window to probe, so there is no reading to weigh.
+That also makes the mistake permanent on that side rather than merely slow — `QuotaResetCheckerJob`
+is Claude-only, so nothing ever restores a Codex account labelled by mistake.
+
 :::caution[Without that, one blanked credential read as a drained pool]
 At 02:05Z on 2026-08-23 a Claude account's OAuth tokens were blanked to empty strings, so every
 session on the worker was logged out at once. Each one rotated away from the account it was holding;
@@ -1016,9 +1026,16 @@ own readings, not on their labels.
 
 `ClaudeAccount.serviceable_for(runtime)` is that question, asked once. It takes every account that is
 `active` or `quota_exceeded` and holds credentials, and keeps the ones whose `effective_status` is
-`active` — so an account the column calls exceeded while its own latest reading says both windows are
-clear **counts**. An account with no reading is taken at its label, which is every Codex account, so
-for a pool with no snapshots this reduces exactly to `.available`.
+`active` — so an account the column calls exceeded while its own reading says both windows are clear
+**counts**. An account with no reading is taken at its label, which is every Codex account, so for a
+pool with no snapshots this reduces exactly to `.available`.
+
+**Only a reading the label has not already answered.** The reading has to be *newer than the account
+row's last write*, or the column stands. A label written after the newest reading was written by
+something that knew more than the reading does — a runtime-observed quota refusal whose follow-up
+probe failed, say — and overruling it would resurrect an account that every spawn path still refuses
+and that the healer's own fresh probe will decline to restore. Where they disagree in that direction
+the predicate degrades to exactly `.available`, which is the safe floor.
 
 Three callers ask it, and they are the three that must not disagree:
 
@@ -1026,17 +1043,28 @@ Three callers ask it, and they are the three that must not disagree:
 | --- | --- |
 | `AuthRecoveryCoordinator#park_reason_for_pool` | whether an outage is `QUOTA_EXHAUSTED` ("wait for the reset") or `AUTH_UNRECOVERABLE` ("a human must re-authenticate") |
 | `AuthOutageParkService.pool_confirmed_empty?` | whether an undelivered turn may be parked at all |
-| `HealthMonitorService#auth_health` | the `N Claude accounts available` line on the health report and the `/health` card |
+| `HealthMonitorService#auth_health` | the `serviceable_accounts` figure on the health report and the `/health` card |
 
 That last row is why this exists. On 2026-08-23 the parking decision concluded at 02:06Z that the
 pool was empty and put four sessions to sleep, while `auth_health` reported *"3 Claude accounts
 available"* at 02:13Z — two code paths in one app contradicting each other about one fact, because
 both were reading a sticky column minutes apart and the healer moved it in between.
 
+`auth_health` reports **both** numbers rather than swapping one for the other, because they answer
+different questions and the gap between them is itself the diagnostic. `available_accounts` is the
+column: what a session can be spawned on this minute, since every path that picks an account reads
+it. `serviceable_accounts` is the predicate above: what the park decision sees. Reporting only the
+column is the contradiction described here; reporting only the evidence would be its mirror image, a
+healthy card over a pool nothing can spawn against. Together, `0 available / 3 serviceable` says
+precisely what is happening — the pool is recovering and the reset checker has not caught up — and
+the card degrades to `warning` in that state rather than claiming health.
+
 The banner's recovery estimate is derived the same way. `AuthOutageParkService#earliest_pool_reset`
-skips any account whose reading says its windows are clear: a clear window is not waiting for
-anything, so its reset stamp is when the counter next rolls over, not a recovery time. Reading one
-anyway is how the 02:06Z park told four sessions their pool came back at noon.
+drops any account whose reading says its windows are clear, and lets the accounts that ARE blocked
+set the estimate. A clear window is not waiting for anything, so its reset stamp is when the counter
+next rolls over rather than a recovery time — reading one anyway is how the 02:06Z park told four
+sessions their pool came back at noon. Contributing "now" instead would be the opposite error: it
+would win the pool-wide minimum and promise a recovery the blocked accounts cannot deliver.
 
 Waking is deliberately the opposite. `AuthOutageParkService.runtime_has_available_account?` and
 `QuotaAvailabilityMonitor` both read the durable column, because resuming a session against an
@@ -1184,10 +1212,11 @@ Spot sessions are skipped entirely — see the table above. They stay parked wit
 metadata intact, which is exactly what the fleet wake needs to find them.
 
 Which of the two reasons a park gets is decided by the **pool's shape**, not by which code path
-arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` when nothing
-is available and at least one account is `quota_exceeded` (waiting genuinely helps), and
-`AUTH_UNRECOVERABLE` otherwise — including when the pool is healthy and the runtime is rejecting it
-anyway, which is a credentials problem a human has to look at. `ProcessLifecycleManager` consults it
+arrived there. `AuthRecoveryCoordinator#park_reason_for_pool` answers `QUOTA_EXHAUSTED` only when
+nothing is [serviceable](#one-predicate-for-is-the-pool-drained) and at least one account is
+`quota_exceeded` (waiting genuinely helps), and `AUTH_UNRECOVERABLE` otherwise — including when the
+pool can still serve and the runtime is rejecting it anyway, which is a credentials problem a human
+has to look at. `ProcessLifecycleManager` consults it
 for the budget-exhaustion park too, so running out of tries during a quota drain no longer produces
 the "re-authenticate an account" instruction.
 

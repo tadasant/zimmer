@@ -663,18 +663,20 @@ class AuthOutageParkService
     accounts = ClaudeAccount.quota_exceeded.for_runtime(session.agent_runtime).to_a
     return nil if accounts.empty?
 
+    # One query for the whole pool rather than one per account.
+    snapshots = ClaudeAccountPool.latest_snapshots(accounts)
+
     per_account = accounts.filter_map do |account|
-      snapshot = account.latest_snapshot
+      snapshot = snapshots[account.id]
       next unless snapshot
 
-      # This account is not waiting for anything. Its own reading says both
-      # windows are clear, so it is servable now and the healer's next tick will
-      # say so too — its reset stamps are merely when the counters next roll
-      # over, not a recovery time. Asked after the stamps instead, this is the
-      # step that told four sessions on 2026-08-23 that their pool came back at
-      # noon, when what they were labelled with was a rotation's fabricated
-      # `quota_exceeded` over a perfectly clear reading.
-      next Time.current if snapshot.windows_clear?
+      # This account is not waiting for anything: its own reading says both
+      # windows are clear, so its reset stamps are merely when the counters next
+      # roll over, not a recovery time. It contributes NOTHING — neither those
+      # stamps, which would put the estimate at a weekly rollover nothing is
+      # actually waiting for, nor a "now" that would win the minimum below and
+      # promise a recovery the accounts that ARE blocked cannot deliver.
+      next if snapshot.windows_clear?
 
       future = [ snapshot.reset_5h, snapshot.reset_7d ].compact.select { |t| t > Time.current }.max
       next future if future

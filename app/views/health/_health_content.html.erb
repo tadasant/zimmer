@@ -247,7 +247,14 @@
         </div>
         <div>
           <dt class="font-medium text-gray-500">Accounts available</dt>
-          <dd class="mt-1 text-gray-900"><%= auth[:available_accounts] || "—" %></dd>
+          <dd class="mt-1 text-gray-900">
+            <%= auth[:available_accounts] || "—" %>
+            <% if auth[:serviceable_accounts].to_i > auth[:available_accounts].to_i %>
+              <span class="block text-xs text-yellow-700">
+                <%= auth[:serviceable_accounts] %> serviceable on their own readings — the reset checker restores the difference
+              </span>
+            <% end %>
+          </dd>
         </div>
         <div>
           <dt class="font-medium text-gray-500">Awaiting re-authentication</dt>

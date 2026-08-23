@@ -249,6 +249,42 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
       "A pool we could not read is not evidence that its quota is gone"
   end
 
+  # StructuredLogger#error ends in ErrorReporter.report_message, which answers a
+  # Sentry::Event whenever a DSN is configured. #take_snapshot's rescue must not
+  # let that object out: it is `present?`, answers no quota question, and
+  # #mark_outgoing! would raise NoMethodError on it under the pool lock — on the
+  # unprobeable-account path, which is the one that has to stay safe.
+  test "rotate! survives a probe that raises, whatever the error reporter returns" do
+    primary = claude_accounts(:primary)
+    QuotaCheckService.stubs(:check_with_token).raises(StandardError.new("probe blew up"))
+    StructuredLogger.any_instance.stubs(:error).returns(Object.new)
+
+    result = @service.rotate!(reason: "auth_recovery")
+
+    assert result[:success], "A failed probe must not abort the rotation"
+    assert_equal "active", primary.reload.status
+  end
+
+  # `!windows_clear?` is the same predicate #effective_status renders and
+  # QuotaResetCheckerJob restores on. `five_hour_window_spent?` is not: a counter
+  # at the cap with no reset stamp satisfies it while `windows_clear?` is still
+  # true, so rotation would write a label the rest of the app immediately
+  # overrules — a mark nothing acts on, over an account every spawn path refuses.
+  test "rotate! does not label an account whose reading windows_clear? still calls serviceable" do
+    primary = claude_accounts(:primary)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(
+        success: true, subscription_type: "claude_max", rate_limit_tier: "tier_4",
+        utilization_5h: 1.0, utilization_7d: 0.2, status_5h: "allowed", status_7d: "allowed",
+        reset_5h: nil, reset_7d: nil
+      )
+    )
+
+    @service.rotate!(reason: "auth_recovery")
+
+    assert_equal "active", primary.reload.status
+  end
+
   test "rotate! creates an AccountRotationEvent" do
     primary = claude_accounts(:primary)
     secondary = claude_accounts(:secondary)
