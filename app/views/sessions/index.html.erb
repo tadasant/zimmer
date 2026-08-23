@@ -498,9 +498,9 @@
                 </button>
                 <span data-quick-prompt-target="mobileBadge" class="ml-auto text-xs text-gray-500"></span>
               </div>
-              <%# Spot opt-in. Unchecked submits no scheduling_class at all, which
-                  is exactly today's behavior: the session takes the `web_ui`
-                  genesis default. Native form field — no JS needed to submit it. %>
+              <%# Spot opt-in. Unchecked submits no scheduling_class at all, so the
+                  session derives its class from the `web_ui` genesis. Native form
+                  field — no JS needed to submit it. %>
               <label class="mb-3 flex items-start gap-2 cursor-pointer">
                 <%= check_box_tag :scheduling_class, SessionGenesis::SPOT, false,
                       id: "quick_prompt_mobile_scheduling_class",
@@ -575,14 +575,24 @@
             <span data-quick-prompt-target="desktopBadge" class="text-xs text-gray-500"></span>
             <%# Spot opt-in, same contract as the mobile overlay and the chat
                 bubble: checked sends scheduling_class=spot, unchecked sends
-                nothing and the class derives from the `web_ui` genesis. %>
+                nothing and the class derives from the `web_ui` genesis.
+
+                The row is tight at this width, so the explanation is sr-only and
+                wired up with aria-describedby rather than shown inline as it is on
+                the two phone surfaces. A `title` would not do: it reaches neither a
+                keyboard user nor a touch user, and this control decides whether the
+                session starts now or waits. %>
             <label class="ml-auto flex items-center gap-1.5 cursor-pointer"
-                   title="Waits for quota room instead of starting now, and lands at the top of the spot queue.">
+                   for="quick_prompt_desktop_scheduling_class">
               <%= check_box_tag :scheduling_class, SessionGenesis::SPOT, false,
                     id: "quick_prompt_desktop_scheduling_class",
+                    aria: { describedby: "quick_prompt_desktop_scheduling_class_help" },
                     class: "h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" %>
               <span class="text-xs text-gray-500">Run as <span class="font-medium text-gray-700">spot</span></span>
             </label>
+            <span id="quick_prompt_desktop_scheduling_class_help" class="sr-only">
+              Waits for quota room instead of starting now, and lands at the top of the spot queue.
+            </span>
           </div>
         <% end %>
       </div>

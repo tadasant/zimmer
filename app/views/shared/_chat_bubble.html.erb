@@ -117,10 +117,10 @@
           <kbd class="px-1 py-0.5 bg-gray-100 rounded text-[10px] font-mono">&#8984;/Ctrl&#x23CE;</kbd> to submit in background.
         </p>
 
-        <%# Spot opt-in. Unchecked is the whole of today's behavior — the session
-            is `web_ui` genesis and takes that genesis's class, which is priority.
-            Checked, it rides on BOTH submit paths (Submit and Submit & Open),
-            because the checkbox is read in _submit rather than per-button. %>
+        <%# Spot opt-in. Unchecked submits no scheduling_class at all, so the
+            session takes the class its `web_ui` genesis resolves to. Checked, it
+            rides on BOTH submit paths (Submit and Submit & Open), because the
+            checkbox is read in _submit rather than per-button. %>
         <label class="mt-2 flex items-start gap-2 cursor-pointer">
           <input type="checkbox"
                  value="<%= SessionGenesis::SPOT %>"

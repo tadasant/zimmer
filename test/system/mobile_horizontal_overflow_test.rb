@@ -359,6 +359,17 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # is dropped" failure the controller tests guard from the other side.
     bubble_box.click
     assert bubble_box.checked?
+
+    # Closing the panel drops the choice, however it was closed. The draft text is
+    # kept on purpose and the class is not: re-ticking a box is cheap, and a stale
+    # tick would silently park a later prompt behind the quota gate.
+    find("[data-chat-bubble-target='panel'] button[aria-label='Close']").click
+    find("#chat-bubble button[aria-label='Open quick router']").click
+    assert_selector "[data-chat-bubble-target='panel'].translate-x-0.opacity-100"
+    assert_not find("[data-chat-bubble-target='spot']").checked?,
+      "reopening the panel should start back at the default"
+
+    find("[data-chat-bubble-target='spot']").click
     find("[data-chat-bubble-target='textarea']").fill_in with: "Sweep the catalog for dangling references"
     find("[data-chat-bubble-target='submitButton']").click
     # The panel slides back out only on a successful create — on an error it stays
