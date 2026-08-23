@@ -106,6 +106,40 @@ Nothing is suppressed and no message content is dropped: Slack's own words, the 
 the thread stay in the line. Only the severity changes, which is what makes the ERROR that
 does appear worth reading.
 
+### A client that has already disconnected is logged at DEBUG, not ERROR
+
+ActionCable applies the same reasoning to WebSockets, and upstream Rails surfaces three benign
+client-disconnect races at ERROR. Each one is a browser tab that went away — a navigation, a
+laptop sleeping, a reconnect — with the server still mid-operation. Nothing is broken, nothing
+is retryable, and the ActionCable consumer re-subscribes on its own when the client comes back.
+Two initializers downgrade all three:
+
+| Race | Where it surfaces | Initializer |
+| --- | --- | --- |
+| A socket operation against a peer that already went away (`Errno::EPIPE`, `ECONNRESET`, `EOFError`, …) | `Connection::Base#on_error` | `action_cable_benign_socket_error_log_level.rb` |
+| An inbound frame dispatched off the async worker pool after the socket closed | `Connection::Base#dispatch_websocket_message` | `action_cable_benign_socket_error_log_level.rb` |
+| A stale or duplicate `unsubscribe` for a subscription the connection no longer holds | `Connection::Subscriptions#execute_command`'s catch-all rescue, reached by `#remove` | `action_cable_idempotent_unsubscribe.rb` |
+
+The middle row is the one that bites hardest, because it is not one line per disconnect.
+`#receive` hands every frame to `send_async :dispatch_websocket_message`, so a tab that drops
+its socket with *n* frames in flight logs *n* ERRORs in a single burst — a session page with
+three `turbo_stream_from` streams, re-subscribing on reconnect, produced six inside 10 ms
+([#624](https://github.com/tadasant/zimmer/issues/624)).
+
+The first two rows preserve upstream's log text byte for byte, so only the severity changes.
+The third cannot: upstream `#remove` *raises* through `execute_command`'s catch-all rescue
+rather than logging, so the patch makes the removal idempotent and emits its own DEBUG line in
+place of the exception.
+
+Only the benign set moves. A genuine WebSocket error, an unrecognized command, and a `find`
+failure on the `perform_action` path all still log at ERROR.
+
+Each override is a method body copied from a specific actioncable release, so the real risk is
+silent drift: a `bundle update` that changes upstream leaves the copy in place and nothing goes
+red. `test/initializers/` covers each override's contract and additionally asserts
+`ActionCable::VERSION::STRING`, so a Rails upgrade fails that guard and lands the prompt to
+re-read the upstream source on the upgrade PR itself.
+
 ## How environments are told apart
 
 Every batch carries two resource attributes:
