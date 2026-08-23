@@ -7408,9 +7408,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_enqueued_with(job: AgentSessionJob)
   end
 
-  test "check_and_handle_mcp_failure fails permanently after max retries exhausted" do
-    # After MAX_MCP_CONNECTION_RETRIES attempts, the session should fail permanently
-    # Note: We don't set mcp_servers since that would trigger validation
+  test "check_and_handle_mcp_failure leaves the server out and keeps the session alive after max retries exhausted" do
+    # GitHub issue #521. Before this, MAX_MCP_CONNECTION_RETRIES exhaustion killed the
+    # session outright — a fallback server nobody had called could orphan hours of
+    # completed work. The retry ladder is unchanged; only what happens at the end of it is.
     @session.update!(
       status: :running,
       metadata: (@session.metadata || {}).merge(
@@ -7427,32 +7428,124 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     job = AgentSessionJob.new
     job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
+    agent_jobs_before = enqueued_jobs.count { |j| j["job_class"] == "AgentSessionJob" }
 
-    # The terminal (retries-exhausted) case is the ONLY MCP-connect path that
-    # emits a Rails.logger.error — shipped to obs and intended to trip the global
-    # prod-ERROR alert. Transient detections (McpStatusPersisting) log at .info.
+    # A degraded session is not an orphaned one, so nothing here may page on-call.
     rails_errors = []
+    rails_warns = []
+    result = nil
     Rails.logger.stub(:error, ->(msg) { rails_errors << msg }) do
-      @result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      Rails.logger.stub(:warn, ->(msg) { rails_warns << msg }) do
+        result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      end
     end
 
-    assert_equal true, @result
+    assert_equal true, result
     @session.reload
 
-    # Should permanently fail after max retries
-    assert_equal "failed", @session.status
-    assert_equal "mcp_connection_failed", @session.metadata["failure_reason"]
-    assert_not_nil @session.metadata["mcp_failed_servers"]
+    assert_not_equal "failed", @session.status, "a failed handshake must no longer kill the session"
+    assert_nil @session.metadata["failure_reason"]
 
-    # Verify retry exhaustion was logged to the session's DB logs (UI surface)
+    degraded = @session.metadata["mcp_degraded_servers"]
+    assert_equal [ "playwright-custom" ], degraded.map { |s| s["name"] }
+    assert_equal "Connection timed out after 30000ms", degraded.first["error"]
+    assert degraded.first["degraded_at"].present?
+
+    # The session is resumed on the servers that did connect, with an automated
+    # nudge naming the one that did not.
+    agent_jobs = enqueued_jobs.select { |j| j["job_class"] == "AgentSessionJob" }
+    assert_equal agent_jobs_before + 1, agent_jobs.size, "the session must be resumed rather than left dead"
+    resume_job = agent_jobs.last
+    assert AutomatedPrompts.system_recovery?(resume_job["arguments"][1])
+    assert_includes resume_job["arguments"][1], "playwright-custom"
+
     log_buffer.flush
-    error_logs = @session.logs.where(level: "error").pluck(:content)
-    assert error_logs.any? { |c| c.include?("retry limit exhausted") }
+    log_text = @session.logs.pluck(:content).join("\n")
+    assert_match(/left out for the remainder of this session/, log_text)
 
-    # Verify the authoritative obs-shipping ERROR was emitted for the orphaning
-    assert rails_errors.any? { |m| m.to_s.include?("session orphaned after") && m.to_s.include?("session_id=#{@session.id}") },
-      "terminal MCP failure must emit a Rails.logger.error for obs/alerting; got: #{rails_errors.inspect}"
+    assert_empty rails_errors.select { |m| m.to_s.include?("orphaned") },
+      "a degraded session is not orphaned and must not trip the prod-ERROR alert"
+    assert rails_warns.any? { |m| m.to_s.include?("left out, session continues") && m.to_s.include?("session_id=#{@session.id}") },
+      "the lost capability must still be greppable in obs; got: #{rails_warns.inspect}"
+  end
+
+  test "check_and_handle_mcp_failure is a no-op for a server this session already degraded" do
+    # The degraded server stays in the runtime config, so it re-fails its handshake on
+    # every later spawn and McpStatusPersisting re-raises should_fail_session each time.
+    # Acting on that again would terminate-and-resume in a loop.
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge(
+        "mcp_retry_count" => AgentSessionJob::MAX_MCP_CONNECTION_RETRIES,
+        "mcp_degraded_servers" => [
+          { "name" => "pulse-fetch", "error" => "Connection closed", "degraded_at" => 1.hour.ago.iso8601 }
+        ]
+      ),
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "pulse-fetch", "status" => "failed", "error" => "Connection closed" }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: pulse-fetch"
+      }
+    )
+
+    job = AgentSessionJob.new
+    mock_pm = MockProcessManager.new
+    job.process_manager = mock_pm
+    job.broadcast_service = BroadcastService.new
+    killed = []
+    mock_pm.kill_hook = ->(_signal, pid) { killed << pid }
+
+    log_buffer = LogBuffer.new(@session)
+    agent_jobs_before = enqueued_jobs.count { |j| j["job_class"] == "AgentSessionJob" }
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    assert_equal false, result, "an already-degraded server is not a new event; the turn keeps running"
+    assert_empty killed, "the live agent process must not be terminated over a failure already reported"
+    assert_equal agent_jobs_before, enqueued_jobs.count { |j| j["job_class"] == "AgentSessionJob" },
+      "no resume may be scheduled; the session is already running"
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_nil @session.custom_metadata["should_fail_session"],
+      "the flag must be consumed, or the monitoring loop re-enters this path every tick"
+    assert_equal [ "pulse-fetch" ], @session.metadata["mcp_degraded_servers"].map { |s| s["name"] }
+  end
+
+  test "check_and_handle_mcp_failure still fails the session when OAuth authorization is required, even at the retry ceiling" do
+    # The one class that stays fatal. A human clicking Authorize at /connectors is the
+    # fix, and running on without the server would burn the work in front of it.
+    @session.update!(
+      status: :running,
+      mcp_servers: [ "notion" ],
+      metadata: (@session.metadata || {}).merge(
+        "mcp_retry_count" => AgentSessionJob::MAX_MCP_CONNECTION_RETRIES
+      ),
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "notion", "status" => "failed", "error" => "Connection failed with status 401" }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+    assert_equal [ "notion" ], @session.metadata["oauth_required_servers"].map { |s| s["server_name"] }
+    assert_nil @session.metadata["mcp_degraded_servers"],
+      "an authorization-required server must not be quietly written off as degraded"
   end
 
   test "check_and_handle_mcp_failure increments retry count on each attempt" do
@@ -7582,19 +7675,22 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.reload
 
     # The bug: this used to be "oauth_required" and rendered an unresolvable OAuth banner.
-    assert_equal "mcp_connection_failed", @session.metadata["failure_reason"]
+    assert_nil @session.metadata["failure_reason"]
     assert_nil @session.metadata["oauth_required_servers"]
-    assert_equal "failed", @session.status
 
-    # The REAL error must reach the user, not an OAuth prompt. failure_detail is what
-    # _failure_details.html.erb renders in the "MCP Connection Failure Details" block.
-    assert_match(/invalid_token/, @session.failure_detail)
-    assert_match(/Failed to verify token: no user or account information/, @session.failure_detail)
+    # The REAL error must reach the user, not an OAuth prompt. It is carried on the
+    # degraded record (which the agent's prompt renders) and in the session log.
+    degraded = @session.degraded_mcp_servers
+    assert_equal [ "zimmer-sessions" ], degraded.map { |s| s["name"] }
+    assert_match(/invalid_token/, degraded.first["error"])
+    assert_match(/Failed to verify token: no user or account information/, degraded.first["error"])
   end
 
-  test "check_and_handle_mcp_failure fails a static-credential auth error immediately without retrying" do
+  test "check_and_handle_mcp_failure leaves a static-credential auth failure out immediately, without retrying or failing" do
     # A rejected API token does not become valid 30s later, so burning the retry ladder
-    # would only delay the real error by ~3.5 minutes.
+    # would only delay the real error by ~3.5 minutes. It is also nothing a human can
+    # authorize their way out of from inside the session, so — unlike the OAuth branch —
+    # stopping buys nothing and costs the transcript (GitHub issue #521).
     @session.update!(
       status: :running,
       mcp_servers: [ "zimmer-sessions" ],
@@ -7609,19 +7705,22 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     job = AgentSessionJob.new
     job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
     job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
 
     @session.reload
-    assert_equal "failed", @session.status
+    assert_not_equal "failed", @session.status
     assert_nil @session.metadata["mcp_retry_count"], "static-credential auth failure must not schedule a retry"
+    assert_equal [ "zimmer-sessions" ], @session.metadata["mcp_degraded_servers"].map { |s| s["name"] }
 
     # The user is told plainly that OAuth is not the fix, and which credential to check.
     log_buffer.flush
     log_text = @session.logs.pluck(:content).join("\n")
     assert_match(/authenticates with a static token, not OAuth/, log_text)
     assert_match(/ZIMMER_PROD_API_KEY/, log_text)
+    assert_match(/session continues on the servers that did connect/, log_text)
   end
 
   test "check_and_handle_mcp_failure still classifies a 401 from an OAuth-capable server as oauth_required" do
@@ -8392,6 +8491,39 @@ class AgentSessionJobTest < ActiveJob::TestCase
       occurred_at: at,
       provenance: { "entry_point" => "web_ui.follow_up" }
     )
+  end
+
+  test "build_prompt_with_goal tells the agent which MCP servers were left out" do
+    # The other half of GitHub issue #521: the session survives, and the agent has to
+    # know what it lost — otherwise it finds out from a tool call that is not there.
+    @session.update!(metadata: (@session.metadata || {}).merge(
+      "mcp_degraded_servers" => [
+        {
+          "name" => "pulse-fetch",
+          "error" => "Connection closed",
+          "reason" => "they did not connect after 3 retries",
+          "degraded_at" => "2026-08-23T15:20:54Z"
+        }
+      ]
+    ))
+
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    assert_includes result, "<unavailable-mcp-servers>"
+    assert_includes result, "</unavailable-mcp-servers>"
+    assert_includes result, "pulse-fetch"
+    assert_includes result, "Connection closed"
+    assert_includes result, "they did not connect after 3 retries"
+    assert_includes result, "say so plainly and stop"
+    assert_includes result, "do not improvise a substitute"
+  end
+
+  test "build_prompt_with_goal adds no MCP block when nothing was left out" do
+    job = AgentSessionJob.new
+    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
+
+    assert_not_includes result, "<unavailable-mcp-servers>"
   end
 
   test "build_prompt_with_goal injects human messages on every turn" do

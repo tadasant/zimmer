@@ -2597,12 +2597,23 @@ class AgentSessionJob < ApplicationJob
   # 1. Log the failure details
   # 2. Terminate the Claude CLI process
   # 3. For non-OAuth failures: retry with exponential backoff (up to MAX_MCP_CONNECTION_RETRIES)
-  # 4. On final retry or OAuth failure: transition to failed state
+  # 4. On OAuth failure: transition to failed state, so a human can authorize the
+  #    connector at /connectors and restart
+  # 5. On any other definitive failure — retries exhausted, or a static credential
+  #    the provider rejected — leave the server out and resume the session on the
+  #    servers that did connect (#degrade_mcp_servers!)
   #
   # MCP connection failures are often transient — especially during deploys, where
   # the auto-recovery system restarts sessions before MCP servers have finished
   # starting. Retrying with backoff (30s, 60s, 120s) gives MCP servers time to
   # come online without requiring manual intervention.
+  #
+  # Only ONE failure class is fatal, and the line is whether a human can resolve it:
+  # an OAuth server that needs authorization is waiting on a person to click
+  # Authorize, and running the session on without it would burn the work in front
+  # of a fix that is one human action away. Every other class is definitive — no
+  # amount of waiting or authorizing changes it — so stopping buys nothing and
+  # costs the whole transcript (GitHub issue #521).
   #
   # @param session [Session] The current session
   # @param process_pid [Integer] The Claude CLI process PID
@@ -2619,6 +2630,27 @@ class AgentSessionJob < ApplicationJob
     # Extract failure details
     failed_servers = custom_metadata["mcp_failed_servers"] || []
     failure_reason = custom_metadata["mcp_failure_reason"] || "MCP server connection failed"
+
+    # A server this session has already given up on is not news. It stays in the
+    # runtime config (so it reconnects for free if whatever broke it is fixed),
+    # which means it re-fails its handshake on every subsequent spawn — and
+    # `clear_stale_mcp_failure_metadata` wipes `mcp_connection_checked` on each
+    # resume, so McpStatusPersisting re-raises `should_fail_session` every time.
+    # Acting on that again would terminate the process and resume the session in
+    # a loop. Consume the flag and let the turn run: the status is already
+    # recorded as failed, and the agent was already told on the resume that
+    # degraded it.
+    if failed_servers.any? && new_mcp_failures(session, failed_servers).empty?
+      log_buffer.add(
+        "MCP connection failure detected for already-degraded server(s) " \
+        "#{failed_servers.map { |s| s['name'] }.join(', ')} — already reported to the agent, " \
+        "session continues without them.",
+        level: "info"
+      )
+      log_buffer.flush
+      session.remove_custom_metadata!("should_fail_session")
+      return false
+    end
 
     log_buffer.add(
       "MCP connection failure detected: #{failure_reason}",
@@ -2733,13 +2765,14 @@ class AgentSessionJob < ApplicationJob
       )
     elsif static_credential_failures.any?
       # Auth failure on a server whose credential is a static header/token, not OAuth.
-      # Terminal and NOT retried: a rejected API token does not become valid 30 seconds
+      # Definitive and NOT retried: a rejected API token does not become valid 30 seconds
       # later, so the backoff ladder would only delay the real error by ~3.5 minutes.
       #
-      # Recorded as mcp_connection_failed so the existing failure UI surfaces the raw
-      # per-server error (Session#failure_detail → "MCP Connection Failure Details"),
-      # which is what the user actually needs to see — e.g. a hosted MCP server's
-      # "invalid_token: Failed to verify token: no user or account information".
+      # Definitive is not the same as fatal. Nobody can authorize their way out of this
+      # one — unlike the OAuth branch above, there is no human action that resolves it
+      # from inside the session — so stopping the session buys nothing and costs the
+      # whole transcript. The server is left out and the session runs on the ones that
+      # did connect.
       static_credential_failures.each do |server|
         credential_vars = ServersConfig.find(server["name"])&.required_headers || []
         hint = credential_vars.any? ? " Check the credential(s): #{credential_vars.join(', ')}." : ""
@@ -2754,15 +2787,15 @@ class AgentSessionJob < ApplicationJob
       log_buffer.flush
 
       Rails.logger.warn(
-        "MCP static-credential authentication failed — session failed without retry " \
+        "MCP static-credential authentication failed — server left out without retry " \
         "| session_id=#{session.id} failed_servers=#{static_credential_failures.map { |s| s["name"] }.join(",")}"
       )
 
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "failure_reason" => "mcp_connection_failed",
-          "mcp_failed_servers" => failed_servers
-        )
+      return degrade_mcp_servers!(
+        session,
+        failed_servers,
+        log_buffer,
+        reason: "their credentials were rejected"
       )
     else
       # Regular MCP connection failure (not OAuth related) — retry with backoff
@@ -2785,28 +2818,30 @@ class AgentSessionJob < ApplicationJob
         return schedule_mcp_retry(session, failed_servers, mcp_retry_count, log_buffer)
       end
 
-      # Max retries exhausted — fall through to permanent failure
+      # Max retries exhausted — the failure is definitive, so stop retrying and
+      # leave the server out rather than killing the session over it.
       log_buffer.add(
-        "MCP connection retry limit exhausted (#{MAX_MCP_CONNECTION_RETRIES} attempts). Failing session.",
-        level: "error"
+        "MCP connection retry limit exhausted (#{MAX_MCP_CONNECTION_RETRIES} attempts).",
+        level: "warning"
       )
 
-      # Emit the authoritative ERROR to Rails.logger (shipped to obs / VictoriaLogs
-      # via the OTLP exporter) ONLY for this terminal case: the session is genuinely
-      # orphaned by MCP failure after all retries are exhausted. The intermediate,
-      # self-healing detection (McpStatusPersisting) logs at .info so transient flaps
-      # don't page on-call — this terminal failure is what the global prod-ERROR
-      # alert should fire on. See GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109.
-      Rails.logger.error(
-        "MCP servers failed to connect — session orphaned after #{MAX_MCP_CONNECTION_RETRIES} retries " \
-        "| session_id=#{session.id} failed_servers=#{failed_servers.map { |s| s["name"] }.join(",")}"
+      # .warn, not .error: the session is no longer orphaned by this, so it is not
+      # an incident and must not page on-call. It is still the loudest MCP-connect
+      # signal Zimmer emits — a capability the session was configured with is gone
+      # for the rest of its life — so it stays on Rails.logger, shipped to obs /
+      # VictoriaLogs via the OTLP exporter, where the per-server error is greppable.
+      # See GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109.
+      Rails.logger.warn(
+        "MCP servers failed to connect after #{MAX_MCP_CONNECTION_RETRIES} retries — left out, " \
+        "session continues | session_id=#{session.id} " \
+        "failed_servers=#{failed_servers.map { |s| s["name"] }.join(",")}"
       )
 
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "failure_reason" => "mcp_connection_failed",
-          "mcp_failed_servers" => failed_servers
-        )
+      return degrade_mcp_servers!(
+        session,
+        failed_servers,
+        log_buffer,
+        reason: "they did not connect after #{MAX_MCP_CONNECTION_RETRIES} retries"
       )
     end
 
@@ -2994,6 +3029,106 @@ class AgentSessionJob < ApplicationJob
 
     log_buffer.add(
       "[DIAGNOSTIC] Exiting monitoring loop - MCP retry scheduled in #{delay}s",
+      level: "debug"
+    )
+
+    true
+  end
+
+  # The failed servers this session has not already given up on.
+  #
+  # A nameless entry counts as "not new" rather than "new". McpStatusPersisting always
+  # names what it reports, so this is unreachable in practice — but a nameless entry
+  # that counted as new would be degraded, written off under no name, and arrive
+  # equally new on the next spawn, which is the one shape that loops.
+  #
+  # @param session [Session]
+  # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
+  # @return [Array<Hash>] the subset not already recorded in mcp_degraded_servers
+  def new_mcp_failures(session, failed_servers)
+    already_degraded = session.degraded_mcp_server_names.to_set
+    failed_servers.select do |server|
+      server["name"].present? && !already_degraded.include?(server["name"])
+    end
+  end
+
+  # Leave the named MCP servers out and keep the session alive.
+  #
+  # This is what a definitive connection failure costs now: the capability, not the
+  # session. The servers stay in the runtime config — nothing is rewritten, so a
+  # server whose upstream comes back reconnects on a later spawn for free — but they
+  # are recorded in `metadata["mcp_degraded_servers"]`, which does three things:
+  #
+  # 1. `Session#degraded_mcp_servers` reads it, so the session page and the JSON
+  #    consumers can say which capability this session lost and why.
+  # 2. #build_prompt_with_goal renders it into every subsequent prompt, so the agent
+  #    is told the tools are gone instead of discovering it by a tool call that is
+  #    not there.
+  # 3. #new_mcp_failures reads it, so the same server failing again on the next spawn
+  #    is a no-op rather than another terminate-and-resume.
+  #
+  # The session is resumed with a SYSTEM_RECOVERY nudge rather than a re-send of the
+  # original prompt: this can fire hours into a session, and #resume_for_recovery_prompt
+  # routes a recovery nudge through `resume_for_system_recovery!`, which preserves the
+  # session's scheduled wake-ups. A session whose runtime never started ignores the
+  # nudge and runs its original prompt (see the `session_id.blank?` branch in #perform),
+  # which is exactly what a first-spawn failure needs.
+  #
+  # `paused_by: "recovery"` — and not a bespoke marker — because that is the value both
+  # recovery sweeps match exactly. If the enqueue below is lost (a worker dying in the
+  # gap), a sweep picks the session back up; a novel marker would strand it where
+  # nothing looks.
+  #
+  # @param session [Session]
+  # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
+  # @param log_buffer [LogBuffer]
+  # @param reason [String] short phrase completing "MCP server(s) X were left out because …"
+  # @return [Boolean] always true (the MCP failure was handled)
+  def degrade_mcp_servers!(session, failed_servers, log_buffer, reason:)
+    require "automated_prompts"
+
+    names = failed_servers.filter_map { |server| server["name"] }.uniq
+    degraded_at = Time.current.iso8601
+    entries = session.degraded_mcp_servers.index_by { |entry| entry["name"] }
+    failed_servers.each do |server|
+      next if server["name"].blank?
+
+      entries[server["name"]] = {
+        "name" => server["name"],
+        "error" => server["error"],
+        "reason" => reason,
+        "degraded_at" => degraded_at
+      }.compact
+    end
+
+    log_buffer.add(
+      "MCP server(s) #{names.join(', ')} are marked failed and left out for the remainder of " \
+      "this session because #{reason}. Their tools are unavailable; the session continues on " \
+      "the servers that did connect.",
+      level: "warning"
+    )
+    log_buffer.flush
+
+    session.update!(
+      running_job_id: nil,
+      metadata: (session.metadata || {}).merge(
+        "paused_by" => "recovery",
+        "mcp_degraded_servers" => entries.values
+      )
+    )
+    session.pause! if session.may_pause?
+
+    remove_running_loader(session)
+
+    AgentSessionJob.perform_later(
+      session.id,
+      AutomatedPrompts.system_recovery(
+        reason: "MCP server(s) #{names.join(', ')} could not connect and have been left out of this session"
+      )
+    )
+
+    log_buffer.add(
+      "[DIAGNOSTIC] Exiting monitoring loop - session resuming without #{names.join(', ')}",
       level: "debug"
     )
 
@@ -3464,7 +3599,41 @@ class AgentSessionJob < ApplicationJob
     prompt += "\n\n#{hierarchy_block}" if hierarchy_block.present?
     prompt += "\n\n#{messages_block}" if messages_block.present?
 
+    degraded_block = build_degraded_mcp_block(session)
+    prompt += "\n\n#{degraded_block}" if degraded_block.present?
+
     prompt
+  end
+
+  # The standing notice that a server this session was configured with is not
+  # there. It rides on every prompt for the same reason the session notes do: the
+  # agent cannot be expected to go looking for it, and the alternative is finding
+  # out from a tool call that silently does not exist.
+  #
+  # The instruction to stop rather than improvise is the point. Running on without
+  # a capability is the right trade only while the agent knows it is doing so — an
+  # agent that quietly substitutes a worse route for the missing one produces work
+  # nobody can trust, which is a more expensive failure than the stop.
+  #
+  # @param session [Session]
+  # @return [String, nil] nil when nothing is degraded
+  def build_degraded_mcp_block(session)
+    degraded = session.degraded_mcp_servers
+    return nil if degraded.empty?
+
+    lines = degraded.map do |server|
+      detail = [ server["reason"].presence, server["error"].presence ].compact.join(": ")
+      detail.present? ? "- #{server['name']} — #{detail}" : "- #{server['name']}"
+    end
+
+    <<~BLOCK.strip
+      <unavailable-mcp-servers>
+      <info>These MCP servers were attached to this session but could not connect, and Zimmer has stopped retrying them. Their tools are NOT available for the rest of this session. Zimmer kept the session running rather than discarding your work — no human is asking you to do anything about this.</info>
+      #{lines.join("\n")}
+
+      Carry on with the servers that did connect. If a task genuinely requires one of the servers above, say so plainly and stop — do not improvise a substitute for the missing capability.
+      </unavailable-mcp-servers>
+    BLOCK
   end
 
   # [hierarchy block, human-messages block], either of which may be nil: the
