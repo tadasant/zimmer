@@ -390,6 +390,11 @@ class HealthMonitorService
 
     {
       status: status,
+      # Which store the card is describing. Under session-scoped credentials the
+      # answer to "can a session authenticate" is a DB row, not a file on the
+      # worker, and a card that still said "Worker credentials file" would be
+      # pointing at something no session reads.
+      session_scoped_credentials: AppSetting.session_scoped_credentials_enabled?,
       credentials_state: credentials.state,
       credentials_detail: credentials.detail,
       credentials_owner: credentials.owner_email,
@@ -405,6 +410,7 @@ class HealthMonitorService
   rescue => e
     {
       status: HealthStatus.new(status: :warning, message: "Auth health could not be read: #{e.message}"),
+      session_scoped_credentials: false,
       credentials_state: :unknown,
       credentials_detail: e.message,
       credentials_owner: nil,

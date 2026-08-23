@@ -8,14 +8,10 @@ class QuotasController < ApplicationController
   # The runtime sub-tab (Claude Code / Codex) is selected via ?runtime=. Each
   # runtime keeps its own account pool, current account, and rotation history.
   def show
-    # Deliberately does NOT reconcile the filesystem identity. Loading a
-    # diagnostic page must not change which account production runs under, and
-    # this one did: #reconcile_filesystem_identity! can mark a different account
-    # current, driven by a container-local file that a container replacement
-    # leaves stale. An operator refreshing /quotas to WATCH an incident was
-    # silently mutating it. The 5-minute sweep in RefreshRuntimeAuthTokensJob
-    # still runs the same reconciliation, so nothing stops converging — it just
-    # no longer happens as a side effect of a GET. See issue #618, hole 12.
+    # Reads. The page has exactly two verbs for an account — Authenticate and
+    # Switch — and nothing that asks an operator to reconcile, adopt or sync
+    # between stores, because with the DB as sole owner there is no second store
+    # to disagree with. See issue #618's acceptance criterion.
     @accounts = ClaudeAccount.for_runtime(current_runtime).order(:priority)
     @current_account = ClaudeAccount.current_account(current_runtime)
     @snapshots = latest_snapshots_for(@accounts)
@@ -35,11 +31,6 @@ class QuotasController < ApplicationController
     auto_heal_accounts
 
     @rotation_events = rotation_events_for(current_runtime)
-
-    # The filesystem-sync banner is Claude-specific (it reads ~/.claude.json and
-    # offers the rake-bootstrap path). Codex credentials are managed entirely
-    # through the DB pool, so the banner is suppressed on that tab.
-    @filesystem_email = current_runtime == ClaudeAuthProvider::RUNTIME ? ClaudeAccount.filesystem_oauth_email : nil
 
     load_spot_gate if current_runtime == ClaudeAuthProvider::RUNTIME
   end
@@ -227,26 +218,6 @@ class QuotasController < ApplicationController
 
     notice = reactivation ? "Re-activated #{account.email} — its credentials were rewritten to the worker." : "Switched to #{account.email}"
     redirect_to quotas_path(runtime: runtime), notice: notice
-  end
-
-  # POST: Read the worker's ~/.claude.json + .credentials.json and populate
-  # the matching ClaudeAccount's oauth_config. Used after `claude /login`
-  # on the worker to avoid the rake-task 3-step dance. Claude Code only.
-  def sync_from_filesystem
-    fs_email = ClaudeAccount.filesystem_oauth_email
-
-    if fs_email.blank?
-      redirect_to quotas_path, alert: "No OAuth tokens detected on the worker filesystem. Run `claude /login` on the worker first."
-      return
-    end
-
-    account = ClaudeAccount.sync_from_filesystem!
-
-    if account
-      redirect_to quotas_path, notice: "Captured tokens for #{fs_email}#{account.is_current? ? " (marked current)" : ""}."
-    else
-      redirect_to quotas_path, alert: "The worker holds tokens for #{fs_email}, but no matching ClaudeAccount exists. Add #{fs_email} with the \"Add account\" form, then Authenticate it."
-    end
   end
 
   # POST: Begin a UI-driven login for an OAuth account. Cancels any in-flight
@@ -490,7 +461,7 @@ class QuotasController < ApplicationController
       account.reload
     end
 
-    token = account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+    token = account.claude_access_token
     return nil unless token.present?
 
     result = QuotaCheckService.check_with_token(token)
@@ -498,7 +469,7 @@ class QuotasController < ApplicationController
     if !result.success? && result.error_message&.include?("401") && account.can_refresh_token?
       if account.refresh_token!
         account.reload
-        token = account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+        token = account.claude_access_token
         result = QuotaCheckService.check_with_token(token) if token.present?
       end
     end

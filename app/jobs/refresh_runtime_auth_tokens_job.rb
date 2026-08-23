@@ -44,10 +44,11 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
   private
 
   def perform_scheduled_refresh(provider)
-    # Auto-adopt filesystem identity changes before syncing tokens.
-    # If the operator manually switched the runtime's CLI to a different known
-    # account, this updates the DB to match the filesystem so the subsequent
-    # sync targets the right account.
+    # Auto-adopt filesystem identity changes before syncing tokens, for the
+    # runtimes that still have one. Claude Code does not: it no longer implements
+    # the hook, because adopting an identity off a container-local file on a
+    # five-minute timer is how a stale identity got adopted over a correct one
+    # (issue #618, addendum B). Codex still reconciles its own auth.json here.
     provider.reconcile_filesystem_identity!
 
     # Repair a corrupt credentials file before anything reads it. The CLI can

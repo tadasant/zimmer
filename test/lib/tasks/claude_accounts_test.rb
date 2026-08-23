@@ -62,105 +62,24 @@ class ClaudeAccountsTasksTest < ActiveSupport::TestCase
     account.update!(priority: original_priority)
   end
 
-  test "add auto-captures tokens when filesystem identity matches email" do
-    email = "autocapture-#{SecureRandom.hex(4)}@example.com"
+  # The task no longer reads `~/.claude/.credentials.json` to decide whether the
+  # new row already has credentials. Whose tokens sit on a file three writers
+  # share is not evidence, and under session-scoped credentials there is nothing
+  # in that file to read. See issue #618.
+  test "add points a credential-less account at the Authenticate button" do
+    email = "needs-auth-#{SecureRandom.hex(4)}@example.com"
 
-    with_claude_account_fs do |_fs|
-      File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({
-        "oauthAccount" => { "emailAddress" => email }
-      }))
-      File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate({
-        "claudeAiOauth" => {
-          "accessToken" => "captured-on-add",
-          "refreshToken" => "captured-refresh",
-          "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
-        }
-      }))
+    output = capture_io do
+      Rake::Task["claude_accounts:add"].reenable
+      Rake::Task["claude_accounts:add"].invoke(email, "0")
+    end.first
 
-      output = capture_io do
-        Rake::Task["claude_accounts:add"].reenable
-        Rake::Task["claude_accounts:add"].invoke(email, "5")
-      end.first
-
-      account = ClaudeAccount.find_by(email: email)
-      assert_not_nil account
-      assert_equal "captured-on-add", account.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken")
-      assert_match(/Captured OAuth tokens from filesystem/, output)
-    ensure
-      ClaudeAccount.find_by(email: email)&.destroy
-    end
-  end
-
-  test "add does not auto-capture when filesystem identity differs" do
-    email = "mismatch-#{SecureRandom.hex(4)}@example.com"
-
-    with_claude_account_fs do |_fs|
-      # Filesystem holds a DIFFERENT account's tokens
-      File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({
-        "oauthAccount" => { "emailAddress" => "someone-else@example.com" }
-      }))
-      File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate({
-        "claudeAiOauth" => {
-          "accessToken" => "wrong-token",
-          "refreshToken" => "wrong-refresh",
-          "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
-        }
-      }))
-
-      output = capture_io do
-        Rake::Task["claude_accounts:add"].reenable
-        Rake::Task["claude_accounts:add"].invoke(email, "0")
-      end.first
-
-      account = ClaudeAccount.find_by(email: email)
-      assert_not_nil account
-      assert_equal({}, account.oauth_config, "should not capture tokens from different account")
-      assert_match(/filesystem holds tokens for a different account/, output)
-    ensure
-      ClaudeAccount.find_by(email: email)&.destroy
-    end
-  end
-
-  test "add prints hint when no filesystem tokens exist" do
-    email = "no-fs-#{SecureRandom.hex(4)}@example.com"
-
-    with_claude_account_fs do |_fs|
-      # No filesystem files
-      output = capture_io do
-        Rake::Task["claude_accounts:add"].reenable
-        Rake::Task["claude_accounts:add"].invoke(email, "0")
-      end.first
-
-      account = ClaudeAccount.find_by(email: email)
-      assert_not_nil account
-      assert_equal({}, account.oauth_config)
-      assert_match(/no filesystem tokens detected/, output)
-    ensure
-      ClaudeAccount.find_by(email: email)&.destroy
-    end
-  end
-
-  private
-
-  def with_claude_account_fs
-    tmpdir = Dir.mktmpdir
-    original_cred_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-    original_json_path = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(tmpdir, ".credentials.json"))
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, File.join(tmpdir, "claude.json"))
-    FileUtils.mkdir_p(tmpdir)
-    yield tmpdir
+    assert_equal({}, ClaudeAccount.find_by(email: email).oauth_config)
+    assert_match(%r{open /quotas and click Authenticate}, output)
+    assert_no_match(/filesystem/i, output)
   ensure
-    FileUtils.rm_rf(tmpdir)
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, original_cred_path)
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, original_json_path)
+    ClaudeAccount.find_by(email: email)&.destroy
   end
-
-  public
 
   # claude_accounts:remove
 

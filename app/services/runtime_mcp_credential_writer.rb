@@ -62,4 +62,25 @@
 # test/contracts/runtime_mcp_credential_writer_contract_test.rb against every
 # writer.
 module RuntimeMcpCredentialWriter
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+
+  module ClassMethods
+    # The writer instance a given session's credentials should be routed
+    # through.
+    #
+    # Most runtimes keep one host-global credential store and ignore the
+    # session entirely, which is what this default expresses. Claude Code
+    # overrides it: under session-scoped credentials each session reads and
+    # writes its own CLAUDE_CONFIG_DIR, so "which store" is a per-session
+    # question there. Callers that genuinely have no session — the cron sweep,
+    # the revocation path — keep calling `.new` directly.
+    #
+    # @param _session [Session]
+    # @return [RuntimeMcpCredentialWriter]
+    def for_session(_session)
+      new
+    end
+  end
 end

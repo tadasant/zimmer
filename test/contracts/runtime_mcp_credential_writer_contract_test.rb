@@ -24,6 +24,15 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
         "#{klass} must include RuntimeMcpCredentialWriter so it is recognizable as a runtime credential writer"
     end
 
+    # `.for_session` is part of the contract, not a Claude-only extra: callers
+    # that hold a session build through it rather than `.new`, so a writer that
+    # omitted it would only fail at spawn time.
+    test "#{klass}.for_session returns an instance of the writer" do
+      assert_respond_to klass, :for_session
+      assert_kind_of klass, klass.for_session(nil)
+      assert_kind_of klass, klass.for_session(sessions(:active_session))
+    end
+
     test "#{klass} instances respond to the full writer contract" do
       writer = klass.new
       assert_respond_to writer, :write!

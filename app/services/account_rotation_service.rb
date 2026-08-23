@@ -139,66 +139,22 @@ class AccountRotationService
     result
   end
 
-  # Adopt the filesystem identity into the DB when the CLI was manually
-  # switched to a different known active account (typically via `claude
-  # /login` on the worker). Returns the adopted account, or nil if no
-  # adoption occurred. Safe to call frequently from any code path that
-  # wants the DB to track filesystem changes — quotas page render,
-  # token refresh cron, session start.
-  #
-  # Skips adoption when:
-  #   - no DB-current account exists (caller must bootstrap)
-  #   - filesystem matches DB (already in sync)
-  #   - filesystem identity has no DB record (call sync_from_filesystem! to bootstrap)
-  #   - filesystem identity is inactive or needs_reauth
-  #   - DB switch is newer than the filesystem config (web UI switch
-  #     hasn't been written to disk yet — caller should write_config!)
-  def reconcile_with_filesystem!
-    current = ClaudeAccount.current_account
-    return nil unless current
-    return nil if config_file_matches?(current)
-
-    # Two gates, both required:
-    #
-    #   1. credentials_changed_externally? — the SHARED credentials file was
-    #      written by something other than Zimmer since our last marker stamp. This
-    #      timestamp comparison is on the shared bind mount, so it is identical on
-    #      the web and worker containers — it cannot be fooled by a stale,
-    #      container-local ~/.claude.json (the divergence that previously let the
-    #      web container "adopt" an identity the worker never switched to).
-    #
-    #   2. filesystem_newer_than_db? — that external write is more recent than the
-    #      DB-current account's switch. Preserves DB-wins semantics: a web-UI
-    #      switch that hasn't been written to disk yet beats an older filesystem
-    #      state, so we don't revert it.
-    return nil unless credentials_changed_externally?
-    return nil unless filesystem_newer_than_db?(current)
-
-    fs_account = detect_filesystem_account
-    return nil unless fs_account
-    return nil if fs_account.id == current.id
-    return nil unless fs_account.active? && fs_account.has_valid_config?
-
-    @logger.info("CLI manually switched to different account, adopting filesystem identity",
-      db_current: current.email, fs_account: fs_account.email)
-    fs_account.mark_current!
-    # Stamp the marker to the adopted owner BEFORE syncing, so the token-capture
-    # gate (which trusts the marker) recognizes the freshly-logged-in account.
-    ClaudeAccount.write_credentials_owner_marker!(fs_account.email)
-    fs_account.sync_tokens_from_filesystem!
-    fs_account
-  end
-
   # Ensure there's an active account configured. Called on session start.
   # If no account is current, picks the first available and writes its config.
   # Also refreshes expired tokens on the current account to prevent 401 errors.
   #
-  # When the filesystem identity doesn't match the DB-current account, this
-  # method checks whether the CLI was manually switched to a different known
-  # account. If so, the DB adopts the filesystem account as current (staying
-  # in sync with manual overrides). Otherwise, it writes the DB-current
-  # account's config to disk.
+  # Under session-scoped credentials the filesystem is not a party to any of
+  # this — see #ensure_active_account_from_db!, which is the whole method.
+  #
+  # With the setting off, the DB-current account's config is written to disk
+  # whenever the on-disk identity does not already agree with it. The DB wins:
+  # there is no longer a branch that adopts an identity off the filesystem,
+  # because a file the CLI and Zimmer both write is not evidence of who the pool
+  # should be running as, and acting on it is what let a container replacement
+  # silently change which account production ran under (#618, addendum B).
   def ensure_active_account!
+    return ensure_active_account_from_db! if session_scoped_credentials?
+
     current = ClaudeAccount.current_account
 
     if current&.active? && current&.has_valid_config?
@@ -212,20 +168,14 @@ class AccountRotationService
         # Filesystem matches DB — sync tokens in case CLI refreshed them
         sync_current_tokens(current)
       else
-        # Filesystem doesn't match DB — try to adopt the filesystem identity
-        # if the CLI was manually switched to a different known active account.
-        adopted = reconcile_with_filesystem!
-        if adopted
-          current = adopted
-        else
-          # DB switch is more recent, unknown identity, or inactive account — write DB-current to disk.
-          # Capture the filesystem identity's CLI-rotated tokens to its DB row first;
-          # otherwise write_config! clobbers credentials the CLI may have rotated and
-          # leaves that account bricked the next time it is selected.
-          capture_outgoing_filesystem_tokens(except: current)
-          @logger.info("Filesystem config mismatch, syncing DB-current account to disk", email: current.email)
-          write_config!(current)
-        end
+        # The on-disk identity does not agree with the DB-current account, so the
+        # DB is what gets written. Capture the filesystem owner's CLI-rotated
+        # tokens to its own DB row first; otherwise write_config! clobbers
+        # credentials the CLI may have rotated and leaves that account bricked
+        # the next time it is selected.
+        capture_outgoing_filesystem_tokens(except: current)
+        @logger.info("Filesystem config mismatch, syncing DB-current account to disk", email: current.email)
+        write_config!(current)
       end
 
       # Refresh if tokens are expired or expiring soon
@@ -245,17 +195,12 @@ class AccountRotationService
     account = first_usable_available_account
 
     unless account
-      # No current and nothing usable. The usual cause is DB records were
-      # added via `claude_accounts:add` but `capture_tokens` was skipped,
-      # so every account has an empty oauth_config. If the filesystem
-      # holds freshly-minted tokens from a recent `claude /login`, adopt
-      # them into the matching DB record before giving up.
-      bootstrapped = ClaudeAccount.sync_from_filesystem!
-      if bootstrapped&.has_valid_config?
-        @logger.info("Bootstrapped account from filesystem", email: bootstrapped.email)
-        account = first_usable_available_account
-      end
-      return nil unless account
+      # No current account and nothing usable. There is no filesystem fallback:
+      # adopting whatever tokens happen to be on disk is the two-sources-of-truth
+      # problem this system is being taken apart to remove, and the answer is the
+      # Authenticate button on /quotas, which writes the DB and needs no shell.
+      @logger.warn("No usable Claude account in the pool — authenticate one from /quotas")
+      return nil
     end
 
     # Capture whoever owns the credentials on disk before overwriting them. This
@@ -268,6 +213,42 @@ class AccountRotationService
 
     # Write config to filesystem BEFORE marking current in the DB
     write_config!(account)
+    account.mark_current!
+    @logger.info("Set initial active account", email: account.email)
+    account
+  end
+
+  # #ensure_active_account! under session-scoped credentials: the same job with
+  # the filesystem removed from it entirely.
+  #
+  # There is no config file to compare against, no identity to adopt, and nothing
+  # to write — the session gets its token from this account's DB row via
+  # CLAUDE_CODE_OAUTH_TOKEN. What is left is the part that was always the real
+  # work: make sure a usable account is current and its access token is fresh.
+  #
+  # @return [ClaudeAccount, nil]
+  def ensure_active_account_from_db!
+    current = ClaudeAccount.current_account
+
+    # `claude_access_token`, not just `has_valid_config?`: the token IS what the
+    # session is handed, so a row carrying only a stored identity is not a usable
+    # current account here even though the hash is non-empty. Keeping it current
+    # would spawn token-less sessions while /health called the same row corrupt.
+    if current&.active? && current&.claude_access_token.present?
+      if current.token_expired? || current.token_expiring_soon?
+        @logger.info("Refreshing expired/expiring tokens for current account", email: current.email)
+        @logger.warn("Token refresh failed for current account", email: current.email) unless current.refresh_token!
+        current.reload
+      end
+      return current
+    end
+
+    account = first_usable_available_account
+    unless account
+      @logger.warn("No usable Claude account in the pool — authenticate one from /quotas")
+      return nil
+    end
+
     account.mark_current!
     @logger.info("Set initial active account", email: account.email)
     account
@@ -286,16 +267,23 @@ class AccountRotationService
   # whose credentials aren't on the filesystem yet, triggering
   # reconciliation that can corrupt token identity.
   def activate!(account, snapshot_trigger:)
-    # Capture the outgoing identity's CLI-rotated tokens before write_config!
-    # overwrites the credentials file. Without this, every switch (manual or
-    # automatic) silently drops any refresh_token rotation the CLI performed
-    # while the outgoing account was current — leaving the outgoing account's
-    # DB copy stale and bricking it the next time anyone tries to use it.
-    # Rotation's #rotate! also calls sync_current_tokens beforehand, but this
-    # in-method capture is the only thing protecting the manual switch path.
-    capture_outgoing_filesystem_tokens(except: account)
+    # Under session-scoped credentials there is nothing on the filesystem to
+    # capture or overwrite: a switch is a DB write and a snapshot, and every
+    # session spawned after it reads the new account's token out of the row.
+    # This is what collapses "Switch" from a two-store reconciliation into one
+    # UPDATE — see issue #618.
+    unless session_scoped_credentials?
+      # Capture the outgoing identity's CLI-rotated tokens before write_config!
+      # overwrites the credentials file. Without this, every switch (manual or
+      # automatic) silently drops any refresh_token rotation the CLI performed
+      # while the outgoing account was current — leaving the outgoing account's
+      # DB copy stale and bricking it the next time anyone tries to use it.
+      # Rotation's #rotate! also calls sync_current_tokens beforehand, but this
+      # in-method capture is the only thing protecting the manual switch path.
+      capture_outgoing_filesystem_tokens(except: account)
+      write_config!(account)
+    end
 
-    write_config!(account)
     account.mark_current!
     take_snapshot(account, trigger: snapshot_trigger)
   end
@@ -311,6 +299,16 @@ class AccountRotationService
   #   backwards-write guard because the caller holds a credential newer than
   #   anything on disk by construction (an interactive login).
   def write_config!(account, force: false)
+    # Belt and braces. Every caller is already gated, but this is the one method
+    # in the codebase that can put a subscription refresh token on the shared
+    # filesystem, so it refuses outright when the filesystem is not supposed to
+    # hold one. A stray call is a bug to see in the log, not a credential to
+    # write.
+    if session_scoped_credentials?
+      @logger.info("Skipping the filesystem credential write: session-scoped credentials are on", email: account.email)
+      return
+    end
+
     # Write ~/.claude.json (contains oauthAccount field)
     claude_json = account.oauth_config.fetch("claude_json", {})
     if claude_json.present?
@@ -460,13 +458,13 @@ class AccountRotationService
   # the candidate is promoted unvalidated. Reading a provider outage as "every
   # account is dead" would park every session on the instance at once.
   def usable_candidate?(account)
-    result = QuotaCheckService.check_with_token(access_token_for(account))
+    result = QuotaCheckService.check_with_token(account.claude_access_token)
 
     if !result.success? && !result.unreachable? && account.can_refresh_token?
       @logger.info("Candidate's token was refused, refreshing before deciding", email: account.email)
       account.refresh_token!
       account.reload
-      result = QuotaCheckService.check_with_token(access_token_for(account))
+      result = QuotaCheckService.check_with_token(account.claude_access_token)
     end
 
     if result.success?
@@ -497,11 +495,6 @@ class AccountRotationService
     !snapshot.nil? && snapshot.seven_day_window_spent?
   end
 
-  # The OAuth access token this account would present, from its DB copy.
-  def access_token_for(account)
-    account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
-  end
-
   # Adopt the on-disk ~/.claude.json identity into the account's stored config
   # when the file already names this account, and report whether that happened.
   #
@@ -528,8 +521,12 @@ class AccountRotationService
     @logger.info("Bootstrapped shared credentials owner marker", email: account.email)
   end
 
-  # Sync filesystem tokens back to DB for the current account
+  # Sync filesystem tokens back to DB for the current account. A no-op under
+  # session-scoped credentials: no session writes the shared file, so there is
+  # never anything on it to adopt.
   def sync_current_tokens(account)
+    return if session_scoped_credentials?
+
     account.sync_tokens_from_filesystem!
     @logger.info("Synced filesystem tokens to DB", email: account.email)
   rescue => e
@@ -544,6 +541,8 @@ class AccountRotationService
   # capture entirely when the filesystem identity matches the incoming
   # account or when there is no filesystem identity to capture from.
   def capture_outgoing_filesystem_tokens(except:)
+    return if session_scoped_credentials?
+
     # The outgoing owner is whoever the SHARED marker names — not whatever the
     # container-local ~/.claude.json says. Using the marker is what keeps a switch
     # on one container from mis-attributing the other container's view of the
@@ -562,25 +561,6 @@ class AccountRotationService
     @logger.warn("Failed to capture outgoing filesystem tokens", error: e.message)
   end
 
-  # True when the shared ~/.claude/.credentials.json was modified more recently
-  # than Zimmer last stamped the owner marker — i.e., something other than Zimmer (the
-  # Claude CLI rotating tokens, or an operator's manual `claude /login`) wrote the
-  # credentials since our last write. Both files live in the shared bind mount, so
-  # this comparison yields the same answer on the web and worker containers.
-  #
-  # Conservative default: with no marker yet (the post-deploy transition window)
-  # we report false, so identity adoption stays off until Zimmer has stamped the
-  # marker at least once.
-  def credentials_changed_externally?
-    marker = ClaudeAuthProvider.credentials_owner_path
-    creds = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-    return false unless File.exist?(marker) && File.exist?(creds)
-
-    File.mtime(creds) > File.mtime(marker)
-  rescue Errno::ENOENT
-    false
-  end
-
   # Refresh tokens if expired, without failing the overall operation
   def ensure_fresh_tokens!(account)
     return unless account.token_expired? || account.token_expiring_soon?
@@ -594,7 +574,7 @@ class AccountRotationService
 
   # Take a quota snapshot for an account using its DB-stored OAuth token
   def take_snapshot(account, trigger:)
-    token = access_token_for(account)
+    token = account.claude_access_token
     return unless token.present?
 
     result = QuotaCheckService.check_with_token(token)
@@ -605,37 +585,16 @@ class AccountRotationService
     @logger.error("Failed to take quota snapshot", email: account.email, error: e.message)
   end
 
-  # Returns true if the filesystem config file was modified more recently
-  # than the DB-current account was switched. Used to distinguish between
-  # a manual `claude /login` (filesystem wins) and a web UI switch that
-  # hasn't been written to disk yet (DB wins).
-  def filesystem_newer_than_db?(current_account)
-    return false unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
-
-    fs_mtime = File.mtime(ClaudeAuthProvider::CLAUDE_JSON_PATH)
-    db_switch_time = current_account.last_rotated_to_at
-
-    # If the DB has no record of when the switch happened, trust filesystem
-    return true if db_switch_time.nil?
-
-    fs_mtime > db_switch_time
-  rescue Errno::ENOENT
-    false
-  end
-
-  # Reads the filesystem ~/.claude.json and looks up the corresponding
-  # ClaudeAccount by oauthAccount identity. Returns nil if the file
-  # doesn't exist, can't be parsed, or no matching account is found.
-  def detect_filesystem_account
-    return nil unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
-
-    fs_config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    fs_email = ClaudeAccount.extract_oauth_email(fs_config["oauthAccount"])
-    return nil if fs_email.blank?
-
-    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).find_by(email: fs_email)
-  rescue JSON::ParserError, Errno::ENOENT
-    nil
+  # Whether Claude sessions carry their own credentials rather than reading the
+  # shared file. Read here rather than passed in, so a caller cannot half-apply
+  # the setting by forgetting to thread it through.
+  #
+  # Deliberately the SETTING alone, not ClaudeSessionConfigDirectory.active_for?:
+  # every caller here is deciding whether to WRITE the shared file, and the
+  # spawn-time fallback that predicate also covers (no current account, no stored
+  # token) is precisely the state in which there is nothing worth writing anyway.
+  def session_scoped_credentials?
+    AppSetting.session_scoped_credentials_enabled?
   end
 
   # Check if the current ~/.claude.json matches the account's stored config.
@@ -646,11 +605,10 @@ class AccountRotationService
   # can be left alone, and an account with no stored identity is exactly the case
   # where the credentials on disk could belong to anyone.
   #
-  # A mismatch is not a dead end for either caller. #ensure_active_account! first
-  # tries to adopt the on-disk identity when it already names this account
+  # A mismatch is not a dead end. #ensure_active_account! first tries to adopt the
+  # on-disk identity when it already names this account
   # (#adopt_own_filesystem_identity), which converges the unverifiable case
-  # instead of repeating it, and otherwise writes the DB-current account to disk;
-  # #reconcile_with_filesystem! goes on to its own adoption gates.
+  # instead of repeating it, and otherwise writes the DB-current account to disk.
   def config_file_matches?(account)
     return false unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 

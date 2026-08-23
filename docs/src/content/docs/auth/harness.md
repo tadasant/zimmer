@@ -37,6 +37,129 @@ Everything goes through `RuntimeAuthProvider.for(runtime)` → `ClaudeAuthProvid
 | Rotation | `AccountRotationService`, 5-minute interval | inline in the provider, 24h |
 | Identity check on capture | email must match | none |
 
+## Session-scoped credentials: the DB owns the chain
+
+**Setting:** Settings → Experimental → *Session-scoped Claude credentials*. Ships **off**.
+
+With it on, every Claude Code session spawns with its own `CLAUDE_CONFIG_DIR` and is handed a
+subscription **access** token through `CLAUDE_CODE_OAUTH_TOKEN`. It receives no refresh token, so it
+cannot rotate the chain — which is what makes "log in once, ever; Zimmer refreshes centrally" true
+rather than aspirational. The shared `~/.claude/.credentials.json` stops being a source of truth
+for subscription tokens entirely.
+
+```mermaid
+flowchart LR
+    DB[(claude_accounts<br/>oauth_config)]
+    Z[Zimmer<br/>RefreshRuntimeAuthTokensJob]
+    S1[session 42<br/>CLAUDE_CONFIG_DIR=…/42]
+    S2[session 43<br/>CLAUDE_CONFIG_DIR=…/43]
+    V[Anthropic]
+
+    DB -->|access token via<br/>CLAUDE_CODE_OAUTH_TOKEN| S1
+    DB -->|access token via<br/>CLAUDE_CODE_OAUTH_TOKEN| S2
+    Z -->|refresh_token grant,<br/>under the pool lock| V
+    V -->|new access + refresh| Z
+    Z --> DB
+    S1 -.->|mcpOAuth only| F1[…/42/.credentials.json]
+    S2 -.->|mcpOAuth only| F2[…/43/.credentials.json]
+```
+
+Only Zimmer refreshes, under the pool lock it already had. Nothing else holds a refresh token, so
+there is no second writer to lose a race to.
+
+### Why this rather than more guards
+
+`~/.claude/.credentials.json` had three writers and no owner. On 2026-08-22 Zimmer's convergence
+write put a spent refresh token over the live one the CLI had rotated to; the CLI presented it,
+Anthropic answered `invalid_grant`, and the CLI blanked its own tokens. The credential then existed
+in **neither** store — data loss, not drift, which is why re-auth-and-wait never healed it. See
+[#618](https://github.com/tadasant/zimmer/issues/618).
+
+Every mechanism on this page below the fold — the owner marker, the completeness guards, the
+symmetric write guard, `sync_tokens_from_filesystem!` — exists to make that one file safe to share.
+This removes the sharing instead.
+
+### What the CLI actually does under it
+
+Measured on CLI 2.1.240/2.1.241, against a scratch config dir on the production worker:
+
+| Question | Answer |
+| --- | --- |
+| Do OAuth MCP servers work with only an `mcpOAuth` block seeded? | Yes — connected and tools callable |
+| Does the CLI write a `claudeAiOauth` block? | **No.** Top-level keys after a run: `["mcpOAuth"]` |
+| Where does a rotated MCP token land? | `$CLAUDE_CONFIG_DIR/.credentials.json`, `mcpOAuth` only |
+| stdio and static-header servers? | Unaffected — the credential store is not in their path |
+| Does `--resume` still work? | Yes, as long as the config dir is stable per session |
+| Does `~/.claude/.credentials.json` change? | No — byte-identical before and after |
+
+The file that remains cannot destroy a subscription chain, because it never contains one.
+
+Two behavioural differences worth knowing. The CLI writes no `oauthAccount` into the scratch
+`.claude.json`, so there is no filesystem identity to reconcile against — which is why the
+reconciliation surface could be deleted rather than fixed. And an env-var session gets
+`user:inference` scope only, which disables Claude-in-Chrome; Zimmer needs inference and MCP, both
+of which work.
+
+### The per-session directory
+
+`ClaudeSessionConfigDirectory` resolves `~/.zimmer/claude-config/<session_id>` — a sibling of the
+clones base, inside the same durable `zimmer_data` volume, so a deploy does not destroy it.
+
+It is keyed on the session id and **stable for that session's whole life**, which is load-bearing
+rather than tidy: Claude Code keeps its conversation state under `CLAUDE_CONFIG_DIR`, so
+`claude --resume <id>` only works when every invocation sees the same directory. "Fresh per session"
+means fresh per *Zimmer* session, not per process — a Zimmer session is a long-lived record resumed
+by many short CLI processes (p99 runtime 0.09h, max 1.27h over 42,971 runs, against an 8-hour token
+TTL: a token fixed at spawn has >6x headroom and needs no mid-process re-seeding).
+
+`projects/` inside it is a **symlink** to the shared `~/.claude/projects`. `CLAUDE_CONFIG_DIR`
+relocates the transcript tree as well as the credentials, and Zimmer reads transcripts from the
+shared path in a dozen places. Credentials are what needs isolating; transcripts are not. The
+directory is reclaimed with the session's scratch dir, and the cleanup deletes the symlink rather
+than following it.
+
+### MCP OAuth under it
+
+`ClaudeMcpCredentialWriter.for_session` points the writer at the session's own file. Rotated tokens
+are captured back by `McpOauthRuntimeReconciler`, unchanged — same `server_name|sha256(…)[0,16]`
+keys, same adoption rule, just a different path. This is strictly better than the shared file: one
+writer per file means the read-modify-write no longer races every other session on the worker.
+
+One gap: `RefreshMcpOauthTokensJob` has no session to scope to, so the cron reads and writes the
+host-global file. Revoking a credential through `delete_runtime_credentials` reaches the revoking
+session's own store, but a *different* session already running keeps its copy until it ends. New
+sessions get fresh directories, so the window is one session's lifetime.
+
+Which store a session uses is decided by one predicate, `ClaudeSessionConfigDirectory.active_for?`.
+MCP injection happens before the spawn env is built, and the spawn env fails open when the pool has
+no current account holding a token — so two independent reads of the setting would put a session's
+MCP tokens in a directory the CLI was never pointed at, and every OAuth server in it would come up
+unauthenticated with nothing in the log to say why.
+
+### Turning it on, and rolling it back
+
+On: Settings → Experimental → *Session-scoped Claude credentials* → Save. It takes effect on the
+next session spawn; nothing needs restarting and nothing needs a shell on the box. A `claude`
+process already running keeps the environment it was spawned with — but a Zimmer session is not one
+process, so the next turn of a `waiting` or `needs_input` session re-spawns under the new setting,
+with a fresh `CLAUDE_CONFIG_DIR` and none of the CLI's own `.claude.json` history. The conversation
+carries (Zimmer resumes from the transcript); the CLI's local state does not.
+
+Back off: untick the same box. The shared-file machinery is untouched and still converges — the next
+`ensure_active_account!` writes the DB-current account's credentials to
+`~/.claude/.credentials.json` and stamps the owner marker. That is what makes this a rollback rather
+than a migration, and it is why the machinery documented below still exists.
+
+The one thing the rollback does **not** restore is the operator-facing reconciliation surface. The
+"Filesystem identity mismatch" banner, the "Sync from filesystem" button and its route,
+`ClaudeAccount.sync_from_filesystem!`, `ClaudeAccount.filesystem_oauth_email`, and Claude's
+`reconcile_filesystem_identity!` are gone in both worlds — as is the filesystem auto-capture that
+`bin/rails claude_accounts:add` used to perform, which now points at the Authenticate button instead. Asking an operator to adjudicate between
+two stores was never the right answer to a disagreement, and the banner's own copy told them to run
+a `bin/rails` command on the worker — which
+[production invariant 11](/operate/deploying/) forbids. `/quotas` now has two verbs for an account,
+**Authenticate** and **Switch**, and nothing that asks anyone to reconcile, adopt or sync.
+
 ## Deleting an account keeps its history
 
 Delete is a real delete: the `claude_accounts` row goes, and the account leaves the pool.
@@ -101,11 +224,11 @@ sequenceDiagram
 
     C->>P: for each registered provider
     P->>FS: reconcile_filesystem_identity!
-    Note over P,FS: adopt a manual `claude /login` switch into the DB
+    Note over P,FS: Codex only — Claude does not implement this hook.<br/>Adopting an identity off a container-local file on a<br/>5-minute timer is how a stale one got adopted (#618)
     P->>FS: ClaudeCredentialHealth.self_heal!
-    Note over P,FS: rewrite a corrupt credentials file from the DB —<br/>after reconcile, because it reads the owner marker<br/>reconcile may just have re-pointed
+    Note over P,FS: rewrite a corrupt credentials file from the DB.<br/>Skipped under session-scoped credentials —<br/>no session reads that file
     P->>FS: sync_current_account_tokens!
-    Note over P,FS: the CLI refreshes tokens on its own, mid-session —<br/>scrape them back or our DB copy goes stale
+    Note over P,FS: the CLI refreshes tokens on its own, mid-session —<br/>scrape them back or our DB copy goes stale.<br/>Skipped under session-scoped credentials
     P->>DB: needs_reauth_recovery_candidates
     P->>V: recover_needs_reauth (probe refresh)
     P->>DB: accounts_needing_refresh<br/>(expiring within 15 min)
@@ -146,17 +269,18 @@ refuses to persist or adopt one, because the CLI sometimes rewrites `.credential
 
 ### Whose tokens are on disk
 
-`ClaudeAccount.filesystem_oauth_email` answers this from the **owner marker**, not from
+Only the **owner marker** answers this, via `ClaudeAccount.credentials_owner_email` — never
 `~/.claude.json`. The two files have different durability: the marker lives in the shared volume
 beside the credentials it describes, while `~/.claude.json` lives in the container's writable layer
 and is destroyed every time the container is replaced. A container replacement therefore keeps the
 tokens and loses the identity — and a reader that trusted the identity file would give a confident,
 wrong answer about a credentials file that never changed.
 
-The identity file is consulted only when there is no marker at all: the bootstrap window before
-Zimmer has ever written credentials, which is also the one case the file is being read for its actual
-purpose (an operator ran `claude /login` on a fresh worker). After a container replacement that window
-looks the same, but the file is gone, so the fallback answers "nobody" — the safe answer.
+Nothing derives an identity from `~/.claude.json` any more. The two readers that touch it use it only
+to **contradict** a claim the marker makes (`filesystem_identity_agrees?`) or under an exact email
+match (`backfill_identity_from_filesystem!`). The path that used to adopt it — the `/quotas` banner
+and the 5-minute `reconcile_filesystem_identity!` sweep — is gone; see
+[Session-scoped credentials](#session-scoped-credentials-the-db-owns-the-chain).
 
 ## The credentials-owner marker
 
@@ -277,10 +401,14 @@ That state now has all three of the things the 2026-08-22 corruption had none of
 
 ### Does the filesystem agree with the DB?
 
+*(Shared-file path only. Under session-scoped credentials there is no config file to agree with, and
+`ensure_active_account!` reduces to "is a usable account current, and is its token fresh".)*
+
 Before each session spawn, `AccountRotationService#ensure_active_account!` compares the identity in
 `~/.claude.json` against the identity stored on the DB-current account. Agreement means the worker is
-already set up for that account; disagreement means either the CLI was switched by hand (adopt it) or
-the DB moved and the disk has not caught up (write the DB-current account to disk).
+already set up for that account; disagreement means the DB is what gets written to disk. **The DB
+always wins** — there is no branch that adopts an identity off the filesystem, because a file that
+Zimmer and the CLI both write is not evidence of who the pool should be running as.
 
 `config_file_matches?` **fails closed**: an account with no stored identity to compare answers "no
 match", not "can't verify, assume ok" ([#61](https://github.com/tadasant/zimmer/issues/61)). A guard
@@ -292,8 +420,7 @@ at the same unanswerable question next time, so the check converges instead:
 `ClaudeAccount#backfill_identity_from_filesystem!` adopts the on-disk `~/.claude.json` **when that
 file already names this account**. Identity only, never credentials; it fills a gap and never
 overwrites a stored identity. From then on the comparison has something to compare. When the file
-names somebody else there is nothing to adopt, and the caller falls through to its existing
-adopt-or-write branches.
+names somebody else there is nothing to adopt, and the caller writes the DB-current account to disk.
 
 ## Rotation on quota
 
@@ -511,20 +638,19 @@ condemning the same account in the same instant produce one event rather than tw
 It lives in the database rather than in `Rails.cache`, where its predecessor lived, because a
 cache-backed suppressor **fails open**: with Redis unreachable, every crossing alerts. Under the old
 design that was a duplicate DM. Under this one it is a spawned agent session per crossing — and an
-account crosses into `needs_reauth` far more often than it breaks, because `sync_from_filesystem!`
-writes `active` back onto a dead row whose credentials file still parses, and `ensure_active_account!`
-runs before every session spawn. The column is also readable after the fact, which a cache key never
-was.
+account crosses into `needs_reauth` more often than it breaks, because plenty of machinery writes
+`active` back onto a dead row (the auto-heal sweep on `/quotas`, a recovery probe that happens to
+succeed) and `ensure_active_account!` runs before every session spawn. The column is also readable
+after the fact, which a cache key never was.
 
 **Only a human re-authenticating releases it** — `ClaudeAccount#clear_reauth_alert!`, called from
-`ClaudeLoginDriver#capture!` and its Codex twin, not from the status callback. That looks like the more obvious place and is a trap:
-`sync_from_filesystem!` resurrects the on-disk credential owner to `active` with a plain `update!`,
-including a `needs_reauth` row whose dead-but-complete tokens are still sitting in the credentials
-file, and `ensure_active_account!` runs that before every session spawn. Clearing there would drop
-the backstop moments before `usable_candidate?` re-condemns the same account — one spawned session per
-spawn attempt on a drained pool, which is the exact flood the window exists to prevent. The cost of
-the narrower rule is that an account the recovery sweep fixes automatically, which then dies again
-inside 12 hours, waits out the window before it can alert again.
+`ClaudeLoginDriver#capture!` and its Codex twin, not from the status callback. That looks like the
+more obvious place and is a trap: the same machinery above writes `active` with a plain `update!`
+and no human involved, before every session spawn. Releasing there would drop the backstop moments
+before `usable_candidate?` re-condemns the same account — one spawned session per spawn attempt on a
+drained pool, which is the exact flood the window exists to prevent. The cost of the narrower rule is
+that an account the recovery sweep fixes automatically, which then dies again inside 12 hours, waits
+out the window before it can alert again.
 
 A failed alert can never take down the auth path: the callback rescues anything the enqueue raises,
 and the firing job runs asynchronously on the `triggers` queue.
@@ -1060,8 +1186,14 @@ message bus's job. Tracked in [#111](https://github.com/tadasant/zimmer/issues/1
 
 ### Re-authenticating the account that is live
 
-`capture!` writes the DB row **and**, when the account is the current one, the shared credential
-files. It did not always, and the omission was worse than it sounds: the account whose credentials
+*(Under session-scoped credentials this whole subsection falls away: `capture!` writes the DB row and
+stops, and the next session to spawn reads the new token out of that row. Re-auth becomes scratch
+login → validate → write the DB → done. There is no second store for the update to fail to reach and
+no separate Switch step to make it take — which is the class of bug the rest of this subsection
+describes.)*
+
+On the shared-file path, `capture!` writes the DB row **and**, when the account is the current one,
+the shared credential files. It did not always, and the omission was worse than it sounds: the account whose credentials
 are live is precisely the one most likely to need repairing, and repairing it changed nothing a
 session could observe. The UI reported "authenticated" while every transcript kept saying
 *Not logged in · Please run /login*. Both re-authentications during the 2026-08-22 incident only
@@ -1072,7 +1204,9 @@ The same reasoning gives the current account a **Re-activate** button. `Switch` 
 it — `<% unless is_current %>` — which left the one account whose file is live with no way to
 re-assert it from the UI at all, so repairing a broken live credentials file meant a shell on the
 worker. Re-activate takes the ordinary activation path and rewrites the files; it records no rotation
-event, because a rotation from an account to itself is not one.
+event, because a rotation from an account to itself is not one. Under session-scoped credentials the
+button is hidden again, and this time correctly: there is no file to rewrite, so it would be a
+control that does nothing.
 
 Admission to the pool no longer requires a refresh **round trip**, either. `validate_switchable` still
 insists a refresh token exists — a pair without one is a dead end in eight hours however well its
