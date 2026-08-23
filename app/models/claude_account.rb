@@ -138,11 +138,12 @@ class ClaudeAccount < ApplicationRecord
   before_save :reset_stale_refresh_tracking_on_new_credential
 
   # How long a single account's needs_reauth event stays suppressed after one is
-  # emitted. Not a nicety: `sync_from_filesystem!` writes `active` back onto a
-  # needs_reauth row whose credentials file still parses, and `ensure_active_
-  # account!` runs it before every session spawn — so an account can cross INTO
-  # needs_reauth many times an hour without a human doing anything. Unsuppressed,
-  # that is one spawned agent session per spawn attempt.
+  # emitted. Not a nicety: plenty of machinery writes `active` back onto a
+  # needs_reauth row with no human involved — the auto-heal sweep on /quotas, a
+  # recovery probe that reaches Anthropic — and `ensure_active_account!` runs
+  # before every session spawn, so an account can cross INTO needs_reauth many
+  # times an hour without anyone doing anything. Unsuppressed, that is one
+  # spawned agent session per spawn attempt.
   #
   # Twelve hours, matching the operator-DM window this replaces. The condition
   # stays broken until a human acts, and the sweeps that rediscover it run every
@@ -923,10 +924,10 @@ class ClaudeAccount < ApplicationRecord
   #
   # Called from the login drivers' `capture!` and nowhere else, because a human
   # completing a login is the only event that means "this is genuinely fixed".
-  # Plenty of machinery writes `active` without a human involved
-  # (sync_from_filesystem!, the recovery sweep); releasing on those would let an
-  # account that is condemned again seconds later alert again, which is the flood
-  # the throttle exists to stop.
+  # Plenty of machinery writes `active` without a human involved (the auto-heal
+  # sweep, the recovery probe); releasing on those would let an account that is
+  # condemned again seconds later alert again, which is the flood the throttle
+  # exists to stop.
   #
   # `update_columns`, not `update!`: this must not itself look like a status
   # transition, and it runs immediately after one.

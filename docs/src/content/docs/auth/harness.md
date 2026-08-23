@@ -143,7 +143,8 @@ than a migration, and it is why the machinery documented below still exists.
 The one thing the rollback does **not** restore is the operator-facing reconciliation surface. The
 "Filesystem identity mismatch" banner, the "Sync from filesystem" button and its route,
 `ClaudeAccount.sync_from_filesystem!`, `ClaudeAccount.filesystem_oauth_email`, and Claude's
-`reconcile_filesystem_identity!` are gone in both worlds. Asking an operator to adjudicate between
+`reconcile_filesystem_identity!` are gone in both worlds — as is the filesystem auto-capture that
+`bin/rails claude_accounts:add` used to perform, which now points at the Authenticate button instead. Asking an operator to adjudicate between
 two stores was never the right answer to a disagreement, and the banner's own copy told them to run
 a `bin/rails` command on the worker — which
 [production invariant 11](/operate/deploying/) forbids. `/quotas` now has two verbs for an account,
