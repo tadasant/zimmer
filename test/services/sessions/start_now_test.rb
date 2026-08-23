@@ -7,6 +7,8 @@ require "test_helper"
 # enqueuing — a held session already has its turn queued, and a second job for
 # the same session is a second turn nobody asked for.
 class Sessions::StartNowTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   def waiting_session(session_id: nil, metadata: {})
     Session.create!(
       git_root: "https://github.com/t/r.git", prompt: "work",
