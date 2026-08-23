@@ -401,8 +401,8 @@ class HealthMonitorService
         HealthStatus.new(status: :warning, message: "No Claude account is available to serve sessions")
       elsif available.zero?
         HealthStatus.new(status: :warning,
-          message: "No Claude account is active yet — #{serviceable} #{"is".pluralize(serviceable)} " \
-            "labelled quota_exceeded over a clear reading, and the reset checker restores them within 15 minutes")
+          message: "No Claude account is active yet — #{serviceable} labelled quota_exceeded over a " \
+            "clear reading, and the reset checker restores them within 15 minutes")
       else
         HealthStatus.new(status: :healthy, message: "#{available} Claude account#{"s" unless available == 1} available")
       end

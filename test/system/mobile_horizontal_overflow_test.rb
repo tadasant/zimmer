@@ -430,6 +430,25 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("health dashboard")
   end
 
+  # The auth card grows a second line when the pool is recovering — every account
+  # still labelled quota_exceeded while its own newer reading says it can serve.
+  # That line is the longest string on the card, so it is the one that would push
+  # the card past the edge.
+  test "health dashboard auth card does not overflow while the pool is recovering" do
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME)
+      .update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).find_each do |account|
+      account.quota_snapshots.create!(trigger: "rotation", status_5h: "allowed", status_7d: "allowed",
+        utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
+        utilization_7d: 0.12, reset_7d: 6.days.from_now)
+    end
+
+    visit health_dashboard_path
+    assert_text "serviceable on their own readings"
+
+    assert_no_horizontal_overflow("health dashboard (pool recovering)")
+  end
+
   test "CLI tools does not overflow horizontally on a phone" do
     visit clis_path
     assert_selector "h1"
