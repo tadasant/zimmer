@@ -336,7 +336,6 @@ class Session < ApplicationRecord
     auth_outage_pool_fingerprint
     mcp_retry_count
     mcp_last_retry_at
-    mcp_degraded_servers
     broadcast_message_count
     transcript_waiting_logged
     transcript_files_waiting_logged
@@ -1111,8 +1110,15 @@ class Session < ApplicationRecord
   # is alive — that is the whole point of the record. It lives in `metadata` rather
   # than `custom_metadata` because `clear_stale_mcp_failure_metadata` wipes the MCP
   # keys in `custom_metadata` on every resume, and this one has to survive the
-  # resume that creates it. It is in STALE_RETRY_METADATA_KEYS, so a deliberate
-  # restart re-arms the retry ladder and gives the server a fresh chance.
+  # resume that creates it.
+  #
+  # Deliberately NOT in STALE_RETRY_METADATA_KEYS: those keys are cleared by every
+  # automatic recovery path (a deploy sweep, an orphan sweep, an auth-outage park
+  # lifting), and a write-off that vanishes on a deploy would let the still-dead
+  # server burn the whole retry ladder again while the agent silently stopped being
+  # told it had lost the capability. The record clears itself the only way that is
+  # actually true — McpStatusPersisting drops a server's entry the moment that
+  # server connects — so nothing has to guess when the outage is over.
   #
   # @return [Array<Hash>]
   def degraded_mcp_servers

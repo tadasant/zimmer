@@ -177,7 +177,14 @@ Leaving a server out means:
   runtime never started ignores the nudge and runs its original prompt instead.
 - Nothing is rewritten in `.mcp.json`. The server stays configured, so if whatever broke it is fixed the next
   spawn reconnects for free. The record exists so the *same* server failing again is a no-op instead of another
-  terminate-and-resume; a deliberate restart clears it (`Session::STALE_RETRY_METADATA_KEYS`) and re-arms the ladder.
+  terminate-and-resume.
+
+The record is retired by exactly one thing: `McpStatusPersisting` sees that server report `connected` again. That is
+the only signal that is actually true about the outage being over, and it re-arms the ladder if the server fails
+again later. In particular `mcp_degraded_servers` is deliberately **not** in `Session::STALE_RETRY_METADATA_KEYS` —
+those keys are cleared by every automatic recovery path (a deploy sweep, an orphan sweep, an auth-outage park
+lifting), and a write-off that vanished on a deploy would let the still-dead server burn the whole ladder again
+while the agent silently stopped being told it had lost the capability.
 
 Before this, exhausting the ladder killed the session. A last-resort fallback server the session had never called
 — and never would have — could orphan two hours of completed work on a stale credential belonging to something

@@ -150,6 +150,52 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
     assert_equal "failed", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
   end
 
+  # --- retiring a degraded server that came back (issue #521) -----------------
+
+  test "a degraded server that reconnects has its write-off retired" do
+    @session.update!(metadata: (@session.metadata || {}).merge(
+      "mcp_degraded_servers" => [
+        { "name" => "context7", "error" => "Connection closed", "degraded_at" => "2026-08-23T15:20:54Z" }
+      ]
+    ))
+
+    @host.update_session_mcp_status("context7" => { status: "connected", connected_at: "2026-08-23T16:00:00Z" })
+
+    @session.reload
+    assert_empty @session.degraded_mcp_servers,
+      "a server that connected is not unavailable, and the agent's prompt must stop saying it is"
+    assert_nil @session.metadata["mcp_degraded_servers"]
+    assert @logger.calls.any? { |c| c[:message].to_s.include?("reconnected") }
+  end
+
+  test "reconnecting one degraded server leaves the others written off" do
+    @session.update!(
+      mcp_servers: [ "context7", "linear" ],
+      metadata: (@session.metadata || {}).merge(
+        "mcp_degraded_servers" => [
+          { "name" => "context7", "error" => "Connection closed" },
+          { "name" => "linear", "error" => "Connection closed" }
+        ]
+      )
+    )
+
+    @host.update_session_mcp_status(
+      "context7" => { status: "connected", connected_at: "2026-08-23T16:00:00Z" },
+      "linear" => { status: "failed", error: "Connection closed" }
+    )
+
+    @session.reload
+    assert_equal [ "linear" ], @session.degraded_mcp_server_names
+  end
+
+  test "a connected server that was never degraded writes nothing to the degraded record" do
+    @host.update_session_mcp_status("context7" => { status: "connected", connected_at: "2026-08-23T16:00:00Z" })
+
+    @session.reload
+    assert_nil @session.metadata["mcp_degraded_servers"]
+    assert_empty @logger.calls.select { |c| c[:message].to_s.include?("reconnected") }
+  end
+
   test "an injected (non-configured) server failure neither escalates nor logs" do
     @session.update!(mcp_servers: [], custom_metadata: { "injected_mcp_servers" => [ "playwright-custom" ] })
 
