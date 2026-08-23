@@ -121,6 +121,53 @@ class ClaudeAccount < ApplicationRecord
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
+  # The accounts that can serve a request for `runtime` RIGHT NOW, judged on the
+  # same evidence #effective_status renders and QuotaResetCheckerJob restores on
+  # rather than on the `status` column alone.
+  #
+  # `.available` reads that column, and the column is a claim about the past:
+  # something wrote `quota_exceeded` and only the 15-minute healer clears it
+  # again. On 2026-08-23 two surfaces asked the same question and got opposite
+  # answers through it — the parking decision saw an empty pool at 02:06Z and put
+  # four sessions to sleep against a noon reset estimate, while the health check
+  # reported three accounts available at 02:13Z. Both were reading `status`; the
+  # labels were simply stale, and the healer cleared all three on their own
+  # readings in between.
+  #
+  # This is the one predicate the parking decision and #auth_health ask now, so
+  # they cannot answer it differently. An account whose column says
+  # quota_exceeded while its latest reading says both windows are clear counts as
+  # serviceable: the healer is about to restore it, and until it runs the
+  # evidence is what tells the truth.
+  #
+  # An account with no reading is taken at its label — there is nothing to judge
+  # by, and a Codex account (which has no Anthropic quota window to read) is
+  # exactly that case, so this reduces to `.available` for a pool with no
+  # snapshots.
+  #
+  # @param runtime [String]
+  # @return [Array<ClaudeAccount>] in priority order
+  def self.serviceable_for(runtime)
+    # Through the provider seam, so a blank runtime resolves to Claude Code the
+    # same way every other pool read does. Scoping on the raw column here instead
+    # would answer "no accounts" for a nil runtime, which reads as an outage.
+    candidates = RuntimeAuthProvider.for(runtime).accounts
+      .where(status: [ statuses[:active], statuses[:quota_exceeded] ])
+      .where.not(oauth_config: {})
+      .order(:priority)
+      .to_a
+    return [] if candidates.empty?
+
+    snapshots = ClaudeAccountPool.latest_snapshots(candidates)
+    candidates.select { |account| account.effective_status(snapshots[account.id]) == "active" }
+  end
+
+  # Does `runtime` have anything that can serve a request right now? The question
+  # every "is the pool drained?" decision actually means to ask.
+  def self.any_serviceable_for?(runtime)
+    serviceable_for(runtime).any?
+  end
+
   # An account that lands in needs_reauth is dead until a human re-authenticates,
   # and nothing else tells them. The transition is latched inside the transaction
   # and acted on after it commits, because the dirty state that identifies it does
@@ -374,10 +421,16 @@ class ClaudeAccount < ApplicationRecord
   # so the badge and the sweep cannot disagree; when they do differ it is only
   # ever because the sweep has not run yet, and the page tells the truth first.
   #
-  # Deliberately display-only. `status` stays load-bearing for
-  # `ClaudeAccount.available` and AccountRotationService, which must keep acting
-  # on the durable column rather than on a reading that may be minutes stale —
-  # QuotasController converges the column separately (#auto_heal_accounts).
+  # `status` stays load-bearing for `ClaudeAccount.available` and
+  # AccountRotationService: every path that picks an account to spawn with must
+  # keep acting on the durable column rather than on a reading that may be
+  # minutes stale, and QuotasController converges the column separately
+  # (#auto_heal_accounts).
+  #
+  # Two decisions read the evidence instead, through `.serviceable_for` — the
+  # park decision and #auth_health — because for them the stale column errs the
+  # dangerous way: it puts a session to sleep, and tells a human the pool is
+  # gone, over a label the account's own reading contradicts.
   #
   # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the reading to judge by;
   #   pass the one already loaded for the page to avoid a query per account.

@@ -376,7 +376,12 @@ class HealthMonitorService
   # a card whose badge contradicts its detail.
   def build_auth_health
     credentials = ClaudeCredentialHealth.status
-    available = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).count
+    # The same predicate AuthRecoveryCoordinator#park_reason_for_pool decides on.
+    # Counting `.available` here instead is how this card came to report "3 Claude
+    # accounts available" seven minutes after the parking decision had concluded
+    # the pool was empty: both were reading the sticky `status` column, minutes
+    # apart, and the healer moved it in between.
+    available = ClaudeAccount.serviceable_for(ClaudeAuthProvider::RUNTIME).count
     needs_reauth = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).needs_reauth.count
 
     status =

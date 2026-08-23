@@ -156,6 +156,55 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     assert_equal "needs_reauth", account.effective_status(snapshot)
   end
 
+  # .serviceable_for — the one predicate the parking decision and #auth_health
+  # both ask, so they cannot answer "does the pool have anything left" differently.
+
+  test "serviceable_for counts an exceeded account whose own reading says the windows are clear" do
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    account = claude_accounts(:exceeded)
+    quota_snapshot_for(account, utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
+      utilization_7d: 0.12, reset_7d: 6.days.from_now)
+
+    assert_includes ClaudeAccount.serviceable_for("claude_code"), account
+    assert ClaudeAccount.any_serviceable_for?("claude_code"),
+      "A pool whose readings say it can serve is not an exhausted pool, whatever its labels say"
+  end
+
+  test "serviceable_for drops an account the API is still rejecting" do
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime("claude_code").find_each do |account|
+      quota_snapshot_for(account, utilization_5h: 1.0, status_5h: "rejected", reset_5h: 2.hours.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: 3.days.from_now)
+    end
+
+    assert_empty ClaudeAccount.serviceable_for("claude_code")
+    assert_not ClaudeAccount.any_serviceable_for?("claude_code")
+  end
+
+  test "serviceable_for takes an unreadable account at its label" do
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccountQuotaSnapshot.delete_all
+
+    assert_empty ClaudeAccount.serviceable_for("claude_code"),
+      "With no reading there is nothing to overrule the column with"
+  end
+
+  test "serviceable_for excludes needs_reauth and credential-less accounts" do
+    claude_accounts(:secondary).update!(status: :needs_reauth)
+
+    emails = ClaudeAccount.serviceable_for("claude_code").map(&:email)
+    assert_not_includes emails, claude_accounts(:secondary).email
+    assert_not_includes emails, claude_accounts(:unconfigured).email, "no credentials, nothing to serve with"
+  end
+
+  test "serviceable_for is scoped to one runtime" do
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:needs_reauth])
+
+    assert_empty ClaudeAccount.serviceable_for("claude_code")
+    assert ClaudeAccount.any_serviceable_for?("codex"),
+      "A drained Claude pool says nothing about the Codex pool"
+  end
+
   test "mark_current! sets is_current and clears others" do
     secondary = claude_accounts(:secondary)
     secondary.mark_current!

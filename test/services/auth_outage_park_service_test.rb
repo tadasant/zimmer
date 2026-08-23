@@ -95,6 +95,23 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_in_delta reset.to_i, recorded.to_i, 5
   end
 
+  # What the four parked sessions actually read on 2026-08-23: "the pool's
+  # earliest reset is 2026-08-23T12:00:00Z", ten hours out, derived from the
+  # 7-day stamp of an account whose own reading said both windows were clear. A
+  # clear window is not waiting for anything, so its stamp is not a recovery time.
+  test "an exceeded account whose reading is clear does not push the estimate out to its next rollover" do
+    account = create_account(email: "mislabelled@example.com", status: :quota_exceeded)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 26.minutes.from_now, reset_7d: 10.hours.from_now,
+      utilization_5h: 0.35, utilization_7d: 0.12)
+
+    park!
+
+    recorded = Time.iso8601(@session.reload.metadata["auth_outage_pool_recovers_at"])
+    assert_in_delta Time.current.to_i, recorded.to_i, 5,
+      "An account that can serve now must not be reported as recovering in ten hours"
+  end
+
   test "records no recovery estimate for an auth outage, which has no published clock" do
     park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
 
@@ -705,12 +722,27 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal parked_at, @session.reload.metadata["auth_outage_parked_at"]
   end
 
+  # Labels are not evidence. An account the column calls quota_exceeded while its
+  # own latest reading says both windows are clear can serve this turn, and a
+  # session must not be put to sleep against it.
+  test "does not park when the pool's labels are stale and its readings are clear" do
+    account = create_account(email: "mislabelled@example.com", status: :quota_exceeded)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 26.minutes.from_now, reset_7d: 6.days.from_now,
+      utilization_5h: 0.35, utilization_7d: 0.12)
+    @session.merge_metadata!("active_follow_up_prompt" => "continue")
+
+    assert_not AuthOutageParkService.pool_confirmed_empty?("claude_code")
+    assert_not AuthOutageParkService.park_undelivered_turn!(@session)
+    assert_equal "running", @session.reload.status
+  end
+
   # An unreadable pool is not evidence of an outage. The sibling predicate
   # .runtime_has_available_account? rescues to false meaning "do not wake", which is
   # conservative; the same false here would mean "park", which is not.
   test "does not park when the pool cannot be read" do
     @session.merge_metadata!("active_follow_up_prompt" => "continue")
-    RuntimeAuthProvider.stubs(:for).raises(StandardError.new("pool unreadable"))
+    ClaudeAccount.stubs(:serviceable_for).raises(StandardError.new("pool unreadable"))
 
     assert_not AuthOutageParkService.pool_confirmed_empty?("claude_code")
     assert_not AuthOutageParkService.park_undelivered_turn!(@session)

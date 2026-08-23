@@ -1433,6 +1433,32 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert auth[:available_accounts].positive?
   end
 
+  # The contradiction that started this: at 02:06Z on 2026-08-23 the parking
+  # decision declared the whole pool quota-exhausted and put four sessions to
+  # sleep; at 02:13Z this card reported "3 Claude accounts available". Both were
+  # reading the sticky `status` column, minutes apart, and the healer moved it in
+  # between. They ask one predicate now, so they cannot disagree.
+  test "auth_health and the parking decision answer from the same predicate" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :ok, detail: "fine", owner_email: "a@b.com", checked_at: Time.current)
+    )
+    # Every account labelled quota_exceeded, every account's own reading clear —
+    # the exact state the production pool was in at 02:06Z.
+    ClaudeAccount.for_runtime("claude_code").update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime("claude_code").find_each do |account|
+      account.quota_snapshots.create!(trigger: "rotation", status_5h: "allowed", status_7d: "allowed",
+        utilization_5h: 0.35, reset_5h: 26.minutes.from_now,
+        utilization_7d: 0.12, reset_7d: 6.days.from_now)
+    end
+
+    auth = HealthMonitorService.new.auth_health
+
+    assert auth[:available_accounts].positive?, "the readings say the pool can serve"
+    assert auth[:status].healthy?
+    assert ClaudeAccount.any_serviceable_for?("claude_code"),
+      "and the predicate the park decision reads must say the same thing"
+  end
+
   test "a corrupt credentials file makes the overall status critical" do
     ClaudeCredentialHealth.stubs(:status).returns(
       ClaudeCredentialHealth::Status.new(state: :corrupt, detail: "tokens blanked", owner_email: "a@b.com", checked_at: Time.current)
