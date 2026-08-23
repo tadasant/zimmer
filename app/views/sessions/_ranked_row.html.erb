@@ -41,6 +41,7 @@
       row's width. Desktop keeps the single truncated line it had. %>
   <%= link_to agent_session.title.presence || "Untitled session",
         session_path(agent_session),
+        data: { turbo_prefetch: false },
         class: "min-w-0 flex-1 break-words font-medium text-gray-800 hover:text-indigo-600 max-sm:line-clamp-2 sm:order-3 sm:truncate" %>
 
   <%# Row actions behind a "⋮", the same overflow-menu controller the session card
@@ -69,21 +70,22 @@
     </button>
     <div data-overflow-menu-target="menu"
          role="menu"
-         class="hidden absolute right-0 top-full mt-2 z-30 w-56 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+         class="hidden absolute right-0 top-full mt-2 z-30 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
       <button type="button"
               role="menuitem"
               data-ranked-queue-target="promoteAction"
               data-action="ranked-queue#promote overflow-menu#close"
               data-session-id="<%= agent_session.id %>"
-              class="block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" unless draggable_row %>">Promote to priority</button>
+              class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" unless draggable_row %>">Promote to priority</button>
       <button type="button"
               role="menuitem"
               data-ranked-queue-target="demoteAction"
               data-action="ranked-queue#demote overflow-menu#close"
               data-session-id="<%= agent_session.id %>"
-              class="block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" if draggable_row %>">Demote to spot</button>
+              class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" if draggable_row %>">Demote to spot</button>
       <%= link_to "Open session", session_path(agent_session),
             role: "menuitem",
+            data: { turbo_prefetch: false },
             class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
     </div>
   </div>

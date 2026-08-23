@@ -508,9 +508,6 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     }
   end
 
-  # The desktop layout has to keep working: these same pages are read on a laptop,
-  # and `flex-wrap` / stacked-on-mobile fixes are exactly the kind of change that
-  # silently reflows a wide screen.
   # The Ranked view is the operator's queue screen, and the densest list Zimmer
   # renders: a drag handle, an editable rank, a status pill, an unbreakable title
   # and an actions menu, on one row, forty times over. Its "⋮" menu is absolutely
@@ -573,6 +570,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-ranked-queue-1400.png")
   end
 
+  # The desktop layout has to keep working: these same pages are read on a laptop,
+  # and `flex-wrap` / stacked-on-mobile fixes are exactly the kind of change that
+  # silently reflows a wide screen.
   test "fixed pages still lay out without overflow at desktop width" do
     create_session
     trigger = create_trigger

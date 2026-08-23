@@ -20,11 +20,20 @@
     precedence the user is halfway through typing, and it cannot renumber or
     re-seat a row mid-drag, because it never touches the input, the handle, or the
     row's position. The one structural change it makes is removing a row that has
-    been trashed, mirroring what the card grid does on the other views.
+    been trashed, mirroring what the card grid does on the other views — including
+    when the operator ticked "Archived" and wanted to see it, which a reload puts
+    back reading "Trashed".
 
     What it deliberately does NOT do: re-sort the queue, or move a row between the
     two sections when its scheduling class changes elsewhere. Both would move the
-    row out from under a pointer that is on it. A reload settles those. %>
+    row out from under a pointer that is on it.
+
+    None of that staleness is permanent, because both lists are also
+    `data-live-region="sync"`. A page whose socket died — every reopen of the iOS
+    PWA — is reconciled against a fresh render on reconnect, which recovers the
+    order, the grouping and any row the stream never delivered. `syncChildren`
+    skips a row holding focus or a dirty field, so that reconnect cannot eat a
+    precedence someone is halfway through typing either. %>
 <%= turbo_stream_from Session::RANKED_STREAM %>
 <section class="mb-8"
          id="ranked_sessions"
@@ -51,7 +60,8 @@
         controller's connect() — taking drag-and-drop and inline editing down on the
         other section with it. It is also what lets a promote/demote move a row into
         a section the server rendered empty. %>
-    <ul class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if priority_sessions.empty? %>"
+    <ul id="ranked_priority_list" data-live-region="sync"
+        class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if priority_sessions.empty? %>"
         data-ranked-queue-target="priorityList">
       <% priority_sessions.each do |session| %>
         <%= render "sessions/ranked_row", agent_session: session, draggable_row: false %>
@@ -72,7 +82,8 @@
             data-ranked-queue-target="spotCount"><%= spot_sessions.size %></span>
       <span class="min-w-0 text-xs text-gray-400">highest precedence is worked first</span>
     </div>
-    <ul class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if spot_sessions.empty? %>"
+    <ul id="ranked_spot_list" data-live-region="sync"
+        class="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white <%= "hidden" if spot_sessions.empty? %>"
         data-ranked-queue-target="spotList">
       <% spot_sessions.each do |session| %>
         <%= render "sessions/ranked_row", agent_session: session, draggable_row: true %>
