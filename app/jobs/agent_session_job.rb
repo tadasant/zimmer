@@ -288,6 +288,11 @@ class AgentSessionJob < ApplicationJob
     stderr_log_path = nil
     log_streaming_thread = nil
     reusing_existing_clone = false
+    # Set when the monitoring loop hands its live process to a monitoring job that has
+    # taken ownership. The `ensure` block below reloads the session and kills the process
+    # for any terminal status it finds — so without this, a session the adopting job
+    # pauses inside that window gets the very turn we just handed over killed anyway.
+    handed_off_process = false
     log_buffer = LogBuffer.new(session)
     lifecycle_manager = create_lifecycle_manager(session, log_buffer)
 
@@ -357,24 +362,7 @@ class AgentSessionJob < ApplicationJob
       # There is nothing to reconnect to and nothing to clean up: the pid we were sent for
       # is gone, and the pid that replaced it belongs to a job that spawned it and is
       # supervising it.
-      if resume_monitoring && monitor_pid.present?
-        current_pid = session.reload.metadata&.dig("process_pid")
-        if current_pid.present? && current_pid.to_i != monitor_pid.to_i
-          log_buffer.add(
-            "Standing down: this monitoring job was enqueued to adopt PID #{monitor_pid}, but the " \
-            "session's process is now PID #{current_pid} — a newer turn owns it, so there is nothing " \
-            "here to reconnect to",
-            level: "warning"
-          )
-          # Only if we are still the recorded owner. A monitoring job's enqueuer may claim
-          # ownership on its behalf, and leaving that claim behind on a job that has exited
-          # would leave the session recorded as driven by nobody. nil is what the orphan
-          # sweep reads as "nobody is driving this", so it re-decides against the current pid.
-          session.update!(running_job_id: nil) if session.running_job_id == job_id
-          log_buffer.flush
-          return
-        end
-      end
+      return if resume_monitoring && monitoring_job_stands_down?(session, monitor_pid, log_buffer)
 
       # A pause outranks every reason there is to start this session.
       #
@@ -571,6 +559,13 @@ class AgentSessionJob < ApplicationJob
         if validation_result[:warning]
           log_buffer.add(validation_result[:warning], level: "warning")
         end
+
+        # Ask the same question again, now that `running_job_id` has been claimed above.
+        # The entry check ran before the claim, and a spawn landing in between would have
+        # overwritten `process_pid` — adopting it here would repeat exactly the mistake
+        # this guard exists to prevent, through a narrower window. Standing down releases
+        # the claim we just made rather than carrying it into a process nobody sent us for.
+        return if monitoring_job_stands_down?(session, monitor_pid, log_buffer)
 
         # Use lifecycle_manager to resume monitoring
         resume_result = lifecycle_manager.resume_monitoring(
@@ -1495,6 +1490,7 @@ class AgentSessionJob < ApplicationJob
               level: "info"
             )
             log_buffer.flush
+            handed_off_process = true
             # Final poll before handing off, mirroring the branches around this one.
             poll_and_broadcast_transcript(session)
             return
@@ -1842,7 +1838,11 @@ class AgentSessionJob < ApplicationJob
 
       # Only cleanup if session is in a terminal state
       # Don't cleanup for needs_input (includes paused sessions waiting for follow-up)
-      if session
+      #
+      # A handed-off process is exempt from all of it. This job stopped supervising it on
+      # purpose, and the job that took ownership is the one responsible for terminating it
+      # and for cleaning up the clone it is still using.
+      if session && !handed_off_process
         session.reload
         if session.archived?
           # Only cleanup when explicitly archived by the user
@@ -1882,6 +1882,42 @@ class AgentSessionJob < ApplicationJob
   end
 
   private
+
+  # Has this monitoring job been sent for a process the session no longer has?
+  #
+  # A monitoring job carries `monitor_pid`: the pid its enqueuer looked at when it decided
+  # this session had a live process worth re-attaching to. That decision and this execution
+  # are seconds apart — five, by design, for the orphan-cleanup path — and
+  # `metadata["process_pid"]` is a single slot that any spawn in between overwrites.
+  # Re-reading it and adopting whatever it says is how a recovery decided about pid 5845
+  # came to adopt the pid 966 another job had spawned meanwhile, and the ownership claim
+  # that came with it made THAT job's monitoring loop kill its own fresh process (zimmer#489).
+  #
+  # Asked twice, deliberately: once before `running_job_id` is claimed, so the common case
+  # never disturbs the job that is driving the session, and once immediately before
+  # adoption, because the claim itself opens a second, narrower window.
+  #
+  # @return [Boolean] true when the job stood down and #perform must return
+  def monitoring_job_stands_down?(session, monitor_pid, log_buffer)
+    return false if monitor_pid.blank?
+
+    current_pid = session.reload.metadata&.dig("process_pid")
+    return false if current_pid.blank? || current_pid.to_i == monitor_pid.to_i
+
+    log_buffer.add(
+      "Standing down: this monitoring job was enqueued to adopt PID #{monitor_pid}, but the " \
+      "session's process is now PID #{current_pid} — a newer turn owns it, so there is nothing " \
+      "here to reconnect to",
+      level: "warning"
+    )
+    # Only if we are still the recorded owner. A monitoring job's enqueuer may claim
+    # ownership on its behalf, and leaving that claim behind on a job that has exited would
+    # leave the session recorded as driven by nobody. nil is what the orphan sweep reads as
+    # "nobody is driving this", so it re-decides against the current pid.
+    session.update!(running_job_id: nil) if session.running_job_id == job_id
+    log_buffer.flush
+    true
+  end
 
   # The actionable "why" for a session that reached a failed terminal status.
   #
