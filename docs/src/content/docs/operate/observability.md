@@ -114,11 +114,11 @@ laptop sleeping, a reconnect — with the server still mid-operation. Nothing is
 is retryable, and the ActionCable consumer re-subscribes on its own when the client comes back.
 Two initializers downgrade all three:
 
-| Race | Upstream method | Initializer |
+| Race | Where it surfaces | Initializer |
 | --- | --- | --- |
-| A write to a socket the peer already closed (`Errno::EPIPE`, `ECONNRESET`, `EOFError`, …) | `Connection::Base#on_error` | `action_cable_benign_socket_error_log_level.rb` |
+| A socket operation against a peer that already went away (`Errno::EPIPE`, `ECONNRESET`, `EOFError`, …) | `Connection::Base#on_error` | `action_cable_benign_socket_error_log_level.rb` |
 | An inbound frame dispatched off the async worker pool after the socket closed | `Connection::Base#dispatch_websocket_message` | `action_cable_benign_socket_error_log_level.rb` |
-| A stale or duplicate `unsubscribe` for a subscription the connection no longer holds | `Connection::Subscriptions#remove` | `action_cable_idempotent_unsubscribe.rb` |
+| A stale or duplicate `unsubscribe` for a subscription the connection no longer holds | `Connection::Subscriptions#execute_command`'s catch-all rescue, reached by `#remove` | `action_cable_idempotent_unsubscribe.rb` |
 
 The middle row is the one that bites hardest, because it is not one line per disconnect.
 `#receive` hands every frame to `send_async :dispatch_websocket_message`, so a tab that drops
@@ -132,9 +132,13 @@ rather than logging, so the patch makes the removal idempotent and emits its own
 place of the exception.
 
 Only the benign set moves. A genuine WebSocket error, an unrecognized command, and a `find`
-failure on the `perform_action` path all still log at ERROR. Each override is pinned to the
-actioncable version in `Gemfile.lock` and covered by a test in `test/initializers/`, so a
-Rails upgrade that changes one of these methods is a prompt to re-check the patch.
+failure on the `perform_action` path all still log at ERROR.
+
+Each override is a method body copied from a specific actioncable release, so the real risk is
+silent drift: a `bundle update` that changes upstream leaves the copy in place and nothing goes
+red. `test/initializers/` covers each override's contract and additionally asserts
+`ActionCable::VERSION::STRING`, so a Rails upgrade fails that guard and lands the prompt to
+re-read the upstream source on the upgrade PR itself.
 
 ## How environments are told apart
 

@@ -1162,8 +1162,8 @@ class Trigger < ApplicationRecord
       # without paging (the `Zimmer backend logging errors (excludes staging)`
       # Grafana rule matches severity_text:ERROR only). The unhealable branch
       # below still raises → .error → page, which IS correct (a scheduled wake
-      # was genuinely lost);
-      # see https://github.com/tadasant/zimmer-catalog/issues/4409.
+      # was genuinely lost); see
+      # https://github.com/tadasant/zimmer-catalog/issues/4409.
       Rails.logger.warn(
         "[Trigger#heal_stale_agent_root!] Updated agent root from '#{old_name}' to '#{successor.name}' " \
         "on trigger '#{name}' (ID: #{id})"
