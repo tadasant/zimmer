@@ -734,6 +734,22 @@ text. No validation, no trusted identifiers.
 
 Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
 
+### Quoted PR comment context is allowlisted; the diff hunk is not
+
+The [PR comment poller](/operate/background-jobs/#the-allowlist-covers-quoted-context-too-not-just-the-trigger)
+withholds the *body* of any quoted comment whose author is outside `GithubCommentAllowlist`, because
+a body is prose a stranger typed. Two things it does not cover:
+
+An outside contributor's legitimate thread context goes into the same bin. A session woken by a
+comment on a PR that a non-allowlisted person also commented on sees who spoke and not what they
+said, and is told not to fetch it. That is the accepted cost of the gate, and the only way back is
+to add the account to the allowlist — the same decision as letting them wake sessions.
+
+The `diff_hunk` on an inline review comment is still interpolated into the prompt verbatim. GitHub
+builds it from the PR's own branch rather than from anything the commenter typed, so the text is
+code Zimmer's own agent usually wrote — but it is untrusted-adjacent on a PR from a fork, and
+nothing labels it.
+
 ### A trigger cannot spawn a session with zero MCP servers
 
 The three surfaces that create a session against a root directly — MCP `start_session`, `POST
