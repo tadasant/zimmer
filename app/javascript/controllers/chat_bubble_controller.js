@@ -4,6 +4,7 @@ import { Controller } from "@hotwired/stimulus"
 //
 // - Click the bubble icon to open a slide-out panel with a textarea
 // - Cmd/Ctrl+Enter submits in the background (session runs silently)
+// - The "Run as spot" checkbox rides on both submit paths, and clears on close
 // - "Submit & Open" button creates the session and navigates to it
 // - Automatically captures the current page HTML as markdown context
 // - Escape key closes the panel
@@ -19,7 +20,8 @@ export default class extends Controller {
     "imageInput",
     "cameraInput",
     "fileInput",
-    "preview"
+    "preview",
+    "spot"
   ]
 
   static values = {
@@ -56,6 +58,13 @@ export default class extends Controller {
   }
 
   close() {
+    // The spot choice does not survive the panel closing, however it closed —
+    // Escape, the backdrop, the X, or a successful submit. The draft text
+    // deliberately does survive: losing a half-typed prompt is expensive, whereas
+    // re-ticking a checkbox is not, and the two mistakes are not symmetric.
+    // Submitting as priority by accident merely runs the work; submitting as spot
+    // by accident parks it behind the quota gate for as long as the gate holds.
+    if (this.hasSpotTarget) this.spotTarget.checked = false
     this.openValue = false
   }
 
@@ -387,6 +396,13 @@ export default class extends Controller {
       const sessionId = this._currentSessionId()
       if (sessionId) {
         body.append("parent_session_id", String(sessionId))
+      }
+
+      // Read from the checkbox rather than from the button that was clicked, so
+      // Submit and Submit & Open both honor it. Only an explicit opt-in is sent;
+      // an unchecked box sends nothing and the server leaves the class to derive.
+      if (this.hasSpotTarget && this.spotTarget.checked) {
+        body.append("scheduling_class", this.spotTarget.value)
       }
 
       for (const f of this.attachedImages) body.append("images[]", f, f.name)

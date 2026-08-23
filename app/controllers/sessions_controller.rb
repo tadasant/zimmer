@@ -467,6 +467,7 @@ class SessionsController < ApplicationController
     # storage once the row is created and we know its ID. Same pattern used by
     # the chat_bubble and new session flows.
     temp_session_id = "temp_#{SecureRandom.uuid}"
+    scheduling_class = quick_router_scheduling_class
     begin
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
@@ -475,6 +476,8 @@ class SessionsController < ApplicationController
         prompt: prompt,
         metadata: { source: "quick_prompt" },
         genesis: SessionGenesis::WEB_UI,
+        scheduling_class: scheduling_class,
+        precedence: quick_router_precedence(scheduling_class),
         skip_enqueue: true
       )
 
@@ -502,7 +505,15 @@ class SessionsController < ApplicationController
       raise
     end
 
-    redirect_to session, notice: "Router session created. The agent will route your request..."
+    # A spot session may not start at all yet — SpotSessionHold parks it behind the
+    # quota gate — so the one place this surface speaks to the user must not promise
+    # routing that has not been scheduled.
+    notice = if scheduling_class == SessionGenesis::SPOT
+      "Router session created as spot. It starts when there is quota room, at the top of the spot queue."
+    else
+      "Router session created. The agent will route your request..."
+    end
+    redirect_to session, notice: notice
   rescue AgentRootsConfig::AgentRootNotFoundError => e
     redirect_to root_path, alert: "Router agent root not configured: #{e.message}"
   rescue ActiveRecord::RecordInvalid => e
@@ -564,6 +575,7 @@ class SessionsController < ApplicationController
 
     temp_session_id = "temp_#{SecureRandom.uuid}"
     session = nil
+    scheduling_class = quick_router_scheduling_class
     begin
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
@@ -577,6 +589,10 @@ class SessionsController < ApplicationController
         # classify Tadas's own message spot whenever he opened the bubble from a
         # spot session's page.
         genesis: SessionGenesis::WEB_UI,
+        # The submitter's own choice, which is the one thing that DOES override
+        # the above — the panel's Spot checkbox says "let this one wait".
+        scheduling_class: scheduling_class,
+        precedence: quick_router_precedence(scheduling_class),
         skip_enqueue: true
       )
 
@@ -4719,6 +4735,34 @@ class SessionsController < ApplicationController
   rescue FileStorageService::InvalidFileError => e
     Rails.logger.warn "Invalid file upload: #{e.message}"
     nil
+  end
+
+  # The Quick Router's spot opt-in, shared by the dashboard quick prompt and the
+  # chat bubble.
+  #
+  # Only an explicit "spot" writes anything. An untouched submission returns nil
+  # so the row's `scheduling_class` stays NULL and the class keeps deriving from
+  # the `web_ui` genesis on every read, which is what lets /quotas move these
+  # sessions by moving that genesis. Stamping "priority" here instead would pin
+  # the shipped default onto every Quick Router session and sever that link.
+  def quick_router_scheduling_class
+    params[:scheduling_class].to_s.strip == SessionGenesis::SPOT ? SessionGenesis::SPOT : nil
+  end
+
+  # Where a Quick-Router spot submission lands in the spot queue.
+  #
+  # A human typed this one seconds ago and chose to let it wait for quota room —
+  # that is a statement about quota, not about importance. Leaving it at the
+  # default precedence of 0 files it beneath every automated spot session ranked
+  # above 0, and behind every older session tied at 0, so it goes to the top of
+  # the queue instead; the UI on each surface says so.
+  #
+  # nil for a priority submission, which leaves the ordinary inheritance alone
+  # (the chat bubble's child-of-parent bump, DEFAULT everywhere else).
+  def quick_router_precedence(scheduling_class)
+    return nil unless scheduling_class == SessionGenesis::SPOT
+
+    Session.precedence_above_top_spot
   end
 
   # Stage uploaded images/files into the temp session dir. Raises a concrete
