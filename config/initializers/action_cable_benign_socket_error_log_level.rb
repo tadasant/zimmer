@@ -17,7 +17,7 @@
 #
 # The same reasoning applies to `#dispatch_websocket_message`, patched below: a
 # frame that lands after the socket closed is the same "client already gone" race
-# seen from the read side.
+# arriving through the inbound path instead of an exception.
 #
 # This is scoped to `on_error`'s message classification and
 # `dispatch_websocket_message`'s closed-socket branch — the log text of both is
@@ -74,8 +74,8 @@ module ActionCable
       # subscribe frames still in flight — every queued frame takes the
       # closed-socket branch and logs one line. The client is already gone and
       # the ActionCable consumer re-subscribes on reconnect, so there is nothing
-      # to fix and nothing to retry; it is the read-side twin of the benign
-      # disconnects handled in `#on_error` above.
+      # to fix and nothing to retry; it is the same benign disconnect `#on_error`
+      # above handles, reaching us as a stale frame rather than as an exception.
       #
       # Verified against actioncable 8.1.3's
       # `Connection::Base#dispatch_websocket_message`, which does exactly two

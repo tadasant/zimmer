@@ -187,4 +187,21 @@ class ActionCableBenignSocketErrorLogLevelTest < ActiveSupport::TestCase
       "a live socket must dispatch the decoded payload to handle_channel_command"
     assert_empty @logger.messages, "the happy path must not log at all, got: #{@logger.messages.inspect}"
   end
+
+  # --- upstream drift guard --------------------------------------------------
+
+  # Every ActionCable override in config/initializers/ reproduces a method body
+  # copied from a specific actioncable release, and a test can only assert the
+  # contract it knows about — it cannot notice that upstream grew a new side
+  # effect on a path the override replaced. This guard is what turns that silent
+  # risk into a red test on the upgrade PR, which is where the prompt to
+  # re-read the upstream source belongs.
+  test "the actioncable version the overrides were verified against has not moved" do
+    assert_equal "8.1.3", ActionCable::VERSION::STRING,
+      "actioncable was bumped — re-read the upstream bodies of " \
+      "Connection::Base#on_error, Connection::Base#dispatch_websocket_message and " \
+      "Connection::Subscriptions#remove, confirm the overrides in " \
+      "config/initializers/action_cable_*.rb still reproduce them, then update this guard " \
+      "and the version named in those files' comments."
+  end
 end
