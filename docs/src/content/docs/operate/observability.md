@@ -108,12 +108,11 @@ does appear worth reading.
 
 ### A client that has already disconnected is logged at DEBUG, not ERROR
 
-ActionCable applies the same reasoning to WebSockets, and upstream Rails logs three benign
+ActionCable applies the same reasoning to WebSockets, and upstream Rails surfaces three benign
 client-disconnect races at ERROR. Each one is a browser tab that went away — a navigation, a
 laptop sleeping, a reconnect — with the server still mid-operation. Nothing is broken, nothing
 is retryable, and the ActionCable consumer re-subscribes on its own when the client comes back.
-Three initializers downgrade them, each preserving upstream's log text verbatim so only the
-severity changes:
+Two initializers downgrade all three:
 
 | Race | Upstream method | Initializer |
 | --- | --- | --- |
@@ -126,6 +125,11 @@ The middle row is the one that bites hardest, because it is not one line per dis
 its socket with *n* frames in flight logs *n* ERRORs in a single burst — a session page with
 three `turbo_stream_from` streams, re-subscribing on reconnect, produced six inside 10 ms
 ([#624](https://github.com/tadasant/zimmer/issues/624)).
+
+The first two rows preserve upstream's log text byte for byte, so only the severity changes.
+The third cannot: upstream `#remove` *raises* through `execute_command`'s catch-all rescue
+rather than logging, so the patch makes the removal idempotent and emits its own DEBUG line in
+place of the exception.
 
 Only the benign set moves. A genuine WebSocket error, an unrecognized command, and a `find`
 failure on the `perform_action` path all still log at ERROR. Each override is pinned to the
