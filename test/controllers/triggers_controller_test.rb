@@ -20,6 +20,35 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Triggers"
   end
 
+  # The icon a row renders is asserted by name, not merely by presence: a
+  # `system_event` trigger that quietly fell through to the gray fallback would
+  # still show *an* icon, and that is the shape of the bug this pins.
+  test "the list renders the system-event icon for a system_event trigger" do
+    trigger = Trigger.create!(
+      name: "Quota available — wake waiting sessions",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Quota is back. {{event}}",
+      trigger_conditions_attributes: [
+        { condition_type: "system_event", configuration: { "event_name" => "quota_available" } }
+      ]
+    )
+
+    get triggers_path
+    assert_response :success
+    assert_select "#trigger_#{trigger.id} svg[aria-label=?]", "System event", 1
+  end
+
+  # The account-reauth trigger is an `ao_event`, and the operator reads the two
+  # kinds of platform trigger apart by their icons, so both are pinned.
+  test "the list renders the Zimmer-event icon for an ao_event trigger" do
+    trigger = triggers(:ao_event_trigger)
+
+    get triggers_path
+    assert_response :success
+    assert_select "#trigger_#{trigger.id} svg[aria-label=?]", "Zimmer event", 1
+  end
+
   test "should get new" do
     get new_trigger_path
     assert_response :success
