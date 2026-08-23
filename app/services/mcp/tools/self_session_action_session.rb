@@ -71,6 +71,15 @@ module Mcp
         ACTIONS
       end
 
+      # The narrowed schema does not advertise `halt`, and this is what makes
+      # that a refusal rather than a suggestion. The action body is inherited
+      # whole, reads `args["halt"]` directly, and no schema here sets
+      # `additionalProperties: false` — so without this a session could pass the
+      # flag anyway and terminate the very process waiting for this reply.
+      def pause_into_spot_queue(session, args)
+        super(session, args.except("halt"))
+      end
+
       # This server is injected into a session and pointed at that session, but
       # nothing enforces the aim: the tool group narrows the *actions*, not the
       # `session_id`. So the surface is named for what it is rather than

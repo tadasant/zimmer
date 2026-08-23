@@ -397,6 +397,12 @@ The "wake me up later" path. The session goes dormant and a one-time schedule tr
 resume it. If the wake-up is scheduled while the session is *running*,
 `metadata["pending_sleep"] = true` is set and the actual transition happens on the next `pause`.
 
+A human clicking **Pause Until** on a running session does not wait for that next `pause` — the
+control stops the turn itself (`Sessions::HaltRunningTurn` terminates the process and pauses the
+session), so the session is dormant in `waiting` before the request returns. The deferred sleep
+remains the fallback for a halt that cannot land. See
+[Pausing a session that is still running](/sessions/triggers/#pausing-a-session-that-is-still-running).
+
 Agents reach this through the `wake_me_up_later` MCP tool, and humans through the **Pause Until**
 control on a session card's overflow menu or in the session detail header. Both go through
 `Sessions::ScheduleWakeUp`, so both refuse the same wakes — a time in the past, or inside the

@@ -233,8 +233,8 @@ class SpotSessionPause
     # holding spot sessions stopped running ones too.
     #
     # Deliberately NOT every dormant session in the queue: a session a human
-    # parked there did not have a turn taken away from it, and counting it would
-    # overstate what the ceiling cost.
+    # parked there had its turn taken away by that human, not by the ceiling, and
+    # counting it would attribute their decision to the quota gate.
     def paused_count
       paused_sessions.where.not("metadata->>? = ?", PAUSED_REASON, QUEUED_REASON).count
     rescue ActiveRecord::ActiveRecordError
@@ -263,9 +263,12 @@ class SpotSessionPause
     def pause!(session, decision, overrides, logger)
       return false unless session.running?
       # A session a human just parked into the queue is already on its way here:
-      # it carries the queue record and sleeps at the end of its turn. Pausing it
-      # would terminate that turn mid-flight — the one thing the panel promised
-      # would not happen — and overwrite its story with the ceiling's.
+      # it carries the queue record and is either asleep or sleeping at the end of
+      # its turn. Pausing it again would overwrite its story with the ceiling's,
+      # and the count below would charge a turn to the ceiling that the ceiling
+      # never took. (The web UI stops such a turn itself — Sessions::HaltRunningTurn
+      # — so a running session reaching here still carrying the queue record is one
+      # parked through the MCP tool's deferred default.)
       return false if queued_by_user?(session)
 
       terminate_process(session, logger)
