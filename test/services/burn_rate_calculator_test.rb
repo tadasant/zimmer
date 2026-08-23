@@ -167,13 +167,29 @@ class BurnRateCalculatorTest < ActiveSupport::TestCase
   # A combination that falls out of the lookback must not go on informing the
   # scheduler from its last recorded value.
   test "recompute drops a combination that no longer has recent spend" do
-    spend(session: @session, minutes: 10, output_tokens: 1_000_000)
+    spend(session: @session, harness: "retired", minutes: 10, output_tokens: 1_000_000)
+    spend(session: other_session("live"), harness: "live", minutes: 10, output_tokens: 1_000_000)
+    assert_equal 2, BurnRateCalculator.recompute_all
+
+    SessionTokenUsage.where(agent_root: "retired").delete_all
     assert_equal 1, BurnRateCalculator.recompute_all
-    assert_equal 1, HarnessModelBurnRate.count
+    assert_equal [ "live" ], HarnessModelBurnRate.pluck(:harness)
+  end
+
+  # …but a run that samples NOTHING is "the ledger had nothing to say", not "no
+  # combination has a rate any more". Wiping on it would drop every rate on one
+  # bad pass and silently take the whole fleet out of dollar mode.
+  test "a run that samples nothing leaves the existing rates alone" do
+    spend(session: @session, minutes: 10, output_tokens: 1_000_000)
+    BurnRateCalculator.recompute_all
+    before = HarnessModelBurnRate.sole.computed_at
 
     SessionTokenUsage.delete_all
     assert_equal 0, BurnRateCalculator.recompute_all
-    assert_equal 0, HarnessModelBurnRate.count
+
+    assert_equal 1, HarnessModelBurnRate.count, "one empty pass must not wipe the table"
+    assert_equal before.to_i, HarnessModelBurnRate.sole.computed_at.to_i,
+      "and it must not refresh them either — staleness is what retires a rate nothing confirms"
   end
 
   test "recompute is idempotent — a second run rewrites the same row" do

@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 # Applies the spot policy to sessions that are already RUNNING: pauses them when
-# a quota window has reached its target, resumes them when it has come back
+# a quota window's spot budget is spent, resumes them when it has room
 # down. SpotSessionHold is the same policy at the starting line; this is the
-# half that makes the target a ceiling rather than a floor.
+# half that makes the budget a ceiling rather than a floor.
 #
 # == Cadence
 #
@@ -16,7 +16,7 @@
 # (every 15 minutes), when an account rotates, and when someone opens /quotas.
 # Sweeping more often than that would re-decide on the same number.
 #
-# A pass that finds a window at its target is the expensive one: each pause
+# A pass that finds a window out of spot budget is the expensive one: each pause
 # terminates a CLI process, and ProcessTerminationService gives each a few
 # seconds of SIGTERM grace before escalating. A full fleet is therefore up to
 # ~a minute of mostly-waiting work in one run — bounded by "Max sessions at

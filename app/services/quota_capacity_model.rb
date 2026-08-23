@@ -164,8 +164,7 @@ class QuotaCapacityModel
     #
     # @param burn_units_per_minute [Float] fleet + candidate, in this window's units
     def within_cap?(burn_units_per_minute)
-      projected = spent_units + (burn_units_per_minute * (LOOKAHEAD / 60.0))
-      projected <= spot_budget_units
+      projected_spend_units(burn_units_per_minute) <= spot_budget_units
     end
 
     # Condition 2 — the pace. Is that burn rate inside what the window can
@@ -178,6 +177,10 @@ class QuotaCapacityModel
       burn_units_per_minute <= rate
     end
 
+    # What total spend will be by the next decision, if the fleet keeps burning
+    # at this rate. The cap is tested against this rather than against `spent`
+    # alone, which is what makes a session's own projected spend part of the
+    # question rather than something noticed after the fact.
     def projected_spend_units(burn_units_per_minute)
       spent_units + (burn_units_per_minute * (LOOKAHEAD / 60.0))
     end

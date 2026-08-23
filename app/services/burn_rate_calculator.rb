@@ -42,28 +42,32 @@ class BurnRateCalculator
     # their last value: a rate nothing refreshes is a rate the scheduler would go
     # on trusting for a harness that no longer exists. `fresh` would hide them
     # anyway, and dropping the row keeps the table a statement about what is
-    # running now.
+    # running now. A run that samples NOTHING deletes nothing — see below.
     #
     # @return [Integer] how many combinations have a current rate
     def recompute_all
       samples = compute_samples
       now = Time.current
 
-      if samples.any?
-        HarnessModelBurnRate.upsert_all(
-          samples.map do |sample|
-            {
-              harness: sample.harness, model: sample.model,
-              usd_per_minute: sample.usd_per_minute,
-              sample_cost_usd: sample.cost_usd, sample_minutes: sample.minutes,
-              sample_session_count: sample.sessions,
-              sample_newest_at: sample.newest_at, sample_oldest_at: sample.oldest_at,
-              computed_at: now, created_at: now, updated_at: now
-            }
-          end,
-          unique_by: %i[harness model]
-        )
-      end
+      # An empty sample is "the ledger had nothing to say this run", not "no
+      # combination has a rate any more". Wiping on it would drop every rate on
+      # one bad pass — an ingestion hiccup, a lookback edge — and silently drop
+      # the whole fleet out of dollar mode until the next good one.
+      return 0 if samples.empty?
+
+      HarnessModelBurnRate.upsert_all(
+        samples.map do |sample|
+          {
+            harness: sample.harness, model: sample.model,
+            usd_per_minute: sample.usd_per_minute,
+            sample_cost_usd: sample.cost_usd, sample_minutes: sample.minutes,
+            sample_session_count: sample.sessions,
+            sample_newest_at: sample.newest_at, sample_oldest_at: sample.oldest_at,
+            computed_at: now, created_at: now, updated_at: now
+          }
+        end,
+        unique_by: %i[harness model]
+      )
 
       # Everything this run wrote carries `now`, so anything older is a
       # combination the lookback no longer contains. One indexed comparison,

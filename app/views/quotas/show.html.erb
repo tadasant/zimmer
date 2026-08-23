@@ -40,7 +40,7 @@
     <!-- Aggregate Stats (Claude-only: the pool summary surfaces quota utilization,
          which has no Codex equivalent yet). -->
     <% if current_runtime == ClaudeAuthProvider::RUNTIME %>
-      <%= render partial: "quotas/aggregate_stats", locals: { accounts: @accounts, snapshots: @snapshots, current_account: @current_account } %>
+      <%= render partial: "quotas/aggregate_stats", locals: { accounts: @accounts, snapshots: @snapshots, current_account: @current_account, setting: @app_setting } %>
     <% end %>
 
     <!-- Spot vs priority (Claude-only, for the same reason as the stats above: the

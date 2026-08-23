@@ -33,15 +33,6 @@ module QuotasHelper
     "#{number_to_currency(value, precision: 2)}/min"
   end
 
-  # How long a window has left before it rolls over, and how far through it we
-  # are — the time axis of the pacing curve, in words.
-  def window_rollover_phrase(window)
-    seconds = window.seconds_remaining
-    return "rollover time unknown, so this window is not paced" if seconds.nil?
-
-    "#{distance_of_time_in_words(seconds)} left (#{(window.elapsed_fraction * 100).round}% through the window)"
-  end
-
   def utilization_bar_color(value)
     return "bg-gray-300" if value.nil?
 
