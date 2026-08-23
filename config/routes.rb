@@ -367,6 +367,10 @@ Rails.application.routes.draw do
       # for the chosen time. The UI counterpart of the wake_me_up_later MCP tool.
       post :pause_until
       post :restart
+      # "Start it now" — the Ranked view's ⋮ menu, and the ⋮ menu is where the
+      # queue is managed. Named :start_now rather than :start so the helper does
+      # not read like the new-session form.
+      post :start_now
       post :touch_activity
       patch :update_title
       patch :update_notes

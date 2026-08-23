@@ -39,9 +39,21 @@
       `break-words` because Zimmer titles are full of unbreakable tokens
       (`test_session_state_machine_transitions_...`) that would otherwise set the
       row's width. Desktop keeps the single truncated line it had. %>
+  <%# A real <a href> whose plain left-click is intercepted by session-drawer#open,
+      so the title opens the same right-side drawer the card grid's "View" opens
+      rather than navigating off the queue. Middle-click, ⌘/Ctrl/Shift/Alt-click
+      and "Open in new tab" are untouched — the controller returns without
+      preventing the default for anything but an unmodified primary click, and
+      below `sm` it declines entirely so a phone gets the full session page.
+
+      turbo_prefetch: false is REQUIRED, for the same reason it is on the card's
+      View button: an intercepted click never does a Turbo Drive visit, so
+      hover-prefetch would only ever seed the cache with the FRAMELESS response
+      for this URL — which the drawer's frame request is then served, rendering
+      "Content missing". %>
   <%= link_to agent_session.title.presence || "Untitled session",
         session_path(agent_session),
-        data: { turbo_prefetch: false },
+        data: { turbo_frame: "_top", turbo_prefetch: false, action: "click->session-drawer#open" },
         class: "min-w-0 flex-1 break-words font-medium text-gray-800 hover:text-indigo-600 max-sm:line-clamp-2 sm:order-3 sm:truncate" %>
 
   <%# Row actions behind a "⋮", the same overflow-menu controller the session card
@@ -83,10 +95,29 @@
               data-action="ranked-queue#demote overflow-menu#close"
               data-session-id="<%= agent_session.id %>"
               class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" if draggable_row %>">Demote to spot</button>
+      <%# Start now: take this session's queued turn immediately rather than
+          waiting out the gate's deferred re-check. Rendered on every row rather
+          than only on the waiting ones, because the row is not re-rendered when a
+          status arrives over the stream — only its status pill is — so a row
+          hidden on render would stay hidden after the session went back to
+          waiting, and one shown would stay shown. The action refuses a session
+          that cannot start and says why. %>
+      <%= link_to "Start now", start_now_session_path(agent_session),
+            role: "menuitem",
+            data: { turbo_method: :post, action: "overflow-menu#close" },
+            class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
       <%= link_to "Open session", session_path(agent_session),
             role: "menuitem",
             data: { turbo_prefetch: false },
             class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
+      <%# Trash posts to the same #archive action every other Trash affordance in
+          the app posts to, so the queued-message speed bump and the Undo toast
+          come along with it. The row itself leaves over the ranked stream, which
+          removes a trashed row wherever it is rendered. %>
+      <%= link_to "Trash", archive_session_path(agent_session),
+            role: "menuitem",
+            data: { turbo_method: :post, action: "overflow-menu#close" },
+            class: "block w-full border-t border-gray-100 px-4 py-2.5 text-left text-sm text-red-600 hover:bg-red-50" %>
     </div>
   </div>
 
