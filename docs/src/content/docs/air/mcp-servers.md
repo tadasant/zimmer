@@ -155,6 +155,35 @@ never claims the remote host answered. And a probe that could not determine an a
 — leaves the server **listed**. Those are transient and hit every server at once; emptying the whole
 option list because Google was slow is a worse failure than offering a server that might not start.
 
+## When a server cannot connect, the server is left out — not the session
+
+A handshake that fails is a lost *capability*, not a lost session. `AgentSessionJob#check_and_handle_mcp_failure`
+classifies the failure and takes one of three routes:
+
+| Failure class | What happens |
+| --- | --- |
+| An **OAuth-capable** server needs authorization | `session.fail!` with `failure_reason: oauth_required`. The one fatal class, because a human clicking Authorize is the fix. |
+| Anything else, first three times | The retry ladder: `MAX_MCP_CONNECTION_RETRIES = 3`, backing off 30s / 60s / 120s. Most connect failures are transient — a server still starting after a deploy, an `npx` cache race — and self-heal here. |
+| Anything else, definitively | The server is **left out** and the session runs on. Also taken immediately, with no retries, for a static credential the provider rejected: a wrong API token does not become right in 30 seconds. |
+
+Leaving a server out means:
+
+- It is marked `failed` in `mcp_servers_status`, so the session page and the JSON consumers show it red.
+- It is recorded in `metadata["mcp_degraded_servers"]` with its error, and `AgentSessionJob#build_prompt_with_goal`
+  renders that into an `<unavailable-mcp-servers>` block on **every** subsequent prompt — so the agent is told
+  the tools are gone rather than discovering it from a tool call that is not there. The block tells it to stop
+  and say so if it genuinely needs the missing capability, rather than improvising a substitute.
+- The session is resumed with a `SYSTEM_RECOVERY` nudge, which preserves its scheduled wake-ups. A session whose
+  runtime never started ignores the nudge and runs its original prompt instead.
+- Nothing is rewritten in `.mcp.json`. The server stays configured, so if whatever broke it is fixed the next
+  spawn reconnects for free. The record exists so the *same* server failing again is a no-op instead of another
+  terminate-and-resume; a deliberate restart clears it (`Session::STALE_RETRY_METADATA_KEYS`) and re-arms the ladder.
+
+Before this, exhausting the ladder killed the session. A last-resort fallback server the session had never called
+— and never would have — could orphan two hours of completed work on a stale credential belonging to something
+else entirely ([#521](https://github.com/tadasant/zimmer/issues/521)). An agent that genuinely needs the missing
+capability can now say so and stop, which is a far cheaper failure than losing the transcript.
+
 ## Remote servers and OAuth
 
 A remote server (`http` / `streamable-http` / `sse`) with no static `Authorization` header is assumed
@@ -212,7 +241,7 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 - `NpxBinExecutableGuard` runs on the way into every **Claude** MCP spawn and restores the execute bit
   on any `_npx/*/node_modules/.bin` target that has none. Some packages publish their entrypoint as
   `-rw-r--r--` and rely on npm's bin-linking to `chmod` it; when that does not land, the server dies
-  on `exec` with `EACCES` identically on every retry and the session is orphaned for the life of the
+  on `exec` with `EACCES` identically on every retry, so the server is left out for the life of the
   clone ([#467](https://github.com/tadasant/zimmer/issues/467)). Codex sessions are not covered — see
   [Limitations](/limitations/#the-npx-bin-permission-repair-only-reaches-claude-sessions-and-only-on-the-next-launch).
 - `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the npm and

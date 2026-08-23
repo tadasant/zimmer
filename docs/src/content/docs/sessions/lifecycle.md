@@ -253,7 +253,7 @@ falls through and recovers as before. `metadata["paused_by"]` carries most of th
 | --- | --- | --- |
 | absent | the agent finishing its turn | stand down — nothing was interrupted |
 | `"user"` | somebody pausing it by hand | stand down — the pause was deliberate |
-| `"recovery"` | an earlier recovery pass parking it | recover, as before |
+| `"recovery"` | an earlier recovery pass parking it — or `degrade_mcp_servers!` resuming a session on the servers that did connect | recover, as before |
 | `"mcp_retry"` | `schedule_mcp_retry` parking it for a delayed retry | recover, as before |
 
 A negative test ("anything but `recovery`") would have been wrong: `mcp_retry`'s only route

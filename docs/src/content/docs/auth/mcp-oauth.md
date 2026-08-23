@@ -54,10 +54,16 @@ server that genuinely needs one, which is the worse failure of the two.
 
 A static-header server (e.g. Zimmer's own
 `zimmer*` entries, which send `X-API-Key: ${ZIMMER_PROD_API_KEY}`) returns the same 401 when
-its token is invalid or under-scoped, but no OAuth flow can mint a valid API token, so that
-failure is recorded as `mcp_connection_failed` — surfacing the raw error and the credential
-to check — rather than a dead-end Authorize button. This is the single predicate shared with
-the pre-spawn gate above.
+its token is invalid or under-scoped, but no OAuth flow can mint a valid API token, so it is
+never routed to a dead-end Authorize button. It is **left out and the session keeps running**,
+with the raw error and the credential to check written into the session log — see
+[When a server cannot connect](/air/mcp-servers/#when-a-server-cannot-connect-the-server-is-left-out-not-the-session).
+This is the single predicate shared with the pre-spawn gate above.
+
+That split is the whole fatality policy: `oauth_required` is the one failure class that still
+stops a session, because it is the one a human can resolve by clicking Authorize. Every other
+class is definitive — no amount of waiting or authorizing changes it — so stopping buys
+nothing and costs the transcript.
 
 There is a second dead-end the classifier avoids: a server Zimmer **already holds a valid
 credential for** that still returns `401`. That is not a missing authorization — it is the

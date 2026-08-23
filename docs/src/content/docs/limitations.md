@@ -1329,10 +1329,12 @@ store, and parks `oauth_required`.
 
 What remains is the silent case: the server rejects the access token — revoked, or its scopes changed
 — and reports only a bare `401` with no grant error, while the DB copy still looks `active` and the
-runtime never attempts a refresh that would name the failure. That retries to the limit and lands in
-`mcp_connection_failed` (raw error surfaced) with **no** Authorize button offered; the credential must
-lapse or be deleted before re-authorization is presented again. The predicate is still
-`McpOauthServerAuthorization.authorized?` (active credential exists), not "the server accepted it".
+runtime never attempts a refresh that would name the failure. That retries to the limit and then
+[leaves the server out](/air/mcp-servers/#when-a-server-cannot-connect-the-server-is-left-out-not-the-session)
+(raw error surfaced in the session log) with **no** Authorize button offered; the session runs on
+without that server's tools, and the credential must lapse or be deleted before re-authorization is
+presented again. The predicate is still `McpOauthServerAuthorization.authorized?` (active credential
+exists), not "the server accepted it".
 
 A runtime that phrases a rejected refresh differently than the pattern expects falls into this same
 silent case. That is the deliberate direction to fail in — the alternative, matching a bare

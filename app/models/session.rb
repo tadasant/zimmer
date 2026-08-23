@@ -336,6 +336,7 @@ class Session < ApplicationRecord
     auth_outage_pool_fingerprint
     mcp_retry_count
     mcp_last_retry_at
+    mcp_degraded_servers
     broadcast_message_count
     transcript_waiting_logged
     transcript_files_waiting_logged
@@ -1100,6 +1101,28 @@ class Session < ApplicationRecord
   # @return [Array<String>]
   def failed_mcp_server_names
     (custom_metadata&.dig("mcp_failed_servers") || []).filter_map { |s| s["name"] }
+  end
+
+  # MCP servers this session has definitively given up connecting to, recorded by
+  # AgentSessionJob#degrade_mcp_servers!. Each entry is
+  # `{ "name", "error", "reason", "degraded_at" }`.
+  #
+  # Their tools are unavailable for the rest of the session, but the session itself
+  # is alive — that is the whole point of the record. It lives in `metadata` rather
+  # than `custom_metadata` because `clear_stale_mcp_failure_metadata` wipes the MCP
+  # keys in `custom_metadata` on every resume, and this one has to survive the
+  # resume that creates it. It is in STALE_RETRY_METADATA_KEYS, so a deliberate
+  # restart re-arms the retry ladder and gives the server a fresh chance.
+  #
+  # @return [Array<Hash>]
+  def degraded_mcp_servers
+    entries = metadata&.dig("mcp_degraded_servers")
+    entries.is_a?(Array) ? entries.select { |e| e.is_a?(Hash) } : []
+  end
+
+  # @return [Array<String>] names of the servers in #degraded_mcp_servers
+  def degraded_mcp_server_names
+    degraded_mcp_servers.filter_map { |server| server["name"].presence }
   end
 
   # Names of the ${VAR} references `air prepare` could not resolve, from the
