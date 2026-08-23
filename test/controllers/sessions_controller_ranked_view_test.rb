@@ -216,6 +216,105 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     assert_select "#ranked_row_#{top.id} button[aria-expanded='false'][aria-haspopup='true']"
   end
 
+  test "the menu also offers Start now and Trash" do
+    queued = spot(10)
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    assert_select "#ranked_row_#{queued.id} [role='menu'] a[href=?][data-turbo-method='post']",
+      start_now_session_path(queued), text: "Start now"
+    # The same #archive every other Trash affordance posts to, so the queued-message
+    # speed bump and the Undo toast come with it rather than being reimplemented.
+    assert_select "#ranked_row_#{queued.id} [role='menu'] a[href=?][data-turbo-method='post']",
+      archive_session_path(queued), text: "Trash"
+  end
+
+  # The title is the reading surface of the row, and clicking it should not take
+  # the operator off the queue. It stays a real <a href> so middle-click and
+  # ⌘/Ctrl-click keep opening a new tab — session-drawer#open intercepts only the
+  # plain left click, exactly as the card grid's View button does.
+  test "the row's title is a real link wired to the session drawer" do
+    queued = spot(10, title: "Rebuild the AIR catalog index")
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    assert_select "#ranked_row_#{queued.id} a[href=?]", session_path(queued) do |links|
+      title_link = links.find { |link| link.text.include?("Rebuild the AIR catalog index") }
+      assert title_link, "the title should still be a link to the session"
+      assert_equal "click->session-drawer#open", title_link["data-action"]
+      assert_equal "_top", title_link["data-turbo-frame"], "the no-JS fallback is a full-page visit"
+      # Turbo 8 would otherwise prefetch the FRAMELESS response for this URL on
+      # hover and serve it to the drawer's frame request, which renders
+      # "Content missing".
+      assert_equal "false", title_link["data-turbo-prefetch"]
+    end
+  end
+
+  # --- starting a row ---------------------------------------------------------
+
+  test "start_now gives a session that never ran its first turn" do
+    session = spot(10)
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      post start_now_session_path(session)
+    end
+
+    assert_redirected_to session_path(session)
+    assert_match(/starting now/i, flash[:notice])
+  end
+
+  test "start_now says why it will not start a session that is already running" do
+    session = spot(10, status: :running)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      post start_now_session_path(session)
+    end
+
+    assert_match(/only a waiting session/, flash[:alert])
+  end
+
+  # The complaint this answers: promoting a held session removed the reason it
+  # was held and changed nothing about when it would next be asked, so it went on
+  # waiting out a re-check up to an hour away.
+  test "promoting a waiting session starts it" do
+    session = spot(10)
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      patch update_scheduling_class_session_url(session),
+        params: { scheduling_class: SessionGenesis::PRIORITY }, as: :json
+    end
+
+    assert_response :success
+    assert_equal "started", response.parsed_body["start_outcome"]
+    assert session.logs.reload.any? { |log| log.content.include?("Started now") }
+  end
+
+  test "demoting a session starts nothing" do
+    session = priority
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      patch update_scheduling_class_session_url(session),
+        params: { scheduling_class: SessionGenesis::SPOT, place: "top_of_spot" }, as: :json
+    end
+
+    assert_response :success
+    assert_nil response.parsed_body["start_outcome"]
+  end
+
+  # A session that has run before and has nothing queued is stranded rather than
+  # held, so there is no turn to bring forward. A promote leaves it alone; only
+  # an explicit Start nudges it, which is what Refresh already does for it.
+  test "promoting a session with nothing queued reports no start" do
+    session = spot(10)
+    session.update!(session_id: "cli-abc")
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::PRIORITY }, as: :json
+
+    assert_response :success
+    assert_nil response.parsed_body["start_outcome"]
+  end
+
   # --- editing a rank ---------------------------------------------------------
 
   test "update_precedence sets the value and answers with JSON for the ranked view" do

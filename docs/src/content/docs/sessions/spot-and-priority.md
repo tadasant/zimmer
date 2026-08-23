@@ -611,7 +611,9 @@ the spot queue is listed under them highest-precedence first, and both halves ar
 | **Drag** a row between two others | it takes the **midpoint** of the two values it was dropped between | `PATCH /sessions/:id/reorder_precedence`, which is handed the two neighbours and derives the value |
 | Drag between two **adjacent** values, where no midpoint exists | the neighbours are nudged one apart each, and the dropped row takes the middle of the gap that opens | the same request — 21 and 20 become 22 and 19 |
 | Open a row's **⋮** menu and press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
-| Open a row's **⋮** menu and press **Promote to priority** on a spot row | it moves up to the priority section, keeping its rank for a later demotion | the same endpoint |
+| Open a row's **⋮** menu and press **Promote to priority** on a spot row | it moves up to the priority section, keeping its rank for a later demotion, **and starts** | the same endpoint, plus `Sessions::StartNow` |
+| Open a row's **⋮** menu and press **Start now** | the session's queued turn is taken now instead of when the scheduler gets to it | `POST /sessions/:id/start_now` |
+| Open a row's **⋮** menu and press **Trash** | the session is archived and the row leaves the queue | `POST /sessions/:id/archive` — the same action every other Trash affordance posts to, speed bump and Undo toast included |
 
 Every write is optimistic: the row moves first and the server's answer corrects the numbers behind
 it, including any neighbour that was nudged. A write that fails rolls the row back and reloads,
@@ -626,10 +628,45 @@ The Ranked view opens on `waiting`, `running`, `needs_input` and `failed` rather
 usual `needs_input`-only default: its whole subject is work that has not started. An explicitly
 chosen filter still wins, as everywhere else.
 
-Each row carries one visible control — a **⋮** overflow menu holding promote/demote and a link to the
-session. The row itself is the reading surface: a drag handle, the rank, the status and the title. On
-a phone the row is two lines (title above, rank and status below), because a single line at 375px
-leaves the title about eighty pixels.
+Each row carries one visible control — a **⋮** overflow menu holding promote/demote, **Start now**,
+a link to the session and **Trash**. The row itself is the reading surface: a drag handle, the rank,
+the status and the title. On a phone the row is two lines (title above, rank and status below),
+because a single line at 375px leaves the title about eighty pixels.
+
+The **title opens the session in the dashboard's right-side drawer** rather than navigating away —
+the same drawer a card's **View** button opens, on the same `session-drawer#open` action. It stays a
+real `<a href>`, so middle-click, ⌘/Ctrl-click and "Open in new tab" still open the session in a new
+tab: only a plain, unmodified left click is intercepted, and below the `sm` breakpoint the drawer
+declines entirely and a phone gets the full session page.
+
+#### Starting a queued session now
+
+`Sessions::StartNow` is the operation behind **Start now**, and the one a promote to priority
+performs on the row it just promoted. It exists because the hold banner's "Make this one session
+priority to start it now" was not true: promoting removed the *reason* a session was held and changed
+nothing about *when* it would next be asked, so a session somebody had just decided was urgent went
+on waiting out a re-check up to an hour away.
+
+A waiting session is dormant in one of three shapes, and each has its own door back in:
+
+| Shape | What starts it |
+| --- | --- |
+| Held at the starting line by [SpotSessionHold](#what-hold-does) | its **already-queued** delayed `AgentSessionJob` is rescheduled to now, through GoodJob's own `reschedule_job` |
+| Paused mid-run by the ceiling, or parked from **Pause Until → Spot Queue** | `SpotSessionPause`'s own resume — the same locked re-check the sweep performs, restoring the prompt a human left with the park |
+| Neither: it has run before and has nothing scheduled | nothing, from a promote. It is stranded rather than queued, so **Start now** sends it the same continue nudge Refresh does |
+
+The first row is the one worth internalizing. A held session is **not** a session with nothing
+scheduled: the gate takes custody of the refused turn and rides it — prompt, images and files — on a
+delayed job. Enqueuing a fresh job alongside it would leave two jobs for one session, and only the
+first is protected. `AgentSessionJob`'s concurrency guard stands a job down while `running_job_id`
+points at a *live* job, but the deferred one fires whenever it likes, and a session that has already
+finished its turn and gone back to `waiting` has no live job to stand it down. That second turn would
+run for real, re-delivering a prompt that was already delivered. Pulling the queued job forward keeps
+it at one job, one turn, prompt intact.
+
+A session **asleep on a wake-up it has not reached** is refused rather than started. The wake is that
+session's next event and it carries its own prompt; starting underneath it would race the two.
+`AgentSessionJob` refuses such a start on its own — this only says so before the click.
 
 #### The queue stays live
 
@@ -707,6 +744,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
+| Start a queued session now, without waiting out its re-check | **Start now** in the Ranked view's ⋮ menu; promoting a waiting row does it too | `action_session` (`start_now`, or as a side effect of `change_scheduling_class` to `priority`) |
 | Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
 | Stop a *running* session's turn while parking it | **Pause Until** does it unconditionally | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
 | Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and ⋮ menu | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
