@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_22_174500) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_23_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -77,6 +77,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_22_174500) do
     t.jsonb "queue_recovery_mode", default: {}, null: false
     t.boolean "quota_pool_available"
     t.datetime "quota_pool_available_changed_at"
+    t.boolean "session_scoped_credentials_enabled", default: false, null: false
     t.integer "spot_gate_five_hour_threshold_pct", default: 80, null: false
     t.integer "spot_gate_weekly_threshold_pct", default: 80, null: false
     t.boolean "spot_gating_enabled", default: false, null: false

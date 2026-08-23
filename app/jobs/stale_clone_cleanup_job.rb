@@ -166,6 +166,14 @@ class StaleCloneCleanupJob < ApplicationJob
       cleaned_anything = true
     end
 
+    # Same reasoning for the session's own CLAUDE_CONFIG_DIR, which holds its
+    # mcpOAuth tokens and the CLI's conversation state.
+    if claude_config_dir_exists?(session.id)
+      ClaudeSessionConfigDirectory.cleanup_for(session.id)
+      Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale Claude config dir for session #{session.id}"
+      cleaned_anything = true
+    end
+
     # Reclaim durable prompt-attachment storage (files + images) on the same
     # lifecycle. It now lives on the shared ~/.zimmer volume (see
     # FileStorageService.storage_root), so it is no longer wiped by container

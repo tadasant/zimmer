@@ -76,7 +76,7 @@ class QuotaResetCheckerJob < ApplicationJob
       end
     end
 
-    token = account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+    token = account.claude_access_token
     unless token.present?
       logger.info("No OAuth token available, using stale snapshot", email: account.email)
       return nil
@@ -95,7 +95,7 @@ class QuotaResetCheckerJob < ApplicationJob
     if !result.success? && result.error_message&.include?("401") && account.can_refresh_token?
       if account.refresh_token!
         account.reload
-        token = account.oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+        token = account.claude_access_token
         result = QuotaCheckService.check_with_token(token) if token.present?
       end
     end

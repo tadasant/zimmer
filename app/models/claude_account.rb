@@ -256,120 +256,16 @@ class ClaudeAccount < ApplicationRecord
     for_runtime(runtime).find_by(is_current: true)
   end
 
-  # Reads ~/.claude.json and ~/.claude/.credentials.json and populates the
-  # matching ClaudeAccount's oauth_config. Used when the CLI has been
-  # manually logged in but the DB record is empty (the common "forgot to
-  # run capture_tokens" case). If no account is marked current, also marks
-  # the synced account as current so subsequent spawns use it.
-  #
-  # @return [ClaudeAccount, nil] the synced account, or nil if no matching
-  #   account exists in the DB or the filesystem files are missing.
-  def self.sync_from_filesystem!
-    return nil unless File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
-
-    fs_email = filesystem_oauth_email
-    if fs_email.blank?
-      Rails.logger.info "[ClaudeAccount] sync_from_filesystem!: no oauthAccount email in filesystem"
-      return nil
-    end
-
-    # Email is unique only per-runtime, so this Claude-Code filesystem-sync path
-    # must scope to the Claude Code runtime — otherwise a same-email Codex row
-    # could be matched and have Claude credentials grafted onto it.
-    account = for_runtime(ClaudeAuthProvider::RUNTIME).find_by(email: fs_email)
-    unless account
-      Rails.logger.info "[ClaudeAccount] sync_from_filesystem!: no DB account for filesystem email #{fs_email}"
-      return nil
-    end
-
-    oauth_config = {}
-    # Two witnesses describe the credentials file: the owner marker Zimmer writes,
-    # and the container-local ~/.claude.json the CLI writes. `fs_email` is the
-    # marker. When the identity file is present and names somebody ELSE, they
-    # disagree — typically because an operator ran `claude /login` as a different
-    # account, which rewrites the tokens and the identity but not the marker.
-    # Adopting on the marker's word alone would then write the newly-logged-in
-    # account's tokens into the previous account's row, which is precisely the
-    # contamination this machinery exists to prevent. Refuse and say why: an
-    # operator can Authenticate the right account from /quotas, which writes both.
-    if File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
-      claude_json = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-      identity_email = extract_oauth_email(claude_json["oauthAccount"])
-      if identity_email.present? && !identity_email.casecmp?(fs_email)
-        Rails.logger.warn "[ClaudeAccount] sync_from_filesystem!: the owner marker names #{fs_email} but ~/.claude.json " \
-          "names #{identity_email}; refusing to attribute the on-disk credentials to either"
-        return nil
-      end
-      oauth_config["claude_json"] = claude_json
-    end
-    credentials_json = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
-    oauth_config["credentials_json"] = credentials_json
-
-    # Refuse to bootstrap a refresh-token-less credential set into the DB. The
-    # Claude CLI sometimes rewrites .credentials.json without the claudeAiOauth
-    # tokens; adopting that here would brick the account the moment its access
-    # token expires (see complete_claude_oauth?). This guard mirrors the one in
-    # sync_tokens_from_filesystem! so no entry point can poison the pool.
-    unless complete_claude_oauth?(credentials_json)
-      Rails.logger.warn "[ClaudeAccount] sync_from_filesystem!: filesystem credentials for #{fs_email} are incomplete (missing accessToken or refreshToken); refusing to bootstrap"
-      return nil
-    end
-
-    account.update!(oauth_config: oauth_config, status: :active)
-
-    # The credentials we just adopted are physically on disk and belong to
-    # fs_email, so stamp the shared marker to match. Without this, the
-    # marker-gated token-capture paths wouldn't recognize this account as the
-    # on-disk owner until the next full write_config!.
-    write_credentials_owner_marker!(fs_email)
-
-    # If nothing is currently marked, adopt this account as current so
-    # ensure_active_account! doesn't keep treating it as unavailable.
-    if current_account.nil?
-      account.mark_current!
-      Rails.logger.info "[ClaudeAccount] sync_from_filesystem!: marked #{fs_email} as current (no prior current account)"
-    end
-
-    Rails.logger.info "[ClaudeAccount] sync_from_filesystem!: captured tokens for #{fs_email}"
-    account
-  rescue JSON::ParserError => e
-    Rails.logger.warn "[ClaudeAccount] sync_from_filesystem! JSON parse error: #{e.message}"
-    nil
-  end
-
-  # Whose tokens are in the SHARED ~/.claude/.credentials.json, as best Zimmer
-  # can tell.
-  #
-  # The owner marker answers this and the container-local ~/.claude.json only
-  # looks like it does. The two files have different durability: the marker sits
-  # in the same shared volume as the credentials it describes, while
-  # ~/.claude.json lives in the container's writable layer and is destroyed every
-  # time the container is replaced — which keeps the tokens and loses the
-  # identity. Trusting the identity file therefore lets a container replacement
-  # produce a confident, wrong answer about a credentials file that did not
-  # change. See issue #618, addendum B.
-  #
-  # The identity file is consulted only when there is NO marker at all: the
-  # bootstrap window before Zimmer has ever written credentials, which is also
-  # the one case the file is being read for its actual purpose (an operator ran
-  # `claude /login` on a fresh worker). After a container replacement that
-  # window looks the same but the file is gone, so the fallback answers nil —
-  # the safe answer — rather than a stale identity.
-  #
-  # @return [String, nil]
-  def self.filesystem_oauth_email
-    marker = credentials_owner_email
-    return nil if marker == UNOWNED_CREDENTIALS_MARKER
-    return marker if marker.present?
-
-    filesystem_identity_email
-  end
-
   # The email in the container-local ~/.claude.json's oauthAccount field, or nil
-  # if the file is missing/unparseable. Deliberately private-by-convention: the
-  # only caller that should reach for it is #filesystem_oauth_email's bootstrap
-  # fallback, and #backfill_identity_from_filesystem!, which uses it under an
-  # email match rather than as an authority.
+  # if the file is missing/unparseable.
+  #
+  # Deliberately narrow, and deliberately never an authority. The file lives in
+  # the container's writable layer while the credentials it appears to describe
+  # live in a shared volume, so a container replacement keeps the tokens and
+  # loses the identity — which is how "adopt the filesystem identity" came to
+  # mean "adopt a dead one" (#618, addendum B). The only readers left consult it
+  # to CONTRADICT a claim (#filesystem_identity_agrees?) or under an email match
+  # (#backfill_identity_from_filesystem!); nothing derives an identity from it.
   def self.filesystem_identity_email
     return nil unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
@@ -570,11 +466,25 @@ class ClaudeAccount < ApplicationRecord
   # reports inconclusive as "not rejected", which would be a false GO here), so
   # callers degrade to the refresh path rather than admitting an unverified
   # account on a network blip.
+  # The Claude subscription access token this account would present, from its DB
+  # copy — the single reader for a dig that seven callers used to spell out
+  # themselves. nil for a Codex row or an account with no captured credentials.
+  #
+  # This is the value handed to a session as CLAUDE_CODE_OAUTH_TOKEN under
+  # session-scoped credentials, which is why it is one method: the token a
+  # session runs on and the token Zimmer probes quota with must not be able to
+  # drift apart.
+  def claude_access_token
+    return nil if codex?
+
+    oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken").presence
+  end
+
   def access_token_honored?
     return false if codex?
     return false if token_expired?
 
-    token = oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+    token = claude_access_token
     return false if token.blank?
 
     QuotaCheckService.check_with_token(token).success?
@@ -854,9 +764,9 @@ class ClaudeAccount < ApplicationRecord
   # account that already carries a claude_json, or whose email the file does not
   # match, is left alone. That makes it safe on the shared worker, where
   # ~/.claude.json is whoever the CLI last wrote: the guard is the same email
-  # match every other adoption path applies. It adopts the file verbatim — as
-  # .sync_from_filesystem! does, because write_config! writes this blob back and a
-  # trimmed copy would drop the CLI's own state — and touches no credentials.
+  # match every other adoption path applies. It adopts the file verbatim, because
+  # write_config! writes this blob back and a trimmed copy would drop the CLI's
+  # own state — and it touches no credentials.
   #
   # Exists so AccountRotationService#config_file_matches? can fail closed (#61)
   # without stranding an account that holds credentials but no identity — a fresh
@@ -1070,14 +980,14 @@ class ClaudeAccount < ApplicationRecord
   #
   # Note what this does NOT do: release the throttle when an account leaves
   # needs_reauth. That was the first shape of this callback and it was wrong.
-  # `sync_from_filesystem!` resurrects the on-disk owner to `active` with a plain
-  # `update!` — including a needs_reauth row whose dead-but-complete tokens are
-  # still in the credentials file — and `ensure_active_account!` runs it before
-  # every session spawn. Releasing there would drop the throttle moments before
-  # `usable_candidate?` re-condemns the same account, turning a drained pool into
-  # one spawned session per spawn attempt: exactly the flood the window exists to
-  # prevent. Releasing is therefore the job of the human re-auth path alone, where
-  # it means what it says — see #clear_reauth_alert! and ClaudeLoginDriver#capture!.
+  # Plenty of machinery writes `active` with a plain `update!` and no human
+  # involved — the auto-heal sweep on /quotas, a recovery probe that happens to
+  # succeed — and `ensure_active_account!` runs before every session spawn.
+  # Releasing there would drop the throttle moments before `usable_candidate?`
+  # re-condemns the same account, turning a drained pool into one spawned session
+  # per spawn attempt: exactly the flood the window exists to prevent. Releasing
+  # is therefore the job of the human re-auth path alone, where it means what it
+  # says — see #clear_reauth_alert! and ClaudeLoginDriver#capture!.
   # Record, at save time, that this save crossed into needs_reauth — so that
   # #notify_status_transition can still tell after the transaction commits.
   #

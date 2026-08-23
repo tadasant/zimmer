@@ -5,11 +5,16 @@ require "mocha/minitest"
 
 class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
   setup do
-    @writer = ClaudeMcpCredentialWriter.new
-    # Keep tests deterministic across platforms: never touch the real Keychain.
-    @writer.stubs(:macos?).returns(false)
     @working_directory = Dir.mktmpdir("claude-mcp-writer-test")
     @credentials_file = File.join(@working_directory, ".credentials.json")
+    # The path is injected, not stubbed. Swapping CLAUDE_CREDENTIALS_PATH could
+    # only ever relocate a read that happened to resolve the constant at call
+    # time — miss one and the test reads (and rewrites) the developer's real
+    # ~/.claude/.credentials.json. Handing the writer its path makes that
+    # impossible rather than unlikely.
+    @writer = ClaudeMcpCredentialWriter.new(credentials_path: @credentials_file)
+    # Keep tests deterministic across platforms: never touch the real Keychain.
+    @writer.stubs(:macos?).returns(false)
   end
 
   teardown do
@@ -35,10 +40,8 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: expires_at
     )
 
-    with_credentials_path(@credentials_file) do
-      path = @writer.write!(working_directory: @working_directory, credentials: [ credential ])
-      assert_equal @credentials_file, path
-    end
+    path = @writer.write!(working_directory: @working_directory, credentials: [ credential ])
+    assert_equal @credentials_file, path
 
     data = JSON.parse(File.read(@credentials_file))
     entry = data.dig("mcpOAuth", "notion|abc123")
@@ -60,9 +63,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: nil
     )
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ credential ])
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "noexpiry|def456")
     assert_not entry.key?("expiresAt"), "expiresAt should be omitted when expires_at is nil"
@@ -75,9 +76,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       "mcpOAuth" => { "existing|key" => { "serverName" => "existing" } }
     }))
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential(credential_key: "new|key") ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential(credential_key: "new|key") ])
 
     data = JSON.parse(File.read(@credentials_file))
     assert_equal "keep-me", data.dig("claudeAiOauth", "accessToken"), "unrelated top-level keys must be preserved"
@@ -86,18 +85,14 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
   end
 
   test "write! writes the file with 0600 permissions" do
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential ])
 
     mode = File.stat(@credentials_file).mode & 0o777
     assert_equal 0o600, mode
   end
 
   test "write! returns nil when there are no credentials" do
-    with_credentials_path(@credentials_file) do
-      assert_nil @writer.write!(working_directory: @working_directory, credentials: [])
-    end
+    assert_nil @writer.write!(working_directory: @working_directory, credentials: [])
     assert_not File.exist?(@credentials_file), "no file should be written when there are no credentials"
   end
 
@@ -115,9 +110,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
 
     credential = resolved_credential(credential_key: "notion|abc123", access_token: "access-token-xyz")
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ credential ])
 
     assert_match(/add-generic-password -U -a/, captured_stdin)
     # The hex blob decodes back to the merged credentials JSON.
@@ -147,9 +140,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: 1.hour.from_now
     )
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
     assert_equal "runtime-fresh-token", entry["accessToken"], "must keep the fresher runtime token"
@@ -173,9 +164,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: 3.hours.from_now
     )
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
     assert_equal "zimmer-newer-token", entry["accessToken"], "Zimmer's newer token must win"
@@ -199,9 +188,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: 1.hour.from_now
     )
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
     assert_equal "zimmer-token", entry["accessToken"], "Zimmer's token must replace the expired runtime token"
@@ -223,9 +210,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: 1.hour.from_now
     )
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
     assert_equal "zimmer-token", entry["accessToken"], "Zimmer's entry must win when existing has no expiry"
@@ -251,9 +236,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: nil
     )
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ zimmer_credential ])
 
     entry = JSON.parse(File.read(@credentials_file)).dig("mcpOAuth", "notion|abc123")
     assert_equal "runtime-valid-token", entry["accessToken"], "must keep the still-valid runtime token when Zimmer's has no expiry"
@@ -272,7 +255,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       }
     ))
 
-    snapshots = with_credentials_path(@credentials_file) { @writer.read_runtime_credentials }
+    snapshots = @writer.read_runtime_credentials
 
     snapshot = snapshots["notion|abc123"]
     assert_equal "on-disk-access", snapshot.access_token
@@ -286,7 +269,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       "mcpOAuth" => { "notion|abc123" => { "accessToken" => "a", "refreshToken" => "r" } }
     ))
 
-    snapshots = with_credentials_path(@credentials_file) { @writer.read_runtime_credentials }
+    snapshots = @writer.read_runtime_credentials
 
     assert_nil snapshots["notion|abc123"].expires_at
   end
@@ -294,7 +277,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
   test "read_runtime_credentials returns {} when the file is absent" do
     missing = File.join(@working_directory, "does-not-exist.json")
 
-    snapshots = with_credentials_path(missing) { @writer.read_runtime_credentials }
+    snapshots = @writer.read_runtime_credentials
 
     assert_empty snapshots
   end
@@ -302,7 +285,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
   test "read_runtime_credentials returns {} when the file is corrupt" do
     File.write(@credentials_file, "{ not json")
 
-    snapshots = with_credentials_path(@credentials_file) { @writer.read_runtime_credentials }
+    snapshots = @writer.read_runtime_credentials
 
     assert_empty snapshots
   end
@@ -316,10 +299,8 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       expires_at: expires_at
     )
 
-    snapshots = with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ credential ])
-      @writer.read_runtime_credentials
-    end
+    @writer.write!(working_directory: @working_directory, credentials: [ credential ])
+    snapshots = @writer.read_runtime_credentials
 
     snapshot = snapshots["notion|abc123"]
     assert_equal "written-access", snapshot.access_token
@@ -335,29 +316,23 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       "linear" => { "timestamp" => 3 }
     }.to_json)
 
-    with_credentials_path(@credentials_file) do
-      cleared = @writer.clear_needs_auth_cache([ "reframe-secrets", "linear", "not-present" ])
-      # Order follows the requested list (names & keys), and "not-present" is dropped.
-      assert_equal %w[reframe-secrets linear], cleared
-    end
+    cleared = @writer.clear_needs_auth_cache([ "reframe-secrets", "linear", "not-present" ])
+    # Order follows the requested list (names & keys), and "not-present" is dropped.
+    assert_equal %w[reframe-secrets linear], cleared
 
     remaining = JSON.parse(File.read(cache_path))
     assert_equal %w[github-rufus], remaining.keys
   end
 
   test "clear_needs_auth_cache is a no-op when the cache file is absent" do
-    with_credentials_path(@credentials_file) do
-      assert_equal [], @writer.clear_needs_auth_cache([ "reframe-secrets" ])
-    end
+    assert_equal [], @writer.clear_needs_auth_cache([ "reframe-secrets" ])
   end
 
   test "clear_needs_auth_cache is a no-op for an empty server list" do
     cache_path = File.join(@working_directory, "mcp-needs-auth-cache.json")
     File.write(cache_path, { "reframe-secrets" => { "timestamp" => 1 } }.to_json)
 
-    with_credentials_path(@credentials_file) do
-      assert_equal [], @writer.clear_needs_auth_cache([])
-    end
+    assert_equal [], @writer.clear_needs_auth_cache([])
 
     # Untouched.
     assert_equal %w[reframe-secrets], JSON.parse(File.read(cache_path)).keys
@@ -367,9 +342,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     cache_path = File.join(@working_directory, "mcp-needs-auth-cache.json")
     File.write(cache_path, "{not valid json")
 
-    with_credentials_path(@credentials_file) do
-      assert_equal [], @writer.clear_needs_auth_cache([ "reframe-secrets" ])
-    end
+    assert_equal [], @writer.clear_needs_auth_cache([ "reframe-secrets" ])
   end
 
   # GitHub issue #222: force-expiring a revoked credential in the DB only sticks
@@ -380,15 +353,13 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
     revoked = resolved_credential(credential_key: "notion|abc123", server_name: "notion")
     keeper = resolved_credential(credential_key: "linear|def456", server_name: "linear")
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ revoked, keeper ])
+    @writer.write!(working_directory: @working_directory, credentials: [ revoked, keeper ])
 
-      assert_equal [ "notion|abc123" ], @writer.delete_credentials([ "notion|abc123" ])
+    assert_equal [ "notion|abc123" ], @writer.delete_credentials([ "notion|abc123" ])
 
-      remaining = @writer.read_runtime_credentials
-      assert_nil remaining["notion|abc123"], "a deleted entry must not be readable by the reconciler"
-      assert remaining.key?("linear|def456"), "must not disturb another server's credential"
-    end
+    remaining = @writer.read_runtime_credentials
+    assert_nil remaining["notion|abc123"], "a deleted entry must not be readable by the reconciler"
+    assert remaining.key?("linear|def456"), "must not disturb another server's credential"
 
     data = JSON.parse(File.read(@credentials_file))
     assert_equal [ "linear|def456" ], data["mcpOAuth"].keys
@@ -400,9 +371,7 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
       "mcpOAuth" => { "notion|abc123" => { "accessToken" => "dead" } }
     ))
 
-    with_credentials_path(@credentials_file) do
-      assert_equal [ "notion|abc123" ], @writer.delete_credentials([ "notion|abc123" ])
-    end
+    assert_equal [ "notion|abc123" ], @writer.delete_credentials([ "notion|abc123" ])
 
     data = JSON.parse(File.read(@credentials_file))
     assert_equal({ "accessToken" => "account-token" }, data["claudeAiOauth"])
@@ -410,25 +379,19 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
   end
 
   test "delete_credentials is a no-op for a missing store, unknown key, or empty list" do
-    with_credentials_path(File.join(@working_directory, "does-not-exist.json")) do
-      assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
-    end
+    assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
 
-    with_credentials_path(@credentials_file) do
-      @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential(credential_key: "notion|abc123") ])
+    @writer.write!(working_directory: @working_directory, credentials: [ resolved_credential(credential_key: "notion|abc123") ])
 
-      assert_equal [], @writer.delete_credentials([ "unknown|000" ])
-      assert_equal [], @writer.delete_credentials([])
-      assert @writer.read_runtime_credentials.key?("notion|abc123")
-    end
+    assert_equal [], @writer.delete_credentials([ "unknown|000" ])
+    assert_equal [], @writer.delete_credentials([])
+    assert @writer.read_runtime_credentials.key?("notion|abc123")
   end
 
   test "delete_credentials tolerates a corrupt credential store without raising" do
     File.write(@credentials_file, "{not valid json")
 
-    with_credentials_path(@credentials_file) do
-      assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
-    end
+    assert_equal [], @writer.delete_credentials([ "notion|abc123" ])
   end
 
   private
@@ -450,14 +413,4 @@ class ClaudeMcpCredentialWriterTest < ActiveSupport::TestCase
 
   # Swaps the frozen credentials-path constant to a temp file for the duration of
   # the block so tests never touch the real ~/.claude/.credentials.json.
-  def with_credentials_path(path)
-    klass = ClaudeMcpCredentialWriter
-    original = klass::CLAUDE_CREDENTIALS_PATH
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, path)
-    yield
-  ensure
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
-  end
 end

@@ -3358,6 +3358,32 @@ in the window, and it excludes sessions whose start and end values disagree. Tho
 the most obvious wrong readings. They do not turn an observational comparison into a causal
 one, and a thin report saying "not enough data to compare" is the correct output, not a bug.
 
+## Session-scoped credentials leave the shared file behind, on purpose
+
+The [session-scoped credentials setting](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)
+removes `~/.claude/.credentials.json` as a source of truth for subscription tokens, but it does not
+delete the machinery that manages it: the owner marker, `sync_tokens_from_filesystem!`, the symmetric
+write guard, `credentials_blob_for_disk`, the completeness guards. All of it is dormant with the
+setting on and load-bearing with it off, because the off path is the rollback.
+
+So while the setting is being rolled out there are two credential mechanisms in the codebase and
+exactly one of them runs. That is the intended state, not an oversight — but it means a reader of
+`ClaudeAccount` or `AccountRotationService` sees guards defending a file that, in production with the
+setting on, nothing reads. The machinery comes out when the setting is on everywhere and the rollback
+is no longer wanted.
+
+Two narrower gaps while both exist:
+
+- **A revoked MCP credential is not removed from a running session's store.**
+  `McpOauthCredentialInjector#delete_runtime_credentials` and `RefreshMcpOauthTokensJob` build their
+  writers with no session, so they target the host-global file. A session that already holds the
+  revoked token keeps it until it ends; new sessions get a fresh directory. The window is one
+  session's lifetime, not indefinite.
+- **A corrupt shared file stays corrupt while the setting is on.** `ClaudeCredentialHealth.self_heal!`
+  declines to repair it, because rewriting a file nothing reads on a five-minute cron is noise rather
+  than a repair. If the setting is later turned off, the next `ensure_active_account!` rewrites the
+  file from the DB — but until then the stale bytes sit there.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
