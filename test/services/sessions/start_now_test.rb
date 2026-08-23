@@ -164,6 +164,64 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
     assert_nil session.metadata[SpotSessionPause::PAUSED_REASON], "the pause record goes with the pause"
   end
 
+  # --- what a start actually promises -----------------------------------------
+
+  # Moving a turn is not the same as passing the gate. A row of buttons that each
+  # claim a start and deliver a re-check is worse than one that says what it did.
+  test "a spot session is told the gate still decides" do
+    session = held_session
+    queued_turn(session, scheduled_at: 40.minutes.from_now)
+
+    result = Sessions::StartNow.call(session)
+
+    assert result.started?, result.message
+    assert_match(/next turn is due now/, result.message)
+    assert_match(/the gate decides/, result.message)
+  end
+
+  test "a priority session is told plainly that it is starting" do
+    session = held_session
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+    queued_turn(session, scheduled_at: 40.minutes.from_now)
+
+    result = Sessions::StartNow.call(session)
+
+    assert result.started?, result.message
+    refute_match(/the gate decides/, result.message)
+  end
+
+  # The one confusion that produces the duplicate turn this class exists to
+  # prevent: an unreadable queue looks exactly like an empty one, and a held
+  # first-turn session (blank session_id) is the shape that would take the
+  # enqueue branch on the strength of it.
+  test "a queue that cannot be read is refused rather than read as empty" do
+    session = held_session
+    queued_turn(session, scheduled_at: 40.minutes.from_now)
+
+    result = nil
+    GoodJob::Job.stub(:where, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        result = Sessions::StartNow.call(session)
+      end
+    end
+
+    assert result.refused?, result.message
+    assert_match(/Could not read what is queued/, result.message)
+    assert_equal 3, session.reload.metadata[SpotSessionHold::HELD_COUNT],
+      "a refused start must not reset the backoff ladder"
+  end
+
+  # The hold record explains why a dormant session is dormant. Clearing it for a
+  # start that did not happen leaves an idle session with no banner and no reason.
+  test "a session with nothing queued keeps the hold record explaining it" do
+    session = held_session(session_id: "cli-abc")
+
+    result = Sessions::StartNow.call(session)
+
+    assert result.nothing_queued?, result.message
+    assert_equal 3, session.reload.metadata[SpotSessionHold::HELD_COUNT]
+  end
+
   # --- refusals ---------------------------------------------------------------
 
   test "a session asleep on a wake-up it has not reached is refused" do

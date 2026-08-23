@@ -200,7 +200,7 @@ class RankedQueueTest < ApplicationSystemTestCase
     # Start hands the session its first turn. The job is enqueued rather than run
     # (the test adapter holds it), so the session's own log is what says so.
     click_link "Start now"
-    assert_selector "#flash", text: "starting now"
+    assert_selector "#flash", text: "next turn is due now"
     assert queued.logs.reload.any? { |log| log.content.include?("Started now") },
       "Start now should record itself on the session it started"
 
