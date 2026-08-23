@@ -856,4 +856,78 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
 
     mock_poller.verify
   end
+  # === Racing the job that is actually driving the session (zimmer#489) ========
+  #
+  # Orphan detection and this service run against a snapshot of the session. Between
+  # that snapshot and the ownership claim below, another job can start driving the
+  # session and spawn a turn. Taking ownership from that job makes its own monitoring
+  # loop see ownership move and terminate the process it just spawned — the only live
+  # process on the session.
+
+  test "recover pins the recovery job to the pid the decision was made about" do
+    mock_pm = Object.new
+    mock_pm.define_singleton_method(:running?) { |pid| pid == 12345 }
+
+    service = SessionRecoveryService.new(@session, process_manager: mock_pm, skip_pid_check: false)
+    service.recover
+
+    enqueued = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+    assert_equal 12345, enqueued[:args][2]["monitor_pid"],
+      "The recovery job must carry the pid this recovery was decided about"
+  end
+
+  test "recover does not take ownership when the session spawned a new process since the orphan check" do
+    live_job_id = "job-actually-driving-this-session"
+    @session.update!(running_job_id: live_job_id)
+
+    mock_pm = Object.new
+    mock_pm.define_singleton_method(:running?) { |_pid| true }
+
+    service = SessionRecoveryService.new(@session, process_manager: mock_pm, skip_pid_check: false)
+
+    # Simulate the race: another job spawns a fresh turn (overwriting process_pid) after
+    # this service has read the session and before it claims ownership.
+    Session.where(id: @session.id).update_all(
+      metadata: @session.metadata.merge("process_pid" => 966).to_json
+    )
+
+    service.recover
+
+    @session.reload
+    assert_equal live_job_id, @session.running_job_id,
+      "Recovery must not steal ownership from the job driving the newly spawned turn"
+    assert @session.logs.any? { |l| l.content.include?("Not taking ownership for recovery job") },
+      "Expected a log documenting the stand-down"
+  end
+
+  test "recover does not take ownership when another job claimed the session since the orphan check" do
+    @session.update!(running_job_id: "dead-job")
+    decided_session = Session.find(@session.id)
+
+    Session.where(id: @session.id).update_all(running_job_id: "job-that-just-took-over")
+
+    mock_pm = Object.new
+    mock_pm.define_singleton_method(:running?) { |_pid| true }
+
+    service = SessionRecoveryService.new(decided_session, process_manager: mock_pm, skip_pid_check: false)
+    service.recover
+
+    assert_equal "job-that-just-took-over", @session.reload.running_job_id,
+      "Recovery must not overwrite an owner that changed since the orphan decision"
+  end
+
+  test "recover takes ownership when nothing changed since the orphan check" do
+    @session.update!(running_job_id: "orphaned-job")
+
+    mock_pm = Object.new
+    mock_pm.define_singleton_method(:running?) { |_pid| true }
+
+    service = SessionRecoveryService.new(@session, process_manager: mock_pm, skip_pid_check: false)
+    service.recover
+
+    enqueued = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+    @session.reload
+    assert_equal enqueued["job_id"], @session.running_job_id,
+      "The recovery job must own the session it is about to monitor"
+  end
 end
