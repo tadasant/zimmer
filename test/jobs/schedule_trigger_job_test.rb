@@ -193,8 +193,10 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
+    # A session that never started has neither a runtime session id nor a
+    # transcript — the fixture carries both, so clear both.
     never_ran = sessions(:archived)
-    never_ran.update_columns(session_id: nil)
+    never_ran.update_columns(session_id: nil, transcript: nil)
 
     @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: never_ran.id)
     @condition.update!(last_triggered_at: nil)
