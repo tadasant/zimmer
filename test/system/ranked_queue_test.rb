@@ -60,8 +60,15 @@ class RankedQueueTest < ApplicationSystemTestCase
 
   def capture(name)
     FileUtils.mkdir_p(SCREENSHOT_DIR)
-    page.execute_script("window.scrollTo(0, 0)")
     page.save_screenshot(SCREENSHOT_DIR.join("proof-#{name}.png"))
+  end
+
+  # The queue sits below the filters panel, so a shot framed on the top of the
+  # document shows the filters and none of the rows. Scroll BEFORE opening a menu
+  # rather than after: overflow-menu decides up-or-down from where the button is
+  # in the viewport at the moment it opens.
+  def scroll_queue_into_view
+    page.execute_script("document.getElementById('ranked_sessions').scrollIntoView({ block: 'start' })")
   end
 
   test "the queue follows status changes live, and a trashed row leaves it" do
@@ -184,6 +191,7 @@ class RankedQueueTest < ApplicationSystemTestCase
     wait_for_turbo_streams_connected
     assert_selector "[data-ranked-queue-target='spotCount']", exact_text: "2"
 
+    scroll_queue_into_view
     kebab_for(queued).click
     assert_link "Start now"
     assert_link "Trash"
