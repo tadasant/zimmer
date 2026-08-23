@@ -22,6 +22,16 @@ class AccountRotationService
   # the time a session would spend actually working on the new account.
   COLLAPSE_WINDOW = 60.seconds
 
+  # The rotation reasons that are themselves evidence the outgoing account hit a
+  # quota wall — the caller watched the runtime refuse the request for quota, and
+  # that observation stands even when the account cannot be probed afterwards.
+  #
+  # Everything else is a rotation for some other cause, and says nothing about
+  # the outgoing account's quota. A reason this does not recognise is treated as
+  # one of those: over-labelling is the failure mode this list exists to prevent,
+  # so a new reason has to opt in rather than be assumed in.
+  QUOTA_ROTATION_REASONS = %w[quota_exceeded].freeze
+
   def initialize
     @logger = StructuredLogger.new({ service: "AccountRotationService" })
   end
@@ -99,27 +109,9 @@ class AccountRotationService
       sync_current_tokens(current)
 
       # Take a snapshot of the outgoing account before switching
-      take_snapshot(current, trigger: "rotation")
+      snapshot = take_snapshot(current, trigger: "rotation")
 
-      # Don't relabel an account the caller has already diagnosed as
-      # credentially dead. quota_exceeded and needs_reauth drive different
-      # recoveries — QuotaResetCheckerJob restores the first automatically,
-      # only a human restores the second — and AuthRecoveryCoordinator reads
-      # the resulting pool state to decide whether a parked session should be
-      # told "wait for reset" or "re-authenticate". Overwriting needs_reauth
-      # here would make an unusable pool look like a merely throttled one.
-      #
-      # The snapshot above can already have done this: a reading that shows the
-      # weekly window spent marks the account as it lands. Marking twice would
-      # count the same wall as two quota hits on the page.
-      if current.needs_reauth?
-        @logger.info("Rotating away from account already marked needs_reauth", email: current.email)
-      elsif current.quota_exceeded?
-        @logger.info("Account was already marked quota_exceeded by its own quota reading", email: current.email)
-      else
-        current.mark_quota_exceeded!
-        @logger.info("Marked account as quota_exceeded", email: current.email)
-      end
+      mark_outgoing!(current, reason, snapshot)
     end
 
     result = activate_next_account(exclude_ids: [ current&.id ].compact)
@@ -138,6 +130,70 @@ class AccountRotationService
 
     result
   end
+
+  # Record what rotating away from `current` actually proves about it.
+  #
+  # This used to stamp `quota_exceeded` on the outgoing account of EVERY
+  # rotation, whatever the rotation was for. For an account rotated past on
+  # `auth_recovery` that label is a fabrication: the runtime said "Not logged
+  # in", which says nothing about quota — and because the label is what
+  # `ClaudeAccount.available` and AuthRecoveryCoordinator#park_reason_for_pool
+  # read, fabricating it does not merely mislabel one account, it removes it from
+  # the pool.
+  #
+  # That is the whole of the 2026-08-23 02:05Z outage. A blanked credential
+  # logged every session on the worker out; each one rotated away from the
+  # account it was holding; in about forty seconds the pool's every row wore a
+  # `quota_exceeded` label with no quota reading behind any of it, rotation ran
+  # out of candidates, and four sessions were parked against a noon reset
+  # estimate. The healer restored all three accounts on their own (clear)
+  # readings minutes later, which is the proof the labels were invented — see
+  # ClaudeAccount#effective_status, which already had to work around them to
+  # render an honest /quotas badge.
+  #
+  # So label on evidence, in this order:
+  #
+  #   * needs_reauth, or already quota_exceeded — the caller (or this account's
+  #     own reading, via QuotaSnapshotService) has already diagnosed it. Leave it
+  #     alone: the two statuses drive different recoveries, and marking twice
+  #     would count one wall as two quota hits on the page.
+  #   * the fresh reading this rotation just took says a window is spent — the
+  #     strongest evidence available, and it condemns the account whatever the
+  #     rotation was for.
+  #   * the caller rotated FOR a quota wall — it watched the runtime refuse the
+  #     request, which is evidence even when the probe could not be taken. This
+  #     keeps the quota path's behaviour exactly as it was.
+  #
+  # Anything else leaves the account active, because nothing observed says
+  # otherwise. Rotating away from an account is not a statement about its quota.
+  #
+  # @param snapshot [ClaudeAccountQuotaSnapshot, nil] the reading #take_snapshot
+  #   just took, or nil when the account could not be probed
+  def mark_outgoing!(current, reason, snapshot)
+    if current.needs_reauth?
+      @logger.info("Rotating away from account already marked needs_reauth", email: current.email)
+      return
+    end
+
+    if current.quota_exceeded?
+      @logger.info("Account was already marked quota_exceeded by its own quota reading", email: current.email)
+      return
+    end
+
+    reading_condemns = snapshot.present? &&
+      (snapshot.seven_day_window_spent? || snapshot.five_hour_window_spent?)
+
+    unless reading_condemns || QUOTA_ROTATION_REASONS.include?(reason)
+      @logger.info("Rotated away without quota evidence — leaving the account active",
+        email: current.email, reason: reason, probed: snapshot.present?)
+      return
+    end
+
+    current.mark_quota_exceeded!
+    @logger.info("Marked account as quota_exceeded",
+      email: current.email, reason: reason, reading_condemns: reading_condemns)
+  end
+  private :mark_outgoing!
 
   # Ensure there's an active account configured. Called on session start.
   # If no account is current, picks the first available and writes its config.

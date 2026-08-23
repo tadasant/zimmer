@@ -2473,7 +2473,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
     setup_transcript_with_auth_error("Not logged in · Please run /login")
-    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    drain_pool_by_quota!
     stub_auth_provider_returning(fake_account("dead@example.com"), rotate_to: nil)
 
     manager = create_manager
@@ -2500,7 +2500,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
     setup_transcript_with_auth_error("Not logged in · Please run /login")
-    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    drain_pool_by_quota!
     stub_auth_provider_returning(fake_account("dead@example.com"), rotate_to: nil)
     @session.update!(metadata: @session.metadata.merge("auth_recovery_count" => AuthRecoveryService::MAX_RECOVERY_ATTEMPTS))
 
@@ -2833,6 +2833,24 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # Minimal account stand-in — AuthRecoveryService only reads #email for logging.
   def fake_account(email)
     Struct.new(:email).new(email)
+  end
+
+  # A pool that is genuinely drained by quota: every account labelled
+  # quota_exceeded AND carrying a reading that says so.
+  #
+  # Both halves are required. The park decision reads the readings now, so a pool
+  # that only wears the labels is the false positive that put four production
+  # sessions to sleep on 2026-08-23 — not a drained pool.
+  def drain_pool_by_quota!
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME)
+      .update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).find_each do |account|
+      account.quota_snapshots.create!(
+        trigger: "rotation", status_5h: "rejected", status_7d: "rejected",
+        utilization_5h: 1.0, utilization_7d: 1.0,
+        reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now
+      )
+    end
   end
 
   # Fake runtime auth provider satisfying the seam AuthRecoveryCoordinator drives.
