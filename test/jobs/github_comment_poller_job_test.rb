@@ -189,8 +189,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     refute GithubCommentPollerJob.const_defined?(:WHITELISTED_USERS, false),
       "GithubCommentPollerJob must not keep a second copy of the allowlist"
 
-    GithubCommentAllowlist.stubs(:include?).returns(false)
-    GithubCommentAllowlist.stubs(:include?).with("someone-new").returns(true)
+    GithubCommentAllowlist.stubs(:trusted?).returns(false)
+    GithubCommentAllowlist.stubs(:trusted?).with("someone-new").returns(true)
 
     job = GithubCommentPollerJob.new
 
