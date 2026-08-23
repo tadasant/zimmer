@@ -78,13 +78,14 @@ class CodexLoginDriverTest < ActiveSupport::TestCase
   # A human re-authenticating is the ONE signal that retires the needs_reauth
   # nag. ClaudeAccount's status callback deliberately does not clear it, because
   # plenty of machinery writes `active` without a human involved.
-  test "capture! clears the needs_reauth DM suppression" do
+  test "capture! releases the needs_reauth alert throttle" do
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "auth.json"), JSON.generate({ "OPENAI_API_KEY" => "sk-test" }))
-
-      AccountReauthNotifier.expects(:clear).with { |acct| acct.id == @account.id }
+      @account.update_columns(reauth_alerted_at: Time.current)
 
       @driver.capture!(dir, @account)
+
+      assert_nil @account.reload.reauth_alerted_at
     end
   end
 

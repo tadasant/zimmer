@@ -17,7 +17,7 @@ flowchart LR
     subgraph conditions["TriggerCondition"]
         SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention | dm_message |<br/>passive_listen_thread | passive_listen_channel)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
-        AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived"]
+        AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived<br/>account_needs_reauth"]
         SE["system_event<br/>quota_available"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
         GI["github_issue<br/>repos + exclude_labels"]
@@ -362,12 +362,43 @@ enabled, and tries again on its next interval.
 
 ### `ao_event`
 
-Fires when a *watched* session transitions to `session_needs_input`, `session_failed`, or
-`session_archived`. Enqueued directly from the state machine's `pause` / `fail` / `archive`
-callbacks (deferred via `after_all_transactions_commit`, so the row is visible to the job).
+Fires on an internal Zimmer event. The events divide by their **subject** — what the event is about —
+and the subject decides which rules apply:
 
-With `watched_session_id` it's session-scoped and one-shot. Without it, it's a broadcast, and
-it only fires for `is_autonomous` sessions.
+| Event | Subject | Emitted by |
+| --- | --- | --- |
+| `session_needs_input`, `session_failed`, `session_archived` | a Session | the state machine's `pause` / `fail` / `archive` callbacks (deferred via `after_all_transactions_commit`, so the row is visible to the job) |
+| `account_needs_reauth` | a `ClaudeAccount` | `ClaudeAccount`'s status-transition callback, when a runtime account's refresh token dies for good |
+
+For a **session** event: with `watched_session_id` it's session-scoped and one-shot. Without it, it's
+a broadcast, and it only fires for `is_autonomous` sessions.
+
+An **account** event has no session to watch, no autonomy flag to consult, and no session the trigger
+could have created — so it is always broadcast, and `watched_session_id` is rejected on it outright.
+It is throttled at the source instead: at most one fire per account per 12 hours, released when a
+human completes a login for that account. See
+[a dead account tells you so](/auth/harness/#a-dead-account-tells-you-so).
+
+`AoEventSubject` is where that split lives. Adding a third kind of subject means adding a class there
+and a name to `TriggerCondition::AO_EVENT_NAMES`; `AoEventTriggerJob` does not change.
+
+Both kinds are creatable from the /triggers form and from the MCP `action_trigger` tool. To wake
+*yourself* on a session you are waiting for, use `wake_me_up_when_session_changes_state` instead — it
+creates the one-shot wake **and** puts your session to sleep.
+
+Two guards apply to `ao_event` specifically, because a broadcast session condition fires on every
+autonomous session's transition and loop prevention is only per-trigger — two of them (one on
+`session_needs_input`, one on `session_archived`) would otherwise feed each other unbounded:
+
+- **A broadcast session condition created through `action_trigger` gets a default
+  `max_sessions_per_minute`** (`BROADCAST_SESSION_AO_EVENT_BURST_CAP`) when the caller names none.
+  Send the value explicitly to choose your own, including no cap. Account events and session-scoped
+  wakes are exempt: the first is already bounded at source, and a cap there could only drop alerts
+  during the mass failure it exists to report; the second fires at most once.
+- **An update that drops `watched_session_id` from a session-scoped condition is refused.**
+  `configuration` replaces a condition's user-facing keys, so omitting it would silently widen a
+  one-shot wake into a broadcast — including one of the rows `wake_me_up_when_session_changes_state`
+  creates. Delete the condition and add a new one if a broadcast is genuinely what you want.
 
 #### When an `ao_event` fire fails
 

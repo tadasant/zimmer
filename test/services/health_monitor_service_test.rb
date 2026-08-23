@@ -260,7 +260,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   # === Ready-backlog breakdown ===
   #
   # A ready count alone cannot tell a starved queue from a busy one, and Zimmer
-  # runs four queues with very different thread counts and job durations. Every
+  # runs five queues with very different thread counts and job durations. Every
   # triage of a backlog page opens with "deep with WHAT", and until this existed
   # the only answer was the GoodJob dashboard — which the agent sessions that
   # actually read these pages have no route to.

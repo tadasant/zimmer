@@ -87,6 +87,9 @@ Rails.application.configure do
   #     ScheduleTriggerJob). Isolated onto its own scheduler so state-change and
   #     scheduled wakes are never starved behind the `default` queue's periodic/
   #     bulk backlog (heartbeat sweeps, Slack polling, cleanup, etc.).
+  # - auth: User-interactive authentication (RuntimeLoginJob and the reaper that
+  #     resolves its attempts), kept off `default` so a human watching the /quotas
+  #     login panel never waits behind a periodic sweep. See production.rb.
   # - default: Everything else - cleanup, title generation, etc.
   #
   # Every scheduler thread here can be executing a job, and an executing GoodJob job

@@ -527,13 +527,13 @@ class HealthMonitorService
   # `queue_statistics` answers "how deep", which is what the thresholds need. It
   # does not answer "deep with WHAT", and that is the question every triage of a
   # backlog page actually opens with: a ready count alone cannot distinguish a
-  # starved queue from a busy one, and Zimmer runs four queues with very different
+  # starved queue from a busy one, and Zimmer runs five queues with very different
   # thread counts and job durations.
   #
   # Deliberately NOT folded into `queue_statistics`. That runs on every /health
   # render; these are two more grouped scans of `good_jobs` and are only worth
   # paying for when something is about to page. Cardinality is small either way —
-  # four queues, and job classes bounded by the app's job count — so the grouping
+  # five queues, and job classes bounded by the app's job count — so the grouping
   # is done in SQL and the ordering in Ruby, which keeps this free of adapter
   # differences in how a grouped COUNT may be ordered.
   #

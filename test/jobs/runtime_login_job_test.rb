@@ -468,6 +468,65 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     assert_nil attempt.pasted_code
   end
 
+  # === Queue routing ===
+  #
+  # A UI-driven login is the one background job with a human watching a spinner
+  # for its whole queue wait, and it pins its thread for up to MAX_DURATION once
+  # it starts. On the shared `default` queue -- four threads, ~30 job classes,
+  # fifteen of them cron'd -- it queued behind periodic and multi-minute work, and
+  # behind earlier logins. It runs on the dedicated `auth` lane instead.
+
+  test "runs on the dedicated auth queue (not default)" do
+    assert_equal "auth", RuntimeLoginJob.new.queue_name
+  end
+
+  test "enqueues onto the auth queue" do
+    assert_enqueued_with(job: RuntimeLoginJob, queue: "auth") do
+      RuntimeLoginJob.perform_later(123)
+    end
+  end
+
+  test "the auth queue GoodJob is configured to serve includes this job's queue" do
+    # A queue_as naming a lane no scheduler serves is worse than `default`: the job
+    # is not prioritized, it is stranded. Assert against the resolved string the
+    # environments hand to config.good_job.queues.
+    assert_includes ConnectionBudget.good_job_queues, "#{RuntimeLoginJob.new.queue_name}:"
+  end
+
+  # === Dispatch-latency observability ===
+
+  test "warns when the job started long after it was enqueued" do
+    job = RuntimeLoginJob.new(-1)
+    job.enqueued_at = (RuntimeLoginJob::DISPATCH_LATENCY_WARN_THRESHOLD + 30).seconds.ago
+
+    logged = capture_warn { job.perform_now }
+
+    assert_match(/High dispatch latency/, logged)
+    assert_match(/auth. queue is backlogged/, logged)
+  end
+
+  test "stays quiet when the job started promptly" do
+    job = RuntimeLoginJob.new(-1)
+    job.enqueued_at = 1.second.ago
+
+    assert_no_match(/High dispatch latency/, capture_warn { job.perform_now })
+  end
+
+  # Collect Rails.logger.warn output for the duration of the block.
+  def capture_warn
+    collected = +""
+    logger = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(StringIO.new).tap do |l|
+      l.extend(Module.new do
+        define_method(:warn) { |message = nil, &block| collected << "#{message || block&.call}\n" }
+      end)
+    end
+    yield
+    collected
+  ensure
+    Rails.logger = logger
+  end
+
   def process_alive?(pid)
     Process.kill(0, pid)
     true

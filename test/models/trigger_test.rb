@@ -3203,4 +3203,97 @@ class TriggerTest < ActiveSupport::TestCase
       5.times { |i| assert_not_nil @trigger.create_session!(prompt: "Unbounded #{i}") }
     end
   end
+
+  # === The seeded account_needs_reauth trigger ===
+  #
+  # db/migrate/20260821010100 inserts this row with raw SQL, deliberately
+  # bypassing the model so a schema migration cannot depend on the AIR catalog
+  # resolving. The cost of that choice is that nothing validates the row at write
+  # time — so it is validated here instead, by running the migration and checking
+  # what it wrote. A bad artifact id becomes a red test rather than a feature that
+  # ships dead.
+  #
+  # The migration is run rather than assumed: fixtures wipe `triggers` before every
+  # test, so the row a real `db:migrate` left behind is not present here. The test
+  # transaction rolls the insert back.
+  class SeededReauthTriggerTest < ActiveSupport::TestCase
+    MIGRATION = Rails.root.join("db/migrate/20260821010100_seed_account_needs_reauth_trigger.rb")
+
+    setup do
+      require MIGRATION.to_s
+      ActiveRecord::Migration.suppress_messages { SeedAccountNeedsReauthTrigger.new.up }
+
+      @condition = TriggerCondition.ao_event.find { |c| c.configuration["event_name"] == "account_needs_reauth" }
+      @seeded = @condition&.trigger
+    end
+
+    test "it seeds exactly one watcher for the account event" do
+      matching = TriggerCondition.ao_event.count { |c| c.configuration["event_name"] == "account_needs_reauth" }
+
+      assert_equal 1, matching, "zero is a dead feature, two is a double DM"
+    end
+
+    test "running it again is a no-op, so a re-run cannot double the notification" do
+      ActiveRecord::Migration.suppress_messages { SeedAccountNeedsReauthTrigger.new.up }
+
+      matching = TriggerCondition.ao_event.count { |c| c.configuration["event_name"] == "account_needs_reauth" }
+      assert_equal 1, matching
+    end
+
+    test "down removes what up created, foreign key and all" do
+      ActiveRecord::Migration.suppress_messages { SeedAccountNeedsReauthTrigger.new.down }
+
+      assert_equal 0, TriggerCondition.ao_event.count { |c| c.configuration["event_name"] == "account_needs_reauth" }
+      assert_not Trigger.exists?(@seeded.id)
+    end
+
+    test "down leaves a trigger a human has renamed alone" do
+      @seeded.update_columns(name: "My own reauth handler")
+
+      ActiveRecord::Migration.suppress_messages { SeedAccountNeedsReauthTrigger.new.down }
+
+      assert Trigger.exists?(@seeded.id), "down must not delete a row the operator has taken ownership of"
+    end
+
+    test "the seeded row passes the validations the raw INSERT skipped" do
+      assert @seeded.valid?, @seeded.errors.full_messages.join("; ")
+      assert @condition.valid?, @condition.errors.full_messages.join("; ")
+    end
+
+    test "it names artifacts that resolve in the catalog" do
+      assert_equal "general-agent", @seeded.agent_root_name
+      assert_equal [ "slack-workspace" ], @seeded.mcp_servers
+      assert_not_nil AgentRootsConfig.find!(@seeded.agent_root_name)
+    end
+
+    test "it is enabled, or the event it watches goes nowhere" do
+      assert_predicate @seeded, :enabled?
+    end
+
+    # ao_event derives `spot`, and a spot session waits for a Claude account under
+    # quota — which is precisely what may not exist when the pool is draining. The
+    # row overrides to `priority` so the one session whose job is to report a dead
+    # account is not gated behind a healthy one.
+    test "its sessions are priority, not spot" do
+      assert_equal SessionGenesis::PRIORITY, @seeded.effective_scheduling_class
+      assert_equal SessionGenesis::SPOT, @seeded.default_scheduling_class,
+        "if ao_event ever defaults to priority, the explicit override here is redundant"
+    end
+
+    # Burst suppression DROPS the fires it suppresses, and the burst case for this
+    # event is a mass token revocation — precisely when every account's notification
+    # matters most. The bound is upstream and durable instead: one event per account
+    # per REAUTH_ALERT_THROTTLE.
+    test "it carries no burst cap, because a cap here could only drop alerts" do
+      assert_nil @seeded.max_sessions_per_minute
+    end
+
+    test "its prompt keeps the structure the agent has to follow" do
+      assert_includes @seeded.prompt_template, "{{event}}"
+      assert_includes @seeded.prompt_template, "slack-workspace"
+      # The raw INSERT is one SQL statement with the prompt inlined; squishing it
+      # once collapsed the numbered list into a single paragraph.
+      assert_operator @seeded.prompt_template.lines.size, :>, 5, "the prompt lost its line structure"
+    end
+  end
 end

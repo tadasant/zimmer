@@ -2,28 +2,25 @@
 
 # Job that fires ao_event trigger conditions when internal Zimmer events occur.
 #
-# Currently supports:
-# - session_needs_input: Fired when a session transitions to needs_input
-# - session_failed: Fired when a session transitions to failed
-# - session_archived: Fired when a session is archived (from any prior state)
+# Supports two kinds of event, told apart by what they are ABOUT:
 #
-# This job is enqueued by the session state machine's pause/fail/archive callbacks.
-# It runs asynchronously to avoid slowing down state transitions.
+# - Session events (session_needs_input, session_failed, session_archived),
+#   enqueued by the session state machine's pause/fail/archive callbacks. They
+#   run asynchronously so a state transition is not slowed down by trigger firing.
+# - Account events (account_needs_reauth), enqueued by ClaudeAccount's
+#   status-transition callback when an account's refresh token dies for good.
 #
-# For broadcast (unscoped) conditions, only autonomous sessions trigger the
-# event — non-autonomous (user-driven) sessions are filtered out below.
-# Watched-session conditions are an explicit per-session opt-in and fire
-# regardless of is_autonomous.
+# The second argument is therefore a SUBJECT id, not a session id. AoEventSubject
+# resolves it and owns every per-subject rule — watched-session scoping, the
+# one-shot guard, the is_autonomous filter and loop prevention for sessions; a
+# freshness re-check for accounts — so nothing below has to ask which kind of
+# event it is holding.
 #
-# Loop prevention:
-# - Sessions created by the same trigger are excluded from firing that trigger again
-# - Only autonomous sessions (is_autonomous: true) trigger this event
-# - Non-autonomous sessions (e.g., user-paused) are ignored
-#
-# Watched-session scoping:
-# - Conditions with watched_session_id in configuration ONLY fire when THAT
-#   session transitions. Conditions without watched_session_id fire for any
-#   transitioning autonomous session (broadcast semantics).
+# For session events, broadcast (unscoped) conditions only fire for autonomous
+# sessions; non-autonomous (user-driven) sessions are filtered out. Conditions
+# carrying a watched_session_id are an explicit per-session opt-in, fire
+# regardless of is_autonomous, and only for that session. Sessions created by the
+# same trigger never re-fire it.
 #
 # A fire that raises always alerts. A session-scoped (one-shot) wake is also
 # parked as `failed` rather than left silently enabled, because it fires only on
@@ -45,18 +42,27 @@ class AoEventTriggerJob < ApplicationJob
   # CLAUDE.md — a self-resolving hiccup is .info, a genuinely late wake is .warn).
   DISPATCH_LATENCY_WARN_THRESHOLD = 120 # seconds
 
-  def perform(event_name, session_id)
-    warn_on_high_dispatch_latency(event_name, session_id)
-
-    session = Session.find_by(id: session_id)
-    return unless session
+  def perform(event_name, subject_id)
+    warn_on_high_dispatch_latency(event_name, subject_id)
 
     unless TriggerCondition::AO_EVENT_NAMES.include?(event_name)
       Rails.logger.warn "[AoEventTriggerJob] Unknown event: #{event_name}"
       return
     end
 
-    fire_event(event_name, session)
+    subject = AoEventSubject.resolve(event_name, subject_id)
+    return unless subject
+
+    # The condition the event announced can un-happen between enqueue and here —
+    # an account can be re-authenticated, or resurrected by a filesystem sync.
+    # Firing on a stale subject spawns a session about a problem that no longer
+    # exists.
+    if subject.stale?
+      Rails.logger.info "[AoEventTriggerJob] Skipping #{event_name} for #{subject} — no longer applies"
+      return
+    end
+
+    fire_event(event_name, subject)
   end
 
   private
@@ -65,7 +71,7 @@ class AoEventTriggerJob < ApplicationJob
   # ActiveJob populates `enqueued_at` at enqueue time and restores it on the
   # worker, so no extra argument or timestamp plumbing is needed. Defensive: any
   # parsing hiccup is swallowed — observability must never break trigger firing.
-  def warn_on_high_dispatch_latency(event_name, session_id)
+  def warn_on_high_dispatch_latency(event_name, subject_id)
     return if enqueued_at.blank?
 
     enqueued = enqueued_at.is_a?(Time) ? enqueued_at : Time.parse(enqueued_at.to_s)
@@ -74,14 +80,14 @@ class AoEventTriggerJob < ApplicationJob
 
     Rails.logger.warn(
       "[AoEventTriggerJob] High dispatch latency: #{latency.round(1)}s between enqueue and " \
-      "execution for #{event_name} (session #{session_id}). The `triggers` queue may be " \
+      "execution for #{event_name} (subject #{subject_id}). The `triggers` queue may be " \
       "backlogged — state-change wakes are being delivered late."
     )
   rescue => e
     Rails.logger.info "[AoEventTriggerJob] Could not compute dispatch latency: #{e.class}: #{e.message}"
   end
 
-  def fire_event(event_name, session)
+  def fire_event(event_name, subject)
     # Find all enabled triggers with ao_event conditions for this event_name
     conditions = TriggerCondition.ao_event
       .joins(:trigger)
@@ -96,33 +102,10 @@ class AoEventTriggerJob < ApplicationJob
         trigger = condition.trigger
         scoped = condition.session_scoped_ao_event?
 
-        # Watched-session scoping: if this condition is scoped to a specific
-        # session, skip unless the transitioning session matches.
-        if scoped && condition.watched_session_id != session.id
-          next
-        end
-
-        # Session-scoped conditions are one-shot: once they've fired (or been
-        # cancelled by a manual resume), don't re-fire on subsequent watched
-        # session transitions. The trigger row itself may also have been
-        # destroyed below for single-condition wake-ups.
-        if scoped && condition.last_triggered_at.present?
-          Rails.logger.debug "[AoEventTriggerJob] Skipping already-fired session-scoped condition #{condition.id}"
-          next
-        end
-
-        # Broadcast (unscoped) ao_event conditions only fire for autonomous
-        # sessions — user-paused sessions shouldn't trigger global automation.
-        # Session-scoped conditions are an explicit per-session opt-in, so they
-        # fire regardless of is_autonomous.
-        if !scoped && !session.is_autonomous
-          Rails.logger.debug "[AoEventTriggerJob] Skipping non-autonomous session #{session.id} for broadcast #{event_name}"
-          next
-        end
-
-        # Prevent infinite loops: don't fire if this session was created by this trigger
-        if session.metadata&.dig("trigger_id").to_s == trigger.id.to_s
-          Rails.logger.info "[AoEventTriggerJob] Skipping trigger #{trigger.id} for session #{session.id} (created by this trigger)"
+        # Every reason not to fire this condition for this subject — scoping, the
+        # one-shot guard, autonomy, loop prevention — lives on the subject.
+        if (skip = subject.skip(condition))
+          Rails.logger.public_send(skip.level, "[AoEventTriggerJob] Skipping #{event_name} for #{subject}: #{skip.message}")
           next
         end
 
@@ -133,7 +116,7 @@ class AoEventTriggerJob < ApplicationJob
 
         begin
           prompt = trigger.interpolate_prompt(
-            event: event_label(event_name, session)
+            event: subject.label(event_name)
           )
           result_session = trigger.create_session!(prompt: prompt)
 
@@ -142,18 +125,18 @@ class AoEventTriggerJob < ApplicationJob
           # condition's one-shot guard, and the auto-delete below would destroy a
           # wake trigger that never woke anything.
           if trigger.last_fire_burst_suppressed?
-            Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} is burst-suppressed for session #{session.id} #{event_name} — no session created, condition left unfired"
+            Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} is burst-suppressed for #{subject} #{event_name} — no session created, condition left unfired"
             next
           end
 
           delivered = true
           condition.update!(last_triggered_at: Time.current)
           if result_session
-            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for session #{session.id} #{event_name}, created/reused session #{result_session.id}"
+            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, created/reused session #{result_session.id}"
           else
             # Burst suppression already skipped above, so nil here means a
             # one-time reuse trigger whose target session is gone. Not an error.
-            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for session #{session.id} #{event_name}, but no session was created (no reusable target session)"
+            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, but no session was created (no reusable target session)"
           end
 
           # One-time wake-up triggers (only session-scoped ao_events and/or
@@ -187,7 +170,7 @@ class AoEventTriggerJob < ApplicationJob
             condition: condition,
             trigger: trigger,
             scoped: scoped,
-            session: session,
+            subject: subject,
             event_name: event_name,
             delivered: delivered,
             error: e
@@ -229,15 +212,15 @@ class AoEventTriggerJob < ApplicationJob
   # find_each fan-out here the way there is in ScheduleTriggerJob#perform. A
   # raise escaping this method would abort the remaining conditions and drop
   # OTHER triggers' wakes, turning one lost wake into several.
-  def handle_fire_failure(condition:, trigger:, scoped:, session:, event_name:, delivered:, error:)
+  def handle_fire_failure(condition:, trigger:, scoped:, subject:, event_name:, delivered:, error:)
     trigger_id = trigger.id
     trigger_name = trigger.name
 
     parked = scoped && trigger.mark_failed(error)
 
     Rails.logger.error(
-      "[AoEventTriggerJob] Error firing trigger #{trigger_id} (#{trigger_name}) for session " \
-      "#{session.id} #{event_name}: #{error.message}\n#{error.backtrace&.first(5)&.join("\n")}"
+      "[AoEventTriggerJob] Error firing trigger #{trigger_id} (#{trigger_name}) for " \
+      "#{subject} #{event_name}: #{error.message}\n#{error.backtrace&.first(5)&.join("\n")}"
     )
 
     # `delivered` and `spent` are different questions and must not be conflated.
@@ -272,8 +255,8 @@ class AoEventTriggerJob < ApplicationJob
         "enabled — it will re-fire only if session ##{condition.watched_session_id} transitions " \
         "again. Check #{trigger_url(trigger_id)} by hand."
       else
-        "This is a broadcast (recurring) state-change condition: it remains enabled and will fire " \
-        "on the next matching session transition."
+        "This is a broadcast (recurring) condition: it remains enabled and will fire on the next " \
+        "matching #{event_name} event."
       end
 
     if parked
@@ -291,7 +274,7 @@ class AoEventTriggerJob < ApplicationJob
     AlertService.raise_alert(
       "State-change wake failed to fire",
       details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to " \
-               "fire for #{event_name} on session ##{session.id}.\n\n#{retry_note}",
+               "fire for #{event_name} on #{subject}.\n\n#{retry_note}",
       source: "AoEventTriggerJob",
       dedup_key: "ao_event_trigger_#{trigger_id}",
       error: error
@@ -300,8 +283,8 @@ class AoEventTriggerJob < ApplicationJob
     # Last resort, and deliberately the one thing here that cannot raise: the
     # original failure must still reach the log even if reporting it fell over.
     Rails.logger.error(
-      "[AoEventTriggerJob] Could not report the failed fire of trigger #{trigger&.id} for session " \
-      "#{session&.id}: #{handler_error.class}: #{handler_error.message}. Original error: " \
+      "[AoEventTriggerJob] Could not report the failed fire of trigger #{trigger&.id} for " \
+      "#{subject}: #{handler_error.class}: #{handler_error.message}. Original error: " \
       "#{error.class}: #{error.message}"
     )
   end
@@ -319,19 +302,5 @@ class AoEventTriggerJob < ApplicationJob
   rescue => e
     Rails.logger.warn "[AoEventTriggerJob] Could not re-read condition #{condition.id}: #{e.class}: #{e.message}"
     condition.last_triggered_at.present?
-  end
-
-  def event_label(event_name, session)
-    title = session.title.presence || "Untitled"
-    case event_name
-    when "session_needs_input"
-      "Session ##{session.id} (#{title}) needs input"
-    when "session_failed"
-      "Session ##{session.id} (#{title}) failed"
-    when "session_archived"
-      "Session ##{session.id} (#{title}) archived"
-    else
-      "Session ##{session.id} (#{title}) #{event_name}"
-    end
   end
 end

@@ -130,4 +130,12 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     assert_not RuntimeLoginAttempt.exists?(old.id)
     assert RuntimeLoginAttempt.exists?(recent.id)
   end
+
+  # This reaper is the only thing that resolves a /quotas login panel whose worker
+  # died, and the only thing that frees the `auth` thread that login pinned. It
+  # rides the lane it serves rather than the backlog that lane exists to escape.
+  test "runs on the dedicated auth queue (not default)" do
+    assert_equal "auth", CleanupRuntimeLoginAttemptsJob.new.queue_name
+    assert_includes ConnectionBudget.good_job_queues, "auth:"
+  end
 end
