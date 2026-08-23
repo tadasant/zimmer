@@ -125,15 +125,25 @@ are captured back by `McpOauthRuntimeReconciler`, unchanged — same `server_nam
 keys, same adoption rule, just a different path. This is strictly better than the shared file: one
 writer per file means the read-modify-write no longer races every other session on the worker.
 
-One gap: `delete_runtime_credentials`, which drops a revoked credential from the runtime's store,
-still targets the host-global file. A session already running keeps its copy until it ends. New
+One gap: `RefreshMcpOauthTokensJob` has no session to scope to, so the cron reads and writes the
+host-global file. Revoking a credential through `delete_runtime_credentials` reaches the revoking
+session's own store, but a *different* session already running keeps its copy until it ends. New
 sessions get fresh directories, so the window is one session's lifetime.
+
+Which store a session uses is decided by one predicate, `ClaudeSessionConfigDirectory.active_for?`.
+MCP injection happens before the spawn env is built, and the spawn env fails open when the pool has
+no current account holding a token — so two independent reads of the setting would put a session's
+MCP tokens in a directory the CLI was never pointed at, and every OAuth server in it would come up
+unauthenticated with nothing in the log to say why.
 
 ### Turning it on, and rolling it back
 
 On: Settings → Experimental → *Session-scoped Claude credentials* → Save. It takes effect on the
-next session spawn; nothing needs restarting and nothing needs a shell on the box. Sessions already
-running keep the environment they were spawned with.
+next session spawn; nothing needs restarting and nothing needs a shell on the box. A `claude`
+process already running keeps the environment it was spawned with — but a Zimmer session is not one
+process, so the next turn of a `waiting` or `needs_input` session re-spawns under the new setting,
+with a fresh `CLAUDE_CONFIG_DIR` and none of the CLI's own `.claude.json` history. The conversation
+carries (Zimmer resumes from the transcript); the CLI's local state does not.
 
 Back off: untick the same box. The shared-file machinery is untouched and still converges — the next
 `ensure_active_account!` writes the DB-current account's credentials to

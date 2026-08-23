@@ -163,7 +163,11 @@ class McpOauthCredentialInjector
     return [] if server_configs.empty?
 
     RuntimeRegistry.mcp_credential_writer_classes.flat_map do |writer_class|
-      writer = writer_class.new
+      # `.for_session`, not `.new`: this instance HAS a session, and under
+      # session-scoped credentials the copy that matters is the one in that
+      # session's own store. Every other runtime's `.for_session` is `.new`, so
+      # the loop is unchanged for them.
+      writer = writer_class.for_session(session)
       keys = server_configs.map { |name, config| writer.credential_key_for(name, config) }
       writer.delete_credentials(keys)
     end

@@ -122,6 +122,35 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     end
   end
 
+  # ── the refresh path stops reconciling against the shared file ────────
+
+  # The regression the fresh-eyes review caught. #lost_refresh_race? re-synced
+  # from the shared file on every rejected refresh, and with the setting on that
+  # file is a stale artifact rather than a racer: pulling it back would overwrite
+  # the DB's live pair with a superseded one and then report the account healthy —
+  # the 2026-08-22 shape, through the one path the setting was meant to close.
+  test "a rejected refresh does not pull the stale shared file back over the DB" do
+    account = claude_accounts(:primary)
+    account.update!(is_current: true)
+
+    with_setting(true) do
+      ClaudeAccount.any_instance.expects(:sync_tokens_from_filesystem!).never
+
+      account.send(:lost_refresh_race?, "some-presented-value")
+    end
+  end
+
+  test "with the setting off, a rejected refresh still re-syncs from the shared file" do
+    account = claude_accounts(:primary)
+    account.update!(is_current: true)
+
+    with_setting(false) do
+      ClaudeAccount.any_instance.expects(:sync_tokens_from_filesystem!).at_least_once
+
+      account.send(:lost_refresh_race?, "some-presented-value")
+    end
+  end
+
   # ── the sweep stops reading the filesystem back ───────────────────────
 
   test "the auth sweep does not sync the current account's tokens off the filesystem" do

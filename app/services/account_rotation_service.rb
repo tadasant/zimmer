@@ -230,7 +230,11 @@ class AccountRotationService
   def ensure_active_account_from_db!
     current = ClaudeAccount.current_account
 
-    if current&.active? && current&.has_valid_config?
+    # `claude_access_token`, not just `has_valid_config?`: the token IS what the
+    # session is handed, so a row carrying only a stored identity is not a usable
+    # current account here even though the hash is non-empty. Keeping it current
+    # would spawn token-less sessions while /health called the same row corrupt.
+    if current&.active? && current&.claude_access_token.present?
       if current.token_expired? || current.token_expiring_soon?
         @logger.info("Refreshing expired/expiring tokens for current account", email: current.email)
         @logger.warn("Token refresh failed for current account", email: current.email) unless current.refresh_token!
@@ -581,6 +585,18 @@ class AccountRotationService
     @logger.error("Failed to take quota snapshot", email: account.email, error: e.message)
   end
 
+  # Whether Claude sessions carry their own credentials rather than reading the
+  # shared file. Read here rather than passed in, so a caller cannot half-apply
+  # the setting by forgetting to thread it through.
+  #
+  # Deliberately the SETTING alone, not ClaudeSessionConfigDirectory.active_for?:
+  # every caller here is deciding whether to WRITE the shared file, and the
+  # spawn-time fallback that predicate also covers (no current account, no stored
+  # token) is precisely the state in which there is nothing worth writing anyway.
+  def session_scoped_credentials?
+    AppSetting.session_scoped_credentials_enabled?
+  end
+
   # Check if the current ~/.claude.json matches the account's stored config.
   #
   # Fails closed: a missing stored identity is a mismatch, not "can't verify,
@@ -593,13 +609,6 @@ class AccountRotationService
   # on-disk identity when it already names this account
   # (#adopt_own_filesystem_identity), which converges the unverifiable case
   # instead of repeating it, and otherwise writes the DB-current account to disk.
-  # Whether Claude sessions carry their own credentials rather than reading the
-  # shared file. Read here rather than passed in, so a caller cannot half-apply
-  # the setting by forgetting to thread it through.
-  def session_scoped_credentials?
-    AppSetting.session_scoped_credentials_enabled?
-  end
-
   def config_file_matches?(account)
     return false unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 

@@ -63,6 +63,33 @@ module ClaudeSessionConfigDirectory
     File.join(File.dirname(ClonesDirectory.base), CONFIG_SUBDIR)
   end
 
+  # Whether THIS session should be run under its own CLAUDE_CONFIG_DIR.
+  #
+  # One predicate, consulted by both call sites, because they have to agree.
+  # ClaudeSpawnEnv fails OPEN — with no current account or no stored token it
+  # sets neither variable and the session reads the shared file — and MCP
+  # credential injection runs BEFORE the spawn env is built. If the two answered
+  # differently, injection would write the session's mcpOAuth map into a config
+  # dir the CLI was never pointed at, and every OAuth MCP server in that session
+  # would come up unauthenticated with nothing in the log to say why.
+  #
+  # Reads the setting and the pool rather than taking them as arguments, so a
+  # caller cannot half-apply it by forgetting to thread one through.
+  #
+  # @param session_id [Integer, String, nil]
+  # @return [Boolean]
+  def active_for?(session_id)
+    return false if session_id.blank?
+    return false unless AppSetting.session_scoped_credentials_enabled?
+
+    ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)&.claude_access_token.present?
+  rescue StandardError => e
+    # Read on the session-spawn hot path. An unreadable settings row or DB blip
+    # must degrade to the shared-file behaviour, not fail the spawn.
+    Rails.logger.warn("[ClaudeSessionConfigDirectory] Could not resolve session-scoped credentials: #{e.message}")
+    false
+  end
+
   # Absolute path to a session's config dir (does not create it).
   #
   # @param session_id [Integer, String]
@@ -123,6 +150,11 @@ module ClaudeSessionConfigDirectory
     projects = File.join(path, PROJECTS_DIRNAME)
     File.delete(projects) if File.symlink?(projects)
     FileUtils.rm_rf(path)
+    # A REAL `projects/` here — the pre-symlink layout — goes with the rest of
+    # the directory, and that is correct rather than inconsistent with
+    # #ensure_for: this runs when the session is being reaped, so its transcripts
+    # are being reclaimed on purpose. #ensure_for declines to touch it because it
+    # runs mid-life, when they are not.
   rescue => e
     Rails.logger.warn("[ClaudeSessionConfigDirectory] Failed to clean up config dir for session #{session_id}: #{e.message}")
   end

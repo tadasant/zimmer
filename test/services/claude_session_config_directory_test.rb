@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class ClaudeSessionConfigDirectoryTest < ActiveSupport::TestCase
   setup do
@@ -43,6 +44,50 @@ class ClaudeSessionConfigDirectoryTest < ActiveSupport::TestCase
 
     expected = File.join(File.dirname(ClonesDirectory.base), "claude-config")
     assert_equal expected, ClaudeSessionConfigDirectory.base
+  end
+
+  # --- active_for? ---------------------------------------------------------
+
+  # One predicate, because MCP injection and the spawn env have to reach the same
+  # answer: injection runs first, and a disagreement puts a session's mcpOAuth map
+  # in a directory the CLI is never pointed at.
+  test "active_for? is false with the setting off" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+    claude_accounts(:primary).update!(is_current: true)
+
+    assert_not ClaudeSessionConfigDirectory.active_for?(886)
+  end
+
+  test "active_for? is true with the setting on and a current account holding a token" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    claude_accounts(:primary).update!(is_current: true)
+
+    assert ClaudeSessionConfigDirectory.active_for?(886)
+  end
+
+  test "active_for? is false for a session-less spawn" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    claude_accounts(:primary).update!(is_current: true)
+
+    assert_not ClaudeSessionConfigDirectory.active_for?(nil)
+  end
+
+  # The fail-open case ClaudeSpawnEnv relies on: with nothing to hand the session,
+  # both it and the MCP writer must fall back to the shared file together.
+  test "active_for? is false when no current account holds an access token" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    ClaudeAccount.update_all(is_current: false)
+
+    assert_not ClaudeSessionConfigDirectory.active_for?(886)
+
+    claude_accounts(:primary).update!(is_current: true, oauth_config: {})
+    assert_not ClaudeSessionConfigDirectory.active_for?(886)
+  end
+
+  test "active_for? degrades to false rather than raising on the spawn path" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).raises(StandardError.new("db down"))
+
+    assert_nothing_raised { assert_not ClaudeSessionConfigDirectory.active_for?(886) }
   end
 
   # --- path_for / credentials_path_for -------------------------------------

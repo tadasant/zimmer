@@ -437,6 +437,32 @@ class ClaudeAccount < ApplicationRecord
     end
   end
 
+  # The Claude subscription access token this account would present, from its DB
+  # copy — the single reader for a dig that seven callers used to spell out
+  # themselves. nil for a Codex row or an account with no captured credentials.
+  #
+  # This is the value handed to a session as CLAUDE_CODE_OAUTH_TOKEN under
+  # session-scoped credentials, which is why it is one method: the token a
+  # session runs on and the token Zimmer probes quota with must not be able to
+  # drift apart.
+  def claude_access_token
+    return nil if codex?
+
+    oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken").presence
+  end
+
+  # Whether Claude sessions carry their own credentials rather than reading the
+  # shared file. When they do, this row is the only copy of the chain and the
+  # shared file is a stale artifact — so the two paths that reconcile against it
+  # (#lost_refresh_race?, the post-refresh write in #refresh_token!) must not.
+  #
+  # Only meaningful for a Claude row; a Codex account manages its own auth.json
+  # and is unaffected by the setting.
+  def session_scoped_credentials?
+    !codex? && AppSetting.session_scoped_credentials_enabled?
+  end
+  private :session_scoped_credentials?
+
   # Refreshes the access token using the runtime's OAuth refresh_token grant.
   # Updates oauth_config in the DB and writes to the runtime's credential file
   # if this is the current account.
@@ -467,20 +493,6 @@ class ClaudeAccount < ApplicationRecord
   # reports inconclusive as "not rejected", which would be a false GO here), so
   # callers degrade to the refresh path rather than admitting an unverified
   # account on a network blip.
-  # The Claude subscription access token this account would present, from its DB
-  # copy — the single reader for a dig that seven callers used to spell out
-  # themselves. nil for a Codex row or an account with no captured credentials.
-  #
-  # This is the value handed to a session as CLAUDE_CODE_OAUTH_TOKEN under
-  # session-scoped credentials, which is why it is one method: the token a
-  # session runs on and the token Zimmer probes quota with must not be able to
-  # drift apart.
-  def claude_access_token
-    return nil if codex?
-
-    oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken").presence
-  end
-
   def access_token_honored?
     return false if codex?
     return false if token_expired?
@@ -597,7 +609,8 @@ class ClaudeAccount < ApplicationRecord
   # Re-syncs from the filesystem first: the row lock in #refresh_token! excludes
   # other Zimmer callers, so the only racer left is the agent CLI writing the
   # shared credentials file mid-session, and that lands on disk rather than in the
-  # DB.
+  # DB. Under session-scoped credentials no session writes that file at all, so
+  # the sync is skipped and the row lock answers the question on its own.
   #
   # When it cannot tell — no token to compare, or the sync raising — it answers
   # "not a race", which condemns the account. That is the deliberate direction:
@@ -609,7 +622,18 @@ class ClaudeAccount < ApplicationRecord
   def lost_refresh_race?(presented)
     return false if presented.blank?
 
-    codex? ? sync_codex_tokens_from_filesystem! : sync_tokens_from_filesystem!
+    # Under session-scoped credentials the shared file is not a racer, it is a
+    # stale artifact: no session writes it, and #capture! no longer converges it
+    # after a human re-auth. Re-syncing from it here would pull a superseded pair
+    # over the DB's live one and then report "the account is healthy" — the
+    # 2026-08-22 shape, arriving through the one path the setting was supposed to
+    # close. With it on, the row lock is the whole story: there is no writer left
+    # to lose a race to.
+    if codex?
+      sync_codex_tokens_from_filesystem!
+    elsif !session_scoped_credentials?
+      sync_tokens_from_filesystem!
+    end
     reload
     current_token = current_refresh_token
 
@@ -671,7 +695,7 @@ class ClaudeAccount < ApplicationRecord
       # rotated onto — an account whose stored token is spent forever, which every
       # later refresh reads as `invalid_grant` and which no probe can recover.
       # Disk can be reconciled on the next sweep; a lost refresh token cannot.
-      if is_current?
+      if is_current? && !session_scoped_credentials?
         begin
           # force: — Anthropic issued this pair moments ago and spent the value we
           # presented, so this row holds the only copy of the chain. Nothing on

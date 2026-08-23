@@ -63,10 +63,15 @@ class ClaudeMcpCredentialWriter
   # @param session [Session]
   # @return [ClaudeMcpCredentialWriter]
   def self.for_session(session)
-    return new unless AppSetting.session_scoped_credentials_enabled?
-    return new if session&.id.blank?
+    # `try(:id)`, not `&.id`: this is the contract's factory and it must answer
+    # for anything session-shaped, including the session doubles the MCP tests
+    # build. A NoMethodError here does not surface as an error — the injector
+    # rescues it into "skip reconciliation" — so the failure would be a session
+    # silently not adopting a token it already had.
+    session_id = session.try(:id)
+    return new unless ClaudeSessionConfigDirectory.active_for?(session_id)
 
-    new(credentials_path: ClaudeSessionConfigDirectory.credentials_path_for(session.id))
+    new(credentials_path: ClaudeSessionConfigDirectory.credentials_path_for(session_id))
   end
 
   # Persists the resolved credentials to Claude Code's credential stores.
