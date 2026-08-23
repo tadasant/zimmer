@@ -5922,6 +5922,100 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal 2, @session.metadata["api_error_retry_count"]
   end
 
+  # The MCP-connection and context-length budgets never reset before #527: a
+  # long-lived session accumulated toward their maxima across its whole life and then
+  # failed permanently. They now get the same per-incident budget the other three have.
+  test "reset_retry_budget for MCP connections resets a budget that never used to" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "mcp_retry_count" => 2,
+        "mcp_last_retry_at" => "2025-11-29T18:22:09Z",
+        "mcp_failed_servers" => [ { "name" => "slack" } ]
+      }
+    )
+
+    job.send(:reset_retry_budget, @session, RetryBudget::MCP_CONNECTION, 65.seconds.ago, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_nil @session.metadata["mcp_retry_count"]
+    assert_nil @session.metadata["mcp_last_retry_at"]
+    assert_equal [ { "name" => "slack" } ], @session.metadata["mcp_failed_servers"],
+      "which servers failed is diagnosis, not budget"
+
+    logs = @session.logs.reload.pluck(:content)
+    assert logs.any? { |log| log.include?("MCP connection retry counter reset") }
+  end
+
+  test "reset_retry_budget for context length resets a budget that never used to" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "compact_retry_count" => 1,
+        "last_compact_at" => "2025-11-29T18:22:09Z",
+        "pending_compact_continuation" => true,
+        "context_length_last_checked_line" => 17
+      }
+    )
+
+    job.send(:reset_retry_budget, @session, RetryBudget::CONTEXT_LENGTH, 65.seconds.ago, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_nil @session.metadata["compact_retry_count"]
+    assert_nil @session.metadata["last_compact_at"]
+    assert_equal true, @session.metadata["pending_compact_continuation"],
+      "the compact still owes the user a continuation"
+    assert_equal 17, @session.metadata["context_length_last_checked_line"],
+      "the scan position must survive a counter reset"
+
+    logs = @session.logs.reload.pluck(:content)
+    assert logs.any? { |log| log.include?("Context-length compact counter reset") }
+  end
+
+  test "reset_stable_retry_budgets hands back every declared budget at once" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: RetryBudget.all.index_by(&:key).transform_values { 1 }
+        .merge(RetryBudget.all.index_by(&:stamp).transform_values { "2025-11-29T18:22:09Z" })
+    )
+
+    stale = RetryBudget.all.index_with { 65.seconds.ago }
+    job.send(:reset_stable_retry_budgets, @session, stale, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    RetryBudget.all.each do |budget|
+      assert_nil @session.metadata[budget.key], "#{budget.name} counter should have been reset"
+      assert_nil @session.metadata[budget.stamp], "#{budget.name} stamp should have been reset"
+    end
+  end
+
+  test "a failed budget reset logs at warn, not error" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(status: :running, metadata: { "sigterm_retry_count" => 2 })
+    # Failing to reset a retry COUNTER is harmless — the session keeps a stale budget
+    # and the next stable stretch clears it — so it must not trip the
+    # "any Zimmer ERROR -> critical" Grafana rule (see ApplicationJob).
+    @session.stubs(:remove_metadata!).raises(StandardError, "boom")
+    Rails.logger.expects(:error).never
+    Rails.logger.expects(:warn).with(regexp_matches(/Error resetting sigterm retry budget/)).at_least_once
+
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGTERM, 65.seconds.ago, log_buffer)
+  end
+
   # ============================================================================
   # Failure Reason Tracking Tests (Issue pulsemcp/agents#503)
   # ============================================================================

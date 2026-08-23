@@ -161,13 +161,6 @@ class AgentSessionJob < ApplicationJob
   # gets an answer.
   PAUSE_CHECK_RETRY_DELAY = 1.minute
 
-  # The retry budgets a stable stretch of running hands back.
-  RETRY_BUDGETS_RESET_ON_STABILITY = [
-    RetryBudget::SIGTERM,
-    RetryBudget::API_ERROR,
-    RetryBudget::SIGNAL_DEATH
-  ].freeze
-
   MAX_INTERRUPTED_START_REQUEUES = 20
   INTERRUPTED_START_REQUEUE_DELAY = 30.seconds
   INTERRUPTED_START_REQUEUE_JITTER = 30.seconds
@@ -3865,6 +3858,12 @@ class AgentSessionJob < ApplicationJob
   # whole life and then fails permanently on an error it should have survived
   # (issue pulsemcp/agents#459).
   #
+  # Every declared budget, not a hand-picked three. The MCP-connection and
+  # context-length budgets never reset before this: a long-lived session accumulated
+  # toward MCP_CONNECTION.max / CONTEXT_LENGTH.max across its whole life and then
+  # failed permanently — the exact failure the signal-death reset was added to
+  # prevent, applied to only one of the three loops that needed it.
+  #
   # One loop rather than one method per failure class, so a sixth failure class resets
   # because it was declared, not because someone remembered to copy twenty lines.
   #
@@ -3872,7 +3871,7 @@ class AgentSessionJob < ApplicationJob
   # @param last_attempt_at [Hash<RetryBudget, Time|nil>] when each budget last fired
   # @param log_buffer [LogBuffer] Buffer for logging
   def reset_stable_retry_budgets(session, last_attempt_at, log_buffer)
-    RETRY_BUDGETS_RESET_ON_STABILITY.each do |budget|
+    RetryBudget.all.each do |budget|
       reset_retry_budget(session, budget, last_attempt_at[budget], log_buffer)
     end
   end
