@@ -86,10 +86,9 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     end
   end
 
-  # The button label carries no state parenthetical: state is the icon's colour,
-  # asserted above. Sighted users were paying for that text in horizontal space --
-  # long enough that the card footer wrapped into two rows on a narrow card -- while
-  # anyone not reading colour needs it, so it moves to an sr-only span and the title.
+  # The button's visible label names the PR and nothing else: state rides on the
+  # icon's glyph and colour (asserted above), with the parenthetical in an sr-only
+  # span and in the title so it survives for a reader of neither.
   test "the PR button label drops the state parenthetical but keeps it for assistive tech" do
     url = "https://github.com/owner/repo/pull/123"
     @session.update!(custom_metadata: {
@@ -117,6 +116,35 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
       # What a screen reader reads, and what a hover reveals.
       assert_equal "(Merged)", pr_link.find("span.sr-only", visible: :all).text(:all).strip
       assert_equal "View PR on GitHub (Merged)", pr_link[:title]
+    end
+  end
+
+  # A session with several PRs renders a second, separate copy of that label in the
+  # dropdown's primary button, so it gets its own pin. The menu rows below it are the
+  # one place the state stays visible text -- there is room in a list.
+  test "the multi-PR button label drops the state parenthetical too" do
+    first = "https://github.com/owner/repo/pull/122"
+    second = "https://github.com/owner/repo/pull/123"
+    @session.update!(custom_metadata: {
+      "github_pull_request_urls" => [ first, second ],
+      "github_pull_request_statuses" => { first => "merged", second => "open" }
+    })
+
+    visit root_path(every_status_params)
+
+    within "turbo-frame#session_#{@session.id}" do
+      primary = find("a[href='#{second}'].rounded-l-md")
+
+      sighted_label = page.evaluate_script(<<~JS, primary)
+        (function (el) {
+          const clone = el.cloneNode(true);
+          clone.querySelectorAll(".sr-only").forEach((n) => n.remove());
+          return clone.textContent;
+        })(arguments[0])
+      JS
+      assert_equal "#123", sighted_label.squish
+      assert_equal "(Open)", primary.find("span.sr-only", visible: :all).text(:all).strip
+      assert_equal "View most recent PR on GitHub (Open)", primary[:title]
     end
   end
 
