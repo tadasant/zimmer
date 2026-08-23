@@ -395,7 +395,7 @@ export default class extends Controller {
       // Submit and Submit & Open both honor it. Only an explicit opt-in is sent;
       // an unchecked box sends nothing and the server leaves the class to derive.
       if (this.hasSpotTarget && this.spotTarget.checked) {
-        body.append("scheduling_class", this.spotTarget.value || "spot")
+        body.append("scheduling_class", this.spotTarget.value)
       }
 
       for (const f of this.attachedImages) body.append("images[]", f, f.name)

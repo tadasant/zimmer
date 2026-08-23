@@ -27,7 +27,6 @@ export default class extends Controller {
     "desktopCameraInput",  // desktop camera input (capture="environment")
     "desktopFileInput",    // desktop file picker
     "desktopBadge",        // desktop "N attached" hint
-    "desktopSpot",         // desktop "Run as spot" checkbox
     "mobileOverlay",       // full-screen overlay (mobile)
     "mobileTextarea",      // textarea inside overlay
     "mobileForm",          // form inside overlay
