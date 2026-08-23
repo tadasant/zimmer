@@ -1160,8 +1160,9 @@ class Trigger < ApplicationRecord
       # fire carrying a legacy/renamed root name. The .warn line is shipped to
       # the obs stack (queryable in VictoriaLogs) as a durable audit trail
       # without paging (the `Zimmer backend logging errors (excludes staging)`
-      # Grafana rule matches severity_text:ERROR only). The unhealable branch below still raises →
-      # .error → page, which IS correct (a scheduled wake was genuinely lost);
+      # Grafana rule matches severity_text:ERROR only). The unhealable branch
+      # below still raises → .error → page, which IS correct (a scheduled wake
+      # was genuinely lost);
       # see https://github.com/tadasant/zimmer-catalog/issues/4409.
       Rails.logger.warn(
         "[Trigger#heal_stale_agent_root!] Updated agent root from '#{old_name}' to '#{successor.name}' " \
