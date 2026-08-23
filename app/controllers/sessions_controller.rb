@@ -2772,13 +2772,81 @@ class SessionsController < ApplicationController
       )
     end
 
+    # Promoting a held session is the whole point of promoting it, so it starts
+    # rather than waiting out the deferred re-check it was already carrying —
+    # which is up to an hour away, and which is exactly what the hold banner's
+    # "Make this one session priority to start it now" already promised.
+    #
+    # Only on the transition INTO priority, and only when the session is waiting:
+    # re-saving a priority session must not restart it, and a demotion must not
+    # start anything at all. `nothing_queued` is left alone deliberately — a
+    # stranded session is not something a promote should nudge behind the user's
+    # back.
+    start = start_after_promotion(previous)
+
     respond_to do |format|
-      format.json { render json: precedence_payload(@session) }
+      format.json { render json: precedence_payload(@session).merge(start_notice(start)) }
       format.html do
-        redirect_back fallback_location: session_path(@session),
-          notice: "This session is now #{@session.priority_class}."
+        notice = [ "This session is now #{@session.priority_class}.", start&.message ].compact.join(" ")
+        redirect_back fallback_location: session_path(@session), notice: notice
       end
     end
+  end
+
+  # Start the session this request has just promoted to priority, if promoting is
+  # what this request did. Returns the Sessions::StartNow result, or nil when the
+  # request was not a promotion of a waiting session.
+  def start_after_promotion(previous)
+    return nil unless previous != SessionGenesis::PRIORITY
+    return nil unless @session.priority_class == SessionGenesis::PRIORITY
+    return nil unless @session.waiting?
+
+    Sessions::StartNow.call(@session, actor: "a user promoting it in the web UI")
+  end
+  private :start_after_promotion
+
+  # The half of a Sessions::StartNow result the Ranked view shows. A refusal is
+  # worth saying out loud (the row stays put and the user should know why); a
+  # session with nothing queued is not, since nothing changed.
+  def start_notice(result)
+    return {} if result.nil? || result.nothing_queued?
+
+    { start_outcome: result.outcome, start_message: result.message }
+  end
+  private :start_notice
+
+  # POST /sessions/:id/start_now
+  # "Start it now" from the Ranked view's ⋮ menu: take this waiting session's
+  # next turn immediately rather than when the scheduler gets round to it.
+  def start_now
+    @session = find_session
+
+    # Starting is a deliberate user interaction, the same as Refresh and Restart:
+    # put the session's GitHub-poll cadence back at the fast end.
+    reset_poll_backoff(@session)
+
+    result = Sessions::StartNow.call(@session, actor: "a user in the web UI")
+
+    # Nothing is queued and the session has run before, so there is no turn to
+    # pull forward — it is stranded rather than waiting. Nudging it is what the
+    # Refresh button already does for exactly this session, so it is what Start
+    # does too rather than reporting a dead end.
+    if result.nothing_queued?
+      success, error_message = restart_with_continue_prompt(@session)
+      return if performed?
+
+      return respond_with_flash(
+        notice: (success ? "Continuing session #{@session.id}." : nil),
+        alert: (success ? nil : "Could not start session #{@session.id}: #{error_message}"),
+        location: @session
+      )
+    end
+
+    respond_with_flash(
+      notice: (result.started? ? result.message : nil),
+      alert: (result.started? ? nil : result.message),
+      location: @session
+    )
   end
 
   # PATCH /sessions/:id/update_precedence

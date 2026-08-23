@@ -124,7 +124,19 @@ class Api::V1::SessionsController < Api::BaseController
   # Update an existing session.
   # Note: Only certain fields can be updated based on session status.
   def update
+    was_priority = @session.priority_class == SessionGenesis::PRIORITY
+
     if @session.update(session_update_params)
+      # Promoting a waiting session starts it, the same as the Ranked view's
+      # Promote and `action_session`'s `change_scheduling_class` — which is what
+      # makes the promise above ("moved to priority and started") true. The hold
+      # this releases carries a deferred re-check up to an hour out, and nothing
+      # else would bring it forward. Only on the transition INTO priority, so an
+      # unrelated PATCH cannot restart a session by touching its title.
+      if !was_priority && @session.priority_class == SessionGenesis::PRIORITY && @session.waiting?
+        Sessions::StartNow.call(@session, actor: "the REST API promoting it")
+      end
+
       render json: { session: session_json(@session) }
     else
       render_api_error("Validation failed", @session.errors.full_messages, status: :unprocessable_entity)
