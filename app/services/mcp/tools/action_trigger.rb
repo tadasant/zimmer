@@ -53,6 +53,7 @@ module Mcp
       # and a burst cap there could only drop alerts during the mass-failure it exists
       # to report.
       BROADCAST_SESSION_AO_EVENT_BURST_CAP = 5
+
       # Derived from the model, not re-declared, so the tool cannot drift behind
       # it. `failed` is subtracted because it is Zimmer's to set — ScheduleTriggerJob
       # and AoEventTriggerJob park a one-shot trigger there when its fire raises,
