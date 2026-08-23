@@ -39,4 +39,24 @@ module TriggersHelper
       "bg-gray-100 text-gray-700"
     end
   end
+
+  # Condition type → icon key, in the order the icons are stacked in a trigger
+  # row. Every type in TriggerCondition::CONDITION_TYPES belongs here; a type
+  # that is missing (or one added later) falls through to :fallback rather than
+  # rendering an empty icon slot.
+  CONDITION_TYPE_ICON_KEYS = {
+    "slack" => :slack,
+    "schedule" => :schedule,
+    "ao_event" => :ao_event,
+    "github_label" => :github,
+    "github_issue" => :github,
+    "system_event" => :system_event
+  }.freeze
+
+  def trigger_condition_icon_keys(condition_types)
+    types = Array(condition_types)
+    keys = CONDITION_TYPE_ICON_KEYS.select { |type, _| types.include?(type) }.values.uniq
+
+    keys.presence || [ :fallback ]
+  end
 end
