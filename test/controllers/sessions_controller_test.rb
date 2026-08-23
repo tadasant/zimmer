@@ -5041,6 +5041,157 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil session.parent_session_id
   end
 
+  # ---- Quick Router spot opt-in ----
+  #
+  # The failure mode these guard is a control that renders but is dropped
+  # server-side, so every one asserts the persisted column on the created row
+  # rather than the response.
+
+  test "quick_prompt stamps spot on the created session when the box is checked" do
+    stub_router_agent_root
+
+    assert_difference("Session.count", 1) do
+      post quick_prompt_sessions_url, params: { prompt: "Long unattended sweep", scheduling_class: "spot" }
+    end
+
+    session = Session.last
+    assert_equal SessionGenesis::SPOT, session.scheduling_class
+    assert_equal SessionGenesis::SPOT, session.priority_class
+    assert_equal SessionGenesis::WEB_UI, session.genesis
+  end
+
+  test "quick_prompt leaves scheduling_class NULL when the box is unchecked" do
+    stub_router_agent_root
+
+    assert_difference("Session.count", 1) do
+      post quick_prompt_sessions_url, params: { prompt: "Fix the login bug" }
+    end
+
+    session = Session.last
+    assert_nil session.scheduling_class
+    assert_equal SessionGenesis::PRIORITY, session.priority_class
+  end
+
+  test "quick_prompt ignores a scheduling_class it does not recognize" do
+    stub_router_agent_root
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", scheduling_class: "urgent" }
+
+    session = Session.last
+    assert_nil session.scheduling_class
+    assert_equal SessionGenesis::PRIORITY, session.priority_class
+  end
+
+  test "quick_prompt does not stamp priority when the box is unchecked" do
+    # "priority" is never written by this surface: an unmodified submission must
+    # keep deriving from the web_ui genesis so a settings change still moves it.
+    stub_router_agent_root
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug", scheduling_class: "priority" }
+
+    assert_nil Session.last.scheduling_class
+  end
+
+  test "quick_prompt lands a spot submission at the top of the spot queue" do
+    stub_router_agent_root
+    Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Queued spot work",
+      scheduling_class: SessionGenesis::SPOT,
+      precedence: 90
+    )
+
+    post quick_prompt_sessions_url, params: { prompt: "Long unattended sweep", scheduling_class: "spot" }
+
+    assert_operator Session.last.precedence, :>, 90
+  end
+
+  test "quick_prompt leaves precedence at the default for a priority submission" do
+    stub_router_agent_root
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug" }
+
+    assert_equal SessionPrecedence::DEFAULT, Session.last.precedence
+  end
+
+  test "chat_bubble stamps spot on the created session when the box is checked" do
+    stub_router_agent_root
+
+    post chat_bubble_sessions_url,
+      params: { prompt: "Long unattended sweep", scheduling_class: "spot" },
+      as: :json
+
+    assert_response :success
+    session = Session.last
+    assert_equal SessionGenesis::SPOT, session.scheduling_class
+    assert_equal SessionGenesis::SPOT, session.priority_class
+  end
+
+  test "chat_bubble leaves scheduling_class NULL when the box is unchecked" do
+    stub_router_agent_root
+
+    post chat_bubble_sessions_url, params: { prompt: "Do something" }, as: :json
+
+    assert_response :success
+    session = Session.last
+    assert_nil session.scheduling_class
+    assert_equal SessionGenesis::PRIORITY, session.priority_class
+  end
+
+  test "chat_bubble spot opt-in wins over a priority parent session" do
+    # The bubble declares web_ui genesis so it never INHERITS a class; the
+    # submitter's own choice still has to get through.
+    parent_session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent session")
+    stub_router_agent_root
+
+    post chat_bubble_sessions_url,
+      params: { prompt: "Do something", parent_session_id: parent_session.id, scheduling_class: "spot" },
+      as: :json
+
+    assert_response :success
+    session = Session.last
+    assert_equal parent_session.id, session.parent_session_id
+    assert_equal SessionGenesis::SPOT, session.scheduling_class
+  end
+
+  test "chat_bubble spot submission outranks the parent it would otherwise sit above" do
+    parent_session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Parent session",
+      precedence: 10
+    )
+    stub_router_agent_root
+    Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Queued spot work",
+      scheduling_class: SessionGenesis::SPOT,
+      precedence: 90
+    )
+
+    post chat_bubble_sessions_url,
+      params: { prompt: "Do something", parent_session_id: parent_session.id, scheduling_class: "spot" },
+      as: :json
+
+    assert_response :success
+    assert_operator Session.last.precedence, :>, 90
+  end
+
+  test "chat_bubble leaves the parent precedence bump alone for a priority submission" do
+    parent_session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Parent session",
+      precedence: 10
+    )
+    stub_router_agent_root
+
+    post chat_bubble_sessions_url,
+      params: { prompt: "Do something", parent_session_id: parent_session.id },
+      as: :json
+
+    assert_response :success
+    assert_equal 10 + SessionPrecedence::CHILD_BUMP, Session.last.precedence
+  end
+
   # ---- Upload-attachment paths for chat_bubble / quick_prompt ----
   #
   # Cover the new multipart attachment behavior added to these endpoints:
@@ -5638,5 +5789,19 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # assertions don't depend on ordering or whitespace.
   def vary_tokens(response)
     (response.headers["Vary"] || "").split(",").map(&:strip)
+  end
+
+  # Both Quick Router entry points resolve the router root and enqueue a job.
+  # Stub the pair so a test can assert on the created row alone.
+  def stub_router_agent_root
+    AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(
+      OpenStruct.new(
+        url: "https://github.com/test/repo.git",
+        default_branch: "main",
+        subdirectory: "agent-roots/zimmer-router",
+        default_mcp_servers: []
+      )
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
   end
 end

@@ -291,6 +291,67 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "the depth indent should be the unchanged 20px per level at desktop width"
   end
 
+  # The Quick Router's spot opt-in is a checkbox with a two-line explanation beside
+  # it — the description-column-next-to-a-fixed-control shape that overflows the
+  # moment the description stops shrinking. It ships on three surfaces, two of them
+  # phone-only, and the panel one is what the mobile joystick's Quick Router petal
+  # opens, so a phone is the primary way it gets used rather than an afterthought.
+  test "the Quick Router spot opt-in is on screen and reachable on a phone" do
+    visit root_path
+    assert_selector "[data-controller='quick-prompt']"
+
+    # Surface 1: the dashboard's full-screen mobile prompt overlay.
+    find("button[data-action='quick-prompt#openMobile']").click
+    assert_selector "#quick_prompt_mobile_scheduling_class", visible: true
+
+    mobile_box = find("#quick_prompt_mobile_scheduling_class")
+    assert_not mobile_box.checked?, "the spot opt-in must default to off — priority is the default"
+    page.save_screenshot("tmp/screenshots/proof-quick-router-spot-mobile-overlay-375.png")
+
+    assert_no_horizontal_overflow("dashboard mobile prompt overlay with the spot opt-in")
+    past_edge = elements_past_right_edge("[data-quick-prompt-target='mobileOverlay']")
+    assert_empty past_edge,
+      "the mobile overlay's spot opt-in ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+
+    # It ticks, and it un-ticks again when the overlay is closed: the choice is
+    # per-submission, not a sticky preference the next prompt silently inherits.
+    mobile_box.click
+    assert mobile_box.checked?
+    find("button[data-action='quick-prompt#closeMobile']").click
+    find("button[data-action='quick-prompt#openMobile']").click
+    assert_not find("#quick_prompt_mobile_scheduling_class").checked?,
+      "reopening the overlay should start back at the default"
+    find("button[data-action='quick-prompt#closeMobile']").click
+
+    # Surface 2: the chat-bubble Quick Router panel, which is also what the mobile
+    # joystick's quick-router petal opens (joystick_menu#_openChatBubble clicks this
+    # same FAB), so proving the panel proves the petal.
+    find("#chat-bubble button[aria-label='Open quick router']").click
+    assert_selector "[data-chat-bubble-target='spot']", visible: true
+
+    bubble_box = find("[data-chat-bubble-target='spot']")
+    assert_not bubble_box.checked?, "the panel's spot opt-in must default to off too"
+    page.save_screenshot("tmp/screenshots/proof-quick-router-spot-chat-bubble-375.png")
+
+    assert_no_horizontal_overflow("chat-bubble Quick Router panel with the spot opt-in")
+    # The panel is `position: fixed`, which contributes nothing to the document's
+    # scrollable overflow — so the page-level check above cannot see it and this
+    # per-element one is the only thing that can.
+    panel_past_edge = elements_past_right_edge("[data-chat-bubble-target='panel']")
+    assert_empty panel_past_edge,
+      "the Quick Router panel ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{panel_past_edge.join("\n  ")}"
+
+    # Surface 3 is the dashboard's inline desktop prompt row, hidden below `md:`.
+    # Check it at a laptop width, where it is the last item in the attach-button row
+    # and therefore the one that would land off the edge if the row could not hold it.
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit root_path
+    assert_selector "#quick_prompt_desktop_scheduling_class", visible: true
+    assert_not find("#quick_prompt_desktop_scheduling_class").checked?
+    assert_empty elements_past_right_edge("[data-quick-prompt-target='desktopForm']"),
+      "the desktop prompt row's spot opt-in ends past the 1400px viewport"
+  end
+
   test "new session form does not overflow horizontally on a phone" do
     visit new_session_path
     assert_selector "form"
