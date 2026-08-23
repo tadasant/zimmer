@@ -34,13 +34,18 @@
             </svg>
           <% end %>
         <% end %>
-        <% unless is_current %>
-          <%= button_to "Switch", switch_account_path(account), method: :post,
-              class: "inline-flex items-center px-2 py-1 border border-indigo-300 text-xs font-medium rounded text-indigo-700 bg-indigo-50 hover:bg-indigo-100 #{account.has_valid_config? ? '' : 'opacity-50'}",
-              disabled: !account.has_valid_config?,
-              data: account.has_valid_config? ? { turbo_confirm: "Switch to #{account.email}?" } : {},
-              title: account.has_valid_config? ? "Switch to #{account.email}" : "No tokens — authenticate the account first" %>
-        <% end %>
+        <%# The current account gets the same control under a different label.
+            Hiding it left the one account whose credentials are actually live
+            with no way to re-assert them from the UI — so repairing a broken
+            live credentials file meant a shell on the worker. See issue #618,
+            hole 3. %>
+        <% switch_label = is_current ? "Re-activate" : "Switch" %>
+        <% switch_confirm = is_current ? "Re-write #{account.email}'s credentials to the worker?" : "Switch to #{account.email}?" %>
+        <%= button_to switch_label, switch_account_path(account), method: :post,
+            class: "inline-flex items-center px-2 py-1 border border-indigo-300 text-xs font-medium rounded text-indigo-700 bg-indigo-50 hover:bg-indigo-100 #{account.has_valid_config? ? '' : 'opacity-50'}",
+            disabled: !account.has_valid_config?,
+            data: account.has_valid_config? ? { turbo_confirm: switch_confirm } : {},
+            title: account.has_valid_config? ? switch_confirm : "No tokens — authenticate the account first" %>
         <%= button_to "Delete", destroy_account_quotas_path(account), method: :delete,
             class: "inline-flex items-center px-2 py-1 border border-red-200 text-xs font-medium rounded text-red-700 bg-red-50 hover:bg-red-100",
             data: { turbo_confirm: is_current ? "#{account.email} is the current account. Deleting it will activate the next available account (or leave this runtime with none). Continue?" : "Delete #{account.email}?" },
