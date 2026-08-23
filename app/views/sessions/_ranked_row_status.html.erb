@@ -1,0 +1,12 @@
+<%# The status pill on a Ranked row, split out so a status change can be
+    broadcast into an open queue without re-rendering the row around it.
+
+    Deliberately NOT the shared `_status_badge` partial: that one carries the
+    `session_<id>_status_badge` DOM id the detail page's live region owns, and a
+    session listed on the Ranked view while its detail drawer is open would then
+    have two elements claiming the same id. It is also sized for a card.
+
+    Locals:
+      agent_session - the session %>
+<span id="ranked_row_status_<%= agent_session.id %>" data-live-region="replace"
+      class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium <%= status_badge_classes(agent_session) %>"><%= agent_session.archived? ? "Trashed" : agent_session.status.humanize %></span>
