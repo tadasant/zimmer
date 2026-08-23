@@ -38,10 +38,22 @@ class TriggersHelperTest < ActionView::TestCase
     assert_equal [ :slack ], trigger_condition_icon_keys([ "slack", "some_future_condition_type" ])
   end
 
+  # Each key is asserted against its own render rather than against `rendered`,
+  # which accumulates every render in the test and would let an empty glyph hide
+  # behind the markup of an earlier iteration.
   test "every icon key renders a glyph, and an unknown key renders the fallback glyph" do
     (TriggersHelper::CONDITION_TYPE_ICON_KEYS.values.uniq + [ :fallback, :not_an_icon ]).each do |key|
-      render partial: "triggers/condition_icon", locals: { key: key }
-      assert_select "svg path", minimum: 1, message: "#{key} should render a glyph"
+      html = render(partial: "triggers/condition_icon", locals: { key: key })
+      fragment = Rails::Dom::Testing.html_document_fragment.parse(html)
+
+      assert_select fragment, "svg[role=img][aria-label] path", { minimum: 1 }, "#{key} should render a labelled glyph"
     end
+  end
+
+  test "an unknown key renders the same glyph as the fallback key" do
+    fallback = render(partial: "triggers/condition_icon", locals: { key: :fallback })
+    unknown = render(partial: "triggers/condition_icon", locals: { key: :not_an_icon })
+
+    assert_equal fallback, unknown
   end
 end

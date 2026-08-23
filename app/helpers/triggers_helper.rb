@@ -42,8 +42,8 @@ module TriggersHelper
 
   # Condition type → icon key, in the order the icons are stacked in a trigger
   # row. Every type in TriggerCondition::CONDITION_TYPES belongs here; a type
-  # that is missing (or one added later) falls through to :fallback rather than
-  # rendering an empty icon slot.
+  # absent from this map falls through to :fallback rather than rendering an
+  # empty icon slot.
   CONDITION_TYPE_ICON_KEYS = {
     "slack" => :slack,
     "schedule" => :schedule,

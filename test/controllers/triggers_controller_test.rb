@@ -20,10 +20,10 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Triggers"
   end
 
-  # The icon slot used to be a chain of per-type branches with an
-  # `if condition_types.empty?` fallback, so a `system_event` trigger — a type
-  # added after the branches were written — rendered no icon at all.
-  test "the list renders an icon for a system_event trigger" do
+  # The icon a row renders is asserted by name, not merely by presence: a
+  # `system_event` trigger that quietly fell through to the gray fallback would
+  # still show *an* icon, and that is the shape of the bug this pins.
+  test "the list renders the system-event icon for a system_event trigger" do
     trigger = Trigger.create!(
       name: "Quota available — wake waiting sessions",
       status: "enabled",
@@ -36,17 +36,17 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
 
     get triggers_path
     assert_response :success
-    assert_select "#trigger_#{trigger.id} div.flex-shrink-0.flex svg", minimum: 1
+    assert_select "#trigger_#{trigger.id} svg[aria-label=?]", "System event", 1
   end
 
-  # The reauth trigger is an `ao_event`, which has had a glyph all along; this
-  # pins that the same list keeps rendering one for it.
-  test "the list renders an icon for an ao_event trigger" do
+  # The account-reauth trigger is an `ao_event`, and the operator reads the two
+  # kinds of platform trigger apart by their icons, so both are pinned.
+  test "the list renders the Zimmer-event icon for an ao_event trigger" do
     trigger = triggers(:ao_event_trigger)
 
     get triggers_path
     assert_response :success
-    assert_select "#trigger_#{trigger.id} div.flex-shrink-0.flex svg", minimum: 1
+    assert_select "#trigger_#{trigger.id} svg[aria-label=?]", "Zimmer event", 1
   end
 
   test "should get new" do
