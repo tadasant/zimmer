@@ -24,6 +24,7 @@
 # catching. Only the user clears a failed trigger.
 class CleanupStaleTriggersJob < ApplicationJob
   queue_as :default
+  include SingletonSweep
 
   STALE_SCHEDULE_THRESHOLD = 1.hour
 

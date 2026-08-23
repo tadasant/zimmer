@@ -123,13 +123,13 @@ the **Scheduling class** selector on its detail page, `action_session` with
 
 ## The gate
 
-With gating on, a spot session starts while **both** of these hold. Neither is a forecast: both are
-statements about numbers that have already been read.
+With gating on, a spot session takes a turn — its first or its next — while **both** of these hold.
+Neither is a forecast: both are statements about numbers that have already been read.
 
 | Check | What it means | Reason when it fails |
 | --- | --- | --- |
 | **Under the targets** | The Claude Code account pool averages below the 5-hour *and* weekly targets, as last read. When either average reaches its target, spot work pauses until utilization comes back down. | `at_utilization_limit` |
-| **A free slot** | Fewer sessions are running than **Max sessions at once**. | `fleet_at_cap` |
+| **A free slot** | Fewer sessions are running than **Max sessions at once**. Skipped only for a session that is *already* `running` when the gate runs — it is counted in the fleet itself. | `fleet_at_cap` |
 
 There is no rate, no projection and no horizon. The gate holds work when a window *has arrived* at
 its target, not when it might. Utilization falls on its own — Anthropic's counters are sliding
@@ -325,13 +325,59 @@ is the intent — the pause is meant to last exactly as long as the utilization 
 for considerably longer, which is the cost of a hard stop and is visible on `/quotas` the whole time.
 Promoting one session to priority is the lever for a single piece of work that cannot wait.
 
-**Only a session's first start is gated at the starting line.** Follow-ups, monitoring resumes and
-clone-only setups pass straight through the admission check. What stops an already-running spot
-session is the ceiling sweep below, which acts only when a window has actually reached its target —
-so an ordinary follow-up is never held for a pool with headroom.
+### Every turn is gated, not just the first
 
-The session detail page shows a **Held for quota headroom** banner naming the reason, the next check
-time, and how to start it now.
+The gate used to read "is this a first start?", and everything else — a fired `wake_me_up_later`
+backstop, a queued follow-up, a Slack or GitHub poller message, a heartbeat nudge, a restart — went
+straight through. All of those arrive at `AgentSessionJob` carrying a prompt, and every one of them
+begins a **new turn that spends fresh quota**. On 2026-08-22 a spot session woke on its own backstop
+trigger and ran a full turn while this gate was reporting `at_utilization_limit` at 87% of a 65%
+target, force-pausing 22 running spot sessions and holding 141 more at the starting line.
+
+So the admission check covers every turn. While a window sits at its target, the only way a
+spot-designated session runs is to be **promoted to priority first**. Two things still pass through,
+because neither spends anything:
+
+| Passes through | Why |
+| --- | --- |
+| `clone_only` | Sets up a clone and configures MCP. No agent is spawned. |
+| `resume_monitoring` | Re-attaches to a process that is **already running**. Holding it would orphan that process, not save a token. |
+
+One hold reason is skipped for a session that is **already `running`** when the gate runs:
+**`fleet_at_cap`**. Its deliverer has flipped it to `running`, so it is counted in the running fleet
+itself — refusing it for a full fleet would refuse it on the strength of its own slot, and would
+refuse every session the ceiling sweep resumes (those are flipped to `running` before their jobs
+run). The utilization reading has no such problem: the pool's windows are measured independently of
+this session.
+
+That exemption is keyed on the session's **status**, not on "this turn carries a prompt". A turn the
+gate has already deferred once is sitting in `waiting` and holds no slot, so its re-check is an
+admission like any other and the concurrency limit applies to it in full.
+
+**A deferred turn is not a lost turn.** The prompt that woke the session, and any images or files
+attached to it, are re-enqueued verbatim on the same backed-off re-check as a first-start hold —
+GoodJob persists that delayed job in Postgres, so it survives a worker restart or a deploy. The
+session goes back to dormant `waiting` (not `needs_input`: nobody has to do anything about it), and
+nothing announces it as needing a human — no push notification, and no `session_needs_input` event
+that would wake a parent watching this session about a turn that never ran.
+
+Two details keep that true when something delivers to the session *again* during a hold, which can
+last the best part of an hour — a second child waking its orchestrator, say:
+
+- **The gate takes custody of the prompt**, so `pending_follow_up_prompt` is dropped. That marker
+  means "no job has picked this up yet" and `AgentSessionJob` prefers it over its own argument;
+  left in place, the second delivery's marker would overwrite the first, and the first deferred job
+  would deliver the second prompt and discard its own.
+- **A second refused turn is queued, not given a second job.** Two jobs racing one session means the
+  concurrency guard drops whichever loses, so the later prompt goes into `enqueued_messages` — the
+  durable queue Zimmer already drains at a session's next turn boundary — and is delivered after the
+  turn ahead of it. The hold record is left alone in that case: the re-check it names is the one
+  that will actually fire, and a queued prompt is not another rung on the backoff ladder.
+
+The session detail page shows a **Held for quota headroom** banner — **Next turn held for quota
+headroom** when it was a resume — naming the reason, the next check time, and how to run it now.
+`get_session` reports the same through `spot_hold_reason` / `spot_hold_retry_at` /
+`spot_hold_count`, and says explicitly that the queued prompt is still coming.
 
 ## The target is a ceiling
 
@@ -578,6 +624,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Choose a class when spawning | **Scheduling class** on the new-session form | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 | Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
+| Stop a *running* session's turn while parking it | **Pause Until** does it unconditionally | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
 | Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and demote button | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
 | Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
 | Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |

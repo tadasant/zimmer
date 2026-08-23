@@ -85,6 +85,21 @@ class ClaudeLoginDriver < RuntimeLoginDriver
       status: :active
     )
 
+    # Writing only the DB row is what made a successful re-auth of the CURRENT
+    # account a no-op: the live ~/.claude/.credentials.json every session reads
+    # kept the broken tokens, so the UI said "authenticated" while every
+    # transcript said "Not logged in · Please run /login". The account whose
+    # credentials are live is precisely the one most likely to need repairing,
+    # so it is the one the capture has to reach. See issue #618, holes 2 and 3.
+    #
+    # force: — the pair the human just minted is newer than anything on disk by
+    # construction, so the backwards-write guard must not treat the file it is
+    # replacing as the live copy.
+    if account.is_current?
+      AccountRotationService.new.write_config!(account, force: true)
+      Rails.logger.info "[ClaudeLoginDriver] Wrote freshly captured credentials for the current account #{account.email} to the filesystem"
+    end
+
     # A human just re-authenticated this account, which is the only signal that
     # actually retires the needs_reauth nag. Release the alert throttle here rather
     # than from ClaudeAccount's status callback: plenty of machinery writes

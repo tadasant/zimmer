@@ -66,6 +66,16 @@ class ClaudeAccount < ApplicationRecord
   # AccountRotationService converges by writing one.
   UNOWNED_CREDENTIALS_MARKER = "unwritten@zimmer.invalid"
 
+  # An `expiresAt` this far in the future is not a credential Anthropic issued.
+  # Access tokens live 8 hours; refresh chains are re-minted continuously. A
+  # value beyond this horizon is corrupt bookkeeping, and the only thing that
+  # reads it for a decision — #newer_on_disk?, which compares two credential
+  # sets to decide which one is live — must not let a garbage timestamp win a
+  # comparison against a real one. See issue #618, hole 8: one account row
+  # acquired an `expiresAt` decoding to the year 2286 by a mechanism nobody has
+  # explained, and while the cause is still unknown this bounds the damage.
+  CREDIBLE_EXPIRY_HORIZON = 30.days
+
   # A second stale rejection this soon after the last one is the same episode.
   # refresh_token! has nine call sites — the quotas page, rotation, activation,
   # the quota-reset checker and the 5-minute sweep — and several of them can
@@ -273,7 +283,25 @@ class ClaudeAccount < ApplicationRecord
     end
 
     oauth_config = {}
-    oauth_config["claude_json"] = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH)) if File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+    # Two witnesses describe the credentials file: the owner marker Zimmer writes,
+    # and the container-local ~/.claude.json the CLI writes. `fs_email` is the
+    # marker. When the identity file is present and names somebody ELSE, they
+    # disagree — typically because an operator ran `claude /login` as a different
+    # account, which rewrites the tokens and the identity but not the marker.
+    # Adopting on the marker's word alone would then write the newly-logged-in
+    # account's tokens into the previous account's row, which is precisely the
+    # contamination this machinery exists to prevent. Refuse and say why: an
+    # operator can Authenticate the right account from /quotas, which writes both.
+    if File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+      claude_json = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
+      identity_email = extract_oauth_email(claude_json["oauthAccount"])
+      if identity_email.present? && !identity_email.casecmp?(fs_email)
+        Rails.logger.warn "[ClaudeAccount] sync_from_filesystem!: the owner marker names #{fs_email} but ~/.claude.json " \
+          "names #{identity_email}; refusing to attribute the on-disk credentials to either"
+        return nil
+      end
+      oauth_config["claude_json"] = claude_json
+    end
     credentials_json = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
     oauth_config["credentials_json"] = credentials_json
 
@@ -309,9 +337,40 @@ class ClaudeAccount < ApplicationRecord
     nil
   end
 
-  # Returns the email address currently present in ~/.claude.json's
-  # oauthAccount field, or nil if the file is missing/unparseable.
+  # Whose tokens are in the SHARED ~/.claude/.credentials.json, as best Zimmer
+  # can tell.
+  #
+  # The owner marker answers this and the container-local ~/.claude.json only
+  # looks like it does. The two files have different durability: the marker sits
+  # in the same shared volume as the credentials it describes, while
+  # ~/.claude.json lives in the container's writable layer and is destroyed every
+  # time the container is replaced — which keeps the tokens and loses the
+  # identity. Trusting the identity file therefore lets a container replacement
+  # produce a confident, wrong answer about a credentials file that did not
+  # change. See issue #618, addendum B.
+  #
+  # The identity file is consulted only when there is NO marker at all: the
+  # bootstrap window before Zimmer has ever written credentials, which is also
+  # the one case the file is being read for its actual purpose (an operator ran
+  # `claude /login` on a fresh worker). After a container replacement that
+  # window looks the same but the file is gone, so the fallback answers nil —
+  # the safe answer — rather than a stale identity.
+  #
+  # @return [String, nil]
   def self.filesystem_oauth_email
+    marker = credentials_owner_email
+    return nil if marker == UNOWNED_CREDENTIALS_MARKER
+    return marker if marker.present?
+
+    filesystem_identity_email
+  end
+
+  # The email in the container-local ~/.claude.json's oauthAccount field, or nil
+  # if the file is missing/unparseable. Deliberately private-by-convention: the
+  # only caller that should reach for it is #filesystem_oauth_email's bootstrap
+  # fallback, and #backfill_identity_from_filesystem!, which uses it under an
+  # email match rather than as an authority.
+  def self.filesystem_identity_email
     return nil unless File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
 
     config = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
@@ -493,6 +552,37 @@ class ClaudeAccount < ApplicationRecord
   #   at .info rather than .error/.warn — the real failure already alerted when the
   #   account first transitioned to needs_reauth, and a known-dead token fails every
   #   cycle until a human re-authenticates.
+  # True when this account's STORED access token is one Anthropic still honours
+  # right now.
+  #
+  # A cheaper and strictly safer readiness probe than #refresh_token!: it proves
+  # the account can serve a session immediately, and unlike a refresh it does not
+  # spend the single-use refresh token. Every place that only needs to know
+  # "can this account work" should ask this first and fall back to a refresh only
+  # when the answer is no — a refresh round trip as the ADMISSION test is what
+  # made repairing an account require the very thing that was broken about it
+  # (issue #618, hole 4).
+  #
+  # Claude only: Codex accounts have no equivalent non-consuming probe, so they
+  # answer false and take the refresh path they already took.
+  #
+  # An unreachable Anthropic answers false too (QuotaCheckService.token_rejected?
+  # reports inconclusive as "not rejected", which would be a false GO here), so
+  # callers degrade to the refresh path rather than admitting an unverified
+  # account on a network blip.
+  def access_token_honored?
+    return false if codex?
+    return false if token_expired?
+
+    token = oauth_config&.dig("credentials_json", "claudeAiOauth", "accessToken")
+    return false if token.blank?
+
+    QuotaCheckService.check_with_token(token).success?
+  rescue StandardError => e
+    Rails.logger.info "[ClaudeAccount] Access-token probe for #{email} was inconclusive: #{e.message}"
+    false
+  end
+
   def refresh_token!(recovery_probe: false)
     @last_refresh_failure_kind = nil
 
@@ -672,7 +762,12 @@ class ClaudeAccount < ApplicationRecord
       # Disk can be reconciled on the next sweep; a lost refresh token cannot.
       if is_current?
         begin
-          write_credentials_to_filesystem!
+          # force: — Anthropic issued this pair moments ago and spent the value we
+          # presented, so this row holds the only copy of the chain. Nothing on
+          # disk can be newer, and letting the backwards-write guard compare
+          # `expiresAt` here would let a coincidentally-larger on-disk timestamp
+          # discard the only live credential.
+          write_credentials_to_filesystem!(force: true)
         rescue StandardError => e
           Rails.logger.error "[ClaudeAccount] Refreshed #{email} but could not write the new credentials to the filesystem: #{e.message}"
           disown_filesystem_credentials!
@@ -723,21 +818,33 @@ class ClaudeAccount < ApplicationRecord
   # Claude CLI rewrites this file to manage MCP OAuth state, and on rare occasions
   # has clobbered the claudeAiOauth fields. Without this guard the sync would
   # propagate that corruption into the DB and brick the entire account pool.
+  #
+  # Reports WHICH of those things happened rather than just returning. The
+  # skipped-for-corruption outcome is the one that matters: it is the precondition
+  # RefreshRuntimeAuthTokensJob's `:stale` handler silently assumes away when it
+  # decides to "wait for the next sweep instead — by then a filesystem sync may
+  # have moved the row on". A sync that is being skipped every time will never
+  # move the row on, and the wait becomes a three-hour metronome. The caller can
+  # only tell the difference if this says so. See issue #618, hole 6.
+  #
+  # @return [Symbol] :synced, :absent, :not_owner, :corrupt, or :unreadable
   def sync_tokens_from_filesystem!
-    return unless File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
-    return unless filesystem_credentials_owned_by_self?
+    return :absent unless File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
+    return :not_owner unless filesystem_credentials_owned_by_self?
 
     fs_credentials = JSON.parse(File.read(ClaudeAuthProvider::CREDENTIALS_JSON_PATH))
     unless self.class.complete_claude_oauth?(fs_credentials)
       Rails.logger.warn "[ClaudeAccount] Skipping filesystem sync for #{email}: filesystem credentials are corrupted (missing accessToken or refreshToken)"
-      return
+      return :corrupt
     end
 
     updated = oauth_config.deep_dup
     updated["credentials_json"] = fs_credentials
     update!(oauth_config: updated)
+    :synced
   rescue JSON::ParserError => e
     Rails.logger.warn "[ClaudeAccount] Failed to parse credentials file: #{e.message}"
+    :unreadable
   end
 
   # Adopt the on-disk ~/.claude.json identity into this account's stored config,
@@ -787,8 +894,17 @@ class ClaudeAccount < ApplicationRecord
   # a refresh-token-less blob would erase the refresh token from disk and, on the
   # next sync, from the DB — exactly the failure that bricked the pool.
   #
+  # Refuses, too, to write BACKWARDS over a live credential the CLI rotated to on
+  # disk and that exists nowhere else. That is the guard the write path was
+  # missing on 2026-08-22: there has always been one stopping bad filesystem data
+  # reaching the DB, and none stopping a stale DB copy destroying live filesystem
+  # data. See #rescue_live_filesystem_credentials.
+  #
+  # @param force [Boolean] skip the backwards-write guard because the caller
+  #   holds a credential that is newer than anything on disk by construction — a
+  #   human's interactive login, which mints a chain the disk has never seen.
   # @return [Boolean] true when credentials were written, false when refused
-  def write_credentials_to_filesystem!
+  def write_credentials_to_filesystem!(force: false)
     credentials_json = oauth_config&.dig("credentials_json")
     return false unless credentials_json.present?
 
@@ -798,8 +914,21 @@ class ClaudeAccount < ApplicationRecord
     end
 
     path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
+    rescued = nil
+
     ClaudeCredentialStore.with_lock(path) do
       on_disk = ClaudeCredentialStore.read(path)
+      # Decide only. The flock is a host-global file lock with no timeout, taken
+      # by every session's MCP credential write as well as this one, and callers
+      # arrive here both inside a row lock (#refresh_token!) and outside one
+      # (AccountRotationService#write_config!). Writing the DB under it would put
+      # a row lock inside a file lock on one path and outside it on another —
+      # a lock-order inversion Postgres cannot see and cannot break, which would
+      # wedge every credential write on the worker. So the capture is persisted
+      # after the lock releases; a DB copy that is one sweep stale is harmless,
+      # because the guard makes the same decision again next time.
+      rescued = force ? nil : rescue_live_filesystem_credentials(on_disk)
+      credentials_json = rescued || credentials_json
       ClaudeCredentialStore.write_atomically(path, credentials_blob_for_disk(credentials_json, on_disk))
       # Inside the lock: the marker must describe the tokens that are on disk. Two
       # accounts written concurrently (the web and worker containers both converge
@@ -808,6 +937,8 @@ class ClaudeAccount < ApplicationRecord
       # how one account's tokens get grafted onto another's row.
       self.class.write_credentials_owner_marker!(email)
     end
+
+    capture_rescued_credentials!(rescued) if rescued
 
     true
   end
@@ -1073,6 +1204,121 @@ class ClaudeAccount < ApplicationRecord
     end
 
     merged
+  end
+
+  # The symmetric half of the guard on sync_tokens_from_filesystem!.
+  #
+  # `sync_tokens_from_filesystem!` refuses to let bad filesystem data reach the
+  # DB. Nothing refused to let a stale DB copy destroy live filesystem data, and
+  # on 2026-08-22 that is what happened: Zimmer pushed a refresh token it had
+  # already spent over the token the CLI had rotated to, which existed only on
+  # disk. The CLI presented the spent value, Anthropic answered `invalid_grant`,
+  # and the CLI blanked its own tokens. Nothing could recover a credential that
+  # no longer existed in either store — which is why re-auth-and-wait never
+  # healed it and the pool sat at ~95 rejected refreshes/hour for three hours.
+  # See https://github.com/tadasant/zimmer/issues/618.
+  #
+  # So: called inside the store lock, immediately before the overwrite. When the
+  # file we are about to overwrite holds a COMPLETE token pair that belongs to
+  # this account and is strictly newer than the one we are holding, the disk is
+  # right and the DB is stale, and this returns the disk copy for the caller to
+  # write back instead of the stale one. The write still happens (the other
+  # writer's `mcpOAuth` block and the owner marker both still need it), it just
+  # no longer moves the credential backwards.
+  #
+  # Decision only — it performs no DB write, because it runs inside a host-global
+  # flock. See #write_credentials_to_filesystem! for why, and
+  # #capture_rescued_credentials! for where the persistence happens.
+  #
+  # Deliberately narrow. It declines when:
+  #
+  #   * the marker does not name this account — the file belongs to someone else
+  #     and overwriting it is the caller's whole intent (a switch or a rotation).
+  #     AccountRotationService#capture_outgoing_filesystem_tokens is what saves
+  #     the outgoing account's copy on that path.
+  #   * the container-local ~/.claude.json exists and names somebody else. The
+  #     marker is written by Zimmer and the CLI rewrites `claudeAiOauth` without
+  #     touching it, so after a manual `claude /login` as another account the
+  #     marker is stale and adopting on its word alone would graft that other
+  #     subscription's tokens onto this row. Two disagreeing witnesses are not
+  #     proof of ownership; one silent witness (no identity file, as after a
+  #     container replacement) leaves the marker unchallenged, which is the
+  #     pre-existing behaviour every other marker-gated path already has.
+  #   * the on-disk pair is incomplete — that is the corrupt-file case, and
+  #     rewriting it from the DB is the repair, not the hazard.
+  #   * the on-disk pair is the same pair we hold — nothing to rescue.
+  #   * neither side carries a credible expiry — with no way to order them,
+  #     refusing to act is safer than guessing which is live.
+  #
+  # @param on_disk [Hash] the parsed credentials file, read under the lock
+  # @return [Hash, nil] the credentials blob to write instead, or nil to proceed
+  def rescue_live_filesystem_credentials(on_disk)
+    stored = oauth_config&.dig("credentials_json")
+    return nil unless self.class.complete_claude_oauth?(on_disk)
+    return nil unless filesystem_credentials_owned_by_self?
+    return nil unless filesystem_identity_agrees?
+    return nil if on_disk.dig("claudeAiOauth", "refreshToken") == stored&.dig("claudeAiOauth", "refreshToken")
+    return nil unless newer_on_disk?(on_disk, stored)
+
+    Rails.logger.warn "[ClaudeAccount] Refusing to overwrite live filesystem credentials for #{email} with an older stored copy; " \
+      "capturing the on-disk pair into the DB instead (disk expiresAt #{on_disk.dig("claudeAiOauth", "expiresAt").inspect}, " \
+      "stored expiresAt #{stored&.dig("claudeAiOauth", "expiresAt").inspect})"
+
+    on_disk
+  end
+
+  # True unless the container-local identity file positively contradicts this
+  # account. An absent, unparseable or email-less file is not a contradiction —
+  # it is the state a replaced container leaves behind, and refusing on it would
+  # disable the guard exactly when the shared volume is the only witness left.
+  def filesystem_identity_agrees?
+    identity = self.class.filesystem_identity_email
+    return true if identity.blank?
+    return true if email.present? && identity.casecmp?(email)
+
+    Rails.logger.warn "[ClaudeAccount] Not adopting the on-disk credentials for #{email}: the owner marker names " \
+      "#{email} but ~/.claude.json names #{identity} — two witnesses that disagree are not proof of ownership"
+    false
+  end
+
+  # Persist a pair rescued off the filesystem, AFTER the store lock has been
+  # released. Never fatal: the disk already holds the live credential, so a
+  # failure here leaves the DB one sweep stale rather than destroying anything,
+  # and the guard reaches the same decision on the next write.
+  def capture_rescued_credentials!(rescued)
+    updated = (oauth_config || {}).deep_dup
+    updated["credentials_json"] = rescued
+    update!(oauth_config: updated)
+    Rails.logger.info "[ClaudeAccount] Captured the live on-disk credentials for #{email} into the DB"
+  rescue StandardError => e
+    Rails.logger.error "[ClaudeAccount] Wrote the rescued credentials to disk for #{email} but could not capture them into the DB: #{e.message}"
+  end
+
+  # True when the on-disk credential set is demonstrably newer than the stored
+  # one, by the only ordering the two blobs share: `claudeAiOauth.expiresAt`.
+  #
+  # Both sides are bounded by CREDIBLE_EXPIRY_HORIZON before they are compared,
+  # so the year-2286 timestamp of issue #618's hole 8 cannot win a comparison
+  # against a real credential in either direction. An incredible value is treated
+  # as no information at all, which makes the answer "no" — the conservative
+  # direction, because "no" means the caller writes what it was going to write.
+  def newer_on_disk?(on_disk, stored)
+    disk_expiry = credible_expiry(on_disk)
+    stored_expiry = credible_expiry(stored)
+    return false if disk_expiry.nil?
+    return true if stored_expiry.nil?
+
+    disk_expiry > stored_expiry
+  end
+
+  # `claudeAiOauth.expiresAt` in epoch milliseconds when it is a value Anthropic
+  # could plausibly have issued, nil otherwise.
+  def credible_expiry(credentials_json)
+    raw = credentials_json.is_a?(Hash) ? credentials_json.dig("claudeAiOauth", "expiresAt") : nil
+    return nil unless raw.is_a?(Numeric) && raw.positive?
+    return nil if raw > (Time.current + CREDIBLE_EXPIRY_HORIZON).to_i * 1000
+
+    raw
   end
 
   # True when the shared ~/.claude/.credentials.json belongs to this account,

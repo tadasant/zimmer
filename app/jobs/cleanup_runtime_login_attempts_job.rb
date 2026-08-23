@@ -15,6 +15,7 @@
 # data) and prunes old terminal rows so the table doesn't grow without bound.
 class CleanupRuntimeLoginAttemptsJob < ApplicationJob
   include DatabaseRetry
+  include SingletonSweep
 
   # On `auth` with RuntimeLoginJob, not on `default`. This is the reaper for the
   # very panel the lane exists to keep responsive: an attempt it fails to resolve

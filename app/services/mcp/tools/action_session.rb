@@ -45,6 +45,8 @@ module Mcp
 
       PRECEDENCE_DESC = PrecedenceDocs::ACTION_SESSION
 
+      HALT_DESC = 'Optional for "pause_into_spot_queue": stop the target session\'s turn where it stands instead of letting it finish. Terminates the agent process — work already written to disk survives, the tool call in flight does not. This is what a human clicking "Pause Until" in the web UI gets. Do NOT set it on your own session: you would be killing the process that is waiting for this call to return.'
+
       ACTIONS = %w[
         follow_up
         pause
@@ -104,7 +106,7 @@ module Mcp
         **Actions:**
         - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
-        - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of "Pause Until → Spot Queue" in the web UI, and the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
+        - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of "Pause Until → Spot Queue" in the web UI, and the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn — pass "halt": true to stop the turn where it stands instead, which is what the web UI's "Pause Until" does. Only use "halt" on a session that is NOT you: it terminates the agent process, so a session halting itself never gets a reply to this call. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately.
         - **unarchive**: Restore an archived session to idle "needs_input" status
@@ -152,6 +154,7 @@ module Mcp
           prompt: { type: "string", description: PROMPT_DESC },
           force_immediate: { type: "boolean", description: FORCE_IMMEDIATE_DESC },
           force: { type: "boolean", description: FORCE_DESC },
+          halt: { type: "boolean", description: HALT_DESC },
           mcp_servers: { type: "array", items: { type: "string" }, description: MCP_SERVERS_DESC },
           model: { type: "string", description: MODEL_DESC },
           skills: { type: "array", items: { type: "string" }, description: SKILLS_DESC },
@@ -377,16 +380,33 @@ module Mcp
       # The web UI's "Pause Until → Spot Queue", for an agent. Everything about
       # the park lives in the service, including which of `needs_input` /
       # `running` / `waiting` it is being applied to; this is the tool surface.
+      #
+      # `halt` is opt-in here and unconditional in the web UI, and the asymmetry
+      # is deliberate rather than an oversight. The UI is a human acting on a
+      # session that is not them, where "pause" means stop. This tool's commonest
+      # caller is a session parking ITSELF (see SelfSessionActionSession, which
+      # does not expose `halt` at all) — and a session that halted itself would
+      # terminate the process waiting on this very call, so the default there has
+      # to stay "sleep when this turn ends". A caller driving somebody else's
+      # running session passes `halt` and gets the UI's behaviour.
       def pause_into_spot_queue(session, args)
         was = session.priority_class
+        was_running = session.running?
         result = Sessions::PauseIntoSpotQueue.call(session: session, prompt: args["prompt"])
+
+        halted = false
+        if was_running && args["halt"]
+          halted = Sessions::HaltRunningTurn.call(session: session.reload, reason: :pause_into_spot_queue).halted
+        end
+        session.reload
+        pending_sleep = session.metadata&.dig("pending_sleep") == true
 
         [
           "## Parked In The Spot Queue",
           "",
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
-          "- **Status:** #{session.status}#{" (sleeps when the current turn ends)" if result.pending_sleep}",
+          "- **Status:** #{session.status}#{" (sleeps when the current turn ends)" if pending_sleep}#{" — its turn was stopped" if halted}",
           "- **Scheduling class:** #{session.priority_class}#{" (was #{was})" if result.pinned_to_spot}",
           "- **Queue position:** precedence #{session.precedence} (higher is handled sooner)",
           "- **Resumes when:** a Claude Code account is under both quota targets and a session slot " \
@@ -908,7 +928,7 @@ module Mcp
         unavailable = SessionStatusSummaryGenerator.unavailable_reason(session: session, force: true)
         raise ToolError, unavailable.message if unavailable
 
-        SessionStatusSummaryJob.perform_later(session.id, force: true)
+        SessionStatusSummaryJob.set(priority: SessionStatusSummaryJob::FORCED_PRIORITY).perform_later(session.id, force: true)
 
         [
           "## Status Summary Regenerating",

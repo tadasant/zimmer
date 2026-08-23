@@ -16,6 +16,7 @@ require "fileutils"
 class TranscriptArchiveJob < ApplicationJob
   include DatabaseRetry
   queue_as :default
+  include SingletonSweep
 
   ARCHIVE_DIR = Rails.root.join("storage", "transcript_archives")
   ARCHIVE_PATH = ARCHIVE_DIR.join("latest.zip")

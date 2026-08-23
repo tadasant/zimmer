@@ -102,6 +102,8 @@ sequenceDiagram
     C->>P: for each registered provider
     P->>FS: reconcile_filesystem_identity!
     Note over P,FS: adopt a manual `claude /login` switch into the DB
+    P->>FS: ClaudeCredentialHealth.self_heal!
+    Note over P,FS: rewrite a corrupt credentials file from the DB —<br/>after reconcile, because it reads the owner marker<br/>reconcile may just have re-pointed
     P->>FS: sync_current_account_tokens!
     Note over P,FS: the CLI refreshes tokens on its own, mid-session —<br/>scrape them back or our DB copy goes stale
     P->>DB: needs_reauth_recovery_candidates
@@ -117,6 +119,7 @@ sequenceDiagram
             P->>DB: status = needs_reauth
         else the VALUE is stale<br/>(invalid_grant "not found or invalid",<br/>refresh_token_reused)
             P->>DB: count a strike; condemn only on the<br/>third, spread over 30+ min. No retry —<br/>the same value would be rejected again
+            Note over P,DB: unless the sync was skipped for corruption —<br/>then nothing can move the row on, and it<br/>escalates to an operator alert instead
         else transient
             P->>C: re-enqueue with backoff (2/4/8 min, max 3)
         end
@@ -140,6 +143,20 @@ sibling access token. Two consequences the code has to defend against:
 A credential set with no refresh token is a dead end. `ClaudeAccount.complete_claude_oauth?`
 refuses to persist or adopt one, because the CLI sometimes rewrites `.credentials.json` *without* the
 `claudeAiOauth` block at all, and adopting that blindly would brick the whole pool.
+
+### Whose tokens are on disk
+
+`ClaudeAccount.filesystem_oauth_email` answers this from the **owner marker**, not from
+`~/.claude.json`. The two files have different durability: the marker lives in the shared volume
+beside the credentials it describes, while `~/.claude.json` lives in the container's writable layer
+and is destroyed every time the container is replaced. A container replacement therefore keeps the
+tokens and loses the identity — and a reader that trusted the identity file would give a confident,
+wrong answer about a credentials file that never changed.
+
+The identity file is consulted only when there is no marker at all: the bootstrap window before
+Zimmer has ever written credentials, which is also the one case the file is being read for its actual
+purpose (an operator ran `claude /login` on a fresh worker). After a container replacement that window
+looks the same, but the file is gone, so the fallback answers "nobody" — the safe answer.
 
 ## The credentials-owner marker
 
@@ -197,6 +214,66 @@ is to name it in `credentials_blob_for_disk` alongside `mcpOAuth`.
 Until [#60](https://github.com/tadasant/zimmer/issues/60), the account writer did a whole-file
 overwrite instead, so rotating accounts dropped every MCP OAuth credential on the box — and the user
 met it as *"the agent says it needs to authorize this server again."*
+
+### The guard runs in both directions
+
+There have always been two ways for one store to poison the other, and until
+[#618](https://github.com/tadasant/zimmer/issues/618) only one of them was guarded.
+
+**Filesystem → DB** has always been guarded. `sync_tokens_from_filesystem!` refuses to adopt a
+credential set missing an `accessToken` or a `refreshToken`, because the CLI is known to rewrite the
+file without them and adopting that would brick the account the moment its access token expired.
+
+**DB → filesystem** was not, and on 2026-08-22 that cost a credential outright. The CLI had rotated
+the refresh token on disk; Zimmer's DB copy was the previous, now-spent value; Zimmer converged the
+filesystem and wrote the spent value over the live one. The CLI presented it, Anthropic answered
+`invalid_grant`, and the CLI blanked its own `accessToken` and `refreshToken` in place. The live
+credential existed in neither store any more, which is why re-authenticating and waiting never healed
+it — for three hours, at roughly 95 rejected refreshes an hour.
+
+So `write_credentials_to_filesystem!` now checks, inside the store lock and immediately before the
+overwrite, whether the file it is about to replace holds a **complete pair that belongs to this
+account and is strictly newer than the one being written**. When it does, the disk is right and the
+DB is stale: Zimmer captures the on-disk pair into `oauth_config` and writes *that* back instead. The
+write still happens — the `mcpOAuth` block and the owner marker both need it — it just no longer
+moves the credential backwards.
+
+"Newer" is `claudeAiOauth.expiresAt`, the only ordering the two blobs share, and both sides are first
+bounded by `ClaudeAccount::CREDIBLE_EXPIRY_HORIZON` (30 days). Anthropic issues 8-hour access tokens,
+so a timestamp beyond that horizon is corrupt bookkeeping rather than a very fresh credential, and
+treating it as no information at all keeps it from winning a comparison in either direction.
+
+The guard is deliberately narrow. It declines when the marker names a different account (overwriting
+*is* the intent of a switch — `capture_outgoing_filesystem_tokens` is what saves that account's copy),
+when the on-disk pair is incomplete (that is the corruption case, and rewriting it is the repair), and
+when the two pairs are the same. A caller holding a credential that is newer by construction — a
+human's interactive login — passes `force: true`.
+
+### Corruption is loud, and repairs itself
+
+`ClaudeCredentialHealth` classifies the shared file as `:ok`, `:absent`, `:mcp_only` or `:corrupt`.
+Only `:corrupt` — a `claudeAiOauth` block whose tokens are missing or blanked — is a fault; the other
+two "no subscription tokens here" states are what a fresh worker legitimately looks like.
+
+That state now has all three of the things the 2026-08-22 corruption had none of:
+
+- **a surface** — the *Agent Authentication* card on `/health`, critical while the file is corrupt,
+  and folded into the dashboard's overall status.
+- **a repair** — `ClaudeCredentialHealth.self_heal!` runs on every
+  `RefreshRuntimeAuthTokensJob` sweep and rewrites a corrupt file from the owning account's stored
+  credentials. A corrupt file has no tokens to lose, so the write cannot destroy anything. It
+  declines when the stored copy is *itself* incomplete, and — less obviously — when the stored copy
+  has been **rejected as spent within the strike window**. Restoring a spent pair would put the file
+  back into `:ok`, silence the alarm, and hand the CLI a token Anthropic refuses, which is how the
+  CLI blanked its own tokens in the first place; on a five-minute cron that is Zimmer fighting the
+  CLI rather than healing it. The health card reports the decline reason rather than promising a
+  repair, because those two cases need different things from the operator.
+- **an escalation** — when the repair *cannot* work (the stored copy is broken too) and the same
+  account's refresh is then rejected as stale, both halves of the deadlock are true at once: the
+  value Zimmer holds is spent and the sync that would replace it is being skipped every sweep. The
+  `:stale` handler's stated plan — "wait for the next sweep, by then a filesystem sync may have moved
+  the row on" — is then false forever. Zimmer logs it at `.error` and raises an operator alert instead
+  of waiting again.
 
 ### Does the filesystem agree with the DB?
 
@@ -980,6 +1057,31 @@ sequenceDiagram
 cache, which would otherwise hide the write — so exactly one method owns it,
 `RuntimeLoginAttempt.bus_state`, and every reader goes through that. It is still a table doing a
 message bus's job. Tracked in [#111](https://github.com/tadasant/zimmer/issues/111).
+
+### Re-authenticating the account that is live
+
+`capture!` writes the DB row **and**, when the account is the current one, the shared credential
+files. It did not always, and the omission was worse than it sounds: the account whose credentials
+are live is precisely the one most likely to need repairing, and repairing it changed nothing a
+session could observe. The UI reported "authenticated" while every transcript kept saying
+*Not logged in · Please run /login*. Both re-authentications during the 2026-08-22 incident only
+worked because the pool had already been switched away from the broken account first, so `capture!`'s
+DB-only write happened to be enough.
+
+The same reasoning gives the current account a **Re-activate** button. `Switch` used to be hidden for
+it — `<% unless is_current %>` — which left the one account whose file is live with no way to
+re-assert it from the UI at all, so repairing a broken live credentials file meant a shell on the
+worker. Re-activate takes the ordinary activation path and rewrites the files; it records no rotation
+event, because a rotation from an account to itself is not one.
+
+Admission to the pool no longer requires a refresh **round trip**, either. `validate_switchable` still
+insists a refresh token exists — a pair without one is a dead end in eight hours however well its
+access token works right now — but it then asks the cheaper, more direct question first: does
+Anthropic still honour the stored *access* token? That is exactly what "can this account serve a
+session" means, and unlike a refresh it does not spend the single-use refresh token to find out.
+Gating on the round trip is what let the failure block its own repair: an account freshly
+authenticated through the UI holds a working access token and an unused refresh token, and demanding
+a refresh burned the latter to learn nothing about the former.
 
 ### The screen-scrape is only as stable as the CLI's output
 

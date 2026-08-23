@@ -103,14 +103,21 @@ class ClaudeAuthProvider < RuntimeAuthProvider
 
   # Sync filesystem tokens for the current account back to the DB. The CLI may
   # have rotated the refresh token on disk, making the DB copy stale.
+  #
+  # @return [Symbol, nil] the sync outcome (see ClaudeAccount#sync_tokens_from_filesystem!),
+  #   or nil when there is no current account / the sync raised. The dispatcher
+  #   reads this: a sync that is being skipped for corruption invalidates the
+  #   `:stale` handler's whole reason for waiting.
   def sync_current_account_tokens!
     current = current_account
-    return unless current
+    return nil unless current
 
-    current.sync_tokens_from_filesystem!
-    Rails.logger.info "[ClaudeAuthProvider] Synced filesystem tokens for current account #{current.email}"
+    outcome = current.sync_tokens_from_filesystem!
+    Rails.logger.info "[ClaudeAuthProvider] Filesystem token sync for current account #{current.email}: #{outcome}"
+    outcome
   rescue => e
     Rails.logger.info "[ClaudeAuthProvider] Failed to sync filesystem tokens: #{e.message}"
+    nil
   end
 
   # Accounts stuck in needs_reauth that still hold a refresh token worth retrying.
