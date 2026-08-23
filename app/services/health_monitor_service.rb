@@ -124,6 +124,7 @@ class HealthMonitorService
       system_health: system_health,
       egress_health: egress_health,
       auth_health: auth_health,
+      retry_budget_health: retry_budget_health,
       sigterm_retry_health: sigterm_retry_health,
       api_error_retry_health: api_error_retry_health,
       overall_status: calculate_overall_status,
@@ -180,66 +181,48 @@ class HealthMonitorService
     }
   end
 
+  # Every retry budget, as one uniform section.
+  #
+  # Built by enumerating RetryBudget.all rather than by naming metadata keys in SQL,
+  # so a budget appears here because it was declared. Before this existed the health
+  # surface covered the two budgets somebody had remembered to wire (SIGTERM and API
+  # error) and read as complete, while the signal-death, MCP-connection and
+  # context-length budgets were invisible to /health, to get_system_health and to
+  # SystemHealthMonitorJob — so "why did this session fail permanently" could not be
+  # answered from any health surface for three of the five ways it can happen.
+  #
+  # The two sections below stay: they carry rate-limit and quota detail this generic
+  # one has no equivalent of, and the /health page renders them as their own panels.
+  # They read their numbers from the same #retry_budget_stats, so there is one query
+  # per fact rather than one per surface.
+  #
+  # @return [Hash] one entry per declared budget, keyed by the budget's name
+  def retry_budget_health
+    {
+      budgets: RetryBudget.all.map { |budget| retry_budget_stats(budget) }
+    }
+  end
+
   # Get SIGTERM retry health information
   # Tracks sessions that have experienced SIGTERM exits and their retry behavior
   # @return [Hash] SIGTERM retry health data
   def sigterm_retry_health
     rate_limit_tracker = GlobalRateLimitTracker.new
-
-    # Use SQL aggregation to get counts and sum in a single query
-    # This avoids loading all sessions into memory
-    # Using pluck to avoid ORDER BY issues with aggregate functions
-    total_sigterm_sessions, total_retries_attempted = Session
-      .where("metadata->>'sigterm_retry_count' IS NOT NULL")
-      .pluck(
-        Arel.sql("COUNT(*)"),
-        Arel.sql("COALESCE(SUM((metadata->>'sigterm_retry_count')::int), 0)")
-      ).first
-
-    total_sigterm_sessions = total_sigterm_sessions.to_i
-    total_retries_attempted = total_retries_attempted.to_i
-
-    # Count recovered sessions (not failed, have retry count > 0) using SQL
-    successful_recovery_count = Session
-      .where("metadata->>'sigterm_retry_count' IS NOT NULL")
-      .where.not(status: :failed)
-      .count
-
-    # Count exhausted retries using SQL (failed with retry count >= MAX_RETRIES)
-    exhausted_retry_count = Session
-      .where("metadata->>'sigterm_retry_count' IS NOT NULL")
-      .where(status: :failed)
-      .where("(metadata->>'sigterm_retry_count')::int >= ?", SigtermRetryService::MAX_RETRIES)
-      .count
-
-    # Get recent SIGTERM events (last 24 hours)
-    # We filter in Ruby to gracefully handle invalid timestamps in metadata
-    # This loads sessions with last_sigterm_at set, then filters by time
-    threshold = 24.hours.ago
-    all_sigterm_sessions = Session.where("metadata->>'last_sigterm_at' IS NOT NULL")
-    recent_sigterm_sessions = all_sigterm_sessions.select do |session|
-      timestamp = parse_timestamp_safely(session.metadata&.dig("last_sigterm_at"))
-      timestamp && timestamp > threshold
-    end.sort_by do |session|
-      parse_timestamp_safely(session.metadata&.dig("last_sigterm_at")) || Time.at(0)
-    end.reverse.first(RECENT_EVENTS_DISPLAY_LIMIT)
-
-    recent_sigterm_count = all_sigterm_sessions.count do |session|
-      timestamp = parse_timestamp_safely(session.metadata&.dig("last_sigterm_at"))
-      timestamp && timestamp > threshold
-    end
+    stats = retry_budget_stats(RetryBudget::SIGTERM)
 
     {
-      total_sigterm_sessions: total_sigterm_sessions,
-      total_retries_attempted: total_retries_attempted,
-      successful_recovery_count: successful_recovery_count,
-      exhausted_retry_count: exhausted_retry_count,
-      recent_sigterm_count: recent_sigterm_count,
+      total_sigterm_sessions: stats[:total_sessions],
+      total_retries_attempted: stats[:total_retries_attempted],
+      successful_recovery_count: stats[:successful_recovery_count],
+      exhausted_retry_count: stats[:exhausted_retry_count],
+      recent_sigterm_count: stats[:recent_count],
       rate_limit_pressure: rate_limit_tracker.under_pressure?,
       rate_limit_events_5min: rate_limit_tracker.recent_event_count,
       current_delay_mode: rate_limit_tracker.under_pressure? ? "escalated" : "normal",
-      max_retries: SigtermRetryService::MAX_RETRIES,
-      recent_sigterm_sessions: recent_sigterm_sessions.map { |s| sigterm_session_summary(s) }
+      max_retries: stats[:max_retries],
+      recent_sigterm_sessions: stats[:recent_sessions].map do |summary|
+        summary.except(:last_attempt_at).merge(last_sigterm_at: summary[:last_attempt_at])
+      end
     }
   end
 
@@ -249,42 +232,8 @@ class HealthMonitorService
   # @return [Hash] API error retry health data
   def api_error_retry_health
     rate_limit_tracker = GlobalRateLimitTracker.new
-
-    total_api_error_sessions, total_retries_attempted = Session
-      .where("metadata->>'api_error_retry_count' IS NOT NULL")
-      .pluck(
-        Arel.sql("COUNT(*)"),
-        Arel.sql("COALESCE(SUM((metadata->>'api_error_retry_count')::int), 0)")
-      ).first
-
-    total_api_error_sessions = total_api_error_sessions.to_i
-    total_retries_attempted = total_retries_attempted.to_i
-
-    successful_recovery_count = Session
-      .where("metadata->>'api_error_retry_count' IS NOT NULL")
-      .where.not(status: :failed)
-      .count
-
-    exhausted_retry_count = Session
-      .where("metadata->>'api_error_retry_count' IS NOT NULL")
-      .where(status: :failed)
-      .where("(metadata->>'api_error_retry_count')::int >= ?", ApiErrorRetryService::MAX_RETRIES)
-      .count
-
-    # Get recent API error events (last 24 hours)
+    stats = retry_budget_stats(RetryBudget::API_ERROR)
     threshold = 24.hours.ago
-    all_api_error_sessions = Session.where("metadata->>'last_api_error_retry_at' IS NOT NULL")
-    recent_api_error_sessions = all_api_error_sessions.select do |session|
-      timestamp = parse_timestamp_safely(session.metadata&.dig("last_api_error_retry_at"))
-      timestamp && timestamp > threshold
-    end.sort_by do |session|
-      parse_timestamp_safely(session.metadata&.dig("last_api_error_retry_at")) || Time.at(0)
-    end.reverse.first(RECENT_EVENTS_DISPLAY_LIMIT)
-
-    recent_api_error_count = all_api_error_sessions.count do |session|
-      timestamp = parse_timestamp_safely(session.metadata&.dig("last_api_error_retry_at"))
-      timestamp && timestamp > threshold
-    end
 
     # Count sessions that hit account quota limits (daily/weekly limits, not transient 429s)
     quota_limit_sessions_count = Session
@@ -297,18 +246,20 @@ class HealthMonitorService
       .count
 
     {
-      total_api_error_sessions: total_api_error_sessions,
-      total_retries_attempted: total_retries_attempted,
-      successful_recovery_count: successful_recovery_count,
-      exhausted_retry_count: exhausted_retry_count,
-      recent_api_error_count: recent_api_error_count,
+      total_api_error_sessions: stats[:total_sessions],
+      total_retries_attempted: stats[:total_retries_attempted],
+      successful_recovery_count: stats[:successful_recovery_count],
+      exhausted_retry_count: stats[:exhausted_retry_count],
+      recent_api_error_count: stats[:recent_count],
       quota_limit_sessions_count: quota_limit_sessions_count,
       recent_quota_limit_count: recent_quota_limit_count,
       rate_limit_pressure: rate_limit_tracker.under_pressure?,
       rate_limit_events_5min: rate_limit_tracker.recent_event_count,
       current_delay_mode: rate_limit_tracker.under_pressure? ? "escalated" : "normal",
-      max_retries: ApiErrorRetryService::MAX_RETRIES,
-      recent_api_error_sessions: recent_api_error_sessions.map { |s| api_error_session_summary(s) }
+      max_retries: stats[:max_retries],
+      recent_api_error_sessions: stats[:recent_sessions].map do |summary|
+        summary.except(:last_attempt_at).merge(last_api_error_at: summary[:last_attempt_at])
+      end
     }
   end
 
@@ -865,48 +816,64 @@ class HealthMonitorService
     }
   end
 
-  # Create a summary of a session for SIGTERM retry display
-  # Safely parses timestamp to handle corrupted data
-  def sigterm_session_summary(session)
-    last_sigterm_at = parse_timestamp_safely(session.metadata&.dig("last_sigterm_at"))
+  # One budget's numbers, from the budget's own declared metadata keys.
+  #
+  # The counts are SQL aggregates so no session is loaded to be counted; the recency
+  # split is done in Ruby because metadata is not schema-checked and one corrupt
+  # timestamp must not take the health page down with it.
+  #
+  # @param budget [RetryBudget]
+  # @param threshold [Time] how far back "recent" reaches
+  # @return [Hash]
+  def retry_budget_stats(budget, threshold: 24.hours.ago)
+    total_sessions, total_retries_attempted = budget.sessions
+      .pluck(
+        Arel.sql("COUNT(*)"),
+        Arel.sql("COALESCE(SUM((metadata->>#{Session.connection.quote(budget.key)})::int), 0)")
+      ).first
 
+    # Sessions that spent the budget and did NOT end up failed — the recovery worked.
+    successful_recovery_count = budget.sessions.where.not(status: :failed).count
+
+    stamped = budget.stamped_sessions.to_a
+    recent = stamped.select { |session| within?(budget.last_attempt_at(session), threshold) }
+
+    {
+      name: budget.name,
+      label: budget.label,
+      count_key: budget.key,
+      stamp_key: budget.stamp,
+      max_retries: budget.max,
+      total_sessions: total_sessions.to_i,
+      total_retries_attempted: total_retries_attempted.to_i,
+      successful_recovery_count: successful_recovery_count,
+      exhausted_retry_count: budget.exhausted_sessions.count,
+      recent_count: recent.size,
+      recent_sessions: recent
+        .sort_by { |session| budget.last_attempt_at(session) || Time.at(0) }
+        .reverse
+        .first(RECENT_EVENTS_DISPLAY_LIMIT)
+        .map { |session| retry_budget_session_summary(session, budget) }
+    }
+  end
+
+  # @return [Boolean] true when `time` is present and newer than `threshold`
+  def within?(time, threshold)
+    time.present? && time > threshold
+  end
+
+  # Create a summary of a session for retry-budget display
+  def retry_budget_session_summary(session, budget)
     {
       id: session.id,
       slug: session.slug,
       title: session.title,
       status: session.status,
       git_root: session.git_root,
-      retry_count: session.metadata&.dig("sigterm_retry_count") || 0,
-      last_sigterm_at: last_sigterm_at,
+      retry_count: budget.count_for(session),
+      last_attempt_at: budget.last_attempt_at(session),
       updated_at: session.updated_at
     }
-  end
-
-  # Create a summary of a session for API error retry display
-  # Safely parses timestamp to handle corrupted data
-  def api_error_session_summary(session)
-    last_api_error_at = parse_timestamp_safely(session.metadata&.dig("last_api_error_retry_at"))
-
-    {
-      id: session.id,
-      slug: session.slug,
-      title: session.title,
-      status: session.status,
-      git_root: session.git_root,
-      retry_count: session.metadata&.dig("api_error_retry_count") || 0,
-      last_api_error_at: last_api_error_at,
-      updated_at: session.updated_at
-    }
-  end
-
-  # Safely parse a timestamp string, returning nil if invalid
-  def parse_timestamp_safely(timestamp_string)
-    return nil if timestamp_string.blank?
-
-    Time.parse(timestamp_string)
-  rescue ArgumentError => e
-    @logger.error("Invalid timestamp in session metadata", value: timestamp_string, error: e.message)
-    nil
   end
 
   # Check if a session can be retried

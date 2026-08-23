@@ -2241,7 +2241,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # session was cgroup-OOM-killed (SIGKILL/9) and left in a terminal `failed` state
   # until the generic ~15-min stuck-session sweep noticed it. A signal death is now
   # a recoverable/transient condition: the session resumes immediately (bounded by
-  # MAX_SIGNAL_DEATH_RETRIES) instead of failing.
+  # RetryBudget::SIGNAL_DEATH.max) instead of failing.
   # ============================================================================
 
   test "signal_death_exit? classifies non-SIGTERM signals as signal death" do
@@ -2324,7 +2324,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # Already at the max — the next signal death must not resume again.
     @session.update!(
       metadata: @session.metadata.merge(
-        "signal_death_retry_count" => ProcessLifecycleManager::MAX_SIGNAL_DEATH_RETRIES
+        "signal_death_retry_count" => RetryBudget::SIGNAL_DEATH.max
       )
     )
 
@@ -3550,7 +3550,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "an exhausted signal-death budget does not alert" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     @session.update!(metadata: @session.metadata.merge(
-      "signal_death_retry_count" => ProcessLifecycleManager::MAX_SIGNAL_DEATH_RETRIES
+      "signal_death_retry_count" => RetryBudget::SIGNAL_DEATH.max
     ))
     AlertService.expects(:raise_alert).never
 
