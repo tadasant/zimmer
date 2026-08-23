@@ -16,6 +16,23 @@ module QuotasHelper
     ])
   end
 
+  # A capacity figure as money, or an em dash when the model has no dollars for
+  # it. The dash is load-bearing: "we have not calibrated this window" and "there
+  # is $0.00 left" are opposite states, and rendering the first as the second
+  # would have someone read an uncalibrated deployment as an exhausted one.
+  def capacity_money(value)
+    return tag.span("—", class: "text-gray-400", title: "No dollar estimate yet — see the note below") if value.nil?
+
+    number_to_currency(value, precision: value.abs < 100 ? 2 : 0)
+  end
+
+  # A burn rate as dollars per minute, for the rates the gate projects with.
+  def burn_rate_money(value)
+    return tag.span("—", class: "text-gray-400") if value.nil?
+
+    "#{number_to_currency(value, precision: 2)}/min"
+  end
+
   def utilization_bar_color(value)
     return "bg-gray-300" if value.nil?
 

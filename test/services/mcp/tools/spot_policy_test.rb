@@ -38,7 +38,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     output = get_policy
 
     assert_match(/Gating enabled:\*\* no/, output)
-    assert_match(/5-hour window target:\*\* 80%/, output)
+    assert_match(/5-hour priority reserve:\*\* 20%/, output)
     assert_match(/Current decision/, output)
     SessionGenesis::KEYS.each { |key| assert_match(/`#{key}`/, output) }
   end
@@ -55,7 +55,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
       reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
       trigger: "usage_sample")
     AppSetting.editable.update!(spot_gating_enabled: true,
-                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+                                spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
 
     output = get_policy
     decision = SpotGateService.evaluate
@@ -65,12 +65,14 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     refute_match(/mcp-window@example\.com/, output,
                  "the decision is the pool's, so no single account is named as the one that decides")
     assert_match(/Utilization now:\*\* 42\.0%/, output)
-    assert_match(/At the target:\*\* no/, output)
+    assert_match(/Has room for a spot session:\*\* yes/, output)
+    assert_match(/Spot budget:\*\* 80\.0% of the window/, output)
+    assert_match(/Pacing curve says:\*\* 48\.0%/, output)
     assert_equal decision.allowed?, output.include?("**Spot sessions:** running"),
       "the tool must report the same decision the page renders"
   end
 
-  test "get_spot_policy says when a window has reached its target" do
+  test "get_spot_policy says when a window has no room for a spot session" do
     ClaudeAccountQuotaSnapshot.delete_all
     account = ClaudeAccount.create!(email: "mcp-at-limit@example.com", runtime: "claude_code",
                                     oauth_config: { "x" => 1 }, is_current: true)
@@ -78,12 +80,12 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
       reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
       trigger: "usage_sample")
     AppSetting.editable.update!(spot_gating_enabled: true,
-                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+                                spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
 
     output = get_policy
     assert_match(/Spot sessions:\*\* HELD/, output)
     assert_match(/Reason:\*\* `at_utilization_limit`/, output)
-    assert_match(/At the target:\*\* yes — spot work is paused until it falls/, output)
+    assert_match(/Has room for a spot session:\*\* no — spot budget spent/, output)
   end
 
   # Parity with /quotas, which renders the same count: the decision above answers
@@ -100,7 +102,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
       metadata: {
         SpotSessionPause::PAUSED_AT => 1.hour.ago.utc.iso8601,
         SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
-        SpotSessionPause::PAUSED_DETAIL => "Holding spot sessions: 5-hour window at 89% of its 80% target."
+        SpotSessionPause::PAUSED_DETAIL => "Holding spot sessions: 5-hour window is at 89% of the 80% spot budget."
       }
     )
 
@@ -121,7 +123,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     ClaudeAccountQuotaSnapshot.create!(claude_account: reauth, utilization_5h: 0.05, utilization_7d: 0.10,
       reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now, active_session_count: 1, trigger: "usage_sample")
     AppSetting.editable.update!(spot_gating_enabled: true,
-                                spot_gate_five_hour_threshold_pct: 80, spot_gate_weekly_threshold_pct: 80)
+                                spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
 
     output = get_policy
 
@@ -158,23 +160,23 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
   # --- write ------------------------------------------------------------------
 
-  test "set_gating turns the gate on and sets both thresholds" do
-    action(action: "set_gating", enabled: true, five_hour_threshold_pct: 70, weekly_threshold_pct: 60)
+  test "set_gating turns the gate on and sets both reserves" do
+    action(action: "set_gating", enabled: true, five_hour_reserve_pct: 70, weekly_reserve_pct: 60)
 
     setting = AppSetting.current
     assert setting.spot_gating_enabled
-    assert_equal 70, setting.spot_gate_five_hour_threshold_pct
-    assert_equal 60, setting.spot_gate_weekly_threshold_pct
+    assert_equal 70, setting.spot_reserve_five_hour_pct
+    assert_equal 60, setting.spot_reserve_weekly_pct
   end
 
   test "set_gating leaves omitted fields alone" do
-    action(action: "set_gating", enabled: true, five_hour_threshold_pct: 55)
-    action(action: "set_gating", weekly_threshold_pct: 45)
+    action(action: "set_gating", enabled: true, five_hour_reserve_pct: 55)
+    action(action: "set_gating", weekly_reserve_pct: 45)
 
     setting = AppSetting.current
     assert setting.spot_gating_enabled, "an omitted enabled flag must not turn the gate off"
-    assert_equal 55, setting.spot_gate_five_hour_threshold_pct
-    assert_equal 45, setting.spot_gate_weekly_threshold_pct
+    assert_equal 55, setting.spot_reserve_five_hour_pct
+    assert_equal 45, setting.spot_reserve_weekly_pct
   end
 
   # Parity: the cap is on the /quotas form, so an agent has to be able to set it
@@ -254,9 +256,9 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_raises(Mcp::ToolError) { action(action: "promote_genesis", genesis: "carrier_pigeon") }
   end
 
-  test "an out-of-range threshold comes back as a readable tool error" do
+  test "an out-of-range reserve comes back as a readable tool error" do
     error = assert_raises(Mcp::ToolError) do
-      action(action: "set_gating", five_hour_threshold_pct: 150)
+      action(action: "set_gating", five_hour_reserve_pct: 150)
     end
     assert_match(/Invalid spot policy/, error.message)
   end

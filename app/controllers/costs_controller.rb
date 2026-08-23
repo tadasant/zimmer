@@ -35,6 +35,12 @@ class CostsController < ApplicationController
     # historical sweep finishes that is only spend since ingestion shipped.
     @coverage = TokenUsageBackfill.coverage
     @last_ingested_at = @coverage[:covers_until]
+
+    # The scheduler's view of the same ledger. Not part of the cached window
+    # snapshot: these are current rates over a fixed per-combination sample, not
+    # a rollup of the window the picker selected, and they turn over on their own
+    # cron. One small indexed read.
+    @burn_rates = HarnessModelBurnRate.fresh.by_rate.to_a
   end
 
   # POST /costs/backfill

@@ -237,6 +237,26 @@ class Session < ApplicationRecord
     0
   end
 
+  # The [harness, model] pair of every Claude Code session running right now, as
+  # HarnessModelBurnRate keys its rates — so the spot gate can price what the
+  # fleet is burning in one query rather than one per session.
+  #
+  # Read straight out of the JSON columns rather than through `agent_root_key`,
+  # which resolves against the catalog per session. The stored key is what that
+  # method prefers anyway, and a session without one is priced at the fleet
+  # default by the caller rather than at nothing.
+  #
+  # Any database trouble reads as an empty fleet for the same reason the count
+  # above reads as zero: this is on the path that decides whether a session may
+  # start, and a monitoring gap must never fail one.
+  def self.running_claude_code_burn_keys
+    where(status: :running, agent_runtime: ClaudeAuthProvider::RUNTIME)
+      .pluck(Arel.sql("metadata->>'agent_root_key'"), Arel.sql("config->>'model'"))
+      .map { |root, model| [ root.to_s, model.to_s ] }
+  rescue ActiveRecord::ActiveRecordError
+    []
+  end
+
   # The SIGTERM retry counters alone. Follow-up delivery paths that only need to hand
   # the session a fresh SIGTERM budget (triggers, the GitHub pollers) clear this subset
   # rather than the full stale set, which would also discard state those paths have no

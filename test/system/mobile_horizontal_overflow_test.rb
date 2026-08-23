@@ -376,8 +376,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # the pool note under it, which is the longest prose on the page.
   test "quotas does not overflow horizontally on a phone" do
     AppSetting.editable.update!(spot_gating_enabled: true,
-                                spot_gate_five_hour_threshold_pct: 80,
-                                spot_gate_weekly_threshold_pct: 80)
+                                spot_reserve_five_hour_pct: 20,
+                                spot_reserve_weekly_pct: 20)
     3.times do |i|
       account = ClaudeAccount.create!(
         email: "a-rather-long-account-address-#{i}@subdomain.example.com",

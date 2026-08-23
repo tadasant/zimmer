@@ -195,5 +195,10 @@
         unit across models rather than money owed.
       </p>
     <% end %>
+
+    <%# Outside the window branch on purpose: these are CURRENT rates over a fixed
+        per-combination sample, not a rollup of the window selected above. A quiet
+        24-hour window has no spend to report and the rates are still real. %>
+    <%= render "burn_rates", rates: @burn_rates %>
   </div>
 </div>

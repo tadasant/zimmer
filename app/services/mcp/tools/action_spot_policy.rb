@@ -21,14 +21,19 @@ module Mcp
         Change Zimmer's spot/priority scheduling policy. Read the current state first with `get_spot_policy`.
 
         **Actions:**
-        - **set_gating**: Turn the spot gate on or off, set the two window targets, and set the ceiling
-          on how many sessions run at once. Any of `enabled`, `five_hour_threshold_pct`,
-          `weekly_threshold_pct` and `max_concurrent_sessions` may be given; omitted ones are left alone.
-          With the gate on, a spot session starts while some Claude Code account is under both targets
-          and a slot is free — a target is a level to reach, not a line to stay clear of, and reaching
-          one pauses spot work until utilization comes back down. `max_concurrent_sessions` bounds the
-          fleet: every running session counts toward it, priority included, but only spot sessions are
-          held by it. With gating off, spot sessions start like any other.
+        - **set_gating**: Turn the spot gate on or off, set how much of each quota window is RESERVED
+          for priority sessions, and set the ceiling on how many sessions run at once. Any of `enabled`,
+          `five_hour_reserve_pct`, `weekly_reserve_pct` and `max_concurrent_sessions` may be given;
+          omitted ones are left alone.
+
+          The reserve is set as a PERCENTAGE and enforced in DOLLARS: Zimmer estimates what a full
+          window is worth in Opus spend, carves out the reserve, and paces spot work into the rest on a
+          curve that reaches 100% of the non-reserved capacity exactly as the window rolls over. So a
+          higher reserve means less spot work, not a lower stopping line — spot work still fills
+          whatever is left, just more slowly. `get_spot_policy` shows the dollar figure each percentage
+          currently derives. `max_concurrent_sessions` bounds the fleet: every running session counts
+          toward it, priority included, but only spot sessions are held by it. With gating off, spot
+          sessions start like any other.
         - **promote_genesis**: Make a genesis kind `priority` (requires `genesis`). This is the one-click
           promotion: it reclassifies every session from that genesis, including ones that already exist,
           because a session's class is derived from its genesis unless something named one for it.
@@ -68,17 +73,19 @@ module Mcp
             type: "boolean",
             description: "set_gating: whether the spot gate holds sessions at all."
           },
-          five_hour_threshold_pct: {
+          five_hour_reserve_pct: {
             type: "integer",
             minimum: 0,
             maximum: 100,
-            description: "set_gating: utilization target for the 5-hour window, 0-100. Reaching it pauses spot work."
+            description: "set_gating: percentage of each 5-hour window held back for priority sessions, 0-100. " \
+                         "Spot work paces itself into the rest. 0 reserves nothing; 100 holds every spot session."
           },
-          weekly_threshold_pct: {
+          weekly_reserve_pct: {
             type: "integer",
             minimum: 0,
             maximum: 100,
-            description: "set_gating: utilization target for the weekly window, 0-100. Reaching it pauses spot work."
+            description: "set_gating: percentage of each weekly window held back for priority sessions, 0-100. " \
+                         "Spot work paces itself into the rest. 0 reserves nothing; 100 holds every spot session."
           },
           max_concurrent_sessions: {
             type: "integer",
@@ -113,13 +120,15 @@ module Mcp
           setting.spot_gating_enabled = ActiveModel::Type::Boolean.new.cast(args["enabled"])
           changes << "gating #{setting.spot_gating_enabled ? 'enabled' : 'disabled'}"
         end
-        if args["five_hour_threshold_pct"]
-          setting.spot_gate_five_hour_threshold_pct = args["five_hour_threshold_pct"]
-          changes << "5-hour target #{setting.spot_gate_five_hour_threshold_pct}%"
+        # `.nil?`, not truthiness: 0 is a meaningful reserve (hold nothing back)
+        # and would otherwise be silently ignored.
+        unless args["five_hour_reserve_pct"].nil?
+          setting.spot_reserve_five_hour_pct = args["five_hour_reserve_pct"]
+          changes << "5-hour priority reserve #{setting.spot_reserve_five_hour_pct}%"
         end
-        if args["weekly_threshold_pct"]
-          setting.spot_gate_weekly_threshold_pct = args["weekly_threshold_pct"]
-          changes << "weekly target #{setting.spot_gate_weekly_threshold_pct}%"
+        unless args["weekly_reserve_pct"].nil?
+          setting.spot_reserve_weekly_pct = args["weekly_reserve_pct"]
+          changes << "weekly priority reserve #{setting.spot_reserve_weekly_pct}%"
         end
         if args["max_concurrent_sessions"]
           setting.spot_max_concurrent_sessions = args["max_concurrent_sessions"]
@@ -127,11 +136,11 @@ module Mcp
         end
 
         if changes.empty?
-          raise ToolError, "Nothing to change: pass enabled, five_hour_threshold_pct, weekly_threshold_pct " \
+          raise ToolError, "Nothing to change: pass enabled, five_hour_reserve_pct, weekly_reserve_pct " \
                            "or max_concurrent_sessions"
         end
 
-        # Surface a bad threshold as a message the caller can act on rather than
+        # Surface a bad reserve as a message the caller can act on rather than
         # as an internal error, matching every other validation in this tool.
         raise ToolError, "Invalid spot policy: #{setting.errors.full_messages.join(', ')}" unless setting.save
         "Spot policy updated: #{changes.join(', ')}.\n\n#{decision_summary}"

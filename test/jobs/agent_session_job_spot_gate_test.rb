@@ -237,9 +237,10 @@ class AgentSessionJobSpotGateTest < ActiveJob::TestCase
   def held_decision
     SpotGateService::Decision.new(
       allowed: false, reason: "at_utilization_limit",
-      detail: "Holding spot sessions: 5-hour window at 87% of its 65% target, averaged across all 4 accounts.",
+      detail: "Holding spot sessions: 5-hour window is at 87% of the 65% spot budget, averaged across all 4 accounts.",
       five_hour: nil, weekly: nil, active_sessions: 10, fleet_cap: 10,
-      accounts_read: 4, pool_size: 4
+      accounts_read: 4, pool_size: 4,
+      fleet_burn_usd_per_minute: 1.2, candidate_burn_usd_per_minute: 0.4
     )
   end
 
@@ -248,16 +249,18 @@ class AgentSessionJobSpotGateTest < ActiveJob::TestCase
       allowed: false, reason: "fleet_at_cap",
       detail: "Holding spot sessions: 10 of 10 session slots taken.",
       five_hour: nil, weekly: nil, active_sessions: 10, fleet_cap: 10,
-      accounts_read: 4, pool_size: 4
+      accounts_read: 4, pool_size: 4,
+      fleet_burn_usd_per_minute: 1.2, candidate_burn_usd_per_minute: 0.4
     )
   end
 
   def allowed_decision
     SpotGateService::Decision.new(
       allowed: true, reason: "within_limits",
-      detail: "1 of 10 session slots taken, and 5-hour at 12% of its 65% target.",
+      detail: "1 of 10 session slots taken, and 5-hour has $412.00 of spot budget left.",
       five_hour: nil, weekly: nil, active_sessions: 1, fleet_cap: 10,
-      accounts_read: 4, pool_size: 4
+      accounts_read: 4, pool_size: 4,
+      fleet_burn_usd_per_minute: 0.4, candidate_burn_usd_per_minute: 0.4
     )
   end
 end

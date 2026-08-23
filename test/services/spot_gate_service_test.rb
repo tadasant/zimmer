@@ -17,9 +17,12 @@ class SpotGateServiceTest < ActiveSupport::TestCase
       oauth_config: { "x" => 1 }, is_current: true
     )
     @setting = AppSetting.editable
+    # A 20% priority reserve leaves an 80% spot budget, which is the same line
+    # the old "80% target" drew — so the pool and fleet-cap assertions below are
+    # comparing against the number they always were.
     @setting.update!(spot_gating_enabled: true,
-                     spot_gate_five_hour_threshold_pct: 80,
-                     spot_gate_weekly_threshold_pct: 80,
+                     spot_reserve_five_hour_pct: 20,
+                     spot_reserve_weekly_pct: 20,
                      spot_max_concurrent_sessions: 10)
   end
 
@@ -76,23 +79,30 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # --- the targets -------------------------------------------------------------
+  # --- the reserve and the cap -------------------------------------------------
 
-  test "a window under its target runs spot sessions" do
+  # With no calibrated dollar capacity these tests run the model in its fraction
+  # mode: every quantity is a share of the window, the reserve is carved off the
+  # top, and spot work fills what is left. That is deliberate — it is the mode a
+  # deployment is in before the calibration cron has ever run, and it has to be
+  # correct on its own.
+  test "a window inside its spot budget runs spot sessions" do
     seed(current_5h: 0.42, current_7d: 0.10)
 
     decision = SpotGateService.evaluate
     assert decision.allowed?
     assert_equal "within_limits", decision.reason
     assert_in_delta 42.0, decision.five_hour.current_pct, 0.001
-    assert_equal 80.0, decision.five_hour.threshold_pct
+    assert_in_delta 80.0, decision.five_hour.spot_budget_pct, 0.001
+    assert_equal 20, decision.five_hour.window.reserve_pct
   end
 
-  # The whole point of the rewrite: work runs right up to the target rather than
-  # backing off from a projection of where it might land. 79% still runs.
-  test "spot work runs at 79% and pauses at exactly the target" do
+  # Spot work fills right up to the edge of the non-reserved budget. It stops at
+  # the edge because the next session would spend INTO the reserve, which is the
+  # one thing the model never allows.
+  test "spot work runs at 79% and stops where the priority reserve begins" do
     seed(current_5h: 0.79, current_7d: 0.10)
-    assert SpotGateService.evaluate.allowed?, "under the target is under the target"
+    assert SpotGateService.evaluate.allowed?, "79% is inside an 80% spot budget"
 
     seed(current_5h: 0.80, current_7d: 0.10)
     decision = SpotGateService.evaluate
@@ -101,7 +111,250 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal "at_utilization_limit", decision.reason
     assert decision.five_hour.at_limit?
     refute decision.weekly.at_limit?
-    assert_match(/5-hour window at 80% of its 80% target/, decision.detail)
+    assert_match(/5-hour window is at 80% of the 80% spot budget/, decision.detail)
+  end
+
+  # Reserve 0% means "spot work may have the whole window". Nothing is held back,
+  # and a reading that would have been refused under any reserve runs.
+  test "a zero reserve lets spot work fill the entire window" do
+    @setting.update!(spot_reserve_five_hour_pct: 0, spot_reserve_weekly_pct: 0)
+    seed(current_5h: 0.97, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?, "with nothing reserved, 97% is still inside the budget"
+    assert_in_delta 100.0, decision.five_hour.spot_budget_pct, 0.001
+    assert_equal 0.0, decision.five_hour.window.reserve_units
+  end
+
+  # Reserve 100% is the other end of the same control: the whole window belongs
+  # to priority work, so no spot session ever starts, however empty the window is.
+  test "a full reserve holds every spot session, even on an empty window" do
+    @setting.update!(spot_reserve_five_hour_pct: 100)
+    seed(current_5h: 0.0, current_7d: 0.10)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "a window entirely reserved for priority has no spot budget at all"
+    assert_equal "at_utilization_limit", decision.reason
+    assert_equal 0.0, decision.five_hour.window.spot_budget_units
+  end
+
+  # --- the pacing curve --------------------------------------------------------
+
+  # The curve is what stops the fleet burning the whole budget in the first hour.
+  # With a session already running the pace test applies, and a window only 20%
+  # of the way through allows only 20% of its budget to have been spent.
+  test "a window early in its life holds work that is ahead of the curve" do
+    running_session(0)
+    # 4 hours left of a 5-hour window: 20% elapsed, so the curve allows 16% of
+    # the window (20% of the 80% budget).
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "40% spent against a curve at 16% is running ahead of the budget"
+    assert_equal "at_utilization_limit", decision.reason
+    assert_in_delta 16.0, decision.five_hour.pace_pct, 0.001
+    refute decision.five_hour.within_pace
+    assert decision.five_hour.within_cap, "the budget is not spent — the fleet is merely early"
+  end
+
+  # …and the same reading late in the window runs, because by then the curve has
+  # caught up with it. This is the difference from a flat target: the line moves.
+  test "the same reading runs later in the window, once the curve has caught up" do
+    running_session(0)
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 1.hour.from_now)
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?, "80% through the window, the curve allows 64%"
+    assert_in_delta 64.0, decision.five_hour.pace_pct, 0.001
+  end
+
+  # A session is not infinitely divisible. With nothing running at all the pace
+  # test is waived, so a deployment always does SOME work rather than idling
+  # through a window it could not fill one session at a time.
+  test "an idle fleet is admitted even when it is ahead of the curve" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?, "nothing is running, so the pacing curve is waived"
+    refute decision.five_hour.within_pace, "…but the reading is still ahead of it"
+    assert decision.five_hour.pace_waived
+  end
+
+  # The waiver is only ever of the PACE. The reserve is absolute: an idle fleet
+  # facing a spent spot budget is still held.
+  test "the idle-fleet waiver never spends into the reserve" do
+    seed(current_5h: 0.92, current_7d: 0.05, reset_5h: 4.hours.from_now)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "the spot budget is spent; nothing waives that"
+    refute decision.five_hour.within_cap
+  end
+
+  # A window with no recorded rollover has no time axis, so there is no curve to
+  # be ahead of — the cap alone decides, which is the safe direction to degrade.
+  test "a window with no rollover time is capped but not paced" do
+    running_session(0)
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: nil)
+
+    decision = SpotGateService.evaluate
+    assert decision.allowed?
+    assert_nil decision.five_hour.pace_pct
+    assert_nil decision.five_hour.window.seconds_remaining
+  end
+
+  # --- dollar mode -------------------------------------------------------------
+
+  # Everything above runs the fraction fallback. This section is the production
+  # path: a calibrated window and measured burn rates, so the gate projects real
+  # money over its own lookahead rather than comparing levels.
+  def calibrate(capacity_usd: 1000.0, window: QuotaCapacityEstimate::FIVE_HOUR)
+    QuotaCapacityEstimate.create!(window_key: window, capacity_usd: capacity_usd,
+                                  sample_cost_usd: capacity_usd / 2, sample_utilization: 0.5,
+                                  observation_count: 5, computed_at: Time.current)
+  end
+
+  # Replaces the whole table, so `fleet_default_usd_per_minute` — which is
+  # cost-weighted over `sample_cost_usd / sample_minutes`, not over the rate
+  # column — moves with it. A session with no sampled combination is priced at
+  # that default, which is what these tests are usually exercising.
+  def burn_rate(usd_per_minute, harness: "zimmer", model: "claude-opus-5")
+    HarnessModelBurnRate.delete_all
+    HarnessModelBurnRate.create!(harness: harness, model: model, usd_per_minute: usd_per_minute,
+                                 sample_cost_usd: usd_per_minute * 100, sample_minutes: 100.0,
+                                 sample_session_count: 25, computed_at: Time.current)
+  end
+
+  test "a calibrated window decides in dollars and reports them" do
+    calibrate(capacity_usd: 1000.0)
+    burn_rate(0.5)
+    seed(current_5h: 0.30, current_7d: 0.05)
+
+    decision = SpotGateService.evaluate
+    window = decision.five_hour.window
+
+    assert window.dollars?
+    assert_in_delta 1000.0, window.capacity_usd, 0.0001
+    assert_in_delta 300.0, window.spent_usd, 0.0001
+    assert_in_delta 200.0, window.reserve_usd, 0.0001, "20% of a $1,000 window"
+    assert_in_delta 500.0, window.remaining_spot_usd, 0.0001
+    assert decision.allowed?
+    assert_match(/5-hour has \$500\.00 of spot budget left/, decision.detail)
+  end
+
+  # The cap is a PROJECTION, which is the whole reason the burn rates exist: the
+  # same reading admits or refuses depending on what the fleet is about to spend.
+  test "the cap refuses a session whose ten minutes would cross the reserve" do
+    calibrate(capacity_usd: 1000.0)
+    seed(current_5h: 0.79, current_7d: 0.05)
+
+    burn_rate(0.5)
+    assert SpotGateService.evaluate.allowed?, "$0.50/min for 10 minutes is $5, inside the $10 left"
+
+    burn_rate(2.0)
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "$20 of projected spend would eat $10 of the priority reserve"
+    assert_equal "at_utilization_limit", decision.reason
+    refute decision.five_hour.within_cap
+    assert_match(/has spent \$790\.00 of its \$800\.00 spot budget/, decision.detail)
+  end
+
+  # The fleet's own burn counts, priority sessions included — they spend against
+  # the same window the reserve is protecting.
+  test "the projection counts every running session, not just the candidate" do
+    calibrate(capacity_usd: 1000.0)
+    burn_rate(1.0)
+    seed(current_5h: 0.70, current_7d: 0.05)
+
+    3.times { |i| running_session(i) }
+    decision = SpotGateService.evaluate
+
+    assert_in_delta 3.0, decision.fleet_burn_usd_per_minute, 0.0001
+    assert_in_delta 1.0, decision.candidate_burn_usd_per_minute, 0.0001
+    assert_in_delta 4.0, decision.projected_burn_usd_per_minute, 0.0001
+  end
+
+  # The pace in dollars: what is left over the time left to spend it in.
+  test "the sustainable rate is the remaining budget over the remaining time" do
+    calibrate(capacity_usd: 1000.0)
+    burn_rate(0.5)
+    seed(current_5h: 0.30, current_7d: 0.05, reset_5h: 100.minutes.from_now)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    # A hair over $5.00: `reset_5h` is read a fraction of a second before the gate
+    # computes against it, so "100 minutes left" is 99.98 by the time it lands.
+    assert_in_delta 5.0, decision.five_hour.window.sustainable_units_per_minute, 0.01,
+      "$500 of budget left over 100 minutes"
+    assert decision.allowed?, "a $1.00/min fleet is well inside $5.00/min"
+
+    burn_rate(4.0)
+    held = SpotGateService.evaluate
+    refute held.allowed?, "$8.00/min is not"
+    assert held.five_hour.within_cap, "the budget is not spent — the pace is what refuses"
+    assert_match(%r{is burning \$8\.00/min against \$5\.00/min sustainable}, held.detail)
+  end
+
+  # A window with dollars but no sampled rate cannot project, so it falls back to
+  # the cumulative curve rather than pretending the fleet is free.
+  test "a calibrated window with no burn rate falls back to the cumulative curve" do
+    calibrate(capacity_usd: 1000.0)
+    seed(current_5h: 0.30, current_7d: 0.05)
+
+    decision = SpotGateService.evaluate
+    assert_nil decision.fleet_burn_usd_per_minute
+    refute decision.five_hour.burn_known?
+    assert decision.allowed?
+    assert_nil decision.five_hour.to_h[:projected_burn_usd_per_minute],
+      "an unknown burn must read as unknown, never as $0.00"
+  end
+
+  # --- what stops work already running ------------------------------------------
+
+  # The ceiling sweep asks about the fleet AS IT STANDS. Projecting a
+  # hypothetical extra session into that would pause running work about one
+  # session's burn early, every sweep.
+  test "the fleet decision projects no extra session" do
+    calibrate(capacity_usd: 1000.0)
+    burn_rate(1.0)
+    seed(current_5h: 0.30, current_7d: 0.05)
+    running_session(0)
+
+    fleet = SpotGateService.fleet_decision
+    assert_in_delta 1.0, fleet.fleet_burn_usd_per_minute, 0.0001
+    assert_in_delta 0.0, fleet.candidate_burn_usd_per_minute, 0.0001
+    assert_in_delta 1.0, fleet.projected_burn_usd_per_minute, 0.0001
+  end
+
+  # A fleet merely ahead of the curve is throttled at the door, never
+  # interrupted: killing a running turn to enforce a curve spends a lost tool
+  # call and protects nothing. Only a spent budget stops running work.
+  test "being ahead of the pacing curve holds new work but does not stop running work" do
+    running_session(0)
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "ahead of the curve, so nothing new starts"
+    refute decision.stops_running_work?, "…but what is running keeps running"
+    refute decision.five_hour.stops_running_work?
+  end
+
+  test "a spent spot budget does stop running work" do
+    running_session(0)
+    seed(current_5h: 0.92, current_7d: 0.05, reset_5h: 4.hours.from_now)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?
+    assert decision.stops_running_work?, "the reserve is worth interrupting a turn for"
+  end
+
+  test "a fleet-cap hold never stops running work" do
+    seed(current_5h: 0.02, current_7d: 0.05)
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    assert_equal "fleet_at_cap", decision.reason
+    refute decision.stops_running_work?
   end
 
   # --- the resume margin -------------------------------------------------------
@@ -109,18 +362,18 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   # The ceiling half of the policy needs a different line from the admission
   # half. Holding a session that has not started costs nothing; resuming one that
   # was interrupted mid-turn costs a lost tool call, so it waits for real
-  # headroom rather than resuming the instant the window dips under the target
-  # and pushing it straight back over.
+  # headroom rather than resuming the instant the window dips back inside the
+  # budget and pushing it straight over again.
   test "the resume decision holds inside the margin, where a starting session would be admitted" do
     seed(current_5h: 0.78, current_7d: 0.10)
 
-    assert SpotGateService.evaluate.allowed?, "78% is under the 80% target for a session starting now"
+    assert SpotGateService.evaluate.allowed?, "78% is inside the 80% spot budget for a session starting now"
 
     resume = SpotGateService.resume_decision
     refute resume.allowed?
     assert_equal "at_utilization_limit", resume.reason
-    assert_in_delta 75.0, resume.five_hour.threshold_pct, 0.001,
-      "the resume decision reports the target it actually decided on"
+    assert_in_delta 75.0, resume.five_hour.spot_budget_pct, 0.001,
+      "the resume decision reports the budget it actually decided on"
   end
 
   test "the resume decision allows once utilization clears the margin" do
@@ -131,15 +384,16 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal "within_limits", decision.reason
   end
 
-  # The margin lowers the target; it never inverts it. A 3% target with a 5-point
-  # margin must not become a negative threshold that no reading can clear.
-  test "the margin cannot push a target below zero" do
-    @setting.update!(spot_gate_five_hour_threshold_pct: 3)
+  # The margin widens the reserve; it never inverts it. A 97% reserve with a
+  # 5-point margin must not produce a negative spot budget that no reading can be
+  # inside of.
+  test "the margin cannot push the spot budget below zero" do
+    @setting.update!(spot_reserve_five_hour_pct: 97)
     seed(current_5h: 0.0, current_7d: 0.10)
 
     decision = SpotGateService.resume_decision
-    assert_in_delta 0.0, decision.five_hour.threshold_pct, 0.001
-    refute decision.allowed?, "a zero target is reached by any reading, including zero"
+    assert_in_delta 0.0, decision.five_hour.spot_budget_pct, 0.001
+    refute decision.allowed?, "a zero spot budget has no room for anything, including zero"
   end
 
   test "the weekly window pauses spot work on its own" do
@@ -149,12 +403,12 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     refute decision.allowed?
     assert_equal "at_utilization_limit", decision.reason
     assert decision.weekly.at_limit?
-    assert_match(/weekly window at 95% of its 80% target/, decision.detail)
+    assert_match(/weekly window is at 95% of the 80% spot budget/, decision.detail)
   end
 
-  # The pause is not a cancellation and not a forecast: when the number comes back
+  # The hold is not a cancellation and not a forecast: when the number comes back
   # down, the very next evaluation runs work again.
-  test "spot work resumes as soon as utilization falls back under the target" do
+  test "spot work resumes as soon as utilization falls back inside the budget" do
     seed(current_5h: 0.85, current_7d: 0.10)
     assert SpotGateService.evaluate.held?
 
@@ -165,11 +419,11 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal "within_limits", decision.reason
   end
 
-  test "a higher target lets the same reading through" do
+  test "a smaller reserve lets the same reading through" do
     seed(current_5h: 0.85, current_7d: 0.10)
     assert SpotGateService.evaluate.held?
 
-    @setting.update!(spot_gate_five_hour_threshold_pct: 90)
+    @setting.update!(spot_reserve_five_hour_pct: 10)
     assert SpotGateService.evaluate.allowed?
   end
 
@@ -275,7 +529,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
 
     decision = SpotGateService.evaluate
     refute decision.allowed?
-    assert_match(/5-hour window at 95% of its 80% target, averaged across 2 of #{pool_size} accounts/,
+    assert_match(/5-hour window is at 95% of the 80% spot budget, averaged across 2 of #{pool_size} accounts/,
                  decision.detail)
     refute_match(/@example\.com/, decision.detail, "no single account may be named as the reason")
     assert_equal 2, decision.to_h[:accounts_read]
@@ -462,13 +716,14 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   # The state production was in at 2026-08-16T01:10Z: the serving account at 69%
   # weekly with the 5-hour window freshly reset to 1%, one session running — and
   # 25 spot sessions that had been waiting up to 23 hours behind a forecast that
-  # projected 122%.
+  # projected 122%. Six days into the week, 69% is inside the curve, and the
+  # queue has to run.
   test "the production incident runs the queue" do
-    seed(current_5h: 0.01, current_7d: 0.69)
+    seed(current_5h: 0.01, current_7d: 0.69, reset_7d: 12.hours.from_now)
     running_session(0)
 
     decision = SpotGateService.evaluate
-    assert decision.allowed?, "both windows are under their targets — the queue has to run"
+    assert decision.allowed?, "both windows are inside their budgets and their curves — the queue has to run"
     assert_equal "within_limits", decision.reason
     assert_equal 1, decision.active_sessions
     assert_equal 10, decision.fleet_cap
@@ -477,6 +732,21 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     9.times { |i| running_session(i + 1) }
     assert SpotGateService.evaluate.held?
     assert_equal "fleet_at_cap", SpotGateService.evaluate.reason
+  end
+
+  # The counterpart, and the reason the curve exists: the SAME 69% early in the
+  # week is ahead of pace. The old gate saw one number and answered "under the
+  # target, run flat out" whichever day it was, which is how a week's allowance
+  # got spent by Wednesday.
+  test "the same weekly reading is throttled early in the week" do
+    seed(current_5h: 0.01, current_7d: 0.69, reset_7d: 5.days.from_now)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    refute decision.allowed?, "69% spent with five days of the week left is ahead of the curve"
+    assert_equal "at_utilization_limit", decision.reason
+    assert decision.weekly.within_cap, "the budget is not spent — the pace is what refuses"
+    refute decision.weekly.within_pace
   end
 
   # Both brakes engaged at once: the target is the one reported, because a window

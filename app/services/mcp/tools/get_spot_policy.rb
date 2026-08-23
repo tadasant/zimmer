@@ -15,16 +15,33 @@ module Mcp
       description <<~DESC
         Read Zimmer's spot/priority scheduling policy and the live decision the spot gate is making.
 
-        Every session runs as `priority` (always starts) or `spot`. A spot session runs while the
-        Claude Code account pool is under both window targets ON AVERAGE — across every account, including
-        ones in needs_reauth — AND a session slot is free. Nothing is forecast: when a window reaches its
-        target, spot work stops until utilization comes back down. That covers every spot TURN, not just
-        first starts — a session woken by a trigger, a follow-up, a poller or a restart is deferred the
-        same way, so while a window is at its target the only way a spot-designated session runs is to be
-        promoted to priority first. Spot sessions already running are paused mid-run as well, so the
-        window stops climbing instead of filling to 100%. A held or paused session goes dormant in
-        `waiting` and comes back on its own — a paused one once utilization falls a few points below the
-        target, a held one at the re-check its `spot_hold_retry_at` names.
+        Every session runs as `priority` (always starts) or `spot`. Zimmer models each Claude quota
+        window in DOLLARS: a calibrated estimate of what a full window is worth in Opus spend, a
+        `priority reserve` carved out of it (the operator sets a percentage; the money is derived), and
+        the non-reserved remainder that spot work is expected to consume in full before the window rolls
+        over.
+
+        Spot work is released on a smooth just-in-time curve rather than at a percentage cliff. A spot
+        session runs while THREE things hold: the money it is projected to spend keeps total spend inside
+        the non-reserved budget, the fleet's burn rate stays under what the window can sustain from here
+        (`remaining spot budget / time left in the window` — the rate that lands on 100% exactly at
+        rollover), and a session slot is free. Because the sustainable rate is recomputed from what is
+        LEFT over the time LEFT, a quiet window releases work faster and a busy one throttles, so there
+        is work happening at every hour instead of a burst and then an idle stretch. When nothing at all
+        is running the pace test is waived — a session is not infinitely divisible, and a deployment
+        whose single-session burn exceeds its sustainable rate should still do work in a duty cycle
+        rather than none. The reserve is never waived.
+
+        That covers every spot TURN, not just first starts — a session woken by a trigger, a follow-up, a
+        poller or a restart is deferred the same way, so while a window is ahead of its curve the only
+        way a spot-designated session runs is to be promoted to priority first. Spot sessions already
+        running are paused mid-run as well. A held or paused session goes dormant in `waiting` and comes
+        back on its own — a paused one once the fleet is back under the curve with a few points of the
+        window to spare, a held one at the re-check its `spot_hold_retry_at` names.
+
+        Windows are read ON AVERAGE across every account, including ones in needs_reauth. When a window
+        has no usable dollar estimate yet, the same curve is applied to percentages instead and the
+        output says so — an estimate is never presented as a measurement.
         Every running session counts toward the concurrency limit, priority included, but only spot
         sessions are held by it — priority work is meant to crowd spot work out. The concurrency limit is
         skipped only for a session that is ALREADY running when the gate runs, since it is counted in the
@@ -37,16 +54,21 @@ module Mcp
         its line of work came from.
 
         Returns:
-        - the gate setting (on/off, both window targets, and the max sessions at once)
+        - the gate setting (on/off, both priority reserves as a percentage AND as dollars, and the max
+          sessions at once)
         - the current decision: running or held, the reason, and how many sessions are running
+        - what the running fleet is burning in $/min, and what one more session is projected to add
         - how many running spot sessions are currently paused for the ceiling, and what brings them back
-        - each window's utilization as last read across the pool, against its target
+        - each window in full: estimated capacity, dollars remaining, dollars reserved, spot budget left,
+          how long until it rolls over, the sustainable burn rate that empties it exactly then, and where
+          the pacing curve says the window should be right now
         - every genesis kind, its current class, and how many live sessions derive from it
         - every trigger that carries a class of its own
 
         **Use cases:**
         - Find out why a spot session has not started, or why its next turn has not run
-        - Check for room before spawning a batch of automated sessions
+        - Check for room before spawning a batch of automated sessions — in dollars, not percentages
+        - See how much capacity is left this window and how much of it priority work has reserved
         - See which origins are currently classified spot
       DESC
 
@@ -72,8 +94,8 @@ module Mcp
           "## Spot / priority policy",
           "",
           "- **Gating enabled:** #{setting.spot_gating_enabled ? "yes" : "no"}",
-          "- **5-hour window target:** #{setting.spot_gate_five_hour_threshold_pct}%",
-          "- **Weekly window target:** #{setting.spot_gate_weekly_threshold_pct}%",
+          "- **5-hour priority reserve:** #{reserve_phrase(setting.spot_reserve_five_hour_pct, decision.five_hour)}",
+          "- **Weekly priority reserve:** #{reserve_phrase(setting.spot_reserve_weekly_pct, decision.weekly)}",
           "- **Max sessions at once:** #{setting.spot_max_concurrent_sessions} " \
           "(every running session counts, priority included; only spot sessions wait for a slot)",
           "",
@@ -83,13 +105,19 @@ module Mcp
           "- **Reason:** `#{decision.reason}`",
           "- **Detail:** #{decision.detail}",
           "- **Running Claude Code sessions:** #{decision.active_sessions}",
+          "- **Fleet burn rate:** #{rate(decision.fleet_burn_usd_per_minute)} " \
+          "(every running session, priority included — they spend against the same windows)",
+          "- **One more session would add:** #{rate(decision.candidate_burn_usd_per_minute)} " \
+          "(from the last #{HarnessModelBurnRate::SAMPLE_SESSIONS} sessions of its harness+model combination, " \
+          "or the fleet average when that combination has never been sampled)",
           # The decision above is about a session TAKING A TURN — its first or its
           # next. This is the same policy applied to the ones already mid-turn,
-          # which is what keeps the target a ceiling on spend rather than a floor
+          # which is what keeps the budget a ceiling on spend rather than a floor
           # under when new work stops. Same number the /quotas card shows.
           "- **Spot sessions paused mid-run:** #{SpotSessionPause.paused_count} " \
-          "(paused while a window sits at its target; they resume automatically once utilization " \
-          "falls #{SpotGateService::RESUME_MARGIN_PCT} points below it, and priority sessions are never paused)"
+          "(paused while a window has no room for them; they resume automatically once the fleet is back " \
+          "under the curve with #{SpotGateService::RESUME_MARGIN_PCT} points of the window to spare, and " \
+          "priority sessions are never paused)"
         ]
 
         if decision.pool_size
@@ -110,17 +138,87 @@ module Mcp
 
       private
 
+      # One window, in the units the model actually has for it. Dollars when the
+      # calibration has produced a usable estimate; percentages of the window
+      # when it has not, said out loud rather than dressed up as money.
       def window_lines(label, reading)
         return [ "", "### #{label} window", "", "No reading available." ] if reading.nil?
 
-        [
+        window = reading.window
+        head = [
           "",
           "### #{label} window",
           "",
           "- **Utilization now:** #{format_pct(reading.current_pct)}",
-          "- **Target:** #{format_pct(reading.threshold_pct)}",
-          "- **At the target:** #{reading.at_limit? ? "yes — spot work is paused until it falls, running sessions included" : "no"}"
+          "- **Priority reserve:** #{window.reserve_pct}% of the window",
+          "- **Rolls over in:** #{duration(window.seconds_remaining)}" \
+          "#{window.elapsed_fraction ? " (#{format_pct(window.elapsed_fraction * 100)} through it)" : ""}"
         ]
+
+        body = if window.dollars?
+          [
+            "- **Estimated capacity:** #{money(window.capacity_usd)} of Opus spend",
+            "- **Remaining:** #{money(window.remaining_usd)}",
+            "- **Reserved for priority:** #{money(window.reserve_usd)}",
+            "- **Spot budget left:** #{money(window.remaining_spot_usd)} of #{money(window.spot_budget_usd)}",
+            "- **Sustainable burn from here:** #{rate(finite(window.sustainable_units_per_minute))} " \
+            "(what empties the spot budget exactly as the window rolls over)",
+            "- **Projected with one more session:** #{rate(reading.burn_units_per_minute)}",
+            "- **Estimate derived from:** #{money(window.estimate&.sample_cost_usd)} of spend at " \
+            "#{format_pct(window.estimate&.sample_utilization.to_f * 100)} pooled utilization" \
+            "#{window.estimate&.computed_at ? ", #{time_ago_in_words(window.estimate.computed_at)} ago" : ""}"
+          ]
+        else
+          [
+            "- **Estimated capacity:** not calibrated yet — this window is paced on percentages",
+            "- **Spot budget:** #{format_pct(reading.spot_budget_pct)} of the window",
+            "- **Pacing curve says:** #{reading.pace_pct ? format_pct(reading.pace_pct) : "unknown — no rollover time"}"
+          ]
+        end
+
+        head + body + [
+          "- **Has room for a spot session:** #{reading.at_limit? ? "no — #{reading.why_held}" : "yes"}"
+        ]
+      end
+
+      # The reserve as the operator set it AND as the model derives it. Both, in
+      # one line, because the percentage is the control and the dollars are what
+      # the gate decides on — showing only one of them hides half the policy.
+      def reserve_phrase(pct, reading)
+        derived = reading&.window&.reserve_usd
+        return "#{pct}% (#{money(derived)} of the estimated window)" if derived
+
+        "#{pct}% of the window (no dollar estimate for this window yet)"
+      end
+
+      def money(value)
+        return "unknown" if value.nil?
+        return "unknown" if value.respond_to?(:infinite?) && value.infinite?
+
+        # `format` before delimiting, so $1,234.50 keeps its trailing zero —
+        # `number_to_delimited(1234.5)` renders "1,234.5", which reads as a
+        # truncated figure rather than as money.
+        "$#{ActiveSupport::NumberHelper.number_to_delimited(format("%.2f", value))}"
+      end
+
+      def rate(value)
+        return "unknown" if value.nil?
+
+        "#{money(value)}/min"
+      end
+
+      # An infinite sustainable rate is what the last seconds of a window look
+      # like; it is true and useless to print, so it reads as unknown.
+      def finite(value) = value.nil? || value.infinite? ? nil : value
+
+      def duration(seconds)
+        return "unknown" if seconds.nil?
+
+        ActiveSupport::Duration.build(seconds).inspect
+      end
+
+      def time_ago_in_words(time)
+        ActionController::Base.helpers.time_ago_in_words(time)
       end
 
       def genesis_lines(classes, counts)
