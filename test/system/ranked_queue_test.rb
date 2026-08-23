@@ -32,6 +32,14 @@ class RankedQueueTest < ApplicationSystemTestCase
     find("#ranked_row_#{session.id} button[aria-label='More actions for session #{session.id}']")
   end
 
+  # The computed `display` of a row's drag handle. A class-list assertion would
+  # pass on markup the browser renders visible.
+  def handle_display(session)
+    page.evaluate_script(
+      "getComputedStyle(document.querySelector(#{"#ranked_row_#{session.id} [data-ranked-queue-target='handle']".to_json})).display"
+    )
+  end
+
   def spot_row_ids
     all("[data-ranked-queue-target='spotList'] > li").map { |li| li[:id] }
   end
@@ -115,6 +123,29 @@ class RankedQueueTest < ApplicationSystemTestCase
     assert_selector "[data-ranked-queue-target='priorityList'] #ranked_row_#{top.id}", wait: 5
     assert_selector "[data-ranked-queue-target='spotCount']", exact_text: "1"
     assert_equal [ "ranked_row_#{queued.id}" ], spot_row_ids
+  end
+
+  # A priority row has no rank to order by, so it must not offer a drag handle —
+  # and "must not" here is a rendered-CSS claim, not a class-list one. Tailwind
+  # emits `.inline-flex` after `.hidden`, so a display utility on the handle would
+  # silently beat the `hidden` that hides it and every priority row would sprout a
+  # handle that drags nothing. Assert the computed display, which is the only thing
+  # that settles it.
+  test "only spot rows offer a drag handle" do
+    top = priority(title: "Ship the hotfix")
+    queued = spot(100, title: "Rebuild the AIR catalog index")
+
+    visit_queue
+    assert_selector "#ranked_row_#{top.id}"
+
+    assert_equal "none", handle_display(top), "a priority row must not show a drag handle"
+    assert_not_equal "none", handle_display(queued), "a spot row must show its drag handle"
+
+    # And the handle follows the row when it changes sections, without a reload.
+    kebab_for(top).click
+    click_button "Demote to spot"
+    assert_selector "[data-ranked-queue-target='spotList'] #ranked_row_#{top.id}", wait: 5
+    assert_not_equal "none", handle_display(top), "a demoted row must gain its handle"
   end
 
   # The inline rank entry is the other half of this screen, and the row rewrite

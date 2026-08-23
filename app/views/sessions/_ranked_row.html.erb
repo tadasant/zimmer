@@ -23,9 +23,13 @@
   <%# Rendered on every row, hidden on priority ones — see the note on the rank
       cell below: a row promoted or demoted swaps its controls in place.
 
-      Sized as a touch target rather than as an icon: SortableJS only starts a
-      drag from inside this box, and a 16px one on a phone is a box you miss. %>
-  <span class="inline-flex h-9 w-6 shrink-0 items-center justify-center text-gray-300 hover:text-gray-500 sm:order-1 sm:h-5 <%= "hidden" unless draggable_row %>"
+      Padded into a touch target rather than sized as one: SortableJS only starts a
+      drag from inside this box, and a 16px one on a phone is a box you miss. The
+      padding rather than a `flex` box is deliberate — Tailwind emits `.inline-flex`
+      AFTER `.hidden`, so a display utility here would beat the `hidden` that keeps
+      the handle off priority rows, and every priority row would sprout a handle
+      that drags nothing. %>
+  <span class="shrink-0 px-1 py-2.5 text-gray-300 hover:text-gray-500 sm:order-1 sm:py-0 <%= "hidden" unless draggable_row %>"
         data-ranked-queue-target="handle" aria-hidden="true" title="Drag to reorder">
     <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
   </span>
