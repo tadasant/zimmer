@@ -280,24 +280,6 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     assert_equal "sam@tadasant.com", claude_json["oauthAccount"]
   end
 
-  test "ensure_active_account! adopts filesystem account when CLI was manually switched" do
-    primary = claude_accounts(:primary)
-    secondary = claude_accounts(:secondary)
-
-    # Simulate: primary was set as current a while ago, then someone SSHed
-    # in and ran `claude /login` as secondary (updating the filesystem).
-    primary.update!(last_rotated_to_at: 1.hour.ago)
-
-    simulate_manual_cli_login(secondary, previous_owner: primary)
-
-    result = @service.ensure_active_account!
-
-    # Should adopt secondary from filesystem
-    assert_equal secondary, result
-    assert secondary.reload.is_current?
-    assert_not primary.reload.is_current?
-  end
-
   test "ensure_active_account! does not adopt inactive filesystem account" do
     primary = claude_accounts(:primary)
     exceeded = claude_accounts(:exceeded)
@@ -316,124 +298,6 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     # Verify filesystem was overwritten with primary's config
     claude_json = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
     assert_equal "tadas@tadasant.com", claude_json["oauthAccount"]
-  end
-
-  # ── reconcile_with_filesystem! ─────────────────────────────────────
-
-  test "reconcile_with_filesystem! adopts filesystem identity when CLI was manually switched" do
-    primary = claude_accounts(:primary)
-    secondary = claude_accounts(:secondary)
-
-    # primary is DB-current; CLI was manually switched to secondary on disk.
-    primary.update!(last_rotated_to_at: 1.hour.ago)
-    simulate_manual_cli_login(secondary, previous_owner: primary)
-
-    result = @service.reconcile_with_filesystem!
-
-    assert_equal secondary, result
-    assert secondary.reload.is_current?
-    assert_not primary.reload.is_current?
-  end
-
-  test "reconcile_with_filesystem! is a no-op when filesystem matches DB" do
-    primary = claude_accounts(:primary)
-    @service.write_config!(primary)
-
-    result = @service.reconcile_with_filesystem!
-
-    assert_nil result
-    assert primary.reload.is_current?
-  end
-
-  test "reconcile_with_filesystem! is a no-op when filesystem identity has no DB record" do
-    primary = claude_accounts(:primary)
-    primary.update!(last_rotated_to_at: 1.hour.ago)
-
-    # Write a filesystem identity that doesn't match any DB account
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
-      JSON.pretty_generate({ "oauthAccount" => "stranger@example.com" }))
-
-    result = @service.reconcile_with_filesystem!
-
-    assert_nil result
-    assert primary.reload.is_current?
-  end
-
-  test "reconcile_with_filesystem! is a no-op when filesystem identity is inactive" do
-    primary = claude_accounts(:primary)
-    exceeded = claude_accounts(:exceeded)
-
-    primary.update!(last_rotated_to_at: 1.hour.ago)
-    @service.write_config!(exceeded)
-
-    result = @service.reconcile_with_filesystem!
-
-    assert_nil result
-    assert primary.reload.is_current?
-    assert_not exceeded.reload.is_current?
-  end
-
-  test "reconcile_with_filesystem! is a no-op when filesystem identity needs reauth" do
-    primary = claude_accounts(:primary)
-    secondary = claude_accounts(:secondary)
-
-    primary.update!(last_rotated_to_at: 1.hour.ago)
-    secondary.update!(status: :needs_reauth)
-    @service.write_config!(secondary)
-
-    result = @service.reconcile_with_filesystem!
-
-    assert_nil result
-    assert primary.reload.is_current?
-    assert_not secondary.reload.is_current?
-  end
-
-  test "reconcile_with_filesystem! is a no-op when DB switch is newer than filesystem (web UI switch)" do
-    primary = claude_accounts(:primary)
-    secondary = claude_accounts(:secondary)
-
-    # Filesystem holds primary's config, but web UI just switched to secondary.
-    @service.write_config!(primary)
-    secondary.update!(is_current: true, last_rotated_to_at: 1.hour.from_now)
-    ClaudeAccount.where.not(id: secondary.id).update_all(is_current: false)
-
-    result = @service.reconcile_with_filesystem!
-
-    # Should NOT adopt primary — DB-current is newer.
-    assert_nil result
-    assert secondary.reload.is_current?
-    assert_not primary.reload.is_current?
-  end
-
-  test "reconcile_with_filesystem! is a no-op when no DB-current account is set" do
-    ClaudeAccount.update_all(is_current: false)
-
-    # Even if filesystem has a valid identity, with no DB-current we have
-    # nothing to reconcile against — bootstrap belongs elsewhere.
-    @service.write_config!(claude_accounts(:secondary))
-
-    result = @service.reconcile_with_filesystem!
-
-    assert_nil result
-  end
-
-  test "reconcile_with_filesystem! is a no-op when filesystem identity has empty oauth_config" do
-    primary = claude_accounts(:primary)
-    unconfigured = claude_accounts(:unconfigured)
-
-    primary.update!(last_rotated_to_at: 1.hour.ago)
-
-    # Write filesystem identity matching unconfigured (which has oauth_config: {})
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
-      JSON.pretty_generate({ "oauthAccount" => unconfigured.email }))
-
-    result = @service.reconcile_with_filesystem!
-
-    # Adoption requires has_valid_config?, which unconfigured fails. The
-    # explicit "Sync from filesystem" button (sync_from_filesystem!) is the
-    # right tool for bootstrapping a config-less account.
-    assert_nil result
-    assert primary.reload.is_current?
   end
 
   test "parse_quota_reset_time parses simple time" do
@@ -660,37 +524,13 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
       "Account should NOT be marked current when write_config! is called — write must happen before mark_current!"
   end
 
-  # Bootstrap-from-filesystem tests
+  # Bootstrap tests — the pool, not the filesystem. There is no
+  # adopt-whatever-is-on-disk path any more: an empty pool is answered by the
+  # Authenticate button on /quotas, not by trusting a file. See issue #618.
 
-  test "ensure_active_account! bootstraps from filesystem when no DB account is current or available" do
-    # Simulate the broken-prod state: accounts exist in DB with empty oauth_config
-    # (user ran `claude_accounts:add` but skipped `capture_tokens`), and no account
-    # is marked current. Filesystem has valid tokens from a recent CLI login.
-    ClaudeAccount.destroy_all
-    account = ClaudeAccount.create!(email: "bootstrap@example.com", priority: 0)
-
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH, JSON.generate({
-      "oauthAccount" => { "emailAddress" => "bootstrap@example.com" }
-    }))
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate({
-      "claudeAiOauth" => {
-        "accessToken" => "bootstrap-token",
-        "refreshToken" => "bootstrap-refresh",
-        "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
-      }
-    }))
-
-    result = @service.ensure_active_account!
-
-    assert_equal account, result
-    account.reload
-    assert account.is_current?
-    assert account.has_valid_config?
-    assert_equal "bootstrap-token", account.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken")
-  end
-
-  test "ensure_active_account! returns nil when no accounts match filesystem email" do
-    # No DB account matches the filesystem identity, and no account has valid config
+  test "ensure_active_account! returns nil when no DB account holds usable credentials" do
+    # Tokens sitting on the filesystem are NOT a bootstrap source: nothing proves
+    # whose they are, and adopting them is the second-source-of-truth problem.
     ClaudeAccount.destroy_all
     ClaudeAccount.create!(email: "not-matching@example.com", priority: 0)
 

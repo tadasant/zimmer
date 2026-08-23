@@ -21,23 +21,17 @@ namespace :claude_accounts do
       puts "Added account #{email} (priority: #{priority})"
     end
 
-    # If the filesystem currently holds this email's oauth tokens (i.e. the
-    # user just ran `claude /login`), capture them automatically. This
-    # removes the old 3-step footgun where forgetting `capture_tokens` left
-    # the account as an empty shell that silently broke every downstream
-    # feature (quotas, rotation, probing).
-    fs_email = ClaudeAccount.filesystem_oauth_email
-    if fs_email == email
-      synced = ClaudeAccount.sync_from_filesystem!
-      if synced
-        puts "Captured OAuth tokens from filesystem for #{email}"
-        puts "Marked #{email} as current (no prior current account)" if synced.is_current? && ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).where.not(id: synced.id).where(is_current: true).none?
-      end
-    elsif fs_email.present?
-      puts "Note: filesystem holds tokens for a different account (#{fs_email}). Run `claude /login` as #{email}, then re-run this command (or use `claude_accounts:capture_tokens`)."
-    else
-      puts "Note: no filesystem tokens detected. Run `claude /login` as #{email}, then run `bin/rails 'claude_accounts:capture_tokens[#{email}]'`."
-    end
+    # A row with no credentials cannot serve a session, and the way to give it
+    # some is the Authenticate button on /quotas: it drives an interactive login
+    # in a scratch dir and writes the tokens straight to this row.
+    #
+    # This task used to capture them off `~/.claude/.credentials.json` when that
+    # file happened to name the same address. It no longer does. Reading whose
+    # tokens are on a shared file that Zimmer, the CLI and any operator all write
+    # is the second-source-of-truth problem the credential rearchitecture removes
+    # — and under session-scoped credentials there is nothing in that file to
+    # read. See https://github.com/tadasant/zimmer/issues/618.
+    puts "Next: open /quotas and click Authenticate on #{email} to give it credentials." unless account.has_valid_config?
   end
 
   desc "Remove a Claude account from the rotation pool. Usage: bin/rails 'claude_accounts:remove[email@example.com]'"

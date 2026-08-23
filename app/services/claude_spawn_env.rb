@@ -67,6 +67,13 @@ module ClaudeSpawnEnv
     # context override this via auto_compact_window.
     env_vars["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = auto_compact_window.to_s
 
+    # Issue #618's credential-ownership rearchitecture, behind the
+    # session-scoped-credentials setting. When it is on, this REPLACES the shared
+    # ~/.claude/.credentials.json as the session's credential source; when it is
+    # off, nothing here fires and the session reads the shared file exactly as
+    # before, which is what makes the setting a rollback.
+    apply_session_scoped_credentials(env_vars)
+
     inject_api_key_from_credentials(env_vars)
     configure_mcp_env(env_vars, working_dir) if has_mcp
 
@@ -108,6 +115,59 @@ module ClaudeSpawnEnv
     @logger.info "Isolating npm cache to #{npm_cache_dir}"
 
     NpxBinExecutableGuard.repair!(working_directory: working_dir, logger: @logger)
+  end
+
+  # Point the session at its own CLAUDE_CONFIG_DIR and hand it an access token,
+  # so it never holds — and therefore can never rotate — the subscription refresh
+  # chain. The mechanism that makes "log in once, ever" true rather than
+  # aspirational. See ClaudeSessionConfigDirectory and issue #618.
+  #
+  # Two variables, and both halves matter:
+  #
+  #   CLAUDE_CONFIG_DIR       moves the credential store out of the host-global
+  #                           file every other session shares. Measured on CLI
+  #                           2.1.241: a session run this way writes a
+  #                           `.credentials.json` containing `mcpOAuth` and
+  #                           nothing else — there is no `claudeAiOauth` block on
+  #                           disk for anyone to move backwards over.
+  #   CLAUDE_CODE_OAUTH_TOKEN carries an ACCESS token and no refresh token. Access
+  #                           tokens live 8 hours; the longest `claude` process
+  #                           ever observed on this deployment ran 1.27h (p99
+  #                           0.09h over 42,971 runs), so a token fixed at spawn
+  #                           needs no mid-process re-seeding.
+  #
+  # Fails OPEN, deliberately. Without a current account, or without a stored
+  # access token on it, this leaves both variables unset and the session falls
+  # back to the shared file — the same place it would have read from with the
+  # setting off. Refusing the spawn instead would turn a momentarily empty pool
+  # into a hard failure on a path that already has its own recovery. That
+  # condition lives in ClaudeSessionConfigDirectory.active_for? rather than here,
+  # because MCP credential injection has to reach the same answer before the
+  # spawn env is built — see the comment there.
+  #
+  # Relies on the including adapter exposing `@zimmer_session_id`.
+  def apply_session_scoped_credentials(env_vars)
+    return env_vars unless ClaudeSessionConfigDirectory.active_for?(@zimmer_session_id)
+
+    token = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)&.claude_access_token
+    if token.blank?
+      # active_for? just saw one, so this is a rotation landing between the two
+      # reads. Fall back rather than hand the child a config dir with no token.
+      @logger.warn "The current Claude account lost its access token between the gate and the spawn; " \
+        "falling back to the shared credentials file for this spawn"
+      return env_vars
+    end
+
+    config_dir = ClaudeSessionConfigDirectory.ensure_for(@zimmer_session_id)
+    env_vars["CLAUDE_CONFIG_DIR"] = config_dir
+    env_vars["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    @logger.info "Set CLAUDE_CONFIG_DIR=#{config_dir} and CLAUDE_CODE_OAUTH_TOKEN (session-scoped credentials)"
+    env_vars
+  rescue => e
+    @logger.warn "Failed to apply session-scoped credentials: #{e.message}"
+    env_vars.delete("CLAUDE_CONFIG_DIR")
+    env_vars.delete("CLAUDE_CODE_OAUTH_TOKEN")
+    env_vars
   end
 
   # When ANTHROPIC_BASE_URL is set (e.g., pointing to a mock API for testing),

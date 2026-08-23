@@ -343,6 +343,15 @@ The reconciler runs in two places:
 - **`RefreshMcpOauthTokensJob`**, before the cron refreshes each credential — so the cron adopts a
   session's rotation instead of burning the stale DB token against the provider's reuse detection.
 
+**Which store it reads** depends on the
+[session-scoped credentials setting](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain).
+With it off, one host-global `~/.claude/.credentials.json` that every session on the worker
+read-modify-writes under a flock. With it on, `ClaudeMcpCredentialWriter.for_session` points the
+writer at that session's own `CLAUDE_CONFIG_DIR` — same keys, same adoption rule, one writer per
+file, so the read-modify-write stops racing. The cron and the revocation path still target the
+host-global file: they have no session to scope to, so a revoked credential is not removed from a
+session that is already running (it gets a fresh directory next time).
+
 Only Claude Code refreshes MCP tokens mid-session; Codex is written-not-trusted (Zimmer rewrites its
 store every spawn), so reconciling against Codex is a harmless no-op.
 

@@ -155,29 +155,6 @@ class ClaudeAccountCredentialWriteGuardTest < ActiveSupport::TestCase
 
   # ------------------------------------------------------ addendum B: identity
 
-  test "filesystem_oauth_email trusts the owner marker over a stale container-local identity file" do
-    ClaudeAccount.write_credentials_owner_marker!("marker@tadasant.com")
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
-      JSON.generate("oauthAccount" => { "emailAddress" => "stale-container-local@tadasant.com" }))
-
-    assert_equal "marker@tadasant.com", ClaudeAccount.filesystem_oauth_email
-  end
-
-  test "filesystem_oauth_email falls back to the identity file only when no marker exists" do
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
-      JSON.generate("oauthAccount" => { "emailAddress" => "bootstrap@tadasant.com" }))
-
-    assert_equal "bootstrap@tadasant.com", ClaudeAccount.filesystem_oauth_email
-  end
-
-  test "filesystem_oauth_email reports nobody when the marker is the unowned sentinel" do
-    ClaudeAccount.write_credentials_owner_marker!(ClaudeAccount::UNOWNED_CREDENTIALS_MARKER)
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
-      JSON.generate("oauthAccount" => { "emailAddress" => "stale@tadasant.com" }))
-
-    assert_nil ClaudeAccount.filesystem_oauth_email
-  end
-
   # ------------------------------------------------------------- hole 6 signal
 
   test "sync_tokens_from_filesystem! reports why it declined" do
@@ -240,16 +217,5 @@ class ClaudeAccountCredentialWriteGuardTest < ActiveSupport::TestCase
     assert_equal "cli-refresh", rescued.dig("claudeAiOauth", "refreshToken"), "the decision must still be to adopt the disk copy"
     assert_equal "db-refresh", @account.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken"),
       "deciding must not touch the DB while the host-global flock is held"
-  end
-
-  test "sync_from_filesystem! refuses when the marker and the identity file name different accounts" do
-    ClaudeAccount.write_credentials_owner_marker!(@account.email)
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
-      JSON.generate("oauthAccount" => { "emailAddress" => "someone-else@tadasant.com" }))
-    write_disk(credentials(access: "fresh-access", refresh: "fresh-refresh", expires_at: ms(8.hours.from_now)))
-    before = @account.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken")
-
-    assert_nil ClaudeAccount.sync_from_filesystem!
-    assert_equal before, @account.reload.oauth_config.dig("credentials_json", "claudeAiOauth", "refreshToken")
   end
 end

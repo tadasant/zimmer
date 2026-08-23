@@ -70,10 +70,15 @@ class ClaudeAuthProvider < RuntimeAuthProvider
     end
   end
 
-  # Reconcile filesystem ↔ DB and write the active account's credentials to
-  # ~/.claude.json + ~/.claude/.credentials.json before a session spawns. Claude
-  # writes to a fixed home-dir location shared by all sessions, so the per-session
-  # working_directory is not used.
+  # Make sure a usable account is current and its token is fresh before a session
+  # spawns.
+  #
+  # With session-scoped credentials on, that is all this does — the session
+  # receives the account's access token through CLAUDE_CODE_OAUTH_TOKEN and never
+  # touches a shared file. With it off, this also writes ~/.claude.json and
+  # ~/.claude/.credentials.json, a fixed home-dir location shared by every
+  # session, which is why the per-session working_directory is not used either
+  # way.
   #
   # @return [ClaudeAccount, nil] the active account, or nil if none is available
   def inject_for_session!(_session = nil, _working_directory = nil)
@@ -95,20 +100,27 @@ class ClaudeAuthProvider < RuntimeAuthProvider
 
   # --- Token-refresh dispatcher hooks (used by RefreshRuntimeAuthTokensJob) ---
 
-  # Adopt a manual `claude /login` filesystem switch into the DB before syncing
-  # tokens, so the subsequent sync targets the right account.
-  def reconcile_filesystem_identity!
-    AccountRotationService.new.reconcile_with_filesystem!
-  end
-
   # Sync filesystem tokens for the current account back to the DB. The CLI may
   # have rotated the refresh token on disk, making the DB copy stale.
+  #
+  # A no-op under session-scoped credentials: no session writes the shared file,
+  # so there is nothing on it that the DB does not already have, and reading one
+  # back would reintroduce the second source of truth the setting removes.
+  #
+  # Zimmer does NOT implement the base #reconcile_filesystem_identity! hook. The
+  # inherited no-op is the behaviour: adopting an identity off ~/.claude.json —
+  # a container-local file a replacement destroys while keeping the tokens — is
+  # how a stale identity got adopted over a correct one, and it ran on a
+  # five-minute timer. Codex still implements it against its own auth.json.
+  # See issue #618, addendum B and the acceptance criterion.
   #
   # @return [Symbol, nil] the sync outcome (see ClaudeAccount#sync_tokens_from_filesystem!),
   #   or nil when there is no current account / the sync raised. The dispatcher
   #   reads this: a sync that is being skipped for corruption invalidates the
   #   `:stale` handler's whole reason for waiting.
   def sync_current_account_tokens!
+    return nil if AppSetting.session_scoped_credentials_enabled?
+
     current = current_account
     return nil unless current
 

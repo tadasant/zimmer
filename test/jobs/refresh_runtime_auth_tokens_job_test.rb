@@ -364,19 +364,6 @@ class RefreshRuntimeAuthTokensJobTest < ActiveJob::TestCase
     assert sync_called, "Job should sync filesystem tokens for current account"
   end
 
-  test "reconciles filesystem identity before syncing tokens" do
-    # If a manual `claude /login` switched the filesystem to a different
-    # known account, the cron run should adopt it into the DB before
-    # syncing — otherwise sync_current_account_tokens targets the wrong
-    # account and the operator's switch is lost.
-    AccountRotationService.any_instance.expects(:reconcile_with_filesystem!).at_least_once
-
-    successful_response = stub_successful_response
-    Net::HTTP.any_instance.stubs(:request).returns(successful_response)
-
-    RefreshRuntimeAuthTokensJob.perform_now
-  end
-
   # Auto-recovery tests (Fix 5)
 
   test "attempts recovery of needs_reauth accounts with valid refresh token" do

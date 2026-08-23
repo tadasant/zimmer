@@ -37,36 +37,6 @@
       </nav>
     </div>
 
-    <!-- Filesystem Sync Banner -->
-    <% if @filesystem_email.present? %>
-      <% fs_account = @accounts.find { |a| a.email == @filesystem_email } %>
-      <% fs_account_valid = fs_account&.has_valid_config? %>
-      <% fs_is_current = fs_account && @current_account&.id == fs_account.id %>
-      <% show_banner = !fs_account_valid || !fs_is_current %>
-      <% if show_banner %>
-        <div class="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start justify-between">
-          <div class="flex-1 min-w-0 break-words">
-            <h3 class="text-sm font-medium text-yellow-800">Filesystem identity mismatch</h3>
-            <p class="mt-1 text-sm text-yellow-700">
-              Worker filesystem holds OAuth tokens for <span class="font-medium"><%= @filesystem_email %></span>.
-              <% if fs_account.nil? %>
-                No DB account matches. Add <%= @filesystem_email %> with the "Add account" form below, then Authenticate it.
-              <% elsif !fs_account_valid %>
-                The DB record exists but has no captured tokens. Click "Sync from filesystem" to populate it.
-              <% elsif !fs_is_current %>
-                The DB-current account is <%= @current_account&.email || "none" %>, not <%= @filesystem_email %>. Click "Sync from filesystem" to adopt the filesystem identity.
-              <% end %>
-            </p>
-          </div>
-          <% if fs_account %>
-            <%= button_to sync_from_filesystem_quotas_path, method: :post, class: "ml-4 inline-flex items-center px-3 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-800 bg-yellow-100 hover:bg-yellow-200 whitespace-nowrap" do %>
-              Sync from filesystem
-            <% end %>
-          <% end %>
-        </div>
-      <% end %>
-    <% end %>
-
     <!-- Aggregate Stats (Claude-only: the pool summary surfaces quota utilization,
          which has no Codex equivalent yet). -->
     <% if current_runtime == ClaudeAuthProvider::RUNTIME %>

@@ -112,10 +112,10 @@ class AoEventSubject
     def to_s = "account ##{account.id} (#{account.email})"
 
     # Unlike a session transition, this condition can un-happen between the
-    # transition and this job running: `sync_from_filesystem!` writes `active`
-    # back onto an account whose credentials file still parses, and the recovery
-    # sweep probes dead refresh tokens on a timer. Spawning a session to tell a
-    # human about an account that is working again is worse than saying nothing.
+    # transition and this job running: the auto-heal sweep writes `active` back
+    # onto an account whose latest reading has cleared, and the recovery sweep
+    # probes dead refresh tokens on a timer. Spawning a session to tell a human
+    # about an account that is working again is worse than saying nothing.
     #
     # Releasing the throttle slot is part of being stale, not an extra: the claim
     # was taken at emit time for a notification that is now not going to happen,

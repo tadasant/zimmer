@@ -34,6 +34,13 @@ class AppSetting < ApplicationRecord
   # unavoidable context cost at the start of every session.
   DEFAULT_MCP_TOOL_SEARCH_ENABLED = true
 
+  # Whether Claude Code sessions run under their own CLAUDE_CONFIG_DIR with an
+  # access token handed in via CLAUDE_CODE_OAUTH_TOKEN, making the DB the sole
+  # owner of the subscription refresh chain (issue #618). OFF is the default and
+  # the off path is the pre-existing shared-credentials-file behaviour, which is
+  # what makes flipping this back a rollback rather than a migration.
+  DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED = false
+
   # How many sessions may run at once. The gate admits spot work in parallel up to
   # the concurrency the quota can carry, and this is the brake on that — 10 is the
   # number Tadas named. Every running session counts against it, priority included;
@@ -92,6 +99,13 @@ class AppSetting < ApplicationRecord
       DEFAULT_MCP_TOOL_SEARCH_ENABLED
     end
     alias_method :mcp_tool_search_enabled?, :mcp_tool_search_enabled
+
+    # No persisted row exists, so sessions keep the shared-credentials-file
+    # behaviour. A DB-less boot never opts a session into the new scheme.
+    def session_scoped_credentials_enabled
+      DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED
+    end
+    alias_method :session_scoped_credentials_enabled?, :session_scoped_credentials_enabled
   end.new(default_runtime: nil, default_model: nil)
 
   validates :default_runtime,
@@ -144,6 +158,16 @@ class AppSetting < ApplicationRecord
     rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
       DEFAULT_MCP_TOOL_SEARCH_ENABLED
     end
+
+    # Whether Claude Code sessions get a per-session CLAUDE_CONFIG_DIR and a
+    # CLAUDE_CODE_OAUTH_TOKEN instead of the shared credentials file. Read on the
+    # spawn path, the auth sweep and the /quotas render, so it falls back to the
+    # shipped default whenever the row can't be read rather than raising.
+    def session_scoped_credentials_enabled?
+      current.session_scoped_credentials_enabled?
+    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
+      DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED
+    end
   end
 
   # Whether the extension with `id` is enabled on this row, defaulting to
@@ -175,6 +199,16 @@ class AppSetting < ApplicationRecord
     return DEFAULT_MCP_TOOL_SEARCH_ENABLED unless has_attribute?(:mcp_tool_search_enabled)
 
     !!self[:mcp_tool_search_enabled]
+  end
+
+  # Whether session-scoped credentials are on for this row. Returns the shipped
+  # default when the column isn't present — the window where new code boots
+  # against a schema that predates the migration — so the spawn path degrades to
+  # the shared-file behaviour instead of raising.
+  def session_scoped_credentials_enabled?
+    return DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED unless has_attribute?(:session_scoped_credentials_enabled)
+
+    !!self[:session_scoped_credentials_enabled]
   end
 
   # The configured model when it is valid for `runtime`, otherwise the runtime's

@@ -163,7 +163,11 @@ class McpOauthCredentialInjector
     return [] if server_configs.empty?
 
     RuntimeRegistry.mcp_credential_writer_classes.flat_map do |writer_class|
-      writer = writer_class.new
+      # `.for_session`, not `.new`: this instance HAS a session, and under
+      # session-scoped credentials the copy that matters is the one in that
+      # session's own store. Every other runtime's `.for_session` is `.new`, so
+      # the loop is unchanged for them.
+      writer = writer_class.for_session(session)
       keys = server_configs.map { |name, config| writer.credential_key_for(name, config) }
       writer.delete_credentials(keys)
     end
@@ -294,8 +298,14 @@ class McpOauthCredentialInjector
   # The runtime-specific credential sink for this session, resolved from the
   # session's agent_runtime via RuntimeRegistry. Claude sessions get
   # ClaudeMcpCredentialWriter; Codex sessions get CodexMcpCredentialWriter.
+  #
+  # Built through `.for_session` rather than `.new` because "which credential
+  # store" is a per-session question on Claude Code under session-scoped
+  # credentials: the session's own CLAUDE_CONFIG_DIR is what the CLI reads its
+  # mcpOAuth map from, and where it writes a token it rotated mid-session back
+  # to. Every other runtime's `.for_session` is `.new`.
   def credential_writer
-    @credential_writer ||= session.runtime.mcp_credential_writer_class.new
+    @credential_writer ||= session.runtime.mcp_credential_writer_class.for_session(session)
   end
 
   # Collects all active credentials for the session's MCP servers as

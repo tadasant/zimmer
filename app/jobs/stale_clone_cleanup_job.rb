@@ -18,8 +18,9 @@
 # clone_path metadata. This catches directories whose session metadata was cleared
 # before the directory was deleted.
 #
-# And a second orphan sweep over the three roots whose per-session directories are
-# named for the session id — scratch and the two prompt-attachment trees. Every
+# And a second orphan sweep over the four roots whose per-session directories are
+# named for the session id — scratch, the Claude config dir, and the two
+# prompt-attachment trees. Every
 # other reaper in the pipeline starts from a Session query, so a hard-deleted row
 # takes with it the only handle on its bytes; this sweep is the one that can still
 # find them (see #sweep_orphaned_session_directories).
@@ -166,6 +167,14 @@ class StaleCloneCleanupJob < ApplicationJob
       cleaned_anything = true
     end
 
+    # Same reasoning for the session's own CLAUDE_CONFIG_DIR, which holds its
+    # mcpOAuth tokens and the CLI's conversation state.
+    if claude_config_dir_exists?(session.id)
+      ClaudeSessionConfigDirectory.cleanup_for(session.id)
+      Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale Claude config dir for session #{session.id}"
+      cleaned_anything = true
+    end
+
     # Reclaim durable prompt-attachment storage (files + images) on the same
     # lifecycle. It now lives on the shared ~/.zimmer volume (see
     # FileStorageService.storage_root), so it is no longer wiped by container
@@ -269,14 +278,15 @@ class StaleCloneCleanupJob < ApplicationJob
   end
 
   # Filesystem-level sweep over the roots whose per-session directories are named
-  # for the session id: scratch, and the two prompt-attachment trees.
+  # for the session id: scratch, the Claude config dir, and the two
+  # prompt-attachment trees.
   #
   # Why this has to exist at all: every other reaper that touches these roots
   # (EmptyTrashJob, DeferredCloneCleanupJob, the DB-driven scopes above) starts
   # from a Session query and cleans up by id. Deleting the row therefore destroys
   # the only handle on those bytes — no query can find a directory whose owner no
   # longer exists — and they stay on the durable volume forever (#340). The clones
-  # base has had a sweep for exactly this since forever; these three are siblings
+  # base has had a sweep for exactly this since forever; these four are siblings
   # of it, deliberately outside its scan (see SessionScratchDirectory), so they
   # need their own.
   #
@@ -334,6 +344,11 @@ class StaleCloneCleanupJob < ApplicationJob
   def session_directory_roots
     [
       [ "scratch", SessionScratchDirectory.base ],
+      # The per-session CLAUDE_CONFIG_DIR has exactly the property this sweep
+      # exists for: a hard-deleted row destroys the only handle on it, and it
+      # sits on the durable volume. `rm_rf` on it is safe — it does not follow
+      # the `projects/` symlink inside.
+      [ "Claude config", ClaudeSessionConfigDirectory.base ],
       [ "prompt files", FileStorageService.base_dir ],
       [ "prompt images", ImageStorageService.base_dir ]
     ]

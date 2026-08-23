@@ -238,11 +238,11 @@
       </p>
       <dl class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <dt class="font-medium text-gray-500">Worker credentials file</dt>
+          <dt class="font-medium text-gray-500"><%= auth[:session_scoped_credentials] ? "Session credentials (database)" : "Worker credentials file" %></dt>
           <dd class="mt-1 text-gray-900 break-words"><%= auth[:credentials_state] %> — <%= auth[:credentials_detail] %></dd>
         </div>
         <div>
-          <dt class="font-medium text-gray-500">Credentials owner</dt>
+          <dt class="font-medium text-gray-500"><%= auth[:session_scoped_credentials] ? "Current account" : "Credentials owner" %></dt>
           <dd class="mt-1 text-gray-900 break-words"><%= auth[:credentials_owner].presence || "—" %></dd>
         </div>
         <div>

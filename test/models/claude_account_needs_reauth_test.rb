@@ -145,11 +145,11 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
 
   # === The repeat throttle ===
   #
-  # An account crosses INTO needs_reauth far more often than it breaks:
-  # sync_from_filesystem! writes `active` back onto a dead row whose credentials
-  # file still parses, and ensure_active_account! runs it before every session
-  # spawn. Under the old design each crossing was a candidate DM; under this one
-  # each would spawn an agent session, so the throttle is load-bearing.
+  # An account crosses INTO needs_reauth far more often than it breaks: the
+  # auto-heal sweep and a successful recovery probe both write `active` back onto
+  # a dead row, and ensure_active_account! runs before every session spawn. Under
+  # the old design each crossing was a candidate DM; under this one each would
+  # spawn an agent session, so the throttle is load-bearing.
 
   test "a second crossing inside the window emits nothing" do
     @account.update!(status: :needs_reauth)

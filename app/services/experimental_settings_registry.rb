@@ -87,6 +87,20 @@ class ExperimentalSettingsRegistry
       landed_at: Time.utc(2026, 8, 22, 13, 55, 34),
       value_before: false,
       value_after: true
+    ),
+    Setting.new(
+      key: "session_scoped_credentials",
+      title: "Session-scoped Claude credentials",
+      description: "Give each Claude Code session its own CLAUDE_CONFIG_DIR and hand it an access " \
+                   "token via CLAUDE_CODE_OAUTH_TOKEN, so no session ever holds a refresh token and " \
+                   "the DB is the sole owner of the subscription chain. Off means the shared " \
+                   "~/.claude/.credentials.json is still the runtime's credential store. Claude Code " \
+                   "only — Codex manages its own. See issue #618.",
+      attribute: :session_scoped_credentials_enabled,
+      default_on: -> { AppSetting::DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED }
+      # No landed_at: this ships OFF and is rolled out deliberately, so only
+      # sessions that run after it is switched on get tagged. Inferring a cohort
+      # from timestamps would be inventing one.
     )
   ].freeze
 

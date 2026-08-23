@@ -52,8 +52,8 @@ class ClaudeLoginDriver < RuntimeLoginDriver
   # Read the scratch config dir the CLI populated and store the credentials.
   # Gated by a strict identity check: the email the CLI authenticated as must
   # equal the account's email, so a user can't accidentally attach the wrong
-  # subscription to a pool row. Mirrors ClaudeAccount.sync_from_filesystem!'s
-  # shape — oauth_config = { "claude_json" => ..., "credentials_json" => ... }.
+  # subscription to a pool row. Stores the same oauth_config shape every other
+  # capture path does — { "claude_json" => ..., "credentials_json" => ... }.
   def capture!(config_dir, account)
     credentials_path = credentials_path_in(config_dir)
     raise "claude login did not produce credentials" unless credentials_path && File.exist?(credentials_path)
@@ -95,7 +95,13 @@ class ClaudeLoginDriver < RuntimeLoginDriver
     # force: — the pair the human just minted is newer than anything on disk by
     # construction, so the backwards-write guard must not treat the file it is
     # replacing as the live copy.
-    if account.is_current?
+    #
+    # Under session-scoped credentials the whole branch falls away, and with it
+    # the class of bug it was written to fix: re-auth becomes scratch login →
+    # validate → write the DB → done, and the next session to spawn reads the new
+    # token out of the row. There is no second store for the update to fail to
+    # reach, and no separate Switch step to make it take.
+    if account.is_current? && !AppSetting.session_scoped_credentials_enabled?
       AccountRotationService.new.write_config!(account, force: true)
       Rails.logger.info "[ClaudeLoginDriver] Wrote freshly captured credentials for the current account #{account.email} to the filesystem"
     end
@@ -103,8 +109,8 @@ class ClaudeLoginDriver < RuntimeLoginDriver
     # A human just re-authenticated this account, which is the only signal that
     # actually retires the needs_reauth nag. Release the alert throttle here rather
     # than from ClaudeAccount's status callback: plenty of machinery writes
-    # `active` without a human involved (sync_from_filesystem!, the auto-heal
-    # sweep), and releasing on those turns a drained pool into an alert per attempt.
+    # `active` without a human involved (the auto-heal sweep, a recovery probe),
+    # and releasing on those turns a drained pool into an alert per attempt.
     account.clear_reauth_alert!
   end
 

@@ -836,6 +836,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     runtime.define_singleton_method(:mcp_credential_writer_class) { ClaudeMcpCredentialWriter }
 
     session = Object.new
+    session.define_singleton_method(:id) { 4_242 }
     session.define_singleton_method(:mcp_servers) { servers }
     session.define_singleton_method(:runtime) { runtime }
     session
