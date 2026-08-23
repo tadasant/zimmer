@@ -9,15 +9,20 @@
 # The client is already gone, so there is nothing we can fix or retry — it is not
 # broken server behavior. Per the repo logging philosophy (benign/expected ->
 # debug/info; genuinely broken -> error), a peer-disconnect-mid-write should not
-# page us. Left at `.error`, a single "Broken pipe" line trips the
-# `agent-orchestrator-errors` and `Rails ERROR logs present (prod)` alerts even
-# though nothing is broken. This override downgrades the known benign disconnect
-# signatures to `.debug` while every other WebSocket error still surfaces at
-# `.error` for diagnosability.
+# page us. Left at `.error`, a single "Broken pipe" line trips the critical
+# `Zimmer backend logging errors (excludes staging)` alert even though nothing is
+# broken. This override downgrades the known benign disconnect signatures to
+# `.debug` while every other WebSocket error still surfaces at `.error` for
+# diagnosability.
 #
-# This is scoped to `on_error`'s message classification only — the log text is
-# preserved verbatim; only the level changes for the benign set. It mirrors the
-# sibling patch in config/initializers/action_cable_idempotent_unsubscribe.rb.
+# The same reasoning applies to `#dispatch_websocket_message`, patched below: a
+# frame that lands after the socket closed is the same "client already gone" race
+# seen from the read side.
+#
+# This is scoped to `on_error`'s message classification and
+# `dispatch_websocket_message`'s closed-socket branch — the log text of both is
+# preserved verbatim; only the level changes. It mirrors the sibling patch in
+# config/initializers/action_cable_idempotent_unsubscribe.rb.
 #
 # Verified against actioncable 8.1.3's `Connection::Base#on_error`, which does
 # exactly one observable thing this override reproduces: `logger.error "WebSocket
@@ -59,6 +64,34 @@ module ActionCable
           logger.debug "WebSocket error occurred: #{message}"
         else
           logger.error "WebSocket error occurred: #{message}"
+        end
+      end
+
+      # `#receive` hands every inbound frame to `send_async
+      # :dispatch_websocket_message`, so frames are dispatched on the async
+      # worker pool rather than inline. When a client's socket closes between
+      # enqueue and dispatch — a tab that navigates away or reconnects with
+      # subscribe frames still in flight — every queued frame takes the
+      # closed-socket branch and logs one line. The client is already gone and
+      # the ActionCable consumer re-subscribes on reconnect, so there is nothing
+      # to fix and nothing to retry; it is the read-side twin of the benign
+      # disconnects handled in `#on_error` above.
+      #
+      # Verified against actioncable 8.1.3's
+      # `Connection::Base#dispatch_websocket_message`, which does exactly two
+      # observable things this override reproduces: `handle_channel_command
+      # decode(...)` when the socket is alive, and a single log line (upstream:
+      # `.error`) when it is not. The message text — including upstream's stray
+      # trailing `)` — is preserved verbatim; only the level changes. If a Rails
+      # upgrade changes that method, re-check this patch —
+      # test/initializers/action_cable_benign_socket_error_log_level_test.rb
+      # covers the contract but cannot detect new upstream side effects on the
+      # alive-socket path.
+      def dispatch_websocket_message(websocket_message) # :nodoc:
+        if websocket.alive?
+          handle_channel_command decode(websocket_message)
+        else
+          logger.debug "Ignoring message processed after the WebSocket was closed: #{websocket_message.inspect})"
         end
       end
 
