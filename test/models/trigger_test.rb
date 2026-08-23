@@ -1322,14 +1322,55 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: session.id)
     session.update_column(:status, Session.statuses[:archived])
 
-    fresh = @trigger.create_session!(prompt: "Day one")
+    fresh = nil
+    assert_difference("Session.count", 1) do
+      fresh = @trigger.create_session!(prompt: "Day one")
+    end
 
-    # Day two: the fresh session is alive, so it is reused as normal.
+    # Day two: the fresh session is alive, so it is reused as normal and the
+    # prompt is actually delivered into it.
     fresh.update_column(:status, Session.statuses[:needs_input])
     assert_no_difference("Session.count") do
       reused = @trigger.create_session!(prompt: "Day two")
       assert_equal fresh.id, reused.id
     end
+    assert_equal :delivered, @trigger.last_follow_up_status
+  end
+
+  # The other side of the screen. A runtime that mints its own conversation id
+  # (codex) has that id cleared by
+  # ProcessLifecycleManager#release_stale_runtime_session_id! on a fresh-start
+  # recovery, so a session that ran for hours can be archived holding a full
+  # transcript and no session_id. UnarchiveSessionService still cannot restore
+  # it — and that IS a failure a human should see, not a session to abandon and
+  # silently duplicate.
+  test "create_session! still raises for an archived session with a transcript but no session_id" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    session = @trigger.create_session!(prompt: "Initial")
+    @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: session.id)
+
+    session.update_columns(
+      session_id: nil,
+      transcript: %({"type":"user","message":{"role":"user","content":"hours of work"}}\n),
+      status: Session.statuses[:archived]
+    )
+
+    UnarchiveSessionService.stubs(:call).with(session: session).returns(
+      UnarchiveSessionService::Result.new(success?: false, error: "Session has no session_id")
+    )
+
+    error = nil
+    assert_no_difference("Session.count") do
+      error = assert_raises(RuntimeError) { @trigger.create_session!(prompt: "Should surface") }
+    end
+    assert_match(/Failed to resuscitate archived session/, error.message)
   end
 
   # A one-time reuse trigger ("wake session 7456 at 9am") means THAT session, so
