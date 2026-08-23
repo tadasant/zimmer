@@ -1517,7 +1517,22 @@ class AgentSessionJob < ApplicationJob
       # When each retry budget last fired, as the reset check measures stability from.
       # Seeded from the session's own stamps so a budget spent by an earlier run of this
       # job is still resettable, then re-stamped wholesale on every successful retry.
-      last_retry_attempt_at = RetryBudget.all.index_with { |budget| budget.last_attempt_at(session) }
+      #
+      # Floored at the moment this loop starts, because the number the reset is really
+      # asking for is "how long has THIS process been up" — which is what the log line
+      # it writes claims. The stamp alone is not that whenever a retry crosses a job
+      # boundary: schedule_mcp_retry stamps mcp_last_retry_at and only THEN waits out a
+      # 30/60/120s backoff before a fresh job spawns a new process, so from the second
+      # MCP attempt on, an unfloored clock is already past the threshold on the new
+      # job's first iteration. The budget would be handed back before the new process
+      # had attempted a handshake, never reach its maximum, and a session with a
+      # genuinely broken MCP server would ping-pong paused -> running forever instead of
+      # failing loudly.
+      monitoring_started_at = Time.current
+      last_retry_attempt_at = RetryBudget.all.index_with do |budget|
+        last_attempt = budget.last_attempt_at(session)
+        last_attempt && [ last_attempt, monitoring_started_at ].max
+      end
 
       loop do
         loop_iteration += 1
