@@ -589,6 +589,53 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-ranked-queue-1400.png")
   end
 
+  # A card footer is one wrapping flex row: the PR button on the left, the actions
+  # (overflow menu, Trash, View) pushed right. Nothing overflows when it wraps -- the
+  # row just becomes two rows and the card grows a line, which is what "the buttons
+  # stack" looks like on a phone. Neither probe above can see that, so it gets its own
+  # geometry assertion: the PR button shares a line with the first action button.
+  #
+  # This is a guard on the phone-width budget rather than a regression pin. What the
+  # button's label may contain is pinned in test/system/github_pr_tracking_test.rb;
+  # this holds the line if some future addition to the footer spends the slack.
+  test "a session card's PR button shares the footer's line with the action buttons on a phone" do
+    url = "https://github.com/owner/repo/pull/603"
+    session = create_session(status: :needs_input)
+    session.update!(custom_metadata: {
+      "github_pull_request_urls" => [ url ],
+      "github_pull_request_statuses" => { url => "open" },
+      "github_pull_request_ci_statuses" => { url => "pass" }
+    })
+
+    visit root_path
+    assert_selector "a[href='#{url}']"
+
+    assert_no_horizontal_overflow("sessions index with a PR button")
+
+    # Measured against the first action button, not against the action group as a
+    # whole: that group wraps internally too, and a group whose own second row
+    # dragged its centre down would fail this while the PR button sat exactly where
+    # it belongs -- blaming the PR button for someone else's wrap.
+    overlap = page.evaluate_script(<<~JS)
+      (function () {
+        const link = document.querySelector("a[href='#{url}']");
+        const row = link.closest("div.justify-between");
+        if (!row) return "no footer row: the card markup this test reads has moved";
+        if (row.children.length !== 2) {
+          return "expected the footer row to hold 2 groups, found " + row.children.length;
+        }
+        const first = row.children[1].firstElementChild;
+        if (!first) return "the action group is empty";
+        const a = link.getBoundingClientRect(), b = first.getBoundingClientRect();
+        return a.bottom > b.top && a.top < b.bottom;
+      })()
+    JS
+
+    assert_equal true, overlap,
+      "the PR button did not share the footer's line with the first action button " \
+      "at #{MOBILE_WIDTH}px (#{overlap})"
+  end
+
   # The desktop layout has to keep working: these same pages are read on a laptop,
   # and `flex-wrap` / stacked-on-mobile fixes are exactly the kind of change that
   # silently reflows a wide screen.
