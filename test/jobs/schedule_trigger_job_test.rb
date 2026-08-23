@@ -181,6 +181,39 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_equal "enabled", @trigger.status, "Recurring trigger should remain enabled after firing"
   end
 
+  # Regression for the "Daily Fleet Cleanup" incident (2026-08-23).
+  #
+  # The trigger's reuse candidate was a `spot` session that never ran a turn and
+  # was then archived, so it had no Claude session_id and UnarchiveSessionService
+  # could never restore it. #resuscitate_session! raised, this job advanced
+  # last_triggered_at to stop the retry loop, and the daily sweep created
+  # nothing — permanently, because the reuse candidate never changed. The fire
+  # must now produce a session and no alert.
+  test "a recurring fire whose archived reuse candidate never ran creates a session instead of alerting" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    # A session that never started has neither a runtime session id nor a
+    # transcript — the fixture carries both, so clear both.
+    never_ran = sessions(:archived)
+    never_ran.update_columns(session_id: nil, transcript: nil)
+
+    @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: never_ran.id)
+    @condition.update!(last_triggered_at: nil)
+
+    AlertService.expects(:raise_alert).never
+    UnarchiveSessionService.expects(:call).never
+
+    assert_difference("Session.count", 1) do
+      ScheduleTriggerJob.perform_now
+    end
+
+    assert_not_nil @condition.reload.last_triggered_at
+    assert_equal "enabled", @trigger.reload.status
+    assert_not_equal never_ran.id, @trigger.last_session_id,
+      "the trigger should now point at the fresh session, so the next fire is not stuck on the same candidate"
+  end
+
   # === A failed one-time wake survives as a visible record (issue #76) ===
   #
   # Destroying the trigger on the failure path leaves a scheduled wake that
