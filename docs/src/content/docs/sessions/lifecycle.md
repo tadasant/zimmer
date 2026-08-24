@@ -723,6 +723,24 @@ The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a sho
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
 `TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.
 
+**That job is the only thing that deletes an archived session's clone.** `AgentSessionJob` used to
+delete it too, the moment its monitoring loop noticed the archive — about ten seconds ahead of the
+job that exists to save the work in it. On a session archived mid-turn, that was silent data loss:
+the bundle and the working-tree patch were never written, unarchive had nothing to restore, and the
+undo window promised a clone that was already gone. The preservation then ran against a tree that
+was mid-`rm -rf` — `File.directory?` still true because the delete unlinks children under the live
+path — and died on `ENOENT`, which is what paged. The loop now kills the process and leaves the
+clone where it is ([#653](https://github.com/tadasant/zimmer/issues/653)). Nothing leaks by waiting:
+`StaleCloneCleanupJob` (archived with no trash deadline, one hour) and `EmptyTrashJob` (at the
+deadline) are the backstops if the deferred job never runs.
+
+A clone that has vanished by the time preservation starts is not a failed preservation. There is
+nothing to preserve and nothing to keep, so `CloneArtifactService` logs it at `.info` — the same
+call `check_dirty_state` makes for the same race — and the job clears the trash deadline rather than
+holding a session in the trash for four days over a clone that does not exist. A clone that is
+still on disk and cannot be read stays `.error`: that one is real, and it costs the session its
+work.
+
 If artifact extraction fails outright, the clone is kept — it is then the only copy of that
 session's unpushed work — and the job writes the same `4.days` deadline on the session and a
 `warning` log the session's owner can see. Unarchive inside that window finds the clone on disk and
