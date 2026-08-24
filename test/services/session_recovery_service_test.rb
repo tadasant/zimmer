@@ -887,9 +887,7 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
 
     # Simulate the race: another job spawns a fresh turn (overwriting process_pid) after
     # this service has read the session and before it claims ownership.
-    Session.where(id: @session.id).update_all(
-      metadata: @session.metadata.merge("process_pid" => 966).to_json
-    )
+    Session.find(@session.id).update!(metadata: @session.metadata.merge("process_pid" => 966))
 
     service.recover
 
