@@ -133,7 +133,7 @@ class CloneArtifactService
     # does not page on-call. Anything else — a genuine, unexpected failure to
     # inspect a clone that is still present — keeps .error so it stays
     # alert-worthy.
-    if vanished_clone?(clone_path, e)
+    if vanished_clone?(clone_path)
       @logger.info("Clone path disappeared during dirty-state check, treating as clean",
         clone_path: clone_path, error: e.message)
     else
@@ -254,23 +254,25 @@ class CloneArtifactService
     CreateResult.new(success?: true, artifacts_path: artifacts_dir,
       dropped_deletions: metadata["dropped_deletions"])
   rescue => e
-    # Every run_git above chdirs into the clone, so the same benign race
-    # check_dirty_state guards can land here too: the clone disappears
-    # mid-flight and the next chdir raises Errno::ENOENT naming the clone
-    # directory itself. There is then nothing to preserve and nothing to retry,
-    # so it is .info — .error here paged on-call for a race nobody can act on
-    # (#653). A failure to read a clone that is still present stays .error: that
-    # one is real, and it costs the session its unpushed work.
-    file_system.rm_rf(artifacts_dir) if artifacts_dir && file_system.directory?(artifacts_dir)
-
-    if vanished_clone?(clone_path, e)
+    # Every run_git above chdirs into the clone, so the benign race
+    # check_dirty_state guards lands here too: the clone is deleted mid-flight
+    # and the next chdir raises. There is then nothing to preserve and nothing
+    # to retry, which is .info — at .error it pages on-call for a race nobody
+    # can act on (#653). A failure to read a clone that is still on disk stays
+    # .error: that one is real, and it costs the session its unpushed work.
+    #
+    # Log before cleaning up, so a partial-artifact rm_rf that raises on its way
+    # out cannot take the diagnostic for the original failure with it.
+    missing = vanished_clone?(clone_path)
+    if missing
       @logger.info("Clone path disappeared during artifact creation, nothing left to preserve",
         clone_path: clone_path, session_id: session_id, error: e.message)
-      return CreateResult.new(success?: false, clone_missing?: true, error: e.message)
+    else
+      @logger.error("Failed to create artifacts", error: e.message, session_id: session_id)
     end
 
-    @logger.error("Failed to create artifacts", error: e.message, session_id: session_id)
-    CreateResult.new(success?: false, error: e.message)
+    file_system.rm_rf(artifacts_dir) if artifacts_dir && file_system.directory?(artifacts_dir)
+    CreateResult.new(success?: false, clone_missing?: missing, error: e.message)
   end
 
   # Apply saved artifacts to a freshly cloned repository.
@@ -382,19 +384,22 @@ class CloneArtifactService
 
   private
 
-  # Did this failure come from the clone being deleted out from under us?
+  # Was the clone deleted out from under us? The disk is the only honest answer,
+  # so this asks the disk rather than reading the exception.
+  #
+  # Errno::ENOENT is tempting as a proxy and is the wrong test. `run_git` is
+  # Open3.capture3(..., chdir: clone_path), which raises it both when the chdir
+  # target is gone — the race — and when the `git` executable is not on PATH,
+  # which is a real failure on a clone that is still there. A recursive delete
+  # unlinks the directory itself last, so whenever a chdir does raise for the
+  # race, the path is already gone and this returns true anyway.
   #
   # Shared by the two methods DeferredCloneCleanupJob calls, so the archive path
   # cannot come to disagree with itself about which failures are benign — the
-  # divergence #653 is about, where the same vanished clone was .info in
+  # divergence #653 is about, where one vanished clone was .info in
   # check_dirty_state and .error in create_artifacts.
-  #
-  # Errno::ENOENT counts on its own: Open3's chdir into a directory that no
-  # longer exists raises it naming the clone, and that is the shape every
-  # observed instance of this race takes. So does a clone that is simply no
-  # longer a directory by the time we look, whatever the error was.
-  def vanished_clone?(clone_path, error)
-    error.is_a?(Errno::ENOENT) || !file_system.directory?(clone_path)
+  def vanished_clone?(clone_path)
+    !file_system.directory?(clone_path)
   end
 
   # Detect the upstream reference for comparing commits.

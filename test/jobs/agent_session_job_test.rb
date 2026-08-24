@@ -2405,6 +2405,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
       nil
     end
 
+    # Counted rather than left to the mock's kill log: the mock pid is not a
+    # running process, so a real terminate_process correctly signals nothing.
+    terminations = 0
+
     GitCloneService.stub(:create_clone, { clone_path: clone_path, working_directory: clone_path }) do
       TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
         mock_poller = Object.new
@@ -2418,8 +2422,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
           def mock_thread.join(*); end
           mock_thread
         }) do
-          job.stub(:sleep, ->(_duration) { }) do
-            job.perform(@session.id)
+          job.stub(:terminate_process, ->(*) { terminations += 1 }) do
+            job.stub(:sleep, ->(_duration) { }) do
+              job.perform(@session.id)
+            end
           end
         end
       end
@@ -2427,6 +2433,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     @session.reload
     assert_equal "archived", @session.status, "the loop should have seen the archive and stopped"
+    assert_operator terminations, :>, 0,
+      "leaving the clone must not also mean leaving the agent process alive"
     assert File.directory?(clone_path),
       "the monitoring loop must leave the clone for the job that preserves it"
     assert File.exist?(File.join(clone_path, "uncommitted_work.rb")),
@@ -2441,7 +2449,6 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_not File.directory?(clone_path), "and only then is the clone reaped"
   ensure
     ENV["AGENT_SCRATCH_DIR"] = original_scratch
-    ENV.delete("AGENT_SCRATCH_DIR") if original_scratch.nil?
   end
 
   # Fallback mechanism tests

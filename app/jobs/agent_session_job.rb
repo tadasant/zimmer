@@ -1781,24 +1781,21 @@ class AgentSessionJob < ApplicationJob
       if session
         session.reload
         if session.archived?
-          # Kill the process, but leave the clone alone.
+          # Kill the process; leave the clone alone.
           #
-          # Archiving already enqueued DeferredCloneCleanupJob, which exists to
-          # preserve whatever unpushed work is in this clone — a bundle of
-          # unpushed commits and a patch of the working tree — before deleting
-          # it, and to tear the session's Docker Compose resources down on the
-          # way (the compose file lives inside the clone). Deleting the clone
-          # here raced that job and beat it by about ten seconds, so on a
-          # session archived mid-work the preservation ran against a tree that
-          # was already being unlinked: it raised ENOENT and paged, and the
-          # session's uncommitted work was gone rather than preserved. It also
-          # emptied the undo window, whose whole promise is that unarchiving
-          # inside it finds the clone still on disk (#653).
+          # DeferredCloneCleanupJob, which archiving enqueued, owns deleting an
+          # archived session's clone. It is the only thing that preserves the
+          # unpushed work in that clone first — a bundle of unpushed commits and
+          # a patch of the working tree — and the only thing that tears the
+          # session's Docker Compose resources down, since the compose file
+          # lives inside the clone. A delete from here beats it by about ten
+          # seconds, which costs the session that work and hands the
+          # preservation a half-unlinked tree to raise ENOENT on (#653).
           #
-          # Nothing leaks by waiting: DeferredCloneCleanupJob deletes the clone
-          # ten seconds later, and if it never runs, StaleCloneCleanupJob
-          # (archived with no trash deadline, one hour) and EmptyTrashJob (at
-          # the trash deadline) are the standing backstops.
+          # Nothing leaks by waiting: that job deletes the clone ten seconds
+          # later, and StaleCloneCleanupJob (archived with no trash deadline,
+          # one hour) and EmptyTrashJob (at the trash deadline) are the
+          # backstops if it never runs.
           terminate_process(session, process_pid, clone_path, log_buffer) if process_pid
         elsif session.failed?
           # Preserve clone on failure for debugging and recovery

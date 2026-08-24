@@ -103,13 +103,19 @@ class DeferredCloneCleanupJob < ApplicationJob
             metadata: new_metadata
           )
         end
-      elsif create_result.clone_missing?
+      elsif create_result.clone_missing? && !File.directory?(clone_path)
         # The clone went away between the dirty check and the preservation —
         # the dirty check read a tree something else was already deleting. There
         # is nothing to preserve, and nothing to hold retention open for, so
         # this takes the same branch as a clone that was already gone when the
         # job started rather than the hold below, which would keep a session in
         # the trash for four days over a clone that does not exist (#653).
+        #
+        # The directory is re-checked here rather than taken on the flag's word.
+        # This branch skips both the Docker teardown and the delete, so a clone
+        # that is somehow still on disk must fall through to the hold instead —
+        # dropping one strands a live clone with its Compose resources up and
+        # nothing but StaleCloneCleanupJob's unpreserved sweep to reap it.
         Rails.logger.info "[DeferredCloneCleanupJob] Clone for session #{session_id} disappeared before its " \
           "artifacts could be preserved (#{create_result.error}); nothing to preserve or delete"
         finalize_trash_expiry(session)
@@ -140,6 +146,18 @@ class DeferredCloneCleanupJob < ApplicationJob
     else
       Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} is clean, no artifacts to preserve"
       finalize_trash_expiry(session)
+    end
+
+    # Re-read the archive before deleting anything. The status check at the top
+    # of this job is minutes old by now on a large clone: preserving artifacts
+    # runs `git bundle create`, `git add -A` and `git diff --binary` over a
+    # whole working tree first. An unarchive inside that window puts a session
+    # back to work on this clone, and deleting it out from under a live session
+    # is not something the undo window can be undone from.
+    unless session.reload.archived?
+      Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} was unarchived while its artifacts were " \
+        "being preserved (status: #{session.status}), leaving the clone in place"
+      return
     end
 
     # Tear down Docker Compose resources before removing the clone directory.
