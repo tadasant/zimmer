@@ -298,6 +298,19 @@ resource "digitalocean_droplet" "zimmer" {
   ssh_keys = var.ssh_key_fingerprints
   tags     = ["zimmer", "zimmer-${var.environment}"]
 
+  # DigitalOcean's metrics agent (CPU / memory / disk / load history, and the only
+  # metrics DO's own resource alert policies can evaluate). Free, and on by default
+  # for every droplet this module creates from here on.
+  #
+  # It is `ForceNew` in the provider -- every version in the 2.x line, including the
+  # `~> 2.43` pinned above -- so flipping it on a droplet that already exists is a
+  # REPLACE, not an in-place update. That is why it is under `ignore_changes` below:
+  # a persistent host that runs every session must not be destroyed to turn on a
+  # metrics agent. An existing droplet gets the agent either from the control panel
+  # (or the `enable_monitoring` droplet action), after which the read converges on
+  # this value with nothing to reconcile, or from its next deliberate rebuild.
+  monitoring = true
+
   # Pin the droplet into the managed cluster's VPC (production) so its private_host
   # is routable; null (staging) lets DigitalOcean pick the region default.
   vpc_uuid = local.use_managed_db ? data.digitalocean_database_cluster.pg[0].private_network_uuid : null
@@ -311,7 +324,14 @@ resource "digitalocean_droplet" "zimmer" {
     # ONLY through user_data, rotating KAMAL_SSH_KEY or changing `domain` produces no
     # plan diff and will not reach the box. Both require an explicit
     # `terraform taint digitalocean_droplet.zimmer`. See docs limitations.
-    ignore_changes = [user_data]
+    #
+    # `monitoring` is here for a different reason: it is ForceNew, so without this an
+    # apply against a droplet created before the flag existed would DESTROY AND
+    # RECREATE it -- and the staging deploy workflow applies with -auto-approve.
+    # Ignoring it costs nothing on create ("the arguments corresponding to the given
+    # attribute names are considered when planning a create operation, but are
+    # ignored when planning an update"), so new droplets still boot with the agent.
+    ignore_changes = [user_data, monitoring]
 
     # NOTE: deliberately NOT create_before_destroy. The tailnet hostname is fixed
     # (zimmer-${var.environment}), so standing a replacement up alongside the old box

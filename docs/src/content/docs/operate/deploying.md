@@ -787,6 +787,14 @@ droplet carries `lifecycle { ignore_changes = [user_data] }` (deliberately *not*
 the box. The cost of freezing `user_data` is that the deploy key and Caddyfile can't be updated in
 place — see [Known limitations](/limitations/#user_data-is-frozen-so-the-deploy-key-and-the-caddyfile-cant-be-updated-in-place).
 
+`monitoring` is in that same `ignore_changes` list, for the same reason from the other direction. The
+droplet asks for DigitalOcean's metrics agent (`monitoring = true`) so a newly created box gets host
+CPU/memory/disk/load history for free, but the attribute is `ForceNew` in the provider — setting it on
+a droplet that already exists is a replace, not an update. Ignoring it keeps a routine `apply` from
+destroying the host over a metrics agent; the trade is that a pre-existing droplet needs the toggle
+flipped once in the DigitalOcean control panel. See
+[Known limitations](/limitations/#the-digitalocean-metrics-agent-only-reaches-a-droplet-that-is-created-after-the-flag).
+
 ## Terraform, briefly
 
 ```bash
