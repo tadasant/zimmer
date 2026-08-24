@@ -170,7 +170,9 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     logger = RecordingLogger.new
     service = CloneArtifactService.new(logger: logger)
 
-    result = service.stub(:run_git, ->(*) { raise Errno::ENOENT.new(@repo_path) }) do
+    # The delete lands first, exactly as it does in production; the ENOENT is
+    # what the chdir into the now-missing directory raises.
+    result = service.stub(:run_git, ->(*) { FileUtils.rm_rf(@repo_path); raise Errno::ENOENT.new(@repo_path) }) do
       service.check_dirty_state(@repo_path)
     end
 
@@ -178,6 +180,23 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     assert_equal :info, logger.level_for("disappeared during dirty-state check")
     assert_nil logger.level_for("Failed to check dirty state"),
       "a vanished clone must not log at .error (it pages on-call)"
+  end
+
+  # Errno::ENOENT is not by itself evidence that the clone vanished: Open3
+  # raises it for a `git` that is not on PATH too, on a clone that is still
+  # entirely there. Only the disk decides, so this one still pages.
+  test "check_dirty_state logs .error for an ENOENT raised while the clone is still on disk" do
+    create_test_repo
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = service.stub(:run_git, ->(*) { raise Errno::ENOENT.new("No such file or directory - git") }) do
+      service.check_dirty_state(@repo_path)
+    end
+
+    assert_not result.dirty?
+    assert_equal :error, logger.level_for("Failed to check dirty state")
+    assert_nil logger.level_for("disappeared during dirty-state check")
   end
 
   # A genuinely unexpected failure while the clone is STILL present must keep
@@ -428,6 +447,81 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     patch = File.binread(File.join(result.artifacts_path, "working_tree.patch"))
     assert_includes patch, "agent_work.rb"
     assert_not_includes patch, "deleted file mode"
+  end
+
+  # Regression for #653. Every run_git in create_artifacts chdirs into the
+  # clone, so the same vanished-clone race check_dirty_state already treats as
+  # benign lands here too — and here it logged at .error, which pages on-call
+  # for a race nobody can act on. The clone is gone; there is nothing to
+  # preserve and nothing to retry.
+  test "create_artifacts logs .info and reports a missing clone when the clone vanishes mid-flight" do
+    create_test_repo(dirty: true)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = service.stub(:run_git, ->(*) { FileUtils.rm_rf(@repo_path); raise Errno::ENOENT.new(@repo_path) }) do
+      service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+    end
+
+    assert_not result.success?
+    assert_equal :info, logger.level_for("disappeared during artifact creation")
+    assert_nil logger.level_for("Failed to create artifacts"),
+      "a vanished clone must not log at .error (it pages on-call)"
+    assert result.clone_missing?, "the caller has to be able to tell this from a clone it must keep"
+    assert_not File.directory?(service.artifacts_path_for(@session_id)),
+      "a failed preservation must not leave an empty artifacts directory behind"
+  end
+
+  # The same discrimination on the preservation side, and the one that decides
+  # whether the caller keeps the clone: a `git` missing from PATH raises the
+  # very error a vanished clone raises, on a clone that is still entirely there.
+  test "create_artifacts logs .error for an ENOENT raised while the clone is still on disk" do
+    create_test_repo(dirty: true)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = service.stub(:run_git, ->(*) { raise Errno::ENOENT.new("No such file or directory - git") }) do
+      service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+    end
+
+    assert_not result.success?
+    assert_not result.clone_missing?,
+      "the clone is still on disk — reporting it missing would strand it with its work unpreserved"
+    assert_equal :error, logger.level_for("Failed to create artifacts")
+    assert_nil logger.level_for("disappeared during artifact creation")
+  end
+
+  # The other half of the distinction check_dirty_state draws: a clone that is
+  # still on disk and could not be read is a real failure. It costs the session
+  # its unpushed work and it stays alert-worthy.
+  test "create_artifacts still logs .error when a clone that is still present cannot be read" do
+    create_test_repo(dirty: true)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = service.stub(:run_git, ->(*) { raise "unexpected boom" }) do
+      service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+    end
+
+    assert_not result.success?
+    assert_not result.clone_missing?, "the clone is still there — the caller must keep it, not drop it"
+    assert_equal :error, logger.level_for("Failed to create artifacts")
+    assert_nil logger.level_for("disappeared during artifact creation")
+  end
+
+  # The dirty check can read a tree a concurrent delete is still walking, call
+  # it dirty, and hand preservation a path that is gone by the time it starts.
+  test "create_artifacts reports a missing clone without creating an artifacts directory" do
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = service.create_artifacts(session_id: @session_id, clone_path: "/nonexistent/clone/path")
+
+    assert_not result.success?
+    assert_equal :info, logger.level_for("gone before artifact creation")
+    assert result.clone_missing?
+    assert_not File.directory?(service.artifacts_path_for(@session_id)),
+      "nothing may be written for a clone that does not exist"
   end
 
   # The in-memory filter re-emits the entries it keeps byte-for-byte, so a

@@ -278,6 +278,95 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_equal "warning", hold_log.level
   end
 
+  # Regression for #653. The dirty check can read a tree that a concurrent
+  # recursive delete is still walking — File.directory? says yes because rm_rf
+  # unlinks children under the live path, and `git status` on the gutted tree
+  # says dirty — and by the time preservation starts there is nothing left.
+  #
+  # That raised ENOENT out of create_artifacts, logged .error twice (the page in
+  # the alert this fixes), and then held a four-day trash deadline open for a
+  # clone that does not exist. A clone that is simply gone is not a failure to
+  # preserve: there is nothing to preserve and nothing to keep.
+  test "treats a clone that vanishes between the dirty check and preservation as nothing to preserve" do
+    # The delete lands inside the dirty check, exactly where production's does.
+    artifact_service = CloneArtifactService.new
+    clone_path = @clone_path
+    artifact_service.define_singleton_method(:check_dirty_state) do |path|
+      FileUtils.rm_rf(clone_path)
+      CloneArtifactService::DirtyCheckResult.new(
+        dirty?: true, has_uncommitted?: true, has_unpushed_commits?: false,
+        details: "uncommitted changes (3 files)"
+      )
+    end
+    CloneArtifactService.expects(:new).returns(artifact_service)
+
+    logged_errors = []
+    Rails.logger.stub(:error, ->(message = nil) { logged_errors << message.to_s }) do
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    end
+
+    assert_empty logged_errors, "a clone that is simply gone must not log at .error — that is the page"
+
+    @session.reload
+    assert_nil @session.trash_after,
+      "nothing restorable is left, so nothing may hold this session in the trash for four days"
+    assert_nil @session.logs.find_by("content LIKE ?", "%Could not preserve unpushed artifacts%"),
+      "the user must not be told a clone is being kept for them when none exists"
+  end
+
+  # The flag alone must not be enough to skip the delete. If a clone_missing?
+  # result ever arrives for a clone that IS on disk, taking the "nothing to
+  # preserve" branch would strand it: no Docker teardown, no delete, trash_after
+  # cleared, and nothing but StaleCloneCleanupJob's unpreserved sweep to reap it
+  # an hour later. The branch checks the disk, so this falls through to the hold.
+  test "holds a clone that is still on disk even if preservation reports it missing" do
+    dirty_result = CloneArtifactService::DirtyCheckResult.new(
+      dirty?: true, has_uncommitted?: true, has_unpushed_commits?: false, details: "uncommitted changes"
+    )
+    create_result = CloneArtifactService::CreateResult.new(
+      success?: false, clone_missing?: true, error: "No such file or directory - git"
+    )
+    artifact_service = mock("artifact_service")
+    artifact_service.expects(:check_dirty_state).with(@clone_path).returns(dirty_result)
+    artifact_service.expects(:create_artifacts)
+      .with(session_id: @session.id, clone_path: @clone_path).returns(create_result)
+    CloneArtifactService.expects(:new).returns(artifact_service)
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "a clone that is still there is the only copy of the work"
+    @session.reload
+    assert_in_delta (@archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD).to_f, @session.trash_after.to_f, 1,
+      "and it belongs to EmptyTrashJob for the full retention window, not to the one-hour stale sweep"
+    assert_not_nil @session.logs.find_by("content LIKE ?", "%Could not preserve unpushed artifacts%")
+  end
+
+  # Preserving artifacts is not instant — a bundle, an `add -A` and a binary
+  # diff over a whole working tree — and this job is the only clone deleter, so
+  # the status it read before all that is stale by the time it deletes. Undo
+  # inside that window puts a session back to work on this clone.
+  test "leaves the clone alone when the session is unarchived while artifacts are being preserved" do
+    session = @session
+    artifact_service = CloneArtifactService.new
+    artifact_service.define_singleton_method(:create_artifacts) do |session_id:, clone_path:|
+      # The user hits Undo while the bundle is still being written.
+      Session.find(session.id).unarchive_to_waiting!
+      CloneArtifactService::CreateResult.new(success?: true, artifacts_path: "/tmp/artifacts-#{session_id}")
+    end
+    artifact_service.define_singleton_method(:check_dirty_state) do |_path|
+      CloneArtifactService::DirtyCheckResult.new(
+        dirty?: true, has_uncommitted?: true, has_unpushed_commits?: false, details: "uncommitted changes"
+      )
+    end
+    CloneArtifactService.expects(:new).returns(artifact_service)
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path),
+      "the session is running against this clone again — deleting it is not something Undo can undo"
+    assert_nil @session.reload.logs.find_by("content LIKE ?", "%Clone deleted%")
+  end
+
   # Regression for #425: the failure branch used to just return, leaving
   # trash_after at whatever `archive` had managed to set. `set_trash_expiry` is
   # best-effort (its rescue is log-only), so a session can reach here with it
