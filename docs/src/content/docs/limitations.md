@@ -36,6 +36,31 @@ Rotating the deploy key is rare; changing the domain is rarer. But neither is a 
 
 Tracked in [#121](https://github.com/tadasant/zimmer/issues/121).
 
+### The DigitalOcean metrics agent only reaches a droplet that is created after the flag
+
+`digitalocean_droplet.zimmer` sets `monitoring = true`, so every droplet the module creates from now
+on boots with DigitalOcean's metrics agent — CPU, memory, disk and load history, and the only metrics
+DO's own resource alert policies can evaluate.
+
+It does **not** reach a droplet that already exists. `monitoring` is `ForceNew` in the DigitalOcean
+provider (schema flag on the attribute, in every 2.x release including the `~> 2.43` pin; the Update
+function has no `monitoring` branch at all, so the provider has no in-place path). Turning it on for
+a live droplet would therefore mean *destroy and recreate* — of the one box every Zimmer session runs
+on, with the staging deploy workflow applying `-auto-approve`. So `monitoring` sits in
+`ignore_changes` alongside `user_data`, which suppresses the diff and the replacement with it.
+
+The consequence is that an existing droplet has no utilization history until someone enables the
+agent out of band — the DigitalOcean control panel's monitoring toggle, or the `enable_monitoring`
+droplet action. That is a one-time click against the DO API, not a shell on the box, and once it is
+done the read converges on `true` and there is nothing left to reconcile. A droplet rebuilt for any
+other reason picks the agent up on its own.
+
+The flip side of `ignore_changes` is that Terraform will not turn the agent back *off*, or back on if
+someone disables it in the panel. Neither is a real risk here, and both are cheaper than a replace.
+
+Note that the DO agent is host metrics only. It is not the app's telemetry, which goes to the
+self-hosted OTLP stack — see [Observability](/operate/observability/).
+
 ### RAILS_MASTER_KEY is optional on staging, and silently degrades when absent
 
 Staging *can* read encrypted credentials: `config/credentials/staging.yml.enc` is committed, and
