@@ -69,7 +69,13 @@ class CloneArtifactService
   # mass-deletion guard threw away, or nil when the guard did not fire. The
   # caller records it on the session, which is what keeps the rate of mangled
   # clones countable without a page per refusal — see #415.
-  CreateResult = Struct.new(:success?, :artifacts_path, :dropped_deletions, :error, keyword_init: true)
+  #
+  # `clone_missing?` separates the two ways preservation can fail. A clone that
+  # is gone has nothing to preserve and nothing to hold on to; a clone that is
+  # still on disk and could not be read is a real failure, and the caller has to
+  # keep the clone because it is then the only copy. See #653.
+  CreateResult = Struct.new(:success?, :artifacts_path, :dropped_deletions, :clone_missing?, :error,
+    keyword_init: true)
   ApplyResult = Struct.new(:success?, :applied_bundle?, :applied_working_tree?, :refused_working_tree?, :error,
     keyword_init: true)
 
@@ -121,13 +127,13 @@ class CloneArtifactService
     )
   rescue => e
     # A clone that vanishes between the early-return guard above and the git
-    # invocation below is a benign, expected race: the only caller
-    # (DeferredCloneCleanupJob) is about to delete the clone anyway, and the
-    # correct answer for a missing clone is "clean" (there is nothing to check
-    # and nothing to retry). Log that at .info so it does not page on-call.
-    # Anything else — a genuine, unexpected failure to inspect a clone that is
-    # still present — keeps .error so it stays alert-worthy.
-    if e.is_a?(Errno::ENOENT) || !file_system.directory?(clone_path)
+    # invocation below is a benign, expected race: the caller is about to delete
+    # the clone anyway, and the correct answer for a missing clone is "clean"
+    # (there is nothing to check and nothing to retry). Log that at .info so it
+    # does not page on-call. Anything else — a genuine, unexpected failure to
+    # inspect a clone that is still present — keeps .error so it stays
+    # alert-worthy.
+    if vanished_clone?(clone_path, e)
       @logger.info("Clone path disappeared during dirty-state check, treating as clean",
         clone_path: clone_path, error: e.message)
     else
@@ -139,6 +145,17 @@ class CloneArtifactService
 
   # Extract artifacts from a dirty clone and save to disk.
   def create_artifacts(session_id:, clone_path:)
+    # The clone can be gone before this even starts: check_dirty_state reads a
+    # tree that a concurrent recursive delete is still walking, calls it dirty,
+    # and by the time preservation begins there is nothing left to preserve
+    # (#653). Say so and return, rather than mkdir_p-ing an artifacts directory
+    # that will only ever be empty.
+    unless clone_path && file_system.directory?(clone_path)
+      @logger.info("Clone path is gone before artifact creation, nothing to preserve",
+        clone_path: clone_path, session_id: session_id)
+      return CreateResult.new(success?: false, clone_missing?: true, error: "Clone path does not exist")
+    end
+
     artifacts_dir = artifacts_path_for(session_id)
     file_system.mkdir_p(artifacts_dir)
 
@@ -237,8 +254,22 @@ class CloneArtifactService
     CreateResult.new(success?: true, artifacts_path: artifacts_dir,
       dropped_deletions: metadata["dropped_deletions"])
   rescue => e
+    # Every run_git above chdirs into the clone, so the same benign race
+    # check_dirty_state guards can land here too: the clone disappears
+    # mid-flight and the next chdir raises Errno::ENOENT naming the clone
+    # directory itself. There is then nothing to preserve and nothing to retry,
+    # so it is .info — .error here paged on-call for a race nobody can act on
+    # (#653). A failure to read a clone that is still present stays .error: that
+    # one is real, and it costs the session its unpushed work.
+    file_system.rm_rf(artifacts_dir) if artifacts_dir && file_system.directory?(artifacts_dir)
+
+    if vanished_clone?(clone_path, e)
+      @logger.info("Clone path disappeared during artifact creation, nothing left to preserve",
+        clone_path: clone_path, session_id: session_id, error: e.message)
+      return CreateResult.new(success?: false, clone_missing?: true, error: e.message)
+    end
+
     @logger.error("Failed to create artifacts", error: e.message, session_id: session_id)
-    file_system.rm_rf(artifacts_dir) if file_system.directory?(artifacts_dir)
     CreateResult.new(success?: false, error: e.message)
   end
 
@@ -350,6 +381,21 @@ class CloneArtifactService
   end
 
   private
+
+  # Did this failure come from the clone being deleted out from under us?
+  #
+  # Shared by the two methods DeferredCloneCleanupJob calls, so the archive path
+  # cannot come to disagree with itself about which failures are benign — the
+  # divergence #653 is about, where the same vanished clone was .info in
+  # check_dirty_state and .error in create_artifacts.
+  #
+  # Errno::ENOENT counts on its own: Open3's chdir into a directory that no
+  # longer exists raises it naming the clone, and that is the shape every
+  # observed instance of this race takes. So does a clone that is simply no
+  # longer a directory by the time we look, whatever the error was.
+  def vanished_clone?(clone_path, error)
+    error.is_a?(Errno::ENOENT) || !file_system.directory?(clone_path)
+  end
 
   # Detect the upstream reference for comparing commits.
   # Falls back through: @{upstream} -> origin/HEAD -> origin/main -> origin/master

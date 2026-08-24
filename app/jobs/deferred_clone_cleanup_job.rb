@@ -103,6 +103,17 @@ class DeferredCloneCleanupJob < ApplicationJob
             metadata: new_metadata
           )
         end
+      elsif create_result.clone_missing?
+        # The clone went away between the dirty check and the preservation —
+        # the dirty check read a tree something else was already deleting. There
+        # is nothing to preserve, and nothing to hold retention open for, so
+        # this takes the same branch as a clone that was already gone when the
+        # job started rather than the hold below, which would keep a session in
+        # the trash for four days over a clone that does not exist (#653).
+        Rails.logger.info "[DeferredCloneCleanupJob] Clone for session #{session_id} disappeared before its " \
+          "artifacts could be preserved (#{create_result.error}); nothing to preserve or delete"
+        finalize_trash_expiry(session)
+        return
       else
         Rails.logger.error "[DeferredCloneCleanupJob] Failed to preserve artifacts for session #{session_id}: #{create_result.error}"
         # Artifact extraction failed, so the clone itself is now the only copy of

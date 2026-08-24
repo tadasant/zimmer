@@ -2360,28 +2360,88 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the scan position must survive a counter reset"
   end
 
-  test "cleanup_on_failure calls appropriate cleanup methods" do
+  # Regression for #653, both halves at once.
+  #
+  # Archiving a running session enqueues DeferredCloneCleanupJob, whose whole
+  # job is to preserve the clone's unpushed work before deleting it. The
+  # monitoring loop used to delete the clone the instant it noticed the archive
+  # — about ten seconds ahead of the job that was supposed to save it — so the
+  # preservation ran against a tree that was already being unlinked: it raised
+  # ENOENT and paged, and the session's uncommitted work was gone rather than
+  # preserved.
+  #
+  # This drives the real sequence: the loop sees the archive, then the deferred
+  # job runs against the clone the loop left behind, and the agent's
+  # uncommitted work has to come out the other side in the artifacts.
+  test "archiving a running session preserves its uncommitted work instead of deleting the clone" do
+    clone_path = Dir.mktmpdir("archived-clone", @test_tmpdir)
+    artifacts_dir = File.join(@test_tmpdir, "artifacts")
+    scratch_base = Dir.mktmpdir("archived-scratch", @test_tmpdir)
+    original_scratch = ENV["AGENT_SCRATCH_DIR"]
+    ENV["AGENT_SCRATCH_DIR"] = scratch_base
+    CloneArtifactService.any_instance.stubs(:artifacts_path_for).returns(artifacts_dir)
+
+    # A real repository with real uncommitted work in it — this is what has to
+    # survive the archive.
+    Dir.chdir(clone_path) do
+      system("git init -q -b main && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init",
+        out: File::NULL, err: File::NULL)
+      File.write("uncommitted_work.rb", "# work the agent never pushed\n")
+    end
+
     job = AgentSessionJob.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.file_system.mkdir_p(clone_path)
+    job.file_system.write("#{clone_path}/claude_stderr.log", "")
 
-    # Inject mock dependencies
-    mock_process_manager = MockProcessManager.new
-    job.process_manager = mock_process_manager
+    # The archive lands from outside, mid-turn: a human hitting the button, or
+    # SessionStatusSummaryHarvestJob reaping a fork. The loop notices on its
+    # next pass.
+    job.process_manager.wait_hook = ->(_pid, _flags) do
+      archiving = Session.find(@session.id)
+      archiving.archive! if archiving.may_archive?
+      nil
+    end
 
-    # Create a mock log buffer
-    log_buffer = LogBuffer.new(@session)
-
-    # Track method calls
-    terminate_called = false
-    cleanup_called = false
-
-    job.stub(:terminate_process, ->(*args) { terminate_called = true }) do
-      job.stub(:cleanup_clone, ->(*args) { cleanup_called = true }) do
-        job.send(:cleanup_on_failure, @session, 12345, "/tmp/clone", log_buffer)
+    GitCloneService.stub(:create_clone, { clone_path: clone_path, working_directory: clone_path }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.stub(:sleep, ->(_duration) { }) do
+            job.perform(@session.id)
+          end
+        end
       end
     end
 
-    assert terminate_called, "Expected terminate_process to be called"
-    assert cleanup_called, "Expected cleanup_clone to be called"
+    @session.reload
+    assert_equal "archived", @session.status, "the loop should have seen the archive and stopped"
+    assert File.directory?(clone_path),
+      "the monitoring loop must leave the clone for the job that preserves it"
+    assert File.exist?(File.join(clone_path, "uncommitted_work.rb")),
+      "the agent's uncommitted work must still be on disk when preservation runs"
+
+    # Now the deferred job, the way it runs ten seconds later in production.
+    DeferredCloneCleanupJob.perform_now(@session.id, @session.archived_at.iso8601)
+
+    assert File.exist?(File.join(artifacts_dir, "working_tree.patch")),
+      "the uncommitted work must be preserved, not left as an empty artifacts directory"
+    assert_includes File.binread(File.join(artifacts_dir, "working_tree.patch")), "uncommitted_work.rb"
+    assert_not File.directory?(clone_path), "and only then is the clone reaped"
+  ensure
+    ENV["AGENT_SCRATCH_DIR"] = original_scratch
+    ENV.delete("AGENT_SCRATCH_DIR") if original_scratch.nil?
   end
 
   # Fallback mechanism tests

@@ -278,6 +278,42 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_equal "warning", hold_log.level
   end
 
+  # Regression for #653. The dirty check can read a tree that a concurrent
+  # recursive delete is still walking — File.directory? says yes because rm_rf
+  # unlinks children under the live path, and `git status` on the gutted tree
+  # says dirty — and by the time preservation starts there is nothing left.
+  #
+  # That raised ENOENT out of create_artifacts, logged .error twice (the page in
+  # the alert this fixes), and then held a four-day trash deadline open for a
+  # clone that does not exist. A clone that is simply gone is not a failure to
+  # preserve: there is nothing to preserve and nothing to keep.
+  test "treats a clone that vanishes between the dirty check and preservation as nothing to preserve" do
+    # The delete lands inside the dirty check, exactly where production's does.
+    artifact_service = CloneArtifactService.new
+    clone_path = @clone_path
+    artifact_service.define_singleton_method(:check_dirty_state) do |path|
+      FileUtils.rm_rf(clone_path)
+      CloneArtifactService::DirtyCheckResult.new(
+        dirty?: true, has_uncommitted?: true, has_unpushed_commits?: false,
+        details: "uncommitted changes (3 files)"
+      )
+    end
+    CloneArtifactService.expects(:new).returns(artifact_service)
+
+    logged_errors = []
+    Rails.logger.stub(:error, ->(message = nil) { logged_errors << message.to_s }) do
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    end
+
+    assert_empty logged_errors, "a clone that is simply gone must not log at .error — that is the page"
+
+    @session.reload
+    assert_nil @session.trash_after,
+      "nothing restorable is left, so nothing may hold this session in the trash for four days"
+    assert_nil @session.logs.find_by("content LIKE ?", "%Could not preserve unpushed artifacts%"),
+      "the user must not be told a clone is being kept for them when none exists"
+  end
+
   # Regression for #425: the failure branch used to just return, leaving
   # trash_after at whatever `archive` had managed to set. `set_trash_expiry` is
   # best-effort (its rescue is log-only), so a session can reach here with it

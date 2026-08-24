@@ -1284,7 +1284,8 @@ class AgentSessionJob < ApplicationJob
           )
           log_buffer.flush
           terminate_process(session, process_pid, clone_path, log_buffer)
-          cleanup_clone(session, clone_path, log_buffer)
+          # The clone is left where it is. DeferredCloneCleanupJob owns deleting
+          # an archived session's clone — see the ensure block for why.
           return
         end
 
@@ -1780,9 +1781,25 @@ class AgentSessionJob < ApplicationJob
       if session
         session.reload
         if session.archived?
-          # Only cleanup when explicitly archived by the user
+          # Kill the process, but leave the clone alone.
+          #
+          # Archiving already enqueued DeferredCloneCleanupJob, which exists to
+          # preserve whatever unpushed work is in this clone — a bundle of
+          # unpushed commits and a patch of the working tree — before deleting
+          # it, and to tear the session's Docker Compose resources down on the
+          # way (the compose file lives inside the clone). Deleting the clone
+          # here raced that job and beat it by about ten seconds, so on a
+          # session archived mid-work the preservation ran against a tree that
+          # was already being unlinked: it raised ENOENT and paged, and the
+          # session's uncommitted work was gone rather than preserved. It also
+          # emptied the undo window, whose whole promise is that unarchiving
+          # inside it finds the clone still on disk (#653).
+          #
+          # Nothing leaks by waiting: DeferredCloneCleanupJob deletes the clone
+          # ten seconds later, and if it never runs, StaleCloneCleanupJob
+          # (archived with no trash deadline, one hour) and EmptyTrashJob (at
+          # the trash deadline) are the standing backstops.
           terminate_process(session, process_pid, clone_path, log_buffer) if process_pid
-          cleanup_clone(session, clone_path, log_buffer) if clone_path
         elsif session.failed?
           # Preserve clone on failure for debugging and recovery
           # Only terminate the process if it's still running
@@ -2461,12 +2478,6 @@ class AgentSessionJob < ApplicationJob
       return status if pid
       sleep 1
     end
-  end
-
-  # Cleanup on failure
-  def cleanup_on_failure(session, process_pid, clone_path, log_buffer)
-    terminate_process(session, process_pid, clone_path, log_buffer) if process_pid
-    cleanup_clone(session, clone_path, log_buffer) if clone_path
   end
 
   # Poll the transcript file and broadcast new messages
@@ -3395,22 +3406,6 @@ class AgentSessionJob < ApplicationJob
     end
   rescue => e
     Rails.logger.warn "[AgentSessionJob] Failed to clear interrupt_terminate_pid for session #{session&.id}: #{e.message}"
-  end
-
-  # Cleanup the clone directory
-  def cleanup_clone(session, clone_path, log_buffer)
-    return unless clone_path
-
-    GitCloneService.cleanup_clone(clone_path)
-    log_buffer.add(
-      "Clone cleaned up: #{clone_path}",
-      level: "info"
-    )
-  rescue => e
-    log_buffer.add(
-      "Error cleaning up clone: #{e.message}",
-      level: "error"
-    )
   end
 
   # Start log streaming in a background thread
