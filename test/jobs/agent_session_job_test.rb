@@ -6386,9 +6386,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # before `resume_monitoring`, so overwriting process_pid from there lands in that window.
     session_id = @session.id
     mock_fs.define_singleton_method(:exists?) do |path|
-      Session.where(id: session_id).update_all(
-        metadata: { "process_pid" => 966, "clone_path" => "/tmp/test-clone" }.to_json
-      )
+      Session.find(session_id).update!(metadata: { "process_pid" => 966, "clone_path" => "/tmp/test-clone" })
       super(path)
     end
 
@@ -6445,9 +6443,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # parking the session from there lands squarely in the window under test. Gated on
     # ownership having already moved, so the polls of earlier iterations leave it running.
     parking_poll = ->(_session) do
-      if Session.where(id: session_id).pick(:running_job_id) == monitoring_job.job_id
-        Session.where(id: session_id).update_all(status: Session.statuses[:needs_input])
-      end
+      handed_off = Log.where(session_id: session_id)
+                      .where("content LIKE ?", "%is left running for it to adopt%").exists?
+      Session.where(id: session_id).update_all(status: Session.statuses[:needs_input]) if handed_off
       nil
     end
 
