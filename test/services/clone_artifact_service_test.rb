@@ -170,7 +170,9 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     logger = RecordingLogger.new
     service = CloneArtifactService.new(logger: logger)
 
-    result = service.stub(:run_git, ->(*) { raise Errno::ENOENT.new(@repo_path) }) do
+    # The delete lands first, exactly as it does in production; the ENOENT is
+    # what the chdir into the now-missing directory raises.
+    result = service.stub(:run_git, ->(*) { FileUtils.rm_rf(@repo_path); raise Errno::ENOENT.new(@repo_path) }) do
       service.check_dirty_state(@repo_path)
     end
 
@@ -178,6 +180,23 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     assert_equal :info, logger.level_for("disappeared during dirty-state check")
     assert_nil logger.level_for("Failed to check dirty state"),
       "a vanished clone must not log at .error (it pages on-call)"
+  end
+
+  # Errno::ENOENT is not by itself evidence that the clone vanished: Open3
+  # raises it for a `git` that is not on PATH too, on a clone that is still
+  # entirely there. Only the disk decides, so this one still pages.
+  test "check_dirty_state logs .error for an ENOENT raised while the clone is still on disk" do
+    create_test_repo
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = service.stub(:run_git, ->(*) { raise Errno::ENOENT.new("No such file or directory - git") }) do
+      service.check_dirty_state(@repo_path)
+    end
+
+    assert_not result.dirty?
+    assert_equal :error, logger.level_for("Failed to check dirty state")
+    assert_nil logger.level_for("disappeared during dirty-state check")
   end
 
   # A genuinely unexpected failure while the clone is STILL present must keep
@@ -440,7 +459,7 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     logger = RecordingLogger.new
     service = CloneArtifactService.new(logger: logger)
 
-    result = service.stub(:run_git, ->(*) { raise Errno::ENOENT.new(@repo_path) }) do
+    result = service.stub(:run_git, ->(*) { FileUtils.rm_rf(@repo_path); raise Errno::ENOENT.new(@repo_path) }) do
       service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
     end
 
@@ -451,6 +470,25 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     assert result.clone_missing?, "the caller has to be able to tell this from a clone it must keep"
     assert_not File.directory?(service.artifacts_path_for(@session_id)),
       "a failed preservation must not leave an empty artifacts directory behind"
+  end
+
+  # The same discrimination on the preservation side, and the one that decides
+  # whether the caller keeps the clone: a `git` missing from PATH raises the
+  # very error a vanished clone raises, on a clone that is still entirely there.
+  test "create_artifacts logs .error for an ENOENT raised while the clone is still on disk" do
+    create_test_repo(dirty: true)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = service.stub(:run_git, ->(*) { raise Errno::ENOENT.new("No such file or directory - git") }) do
+      service.create_artifacts(session_id: @session_id, clone_path: @repo_path)
+    end
+
+    assert_not result.success?
+    assert_not result.clone_missing?,
+      "the clone is still on disk — reporting it missing would strand it with its work unpreserved"
+    assert_equal :error, logger.level_for("Failed to create artifacts")
+    assert_nil logger.level_for("disappeared during artifact creation")
   end
 
   # The other half of the distinction check_dirty_state draws: a clone that is

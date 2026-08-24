@@ -723,23 +723,30 @@ The clone is not deleted immediately. `DeferredCloneCleanupJob` runs after a sho
 window and then either deletes the clone (if it's clean) or preserves unpushed artifacts for
 `TRASH_RETENTION_PERIOD`, which is `4.days`. `EmptyTrashJob` deletes them once that expires.
 
-**That job is the only thing that deletes an archived session's clone.** `AgentSessionJob` used to
-delete it too, the moment its monitoring loop noticed the archive — about ten seconds ahead of the
-job that exists to save the work in it. On a session archived mid-turn, that was silent data loss:
-the bundle and the working-tree patch were never written, unarchive had nothing to restore, and the
-undo window promised a clone that was already gone. The preservation then ran against a tree that
-was mid-`rm -rf` — `File.directory?` still true because the delete unlinks children under the live
-path — and died on `ENOENT`, which is what paged. The loop now kills the process and leaves the
-clone where it is ([#653](https://github.com/tadasant/zimmer/issues/653)). Nothing leaks by waiting:
-`StaleCloneCleanupJob` (archived with no trash deadline, one hour) and `EmptyTrashJob` (at the
-deadline) are the backstops if the deferred job never runs.
+**That job is the only thing that deletes an archived session's clone.** `AgentSessionJob` kills the
+agent process when it sees the archive and leaves the clone where it is, because a second deleter
+beats the preservation by about ten seconds and there is nothing left to preserve from a tree that
+is already being unlinked. [#653](https://github.com/tadasant/zimmer/issues/653) is what happens
+when that ordering is not respected, and it costs two things: the session's uncommitted work is
+destroyed rather than saved, and the preservation dies on `ENOENT` against a half-deleted tree —
+`File.directory?` is still true, because a recursive delete unlinks children under the live path —
+which pages. Nothing leaks by waiting: `StaleCloneCleanupJob` (archived with no trash deadline, one
+hour) and `EmptyTrashJob` (at the deadline) are the backstops if the deferred job never runs.
+
+Preservation is not instant on a large tree — a `git bundle create`, a `git add -A` and a
+`git diff --binary` over the whole working tree — so the job re-reads the session's status
+immediately before deleting, and stands down if it is no longer archived. An unarchive inside that
+window puts a session back to work on this clone, and that is not something the undo window could
+undo.
 
 A clone that has vanished by the time preservation starts is not a failed preservation. There is
 nothing to preserve and nothing to keep, so `CloneArtifactService` logs it at `.info` — the same
 call `check_dirty_state` makes for the same race — and the job clears the trash deadline rather than
-holding a session in the trash for four days over a clone that does not exist. A clone that is
-still on disk and cannot be read stays `.error`: that one is real, and it costs the session its
-work.
+holding a session in the trash for four days over a clone that does not exist. "Vanished" is decided
+by looking at the disk, not by reading the exception: `Errno::ENOENT` also comes back from a `git`
+that is not on `PATH`, and that is a real failure on a clone that is still there. A clone still on
+disk that cannot be read stays `.error` and is held for the full window, because it is then the only
+copy of the session's work.
 
 If artifact extraction fails outright, the clone is kept — it is then the only copy of that
 session's unpushed work — and the job writes the same `4.days` deadline on the session and a
