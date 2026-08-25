@@ -1,10 +1,14 @@
 <%# Session detail page. The body lives in the shared _detail partial so it can
-    also be lazy-loaded into the dashboard's right-side drawer. When the request
-    arrives via the drawer's Turbo Frame (@in_drawer set by the controller), the
-    content is wrapped in a matching <turbo-frame id="session_detail"> and
-    rendered chrome-light so it swaps cleanly into the drawer panel. On a normal
-    full-page load it renders without the frame so internal Turbo navigations
-    (follow-up form, infinite scroll, log-level filter) still target _top. %>
+    also be lazy-loaded into the dashboard's right-side drawer.
+
+    Two actions render this template, and which one you are in is decided by the
+    URL, never by a request header: #show (/sessions/:id) renders the full page
+    without a frame, so internal Turbo navigations still target _top, and #drawer
+    (/sessions/:id/drawer) wraps the same body in <turbo-frame id="session_detail">
+    and renders chrome-light so it swaps cleanly into the drawer panel. Keeping the
+    two bodies on disjoint URLs is what stops a URL-keyed cache — Turbo's prefetch
+    cache above all — from serving the frameless one to the drawer's frame request
+    and leaving it showing "Content missing". See SessionsController#drawer. %>
 <% if @in_drawer %>
   <%= turbo_frame_tag "session_detail" do %>
     <%= render "sessions/detail", in_drawer: true %>
