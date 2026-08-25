@@ -47,6 +47,42 @@ class Trigger < ApplicationRecord
   # is small, but nothing stops an operator setting it to 500.
   MAX_BURST_NOTICE_LINKS = 25
 
+  # --- Pending-session dedup ----------------------------------------------
+  #
+  # `skip_if_pending_session` says: if a session this trigger already spawned is
+  # still pending — it has not yet finished the work the trigger asked for — then
+  # this fire creates nothing. Opt-in, default off, so no existing trigger
+  # changes behavior.
+  #
+  # This is a different question from the burst cap, and neither substitutes for
+  # the other. `max_sessions_per_minute` bounds the RATE ("no more than N a
+  # minute"); this bounds the BACKLOG ("no second session while the first is
+  # still to act"). A trigger that fires every fifteen minutes never trips a rate
+  # cap and can still pile up a dozen sessions all carrying the same prompt —
+  # which is exactly what the `quota_available` wake trigger did, because the
+  # fleet session it spawns is itself parked by the quota exhaustion it exists to
+  # answer.
+  #
+  # PENDING means `waiting` or `running`, and deliberately nothing else:
+  #
+  #   - `waiting` is the "queued, has not had its turn" state, and it is where a
+  #     session sits both before it is first started and while it is parked on an
+  #     exhausted pool. This is the case the setting exists for.
+  #   - `running` counts too. A session mid-work has not delivered its outcome
+  #     yet, and spawning a sibling to do the same job concurrently is the same
+  #     duplication one tick earlier — several of the duplicate wake sessions were
+  #     running side by side.
+  #   - `needs_input`, `archived` and `failed` do NOT count. Each is a session
+  #     that has had its turn: it either finished, died, or is waiting on a human,
+  #     and none of those may block a legitimate future fire. Counting
+  #     `needs_input` in particular would let one session parked for a human
+  #     silently disable the trigger for as long as nobody looked at it.
+  #
+  # Burst-notice sessions are excluded: a notice carries the "investigate this
+  # burst" intent, not the trigger's own, so one sitting in `needs_input`-adjacent
+  # limbo must not stand in for the work the trigger was asked to do.
+  PENDING_INTENT_STATUSES = %w[waiting running].freeze
+
   # How much of the event that tipped the cap to quote in the notice prompt.
   BURST_NOTICE_PROMPT_EXCERPT = 500
 
@@ -322,6 +358,7 @@ class Trigger < ApplicationRecord
   # @param genesis [String, nil] override the derived genesis for this fire only.
   def create_session!(prompt:, genesis: nil)
     @last_fire_burst_suppressed = false
+    @last_fire_pending_session = nil
     @genesis_override = genesis
 
     # Heal any catalog references that no longer exist before creating or
@@ -376,7 +413,7 @@ class Trigger < ApplicationRecord
       end
     end
 
-    spawn_with_burst_control!(prompt: prompt)
+    spawn_unless_pending_session!(prompt: prompt)
   end
 
   # True when this trigger is currently inside a burst it has already noticed:
@@ -395,6 +432,37 @@ class Trigger < ApplicationRecord
   # was gone."
   def last_fire_burst_suppressed?
     @last_fire_burst_suppressed == true
+  end
+
+  # The still-pending session that made the most recent #create_session! call on
+  # this in-memory instance spawn nothing, or nil when dedup did not apply. Given
+  # to callers so they can name the session that already covers the work rather
+  # than reporting a bare "nothing happened".
+  attr_reader :last_fire_pending_session
+
+  # Whether the most recent #create_session! call was skipped because a session
+  # this trigger already spawned is still pending (see PENDING_INTENT_STATUSES).
+  #
+  # Callers must NOT treat this like #last_fire_burst_suppressed?. A
+  # burst-suppressed fire is an event DROPPED — the work it asked for will not
+  # happen, and a caller holding a retryable edge should put that edge back. A
+  # dedup-skipped fire is the opposite: the work is already in hand, spawned and
+  # queued, so the fire was HANDLED. Re-arming on it would mean firing again,
+  # skipping again, and re-arming again, forever.
+  def last_fire_skipped_for_pending_session?
+    @last_fire_pending_session.present?
+  end
+
+  # The pending session that blocks a new spawn, or nil when there is none.
+  # Newest first, so the session a caller is pointed at is the most recent one
+  # still carrying the intent.
+  def pending_intent_session
+    Session
+      .for_trigger(id)
+      .where(status: PENDING_INTENT_STATUSES)
+      .where("metadata->>'burst_notice' IS DISTINCT FROM 'true'")
+      .order(created_at: :desc)
+      .first
   end
 
   # A one-time reuse trigger is one where reuse_session is enabled and ALL
@@ -948,6 +1016,38 @@ class Trigger < ApplicationRecord
     return if invalid_plugins.empty?
 
     errors.add(:catalog_plugins, "contains invalid plugin(s): #{invalid_plugins.join(', ')}")
+  end
+
+  # The dedup gate, in front of the burst gate. Both sit on the SPAWN path only:
+  # a fire that follows up into a reused session has already returned by now, and
+  # rightly so — it adds no session to the pile.
+  #
+  # Ordering matters. Dedup runs first because it is the cheaper and more
+  # specific answer: when a pending session already covers the intent, this fire
+  # should consume no burst budget and leave no trace, exactly as if the event
+  # had not arrived.
+  #
+  # The check and the spawn share one row lock so two jobs firing the same
+  # trigger at once (ScheduleTriggerJob and AoEventTriggerJob can overlap) cannot
+  # both read "nothing pending" and both spawn. A trigger with the setting off
+  # takes no lock at all and reaches #spawn_with_burst_control! exactly as before.
+  def spawn_unless_pending_session!(prompt:)
+    return spawn_with_burst_control!(prompt: prompt) unless skip_if_pending_session?
+
+    with_lock do
+      pending = pending_intent_session
+
+      if pending
+        @last_fire_pending_session = pending
+        Rails.logger.info(
+          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) skipped this fire — session " \
+          "#{pending.id} (#{pending.status}) is still pending and already carries this intent"
+        )
+        next nil
+      end
+
+      spawn_with_burst_control!(prompt: prompt)
+    end
   end
 
   # The burst-control gate. Every path that would SPAWN a session funnels

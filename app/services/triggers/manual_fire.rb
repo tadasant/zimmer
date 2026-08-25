@@ -28,6 +28,9 @@ module Triggers
     #                       session it spawned instead of the one asked for
     #   :burst_suppressed — the trigger is inside a burst it has already noticed,
     #                       so nothing at all was created
+    #   :pending_session  — the trigger has `skip_if_pending_session` on and a
+    #                       session it already spawned is still pending; `session`
+    #                       is that pending session, and nothing was created
     #   :not_reusable     — a one-time reuse trigger whose target session is gone
     #                       or is no longer reusable. `session` is that target
     #                       when the row still exists, and nil when it does not;
@@ -61,6 +64,10 @@ module Triggers
 
       if session.nil?
         return result(nil, :burst_suppressed) if @trigger.last_fire_burst_suppressed?
+        # Hand back the session that already covers the work, so the surface can
+        # link it rather than reporting a bare "nothing happened".
+        return result(@trigger.last_fire_pending_session, :pending_session) if @trigger.last_fire_skipped_for_pending_session?
+
         return result(nil, :not_reusable)
       end
 
@@ -102,6 +109,10 @@ module Triggers
         "Trigger \"#{@trigger.name}\" is in a burst: it exceeded its cap of " \
         "#{@trigger.max_sessions_per_minute} session(s) per minute, so no session was created. " \
         "See the burst-notice session it already spawned."
+      when :pending_session
+        pending = @trigger.last_fire_pending_session
+        "Trigger \"#{@trigger.name}\" created no session — it skips a fire while a session it already " \
+        "spawned is still pending, and session ##{pending&.id} (#{pending&.status}) already carries this intent."
       when :not_reusable
         "Trigger \"#{@trigger.name}\" fired but created no session — its target session is no longer reusable."
       end

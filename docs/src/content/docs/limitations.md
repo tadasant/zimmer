@@ -1015,6 +1015,15 @@ whole spot wake into one event, and the sharp edges are all about that concentra
   (`QuotaAvailabilityMonitor.rearm!`) so the next sweep tries again rather than spending the one
   chance — but a permanently broken trigger is a permanently stalled queue, visible only as spot
   sessions sitting in `waiting`.
+- **The trigger defers to its own pending session, and a stuck one holds the queue.** The seeded
+  trigger has [`skip_if_pending_session`](/sessions/triggers/#skip-while-a-session-is-still-pending)
+  on, because the fleet session it spawns is itself parked by the exhaustion it exists to answer —
+  without it, every recovery stacked up another sibling carrying the identical prompt (102 sessions
+  on the trigger, ten of them in one afternoon). The cost is that a fleet session which never takes
+  its turn and never leaves `waiting` suppresses every later wake, and unlike a broken trigger this
+  one re-arms nothing: a skip counts as handled, deliberately, or the edge would be spent and put
+  back on every sweep forever. Archiving or failing the stuck session releases it, and the trigger
+  page names the session it is deferring to.
 - **An auth park is woken by different evidence than a quota park**, and only the quota one has an
   edge of its own. `accounts.available` never goes false→true for a rejected identity, so a *spot*
   session parked `auth_unrecoverable` is woken only because the fifteen-minute sweep notices its pool

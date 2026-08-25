@@ -148,6 +148,23 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal 3, Trigger.find(json["trigger"]["id"]).max_sessions_per_minute
   end
 
+  test "should create a trigger with skip_if_pending_session and expose it in the payload" do
+    post api_v1_triggers_path, params: {
+      name: "Deduped Alerts Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "Check this: {{link}}",
+      skip_if_pending_session: true,
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C1", channel_name: "alerts", event_type: "new_message" } }
+      ]
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_equal true, json["trigger"]["skip_if_pending_session"]
+    assert Trigger.find(json["trigger"]["id"]).skip_if_pending_session
+  end
+
   test "should reject a non-positive burst cap" do
     post api_v1_triggers_path, params: {
       name: "Bad Cap",
@@ -610,6 +627,24 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Burst suppressed", suppressed["error"]
     assert_match(/is in a burst/, suppressed["message"])
     assert suppressed["trigger"]["bursting"]
+  end
+
+  test "invoking a skip_if_pending_session trigger while a session is pending is a 409 that names it" do
+    stub_session_creation
+    @trigger.update!(skip_if_pending_session: true)
+
+    post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    assert_response :created
+    pending_id = JSON.parse(response.body)["session"]["id"]
+
+    assert_no_difference("Session.count") do
+      post invoke_api_v1_trigger_path(@trigger), headers: @headers
+    end
+    assert_response :conflict
+    json = JSON.parse(response.body)
+    assert_equal "No session created", json["error"]
+    assert_equal pending_id, json["session"]["id"]
+    assert_match(/already carries this intent/, json["message"])
   end
 
   test "a target session that cannot be reused is a 422 that names it, not a 201" do

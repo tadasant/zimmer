@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_24_235500) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_25_200000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -594,6 +594,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_24_235500) do
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
     t.index "((custom_metadata ->> 'router_session_id'::text))", name: "index_sessions_on_router_session_id"
     t.index "((metadata ->> 'agent_root_key'::text))", name: "index_sessions_on_agent_root_key"
+    t.index "((metadata ->> 'trigger_id'::text))", name: "index_sessions_on_trigger_id", where: "((metadata ->> 'trigger_id'::text) IS NOT NULL)"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
     t.index ["category_id"], name: "index_sessions_on_category_id"
@@ -722,6 +723,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_24_235500) do
     t.boolean "reuse_session", default: false, null: false
     t.string "scheduling_class"
     t.integer "sessions_created_count", default: 0
+    t.boolean "skip_if_pending_session", default: false, null: false
     t.string "status", default: "enabled", null: false
     t.datetime "updated_at", null: false
     t.index ["last_session_id"], name: "index_triggers_on_last_session_id"

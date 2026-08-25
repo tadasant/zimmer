@@ -134,9 +134,17 @@ class AoEventTriggerJob < ApplicationJob
           if result_session
             Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, created/reused session #{result_session.id}"
           else
-            # Burst suppression already skipped above, so nil here means a
-            # one-time reuse trigger whose target session is gone. Not an error.
-            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, but no session was created (no reusable target session)"
+            # Burst suppression already skipped above, so nil here means either a
+            # one-time reuse trigger whose target session is gone or a
+            # `skip_if_pending_session` trigger whose previous session is still
+            # pending. Neither is an error: the condition is consumed either way,
+            # because the event has been answered as well as it is going to be.
+            reason = if trigger.last_fire_skipped_for_pending_session?
+                       "session #{trigger.last_fire_pending_session.id} is still pending"
+            else
+                       "no reusable target session"
+            end
+            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, but no session was created (#{reason})"
           end
 
           # One-time wake-up triggers (only session-scoped ao_events and/or

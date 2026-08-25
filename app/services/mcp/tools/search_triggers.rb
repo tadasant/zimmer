@@ -97,6 +97,7 @@ module Mcp
           "- **Status:** #{trigger.status}",
           "- **Agent Root:** #{trigger.agent_root_name}",
           "- **Reuse Session:** #{trigger.reuse_session ? 'Yes' : 'No'}",
+          "- **Skip While Pending:** #{skip_if_pending_summary(trigger)}",
           "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
           "- **MCP Servers:** #{trigger.mcp_servers.presence&.join(', ') || '(none)'}"
         ]
@@ -208,6 +209,19 @@ module Mcp
       def scheduling_class_summary(trigger)
         source = trigger.scheduling_class.present? ? "set on this trigger" : "default for its conditions"
         "#{trigger.effective_scheduling_class} (#{source})"
+      end
+
+      # Whether the trigger skips a fire while one of its own sessions is still
+      # pending — and, when it is, WHICH session. Same reasoning as the burst
+      # marker below: this is a state in which the trigger spawns nothing, so a
+      # caller wondering why it looks dead has to be able to see it here.
+      def skip_if_pending_summary(trigger)
+        return "No" if !trigger.skip_if_pending_session
+
+        pending = trigger.pending_intent_session
+        return "Yes (nothing pending — the next fire spawns)" if pending.nil?
+
+        "Yes ⚠️ SKIPPING — session #{pending.id} (#{pending.status}) is still pending"
       end
 
       # The burst cap, plus a loud marker when the trigger is currently inside a

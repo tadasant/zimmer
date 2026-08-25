@@ -17,7 +17,7 @@ class TriggersController < ApplicationController
   def show
     # Load recent sessions created by this trigger
     @recent_sessions = Session
-      .where("metadata->>'trigger_id' = ?", @trigger.id.to_s)
+      .for_trigger(@trigger.id)
       .order(created_at: :desc)
       .limit(10)
   end
@@ -278,6 +278,7 @@ class TriggersController < ApplicationController
       :enqueue_messages,
       :resuscitate_archived,
       :max_sessions_per_minute,
+      :skip_if_pending_session,
       :scheduling_class,
       :precedence,
       mcp_servers: [],

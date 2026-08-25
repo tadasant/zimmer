@@ -84,6 +84,26 @@ class Triggers::ManualFireTest < ActiveSupport::TestCase
     assert_match(/is in a burst/, suppressed.message)
   end
 
+  test "with skip_if_pending_session on, a fire while a session is pending reports pending_session" do
+    @trigger.update!(skip_if_pending_session: true)
+
+    first = Triggers::ManualFire.call(trigger: @trigger, genesis: SessionGenesis::API)
+    assert_equal :fired, first.outcome
+
+    skipped = nil
+    assert_no_difference("Session.count") do
+      skipped = Triggers::ManualFire.call(trigger: @trigger, genesis: SessionGenesis::API)
+    end
+
+    assert_equal :pending_session, skipped.outcome
+    assert_not skipped.fired?
+    # The pending session comes back so the surface can link it rather than
+    # reporting a bare "nothing happened".
+    assert skipped.session?
+    assert_equal first.session.id, skipped.session.id
+    assert_match(/already carries this intent/, skipped.message)
+  end
+
   test "a one-time reuse trigger whose target session is gone reports not_reusable" do
     @trigger.update!(reuse_session: true, last_session_id: 999_999_999)
     @trigger.stubs(:one_time_reuse_trigger?).returns(true)

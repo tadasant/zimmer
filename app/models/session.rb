@@ -100,6 +100,13 @@ class Session < ApplicationRecord
   # remaining). Mirrors the instance-level `blocked_on_elicitation?` predicate.
   scope :blocked_on_elicitation, -> { where("metadata ->> 'blocked_on_elicitation' = 'true'") }
 
+  # Sessions a given trigger spawned. `metadata.trigger_id` is stamped by
+  # Trigger#create_new_session!, and is the only record of which trigger a session
+  # came from — there is no foreign key. Read by the trigger page (the "recent
+  # sessions" list) and by Trigger#pending_intent_session, which is on the fire
+  # path, so `index_sessions_on_trigger_id` covers the expression.
+  scope :for_trigger, ->(trigger_id) { where("metadata->>'trigger_id' = ?", trigger_id.to_s) }
+
   # Excludes sessions that belong to a frozen category. Frozen categories are a
   # "park it and leave it alone" bucket: their sessions must be skipped by every
   # bulk "refresh / recover all sessions" flow. A LEFT JOIN is required so that

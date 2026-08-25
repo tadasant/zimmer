@@ -103,9 +103,18 @@ class ScheduleTriggerJob < ApplicationJob
     if session
       Rails.logger.info "[ScheduleTriggerJob] Created/reused session #{session.id} for trigger #{trigger_id}"
     else
-      # Burst suppression already returned above, so nil here means a one-time
-      # reuse trigger whose target session is gone. Not an error.
-      Rails.logger.info "[ScheduleTriggerJob] Trigger #{trigger_id} fired but created no session (no reusable target session)"
+      # Burst suppression already returned above, so nil here means either a
+      # one-time reuse trigger whose target session is gone or a
+      # `skip_if_pending_session` trigger whose previous session is still
+      # pending. Neither is an error, and both are spent: the schedule advanced,
+      # because the next occurrence is a fresh chance and re-running this one
+      # would only ask the same question again.
+      reason = if trigger.last_fire_skipped_for_pending_session?
+                 "session #{trigger.last_fire_pending_session.id} is still pending"
+      else
+                 "no reusable target session"
+      end
+      Rails.logger.info "[ScheduleTriggerJob] Trigger #{trigger_id} fired but created no session (#{reason})"
     end
   rescue => e
     trigger = condition.trigger
