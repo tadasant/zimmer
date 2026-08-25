@@ -529,7 +529,39 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(real_dir) if real_dir && File.directory?(real_dir)
   end
 
-  test "referenced_clone_owners_by_basename maps unique basenames to session ids" do
+  # --- interrupted-delete tombstones (#412) --------------------------------
+
+  test "a deletion tombstone is not swept as an orphaned clone" do
+    # A young tombstone would otherwise sail past the age bar and linger forever;
+    # an old one would be miscounted as an orphaned clone. Neither is true: it is
+    # a clone mid-delete, and the reaper owns it.
+    tombstone = File.join(@clones_base, "test-clone-1770000000-abcd1234.deleting-0123abcd")
+    FileUtils.mkdir_p(tombstone)
+
+    job = StaleCloneCleanupJob.new
+    result = job.send(:sweep_orphaned_clones)
+
+    assert_equal 0, result[:cleaned], "a tombstone is not an orphaned clone and must not be counted as one"
+    assert_not File.exist?(tombstone), "but it must still be reaped"
+  end
+
+  test "the orphan sweep reaps leftover tombstones without touching live clones" do
+    tombstone = File.join(@clones_base, "test-clone-1770000001-abcd1234.deleting-0123abcd")
+    FileUtils.mkdir_p(File.join(tombstone, "app"))
+
+    live = sessions(:needs_input)
+    live_dir = File.join(@clones_base, "test-clone-1770000002-abcd1234")
+    FileUtils.mkdir_p(live_dir)
+    FileUtils.touch(live_dir, mtime: 2.hours.ago.to_time)
+    live.update!(trash_after: nil, metadata: { "clone_path" => live_dir })
+
+    StaleCloneCleanupJob.new.perform
+
+    assert_not File.exist?(tombstone)
+    assert File.directory?(live_dir), "a live session's clone must survive the reap"
+  end
+
+    test "referenced_clone_owners_by_basename maps unique basenames to session ids" do
     @session.update!(status: :needs_input, metadata: { "clone_path" => "/a/base/zzz-clone-aaa" })
 
     map = StaleCloneCleanupJob.new.send(:referenced_clone_owners_by_basename)

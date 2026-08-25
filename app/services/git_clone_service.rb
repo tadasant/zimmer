@@ -167,17 +167,23 @@ class GitCloneService
       raise error_class, "Failed to create clone: #{e.message}"
     end
 
-    # Clean up a git clone
+    # Clean up a git clone.
+    #
+    # Atomic from every consumer's point of view: AtomicCloneRemoval renames the
+    # clone aside before deleting it, so an interrupted delete can never leave a
+    # half-tree wearing the clone's name (#412).
+    #
     # @param path [String] the path to the clone
     # @return [void]
     def cleanup_clone(path)
       return unless path && file_system.directory?(path)
 
-      file_system.rm_rf(path)
+      AtomicCloneRemoval.remove(path, file_system: file_system)
     rescue StandardError => e
+      # Logged, not retried: by the time a failure can be raised the clone has
+      # already been renamed out of the way, so the path the caller cares about is
+      # gone. What is left is a tombstone, which the hourly clone sweeps reap.
       logger.error("Failed to cleanup clone", path: path, error: e.message)
-      # Try forceful removal as last resort
-      file_system.rm_rf(path) rescue nil
     end
 
     private

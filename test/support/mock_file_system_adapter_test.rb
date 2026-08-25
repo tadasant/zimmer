@@ -227,4 +227,24 @@ class MockFileSystemAdapterTest < ActiveSupport::TestCase
     error = assert_raises(Errno::ENOENT) { @adapter.chmod(0o755, "/nonexistent.sh") }
     assert_match(/nonexistent\.sh/, error.message)
   end
+
+  test "rename moves a directory and everything under it" do
+    @adapter.mkdir_p("/clones/repo-main-1-a/subdir")
+    @adapter.write("/clones/repo-main-1-a/subdir/file.txt", "content")
+
+    @adapter.rename("/clones/repo-main-1-a", "/clones/repo-main-1-a.deleting-0123abcd")
+
+    assert_not @adapter.exists?("/clones/repo-main-1-a")
+    assert_not @adapter.exists?("/clones/repo-main-1-a/subdir/file.txt")
+    assert @adapter.directory?("/clones/repo-main-1-a.deleting-0123abcd/subdir")
+    assert_equal "content", @adapter.read("/clones/repo-main-1-a.deleting-0123abcd/subdir/file.txt")
+  end
+
+  test "rename raises rather than clobbering an existing destination" do
+    @adapter.mkdir_p("/clones/a")
+    @adapter.mkdir_p("/clones/b")
+
+    assert_raises(Errno::ENOENT) { @adapter.rename("/clones/missing", "/clones/c") }
+    assert_raises(Errno::EEXIST) { @adapter.rename("/clones/a", "/clones/b") }
+  end
 end

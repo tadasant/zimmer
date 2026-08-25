@@ -91,6 +91,12 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     return unless File.directory?(clones_base)
     return unless reclaimable_root?(clones_base)
 
+    # Reap first: a tombstone is a clone whose delete was interrupted between the
+    # rename and the recursive unlink (#412). It is doomed by construction, so
+    # there is nothing to weigh — take the bytes back before considering anything
+    # a session might still own.
+    AtomicCloneRemoval.reap_tombstones(clones_base)
+
     orphans = find_orphan_directories(clones_base)
     cleaned = 0
 
@@ -116,6 +122,18 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     return 0 unless reclaimable_root?(clones_base)
 
     starting_free = CloneDiskGuard.available_bytes(clones_base)
+
+    # The cheapest bytes on the volume: a tombstone is a clone whose delete was
+    # interrupted (#412) and that no session can ever want back, so it is taken
+    # before any directory that needs an ownership argument made for it.
+    reaped = AtomicCloneRemoval.reap_tombstones(clones_base)
+    if reaped > 0 && (free_now = CloneDiskGuard.available_bytes(clones_base)) && free_now >= target_free_bytes
+      freed = starting_free ? [ free_now - starting_free, 0 ].max : 0
+      Rails.logger.info "[OrphanCloneFilesystemCleanupJob] Reclaimed #{freed} bytes from #{reaped} " \
+        "interrupted-delete tombstones; no orphan clones needed removing"
+      return freed
+    end
+
     orphans = find_orphan_directories(clones_base, cutoff: PRESSURE_AGE_THRESHOLD.ago)
 
     if orphans.empty?
@@ -221,6 +239,10 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     entries.filter_map do |entry|
       full_path = File.join(clones_base, entry)
       next unless File.directory?(full_path)
+      # A tombstone is not a clone — it is a clone being deleted right now, or one
+      # whose delete was interrupted. Either way it belongs to reap_tombstones,
+      # not to a sweep that reasons about session ownership and age.
+      next if AtomicCloneRemoval.tombstone?(entry)
       next if tracked_paths.include?(entry)
       next if live_paths.include?(File.expand_path(full_path))
 
@@ -241,8 +263,9 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     # Tear down Docker Compose resources first
     DockerComposeCleanupService.cleanup(dir_path)
 
-    # Remove the directory
-    FileUtils.rm_rf(dir_path)
+    # Rename aside, then delete: an interrupted sweep must not leave a half-tree
+    # wearing a clone's name (#412).
+    AtomicCloneRemoval.remove(dir_path)
     Rails.logger.info "[OrphanCloneFilesystemCleanupJob] Removed orphan clone: #{File.basename(dir_path)}"
   end
 end
