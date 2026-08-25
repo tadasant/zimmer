@@ -1584,6 +1584,70 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes flash[:notice], "queued"
   end
 
+  # A Turbo Frame follows a redirect with its own Turbo-Frame header still
+  # attached and then looks for a matching frame in the result. /sessions/:id is
+  # frameless by construction, so a redirect there from the drawer's follow-up
+  # form lands on a body with no frame and renders "Content missing" — the drawer
+  # bug reached through a redirect instead of through a poisoned cache. These two
+  # actions are the ones that redirect rather than answering with a Turbo Stream.
+  test "follow_up on a running session redirects the drawer frame to the drawer url" do
+    session = sessions(:running)
+    session.update!(metadata: { "process_pid" => 999999 })
+
+    post follow_up_session_url(session),
+      params: { follow_up_prompt: "Queued from the drawer" },
+      headers: { "Turbo-Frame" => "session_detail" }
+
+    assert_redirected_to drawer_session_path(session)
+  end
+
+  test "refresh redirects the drawer frame to the drawer url" do
+    session = sessions(:running)
+
+    post refresh_session_url(session), headers: { "Turbo-Frame" => "session_detail" }
+    assert_redirected_to drawer_session_path(session)
+
+    # Outside the drawer the full page is still the right destination.
+    post refresh_session_url(session)
+    assert_redirected_to session_path(session)
+  end
+
+  # A redirect is the other way the drawer can end up on a frameless body. The
+  # drawer's follow-up form carries no frame target, so Turbo scopes the POST to
+  # session_detail and follows the 302 with that header still attached, then looks
+  # for a matching frame in the result. /sessions/:id has none by construction, so
+  # a redirect there renders "Content missing" — the bug the drawer's own URL
+  # exists to prevent, arrived at by a different door.
+  test "a queued follow-up from the drawer redirects to the drawer, not the frameless page" do
+    session = sessions(:running)
+    session.update!(metadata: { "process_pid" => 999999 })
+
+    post follow_up_session_url(session),
+      params: { follow_up_prompt: "Queued from the drawer" },
+      headers: { "Turbo-Frame" => "session_detail" }
+
+    assert_redirected_to drawer_session_path(session)
+  end
+
+  # Same door, second latch: #refresh has no turbo_stream branch, so every exit is
+  # a redirect. From the drawer without a dashboard referer it fell back to the
+  # frameless session page.
+  test "refresh from the drawer redirects to the drawer, not the frameless page" do
+    session = sessions(:running)
+
+    post refresh_session_url(session), headers: { "Turbo-Frame" => "session_detail" }
+
+    assert_redirected_to drawer_session_path(session)
+  end
+
+  test "refresh outside the drawer still redirects to the full session page" do
+    session = sessions(:running)
+
+    post refresh_session_url(session)
+
+    assert_redirected_to session_path(session)
+  end
+
   test "should not follow up on archived session" do
     session = sessions(:archived)
 
@@ -5534,6 +5598,42 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_select "a[href*='/drawer']", false,
       "nothing rendered inside the drawer may link to a drawer path — that is the URL its own frame fetches"
+  end
+
+  # The other half of the invariant. Keeping the drawer's URL out of every cache a
+  # link can seed stops a frameless body being served TO the frame; this stops the
+  # frame navigating ITSELF somewhere frameless. A plain same-origin link rendered
+  # inside <turbo-frame id="session_detail"> navigates that frame, and every page it
+  # could land on — /triggers, /costs, the dashboard, the session's own full page —
+  # has no matching frame, so the drawer renders "Content missing" again by a
+  # different door. Everything in there must escape to _top.
+  #
+  # Asserted over the rendered body rather than per-link, so a link added later is
+  # caught without anyone remembering this rule.
+  test "every same-origin link inside the drawer escapes the frame" do
+    parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent")
+    child = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Child",
+      parent_session_id: parent.id, scheduling_class: "spot"
+    )
+
+    get drawer_session_url(child)
+    assert_response :success
+
+    offenders = css_select("a[href]").reject do |link|
+      href = link["href"].to_s
+      # Only a same-origin path is a frame navigation. An absolute URL, a bare
+      # fragment, a mailto:, an explicit target, or data-turbo="false" is not.
+      !href.start_with?("/") ||
+        link["target"].present? ||
+        link["data-turbo"] == "false" ||
+        link["data-turbo-frame"] == "_top"
+    end.map { |link| "#{link["href"]} (#{link.text.strip[0, 30]})" }
+
+    assert_empty offenders,
+      "these links inside the drawer would navigate its Turbo Frame to a page with no " \
+      "session_detail frame, rendering \"Content missing\". Give each data-turbo-frame=\"_top\": " \
+      "#{offenders.join(", ")}"
   end
 
   # ---------------------------------------------------------------------------

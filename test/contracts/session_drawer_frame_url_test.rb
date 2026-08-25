@@ -40,14 +40,12 @@ class SessionDrawerFrameUrlTest < ActiveSupport::TestCase
   end
 
   test "the drawer variant is served by its own route" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Drawer route")
+    routes = Rails.application.routes.url_helpers
 
-    assert_not_equal Rails.application.routes.url_helpers.session_path(session),
-      Rails.application.routes.url_helpers.drawer_session_path(session),
+    assert_not_equal routes.session_path(1), routes.drawer_session_path(1),
       "The drawer and the full page must not share a URL — that shared key is the bug."
     assert_equal "sessions#drawer",
-      Rails.application.routes.recognize_path(
-        Rails.application.routes.url_helpers.drawer_session_path(session)
-      ).values_at(:controller, :action).join("#")
+      Rails.application.routes.recognize_path(routes.drawer_session_path(1))
+        .values_at(:controller, :action).join("#")
   end
 end
