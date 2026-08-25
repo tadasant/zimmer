@@ -243,11 +243,28 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
       assert title_link, "the title should still be a link to the session"
       assert_equal "click->session-drawer#open", title_link["data-action"]
       assert_equal "_top", title_link["data-turbo-frame"], "the no-JS fallback is a full-page visit"
-      # Turbo 8 would otherwise prefetch the FRAMELESS response for this URL on
-      # hover and serve it to the drawer's frame request, which renders
-      # "Content missing".
+      # The drawer loads a DIFFERENT url than this href, which is what keeps the
+      # frame's fetch out of Turbo's URL-keyed hover-prefetch cache. Serving both
+      # bodies from one URL is what used to render "Content missing".
+      assert_equal drawer_session_path(queued), title_link["data-session-drawer-url"]
+      # A plain click never navigates to the href, so prefetching the full page
+      # on hover would always be wasted work.
       assert_equal "false", title_link["data-turbo-prefetch"]
     end
+  end
+
+  # The ranked view is where the "Content missing" report came from, and its ⋮
+  # menu's "Open session" is a plain full-page link to /sessions/:id. It needs no
+  # prefetch guard: that URL has exactly one body now, so warming it cannot poison
+  # the drawer's frame fetch.
+  test "the row's overflow menu links to the full session page, not the drawer path" do
+    queued = spot(10, title: "Rebuild the AIR catalog index")
+
+    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+
+    assert_select "#ranked_row_#{queued.id} a[href=?]", session_path(queued), { minimum: 1 }
+    assert_select "#ranked_row_#{queued.id} a[href*='/drawer']", false,
+      "no anchor may point at the drawer path, or hover-prefetch could poison the drawer's own frame fetch"
   end
 
   # --- starting a row ---------------------------------------------------------

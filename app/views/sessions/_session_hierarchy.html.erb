@@ -80,7 +80,7 @@
                 <span class="font-semibold text-gray-900 min-w-0 break-words"><%= node.label %></span>
                 <span class="text-xs font-medium text-indigo-700">this session</span>
               <% else %>
-                <%= link_to node.label, session_path(node.id), class: "text-indigo-600 hover:text-indigo-800 hover:underline min-w-0 break-words" %>
+                <%= link_to node.label, session_path(node.id), data: session_drawer_link_data(node.id), class: "text-indigo-600 hover:text-indigo-800 hover:underline min-w-0 break-words" %>
               <% end %>
               <span class="text-xs text-gray-400">#<%= node.id %> · <%= node.status %></span>
               <%# Genesis, on every node. It is inherited down a lineage, so showing
@@ -101,7 +101,7 @@
                       title="Queued or interrupted this session, so Zimmer treats it as an additional parent">
                   also senior:
                   <% node.uncles.each_with_index do |uncle_id, index| %><%= "," if index.positive? %>
-                    <%= link_to "##{uncle_id}", session_path(uncle_id), class: "underline hover:text-amber-900" %>
+                    <%= link_to "##{uncle_id}", session_path(uncle_id), data: session_drawer_link_data(uncle_id), class: "underline hover:text-amber-900" %>
                   <% end %>
                 </span>
               <% end %>
@@ -199,7 +199,7 @@
                 <% unless entry.here? %>
                   <span class="text-gray-400">·</span>
                   <span class="text-gray-500">said in</span>
-                  <%= link_to "##{entry.session_id}", session_path(entry.session_id), class: "text-indigo-600 hover:text-indigo-800 underline" %>
+                  <%= link_to "##{entry.session_id}", session_path(entry.session_id), data: session_drawer_link_data(entry.session_id), class: "text-indigo-600 hover:text-indigo-800 underline" %>
                   <span class="text-gray-500"><%= entry.session_label %></span>
                 <% end %>
                 <span class="text-gray-400">·</span>

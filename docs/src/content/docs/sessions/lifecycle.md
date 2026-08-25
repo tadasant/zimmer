@@ -1015,6 +1015,45 @@ dead socket has also *missed content*, and re-subscribing would not bring it bac
 which re-subscribes every subscription on the connection and restores live updates without
 rendering anything, then **backfill** the gap.
 
+### The drawer loads its own URL
+
+The dashboard's right-hand session drawer is a real Turbo Frame navigation, not an innerHTML
+injection — that is what makes the detail view's `turbo_stream_from` subscriptions and Stimulus
+controllers connect, so a transcript streams live inside the drawer and the follow-up and archive
+controls work.
+
+What it navigates to is a **separate path**: `/sessions/:id/drawer` renders the same detail body
+wrapped in `<turbo-frame id="session_detail">` with no application layout, and `/sessions/:id`
+renders the full page with no frame. Which body you get is decided by the URL and nothing else.
+
+That separation is load-bearing, and it replaced an arrangement where one URL served both bodies
+and a `Turbo-Frame` request header chose between them. Every cache between the view and the reader
+keys on the URL, so a shared URL meant any of them could hand the drawer's frame request the
+frameless body — and Turbo would render its `Content missing` placeholder in place of the session.
+The one that actually did it is not an HTTP cache and no response header can reach it: Turbo 8's
+link prefetching keeps a hover-prefetched request keyed **only** by URL, and splices it into any
+later GET fetch for that URL — a frame's own `src` load included — discarding the `Turbo-Frame`
+header that decided the body. It happens in browser memory and never touches the network, which is
+why `Vary: Turbo-Frame` could not help and why disabling prefetch on one link never did either: the
+key is the URL, so *any* other link to the same session seeded the entry just as well.
+
+Two rules follow, and both are pinned by tests:
+
+- **Nothing links to a drawer path.** Turbo's prefetch cache is only ever seeded by hovering an
+  `<a>`, so as long as no anchor points at `/sessions/:id/drawer`, no entry for it can exist. A
+  drawer trigger's `href` stays the full session page — so middle-click, ⌘-click and the no-JS
+  path all do the obvious thing — and it hands the drawer the frame's URL in
+  `data-session-drawer-url` instead. `SessionsHelper#session_drawer_link_data` builds that pair.
+- **Links rendered inside the drawer target `_top`.** A plain link inside the frame would navigate
+  *the frame* to the full-page URL, which no longer carries a frame. The session-hierarchy links
+  carry `data-turbo-frame="_top"` and the same drawer url, so clicking one swaps the drawer to that
+  session and, on the full page where no drawer exists, falls back to an ordinary navigation.
+
+`test/contracts/session_drawer_frame_url_test.rb` pins the arrangement, and the controller tests
+assert the invariant directly: each URL returns the same body whatever the `Turbo-Frame` header
+says. Opening `/sessions/:id/drawer` by hand is not a supported way to read a session — it answers
+with a bare frame and no chrome — it is the drawer's own address.
+
 ### The reopen backfill
 
 iOS suspends a backgrounded standalone PWA. The process stops and the WebSocket dies with it, so

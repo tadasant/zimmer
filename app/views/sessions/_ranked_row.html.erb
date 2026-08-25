@@ -46,14 +46,17 @@
       preventing the default for anything but an unmodified primary click, and
       below `sm` it declines entirely so a phone gets the full session page.
 
-      turbo_prefetch: false is REQUIRED, for the same reason it is on the card's
-      View button: an intercepted click never does a Turbo Drive visit, so
-      hover-prefetch would only ever seed the cache with the FRAMELESS response
-      for this URL — which the drawer's frame request is then served, rendering
-      "Content missing". %>
+      The href is the full session page; session_drawer_url is the separate path
+      the drawer's frame loads, so the frame never fetches a URL a link points at
+      and no URL-keyed cache can serve it the frameless body. See
+      SessionsController#drawer.
+
+      turbo_prefetch: false is a cost measure, not a correctness one — an
+      intercepted click never navigates to this href, so hover-prefetching the
+      full page would always be wasted work. %>
   <%= link_to agent_session.title.presence || "Untitled session",
         session_path(agent_session),
-        data: { turbo_frame: "_top", turbo_prefetch: false, action: "click->session-drawer#open" },
+        data: { turbo_frame: "_top", turbo_prefetch: false, action: "click->session-drawer#open", session_drawer_url: drawer_session_path(agent_session) },
         class: "min-w-0 flex-1 break-words font-medium text-gray-800 hover:text-indigo-600 max-sm:line-clamp-2 sm:order-3 sm:truncate" %>
 
   <%# Row actions behind a "⋮", the same overflow-menu controller the session card
@@ -106,9 +109,10 @@
             role: "menuitem",
             data: { turbo_method: :post, action: "overflow-menu#close" },
             class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
+      <%# A plain full-page navigation, and prefetchable: /sessions/:id has exactly
+          one body now, so warming it on hover cannot poison anything. %>
       <%= link_to "Open session", session_path(agent_session),
             role: "menuitem",
-            data: { turbo_prefetch: false },
             class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
       <%# Trash posts to the same #archive action every other Trash affordance in
           the app posts to, so the queued-message speed bump and the Undo toast

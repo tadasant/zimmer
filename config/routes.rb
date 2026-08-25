@@ -390,6 +390,12 @@ Rails.application.routes.draw do
       patch :update_heartbeat_interval
       patch :set_category
       get :timeline_items
+      # The dashboard drawer's variant of #show: the same detail body, wrapped in
+      # <turbo-frame id="session_detail"> and rendered without the layout. It is a
+      # distinct PATH rather than a Turbo-Frame-header variant of /sessions/:id so
+      # that the framed and frameless bodies never share a cache key — see the
+      # comment on SessionsController#drawer.
+      get :drawer
       get :transcript
       post :fork
       post :regenerate_status_summary

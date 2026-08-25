@@ -195,19 +195,19 @@
             <% end %>
           <% end %>
           <%# A real <a href> so middle/modifier clicks open a new tab natively;
-              session-drawer#open intercepts only plain left-clicks to open the
-              detail view in the right-side drawer. turbo_frame: "_top" keeps the
-              no-JS fallback a normal full-page navigation.
+              session-drawer#open intercepts only plain left-clicks and loads
+              session_drawer_url into the drawer's frame instead. turbo_frame:
+              "_top" keeps the no-JS fallback a normal full-page navigation.
 
-              turbo_prefetch: false is REQUIRED: a plain left-click never does a
-              Turbo Drive visit (it's intercepted into a frame load), so Turbo 8's
-              hover-prefetch would only fetch the *full-page* (frameless) variant
-              of this URL and seed the browser cache with it. The drawer's frame
-              request for the same URL is then served that cached frameless
-              response, which has no <turbo-frame id="session_detail"> — rendering
-              "Content missing". Disabling prefetch here also avoids fetching a
-              ~900 KB full page on every hover that would never be used. %>
-          <%= link_to session_path(agent_session), class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: "View session details", "aria-label" => "View session #{agent_session.id}", data: { turbo_frame: "_top", turbo_prefetch: false, action: "click->session-drawer#open" } do %>
+              The href and the drawer url are deliberately different paths: the
+              drawer's frame never fetches a URL that any <a> on the page points
+              at, so no URL-keyed cache can hand it the frameless body. See
+              SessionsController#drawer.
+
+              turbo_prefetch: false is a cost measure, not a correctness one — a
+              plain left-click never navigates to this href, so prefetching a
+              ~900 KB full page on hover would always be wasted work. %>
+          <%= link_to session_path(agent_session), class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: "View session details", "aria-label" => "View session #{agent_session.id}", data: { turbo_frame: "_top", turbo_prefetch: false, action: "click->session-drawer#open", session_drawer_url: drawer_session_path(agent_session) } do %>
             View
           <% end %>
         </div>
