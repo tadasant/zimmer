@@ -8,10 +8,12 @@ import { Controller } from "@hotwired/stimulus"
  * follow-up, archive) without losing their place on the dashboard.
  *
  * The detail view is lazy-loaded into a Turbo Frame by setting its `src` to the
- * session URL. Loading via a real frame navigation (rather than innerHTML
- * injection) is what makes the detail view's `turbo_stream_from` subscriptions
- * and Stimulus controllers connect, so the transcript streams live inside the
- * drawer and the follow-up/archive controls work.
+ * session's DRAWER url (/sessions/:id/drawer), which is a different path from the
+ * full session page the trigger link points at. Loading via a real frame
+ * navigation (rather than innerHTML injection) is what makes the detail view's
+ * `turbo_stream_from` subscriptions and Stimulus controllers connect, so the
+ * transcript streams live inside the drawer and the follow-up/archive controls
+ * work.
  *
  * Native link semantics are preserved: the "View" trigger is a real <a href>, so
  * middle-clicks (which fire `auxclick`, not `click`) and modifier-clicks
@@ -103,14 +105,31 @@ export default class extends Controller {
       return
     }
 
-    const url = event.currentTarget.href
+    // The frame loads the drawer's OWN url (/sessions/:id/drawer), which is a
+    // different path from the trigger's href (/sessions/:id, the full page the
+    // link navigates to on a middle-click or without JS). That separation is the
+    // fix for the drawer's "Content missing" bug, not an incidental detail:
+    // Turbo 8 caches a hover-prefetched request keyed only by URL and splices it
+    // into any later GET fetch for the same URL — this frame's `src` load
+    // included — dropping the Turbo-Frame header that decided which body the
+    // server sent. As long as no <a href> on the page points at the drawer path,
+    // nothing can ever seed that cache entry, so the frame always gets a framed
+    // body. A trigger that declares no drawer url is not ours to intercept.
+    const url = event.currentTarget.dataset.sessionDrawerUrl
     if (!url) return
 
     event.preventDefault()
 
+    // Reopening while the panel is already out (a link inside the drawer swapping
+    // it to another session) must not replay the slide: re-arming the settle gate
+    // would make the panel inert for the transition it is not making, and the
+    // trigger to return focus to on close is the one that opened the drawer in
+    // the first place, not the in-drawer link.
+    const wasClosed = this.isClosed
+
     // Remember the trigger so focus can return to it on close (the panel is an
     // aria-modal dialog; focus must not be stranded on <body> after dismissal).
-    this.returnFocusEl = event.currentTarget
+    if (wasClosed) this.returnFocusEl = event.currentTarget
 
     // Cancel any pending frame-clear from a previous close so reopening keeps
     // (or replaces) the content cleanly.
@@ -131,7 +150,15 @@ export default class extends Controller {
     // <turbo-frame id="session_detail"> in the response is swapped in.
     this.frameTarget.src = url
 
-    this.show()
+    if (wasClosed) {
+      this.show()
+    } else {
+      // Already out, so no slide to replay — but blanking the frame above just
+      // destroyed the link that had focus, dropping it to <body>, outside this
+      // aria-modal panel. Tab from there walks into the dashboard behind the
+      // open drawer. Put focus back on the panel, as show() would have.
+      this.panelTarget.focus({ preventScroll: true })
+    }
   }
 
   show() {

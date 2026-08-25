@@ -564,13 +564,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       "full-page show should not wrap content in the drawer's session_detail frame"
   end
 
-  # When the dashboard's session drawer lazy-loads the detail page into its
-  # Turbo Frame, the request carries a Turbo-Frame header. The controller then
-  # renders a chrome-light, frame-wrapped variant with no application layout so
-  # it swaps cleanly into the drawer panel.
-  test "show renders chrome-light frame variant for the session drawer" do
+  # The drawer variant lives at its own path and renders chrome-light, wrapped in
+  # the frame the drawer panel swaps into.
+  test "drawer renders the chrome-light frame variant for the session drawer" do
     session = sessions(:running)
-    get session_url(session), headers: { "Turbo-Frame" => "session_detail" }
+    get drawer_session_url(session)
     assert_response :success
     # The matching frame is present so Turbo can swap it into the drawer.
     assert_select "turbo-frame#session_detail"
@@ -679,25 +677,42 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "pre.overflow-y-auto", text: /#{Regexp.escape(tail_marker)}/
   end
 
-  # show serves two different bodies from the same URL depending on the
-  # Turbo-Frame request header (full-page vs. drawer frame). The response must
-  # advertise Vary: Turbo-Frame so no cache (notably the browser HTTP cache that
-  # Turbo's hover-prefetch fills with the frameless variant) reuses one variant
-  # to satisfy a request for the other — which would render "Content missing".
-  test "show varies on Turbo-Frame for the full-page variant" do
+  # The root cause of the drawer's intermittent "Content missing": /sessions/:id
+  # used to serve two structurally different bodies — frameless full page, or
+  # frame-wrapped drawer variant — chosen by the Turbo-Frame request header. Any
+  # cache keyed on URL alone could then hand the frameless body to the drawer's
+  # frame request, and the worst offender is not an HTTP cache at all: Turbo 8's
+  # LinkPrefetchObserver stores a hover-prefetched request keyed ONLY by URL and
+  # splices it into any later GET fetch for that URL, frame `src` loads included,
+  # discarding the frame header entirely. `Vary` cannot reach that substitution
+  # because it happens in browser memory and never touches the network.
+  #
+  # These two tests pin the fix: each URL has exactly ONE body, so there is no
+  # variant for a cache to pick wrongly.
+  test "show serves the same frameless body regardless of the Turbo-Frame header" do
     session = sessions(:running)
+
     get session_url(session)
     assert_response :success
-    assert_includes vary_tokens(response), "Turbo-Frame",
-      "full-page show must Vary on Turbo-Frame so caches don't serve it to a frame request"
-  end
+    assert_select "turbo-frame#session_detail", false
 
-  test "show varies on Turbo-Frame for the drawer frame variant" do
-    session = sessions(:running)
     get session_url(session), headers: { "Turbo-Frame" => "session_detail" }
     assert_response :success
-    assert_includes vary_tokens(response), "Turbo-Frame",
-      "drawer frame show must Vary on Turbo-Frame so caches key on the header"
+    assert_select "turbo-frame#session_detail", false,
+      "/sessions/:id must not negotiate on Turbo-Frame — one URL, one body"
+  end
+
+  test "drawer serves the same framed body regardless of the Turbo-Frame header" do
+    session = sessions(:running)
+
+    get drawer_session_url(session)
+    assert_response :success
+    assert_select "turbo-frame#session_detail"
+
+    get drawer_session_url(session), headers: { "Turbo-Frame" => "session_detail" }
+    assert_response :success
+    assert_select "turbo-frame#session_detail"
+    assert_no_match(/<html/, response.body)
   end
 
   # When a session's frozen catalog columns are blank but its agent root still
@@ -1567,6 +1582,70 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "This should be queued", session.enqueued_messages.first.content
     assert_redirected_to session_path(session)
     assert_includes flash[:notice], "queued"
+  end
+
+  # A Turbo Frame follows a redirect with its own Turbo-Frame header still
+  # attached and then looks for a matching frame in the result. /sessions/:id is
+  # frameless by construction, so a redirect there from the drawer's follow-up
+  # form lands on a body with no frame and renders "Content missing" — the drawer
+  # bug reached through a redirect instead of through a poisoned cache. These two
+  # actions are the ones that redirect rather than answering with a Turbo Stream.
+  test "follow_up on a running session redirects the drawer frame to the drawer url" do
+    session = sessions(:running)
+    session.update!(metadata: { "process_pid" => 999999 })
+
+    post follow_up_session_url(session),
+      params: { follow_up_prompt: "Queued from the drawer" },
+      headers: { "Turbo-Frame" => "session_detail" }
+
+    assert_redirected_to drawer_session_path(session)
+  end
+
+  test "refresh redirects the drawer frame to the drawer url" do
+    session = sessions(:running)
+
+    post refresh_session_url(session), headers: { "Turbo-Frame" => "session_detail" }
+    assert_redirected_to drawer_session_path(session)
+
+    # Outside the drawer the full page is still the right destination.
+    post refresh_session_url(session)
+    assert_redirected_to session_path(session)
+  end
+
+  # A redirect is the other way the drawer can end up on a frameless body. The
+  # drawer's follow-up form carries no frame target, so Turbo scopes the POST to
+  # session_detail and follows the 302 with that header still attached, then looks
+  # for a matching frame in the result. /sessions/:id has none by construction, so
+  # a redirect there renders "Content missing" — the bug the drawer's own URL
+  # exists to prevent, arrived at by a different door.
+  test "a queued follow-up from the drawer redirects to the drawer, not the frameless page" do
+    session = sessions(:running)
+    session.update!(metadata: { "process_pid" => 999999 })
+
+    post follow_up_session_url(session),
+      params: { follow_up_prompt: "Queued from the drawer" },
+      headers: { "Turbo-Frame" => "session_detail" }
+
+    assert_redirected_to drawer_session_path(session)
+  end
+
+  # Same door, second latch: #refresh has no turbo_stream branch, so every exit is
+  # a redirect. From the drawer without a dashboard referer it fell back to the
+  # frameless session page.
+  test "refresh from the drawer redirects to the drawer, not the frameless page" do
+    session = sessions(:running)
+
+    post refresh_session_url(session), headers: { "Turbo-Frame" => "session_detail" }
+
+    assert_redirected_to drawer_session_path(session)
+  end
+
+  test "refresh outside the drawer still redirects to the full session page" do
+    session = sessions(:running)
+
+    post refresh_session_url(session)
+
+    assert_redirected_to session_path(session)
   end
 
   test "should not follow up on archived session" do
@@ -5461,13 +5540,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(archived)}"
   end
 
-  # The dashboard "View" link opens the detail in the right-side drawer via a
-  # frame load; its plain left-click is intercepted, so it never does a Turbo
-  # Drive visit. Turbo's hover-prefetch must be disabled on it, otherwise the
-  # prefetch fetches the frameless full-page variant and seeds the browser cache
-  # with it, and the drawer's frame request is then served that frameless
-  # response — rendering "Content missing".
-  test "index View link disables Turbo prefetch to avoid drawer cache poisoning" do
+  # The dashboard "View" link is a real <a> to the full session page (so
+  # middle-click and the no-JS path work), and carries the SEPARATE drawer path
+  # for session-drawer#open to load into the frame. Those two URLs must differ:
+  # that is what keeps the frame's URL out of every URL-keyed cache a link can
+  # populate.
+  test "index View link carries the separate drawer url for the drawer to load" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Drawer link")
 
     get root_url(every_status_params)
@@ -5477,10 +5555,85 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # consuming session_path, a trailing bare String would be parsed by
     # assert_select as the expected text content (equality), not as the failure
     # message — so the explicit equality hash keeps the message a message.
-    assert_select "a[href=?][data-turbo-prefetch='false'][data-action*='session-drawer#open']",
+    assert_select "a[href=?][data-action*='session-drawer#open'][data-session-drawer-url=?]",
       session_path(session),
+      drawer_session_path(session),
       { count: 1 },
-      "the dashboard View link must set data-turbo-prefetch='false' to avoid drawer cache poisoning"
+      "the dashboard View link must hand session-drawer#open the drawer path, not its own href"
+    assert_not_equal session_path(session), drawer_session_path(session),
+      "the drawer must load a different URL than any link points at"
+  end
+
+  # The structural guarantee, asserted rather than assumed: nothing the dashboard
+  # renders links to a drawer path. Turbo's prefetch cache is seeded only by
+  # hovering an <a>, so with no anchor pointing at the URL the drawer's frame
+  # fetches, there can never be an entry to splice into that fetch. This is the
+  # test that would have caught the original bug class, and it keeps catching it
+  # no matter which new link to a session someone adds later.
+  test "no dashboard link points at a drawer path" do
+    Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Drawer link")
+
+    get root_url(every_status_params)
+    assert_response :success
+
+    assert_select "a[href*='/drawer']", false,
+      "a link to the drawer path would let Turbo's hover-prefetch cache poison the drawer's own frame fetch"
+  end
+
+  # Links rendered INSIDE the drawer (the hierarchy tree) navigate the drawer
+  # frame if left alone, and that frame would fetch the frameless /sessions/:id.
+  # They target _top and hand the drawer its own path instead.
+  test "in-drawer hierarchy links target _top and carry the drawer url" do
+    parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent")
+    child = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Child", parent_session_id: parent.id)
+
+    get drawer_session_url(child)
+    assert_response :success
+
+    assert_select "a[href=?][data-turbo-frame='_top'][data-session-drawer-url=?]",
+      session_path(parent),
+      drawer_session_path(parent),
+      { count: 1 },
+      "a hierarchy link inside the drawer must not frame-navigate to the frameless full-page URL"
+
+    assert_select "a[href*='/drawer']", false,
+      "nothing rendered inside the drawer may link to a drawer path — that is the URL its own frame fetches"
+  end
+
+  # The other half of the invariant. Keeping the drawer's URL out of every cache a
+  # link can seed stops a frameless body being served TO the frame; this stops the
+  # frame navigating ITSELF somewhere frameless. A plain same-origin link rendered
+  # inside <turbo-frame id="session_detail"> navigates that frame, and every page it
+  # could land on — /triggers, /costs, the dashboard, the session's own full page —
+  # has no matching frame, so the drawer renders "Content missing" again by a
+  # different door. Everything in there must escape to _top.
+  #
+  # Asserted over the rendered body rather than per-link, so a link added later is
+  # caught without anyone remembering this rule.
+  test "every same-origin link inside the drawer escapes the frame" do
+    parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent")
+    child = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Child",
+      parent_session_id: parent.id, scheduling_class: "spot"
+    )
+
+    get drawer_session_url(child)
+    assert_response :success
+
+    offenders = css_select("a[href]").reject do |link|
+      href = link["href"].to_s
+      # Only a same-origin path is a frame navigation. An absolute URL, a bare
+      # fragment, a mailto:, an explicit target, or data-turbo="false" is not.
+      !href.start_with?("/") ||
+        link["target"].present? ||
+        link["data-turbo"] == "false" ||
+        link["data-turbo-frame"] == "_top"
+    end.map { |link| "#{link["href"]} (#{link.text.strip[0, 30]})" }
+
+    assert_empty offenders,
+      "these links inside the drawer would navigate its Turbo Frame to a page with no " \
+      "session_detail frame, rendering \"Content missing\". Give each data-turbo-frame=\"_top\": " \
+      "#{offenders.join(", ")}"
   end
 
   # ---------------------------------------------------------------------------
@@ -5753,12 +5906,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   private
-
-  # Vary is a comma-separated list of header names; normalize to a token array so
-  # assertions don't depend on ordering or whitespace.
-  def vary_tokens(response)
-    (response.headers["Vary"] || "").split(",").map(&:strip)
-  end
 
   # Both Quick Router entry points resolve the router root and enqueue a job.
   # Stub the pair so a test can assert on the created row alone.
