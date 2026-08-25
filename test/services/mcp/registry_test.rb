@@ -16,8 +16,8 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   test "self_session exposes exactly the self-management surface" do
     names = Mcp::Registry.tools_for([ "self_session" ]).map(&:tool_name)
 
-    assert_equal %w[get_session get_configs action_session send_push_notification wake_me_up_later
-                    wake_me_up_when_session_changes_state].sort, names.sort
+    assert_equal %w[get_session get_session_provenance get_configs action_session send_push_notification
+                    wake_me_up_later wake_me_up_when_session_changes_state].sort, names.sort
   end
 
   test "self_session gets the restricted action_session variant" do
@@ -46,6 +46,6 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 22, names.size
+    assert_equal 23, names.size
   end
 end
