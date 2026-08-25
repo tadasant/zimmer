@@ -2099,9 +2099,9 @@ so the merged-PR message rides that same curve.
 The session most likely to be waiting on a merge is exactly the one with stale user activity: it did
 its work, said so, and has been sitting in `needs_input` — or asleep in `waiting` on the `open-pr`
 skill's self-wake — ever since. It can therefore wait a long time to learn that the PR it was
-blocked on landed. The backoff exists because polling every
-active session's PRs on every tick exhausts GitHub's 5000/hr authenticated rate limit at around 50
-sessions, and that is the trade being made. Touching the session resets the curve to the 30-second
+blocked on landed. The backoff exists because polling every active session's PRs on every tick
+exhausts GitHub's 5000/hr authenticated rate limit at around 50 sessions, and that is the trade
+being made. Touching the session resets the curve to the 30-second
 cadence.
 
 ---
