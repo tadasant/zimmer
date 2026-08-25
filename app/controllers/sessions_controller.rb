@@ -640,108 +640,35 @@ class SessionsController < ApplicationController
   # These correspond to the client-side log level filter values
   VALID_FILTER_LEVELS = %w[minimal condensed show-logs verbose].freeze
 
+  # GET /sessions/:id
+  # The full session page. Always frameless: this URL has exactly one body.
   def show
-    @session = find_session
+    load_session_detail
+  end
 
-    # A genuine human view — opening the full page or lazy-loading the drawer
-    # frame — counts as deliberate engagement. We only act on HTML requests
-    # (initial page/drawer load, not passive Turbo Stream/AJAX polling) and skip
-    # Turbo's hover-prefetch requests, which are speculative and not real views.
-    if human_initiated_view?
-      # Mark any unread notifications for this session as read.
-      mark_session_notifications_read(@session)
-
-      # Record the view as "last touched" user activity (best effort; a failure
-      # here must never break rendering the session). touch_user_view! writes via
-      # update_column so a mere view does not rebroadcast the card to the index.
-      begin
-        @session.touch_user_view!
-      rescue => e
-        Rails.logger.info("[SessionsController#show] touch_user_view! failed for session #{@session.id}: #{e.class}: #{e.message}")
-      end
-    end
-
-    # Get filter level from params (for page load with filter param)
-    # Default to "minimal" which matches the client-side default
-    @filter_level = params[:filter].presence || "minimal"
-    @filter_level = "minimal" unless VALID_FILTER_LEVELS.include?(@filter_level)
-
-    # Performance optimization: instead of loading ALL logs and parsing the ENTIRE
-    # transcript (which can be 280K+ logs and 9MB+ for long-running sessions),
-    # only load the tail of each data source. We need enough items from each source
-    # so that after merging, sorting, and filtering, we have at least
-    # INITIAL_TIMELINE_ITEMS_LIMIT items to display.
-    #
-    # For the total count, we use cheap counting methods (SQL COUNT, line counting)
-    # instead of loading all data into memory.
-    @total_timeline_items_count = compute_filtered_count(@session, @filter_level)
-
-    tail_items = build_timeline_items_tail(@session, @filter_level, TAIL_FETCH_BUFFER)
-    filtered_items = filter_timeline_items(tail_items, @filter_level)
-
-    # For initial page load, only show the last N filtered items
-    if @total_timeline_items_count > INITIAL_TIMELINE_ITEMS_LIMIT
-      @has_more_items = true
-      @oldest_displayed_index = @total_timeline_items_count - [ filtered_items.count, INITIAL_TIMELINE_ITEMS_LIMIT ].min
-      @timeline_items = filtered_items.last(INITIAL_TIMELINE_ITEMS_LIMIT)
-    else
-      @has_more_items = false
-      @oldest_displayed_index = 0
-      @timeline_items = filtered_items
-    end
-
-    # Timestamp cursor for infinite scroll pagination.
-    # The oldest displayed item's timestamp is used as the cursor for loading earlier items.
-    @oldest_displayed_timestamp = @timeline_items.first&.dig(:sort_time)&.iso8601(6)
-
-    # Load MCP servers for the editable MCP selector
-    @servers_for_select = ServersConfig.all.map do |server|
-      { name: server.name, title: server.title, description: server.description }
-    end
-
-    # Load catalog skills for the editable skills selector
-    @catalog_skills_for_select = SkillsConfig.all.map do |skill|
-      { id: skill.id, name: skill.name, title: skill.title, description: skill.description, category: skill.category }
-    end
-
-    # Load catalog hooks for the editable hooks selector
-    @catalog_hooks_for_select = HooksConfig.all.map do |hook|
-      { id: hook.id, name: hook.name, title: hook.title, description: hook.description }
-    end
-
-    # Load plugins for the editable plugins selector
-    @plugins_for_select = PluginsConfig.all.map do |plugin|
-      { id: plugin.id, title: plugin.title, description: plugin.description }
-    end
-
-    # Load available models for the editable model selector, scoped to this
-    # session's runtime so the picker only offers runtime-compatible models.
-    @available_models = ModelCatalog.model_ids_for(@session.agent_runtime)
-
-    # Load goals for the editable goal selector
-    @goals_for_select = GoalsConfig.all.map do |goal|
-      { id: goal.id, name: goal.name, description: goal.description }
-    end
-
-    # Load Claude skills for the follow-up form slash command typeahead
-    @session_skills = ClaudeSkillsCacheService.get_for_session(@session)
-
-    # This URL serves two structurally different bodies from the same path: the
-    # full-page variant (no frame) and the drawer variant (wrapped in
-    # <turbo-frame id="session_detail">). Which one is rendered depends solely on
-    # the Turbo-Frame request header, so every cache between us and the browser —
-    # including the browser's own HTTP cache that Turbo's hover-prefetch populates
-    # — must key on that header. Without it, a frameless full-page response can be
-    # reused to satisfy the drawer's frame request, rendering "Content missing".
-    response.headers["Vary"] = [ response.headers["Vary"], "Turbo-Frame" ].compact.join(", ")
-
-    # When the dashboard's session drawer lazy-loads this page into its Turbo
-    # Frame, render a chrome-light, frame-wrapped variant without the
-    # application layout (the drawer panel supplies the surrounding chrome).
-    if request.headers["Turbo-Frame"] == "session_detail"
-      @in_drawer = true
-      render layout: false
-    end
+  # GET /sessions/:id/drawer
+  # The dashboard drawer's variant of #show — the same detail body, wrapped in
+  # <turbo-frame id="session_detail"> and rendered without the application layout
+  # (the drawer panel supplies the surrounding chrome).
+  #
+  # This is a separate PATH, not a Turbo-Frame-header variant of /sessions/:id,
+  # and that is the whole point. Serving two structurally different bodies from
+  # one URL made every URL-keyed cache between the view and the browser a way to
+  # get the wrong one, and the worst of them is not an HTTP cache at all: Turbo 8's
+  # LinkPrefetchObserver keeps a prefetched request keyed ONLY by URL and splices
+  # it into any later GET fetch for that URL — including this frame's own `src`
+  # load — discarding the frame's Turbo-Frame header along with it. The frame then
+  # gets a body with no <turbo-frame id="session_detail"> in it and Turbo renders
+  # "Content missing". `Vary` cannot help, because that substitution happens in
+  # browser memory and never reaches the network.
+  #
+  # With disjoint paths the question never arises: /sessions/:id is always
+  # frameless, /sessions/:id/drawer is always framed, and no cache — Turbo's,
+  # the browser's, or a CDN's — can offer one in place of the other.
+  def drawer
+    @in_drawer = true
+    load_session_detail
+    render :show, layout: false
   end
 
   # Fetch older timeline items for infinite scroll
@@ -3239,6 +3166,95 @@ class SessionsController < ApplicationController
   def scalar_page_param
     page = params[:page]
     page if page.is_a?(String) || page.is_a?(Integer)
+  end
+
+  # Loads everything #show and #drawer render: the session, its timeline tail,
+  # and the form/selector collections the detail view needs.
+  def load_session_detail
+    @session = find_session
+
+    # A genuine human view — opening the full page or lazy-loading the drawer
+    # frame — counts as deliberate engagement. We only act on HTML requests
+    # (initial page/drawer load, not passive Turbo Stream/AJAX polling) and skip
+    # Turbo's hover-prefetch requests, which are speculative and not real views.
+    if human_initiated_view?
+      # Mark any unread notifications for this session as read.
+      mark_session_notifications_read(@session)
+
+      # Record the view as "last touched" user activity (best effort; a failure
+      # here must never break rendering the session). touch_user_view! writes via
+      # update_column so a mere view does not rebroadcast the card to the index.
+      begin
+        @session.touch_user_view!
+      rescue => e
+        Rails.logger.info("[SessionsController#show] touch_user_view! failed for session #{@session.id}: #{e.class}: #{e.message}")
+      end
+    end
+
+    # Get filter level from params (for page load with filter param)
+    # Default to "minimal" which matches the client-side default
+    @filter_level = params[:filter].presence || "minimal"
+    @filter_level = "minimal" unless VALID_FILTER_LEVELS.include?(@filter_level)
+
+    # Performance optimization: instead of loading ALL logs and parsing the ENTIRE
+    # transcript (which can be 280K+ logs and 9MB+ for long-running sessions),
+    # only load the tail of each data source. We need enough items from each source
+    # so that after merging, sorting, and filtering, we have at least
+    # INITIAL_TIMELINE_ITEMS_LIMIT items to display.
+    #
+    # For the total count, we use cheap counting methods (SQL COUNT, line counting)
+    # instead of loading all data into memory.
+    @total_timeline_items_count = compute_filtered_count(@session, @filter_level)
+
+    tail_items = build_timeline_items_tail(@session, @filter_level, TAIL_FETCH_BUFFER)
+    filtered_items = filter_timeline_items(tail_items, @filter_level)
+
+    # For initial page load, only show the last N filtered items
+    if @total_timeline_items_count > INITIAL_TIMELINE_ITEMS_LIMIT
+      @has_more_items = true
+      @oldest_displayed_index = @total_timeline_items_count - [ filtered_items.count, INITIAL_TIMELINE_ITEMS_LIMIT ].min
+      @timeline_items = filtered_items.last(INITIAL_TIMELINE_ITEMS_LIMIT)
+    else
+      @has_more_items = false
+      @oldest_displayed_index = 0
+      @timeline_items = filtered_items
+    end
+
+    # Timestamp cursor for infinite scroll pagination.
+    # The oldest displayed item's timestamp is used as the cursor for loading earlier items.
+    @oldest_displayed_timestamp = @timeline_items.first&.dig(:sort_time)&.iso8601(6)
+
+    # Load MCP servers for the editable MCP selector
+    @servers_for_select = ServersConfig.all.map do |server|
+      { name: server.name, title: server.title, description: server.description }
+    end
+
+    # Load catalog skills for the editable skills selector
+    @catalog_skills_for_select = SkillsConfig.all.map do |skill|
+      { id: skill.id, name: skill.name, title: skill.title, description: skill.description, category: skill.category }
+    end
+
+    # Load catalog hooks for the editable hooks selector
+    @catalog_hooks_for_select = HooksConfig.all.map do |hook|
+      { id: hook.id, name: hook.name, title: hook.title, description: hook.description }
+    end
+
+    # Load plugins for the editable plugins selector
+    @plugins_for_select = PluginsConfig.all.map do |plugin|
+      { id: plugin.id, title: plugin.title, description: plugin.description }
+    end
+
+    # Load available models for the editable model selector, scoped to this
+    # session's runtime so the picker only offers runtime-compatible models.
+    @available_models = ModelCatalog.model_ids_for(@session.agent_runtime)
+
+    # Load goals for the editable goal selector
+    @goals_for_select = GoalsConfig.all.map do |goal|
+      { id: goal.id, name: goal.name, description: goal.description }
+    end
+
+    # Load Claude skills for the follow-up form slash command typeahead
+    @session_skills = ClaudeSkillsCacheService.get_for_session(@session)
   end
 
   # True when the current request is a deliberate human page/drawer load, as

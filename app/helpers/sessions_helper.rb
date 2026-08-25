@@ -402,4 +402,27 @@ module SessionsHelper
       value.to_s
     end
   end
+  # Link data for pointing at a session from anywhere the dashboard's right-side
+  # drawer might be mounted — a card, a ranked row, a node in the hierarchy tree
+  # rendered INSIDE the drawer itself.
+  #
+  # The href stays the full session page, so middle-click, ⌘/Ctrl-click and the
+  # no-JS path all do the obvious thing. session-drawer#open intercepts a plain
+  # left-click and loads `session_drawer_url` — a different path — into the
+  # drawer's frame.
+  #
+  # Keeping those two URLs disjoint is what fixes the drawer's intermittent
+  # "Content missing": the frame only ever fetches a URL that no <a> on the page
+  # points at, so Turbo 8's URL-keyed hover-prefetch cache can never hold an
+  # entry for it and can never splice a frameless body into the frame's own
+  # fetch. See SessionsController#drawer for the full mechanism.
+  #
+  # turbo_frame: "_top" matters most for the in-drawer case: without it a link
+  # inside <turbo-frame id="session_detail"> would navigate that frame to the
+  # full-page URL and land on a body with no matching frame.
+  def session_drawer_link_data(session_or_id, **extra)
+    { turbo_frame: "_top",
+      action: "click->session-drawer#open",
+      session_drawer_url: drawer_session_path(session_or_id) }.merge(extra)
+  end
 end
