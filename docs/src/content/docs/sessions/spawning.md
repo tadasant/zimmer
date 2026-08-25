@@ -324,7 +324,8 @@ flowchart TD
     Q -->|quota| RO{"rotate_for_quota!<br/>next Claude account"}
     RO -->|rotated| P
     RO -->|no_available_accounts| PARK
-    Q -->|transient| RT["retry with backoff"]
+    Q -->|transient| RT["retry with backoff<br/>(MAX_RETRIES = 6)"]
+    RT -->|exhausted| RTF["fail → failed<br/>(pages if it was a<br/>malformed tool call)"]
     Q -->|no| F{"failed_resume_recovery_needed?"}
     F -->|yes| FR["restart from scratch"]
     F -->|no| SD{"signal_death_exit?<br/>(SIGKILL/OOM, non-SIGTERM)"}
@@ -444,6 +445,46 @@ completion, so an unrecognized error there still lands in `needs_input` silently
 whose strategy classifies nothing — Codex, until #3779 characterizes its transcript envelope —
 answers `classifies_exits? => false` and gets the loud log without the page, because for it
 "no classifier matched" is the designed-for path rather than news.
+:::
+
+### Not every "API error" in the transcript is the API
+
+`api_error_for_retry?` reads the transcript's `isApiErrorMessage` entries, and Claude Code writes one
+of those for a failure that never left the machine: a tool call the model emitted that will not
+parse. The CLI re-prompts the model in-turn — *"Your tool call was malformed and could not be
+parsed. Please retry."* — and when that second attempt also fails it synthesises an assistant entry
+of its own (`model: "<synthetic>"`, `isApiErrorMessage: true`, and **no `error` field at all**) and
+exits 1, its turn-finished convention.
+
+That untyped entry is why `ApiErrorRetryService::MALFORMED_TOOL_CALL_PATTERNS` matches prose rather
+than an error type: there is no error type to read. It sits on the transient side because an
+unparseable tool call is a **sampling artifact, not a permanent condition** — and the CLI's own
+in-turn retry does not settle that, since it re-prompts the same model with the same context, which
+is the worst conditions for escaping the failure mode. A respawn is a materially different draw.
+
+What a retry cannot fix is a *deterministically* unserializable payload — an oversized tool argument
+that fails identically every time. `MAX_RETRIES` bounds that, and a ladder spent this way fails the
+session **and** pages `#eng-alerts` under "Malformed tool call survived every retry", deduped per
+runtime. Deliberately louder than the generic exhausted ladder, which just fails with
+`api_error_retries_exhausted`: an exhausted 5xx ladder means the API was down for half an hour, but
+an exhausted malformed-tool-call ladder means Zimmer classified something as transient that isn't.
+
+:::caution[Why this needed a classifier of its own]
+On 2026-08-25, production session 8878 finished an episode of real, paid work, downloaded the
+resulting MP3, and died on the upload — the last step — with
+
+```json
+{"isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text",
+  "text":"The model's tool call could not be parsed (retry also failed)."}]}}
+```
+
+The entry carried no error type and no classifier owned the wording, so nothing retried it.
+`handle_exit` fell through to the terminal-API-error backstop, failed the session with
+`failure_reason: terminal_api_error`, and paged as an unknown failure mode. The alerting was
+correct — an unrecognized wording is supposed to be news — and the missing classifier behind it was
+the defect. One concrete instance of the general problem in
+[#53](https://github.com/tadasant/zimmer/issues/53); the fix is
+[#668](https://github.com/tadasant/zimmer/issues/668).
 :::
 
 ## Metadata races

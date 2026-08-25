@@ -43,6 +43,12 @@ require "automated_prompts"
 #   the service returns :quota_exceeded so the caller can fail the session immediately
 #   with a clear message instead of wasting retry attempts.
 #
+# Malformed tool calls:
+#   Not every entry the CLI writes with isApiErrorMessage: true is the API talking.
+#   A tool call the model emitted that will not parse is reported the same way, with
+#   no error type at all — and it belongs in the same transient category, because a
+#   fresh draw usually parses. See MALFORMED_TOOL_CALL_PATTERNS.
+#
 class ApiErrorRetryService
   include DatabaseRetry
 
@@ -115,6 +121,40 @@ class ApiErrorRetryService
   # explicit reset time — keep flowing through the retry-with-backoff path.
   ACCOUNT_QUOTA_LIMIT_PATTERN = /hit your\b.*\blimit\b.*\bresets\b/i
 
+  # The CLI's own report that the model emitted a tool call it could not parse.
+  #
+  # This one is not the API talking. When a tool call will not parse, Claude Code
+  # re-prompts the model in-turn ("Your tool call was malformed and could not be
+  # parsed. Please retry."), and if the second attempt also fails it synthesises
+  # an assistant entry of its own — +model: "<synthetic>"+, +isApiErrorMessage:
+  # true+, and **no +error+ field at all** — then exits with its turn-finished
+  # convention. So the entry is untyped by construction: no amount of reading
+  # +error+ classifies it, and only the prose can.
+  #
+  # Known message format from production:
+  #   "The model's tool call could not be parsed (retry also failed)."
+  #
+  # It is retryable because a tool call that will not parse is a **sampling
+  # artifact, not a permanent condition** — the same category as a 5xx, arrived
+  # at from the other end. The CLI's in-turn retry does not settle that: it
+  # re-prompts the same model with the same context, which is the worst
+  # conditions for escaping the failure mode. A respawn is a materially
+  # different draw.
+  #
+  # What it does NOT rule out is a deterministically unparseable payload — a
+  # multi-megabyte base64 argument that fails identically every time. MAX_RETRIES
+  # bounds that, and ProcessLifecycleManager alerts when the ladder is spent, so
+  # a repeating failure fails loudly rather than being retried into silence.
+  #
+  # Production incident 2026-08-25 (session 8878, issue #668): the entry matched
+  # no classifier, `handle_exit`'s terminal-API-error backstop failed the session
+  # as an unknown failure mode, and a finished deliverable was lost on the upload
+  # step one respawn would probably have cleared.
+  MALFORMED_TOOL_CALL_PATTERNS = [
+    /tool call could not be parsed/i,
+    /tool call was malformed/i
+  ].freeze
+
   # Error types from the API that indicate server errors (as opposed to client errors)
   API_SERVER_ERROR_TYPES = %w[api_error overloaded_error server_error].freeze
 
@@ -139,6 +179,13 @@ class ApiErrorRetryService
 
   attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :file_system, :rate_limit_tracker
 
+  # Whether the error this service is retrying is a CLI-synthesised malformed
+  # tool call (see MALFORMED_TOOL_CALL_PATTERNS). Set by
+  # #retryable_api_error_detected? and read by ProcessLifecycleManager once the
+  # ladder is spent: six respawns that all died the same way is no longer a
+  # plausible sampling artifact, and that is news worth alerting on.
+  attr_reader :detected_malformed_tool_call
+
   def initialize(session, cli_adapter:, process_manager:, log_buffer:, file_system: nil, rate_limit_tracker: nil)
     @session = session
     @cli_adapter = cli_adapter
@@ -149,6 +196,7 @@ class ApiErrorRetryService
     @logger = StructuredLogger.new({ session_id: session.id, service: "ApiErrorRetryService" })
     @detected_rate_limit = false
     @detected_quota_limit = false
+    @detected_malformed_tool_call = false
   end
 
   # Attempt to retry the session after a retryable API error (server error or rate limit)
@@ -251,6 +299,7 @@ class ApiErrorRetryService
             error_type: error_type,
             is_rate_limit: is_rate_limit,
             is_quota_limit: is_quota_limit,
+            is_malformed_tool_call: malformed_tool_call?(message_text),
             message_text: message_text
           }
         end
@@ -264,6 +313,8 @@ class ApiErrorRetryService
         "account_quota_limit"
       elsif last_match[:is_rate_limit]
         "rate_limit"
+      elsif last_match[:is_malformed_tool_call]
+        "malformed_tool_call"
       else
         "server_error"
       end
@@ -272,6 +323,7 @@ class ApiErrorRetryService
         line_number: last_match[:line_number], error_type: last_match[:error_type])
       @detected_rate_limit = last_match[:is_rate_limit] && !last_match[:is_quota_limit]
       @detected_quota_limit = last_match[:is_quota_limit]
+      @detected_malformed_tool_call = last_match[:is_malformed_tool_call] && !last_match[:is_quota_limit]
       @detected_quota_message = last_match[:message_text] if last_match[:is_quota_limit]
       return true
     end
@@ -562,7 +614,13 @@ class ApiErrorRetryService
     end
 
     # Determine error category for logging
-    error_category = @detected_rate_limit ? "Rate limit" : "API server error"
+    error_category = if @detected_rate_limit
+      "Rate limit"
+    elsif @detected_malformed_tool_call
+      "Malformed tool call"
+    else
+      "API server error"
+    end
 
     # Log rate limit pressure status for visibility
     if rate_limit_tracker.under_pressure?
@@ -734,7 +792,21 @@ class ApiErrorRetryService
     return true if RATE_LIMIT_ERROR_PATTERNS.any? { |pattern| message_text.match?(pattern) }
     return true if RATE_LIMIT_ERROR_PATTERNS.any? { |pattern| error_type.match?(pattern) }
 
+    # The CLI's own untyped report of a tool call it could not parse. Prose only,
+    # because the entry it is written on carries no error type at all.
+    return true if malformed_tool_call?(message_text)
+
     false
+  end
+
+  # Check if the error is the CLI's report of a tool call that would not parse.
+  # See MALFORMED_TOOL_CALL_PATTERNS for why this is prose-matched and why it is
+  # treated as transient.
+  #
+  # @param message_text [String] The message text from the transcript entry
+  # @return [Boolean] true if the error is a malformed tool call
+  def malformed_tool_call?(message_text)
+    MALFORMED_TOOL_CALL_PATTERNS.any? { |pattern| message_text.match?(pattern) }
   end
 
   # Check if the error is specifically a rate limit error (vs server error)
