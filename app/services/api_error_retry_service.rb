@@ -143,8 +143,9 @@ class ApiErrorRetryService
   #
   # What it does NOT rule out is a deterministically unparseable payload — a
   # multi-megabyte base64 argument that fails identically every time. MAX_RETRIES
-  # bounds that, and ProcessLifecycleManager alerts when the ladder is spent, so
-  # a repeating failure fails loudly rather than being retried into silence.
+  # bounds that, and ProcessLifecycleManager alerts on a malformed tool call that
+  # the ladder did not clear, so a repeating failure fails loudly rather than
+  # being retried into silence.
   #
   # Production incident 2026-08-25 (session 8878, issue #668): the entry matched
   # no classifier, `handle_exit`'s terminal-API-error backstop failed the session
@@ -182,9 +183,20 @@ class ApiErrorRetryService
   # Whether the error this service is retrying is a CLI-synthesised malformed
   # tool call (see MALFORMED_TOOL_CALL_PATTERNS). Set by
   # #retryable_api_error_detected? and read by ProcessLifecycleManager once the
-  # ladder is spent: six respawns that all died the same way is no longer a
-  # plausible sampling artifact, and that is news worth alerting on.
-  attr_reader :detected_malformed_tool_call
+  # retry budget is spent: a turn that dies this way with no retries left is no
+  # longer a plausible sampling artifact, and that is news worth alerting on.
+  def detected_malformed_tool_call? = @detected_malformed_tool_call
+
+  # Whether some error text is the CLI's report of a tool call that would not
+  # parse. A class method because ProcessLifecycleManager asks the same question
+  # of a TerminalApiError, where no instance of this service is in hand — one
+  # definition of the pattern match, two callers.
+  #
+  # @param message_text [String] the message text from a transcript entry
+  # @return [Boolean] true if the error is a malformed tool call
+  def self.malformed_tool_call?(message_text)
+    MALFORMED_TOOL_CALL_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
+  end
 
   def initialize(session, cli_adapter:, process_manager:, log_buffer:, file_system: nil, rate_limit_tracker: nil)
     @session = session
@@ -299,7 +311,7 @@ class ApiErrorRetryService
             error_type: error_type,
             is_rate_limit: is_rate_limit,
             is_quota_limit: is_quota_limit,
-            is_malformed_tool_call: malformed_tool_call?(message_text),
+            is_malformed_tool_call: self.class.malformed_tool_call?(message_text),
             message_text: message_text
           }
         end
@@ -794,19 +806,9 @@ class ApiErrorRetryService
 
     # The CLI's own untyped report of a tool call it could not parse. Prose only,
     # because the entry it is written on carries no error type at all.
-    return true if malformed_tool_call?(message_text)
+    return true if self.class.malformed_tool_call?(message_text)
 
     false
-  end
-
-  # Check if the error is the CLI's report of a tool call that would not parse.
-  # See MALFORMED_TOOL_CALL_PATTERNS for why this is prose-matched and why it is
-  # treated as transient.
-  #
-  # @param message_text [String] The message text from the transcript entry
-  # @return [Boolean] true if the error is a malformed tool call
-  def malformed_tool_call?(message_text)
-    MALFORMED_TOOL_CALL_PATTERNS.any? { |pattern| message_text.match?(pattern) }
   end
 
   # Check if the error is specifically a rate limit error (vs server error)

@@ -337,6 +337,11 @@ flowchart TD
     SDR --> P
 ```
 
+The diagram draws the recovery questions once, on the abnormal-exit branch, but `handle_exit` asks
+them on **both**: a normal-completion exit runs the same context-length, auth, API-error and
+failed-resume checks before it parks, which is how a failure that arrives with Claude's exit 1 —
+`session_id_conflict?`, and the malformed tool call below — reaches them at all.
+
 The auth branch does not re-inject blindly. `AuthRecoveryCoordinator` takes a per-runtime advisory
 lock on the account pool and picks one of three answers: **adopt** the account the pool already
 rotated to while this session was running (free — it is another session's rotation), **rotate** away
@@ -440,11 +445,14 @@ status, never the session — so a fleet-wide wave of one unknown mode is one pa
 a new shape pages on its own. A new failure mode that happens to share an already-seen runtime
 and exit code is suppressed for the rest of the window; the loud log is what catches that one.
 
-Two scoping notes. The alert covers the **failure** branch only: a Claude exit 0 or 1 is a normal
-completion, so an unrecognized error there still lands in `needs_input` silently. And a runtime
-whose strategy classifies nothing — Codex, until #3779 characterizes its transcript envelope —
-answers `classifies_exits? => false` and gets the loud log without the page, because for it
-"no classifier matched" is the designed-for path rather than news.
+Two scoping notes. *This* alert covers the **failure** branch only — a Claude exit 0 or 1 is a normal
+completion and never reaches it — but the normal-completion branch is not silent: it asks the same
+recovery questions and then the terminal-API-error backstop below, which pages on an unrecognized
+wording of its own. What lands in `needs_input` quietly is a turn that wrote real output and simply
+did not say anything Zimmer recognises as trouble. And a runtime whose strategy classifies nothing —
+Codex, until #3779 characterizes its transcript envelope — answers `classifies_exits? => false` and
+gets the loud log without the page, because for it "no classifier matched" is the designed-for path
+rather than news.
 :::
 
 ### Not every "API error" in the transcript is the API

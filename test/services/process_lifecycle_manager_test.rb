@@ -2362,9 +2362,9 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
   # The other half. Retrying bets the failure is stochastic; a deterministically
   # unserializable payload (an oversized base64 tool argument) fails identically
-  # every time. Exhausting the ladder means the bet was wrong, so it must fail
+  # every time. A budget that runs out means the bet was wrong, so it must fail
   # AND page — a repeating failure retried into silence is the worse bug.
-  test "handle_exit alerts when a malformed tool call survives the whole retry ladder" do
+  test "handle_exit alerts when a malformed tool call outlives the retry budget" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_malformed_tool_call
     @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
@@ -2382,13 +2382,85 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     assert_equal :failed, decision.action
     assert_match(/API error retry limit exhausted/, decision.error_message)
-    assert alert, "a malformed tool call that outlived every retry is not transient — it must page"
-    assert_equal "Malformed tool call survived every retry", alert[0]
+    assert alert, "a malformed tool call with no retries left is not transient — it must page"
+    assert_equal "Malformed tool call the retry ladder did not clear", alert[0]
     assert_match(/deterministically unserializable/, alert[1][:details])
     assert_equal "ProcessLifecycleManager#handle_retryable_api_error", alert[1][:source]
     assert_match(/claude_code/, alert[1][:dedup_key],
       "keyed on the runtime only, so a fleet-wide wave is one message rather than one per session"
     )
+  end
+
+  # `api_error_retry_count` is shared across every retryable class, so a ladder
+  # burned on a 5xx outage can leave the very first malformed tool call with
+  # nothing to spend. The alert must still fire — the conclusion "no draw left to
+  # take" holds — and must NOT claim six respawns died this way, because none did.
+  test "the malformed tool call alert does not claim retries that were spent on something else" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_malformed_tool_call
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert alert
+    assert_match(/no retry budget left/, alert[1][:details])
+    assert_no_match(/died the same way|all 6 respawns/, alert[1][:details],
+      "the count is not ours to claim — the budget may have been spent on a 5xx outage"
+    )
+  end
+
+  # The path that would otherwise have turned a page into silence. A retry runs,
+  # advances api_error_last_checked_line past the entry, and the respawn writes
+  # nothing new — so api_error_for_retry? now declines and the turn falls to the
+  # terminal backstop, where the wording is "recognized" and normally would not
+  # page. For this class the retry ladder IS the alerting mechanism, so it must.
+  test "handle_exit still pages for a malformed tool call whose retry cursor is already spent" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_malformed_tool_call
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Turn ended on an API error no recovery path claimed/, decision.error_message)
+    assert alert, "classifying the wording must not have converted this page into silence"
+    assert_equal "Malformed tool call the retry ladder did not clear", alert[0]
+    assert_equal "ProcessLifecycleManager#handle_terminal_api_error", alert[1][:source]
+  end
+
+  # The noise constraint on the exception above: an ordinary recognized wording
+  # reaching the backstop is a dead turn, not an unknown failure mode, and still
+  # must not page.
+  test "handle_exit does not page for a recognized server error whose retry cursor is already spent" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_api_server_error("500 Internal Server Error")
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Turn ended on an API error no recovery path claimed/, decision.error_message)
   end
 
   # The noise constraint on the alert above: an ordinary exhausted ladder (a 5xx

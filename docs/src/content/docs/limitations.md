@@ -778,11 +778,18 @@ after the servers have already been wired for that run.
 
 | What | Pattern | File |
 | --- | --- | --- |
-| Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb:116` |
+| Quota exhausted → rotate accounts, then park | `/hit your\b.*\blimit\b.*\bresets\b/i` | `api_error_retry_service.rb` |
+| Unparseable tool call → retry with backoff | `/tool call could not be parsed/i`, `/tool call was malformed/i` | `api_error_retry_service.rb` |
 | Auth lost → adopt/rotate/wait, respawn, then park | the `error` types `authentication_failed` / `oauth_error`, plus a prose net | `auth_recovery_service.rb` |
-| Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb:44` |
-| Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb:75` |
+| Context overflow → compact and retry | a pattern list | `context_length_retry_service.rb` |
+| Corrupted npx cache → delete it | `ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT` | `npx_cache_heal_service.rb` |
 | Held runtime session id → resume it, or mint a new one | `/session id\b.*\balready in use/i` | `claude_retry_strategy.rb` |
+
+The tool-call row is the one that *cannot* be anything but prose. Claude Code writes its report of an
+unparseable tool call as a `<synthetic>` entry with no `error` field at all, so there is no type to
+read — the residual risk is the mirror of the others: a genuine API-side error whose prose happens to
+mention a malformed tool call gets retried six times before it pages, instead of paging at once. See
+[Spawning](/sessions/spawning/#not-every-api-error-in-the-transcript-is-the-api).
 
 This has already caused an outage. When Claude Code's wording changed, account rotation stopped firing:
 the session fell through to the transient-rate-limit path, retried six times against an already-capped
