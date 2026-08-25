@@ -56,7 +56,7 @@
       full page would always be wasted work. %>
   <%= link_to agent_session.title.presence || "Untitled session",
         session_path(agent_session),
-        data: { turbo_frame: "_top", turbo_prefetch: false, action: "click->session-drawer#open", session_drawer_url: drawer_session_path(agent_session) },
+        data: session_drawer_link_data(agent_session, turbo_prefetch: false),
         class: "min-w-0 flex-1 break-words font-medium text-gray-800 hover:text-indigo-600 max-sm:line-clamp-2 sm:order-3 sm:truncate" %>
 
   <%# Row actions behind a "⋮", the same overflow-menu controller the session card
@@ -109,10 +109,13 @@
             role: "menuitem",
             data: { turbo_method: :post, action: "overflow-menu#close" },
             class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
-      <%# A plain full-page navigation, and prefetchable: /sessions/:id has exactly
-          one body now, so warming it on hover cannot poison anything. %>
+      <%# A plain full-page navigation. turbo_prefetch: false is a cost measure and
+          nothing more — /sessions/:id has exactly one body now, so warming it on
+          hover could not poison the drawer even if it were left on; a ~900 KB page
+          is simply not worth fetching on a hover over a menu item. %>
       <%= link_to "Open session", session_path(agent_session),
             role: "menuitem",
+            data: { turbo_prefetch: false },
             class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
       <%# Trash posts to the same #archive action every other Trash affordance in
           the app posts to, so the queued-message speed bump and the Undo toast

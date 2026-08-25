@@ -150,7 +150,15 @@ export default class extends Controller {
     // <turbo-frame id="session_detail"> in the response is swapped in.
     this.frameTarget.src = url
 
-    if (wasClosed) this.show()
+    if (wasClosed) {
+      this.show()
+    } else {
+      // Already out, so no slide to replay — but blanking the frame above just
+      // destroyed the link that had focus, dropping it to <body>, outside this
+      // aria-modal panel. Tab from there walks into the dashboard behind the
+      // open drawer. Put focus back on the panel, as show() would have.
+      this.panelTarget.focus({ preventScroll: true })
+    }
   }
 
   show() {

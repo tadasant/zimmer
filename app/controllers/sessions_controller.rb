@@ -1471,7 +1471,8 @@ class SessionsController < ApplicationController
       return if performed?
 
       if result != false
-        redirect_to @session, notice: "Message queued. It will be sent when the agent completes its current task."
+        redirect_to session_redirect_target(@session),
+          notice: "Message queued. It will be sent when the agent completes its current task."
       end
       return
     end
@@ -3168,6 +3169,26 @@ class SessionsController < ApplicationController
     page if page.is_a?(String) || page.is_a?(Integer)
   end
 
+  # Where to send a redirect that the drawer's Turbo Frame may follow.
+  #
+  # A frame follows a 302 with its own Turbo-Frame header still attached and then
+  # looks for a matching frame in whatever comes back. /sessions/:id is frameless
+  # by construction, so a redirect there from inside the drawer lands on a body
+  # with no frame and renders "Content missing" — the same symptom the drawer's
+  # own URL exists to prevent, reached by a different door. Send the frame to the
+  # drawer's address instead.
+  #
+  # This reads the Turbo-Frame header to pick a redirect TARGET, which is not the
+  # content negotiation that caused the bug: each URL still has exactly one body.
+  def session_redirect_target(session)
+    drawer_frame_request? ? drawer_session_path(session) : session_path(session)
+  end
+
+  # True when this request came from the dashboard drawer's Turbo Frame.
+  def drawer_frame_request?
+    request.headers["Turbo-Frame"] == "session_detail"
+  end
+
   # Loads everything #show and #drawer render: the session, its timeline tail,
   # and the form/selector collections the detail view needs.
   def load_session_detail
@@ -3792,7 +3813,7 @@ class SessionsController < ApplicationController
   # referrer_is_sessions_index? has already checked that the referer is this host's
   # index path, so it is not an open redirect.
   def refresh_redirect_target(session)
-    referrer_is_sessions_index? ? request.referer : session_path(session)
+    referrer_is_sessions_index? ? request.referer : session_redirect_target(session)
   end
 
   # Check if the HTTP referer is the sessions index (home) page

@@ -17,7 +17,7 @@
         <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-1 1v.092a3 3 0 000 5.816V15a1 1 0 102 0v-.092a3 3 0 000-5.816V8a1 1 0 00-1-1z" clip-rule="evenodd" />
       </svg>
       <span class="tabular-nums"><%= number_to_currency(session_cost, precision: session_cost < 1 ? 3 : 2) %></span>
-      <%= link_to "cost", costs_path, class: "text-gray-400 hover:text-gray-600 underline decoration-dotted" %>
+      <%= link_to "cost", costs_path, data: { turbo_frame: "_top" }, class: "text-gray-400 hover:text-gray-600 underline decoration-dotted" %>
     </div>
   <% end %>
   <% agent_root_key = agent_session.agent_root_key %>
@@ -660,7 +660,7 @@
       <% end %>
       <span class="text-gray-400">
         <% if agent_session.spot? %>
-          higher is worked first — see the <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), class: "text-indigo-600 hover:text-indigo-500" %>
+          higher is worked first — see the <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), data: { turbo_frame: "_top" }, class: "text-indigo-600 hover:text-indigo-500" %>
         <% else %>
           unused while this session is priority; it applies if it is demoted to spot
         <% end %>
