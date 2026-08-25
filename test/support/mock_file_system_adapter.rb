@@ -95,6 +95,23 @@ class MockFileSystemAdapter < FileSystemAdapter
     end
   end
 
+  def rename(src, dest)
+    raise Errno::ENOENT, "No such file or directory - #{src}" unless exists?(src)
+    raise Errno::EEXIST, "File exists - #{dest}" if exists?(dest)
+
+    move = ->(from, to) do
+      @files[to] = @files.delete(from) if @files.key?(from)
+      @directories.add(to) && @directories.delete(from) if @directories.include?(from)
+      @mtimes[to] = @mtimes.delete(from) if @mtimes.key?(from)
+    end
+
+    descendants = (@files.keys + @directories.to_a).select { |p| p.start_with?("#{src}/") }
+    move.call(src, dest)
+    descendants.each { |p| move.call(p, "#{dest}#{p[src.length..]}") }
+
+    0
+  end
+
   def chmod(mode, path)
     raise Errno::ENOENT, "No such file or directory - #{path}" unless exists?(path)
 

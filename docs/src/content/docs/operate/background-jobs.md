@@ -147,6 +147,32 @@ session's working directory is a far worse outcome than the disk pressure it was
 
 A removal that raises is logged and skipped; the run continues with the next candidate.
 
+## Both clone sweeps reap deletion tombstones
+
+Clone deletion is atomic: `AtomicCloneRemoval` renames the clone to a sibling
+`<clone>.deleting-<hex>` tombstone and then deletes the tombstone, so an interrupted delete leaves
+either the whole tree at the clone's path or nothing at it — never a half-tree wearing the clone's
+name ([#412](https://github.com/tadasant/zimmer/issues/412)). What an interrupt between the rename
+and the delete *does* leave is the tombstone.
+
+Both sweeps therefore treat a tombstone as its own category, not as a clone:
+
+- **Never a candidate.** `find_orphan_directories` and `sweep_orphaned_clones` skip any name matching
+  the tombstone pattern, so a tombstone is never counted as an orphaned clone, never weighed against
+  session ownership, and never left to sit out an age threshold that does not apply to it.
+- **Always reaped.** Each run calls `AtomicCloneRemoval.reap_tombstones` on the clones base first,
+  with no age bar: a tombstone is doomed the moment it is created, so there is no window in which one
+  is still wanted, and racing a delete that is still in flight is harmless — both processes are
+  unlinking the same doomed tree. `REAP_LIMIT` (50) bounds one pass; the rest go to the next run.
+
+Under disk pressure, `reclaim_space` reaps tombstones before it looks at orphan clones and returns
+early if that alone clears the requirement — they are the cheapest bytes on the volume, the only ones
+that need no ownership argument made for them.
+
+Every other enumerator of the clones base skips tombstones for the same reason: `CloneDiskGuard`
+will not size a tree that is disappearing under `du`, and `CacheClearService` will not clear an
+`.npm-cache` inside a clone that is on its way out.
+
 ## Counting mangled clones without paging for each one
 
 An interrupted `rm -rf` on a live clone leaves a working tree that is nothing but deletions of

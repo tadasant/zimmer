@@ -113,6 +113,25 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     assert_not Dir.exist?(test_path)
   end
 
+  test "cleanup removes the clone atomically, leaving no half-tree at the clone path" do
+    # #412: an interrupted in-place rm_rf left a directory still wearing the
+    # clone's name and holding an arbitrary surviving subset of the tree. The
+    # rename lands first, so the clone path is gone even when the delete fails.
+    test_path = @test_dir.join("interrupted_clone")
+    FileUtils.mkdir_p(test_path.join("app"))
+    File.write(test_path.join("app", "file.txt"), "content")
+
+    GitCloneService.file_system.stubs(:rm_rf).raises(Errno::EIO, "simulated interrupt")
+
+    assert_nothing_raised { GitCloneService.cleanup_clone(test_path.to_s) }
+
+    assert_not Dir.exist?(test_path), "the clone path must be gone once the rename lands"
+
+    tombstones = Dir.children(@test_dir).select { |entry| AtomicCloneRemoval.tombstone?(entry) }
+    assert_equal 1, tombstones.size, "the tree lives on under a tombstone the sweeps reap"
+    assert File.exist?(File.join(@test_dir, tombstones.first, "app", "file.txt"))
+  end
+
   test "should handle cleanup of non-existent path" do
     # Should not raise error
     assert_nothing_raised do

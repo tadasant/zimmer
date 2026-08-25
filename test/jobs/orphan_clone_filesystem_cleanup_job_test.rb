@@ -274,6 +274,69 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
     assert_includes orphans, @orphan_dir
   end
 
+  # --- interrupted-delete tombstones (#412) --------------------------------
+  #
+  # AtomicCloneRemoval renames a clone to `<clone>.deleting-<hex>` before deleting
+  # it, so an interrupt leaves a tombstone rather than a half-tree wearing the
+  # clone's name. A tombstone is not a clone: this sweep must never reason about
+  # it as one, and must take the bytes back.
+
+  test "a deletion tombstone is never identified as an orphan clone" do
+    tombstone = File.join(@clones_base, "pulsemcp-main-1770000009-eeeeffff.deleting-0123abcd")
+    FileUtils.mkdir_p(tombstone)
+    FileUtils.touch(tombstone, mtime: 3.days.ago.to_time)
+
+    orphans = OrphanCloneFilesystemCleanupJob.new.send(:find_orphan_directories, @clones_base)
+
+    assert_not_includes orphans, tombstone,
+      "a tombstone belongs to the tombstone reaper, not to the ownership-and-age sweep"
+  end
+
+  test "the scheduled sweep reaps leftover tombstones" do
+    tombstone = File.join(@clones_base, "pulsemcp-main-1770000010-eeeeffff.deleting-0123abcd")
+    FileUtils.mkdir_p(File.join(tombstone, "app"))
+
+    OrphanCloneFilesystemCleanupJob.new.perform
+
+    assert_not File.exist?(tombstone), "an interrupted delete must not leave bytes on the volume forever"
+  end
+
+  test "a tombstone is reaped however young it is" do
+    # No age bar applies: a tombstone is doomed the moment it is created, so the
+    # startup race the age thresholds exist for cannot apply to one.
+    tombstone = File.join(@clones_base, "pulsemcp-main-1770000011-eeeeffff.deleting-0123abcd")
+    FileUtils.mkdir_p(tombstone)
+
+    OrphanCloneFilesystemCleanupJob.new.perform
+
+    assert_not File.exist?(tombstone)
+    assert File.directory?(@recent_dir), "a real clone still gets the age bar"
+  end
+
+  test "reclaim_space takes tombstones first and stops there when that is enough" do
+    tombstone = File.join(@clones_base, "pulsemcp-main-1770000012-eeeeffff.deleting-0123abcd")
+    FileUtils.mkdir_p(tombstone)
+    stub_available_bytes(before: 1_000, after: 9_999)
+
+    freed = OrphanCloneFilesystemCleanupJob.reclaim_space(target_free_bytes: 5_000)
+
+    assert_equal 8_999, freed
+    assert_not File.exist?(tombstone)
+    assert File.directory?(@orphan_dir),
+      "the cheapest bytes on the volume are the doomed ones; no orphan clone should have been touched"
+  end
+
+  test "reclaim_space falls through to orphan clones when reaping tombstones is not enough" do
+    tombstone = File.join(@clones_base, "pulsemcp-main-1770000013-eeeeffff.deleting-0123abcd")
+    FileUtils.mkdir_p(tombstone)
+    stub_available_bytes(before: 1_000, after: 1_000)
+
+    OrphanCloneFilesystemCleanupJob.reclaim_space(target_free_bytes: 1_000_000)
+
+    assert_not File.exist?(tombstone)
+    assert_not File.directory?(@orphan_dir), "the orphan sweep still runs when the volume is still short"
+  end
+
   private
 
   # The reclamation loop probes free space through CloneDiskGuard; stub the

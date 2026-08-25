@@ -500,11 +500,18 @@ class ForkSessionService
     false
   end
 
-  # rm_rf on a path that was never created is a no-op, so this needs no guard
+  # Removal on a path that was never created is a no-op, so this needs no guard
   # beyond having a path at all — and the destination may be a partially written
   # tree, a bare directory, or nothing.
+  #
+  # Atomic (AtomicCloneRemoval, #412), which strengthens the caller's
+  # precondition rather than merely preserving it: the callers check
+  # `file_system.exists?(new_clone_path)` afterwards because cp_r into a
+  # surviving partial tree nests or merges instead of failing. A rename clears
+  # the path in one step, so a delete interrupted halfway through no longer
+  # leaves a partial tree at it.
   def discard_partial_clone(path)
-    file_system.rm_rf(path) if path.present?
+    AtomicCloneRemoval.remove(path, file_system: file_system) if path.present?
   rescue => e
     @logger.warn("Failed to remove partial forked clone", path: path, error: e.message)
   end
@@ -690,7 +697,9 @@ class ForkSessionService
     forked_session&.destroy if forked_session&.persisted?
 
     # Delete the clone directory if it exists
-    file_system.rm_rf(new_clone_path) if new_clone_path && file_system.directory?(new_clone_path)
+    if new_clone_path && file_system.directory?(new_clone_path)
+      AtomicCloneRemoval.remove(new_clone_path, file_system: file_system)
+    end
   rescue => e
     @logger.error("Failed to cleanup after fork failure", error: e.message)
   end
