@@ -495,6 +495,17 @@ class GithubTriggerPollerJob < ApplicationJob
       return false
     end
 
+    # Dedup suppressed the spawn: a session this trigger already spawned is still
+    # pending and carries the same intent. Leave the item unseen — unlike a
+    # broadcast event, a label or an open issue is durable state, so the item
+    # fires for real on a later tick once that session is done. Info, not warn:
+    # nothing was dropped and nothing is wrong.
+    if session.nil? && trigger.last_fire_skipped_for_pending_session?
+      Rails.logger.info "[GithubTriggerPollerJob] Trigger #{trigger.id} skipped #{item_key(item)} (#{event}) — " \
+                        "session #{trigger.last_fire_pending_session.id} is still pending; leaving it unseen"
+      return false
+    end
+
     # create_session! returns the session truthily even when a reuse_session trigger DROPPED
     # the follow-up prompt (target session busy, enqueue_messages off). Treating that as a
     # fire would record the item as seen and consume the event without any work ever having

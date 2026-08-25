@@ -379,6 +379,10 @@ payload with its counters already updated. Two outcomes are not ordinary success
   instead of the one you asked for.
 - **429 Too Many Requests** (`error: "Burst suppressed"`) — the trigger is inside a burst it has
   already announced, so nothing at all was created.
+- **409 Conflict** (`error: "No session created"`) — the trigger has
+  [`skip_if_pending_session`](/sessions/triggers/#skip-while-a-session-is-still-pending) on and a
+  session it already spawned is still `waiting` or `running`. `session` carries that pending session,
+  so you can go and look at it instead of firing again.
 
 A one-time reuse trigger whose target session is gone or is no longer reusable returns 422
 (`error: "No session created"`), with `session` carrying that target when the row still exists and
@@ -386,6 +390,12 @@ A one-time reuse trigger whose target session is gone or is no longer reusable r
 (`error: "Invalid agent_root"`).
 
 The MCP equivalent is `action_trigger` with `action: "invoke"`.
+
+`skip_if_pending_session` (boolean, default `false`) makes the trigger [spawn nothing while a session
+it already created is still pending](/sessions/triggers/#skip-while-a-session-is-still-pending) —
+`waiting` or `running`. It bounds the backlog of duplicate-intent sessions, where
+`max_sessions_per_minute` bounds the rate. `needs_input`, `archived` and `failed` predecessors never
+block a fire.
 
 `max_sessions_per_minute` (integer, nullable) sets the trigger's [burst
 cap](/sessions/triggers/#burst-control); `null` — the default — means unbounded. The trigger payload

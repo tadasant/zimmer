@@ -19,11 +19,18 @@
 # enabled: the next recovery is a fresh chance, and parking the trigger would
 # silently stop every future wake.
 #
-# A pass that delivers NO session — nothing listening, every fire raised, every
-# fire burst-suppressed — puts the edge back through
-# QuotaAvailabilityMonitor.rearm!, so the next sweep fires again. Without that,
-# a deleted or broken fleet trigger would silently consume the one recovery the
-# parked sessions were waiting for.
+# A pass that HANDLES nothing — nothing listening, every fire raised, every fire
+# burst-suppressed — puts the edge back through QuotaAvailabilityMonitor.rearm!,
+# so the next sweep fires again. Without that, a deleted or broken fleet trigger
+# would silently consume the one recovery the parked sessions were waiting for.
+#
+# "Handled" is deliberately wider than "spawned a session". A trigger with
+# `skip_if_pending_session` on can answer the event by pointing at the session it
+# already spawned, and that session — queued, holding the same prompt — is the
+# thing the recovery was for. Counting that as undelivered would re-arm the edge,
+# so the next sweep would find the level false against an available pool, call it
+# a fresh recovery, fire, skip again and re-arm again: one wasted fire every
+# sweep for as long as the pending session stays pending.
 class SystemEventTriggerJob < ApplicationJob
   # Same queue as AoEventTriggerJob and for the same reason: a wake that arrives
   # late is a wake that did not happen. The pool recovering is the moment the
@@ -48,16 +55,16 @@ class SystemEventTriggerJob < ApplicationJob
       return rearm(event_name)
     end
 
-    delivered = 0
+    handled = 0
     AlertBatcher.with_batch do
-      conditions.find_each { |condition| delivered += 1 if fire(condition, event_name) }
+      conditions.find_each { |condition| handled += 1 if fire(condition, event_name) }
     end
 
     # Nobody acted on the event. For `quota_available` that means the parked
     # sessions it exists to wake are still parked, so put the edge back rather
-    # than spending it on a fire that delivered nothing — see
+    # than spending it on a fire that did nothing — see
     # QuotaAvailabilityMonitor.rearm!.
-    rearm(event_name) if delivered.zero?
+    rearm(event_name) if handled.zero?
   end
 
   private
@@ -76,6 +83,19 @@ class SystemEventTriggerJob < ApplicationJob
         "no session created"
       )
       return false
+    end
+
+    # A dedup-skipped fire is HANDLED, not dropped: a session this trigger already
+    # spawned is still queued with the same prompt, so the event has a listener —
+    # it just does not need a second one. Return true so the pass does not re-arm
+    # the edge, and leave last_triggered_at alone, because no new fire happened.
+    if trigger.last_fire_skipped_for_pending_session?
+      pending = trigger.last_fire_pending_session
+      Rails.logger.info(
+        "[SystemEventTriggerJob] Trigger #{trigger.id} skipped #{event_name} — session #{pending.id} " \
+        "(#{pending.status}) is still pending and already carries this intent"
+      )
+      return true
     end
 
     condition.update!(last_triggered_at: Time.current)

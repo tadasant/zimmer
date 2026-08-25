@@ -265,6 +265,85 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_nil trigger.reload.max_sessions_per_minute
   end
 
+  test "the form saves skip_if_pending_session, and the detail page reports what it is doing" do
+    post triggers_path, params: {
+      trigger: {
+        name: "Deduped Alerts Trigger",
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "New alert: {{link}}",
+        skip_if_pending_session: "1",
+        mcp_servers: [],
+        trigger_conditions_attributes: [
+          { condition_type: "slack", configuration: { channel_id: "C123456", channel_name: "alerts", event_type: "new_message" } }
+        ]
+      }
+    }
+
+    trigger = Trigger.find_by!(name: "Deduped Alerts Trigger")
+    assert trigger.skip_if_pending_session
+
+    get trigger_path(trigger)
+    assert_response :success
+    assert_select "#trigger-skip-if-pending-session", text: /Enabled/
+    assert_select "body", text: /nothing pending/
+
+    # A pending session it spawned: the page names the one it is deferring to.
+    pending = sessions(:waiting)
+    pending.update!(metadata: pending.metadata.merge("trigger_id" => trigger.id))
+    get trigger_path(trigger)
+    assert_select "body", text: /Skipping/
+
+    # Unchecking the box turns it off (the form posts "0").
+    patch trigger_path(trigger), params: { trigger: { skip_if_pending_session: "0" } }
+    assert_not trigger.reload.skip_if_pending_session
+  end
+
+  test "the new trigger form renders the skip-while-pending checkbox" do
+    get new_trigger_path
+    assert_response :success
+    assert_select "input[type=checkbox][name='trigger[skip_if_pending_session]']"
+  end
+
+  test "should create trigger with skip_if_pending_session, and toggle it off from the edit form" do
+    post triggers_path, params: {
+      trigger: {
+        name: "Deduped Alerts Trigger",
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "New alert: {{link}}",
+        skip_if_pending_session: "1",
+        mcp_servers: [],
+        trigger_conditions_attributes: [
+          { condition_type: "slack", configuration: { channel_id: "C123456", channel_name: "alerts", event_type: "new_message" } }
+        ]
+      }
+    }
+
+    trigger = Trigger.find_by!(name: "Deduped Alerts Trigger")
+    assert trigger.skip_if_pending_session
+
+    patch trigger_path(trigger), params: { trigger: { skip_if_pending_session: "0" } }
+    assert_not trigger.reload.skip_if_pending_session
+  end
+
+  test "the show page reports the dedup setting and names the session it is skipping for" do
+    @trigger.update!(skip_if_pending_session: true)
+
+    get trigger_path(@trigger)
+    assert_response :success
+    assert_select "#trigger-skip-if-pending-session", "Enabled"
+    assert_select "body", { text: /nothing pending/, count: 1 }
+
+    pending = sessions(:waiting)
+    pending.update!(metadata: pending.metadata.merge("trigger_id" => @trigger.id))
+
+    get trigger_path(@trigger)
+    assert_response :success
+    assert_select "body", { text: /is still pending/ }
+    assert_select "a[href=?]", session_path(pending), text: "session ##{pending.id}"
+  end
+
   test "should reject a non-positive burst cap" do
     patch trigger_path(@trigger), params: { trigger: { max_sessions_per_minute: "0" } }
 

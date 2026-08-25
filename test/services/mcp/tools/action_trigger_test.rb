@@ -158,6 +158,39 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_includes update_output, "- **Max Sessions/Minute:** (no limit)"
   end
 
+  test "creates a trigger with skip_if_pending_session, and turns it off on update" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Deduped Watcher",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "New message: {{link}}",
+      "skip_if_pending_session" => true,
+      "configuration" => { "channel_id" => "C123", "channel_name" => "alerts" }
+    )
+
+    trigger = Trigger.find_by!(name: "Deduped Watcher")
+    assert trigger.skip_if_pending_session
+    assert_includes output, "- **Skip While Pending:** yes"
+
+    update_output = @tool.call("action" => "update", "id" => trigger.id, "skip_if_pending_session" => false)
+    assert_not trigger.reload.skip_if_pending_session
+    assert_includes update_output, "- **Skip While Pending:** no"
+  end
+
+  test "skip_if_pending_session defaults to off when the caller says nothing" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Quiet Watcher",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "New message: {{link}}",
+      "configuration" => { "channel_id" => "C123", "channel_name" => "alerts" }
+    )
+
+    assert_not Trigger.find_by!(name: "Quiet Watcher").skip_if_pending_session
+  end
+
   test "creates a one-time schedule trigger" do
     @tool.call(
       "action" => "create",
