@@ -33,6 +33,11 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
   DOCKERFILE = Rails.root.join("Dockerfile")
   AUDIT_DOCKERFILE = Rails.root.join("Dockerfile.docs-audit")
   CI_WORKFLOW = Rails.root.join(".github/workflows/ci.yml")
+  DOCKERIGNORE = Rails.root.join(".dockerignore")
+
+  # The real `find`, resolved once so the shims below can hand off to it. Resolving it
+  # through a plain `sh` keeps any interactive shell's `find` alias out of the answer.
+  REAL_FIND = Open3.capture2("sh", "-c", "command -v find").first.strip
 
   # The exact invocation each caller must keep. Both are load-bearing: an image whose
   # build no longer runs the script is an image with no guardrail on it.
@@ -41,6 +46,18 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
 
   def detect(root, env = {})
     Open3.capture2e(env, SCRIPT.to_s, "--root", root.to_s)
+  end
+
+  # Installs `body` as a `find` ahead of the real one on PATH, and returns the env that
+  # puts it there. The shims below stand in for conditions that are real but racy to
+  # provoke for real -- a directory disappearing mid-walk, a manifest deleted between the
+  # find that listed it and the grep that reads it.
+  def with_find_shim(dir, body)
+    bin = File.join(dir, "bin")
+    FileUtils.mkdir_p(bin)
+    File.write(File.join(bin, "find"), body)
+    File.chmod(0o755, File.join(bin, "find"))
+    { "PATH" => "#{bin}:#{ENV['PATH']}" }
   end
 
   test "the script is executable, since Docker runs it directly" do
@@ -128,11 +145,9 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
       File.write(File.join(dir, "tree/site/package.json"), '{"dependencies":{"@astrojs/starlight":"^0.36.0"}}')
 
       # A `find` that always errors, ahead of the real one on PATH.
-      FileUtils.mkdir_p(File.join(dir, "bin"))
-      File.write(File.join(dir, "bin/find"), "#!/bin/sh\nexit 9\n")
-      File.chmod(0o755, File.join(dir, "bin/find"))
+      env = with_find_shim(dir, "#!/bin/sh\nexit 9\n")
 
-      output, status = detect(File.join(dir, "tree"), "PATH" => "#{dir}/bin:#{ENV['PATH']}")
+      output, status = detect(File.join(dir, "tree"), env)
 
       assert_equal 2, status.exitstatus, <<~MSG
         With a broken `find`, the detector should have exited 2. Instead it exited
@@ -140,6 +155,151 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
 
         #{output}
       MSG
+      assert_match(/after \d+ attempts/, output, <<~MSG)
+        The retry that absorbs a vanishing directory must not absorb a find that cannot
+        run: a permanent failure is expected to exhaust every attempt and say so. Output:
+
+        #{output}
+      MSG
+    end
+  end
+
+  # The flake this replaced: the detector runs over the live working tree while the rest
+  # of the suite creates and deletes tmp/ scratch directories, and a directory that
+  # vanishes between find's readdir and its stat makes find exit non-zero. That is the
+  # tree changing underneath the scan, not a scan that could not run -- the two are told
+  # apart by retrying, since only the second one fails every attempt.
+  test "a find that fails transiently is retried rather than reported as a broken scan" do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "tree/site"))
+      File.write(File.join(dir, "tree/site/package.json"), '{"dependencies":{"@astrojs/starlight":"^0.36.0"}}')
+
+      # Fails the first two invocations the way a vanished directory does, then works.
+      env = with_find_shim(dir, <<~SHIM)
+        #!/bin/sh
+        n=$(cat #{dir}/calls 2>/dev/null || echo 0)
+        n=$((n + 1))
+        echo "$n" > #{dir}/calls
+        if [ "$n" -le 2 ]; then
+          echo "find: '#{dir}/tree/gone': No such file or directory" >&2
+          exit 1
+        fi
+        exec #{REAL_FIND} "$@"
+      SHIM
+
+      output, status = detect(File.join(dir, "tree"), env)
+
+      assert_equal 1, status.exitstatus, <<~MSG
+        A find that failed twice and then succeeded should have been retried into a real
+        answer -- the Starlight dependency in the tree. Instead the detector exited
+        #{status.exitstatus}. Output:
+
+        #{output}
+      MSG
+      assert_match "site/package.json", output, <<~MSG
+        The retry returned, but with nothing in it. A scan that is retried has to report
+        what the successful attempt found, not an empty result. Output:
+
+        #{output}
+      MSG
+    end
+  end
+
+  # The other half of the same race, one step later: find lists a manifest, and it is gone
+  # by the time grep opens it. Tolerating that is safe *because* it is exact -- the file is
+  # checked for existence rather than grep's message being pattern-matched.
+  test "a manifest that vanished between the find and the grep does not fail the scan" do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "tree/site"))
+      File.write(File.join(dir, "tree/site/package.json"), '{"dependencies":{"@astrojs/starlight":"^0.36.0"}}')
+
+      # A find that also lists a manifest which no longer exists.
+      env = with_find_shim(dir, <<~SHIM)
+        #!/bin/sh
+        for arg in "$@"; do
+          if [ "$arg" = "package.json" ]; then
+            printf '%s\\n' "#{dir}/tree/vanished/package.json"
+          fi
+        done
+        exec #{REAL_FIND} "$@"
+      SHIM
+
+      output, status = detect(File.join(dir, "tree"), env)
+
+      assert_equal 1, status.exitstatus, <<~MSG
+        A manifest that disappeared mid-scan should not have turned into "could not read a
+        package manifest". The detector exited #{status.exitstatus}. Output:
+
+        #{output}
+      MSG
+      assert_match "site/package.json", output, "The real manifest still had to be reported.\n#{output}"
+    end
+  end
+
+  # ...and the inverse, which is what keeps the tolerance above from hollowing the check
+  # out: a manifest that is still on disk and still unreadable is a scan that failed.
+  test "a manifest that exists but cannot be read still fails loudly" do
+    skip "root can read anything, so an unreadable file cannot be staged" if Process.uid.zero?
+
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "site"))
+      File.write(File.join(dir, "site/package.json"), '{"dependencies":{"@astrojs/starlight":"^0.36.0"}}')
+      File.chmod(0o000, File.join(dir, "site/package.json"))
+
+      output, status = detect(dir)
+
+      assert_equal 2, status.exitstatus, <<~MSG
+        An unreadable manifest is a manifest this check did not read, and it must exit 2
+        rather than pass the tree. It exited #{status.exitstatus}. Output:
+
+        #{output}
+      MSG
+    ensure
+      File.chmod(0o644, File.join(dir, "site/package.json"))
+    end
+  end
+
+  # Pruning is only safe where nothing it skips could ever reach the image. These two are
+  # the volatile directories the suite churns hardest, and .dockerignore already keeps
+  # their contents out of the build context entirely -- asserted below, because that
+  # exclusion is what makes the prune a no-op for the invariant rather than a blind spot.
+  test "the volatile top-level directories are not walked" do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "tmp/test_skills_deadbeef"))
+      File.write(File.join(dir, "tmp/test_skills_deadbeef/astro.config.mjs"), "export default {}\n")
+      FileUtils.mkdir_p(File.join(dir, "log/cache"))
+      File.write(File.join(dir, "log/cache/package.json"), '{"dependencies":{"@astrojs/starlight":"^0.36.0"}}')
+
+      output, status = detect(dir)
+
+      assert_predicate status, :success?, "Expected tmp/ and log/ to be skipped. Output:\n#{output}"
+    end
+  end
+
+  test "dockerignore keeps the pruned directories out of the build context" do
+    ignored = File.read(DOCKERIGNORE).lines.map(&:strip)
+
+    %w[/tmp/* /log/*].each do |rule|
+      assert_includes ignored, rule, <<~MSG
+        scripts/assert-docs-excluded.sh prunes the top-level tmp/ and log/ from its scans,
+        and the only reason that is safe is this line: nothing under them reaches the build
+        context, so there is no copy of the docs there to miss. Remove the rule and the
+        prune becomes a hole. Restore #{rule}, or stop pruning it.
+      MSG
+    end
+  end
+
+  # The prune is anchored to the top of the tree, not matched by name: a docs site that
+  # was moved into some nested tmp/ is still a docs site in the image.
+  test "a nested tmp directory is still walked" do
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "site/tmp"))
+      File.write(File.join(dir, "site/tmp/astro.config.mjs"), "export default {}\n")
+
+      output, status = detect(dir)
+
+      refute_predicate status, :success?, "Expected a nested tmp/ to be scanned. Output:\n#{output}"
+      assert_match "site/tmp/astro.config.mjs", output
     end
   end
 

@@ -60,6 +60,17 @@ if [ ! -d "$root" ]; then
   exit 2
 fi
 
+# Strip trailing slashes so the -path prunes below compare against the same spelling find
+# prints: "/rails/tmp", never "/rails//tmp". `root_prefix` exists only for --root /, where
+# "$root/tmp" would be "//tmp" and match nothing.
+while [ "$root" != "/" ] && [ "${root%/}" != "$root" ]; do
+  root="${root%/}"
+done
+root_prefix="$root"
+if [ "$root_prefix" = "/" ]; then
+  root_prefix=""
+fi
+
 findings=""
 
 # $1: label for the kind of hit, $2: newline-separated paths (may be empty).
@@ -75,13 +86,52 @@ record() {
 # A scan that cannot run is not a scan that found nothing. Every failure below exits 2
 # rather than falling through to the "OK" at the bottom -- a guardrail that passes when
 # its own machinery is broken is worse than no guardrail, because it looks like a check.
+# $1: what failed. $2: optional detail, for the failures that are worth qualifying -- a
+# retried scan says how many attempts it burned, so a permanent failure cannot be read as
+# a one-off blip.
 scan_failed() {
-  echo "assert-docs-excluded.sh: $1 under $root" >&2
+  echo "assert-docs-excluded.sh: $1 under $root${2:+ ($2)}" >&2
   exit 2
 }
 
-# Every scan skips node_modules and .git. A Starlight dependency vendored under
-# node_modules belongs to some other package's tree, not to a second copy of our site.
+# What the scans do not walk into, and why none of it can hide a second copy of the site:
+#
+#   node_modules, .git   anywhere in the tree. A Starlight dependency vendored under
+#                        node_modules belongs to some other package's tree, not to ours.
+#   tmp/, log/           at the TOP of the tree only -- not by name, so a docs/tmp/ or a
+#                        site/log/ is still scanned. .dockerignore excludes /tmp/* and
+#                        /log/* outright, so nothing under either can reach the build
+#                        context or the image: there is no copy there to catch. They are
+#                        also the two directories a running test suite churns hardest,
+#                        and a directory that vanishes between find's readdir and its
+#                        stat makes find exit non-zero -- which used to redden this
+#                        guardrail on unrelated churn rather than on the invariant.
+#
+# Retrying is how the two reasons find can fail are told apart, without parsing
+# locale-dependent messages off stderr: a tree that changed underneath the scan is
+# transient and clears, while a find that cannot run -- broken binary, unreadable tree --
+# fails every single attempt and still exits 2, loudly.
+SCAN_ATTEMPTS=3
+
+# $@: the find expression to apply to each surviving path (without -print).
+# Sets $scan_output to the newline-separated matches. Returns non-zero if every attempt
+# failed, which callers must turn into scan_failed.
+scan() {
+  attempt=1
+  while :; do
+    if scan_output=$(find "$root" \
+      \( -name node_modules -o -name .git \
+         -o -path "$root_prefix/tmp" -o -path "$root_prefix/log" \) -prune -o \
+      "$@" -print); then
+      return 0
+    fi
+    if [ "$attempt" -ge "$SCAN_ATTEMPTS" ]; then
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+}
 
 # 1. The canonical path, at the top of the tree. Exact, cheap, and the case that actually
 # regresses. Checks 2 and 3 are the recursive ones.
@@ -90,26 +140,28 @@ if [ -e "$root/docs" ]; then
 fi
 
 # 2. An Astro site anywhere under the tree, whatever directory it was moved to.
-if ! astro_configs=$(find "$root" \( -name node_modules -o -name .git \) -prune -o \
-  -type f -name 'astro.config.*' -print); then
-  scan_failed "could not scan for Astro configs"
+if ! scan -type f -name 'astro.config.*'; then
+  scan_failed "could not scan for Astro configs" "after $SCAN_ATTEMPTS attempts"
 fi
-record "Astro config" "$astro_configs"
+record "Astro config" "$scan_output"
 
 # 3. A Starlight dependency in any package manifest -- catches a docs site whose config
 # was renamed or generated, and catches a stray docs/package-lock.json on its own.
-if ! manifests=$(find "$root" \( -name node_modules -o -name .git \) -prune -o \
-  -type f \( -name package.json -o -name package-lock.json \) -print); then
-  scan_failed "could not scan for package manifests"
+if ! scan -type f \( -name package.json -o -name package-lock.json \); then
+  scan_failed "could not scan for package manifests" "after $SCAN_ATTEMPTS attempts"
 fi
+manifests="$scan_output"
 starlight=""
 if [ -n "$manifests" ]; then
   # `elif [ "$?" -gt 1 ]` reads grep's status: 1 is "no match", anything higher is a file
-  # grep could not read, which must not be mistaken for a clean manifest.
+  # grep could not read, which must not be mistaken for a clean manifest. The `-e` guard
+  # is the same race the prunes above are about, one step later: a manifest deleted
+  # between the find and the grep is a tree that changed, not a manifest we failed to
+  # read. Anything still on disk that grep choked on is the real thing, and still exits 2.
   if ! starlight=$(printf '%s\n' "$manifests" | while IFS= read -r manifest; do
     if grep -q '@astrojs/starlight' "$manifest"; then
       printf '%s\n' "$manifest"
-    elif [ "$?" -gt 1 ]; then
+    elif [ "$?" -gt 1 ] && [ -e "$manifest" ]; then
       exit 2
     fi
   done); then
