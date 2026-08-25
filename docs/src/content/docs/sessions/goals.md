@@ -40,10 +40,12 @@ merge gate to rate it is a machine wait, while a PR the gate has *held* is a hum
 only the second belongs in the action queue. So the skill has the session schedule a bounded
 self-wake — three wakes, 30 minutes apart — and sleep in `waiting`, checking the PR's state on
 each wake: merged or closed unmerged means archive, a fresh gate `HELD` verdict or a spent wake
-budget means come to rest in `needs_input`, and anything else means sleep again. A sleeping
-session holds the PR exactly as a parked one does; `Session.with_github_prs` excludes only
-`archived` and `failed`, so the merge message still reaches it. The goal text keeps a fallback for
-runtimes and repos that do not ship the skill: come to rest in `needs_input` holding the PR.
+budget means come to rest in `needs_input`, and a PR still open and unrated means sleep again. A
+sleeping session holds the PR exactly as a parked one does — `Session.with_github_prs` excludes
+only `archived` and `failed`, so the poller still sees it — with one difference in delivery: a
+`needs_input` session takes the merge message immediately, while a `waiting` one has it enqueued
+and picks it up at its next wake. The goal text keeps a fallback for runtimes and repos that do
+not ship the skill: come to rest in `needs_input` holding the PR.
 
 Nothing has to watch for the merge. `GitHubPullRequestPollerJob` sweeps unarchived sessions with
 recorded PR URLs, and on the open → merged transition it delivers `AutomatedPrompts.pr_merged_message`

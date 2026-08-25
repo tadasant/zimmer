@@ -183,6 +183,22 @@ class GoalsConfigTest < ActiveSupport::TestCase
     end
   end
 
+  # The three variants differ in their preamble and share their ending. Editing the
+  # terminal paragraph in one and not the others is the drift this pins: a session's
+  # resting behaviour must not depend on which PR-shaped goal it was given.
+  test "the three PR goals share one terminal paragraph, byte for byte" do
+    tails = PR_GOAL_IDS.map do |id|
+      description = GoalsConfig.find(id).description
+      index = description.index("Then report the PR URL")
+
+      assert index, "Goal '#{id}' is missing the shared terminal paragraph"
+      description[index..]
+    end
+
+    assert_equal 1, tails.uniq.size,
+      "The PR goals' terminal paragraphs have diverged: #{PR_GOAL_IDS.zip(tails.map(&:length)).to_h}"
+  end
+
   # The stop is conditional, and the condition has to be the merge message rather than
   # a person's attention. A goal making a human the only thing able to release a session
   # is what leaves sessions in needs_input for weeks after their PR has landed.

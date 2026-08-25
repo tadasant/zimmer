@@ -68,8 +68,9 @@ finish, it is holding a PR whose merge disposition is unsettled, you invoked it 
 or ask something, or it hit an ambiguity too dangerous and irreversible to guess at. Those four
 cases are spelled out in [Goals and stop conditions](/sessions/goals/).
 
-The PR case is the one you will see most, and it clears itself: a session that opened a PR waits
-here until the PR merges, then archives on its own. What is left behind is the set of PRs the merge
+The PR case is the one you will see most, and it clears itself: a session that opened a PR holds it
+— asleep on a bounded self-wake while the merge gate rates it, here in the queue once the gate has
+held it for you — and archives on its own when the PR merges. What is left behind is the set of PRs the merge
 gate declined to merge for you — which is the list worth your attention.
 
 A session showing "blocked on elicitation" is different: the agent process is still alive, and an
