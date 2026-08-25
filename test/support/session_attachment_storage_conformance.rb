@@ -146,6 +146,16 @@ module SessionAttachmentStorageConformance
       refute conformance_service.exists?(File.join(storage_class.base_dir, "other-session", "thing"))
     end
 
+    # Every other negative case above is rejected by the prefix guard, so none of
+    # them reaches the filesystem check at the end of exists?. This one is inside
+    # the session directory and simply absent, which is the only way to prove that
+    # last line still runs.
+    test "conformance: exists? rejects an absent path inside the session directory" do
+      store_sample(conformance_service)
+
+      refute conformance_service.exists?(File.join(conformance_service.session_dir, "not-there"))
+    end
+
     test "conformance: exists? rejects dot-dot traversal out of the session directory" do
       store_sample(conformance_service)
       dir = conformance_service.session_dir
@@ -260,7 +270,7 @@ module SessionAttachmentStorageConformance
     test "conformance: copy_from_temp on an empty temp session returns nothing" do
       copied = storage_class.copy_from_temp(
         temp_session_id: "temp_#{SecureRandom.uuid}",
-        new_session_id: conformance_session_id + 1
+        new_session_id: conformance_other_service.session_id.to_i
       )
 
       assert_equal [], copied
@@ -277,12 +287,53 @@ module SessionAttachmentStorageConformance
 
       copied = storage_class.copy_from_temp(
         temp_session_id: temp_service.session_id,
-        new_session_id: conformance_session_id + 1
+        new_session_id: conformance_other_service.session_id.to_i
       )
 
       assert_equal 1, copied.length
       assert File.exist?(copied.first[:path])
       refute File.directory?(temp_service.session_dir)
+    ensure
+      temp_service&.cleanup!
+    end
+
+    # --- Log wording ----------------------------------------------------------
+    #
+    # The two log lines below are the ONLY place the subclasses' observable
+    # behaviour differed before this refactor, and they now flow through
+    # `attachment_noun` interpolation from inside rescue handlers no other test
+    # enters. Asserting the noun alone would not catch a dropped plural, a swapped
+    # word, or a receiver that raises NoMethodError where nothing may raise.
+
+    test "conformance: a failed cleanup! warns with this attachment kind's noun" do
+      store_sample(conformance_service)
+
+      entries = capture_log_entries do
+        FileUtils.stub(:rm_rf, ->(*) { raise Errno::EACCES, conformance_service.session_dir }) do
+          assert_nothing_raised { conformance_service.cleanup! }
+        end
+      end
+
+      assert_includes entries.map(&:last).join("\n"),
+        "Failed to cleanup #{expected_attachment_noun}s for session #{conformance_session_id}"
+    end
+
+    test "conformance: an entry that cannot be copied is logged with this attachment kind's noun" do
+      temp_service = storage_class.new(session_id: "temp_#{SecureRandom.uuid}")
+      store_sample(temp_service)
+      unreadable = temp_service.list.sole
+
+      entries = capture_log_entries do
+        File.stub(:binread, ->(*) { raise Errno::EACCES, unreadable }) do
+          storage_class.copy_from_temp(
+            temp_session_id: temp_service.session_id,
+            new_session_id: conformance_other_service.session_id.to_i
+          )
+        end
+      end
+
+      assert_includes entries.map(&:last).join("\n"),
+        "Failed to copy #{expected_attachment_noun} from temp storage #{unreadable}"
     ensure
       temp_service&.cleanup!
     end
