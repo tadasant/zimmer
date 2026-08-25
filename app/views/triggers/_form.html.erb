@@ -348,6 +348,29 @@
       </p>
     </div>
 
+    <!-- Pending-session dedup -->
+    <div class="mb-4">
+      <div class="flex items-start">
+        <div class="flex items-center h-5">
+          <%= f.check_box :skip_if_pending_session,
+              class: "focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300 rounded" %>
+        </div>
+        <div class="ml-3">
+          <%= f.label :skip_if_pending_session, class: "text-sm font-medium text-gray-700" do %>
+            Skip while a session is still pending
+          <% end %>
+          <p class="text-sm text-gray-500">
+            When enabled, this trigger creates nothing while a session it already spawned is still
+            queued (waiting) or running — the fire is treated as already covered by that session.
+            Sessions that are archived, failed, or waiting on you (needs input) do not block a fire.
+            Use this for a trigger whose sessions all carry the same intent, so a slow one does not
+            collect duplicate siblings. This bounds the backlog; "Max sessions per minute" above
+            bounds the rate.
+          </p>
+        </div>
+      </div>
+    </div>
+
     <!-- Prompt Template -->
     <div>
       <%= f.label :prompt_template, class: "block text-sm font-medium text-gray-700 mb-2" do %>

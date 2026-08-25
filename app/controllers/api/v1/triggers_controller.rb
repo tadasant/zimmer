@@ -35,7 +35,7 @@ class Api::V1::TriggersController < Api::BaseController
   # Get a single trigger with recent sessions.
   def show
     recent_sessions = Session
-      .where("metadata->>'trigger_id' = ?", @trigger.id.to_s)
+      .for_trigger(@trigger.id)
       .order(created_at: :desc)
       .limit(10)
 
@@ -55,6 +55,9 @@ class Api::V1::TriggersController < Api::BaseController
   #   - status: "enabled" or "disabled" (default: "enabled")
   #   - goal: Optional goal
   #   - reuse_session: Boolean (default: false)
+  #   - skip_if_pending_session: Boolean (default: false). When true, a fire creates
+  #         nothing while a session this trigger already spawned is still `waiting` or
+  #         `running`. Bounds the BACKLOG, where max_sessions_per_minute bounds the rate.
   #   - max_sessions_per_minute: Integer burst cap — the most NEW sessions this trigger
   #     may spawn in one minute. Omit or send null for no limit (the default). When the
   #     cap is exceeded the trigger spawns one burst-notice session and then suppresses
@@ -140,6 +143,13 @@ class Api::V1::TriggersController < Api::BaseController
     when :burst_suppressed
       render_api_error("Burst suppressed", result.message, status: :too_many_requests,
                        trigger: trigger_json(@trigger.reload))
+    when :pending_session
+      # 409: the request is well-formed and the trigger is healthy — it simply
+      # already has a session pending for this intent, which is reported so the
+      # caller can go and look at it instead of firing again.
+      render_api_error("No session created", result.message, status: :conflict,
+                       trigger: trigger_json(@trigger.reload),
+                       session: result.session && session_summary_json(result.session))
     when :not_reusable
       # The target session is reported when the row still exists — it is the
       # thing to go and look at — and null when it is gone.
@@ -203,7 +213,8 @@ class Api::V1::TriggersController < Api::BaseController
     permitted = params.permit(
       :name, :status, :agent_root_name, :goal,
       :prompt_template, :reuse_session, :enqueue_messages, :resuscitate_archived,
-      :last_session_id, :max_sessions_per_minute, :scheduling_class, :precedence,
+      :last_session_id, :max_sessions_per_minute, :skip_if_pending_session,
+      :scheduling_class, :precedence,
       mcp_servers: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
@@ -228,6 +239,7 @@ class Api::V1::TriggersController < Api::BaseController
       enqueue_messages: trigger.enqueue_messages,
       resuscitate_archived: trigger.resuscitate_archived,
       max_sessions_per_minute: trigger.max_sessions_per_minute,
+      skip_if_pending_session: trigger.skip_if_pending_session,
       bursting: trigger.bursting?,
       # The chosen class (null when none was chosen) and the one its sessions
       # actually get, which falls back to the default for the genesis its

@@ -68,6 +68,17 @@ class ScheduleTriggerJob < ApplicationJob
       return
     end
 
+    # A dedup-skipped fire delivered nothing either, and the schedule must not be
+    # marked as having run. That matters most for a ONE-TIME schedule: the block
+    # below destroys the trigger and its sibling wakes after firing, so consuming
+    # the condition here would delete the scheduled work outright — there is no
+    # next occurrence to make up for it. Leave the schedule due; it fires for
+    # real once the pending session is done, exactly as the burst path does.
+    if trigger.last_fire_skipped_for_pending_session?
+      Rails.logger.info "[ScheduleTriggerJob] Condition #{condition.id} on trigger #{trigger.id} skipped — session #{trigger.last_fire_pending_session.id} is still pending; leaving it due"
+      return
+    end
+
     # Update condition's last_triggered_at
     condition.update!(last_triggered_at: Time.current)
 
@@ -103,8 +114,8 @@ class ScheduleTriggerJob < ApplicationJob
     if session
       Rails.logger.info "[ScheduleTriggerJob] Created/reused session #{session.id} for trigger #{trigger_id}"
     else
-      # Burst suppression already returned above, so nil here means a one-time
-      # reuse trigger whose target session is gone. Not an error.
+      # Burst suppression and dedup both returned above, so nil here means a
+      # one-time reuse trigger whose target session is gone. Not an error.
       Rails.logger.info "[ScheduleTriggerJob] Trigger #{trigger_id} fired but created no session (no reusable target session)"
     end
   rescue => e

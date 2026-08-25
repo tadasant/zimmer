@@ -1037,8 +1037,13 @@ class SlackTriggerPollerJob < ApplicationJob
     # cursor to the newest message it fetched regardless of what each message
     # produced, which is exactly what we want here — replaying a burst once it
     # subsides would spawn the very sessions the cap exists to prevent.
+    #
+    # `skip_if_pending_session` drops the message the same way and for the same
+    # reason: a session this trigger already spawned is still queued, so the
+    # message it would have spawned a second session for is covered by that one.
     if session.nil?
-      Rails.logger.info "[SlackTriggerPollerJob] Trigger #{trigger.id} spawned nothing for message #{message.ts} (burst-suppressed) — dropping it"
+      reason = trigger.last_fire_skipped_for_pending_session? ? "session #{trigger.last_fire_pending_session.id} is still pending" : "burst-suppressed"
+      Rails.logger.info "[SlackTriggerPollerJob] Trigger #{trigger.id} spawned nothing for message #{message.ts} (#{reason}) — dropping it"
       return
     end
 

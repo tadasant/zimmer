@@ -18,6 +18,24 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     assert_includes output, "  - Slack: #eng-ci"
   end
 
+  test "surfaces skip_if_pending_session, and names the session it is skipping for" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    assert_includes @tool.call("id" => trigger.id), "- **Skip While Pending:** No"
+
+    trigger.update!(skip_if_pending_session: true)
+    assert_includes @tool.call("id" => trigger.id), "Yes (nothing pending — the next fire spawns)"
+
+    # A trigger skipping every fire spawns nothing at all — say so, and say which
+    # session it is deferring to, or a caller wondering why it looks dead has no
+    # way to tell.
+    pending = sessions(:waiting)
+    pending.update!(metadata: pending.metadata.merge("trigger_id" => trigger.id))
+    output = @tool.call("id" => trigger.id)
+    assert_includes output, "SKIPPING"
+    assert_includes output, "session #{pending.id}"
+  end
+
   test "surfaces the burst cap, and flags a trigger that is currently bursting" do
     trigger = triggers(:enabled_slack_trigger)
 

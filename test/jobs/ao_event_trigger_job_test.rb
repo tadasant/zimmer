@@ -400,6 +400,47 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     assert_not_nil @condition.last_triggered_at
   end
 
+  # last_triggered_at is a session-scoped condition's one-shot guard. Spending it
+  # on a dedup skip would lose that wake permanently, just because a session the
+  # trigger spawned earlier happened to still be pending.
+  test "a session-scoped condition skipped for a pending session keeps its one-shot guard" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    watched = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      is_autonomous: true,
+      metadata: {}
+    )
+    @condition.update!(configuration: {
+      "event_name" => "session_needs_input",
+      "watched_session_id" => watched.id
+    })
+    @trigger.update!(skip_if_pending_session: true)
+
+    pending = Session.create!(
+      prompt: "Already doing this work",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      metadata: { "trigger_id" => @trigger.id }
+    )
+    assert pending.waiting?
+
+    assert_no_difference("Session.count") do
+      AoEventTriggerJob.perform_now("session_needs_input", watched.id)
+    end
+    assert_nil @condition.reload.last_triggered_at, "the one-shot guard must be unspent"
+
+    # And the wake still lands once the pending session is done.
+    pending.update_columns(status: Session.statuses[:archived])
+    assert_difference("Session.count", 1) do
+      AoEventTriggerJob.perform_now("session_needs_input", watched.id)
+    end
+    assert_not_nil @condition.reload.last_triggered_at
+  end
+
   test "broadcast (no watched_session_id) ao_event condition fires for any session" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
