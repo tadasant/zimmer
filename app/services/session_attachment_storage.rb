@@ -33,6 +33,15 @@
 #     def copy_entry(...) = ...   # re-stores one entry into another session
 #   end
 #
+# Declaring the subclass is not the whole job. Nothing discovers a storage kind
+# by reflection, so a new subclass is invisible to the reapers until it is named
+# in each of them by hand — and invariant 3 above is exactly the failure that
+# produces. Register a new kind in all four:
+#
+#   Session#reclaim_session_directories        (app/models/session.rb)
+#   DurableSessionStorage                      (app/jobs/concerns/durable_session_storage.rb, twice)
+#   StaleCloneCleanupJob                       (app/jobs/stale_clone_cleanup_job.rb, twice)
+#
 # Storage location:
 #   <storage_root>/<session_id>/<subclass-chosen filename>
 #
@@ -107,6 +116,9 @@ class SessionAttachmentStorage
     resolved_session_dir = File.expand_path(session_dir)
 
     # Ensure the resolved path is within our session directory
+    # The trailing "/" is load-bearing: without it a SIBLING directory whose
+    # name merely starts with this session's id (".../123-evil") satisfies the
+    # prefix and escapes the guard.
     return false unless resolved_path.start_with?(resolved_session_dir + "/") ||
                         resolved_path == resolved_session_dir
 
@@ -169,10 +181,9 @@ class SessionAttachmentStorage
 
   # Reclaim a session's stored attachments (best-effort; never raises).
   #
-  # Now that storage is durable (see .storage_root) it is no longer wiped by
-  # container recreation, so it must be reaped explicitly. Called from the clone
-  # GC so attachments share the clone/scratch lifecycle rather than accumulating
-  # on the shared volume forever.
+  # Durable storage (see .storage_root) survives container recreation, so it has
+  # to be reaped explicitly. Called from the clone GC so attachments share the
+  # clone/scratch lifecycle rather than accumulating on the shared volume forever.
   def self.cleanup_for(session_id)
     new(session_id: session_id).cleanup!
   rescue ArgumentError => e

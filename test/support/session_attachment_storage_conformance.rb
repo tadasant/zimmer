@@ -4,17 +4,18 @@ require "minitest/mock"
 
 # Shared conformance tests for the SessionAttachmentStorage surface.
 #
-# FileStorageService and ImageStorageService were once near-verbatim twins, and
-# their two test suites were twins too — which is how a hardening applied to one
-# copy stayed silently absent from the other. The lifecycle now lives once in
+# The lifecycle every attachment kind shares lives once in
 # SessionAttachmentStorage, and the tests for it live once here: both subclass
-# suites include this module, so every assertion below runs against both.
+# suites include this module, so every assertion below runs against both. Two
+# suites asserting the same lifecycle separately is how a hardening applied to
+# one attachment kind stays silently absent from the other.
 #
-# An including test case supplies four things:
+# An including test case supplies five things:
 #
 #   storage_class                         # the class under test
 #   storage_env_var                       # literal name of its storage_root override var
 #   expected_storage_subdir               # literal name of its directory under ~/.zimmer
+#   expected_attachment_noun              # literal singular noun used in its log lines
 #   store_sample(service, filename: nil)  # stores one attachment, returns its metadata
 #
 # The path assertions deliberately compare against *literal* expected strings
@@ -32,10 +33,15 @@ module SessionAttachmentStorageConformance
       assert_operator storage_class, :<, SessionAttachmentStorage
     end
 
-    test "conformance: declares its env var and subdir" do
+    # attachment_noun is asserted alongside the other two because cleanup! and
+    # copy_from_temp read it from inside their rescue handlers. A subclass that
+    # forgot to declare it would work until the first failure and then raise
+    # NotImplementedError out of cleanup!, which callers rely on never raising.
+    test "conformance: declares its env var, subdir, and log noun" do
       assert_equal storage_env_var, storage_class.storage_env_var
       assert_equal expected_storage_subdir, storage_class.storage_subdir
       assert_equal expected_storage_subdir, storage_class::STORAGE_SUBDIR
+      assert_equal expected_attachment_noun, storage_class.attachment_noun
     end
 
     # --- Resolved paths -------------------------------------------------------
@@ -152,11 +158,21 @@ module SessionAttachmentStorageConformance
       )
     end
 
+    # The sibling file is really created, so this fails if the guard is weakened
+    # to start_with?(resolved_session_dir) without the trailing "/". Against a
+    # path that does not exist the assertion would pass either way, and the
+    # missing separator is exactly the bug it exists to catch.
     test "conformance: exists? rejects a sibling directory sharing the session_id prefix" do
       result = store_sample(conformance_service)
-      sibling = "#{conformance_service.session_dir}-evil/#{File.basename(result[:path])}"
+      sibling_dir = "#{conformance_service.session_dir}-evil"
+      FileUtils.mkdir_p(sibling_dir)
+      sibling = File.join(sibling_dir, File.basename(result[:path]))
+      FileUtils.cp(result[:path], sibling)
+      assert File.exist?(sibling), "the sibling file must exist or this test proves nothing"
 
       refute conformance_service.exists?(sibling)
+    ensure
+      FileUtils.rm_rf(sibling_dir) if sibling_dir
     end
 
     # --- list / store / cleanup ----------------------------------------------
@@ -195,7 +211,11 @@ module SessionAttachmentStorageConformance
     end
 
     test "conformance: cleanup! on a session that stored nothing is a no-op" do
-      assert_nothing_raised { conformance_service.cleanup! }
+      refute File.directory?(conformance_service.session_dir)
+
+      conformance_service.cleanup!
+
+      refute File.directory?(conformance_service.session_dir)
     end
 
     test "conformance: cleanup_for reaps a session's directory" do
