@@ -833,7 +833,7 @@ class ClaudeAccount < ApplicationRecord
   # @return [Symbol] :synced, :session_scoped, :absent, :not_owner, :corrupt,
   #   or :unreadable
   def sync_tokens_from_filesystem!
-    # Enforce DB ownership at the dangerous boundary, not only at today's
+    # Enforce DB ownership at the dangerous boundary, not only at individual
     # callers. A missed caller guard is what let the pre-refresh path import a
     # stale rollback artifact after a successful interactive login.
     return :session_scoped if session_scoped_credentials?
