@@ -175,7 +175,28 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
 
       assert account.refresh_token!
       assert_equal "cli-rotated-refresh", sent_refresh_token.call,
-        "shared-file mode must retain the rollback path that adopts CLI rotations"
+      "shared-file mode must retain the rollback path that adopts CLI rotations"
+    end
+  end
+
+  test "the filesystem sync boundary refuses stale shared tokens when the setting is on" do
+    account = claude_accounts(:secondary)
+    db_refresh_token = account.claude_refresh_token
+    write_shared_subscription_credentials!(account, refresh_token: "stale-shared-refresh")
+
+    with_setting(true) do
+      assert_equal :session_scoped, account.sync_tokens_from_filesystem!
+      assert_equal db_refresh_token, account.reload.claude_refresh_token
+    end
+  end
+
+  test "with the setting off, the filesystem sync boundary still adopts shared tokens" do
+    account = claude_accounts(:secondary)
+    write_shared_subscription_credentials!(account, refresh_token: "cli-rotated-refresh")
+
+    with_setting(false) do
+      assert_equal :synced, account.sync_tokens_from_filesystem!
+      assert_equal "cli-rotated-refresh", account.reload.claude_refresh_token
     end
   end
 

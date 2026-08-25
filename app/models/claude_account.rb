@@ -830,8 +830,14 @@ class ClaudeAccount < ApplicationRecord
   # move the row on, and the wait becomes a three-hour metronome. The caller can
   # only tell the difference if this says so. See issue #618, hole 6.
   #
-  # @return [Symbol] :synced, :absent, :not_owner, :corrupt, or :unreadable
+  # @return [Symbol] :synced, :session_scoped, :absent, :not_owner, :corrupt,
+  #   or :unreadable
   def sync_tokens_from_filesystem!
+    # Enforce DB ownership at the dangerous boundary, not only at today's
+    # callers. A missed caller guard is what let the pre-refresh path import a
+    # stale rollback artifact after a successful interactive login.
+    return :session_scoped if session_scoped_credentials?
+
     return :absent unless File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
     return :not_owner unless filesystem_credentials_owned_by_self?
 
