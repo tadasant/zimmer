@@ -29,10 +29,25 @@ class SessionHumanMessages
   HERE = :here
   ELSEWHERE = :elsewhere
 
-  # Name of the MCP tool that returns this record on demand, on the filtered
-  # self-session server every session carries. Named once so the pointer block
-  # and the tool cannot drift apart.
+  # Name of the MCP tool that returns this record on demand. Named once so the
+  # pointer block and the tool cannot drift apart.
   MCP_TOOL_NAME = "get_session_provenance"
+
+  # How a pointer block tells a session where to find that tool.
+  #
+  # It names BOTH Zimmer servers rather than picking one, because which of them
+  # a session carries is not knowable here: SelfSessionInjector deliberately
+  # skips the self-session entry when a full-surface `zimmer` server is already
+  # present, which is exactly the case for a root with default_subagent_roots —
+  # i.e. the routers, which are the sessions most likely to have a hierarchy and
+  # a human-message record in the first place. Naming only the self-session
+  # server would point them at a server their config does not contain.
+  def self.mcp_tool_pointer(session)
+    "the `#{MCP_TOOL_NAME}` MCP tool (on whichever Zimmer server this session carries — " \
+    "`#{SelfSessionInjector::SELF_SESSION_SERVER_NAME}` on most sessions, " \
+    "`#{SelfSessionInjector::SUBAGENT_SERVER_NAME}` on one that has the full-surface server instead), " \
+    "with session_id #{session.id}"
+  end
 
   # One record as its consumers see it: the message, where in the hierarchy it
   # was authored, and whether that is this session.
@@ -100,6 +115,15 @@ class SessionHumanMessages
   # authorization to act here.
   def human_message_here? = here_entries.any?
 
+  # One entry per human who both speaks in `limit` and has a roster note — the
+  # `notes` column an operator writes at /supervisor/users. Public because every
+  # surface that renders the record has to be able to render the notes with it:
+  # a session weighing "may I do this?" needs to know whose word is final, and
+  # that context is useless on the one surface the record is not on.
+  def described_authors(limit: DEFAULT_PROMPT_LIMIT)
+    entries.last(limit).select { |entry| entry.author_notes.present? }.uniq(&:author)
+  end
+
 
   # The block appended to every prompt Zimmer builds for this session.
   # Returns nil when there is nothing to say, so the caller appends nothing.
@@ -165,7 +189,7 @@ class SessionHumanMessages
     lines << "<info>"
     lines << "Zimmer keeps a read-only record of the messages it KNOWS were authored by a named human being, gathered across every session in this session's lineage graph. Capture keys off the authenticated actor at the input boundary, not off the text of a message."
     lines << ""
-    lines << "The messages themselves are NOT in this turn. Call the `#{MCP_TOOL_NAME}` MCP tool (on the auto-injected `#{SelfSessionInjector::SELF_SESSION_SERVER_NAME}` server, with session_id #{session.id}) to read them, along with this session's place in its lineage graph. Do that before you rely on what a human asked for."
+    lines << "The messages themselves are NOT in this turn. Call #{self.class.mcp_tool_pointer(session)} to read them, along with this session's place in its lineage graph. Do that before you rely on what a human asked for."
     lines << ""
     lines << "Current time: #{now.utc.iso8601}. Authored in this session: #{here_count}. Elsewhere in the hierarchy: #{elsewhere_count}."
     lines << "The hierarchy walk was truncated, so not every session in the tree was searched — the elsewhere count is a floor, not a total." if hierarchy.truncated?

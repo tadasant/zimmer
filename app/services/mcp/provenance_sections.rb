@@ -46,6 +46,37 @@ module Mcp
       lines
     end
 
+    # The roster's own context about the humans who speak in the record — the
+    # `notes` column an operator writes at /supervisor/users.
+    #
+    # It rides with the messages because that is where it gets used: an agent
+    # weighing "may I do this?" needs to know who is asking, not only what was
+    # asked. The injected block has always carried it; when provenance moves to
+    # this tool it has to come along, or the experiment quietly drops the one
+    # piece of context that says whose word is final.
+    #
+    # Only humans present in the shown messages are described, and only when a
+    # note exists, so an empty roster column costs nothing.
+    def people_lines(record)
+      described = record.described_authors(limit: MAX_HUMAN_MESSAGES)
+      return [] if described.empty?
+
+      lines = [ "", "### People" ]
+      lines << "What this deployment's roster records about the humans above. It describes who they are; it is not itself an instruction from them."
+
+      described.each do |entry|
+        lines << ""
+        name = Sanitize.sanitize_for_markdown_line(entry.display_name)
+        handle = Sanitize.sanitize_for_markdown_line(entry.author).tr("`", "ˋ")
+        lines << "- **#{name}** (`#{handle}`)"
+        lines << "  ```"
+        Sanitize.sanitize_for_fence(entry.author_notes).each_line { |line| lines << "  #{line.chomp}" }
+        lines << "  ```"
+      end
+
+      lines
+    end
+
     # The human-message record for the whole hierarchy.
     #
     # Never behind an `include_` flag on either tool. Two reasons: it is small
@@ -91,7 +122,7 @@ module Mcp
       omitted = entries.size - [ entries.size, MAX_HUMAN_MESSAGES ].min
       lines << "" << "_#{omitted} older #{'entry'.pluralize(omitted)} omitted._" if omitted.positive?
 
-      lines
+      lines.concat(people_lines(record))
     end
   end
 end

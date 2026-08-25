@@ -8740,7 +8740,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert_includes result, "<human-messages>"
     assert_includes result, "get_session_provenance"
+    # Both Zimmer servers are named: which one a session carries is not knowable
+    # at prompt-build time, and a router (the case with a record to fetch) gets
+    # the full-surface one INSTEAD of the self-session one.
     assert_includes result, "zimmer-self-session"
+    assert_includes result, "`zimmer`"
     assert_includes result, "session_id #{worker.id}"
     assert_includes result, "Authored in this session: 1"
     assert_includes result, "Elsewhere in the hierarchy: 1"
