@@ -151,6 +151,55 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     end
   end
 
+  test "a refresh uses the DB token captured by re-auth instead of the stale shared file" do
+    account = claude_accounts(:secondary)
+    write_shared_subscription_credentials!(account, refresh_token: "stale-shared-refresh")
+
+    with_setting(true) do
+      capture_login!(account)
+      sent_refresh_token = stub_successful_refresh!
+
+      assert account.refresh_token!
+      assert_equal "fresh-refresh", sent_refresh_token.call,
+        "the shared file is a rollback artifact and must not overwrite a completed login"
+    end
+  end
+
+  test "with the setting off, a refresh still adopts a CLI-rotated shared token" do
+    account = claude_accounts(:secondary)
+    write_shared_subscription_credentials!(account, refresh_token: "cli-rotated-refresh")
+
+    with_setting(false) do
+      capture_login!(account)
+      sent_refresh_token = stub_successful_refresh!
+
+      assert account.refresh_token!
+      assert_equal "cli-rotated-refresh", sent_refresh_token.call,
+      "shared-file mode must retain the rollback path that adopts CLI rotations"
+    end
+  end
+
+  test "the filesystem sync boundary refuses stale shared tokens when the setting is on" do
+    account = claude_accounts(:secondary)
+    db_refresh_token = account.claude_refresh_token
+    write_shared_subscription_credentials!(account, refresh_token: "stale-shared-refresh")
+
+    with_setting(true) do
+      assert_equal :session_scoped, account.sync_tokens_from_filesystem!
+      assert_equal db_refresh_token, account.reload.claude_refresh_token
+    end
+  end
+
+  test "with the setting off, the filesystem sync boundary still adopts shared tokens" do
+    account = claude_accounts(:secondary)
+    write_shared_subscription_credentials!(account, refresh_token: "cli-rotated-refresh")
+
+    with_setting(false) do
+      assert_equal :synced, account.sync_tokens_from_filesystem!
+      assert_equal "cli-rotated-refresh", account.reload.claude_refresh_token
+    end
+  end
+
   # ── the sweep stops reading the filesystem back ───────────────────────
 
   test "the auth sweep does not sync the current account's tokens off the filesystem" do
@@ -268,6 +317,34 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
       scope: nil,
       headers: {}
     )
+  end
+
+  def write_shared_subscription_credentials!(account, refresh_token:)
+    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH, JSON.generate(
+      "claudeAiOauth" => {
+        "accessToken" => "access-for-#{refresh_token}",
+        "refreshToken" => refresh_token,
+        "expiresAt" => ((Time.current + 1.hour).to_f * 1000).to_i
+      }
+    ))
+    ClaudeAccount.write_credentials_owner_marker!(account.email)
+  end
+
+  def stub_successful_refresh!
+    sent_refresh_token = nil
+    response = Net::HTTPSuccess.new("1.1", "200", "OK")
+    response.stubs(:code).returns("200")
+    response.stubs(:body).returns({
+      access_token: "rotated-access",
+      refresh_token: "rotated-refresh",
+      expires_in: 3600
+    }.to_json)
+    Net::HTTP.any_instance.stubs(:request).with do |request|
+      sent_refresh_token = URI.decode_www_form(request.body).to_h["refresh_token"]
+      true
+    end.returns(response)
+
+    -> { sent_refresh_token }
   end
 
   # Drive ClaudeLoginDriver#capture! against a scratch dir holding a complete,
