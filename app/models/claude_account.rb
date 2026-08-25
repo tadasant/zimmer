@@ -523,8 +523,8 @@ class ClaudeAccount < ApplicationRecord
 
   # Whether Claude sessions carry their own credentials rather than reading the
   # shared file. When they do, this row is the only copy of the chain and the
-  # shared file is a stale artifact — so the two paths that reconcile against it
-  # (#lost_refresh_race?, the post-refresh write in #refresh_token!) must not.
+  # shared file is a stale artifact — so no refresh path may reconcile against
+  # it before a request, after a rejection, or after a successful rotation.
   #
   # Only meaningful for a Claude row; a Codex account manages its own auth.json
   # and is unaffected by the setting.
@@ -626,13 +626,11 @@ class ClaudeAccount < ApplicationRecord
       refreshed = if codex?
         refresh_codex_token!(recovery_probe: recovery_probe)
       else
-        # The Claude CLI refreshes tokens independently during sessions, and Anthropic's
-        # OAuth endpoint rotates refresh_token for security. When that happens, the CLI
-        # writes the new pair to ~/.claude/.credentials.json but Zimmer's DB copy stays
-        # stale — using it would fail with invalid_grant. Sync from filesystem first.
-        # sync_tokens_from_filesystem! is a no-op when ~/.claude.json's identity does
-        # not match this account or when ~/.claude.json is missing entirely.
-        sync_tokens_from_filesystem!
+        # In shared-file mode the Claude CLI can rotate the chain independently,
+        # so adopt its pair before refreshing. Under session-scoped credentials no
+        # session receives a refresh token or writes this file; the DB is the sole
+        # owner and the shared file is only a potentially stale rollback artifact.
+        sync_tokens_from_filesystem! unless session_scoped_credentials?
         perform_claude_refresh!(recovery_probe: recovery_probe, presented: claude_refresh_token)
       end
     end
@@ -832,8 +830,14 @@ class ClaudeAccount < ApplicationRecord
   # move the row on, and the wait becomes a three-hour metronome. The caller can
   # only tell the difference if this says so. See issue #618, hole 6.
   #
-  # @return [Symbol] :synced, :absent, :not_owner, :corrupt, or :unreadable
+  # @return [Symbol] :synced, :session_scoped, :absent, :not_owner, :corrupt,
+  #   or :unreadable
   def sync_tokens_from_filesystem!
+    # Enforce DB ownership at the dangerous boundary, not only at individual
+    # callers. A missed caller guard is what let the pre-refresh path import a
+    # stale rollback artifact after a successful interactive login.
+    return :session_scoped if session_scoped_credentials?
+
     return :absent unless File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
     return :not_owner unless filesystem_credentials_owned_by_self?
 
