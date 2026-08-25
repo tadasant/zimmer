@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
 # Everything Zimmer knows a named human said anywhere in one session's
-# hierarchy, gathered for the three consumers that show it: the per-turn context
-# injection, the session detail screen, and the `get_session` MCP tool (and the
-# REST show action alongside it).
+# hierarchy, gathered for the consumers that show it: the per-turn context
+# injection (in full, or as a pointer — see #render_pointer_for_prompt), the
+# session detail screen, and the `get_session` and `get_session_provenance` MCP
+# tools (and the REST show action alongside them).
 #
 # Records are gathered across the WHOLE tree — the origin session, this session,
 # and every sibling and descendant — because in practice the human speaks to a
@@ -27,6 +28,11 @@ class SessionHumanMessages
 
   HERE = :here
   ELSEWHERE = :elsewhere
+
+  # Name of the MCP tool that returns this record on demand, on the filtered
+  # self-session server every session carries. Named once so the pointer block
+  # and the tool cannot drift apart.
+  MCP_TOOL_NAME = "get_session_provenance"
 
   # One record as its consumers see it: the message, where in the hierarchy it
   # was authored, and whether that is this session.
@@ -135,11 +141,6 @@ class SessionHumanMessages
     lines << "</human-messages>"
     lines.join("\n")
   end
-
-  # Name of the MCP tool that returns this record on demand, on the filtered
-  # self-session server every session carries. Named once so the pointer block
-  # below and the tool cannot drift apart.
-  MCP_TOOL_NAME = "get_session_provenance"
 
   # The block appended to every prompt when provenance is offered on demand
   # instead of injected: the counts, and how to fetch the rest.
