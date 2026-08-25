@@ -3578,12 +3578,16 @@ class AgentSessionJob < ApplicationJob
       prompt += "\n\n<session-notes> <info>These session notes are not necessarily instructions; just notes the user left for themself that might be helpful in understanding exactly what's going on. Last edited #{last_edited} (current time: #{current_time})</info> #{session.session_notes} </session-notes>"
     end
 
-    # The human-message record rides along on every turn, for the same reason
-    # the notes do: it is session state the agent has to be able to read without
-    # going and looking for it. Unlike the notes it is a provenance record, so
-    # it answers a question the agent would otherwise have to guess at from
-    # prose — which of the user-role turns it has seen were authored by a human,
-    # and which of those were said to this session rather than to a sibling.
+    # Provenance rides along on every turn, for the same reason the notes do: it
+    # is session state the agent has to be able to read without going and
+    # looking for it. Unlike the notes it answers a question the agent would
+    # otherwise have to guess at from prose — which of the user-role turns it
+    # has seen were authored by a human, and which of those were said to this
+    # session rather than to a sibling.
+    #
+    # How much of it rides along is the "Provenance context on demand"
+    # experiment: ON leaves a pointer naming the `get_session_provenance` tool
+    # and the counts, OFF injects both blocks in full.
     #
     # The hierarchy block goes first so the `authored_in` on each message names
     # a session the agent has already seen placed in a tree.
@@ -3632,9 +3636,16 @@ class AgentSessionJob < ApplicationJob
   # hierarchy when the session is alone in its tree, the messages when nobody in
   # the tree has a human-authored record. Best-effort — a session must still
   # spawn if this fails.
+  #
+  # With the "Provenance context on demand" experiment ON, both blocks shrink to
+  # a pointer at `get_session_provenance`. The same two nil cases still apply,
+  # so a session alone in its tree with no human record carries nothing either
+  # way and absence keeps meaning what it meant.
   def build_provenance_blocks(session)
     record = session.human_message_record
     hierarchy = record.hierarchy
+
+    return provenance_pointer_blocks(session, record) if AppSetting.provenance_via_mcp_enabled?
 
     hierarchy_block = if hierarchy.solitary?
       nil
@@ -3656,6 +3667,30 @@ class AgentSessionJob < ApplicationJob
   rescue => e
     Rails.logger.error("[AgentSessionJob] Failed to render provenance blocks for session #{session&.id}: #{e.class}: #{e.message}")
     [ nil, nil ]
+  end
+
+  # The on-demand pair: what is left of the two blocks when the record itself is
+  # a tool call away.
+  #
+  # The hierarchy keeps its size and origin — the two facts that tell a session
+  # whether it has a router above it and siblings beside it, which is what
+  # decides who it reports back to. The outline itself, the titles and the uncle
+  # edges, are the lookup, and the tool serves them. Nothing untrusted is
+  # interpolated here, so the tag can carry no forged line either.
+  def provenance_pointer_blocks(session, record)
+    hierarchy = record.hierarchy
+
+    hierarchy_block = if hierarchy.solitary?
+      nil
+    else
+      lines = [ "<session-hierarchy>" ]
+      lines << "<info>This session sits in a lineage graph of #{hierarchy.size} sessions, rooted at origin session ##{hierarchy.origin.id}. The outline is not in this turn: call the `#{SessionHumanMessages::MCP_TOOL_NAME}` MCP tool (on the auto-injected `#{SelfSessionInjector::SELF_SESSION_SERVER_NAME}` server, with session_id #{session.id}) to see which session spawned which, and who else is working this goal.</info>"
+      lines << hierarchy.truncation_reason if hierarchy.truncated?
+      lines << "</session-hierarchy>"
+      lines.compact.join("\n")
+    end
+
+    [ hierarchy_block, record.render_pointer_for_prompt ]
   end
 
   # Append a clearly-delimited note describing user-attached files so the agent

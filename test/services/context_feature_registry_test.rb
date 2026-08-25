@@ -38,6 +38,35 @@ class ContextFeatureRegistryTest < ActiveSupport::TestCase
     assert_equal({ "tool_result" => 3 }, builtin)
   end
 
+  # The experiment must not be able to look free on the cost page: when the
+  # blocks stop being injected the bytes reappear as a tool call, and they land
+  # on their own line rather than disappearing into "MCP responses".
+  test "provenance fetched on demand is attributed to itself, not to MCP responses" do
+    fetched = ContextFeatureRegistry.classify(
+      block(type: "tool_result", text: "abc", tool_name: "mcp__zimmer-self-session__get_session_provenance")
+    )
+    called = ContextFeatureRegistry.classify(
+      block(role: "assistant", type: "tool_use", text: "ab", tool_name: "mcp__zimmer-self-session__get_session_provenance")
+    )
+
+    assert_equal({ "provenance_tool" => 3 }, fetched)
+    assert_equal({ "provenance_tool" => 2 }, called)
+    assert_includes ContextFeatureRegistry.zimmer_keys, "provenance_tool"
+  end
+
+  # The two injected blocks keep their own lines in both modes: ON they shrink
+  # to the pointer, OFF they are the full record. Same key either way, so the
+  # before/after is one number moving rather than a line appearing.
+  test "the injected-block detectors still match the on-demand pointers" do
+    pointer = "<session-hierarchy>\n<info>This session sits in a lineage graph of 2 sessions, rooted at origin session #7.</info>\n</session-hierarchy>\n" \
+              "<human-messages>\n<info>Call the `get_session_provenance` MCP tool. Authored in this session: 0.</info>\n</human-messages>"
+    claimed = ContextFeatureRegistry.classify(block(text: pointer))
+
+    assert_equal pointer.length, claimed.values.sum
+    assert_operator claimed["session_hierarchy"], :>, 0
+    assert_operator claimed["human_messages"], :>, 0
+  end
+
   test "the features Zimmer itself injects are identifiable as such" do
     # The page marks these because they are the ones this repository can decide to
     # stop injecting, shrink, or serve from a cheaper model.
