@@ -1,8 +1,10 @@
-# ImageStorageService - Abstraction for temporary image storage
+# ImageStorageService - Storage for image session attachments
 #
-# This service provides a pluggable interface for storing images attached to
-# agent session prompts. Stores images on the durable `~/.zimmer` volume, but is
-# designed to be easily extended for more persistent storage (S3, etc.).
+# The SessionAttachmentStorage subclass for images attached to agent session
+# prompts. The lifecycle — durable storage root, per-session directory,
+# path-traversal guard, reaping — lives in SessionAttachmentStorage; this class
+# adds magic-byte media-type sniffing, size/format validation, and base64
+# retrieval for the CLI.
 #
 # Usage:
 #   service = ImageStorageService.new(session_id: 123)
@@ -25,16 +27,10 @@
 # Storage location:
 #   <storage_root>/<session_id>/<uuid>.<ext>
 #
-# where <storage_root> resolves under the durable `zimmer_data` volume shared by
-# the web and worker containers (see .base_dir). Cross-container visibility is
-# load-bearing: the web container writes the upload and the worker container's
-# agent reads it back to base64-inline it, so the bytes MUST live on a mount both
-# roles see.
-#
 # Supported formats: JPEG, PNG, GIF, WebP
 # Maximum size: 10MB per image
 #
-class ImageStorageService
+class ImageStorageService < SessionAttachmentStorage
   class ImageStorageError < StandardError; end
   class InvalidImageError < ImageStorageError; end
   class StorageError < ImageStorageError; end
@@ -53,20 +49,9 @@ class ImageStorageService
   # Subdirectory (under the durable ~/.zimmer root) that holds images.
   STORAGE_SUBDIR = "agent-orchestrator-images"
 
-  attr_reader :session_id, :file_system
-
-  def initialize(session_id:, file_system: nil)
-    # Validate session_id to prevent path traversal attacks
-    # Accept positive integers OR strings matching temp_<uuid> pattern for pre-session uploads
-    if session_id.is_a?(Integer) && session_id > 0
-      @session_id = session_id.to_s
-    elsif session_id.is_a?(String) && session_id.match?(/\Atemp_[a-f0-9\-]+\z/)
-      @session_id = session_id
-    else
-      raise ArgumentError, "session_id must be a positive integer or temp_<uuid> string"
-    end
-    @file_system = file_system || RealFileSystemAdapter.new
-  end
+  def self.storage_env_var = "AGENT_IMAGES_DIR"
+  def self.storage_subdir = STORAGE_SUBDIR
+  def self.attachment_noun = "image"
 
   # Store an image from either base64 data or an uploaded file
   #
@@ -84,6 +69,16 @@ class ImageStorageService
     end
   end
 
+  # Re-store one image into another session (see SessionAttachmentStorage#copy_entry).
+  #
+  # An entry whose media type cannot be sniffed from its bytes is dropped rather
+  # than copied — the destination's #store would reject it anyway.
+  def copy_entry(content:, old_path:, destination:)
+    return nil unless detect_media_type_from_content(content)
+
+    destination.store(data: Base64.strict_encode64(content), filename: File.basename(old_path))
+  end
+
   # Retrieve an image as base64 for passing to CLI
   #
   # @param path [String] Path to the stored image
@@ -97,139 +92,6 @@ class ImageStorageService
     media_type = detect_media_type_from_content(content)
 
     [ Base64.strict_encode64(content), media_type ]
-  end
-
-  # Check if an image path exists and is valid
-  # Uses File.expand_path to prevent path traversal attacks via ".." sequences
-  #
-  # @param path [String] Path to check
-  # @return [Boolean]
-  def exists?(path)
-    return false unless path.present?
-
-    # Resolve any ".." or "." in the path to prevent traversal attacks
-    resolved_path = File.expand_path(path)
-    resolved_session_dir = File.expand_path(session_dir)
-
-    # Ensure the resolved path is within our session directory
-    return false unless resolved_path.start_with?(resolved_session_dir + "/") ||
-                        resolved_path == resolved_session_dir
-
-    @file_system.exists?(resolved_path)
-  end
-
-  # Clean up all images for this session
-  def cleanup!
-    dir = session_dir
-    return unless File.directory?(dir)
-
-    FileUtils.rm_rf(dir)
-  rescue => e
-    Rails.logger.warn("Failed to cleanup images for session #{session_id}: #{e.message}")
-  end
-
-  # List all images for this session
-  #
-  # @return [Array<String>] Paths to stored images
-  def list
-    dir = session_dir
-    return [] unless File.directory?(dir)
-
-    Dir.glob(File.join(dir, "*")).select { |f| File.file?(f) }
-  end
-
-  # Copy images from a temporary session to the real session
-  # Used when creating a new session with pre-uploaded images
-  #
-  # @param temp_session_id [String] The temporary session ID (temp_<uuid>)
-  # @param new_session_id [Integer] The real session ID
-  # @return [Array<Hash>] Updated image metadata with new paths
-  def self.copy_from_temp(temp_session_id:, new_session_id:)
-    temp_service = new(session_id: temp_session_id)
-    new_service = new(session_id: new_session_id)
-
-    copied_images = []
-
-    temp_service.list.each do |old_path|
-      begin
-        # Read the image content
-        content = File.binread(old_path)
-        media_type = temp_service.send(:detect_media_type_from_content, content)
-        next unless media_type
-
-        # Store in new location
-        result = new_service.store(data: Base64.strict_encode64(content), filename: File.basename(old_path))
-        copied_images << result
-      rescue => e
-        Rails.logger.error("Failed to copy image from temp storage #{old_path}: #{e.message}")
-        # Continue with other images rather than failing entirely
-      end
-    end
-
-    # Clean up temp directory
-    temp_service.cleanup!
-
-    copied_images
-  end
-
-  # Reclaim a session's stored images (best-effort; never raises).
-  #
-  # Now that storage is durable (see .storage_root) it is no longer wiped by
-  # container recreation, so it must be reaped explicitly. Called from the clone
-  # GC so attachments share the clone/scratch lifecycle rather than accumulating
-  # on the shared volume forever.
-  def self.cleanup_for(session_id)
-    new(session_id: session_id).cleanup!
-  rescue ArgumentError => e
-    Rails.logger.warn("[ImageStorageService] cleanup_for skipped invalid session #{session_id.inspect}: #{e.message}")
-  end
-
-  # Root of the image storage tree, before per-session subdirectories.
-  #
-  # Resolves under the durable `zimmer_data` volume (~/.zimmer) — a sibling of
-  # ClonesDirectory.base, the SAME mount that is bind-mounted into BOTH the web
-  # and worker containers in production. This cross-container visibility is the
-  # whole point: an upload written by the web role (Puma) has to be readable by
-  # the agent running in the worker role (GoodJob :external), which reads the
-  # file back to base64-inline it. Per-container `/tmp` is an ephemeral overlay
-  # that is NOT shared between the two roles, so files written there never reach
-  # the worker (see limitations #74).
-  #
-  # Override with the AGENT_IMAGES_DIR environment variable. If you point it
-  # OUTSIDE the mounted named volume you MUST add a corresponding durable volume
-  # mount that both roles share, or the worker will not see uploads. Resolved at
-  # call time (never memoized) so tests that stub HOME and ops that set the
-  # override are both honored without a process restart.
-  def self.storage_root
-    configured = ENV["AGENT_IMAGES_DIR"].presence
-    return File.expand_path(configured) if configured
-
-    File.join(File.dirname(ClonesDirectory.base), STORAGE_SUBDIR)
-  end
-
-  # Root directory under which all session directories live.
-  #
-  # In production and development this is storage_root verbatim. In the test
-  # environment it is namespaced per worker *process* so that parallel test
-  # workers cannot delete each other's files.
-  #
-  # Parallel test workers run in separate processes, each with its own test
-  # database. Because `fixtures :all` seeds every worker's database identically,
-  # `Session.create!` hands out colliding ids across workers. All workers
-  # otherwise share the single storage_root, so one worker's teardown
-  # `cleanup!` would wipe the session directory another worker is still reading
-  # from — producing intermittent ENOENT errors. Keying the root by Process.pid
-  # gives each worker an isolated tree. See pulsemcp/pulsemcp#3455 and
-  # pulsemcp/pulsemcp#3741.
-  def self.base_dir
-    return storage_root unless Rails.env.test?
-
-    File.join(storage_root, "test-worker-#{Process.pid}")
-  end
-
-  # Get storage directory for this session
-  def session_dir
-    File.join(self.class.base_dir, session_id.to_s)
   end
 
   private
@@ -313,11 +175,5 @@ class ImageStorageService
     end
 
     nil
-  end
-
-  def ensure_directory_exists(dir)
-    return if File.directory?(dir)
-
-    FileUtils.mkdir_p(dir, mode: 0o755)
   end
 end

@@ -1,20 +1,32 @@
 require "test_helper"
 
+# The lifecycle ImageStorageService shares with FileStorageService — resolved
+# storage paths, session_id validation, the exists? traversal guard, list,
+# cleanup, copy_from_temp — is asserted once in
+# SessionAttachmentStorageConformance and runs against both subclasses. What
+# remains here is what is genuinely ImageStorageService's own: magic-byte
+# sniffing, format/size validation, and base64 retrieval.
 class ImageStorageServiceTest < ActiveSupport::TestCase
+  include SessionAttachmentStorageConformance
+
+  def storage_class = ImageStorageService
+  def storage_env_var = "AGENT_IMAGES_DIR"
+  def expected_storage_subdir = "agent-orchestrator-images"
+
+  # Conformance hook: store one attachment and return its metadata.
+  def store_sample(service, filename: nil)
+    service.store(data: Base64.strict_encode64(create_minimal_png), filename: "#{filename || 'sample'}.png")
+  end
+
   def setup
-    # Use a unique session_id per test to avoid conflicts in parallel test runs
-    @session_id = rand(100_000_000..999_999_999)
-    @service = ImageStorageService.new(session_id: @session_id)
+    @session_id = conformance_session_id
+    @service = conformance_service
 
     # Create a valid PNG image (1x1 pixel, red)
     @valid_png = create_minimal_png
     @valid_png_base64 = Base64.strict_encode64(@valid_png)
 
     # Cleanup any leftover test files
-    FileUtils.rm_rf(@service.session_dir)
-  end
-
-  def teardown
     FileUtils.rm_rf(@service.session_dir)
   end
 
@@ -65,6 +77,17 @@ class ImageStorageServiceTest < ActiveSupport::TestCase
     assert File.exist?(result[:path])
   end
 
+  test "rejects an uploaded file whose declared content type is unsupported" do
+    uploaded_file = mock("uploaded_file")
+    uploaded_file.stubs(:read).returns(@valid_png)
+    uploaded_file.stubs(:original_filename).returns("test.tiff")
+    uploaded_file.stubs(:content_type).returns("image/tiff")
+
+    assert_raises(ImageStorageService::InvalidImageError) do
+      @service.store(uploaded_file: uploaded_file)
+    end
+  end
+
   test "retrieves image as base64" do
     result = @service.store(data: @valid_png_base64)
 
@@ -72,59 +95,6 @@ class ImageStorageServiceTest < ActiveSupport::TestCase
 
     assert_equal @valid_png_base64, base64
     assert_equal "image/png", media_type
-  end
-
-  test "validates image exists" do
-    result = @service.store(data: @valid_png_base64)
-
-    assert @service.exists?(result[:path])
-    refute @service.exists?("/nonexistent/path.png")
-    refute @service.exists?(nil)
-  end
-
-  test "validates path is within session directory" do
-    refute @service.exists?("/etc/passwd")
-    refute @service.exists?("/tmp/other-session/image.png")
-  end
-
-  test "prevents path traversal attacks via dot-dot sequences" do
-    # Store a real image first
-    result = @service.store(data: @valid_png_base64)
-    assert @service.exists?(result[:path])
-
-    # These should all fail - attempting to escape the session directory
-    refute @service.exists?(@service.session_dir + "/../../../etc/passwd")
-    refute @service.exists?(@service.session_dir + "/../../other/file")
-    refute @service.exists?(File.join(ImageStorageService.base_dir, @session_id.to_s, "..", "12346", "image.png"))
-    refute @service.exists?("#{@service.session_dir}/subdir/../../../etc/passwd")
-  end
-
-  test "rejects invalid session_id types" do
-    assert_raises(ArgumentError) { ImageStorageService.new(session_id: "123") }
-    assert_raises(ArgumentError) { ImageStorageService.new(session_id: nil) }
-    assert_raises(ArgumentError) { ImageStorageService.new(session_id: -1) }
-    assert_raises(ArgumentError) { ImageStorageService.new(session_id: 0) }
-    assert_raises(ArgumentError) { ImageStorageService.new(session_id: "../123") }
-  end
-
-  test "lists images for session" do
-    @service.store(data: @valid_png_base64, filename: "image1.png")
-    @service.store(data: @valid_png_base64, filename: "image2.png")
-
-    images = @service.list
-
-    assert_equal 2, images.length
-    images.each { |path| assert File.exist?(path) }
-  end
-
-  test "cleans up session images" do
-    result = @service.store(data: @valid_png_base64)
-    assert File.exist?(result[:path])
-
-    @service.cleanup!
-
-    refute File.exist?(result[:path])
-    refute File.directory?(@service.session_dir)
   end
 
   test "rejects images that are too large" do
@@ -196,58 +166,41 @@ class ImageStorageServiceTest < ActiveSupport::TestCase
     assert_equal "image/webp", result[:media_type]
   end
 
-  test "creates unique paths for each stored image" do
-    result1 = @service.store(data: @valid_png_base64)
-    result2 = @service.store(data: @valid_png_base64)
+  test "copy_from_temp drops an entry whose media type cannot be sniffed" do
+    temp_id = "temp_#{SecureRandom.uuid}"
+    temp_service = ImageStorageService.new(session_id: temp_id)
+    temp_service.store(data: @valid_png_base64)
+    # A file in the tree that is not a recognizable image: sniffing fails, so
+    # the entry is skipped rather than copied or fatal to the whole batch.
+    File.binwrite(File.join(temp_service.session_dir, "junk.png"), SecureRandom.random_bytes(64))
 
-    refute_equal result1[:path], result2[:path]
-  end
+    real_service = conformance_other_service
+    copied = ImageStorageService.copy_from_temp(
+      temp_session_id: temp_id,
+      new_session_id: real_service.session_id.to_i
+    )
 
-  # --- Cross-container durability -------------------------------------------
-  #
-  # The web container writes the upload; a SEPARATE worker container reads it
-  # back to base64-inline it for the CLI. They share only the durable ~/.zimmer
-  # volume, so the storage base must resolve there, not on per-container /tmp.
-
-  test "storage_root resolves under the durable shared volume, not container-local /tmp" do
-    ENV.delete("AGENT_IMAGES_DIR")
-    ENV.delete("AGENT_CLONES_DIR")
-
-    refute ImageStorageService.storage_root.start_with?("/tmp"),
-      "images must not live on per-container /tmp; got #{ImageStorageService.storage_root}"
-
-    assert_equal File.dirname(ClonesDirectory.base), File.dirname(ImageStorageService.storage_root)
-    assert_equal "agent-orchestrator-images", File.basename(ImageStorageService.storage_root)
+    assert_equal 1, copied.length
+    assert_equal "image/png", copied.first[:media_type]
+    assert_equal 1, real_service.list.length
   ensure
-    restore_clone_env
+    temp_service&.cleanup!
   end
 
-  test "storage_root honors the AGENT_IMAGES_DIR override" do
-    ENV["AGENT_IMAGES_DIR"] = "/mnt/durable/images"
-    assert_equal "/mnt/durable/images", ImageStorageService.storage_root
+  test "copy_from_temp re-sniffs the media type of every copied entry" do
+    temp_id = "temp_#{SecureRandom.uuid}"
+    temp_service = ImageStorageService.new(session_id: temp_id)
+    temp_service.store(data: Base64.strict_encode64("GIF89a" + ("x" * 100)))
+
+    real_service = conformance_other_service
+    copied = ImageStorageService.copy_from_temp(
+      temp_session_id: temp_id,
+      new_session_id: real_service.session_id.to_i
+    )
+
+    assert_equal [ "image/gif" ], copied.map { |c| c[:media_type] }
+    assert copied.first[:path].end_with?(".gif")
   ensure
-    restore_clone_env
-  end
-
-  test "storage_root follows HOME so web and worker resolve the same mount" do
-    ENV.delete("AGENT_IMAGES_DIR")
-    ENV.delete("AGENT_CLONES_DIR")
-    original_home = ENV["HOME"]
-    Dir.mktmpdir("images-home") do |tmp_home|
-      ENV["HOME"] = tmp_home
-      assert_equal File.join(tmp_home, ".zimmer", "agent-orchestrator-images"),
-        ImageStorageService.storage_root
-    ensure
-      ENV["HOME"] = original_home
-    end
-  ensure
-    restore_clone_env
-  end
-
-  private
-
-  def restore_clone_env
-    ENV.delete("AGENT_IMAGES_DIR")
-    ENV.delete("AGENT_CLONES_DIR")
+    temp_service&.cleanup!
   end
 end
