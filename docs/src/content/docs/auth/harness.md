@@ -67,6 +67,10 @@ flowchart LR
 Only Zimmer refreshes, under the pool lock it already had. Nothing else holds a refresh token, so
 there is no second writer to lose a race to.
 
+That ownership applies to every part of a refresh: while the setting is on, Zimmer does not import
+the shared file before a request, re-read it after a rejection, or write the rotated pair back to
+it. The file remains in place only so disabling the setting can restore the shared-file behavior.
+
 ### Why this rather than more guards
 
 `~/.claude/.credentials.json` had three writers and no owner. On 2026-08-22 Zimmer's convergence
