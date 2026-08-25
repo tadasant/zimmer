@@ -1,17 +1,17 @@
 require "test_helper"
 
-# The lifecycle ImageStorageService shares with FileStorageService — resolved
-# storage paths, session_id validation, the exists? traversal guard, list,
-# cleanup, copy_from_temp — is asserted once in
-# SessionAttachmentStorageConformance and runs against both subclasses. What
-# remains here is what is genuinely ImageStorageService's own: magic-byte
-# sniffing, format/size validation, and base64 retrieval.
+# Covers what is genuinely ImageStorageService's own: magic-byte sniffing,
+# format/size validation, and base64 retrieval. The lifecycle it shares with
+# FileStorageService — resolved storage paths, session_id validation, the
+# exists? traversal guard, list, cleanup, copy_from_temp — is asserted by
+# SessionAttachmentStorageConformance, which runs against both subclasses.
 class ImageStorageServiceTest < ActiveSupport::TestCase
   include SessionAttachmentStorageConformance
 
   def storage_class = ImageStorageService
   def storage_env_var = "AGENT_IMAGES_DIR"
   def expected_storage_subdir = "agent-orchestrator-images"
+  def expected_attachment_noun = "image"
 
   # Conformance hook: store one attachment and return its metadata.
   def store_sample(service, filename: nil)
@@ -19,15 +19,11 @@ class ImageStorageServiceTest < ActiveSupport::TestCase
   end
 
   def setup
-    @session_id = conformance_session_id
     @service = conformance_service
 
     # Create a valid PNG image (1x1 pixel, red)
     @valid_png = create_minimal_png
     @valid_png_base64 = Base64.strict_encode64(@valid_png)
-
-    # Cleanup any leftover test files
-    FileUtils.rm_rf(@service.session_dir)
   end
 
   # Helper to create a minimal valid PNG (1x1 red pixel)

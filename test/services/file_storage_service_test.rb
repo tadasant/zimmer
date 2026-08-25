@@ -1,18 +1,18 @@
 require "test_helper"
 require "mocha/minitest"
 
-# The lifecycle FileStorageService shares with ImageStorageService — resolved
-# storage paths, session_id validation, the exists? traversal guard, list,
-# cleanup, copy_from_temp — is asserted once in
-# SessionAttachmentStorageConformance and runs against both subclasses. What
-# remains here is what is genuinely FileStorageService's own: storing arbitrary
-# bytes, filename sanitisation, and the 500MB bound.
+# Covers what is genuinely FileStorageService's own: storing arbitrary bytes,
+# filename sanitisation, and the 500MB bound. The lifecycle it shares with
+# ImageStorageService — resolved storage paths, session_id validation, the
+# exists? traversal guard, list, cleanup, copy_from_temp — is asserted by
+# SessionAttachmentStorageConformance, which runs against both subclasses.
 class FileStorageServiceTest < ActiveSupport::TestCase
   include SessionAttachmentStorageConformance
 
   def storage_class = FileStorageService
   def storage_env_var = "AGENT_FILES_DIR"
   def expected_storage_subdir = "agent-orchestrator-files"
+  def expected_attachment_noun = "file"
 
   # Conformance hook: store one attachment and return its metadata.
   def store_sample(service, filename: nil)
@@ -20,9 +20,7 @@ class FileStorageServiceTest < ActiveSupport::TestCase
   end
 
   def setup
-    @session_id = conformance_session_id
     @service = conformance_service
-    FileUtils.rm_rf(@service.session_dir)
   end
 
   test "stores file from raw data" do
