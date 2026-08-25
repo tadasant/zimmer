@@ -225,7 +225,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
 
     service = create_service
     assert service.retryable_api_error_detected?("/tmp/test-clone")
-    assert service.detected_malformed_tool_call,
+    assert service.detected_malformed_tool_call?,
       "The retry ladder needs to know which failure it is spending itself on"
   end
 
@@ -252,7 +252,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
 
     service = create_service
     assert service.retryable_api_error_detected?("/tmp/test-clone")
-    assert_not service.detected_malformed_tool_call
+    assert_not service.detected_malformed_tool_call?
   end
 
   test "an account quota limit still wins over the malformed tool call classifier" do
@@ -264,7 +264,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     service = create_service
     service.retryable_api_error_detected?("/tmp/test-clone")
 
-    assert_not service.detected_malformed_tool_call,
+    assert_not service.detected_malformed_tool_call?,
       "A quota limit needs hours, not a 5s backoff — it must not be downgraded to a transient retry"
     assert_equal :quota_exceeded, service.attempt_retry("/tmp/test-clone")
   end
@@ -337,7 +337,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     assert_equal :exhausted, service.attempt_retry("/tmp/test-clone")
     assert_equal ApiErrorRetryService::MAX_RETRIES, resume_count,
       "bounded by MAX_RETRIES — a repeating failure must not be retried forever"
-    assert service.detected_malformed_tool_call,
+    assert service.detected_malformed_tool_call?,
       "the caller reads this on the exhausted path to decide whether to alert"
   end
 
