@@ -432,9 +432,10 @@ class ProcessLifecycleManager
           return handle_auth_recovery(working_dir)
         end
 
-        # Check for API server errors (500, 529, etc.) - retry with exponential backoff
+        # Check for transient API errors (500, 529, rate limits) and the CLI's own
+        # unparseable-tool-call report — retry with exponential backoff
         if retry_strategy.api_error_for_retry?(working_dir: working_dir)
-          add_log("API server error detected on successful exit - attempting retry with backoff", level: "info")
+          add_log("Retryable API error detected on successful exit - attempting retry with backoff", level: "info")
           return handle_retryable_api_error(working_dir)
         end
 
@@ -540,7 +541,8 @@ class ProcessLifecycleManager
         return handle_auth_recovery(working_dir)
       end
 
-      # API server error case (500, 529, etc.) - retry with exponential backoff
+      # Transient API error case (500, 529, rate limits, unparseable tool call) —
+      # retry with exponential backoff
       if retry_strategy.api_error_for_retry?(working_dir: working_dir)
         return handle_retryable_api_error(working_dir)
       end
@@ -1409,6 +1411,49 @@ class ProcessLifecycleManager
     @logger.error("Failed to report a terminal API error", error: e.message)
   end
 
+  # A malformed tool call that survived the whole retry ladder.
+  #
+  # The classifier that routes an unparseable tool call to the backoff path
+  # (ApiErrorRetryService::MALFORMED_TOOL_CALL_PATTERNS) bets that it is a
+  # sampling artifact — a fresh draw parses. Six respawns that all died the same
+  # way say the bet was wrong: something about this turn is deterministically
+  # unparseable, most plausibly a payload too large or too malformed to ever
+  # survive serialization. That is a different failure from the one the retry was
+  # for, it is not going to fix itself, and it must not be retried into silence.
+  #
+  # Deliberately louder than the generic exhausted-ladder path, which just fails
+  # with `api_error_retries_exhausted`. An exhausted 5xx ladder means the API was
+  # down for half an hour; an exhausted malformed-tool-call ladder means Zimmer
+  # classified something as transient that isn't.
+  def report_stuck_malformed_tool_call
+    runtime = session&.agent_runtime.presence || "unknown runtime"
+
+    @logger.error(
+      "A malformed tool call survived every retry — the failure is not stochastic",
+      runtime: runtime, retries: ApiErrorRetryService::MAX_RETRIES
+    )
+
+    AlertService.raise_alert(
+      "Malformed tool call survived every retry",
+      details: [
+        "A #{runtime} turn died on a tool call the CLI could not parse, and it died the same way " \
+          "after all #{ApiErrorRetryService::MAX_RETRIES} respawns.",
+        "",
+        "Zimmer retries this failure because an unparseable tool call is normally a sampling " \
+          "artifact. Surviving the whole ladder means it is not: something in this turn is " \
+          "deterministically unserializable — most plausibly an oversized tool argument. The " \
+          "session failed rather than looping.",
+        session ? "\n<#{AppUrl.base_url}/sessions/#{session.id}|View session #{session.id} in Zimmer>" : nil
+      ].compact.join("\n"),
+      source: "ProcessLifecycleManager#handle_retryable_api_error",
+      # Runtime only, like the unclassified-failure keys: a fleet-wide wave is one
+      # Slack message per window, not one per session.
+      dedup_key: "malformed_tool_call_retries_exhausted:#{runtime}"
+    )
+  rescue => e
+    @logger.error("Failed to report a stuck malformed tool call", error: e.message)
+  end
+
   # The API error this turn died on, unless it is the same one a previous exit
   # already failed for. Runtimes whose strategy does not answer the question
   # (Codex) never route here.
@@ -1528,6 +1573,7 @@ class ProcessLifecycleManager
       end
       ExitDecision.new(action: :continue)
     when :exhausted
+      report_stuck_malformed_tool_call if retry_service.detected_malformed_tool_call
       @mutex.synchronize { @state = :idle }
       ExitDecision.new(action: :failed, error_message: "API error retry limit exhausted")
     when :quota_exceeded

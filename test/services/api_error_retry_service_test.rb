@@ -64,6 +64,35 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     @mock_file_system.write(@transcript_file, transcript_content)
   end
 
+  # The CLI's own synthetic report of a tool call that would not parse. Note what
+  # it does NOT carry: an "error" key. The entry is untyped by construction, so
+  # error_type is "" — the specific hole issue #668 fell through.
+  def malformed_tool_call_json(message)
+    JSON.generate({
+      "type" => "assistant",
+      "isApiErrorMessage" => true,
+      "message" => {
+        "model" => "<synthetic>",
+        "content" => [ { "type" => "text", "text" => message } ]
+      }
+    })
+  end
+
+  # Reproduces the tail of the production transcript from session 8878 (#668):
+  # the assistant's last real message, the CLI's own in-turn retry prompt, and
+  # the synthetic entry it wrote when that retry also failed.
+  def setup_transcript_with_malformed_tool_call(
+    message = "The model's tool call could not be parsed (retry also failed)."
+  )
+    setup_transcript_directory
+    transcript_content = <<~JSONL
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Real MP3 downloaded. Uploading it so Tadas can play it."}]}}
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Your tool call was malformed and could not be parsed. Please retry."}]}}
+      #{malformed_tool_call_json(message)}
+    JSONL
+    @mock_file_system.write(@transcript_file, transcript_content)
+  end
+
   def setup_transcript_with_regular_message(message)
     setup_transcript_directory
     transcript_content = <<~JSONL
@@ -168,6 +197,163 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
 
     service = create_service
     assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+  end
+
+  # ===========================================================================
+  # Malformed tool calls (#668)
+  #
+  # The CLI writes these with isApiErrorMessage: true and NO error field, so
+  # error_type is "" and every type-based classifier declines. Before this
+  # classifier existed, a session that died this way was failed as an unknown
+  # failure mode and paged #alerts, with no retry — production session 8878 lost
+  # a finished deliverable on its upload step.
+  # ===========================================================================
+
+  test "detects the CLI's untyped malformed tool call report" do
+    setup_transcript_with_malformed_tool_call
+
+    assert create_service.retryable_api_error_detected?("/tmp/test-clone"),
+      "An unparseable tool call is a sampling artifact — a fresh draw usually parses"
+  end
+
+  test "detects the malformed tool call on an entry that carries no error field at all" do
+    setup_transcript_directory
+    @mock_file_system.write(
+      @transcript_file,
+      malformed_tool_call_json("The model's tool call could not be parsed (retry also failed).") + "\n"
+    )
+
+    service = create_service
+    assert service.retryable_api_error_detected?("/tmp/test-clone")
+    assert service.detected_malformed_tool_call,
+      "The retry ladder needs to know which failure it is spending itself on"
+  end
+
+  test "detects the alternate malformed tool call wording" do
+    setup_transcript_with_malformed_tool_call("Your tool call was malformed and could not be parsed.")
+
+    assert create_service.retryable_api_error_detected?("/tmp/test-clone")
+  end
+
+  # The CLI's in-turn re-prompt carries the same prose but is an ordinary user
+  # turn. Only isApiErrorMessage entries are errors; matching prose anywhere else
+  # would make every conversation *about* this bug look like an instance of it.
+  test "does not treat the CLI's in-turn retry prompt as an API error" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Your tool call was malformed and could not be parsed. Please retry."}]}}
+    JSONL
+
+    assert_not create_service.retryable_api_error_detected?("/tmp/test-clone")
+  end
+
+  test "does not flag a plain server error as a malformed tool call" do
+    setup_transcript_with_api_error("500 Internal Server Error", error_type: "api_error")
+
+    service = create_service
+    assert service.retryable_api_error_detected?("/tmp/test-clone")
+    assert_not service.detected_malformed_tool_call
+  end
+
+  test "an account quota limit still wins over the malformed tool call classifier" do
+    setup_transcript_with_api_error(
+      "You've hit your weekly limit · resets Jan 15, 6pm (UTC). The model's tool call could not be parsed.",
+      error_type: "rate_limit_error"
+    )
+
+    service = create_service
+    service.retryable_api_error_detected?("/tmp/test-clone")
+
+    assert_not service.detected_malformed_tool_call,
+      "A quota limit needs hours, not a 5s backoff — it must not be downgraded to a transient retry"
+    assert_equal :quota_exceeded, service.attempt_retry("/tmp/test-clone")
+  end
+
+  test "unclassified_api_error_text does not report a malformed tool call as unknown" do
+    setup_transcript_with_malformed_tool_call
+
+    assert_nil create_service.unclassified_api_error_text("/tmp/test-clone"),
+      "The wording has an owner now, so it is no longer news"
+  end
+
+  test "terminal_api_error marks an untyped malformed tool call recognized" do
+    setup_transcript_with_malformed_tool_call
+
+    terminal = create_service.terminal_api_error("/tmp/test-clone")
+
+    assert_match(/tool call could not be parsed/, terminal.text)
+    assert terminal.recognized?,
+      "ApiErrorRetryService owns this wording, so it must not page as an unknown failure mode"
+  end
+
+  test "retries a malformed tool call by respawning the session" do
+    setup_transcript_with_malformed_tool_call
+
+    resume_count = 0
+    @mock_cli_adapter.resume_hook = ->(_opts) do
+      resume_count += 1
+      { pid: 12345, stderr_log_path: "/tmp/stderr.log" }
+    end
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_retry("/tmp/test-clone")
+    assert_equal 1, resume_count
+    assert_equal 1, @session.reload.metadata["api_error_retry_count"]
+  end
+
+  test "a malformed tool call retry does not record a global rate limit event" do
+    setup_transcript_with_malformed_tool_call
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+    service.attempt_retry("/tmp/test-clone")
+
+    assert_empty @mock_rate_limit_tracker.recorded_events,
+      "An unparseable tool call is not upstream pressure — it must not slow other sessions down"
+  end
+
+  # The other half of the bet. Retrying assumes the failure is stochastic; a
+  # payload that is deterministically unserializable (an oversized base64 tool
+  # argument, say) fails identically every time. The ladder must run out.
+  test "returns :exhausted when a malformed tool call survives every retry" do
+    setup_transcript_with_malformed_tool_call
+
+    resume_count = 0
+    @mock_cli_adapter.resume_hook = ->(_opts) do
+      resume_count += 1
+      { pid: 12345, stderr_log_path: "/tmp/stderr.log" }
+    end
+    @mock_process_manager.running_hook = ->(_pid) { false }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :exhausted, service.attempt_retry("/tmp/test-clone")
+    assert_equal ApiErrorRetryService::MAX_RETRIES, resume_count,
+      "bounded by MAX_RETRIES — a repeating failure must not be retried forever"
+    assert service.detected_malformed_tool_call,
+      "the caller reads this on the exhausted path to decide whether to alert"
+  end
+
+  test "logs the malformed tool call as its own category rather than as a server error" do
+    setup_transcript_with_malformed_tool_call
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+    service.attempt_retry("/tmp/test-clone")
+    @log_buffer.flush
+
+    assert_match(/Malformed tool call detected - attempting auto-retry 1\/6/,
+      @session.logs.reload.pluck(:content).join("\n"))
   end
 
   # ===========================================================================
