@@ -298,8 +298,11 @@ class Trigger < ApplicationRecord
   #
   # Returns the session that was created or reused, or nil when nothing was
   # created: the trigger is burst-suppressed (see #spawn_with_burst_control!),
-  # or a one-time reuse trigger's target session is gone. Callers must handle
-  # nil.
+  # a session it already spawned is still pending (see
+  # #spawn_unless_pending_session!), or a one-time reuse trigger's target session
+  # is gone. Callers must handle nil, and the three reasons are NOT
+  # interchangeable — #last_fire_burst_suppressed? and
+  # #last_fire_skipped_for_pending_session? tell them apart.
   # The genesis stamped on sessions this trigger spawns.
   #
   # Derived from the trigger's own condition types, so a Slack trigger's sessions
@@ -1027,27 +1030,31 @@ class Trigger < ApplicationRecord
   # should consume no burst budget and leave no trace, exactly as if the event
   # had not arrived.
   #
-  # The check and the spawn share one row lock so two jobs firing the same
-  # trigger at once (ScheduleTriggerJob and AoEventTriggerJob can overlap) cannot
-  # both read "nothing pending" and both spawn. A trigger with the setting off
-  # takes no lock at all and reaches #spawn_with_burst_control! exactly as before.
+  # Deliberately NOT under a row lock, and the residual race is worth naming: two
+  # fires landing in the same instant can both read "nothing pending" and both
+  # spawn. Holding a lock across the spawn would close that, and would cost more
+  # than it buys — #reserve_burst_slot! would join the outer transaction, so a
+  # spawn that raises would roll back the attempt it is supposed to consume AND
+  # the burst-latch clear that keeps a failed notice from silently disabling the
+  # trigger. Those two properties guard against runaway spawning; a same-instant
+  # duplicate is the pre-existing behavior of every trigger, and unchanged here.
+  # What this setting bounds is the backlog ACROSS fires, which is where the
+  # duplicates actually came from — fires minutes or quarter-hours apart.
   def spawn_unless_pending_session!(prompt:)
     return spawn_with_burst_control!(prompt: prompt) unless skip_if_pending_session?
 
-    with_lock do
-      pending = pending_intent_session
+    pending = pending_intent_session
 
-      if pending
-        @last_fire_pending_session = pending
-        Rails.logger.info(
-          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) skipped this fire — session " \
-          "#{pending.id} (#{pending.status}) is still pending and already carries this intent"
-        )
-        next nil
-      end
-
-      spawn_with_burst_control!(prompt: prompt)
+    if pending
+      @last_fire_pending_session = pending
+      Rails.logger.info(
+        "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) skipped this fire — session " \
+        "#{pending.id} (#{pending.status}) is still pending and already carries this intent"
+      )
+      return nil
     end
+
+    spawn_with_burst_control!(prompt: prompt)
   end
 
   # The burst-control gate. Every path that would SPAWN a session funnels

@@ -191,7 +191,7 @@ module Mcp
       # Sessions a trigger has spawned are stamped with its id in metadata.
       def recent_sessions_for(trigger)
         Session
-          .where("metadata->>'trigger_id' = ?", trigger.id.to_s)
+          .for_trigger(trigger.id)
           .order(created_at: :desc)
           .limit(10)
           .to_a

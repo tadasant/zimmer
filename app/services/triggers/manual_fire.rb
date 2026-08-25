@@ -13,7 +13,7 @@ module Triggers
   #
   # What this class adds is the part all three surfaces were about to duplicate:
   # restricting the variables to the ones the template can name, and turning the
-  # four possible outcomes of a fire into something each surface can render.
+  # five possible outcomes of a fire into something each surface can render.
   # #create_session! reports them as a session-or-nil plus a flag on the trigger,
   # which reads as "nothing came back, ask the trigger why"; `outcome` names them.
   #
@@ -21,7 +21,7 @@ module Triggers
   # from, and only the caller knows: `web_ui` for the button a human clicked,
   # `api` for the REST and MCP paths, where the fire is an agent's.
   class ManualFire
-    # The four ways a manual fire can land:
+    # The five ways a manual fire can land:
     #
     #   :fired            — a session was created (or an existing one followed up)
     #   :burst_notice     — the trigger blew its cap; `session` is the burst-notice
