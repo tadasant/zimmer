@@ -3684,7 +3684,7 @@ class AgentSessionJob < ApplicationJob
       nil
     else
       lines = [ "<session-hierarchy>" ]
-      lines << "<info>This session sits in a lineage graph of #{hierarchy.size} sessions, rooted at origin session ##{hierarchy.origin.id}. The outline is not in this turn: call the `#{SessionHumanMessages::MCP_TOOL_NAME}` MCP tool (on the auto-injected `#{SelfSessionInjector::SELF_SESSION_SERVER_NAME}` server, with session_id #{session.id}) to see which session spawned which, and who else is working this goal.</info>"
+      lines << "<info>This session sits in a lineage graph of #{hierarchy.size} sessions, rooted at origin session ##{hierarchy.origin.id}. The outline is not in this turn: call #{SessionHumanMessages.mcp_tool_pointer(session)} to see which session spawned which, and who else is working this goal.</info>"
       lines << hierarchy.truncation_reason if hierarchy.truncated?
       lines << "</session-hierarchy>"
       lines.compact.join("\n")

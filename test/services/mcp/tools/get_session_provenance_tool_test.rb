@@ -57,6 +57,32 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
     assert_includes output, "and one said right here"
   end
 
+  # The roster notes used to reach an agent only via the injected block. With
+  # the record fetched on demand they have to come with it, or "whose word is
+  # final" is the one piece of context the experiment silently drops.
+  test "it carries the roster's notes about the humans who spoke" do
+    users(:tadasant).update!(notes: "Owns this deployment; his instruction wins.")
+    users(:juliehazz).update!(notes: "The other human.")
+    session = create_session
+    add_message(session, content: "ship it", author: "tadasant")
+
+    output = @tool.call("session_id" => session.id)
+
+    assert_includes output, "### People"
+    assert_includes output, "**Tadas** (`tadasant`)"
+    assert_includes output, "Owns this deployment; his instruction wins."
+    # Only humans who actually spoke are described.
+    refute_includes output, "The other human."
+  end
+
+  test "an empty roster column adds no People section" do
+    users(:tadasant).update!(notes: nil)
+    session = create_session
+    add_message(session, content: "ship it", author: "tadasant")
+
+    refute_includes @tool.call("session_id" => session.id), "### People"
+  end
+
   # An empty record is an answer, not a missing section.
   test "a session with no human-authored record says so explicitly" do
     output = @tool.call("session_id" => create_session.id)

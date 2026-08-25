@@ -339,6 +339,7 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     assert_includes block, "</human-messages>"
     assert_includes block, "get_session_provenance"
     assert_includes block, "zimmer-self-session"
+    assert_includes block, "`zimmer`"
     assert_includes block, "session_id #{worker.id}"
     assert_includes block, "Authored in this session: 1"
     assert_includes block, "Elsewhere in the hierarchy: 1"

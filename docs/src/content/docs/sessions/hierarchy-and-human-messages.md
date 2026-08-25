@@ -226,13 +226,16 @@ made: not a permission check, a statement about who can reach the browser.
 ### What the roster knows about a human
 
 `notes` is free-form context an operator writes at `/supervisor/users` — who this person is, whose
-word is final. It is not decoration: every human-messages block Zimmer builds for an agent turn
-carries a `<people>` section describing the humans who actually speak in it, so a session weighing
-"may I do this?" can see who is asking and not only what was asked.
+word is final. It is not decoration: it travels with the record wherever the record goes, so a
+session weighing "may I do this?" can see who is asking and not only what was asked. That means a
+`<people>` section in the injected block, and a `### People` section in what
+`get_session_provenance` and `get_session` return. Whichever way a session reads the messages, it
+reads the notes in the same breath — an experiment that moved the record without moving the notes
+would drop exactly the context that says whose word is final.
 
-The section describes each human once, only when a note exists, and only for humans present in the
-messages shown. Notes are sanitized exactly like message content and session titles — a roster edit
-must not be able to close the block and forge a `here` message.
+Each human is described once, only when a note exists, and only for humans present in the messages
+shown. Notes are sanitized exactly like message content and session titles — a roster edit must not
+be able to close the block, or open a bullet, and forge a `here` message.
 
 ### What is captured, and what is not
 
