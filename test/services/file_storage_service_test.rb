@@ -1,15 +1,26 @@
 require "test_helper"
 require "mocha/minitest"
 
+# Covers what is genuinely FileStorageService's own: storing arbitrary bytes,
+# filename sanitisation, and the 500MB bound. The lifecycle it shares with
+# ImageStorageService — resolved storage paths, session_id validation, the
+# exists? traversal guard, list, cleanup, copy_from_temp — is asserted by
+# SessionAttachmentStorageConformance, which runs against both subclasses.
 class FileStorageServiceTest < ActiveSupport::TestCase
-  def setup
-    @session_id = rand(100_000_000..999_999_999)
-    @service = FileStorageService.new(session_id: @session_id)
-    FileUtils.rm_rf(@service.session_dir)
+  include SessionAttachmentStorageConformance
+
+  def storage_class = FileStorageService
+  def storage_env_var = "AGENT_FILES_DIR"
+  def expected_storage_subdir = "agent-orchestrator-files"
+  def expected_attachment_noun = "file"
+
+  # Conformance hook: store one attachment and return its metadata.
+  def store_sample(service, filename: nil)
+    service.store(data: "sample-#{SecureRandom.hex(4)}", filename: "#{filename || 'sample'}.txt")
   end
 
-  def teardown
-    FileUtils.rm_rf(@service.session_dir)
+  def setup
+    @service = conformance_service
   end
 
   test "stores file from raw data" do
@@ -109,59 +120,6 @@ class FileStorageServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "validates path is within session directory" do
-    refute @service.exists?("/etc/passwd")
-    refute @service.exists?(File.join(FileStorageService.base_dir, "other-session", "file.txt"))
-    refute @service.exists?(nil)
-  end
-
-  test "exists? confirms stored file" do
-    result = @service.store(data: "x", filename: "notes.md")
-    assert @service.exists?(result[:path])
-  end
-
-  test "prevents path traversal via dot-dot in exists?" do
-    @service.store(data: "x", filename: "notes.md")
-
-    refute @service.exists?(@service.session_dir + "/../../../etc/passwd")
-    refute @service.exists?("#{@service.session_dir}/sub/../../../etc/passwd")
-    refute @service.exists?(File.join(FileStorageService.base_dir, @session_id.to_s, "..", "other", "file"))
-  end
-
-  test "rejects invalid session_id types" do
-    assert_raises(ArgumentError) { FileStorageService.new(session_id: "123") }
-    assert_raises(ArgumentError) { FileStorageService.new(session_id: nil) }
-    assert_raises(ArgumentError) { FileStorageService.new(session_id: -1) }
-    assert_raises(ArgumentError) { FileStorageService.new(session_id: 0) }
-    assert_raises(ArgumentError) { FileStorageService.new(session_id: "../123") }
-  end
-
-  test "accepts temp_<uuid> session_id format for pre-session uploads" do
-    uuid = SecureRandom.uuid
-    service = FileStorageService.new(session_id: "temp_#{uuid}")
-    assert_equal "temp_#{uuid}", service.session_id
-  end
-
-  test "lists files for session" do
-    @service.store(data: "a", filename: "one.txt")
-    @service.store(data: "b", filename: "two.txt")
-
-    files = @service.list
-
-    assert_equal 2, files.length
-    files.each { |path| assert File.exist?(path) }
-  end
-
-  test "cleans up session files" do
-    result = @service.store(data: "x", filename: "notes.md")
-    assert File.exist?(result[:path])
-
-    @service.cleanup!
-
-    refute File.exist?(result[:path])
-    refute File.directory?(@service.session_dir)
-  end
-
   test "creates unique paths for each stored file" do
     r1 = @service.store(data: "x", filename: "same.txt")
     r2 = @service.store(data: "y", filename: "same.txt")
@@ -171,95 +129,28 @@ class FileStorageServiceTest < ActiveSupport::TestCase
     assert_equal "same.txt", r2[:original_filename]
   end
 
-  test "copy_from_temp moves files from temp session to real session" do
+  test "copy_from_temp recovers the sanitized original basename" do
     temp_id = "temp_#{SecureRandom.uuid}"
     temp_service = FileStorageService.new(session_id: temp_id)
     temp_service.store(data: "hello", filename: "greet.txt")
     temp_service.store(data: "world", filename: "second.md")
 
-    real_id = rand(100_000_000..999_999_999)
-    copied = FileStorageService.copy_from_temp(temp_session_id: temp_id, new_session_id: real_id)
+    real_service = conformance_other_service
+    copied = FileStorageService.copy_from_temp(
+      temp_session_id: temp_id,
+      new_session_id: real_service.session_id.to_i
+    )
 
-    real_service = FileStorageService.new(session_id: real_id)
-    begin
-      assert_equal 2, copied.length
-      copied.each { |c| assert File.exist?(c[:path]) }
-      assert_equal 2, real_service.list.length
-
-      # Original filenames should be preserved on the new entries
-      filenames = copied.map { |c| c[:original_filename] }.sort
-      assert_equal [ "greet.txt", "second.md" ], filenames
-
-      # Temp directory should be cleaned up
-      refute File.directory?(temp_service.session_dir)
-    ensure
-      real_service.cleanup!
-    end
-  end
-
-  test "session_dir is namespaced by session_id" do
-    other = FileStorageService.new(session_id: @session_id + 1)
-    refute_equal @service.session_dir, other.session_dir
-  end
-
-  # --- Cross-container durability -------------------------------------------
-  #
-  # In production the web container writes the upload and a SEPARATE worker
-  # container reads it. They share only the durable ~/.zimmer volume; per-
-  # container /tmp is not shared. These tests pin the storage base to that shared
-  # location so a regression back to /tmp (which silently breaks attachments in
-  # the two-container topology) fails here.
-
-  test "storage_root resolves under the durable shared volume, not container-local /tmp" do
-    ENV.delete("AGENT_FILES_DIR")
-    ENV.delete("AGENT_CLONES_DIR")
-
-    refute FileStorageService.storage_root.start_with?("/tmp"),
-      "attachments must not live on per-container /tmp; got #{FileStorageService.storage_root}"
-
-    # Sibling of the clones base, under the same durable ~/.zimmer mount that is
-    # bind-mounted into both the web and worker roles.
-    assert_equal File.dirname(ClonesDirectory.base), File.dirname(FileStorageService.storage_root)
-    assert_equal "agent-orchestrator-files", File.basename(FileStorageService.storage_root)
+    assert_equal 2, copied.length
+    # The stored basename is "<unique_id>-<sanitized_original>"; the copy strips
+    # the old unique_id so the new entry keeps a clean original filename.
+    assert_equal [ "greet.txt", "second.md" ], copied.map { |c| c[:original_filename] }.sort
+    copied.each { |c| refute_match(/\A[a-f0-9]+-[a-f0-9]+-/, File.basename(c[:path])) }
   ensure
-    restore_clone_env
-  end
-
-  test "storage_root honors the AGENT_FILES_DIR override" do
-    ENV["AGENT_FILES_DIR"] = "/mnt/durable/files"
-    assert_equal "/mnt/durable/files", FileStorageService.storage_root
-  ensure
-    restore_clone_env
-  end
-
-  test "storage_root expands a relative AGENT_FILES_DIR override" do
-    ENV["AGENT_FILES_DIR"] = "relative/files"
-    assert_equal File.expand_path("relative/files"), FileStorageService.storage_root
-  ensure
-    restore_clone_env
-  end
-
-  test "storage_root follows HOME so web and worker resolve the same mount" do
-    ENV.delete("AGENT_FILES_DIR")
-    ENV.delete("AGENT_CLONES_DIR")
-    original_home = ENV["HOME"]
-    Dir.mktmpdir("files-home") do |tmp_home|
-      ENV["HOME"] = tmp_home
-      assert_equal File.join(tmp_home, ".zimmer", "agent-orchestrator-files"),
-        FileStorageService.storage_root
-    ensure
-      ENV["HOME"] = original_home
-    end
-  ensure
-    restore_clone_env
+    temp_service&.cleanup!
   end
 
   private
-
-  def restore_clone_env
-    ENV.delete("AGENT_FILES_DIR")
-    ENV.delete("AGENT_CLONES_DIR")
-  end
 
   def with_max_file_size(value)
     original = FileStorageService::MAX_FILE_SIZE
