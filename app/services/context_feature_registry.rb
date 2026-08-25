@@ -146,7 +146,7 @@ class ContextFeatureRegistry
   feature(
     key: "session_hierarchy",
     label: "Session hierarchy",
-    blurb: "The lineage outline that tells a session where it sits in its tree.",
+    blurb: "The lineage outline that tells a session where it sits in its tree. Shrinks to a one-line pointer when provenance is offered on demand.",
     owner: :zimmer,
     pattern: %r{<session-hierarchy>[\s\S]*?</session-hierarchy>}
   )
@@ -154,7 +154,7 @@ class ContextFeatureRegistry
   feature(
     key: "human_messages",
     label: "Human-message record",
-    blurb: "The provenance record of which turns a real person authored.",
+    blurb: "The provenance record of which turns a real person authored. Shrinks to counts plus a pointer when provenance is offered on demand.",
     owner: :zimmer,
     pattern: %r{<human-messages>[\s\S]*?</human-messages>}
   )
@@ -177,6 +177,19 @@ class ContextFeatureRegistry
     blurb: "A skill's SKILL.md, loaded into the context when the Skill tool runs.",
     owner: :zimmer
   ) { |block| block.user_text? && block.text.to_s.start_with?("Base directory for this skill:") }
+
+  # Deliberately ahead of the generic MCP detectors: with provenance offered on
+  # demand the record still costs bytes, it just arrives as a tool call instead
+  # of an injected block. Folding it into "MCP responses" would make the
+  # experiment look free — the injected lines go to zero and the fetched ones
+  # disappear into a bucket shared with every other server. This line plus the
+  # two region lines above is the honest before/after.
+  feature(
+    key: "provenance_tool",
+    label: "Provenance fetched on demand",
+    blurb: "The hierarchy and human-message record a session fetched with get_session_provenance, rather than being handed it every turn.",
+    owner: :zimmer
+  ) { |block| block.mcp? && block.tool_name.to_s.end_with?("__#{SessionHumanMessages::MCP_TOOL_NAME}") }
 
   feature(
     key: "mcp_result",
