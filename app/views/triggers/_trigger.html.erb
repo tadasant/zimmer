@@ -45,6 +45,11 @@
                   Resuscitates archived
                 </span>
               <% end %>
+              <% if trigger.skip_if_pending_session %>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-sky-100 text-sky-800">
+                  Skips while pending
+                </span>
+              <% end %>
               <%# Only shown when the operator chose one. Every trigger has an
                   effective class, but badging all of them would say nothing about
                   most of them. %>

@@ -118,6 +118,15 @@ module Mcp
         - **github_issue**: Triggered when a new issue is opened in a watched repo
         - **system_event**: Triggered when the DEPLOYMENT changes state, not a session. One event today: `{"event_name": "quota_available"}`, the account pool going from serving nothing to serving something. Broadcast and recurring. This is what wakes quota-parked spot sessions, so there is normally exactly one such trigger and it is seeded by a migration — create another only deliberately.
 
+        **Pending-session dedup:**
+        - **skip_if_pending_session**: when true, the trigger creates NOTHING while a session it
+          already spawned is still `waiting` or `running` — the fire is treated as already covered
+          by that session. `needs_input`, `archived` and `failed` predecessors do not block a fire.
+          Default false. Use it for a trigger whose every session carries the same intent (a fleet
+          wake, a "process the backlog" sweep), where a second session is duplicated work rather
+          than more of it. This bounds the BACKLOG; max_sessions_per_minute bounds the RATE, and
+          neither substitutes for the other.
+
         **Burst control:**
         - **max_sessions_per_minute**: caps how many sessions the trigger may spawn per minute.
           Omit (or send null) for no limit — that is the default and how every trigger behaved
@@ -196,6 +205,12 @@ module Mcp
           status: { type: "string", enum: STATUSES, description: "Trigger status." },
           goal: { type: "string", description: "Goal for triggered sessions." },
           reuse_session: { type: "boolean", description: "Whether to reuse existing sessions." },
+          skip_if_pending_session: {
+            type: "boolean",
+            description: "When true, the trigger spawns nothing while a session it already created is still " \
+                         "waiting or running. Default false. Bounds the backlog of duplicate-intent sessions; " \
+                         "needs_input/archived/failed predecessors never block a fire."
+          },
           max_sessions_per_minute: {
             type: [ "number", "null" ],
             minimum: 1,
@@ -300,6 +315,7 @@ module Mcp
           status: args["status"].presence || "enabled",
           goal: args["goal"],
           reuse_session: args.fetch("reuse_session", false),
+          skip_if_pending_session: args.fetch("skip_if_pending_session", false),
           max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
           precedence: trigger_precedence(args),
@@ -316,6 +332,7 @@ module Mcp
           - **Conditions:** #{condition_types_summary(trigger)}
           - **Status:** #{trigger.status}
           - **Agent Root:** #{trigger.agent_root_name}
+          - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
           - **Precedence:** #{precedence_summary(trigger)}
@@ -356,6 +373,7 @@ module Mcp
         attributes[:status] = args["status"] if args["status"].present?
         attributes[:goal] = args["goal"] if args.key?("goal")
         attributes[:reuse_session] = args["reuse_session"] if args.key?("reuse_session")
+        attributes[:skip_if_pending_session] = args["skip_if_pending_session"] if args.key?("skip_if_pending_session")
         # An explicit null clears the cap (back to unbounded); an omitted key means "no opinion".
         attributes[:max_sessions_per_minute] = args["max_sessions_per_minute"].presence if args.key?("max_sessions_per_minute")
         # Same omitted-vs-null rule: an explicit null returns the trigger to the
@@ -384,6 +402,7 @@ module Mcp
           - **ID:** #{trigger.id}
           - **Name:** #{trigger.name}
           - **Status:** #{trigger.status}
+          - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
           - **Precedence:** #{precedence_summary(trigger)}

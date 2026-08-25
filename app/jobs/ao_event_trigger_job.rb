@@ -129,12 +129,22 @@ class AoEventTriggerJob < ApplicationJob
             next
           end
 
+          # A dedup-skipped fire delivered nothing either, so it must not consume
+          # the condition. For a SESSION-SCOPED condition last_triggered_at is the
+          # one-shot guard: spending it here would lose that wake permanently
+          # because a session the trigger spawned earlier happened to still be
+          # pending. Leave the condition unfired, as the burst path does.
+          if trigger.last_fire_skipped_for_pending_session?
+            Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} skipped #{subject} #{event_name} — session #{trigger.last_fire_pending_session.id} is still pending; condition left unfired"
+            next
+          end
+
           delivered = true
           condition.update!(last_triggered_at: Time.current)
           if result_session
             Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, created/reused session #{result_session.id}"
           else
-            # Burst suppression already skipped above, so nil here means a
+            # Burst suppression and dedup both skipped above, so nil here means a
             # one-time reuse trigger whose target session is gone. Not an error.
             Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, but no session was created (no reusable target session)"
           end

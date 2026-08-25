@@ -41,6 +41,11 @@
                 Resuscitates archived
               </span>
             <% end %>
+            <% if @trigger.skip_if_pending_session %>
+              <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
+                Skips while pending
+              </span>
+            <% end %>
           </div>
           <p class="mt-2 text-sm text-gray-600">
             <%= @trigger.trigger_conditions.size %> condition<%= @trigger.trigger_conditions.size == 1 ? "" : "s" %>:
@@ -261,6 +266,26 @@
                 <% end %>
               <% else %>
                 <span class="text-xs text-gray-400">(requires re-use session)</span>
+              <% end %>
+            </dd>
+          </div>
+          <div>
+            <dt class="text-sm font-medium text-gray-500">Skip While Pending</dt>
+            <dd class="mt-1 flex flex-wrap items-center gap-2">
+              <span class="text-sm text-gray-900" id="trigger-skip-if-pending-session">
+                <%= @trigger.skip_if_pending_session ? "Enabled" : "Disabled" %>
+              </span>
+              <% if @trigger.skip_if_pending_session %>
+                <% pending = @trigger.pending_intent_session %>
+                <% if pending %>
+                  <%# gap-1, not spaces: an inline-flex container drops the whitespace-only text
+                      nodes between its children, so the link would render glued to the words. %>
+                  <span class="inline-flex flex-wrap items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-sky-100 text-sky-800">
+                    Skipping — <%= link_to "session ##{pending.id}", session_path(pending), class: "underline" %> (<%= pending.status %>) is still pending
+                  </span>
+                <% else %>
+                  <span class="text-xs text-gray-500">nothing pending — the next fire spawns</span>
+                <% end %>
               <% end %>
             </dd>
           </div>

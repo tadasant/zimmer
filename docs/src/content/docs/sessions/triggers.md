@@ -793,6 +793,63 @@ queued, which is as true of a hand-fired run as of a scheduled one.
 
 Full detail in [Spot and priority](/sessions/spot-and-priority/).
 
+## Skip while a session is still pending
+
+A trigger can refuse to spawn a second session while one it already spawned has yet to do the work:
+**skip while a session is still pending** (`Trigger#skip_if_pending_session`, on the triggers form,
+the trigger detail page, the REST API, and the `action_trigger` / `search_triggers` MCP tools). It is
+**opt-in** and defaults to off, so no existing trigger changes behavior.
+
+It bounds the **backlog**, where [burst control](#burst-control) bounds the **rate**, and neither
+substitutes for the other. A trigger that fires every fifteen minutes never trips a rate cap and can
+still pile up a dozen sessions all carrying the same prompt.
+
+That is exactly what the seeded `quota_available` wake trigger did. It fires on every pool recovery
+and spawns a fleet-maintenance session to decide who runs — but that session is itself parked by the
+quota exhaustion it exists to answer, so recovery after recovery it sat in `waiting` while the
+trigger spawned fresh siblings with an identical prompt. The migration that adds the column turns the
+setting on for that trigger.
+
+**Pending means `waiting` or `running`**, and deliberately nothing else:
+
+- `waiting` is "queued, has not had its turn" — including a session parked on an exhausted pool.
+  This is the case the setting exists for.
+- `running` counts too: a session mid-work has not delivered its outcome, and a sibling doing the
+  same job concurrently is the same duplication one tick earlier.
+- `needs_input`, `archived` and `failed` do **not** count. Each has had its turn — finished, died, or
+  waiting on a human — and none may block a legitimate future fire. Counting `needs_input` would let
+  one session parked for a human silently disable the trigger for as long as nobody looked at it.
+
+A burst-notice session never counts as pending: it carries "investigate this burst", not the
+trigger's own intent.
+
+The gate sits at `Trigger#create_session!`, in front of burst control, so it covers every condition
+type at once, and the check and the spawn share one row lock — two jobs firing the same trigger at
+once cannot both read "nothing pending" and both spawn. Follow-ups into a **reused** session are
+unaffected: they spawn nothing, so there is nothing to deduplicate.
+
+A skipped fire consumes no burst budget, does not advance `last_triggered_at`, and does not increment
+the trigger's session counter — nothing happened. What it *does* mean varies by caller, because a
+skip is "the work is already in hand", not "the event was dropped":
+
+- `SystemEventTriggerJob` counts it as **handled** and does **not** re-arm the quota edge. Re-arming
+  would put the edge back, so the next sweep would read the level as `false` against an available
+  pool, call it a fresh recovery, fire, skip, and re-arm again — one wasted fire every sweep for as
+  long as the pending session stays pending. This is the opposite of the burst-suppressed path, which
+  *is* an undelivered event and *does* re-arm.
+- `GithubTriggerPollerJob` leaves the item unseen, so a label or an open issue fires for real on a
+  later tick once the pending session is done. A GitHub item is durable state; a broadcast event is
+  not.
+- `ScheduleTriggerJob` and `AoEventTriggerJob` consume the condition: the next occurrence is a fresh
+  chance, and re-running this one would only ask the same question again.
+- `SlackTriggerPollerJob` drops the message, exactly as burst suppression does and for the same
+  reason — the poller's cursor has already moved past it.
+- A hand-fired **Invoke** reports the skip and links the pending session: the web UI redirects to it,
+  the REST API answers `409 Conflict` naming it, and `action_trigger` returns "Trigger Not Fired".
+
+The trigger detail page and `search_triggers` both say when a trigger is *currently* skipping and
+which session it is deferring to — without that, a trigger spawning nothing looks dead.
+
 ## Burst control
 
 A trigger can cap how many sessions it spawns per minute: **max sessions per minute**

@@ -15,6 +15,7 @@ class TriggerDashboard < Administrate::BaseDashboard
     sessions_created_count: Field::Number,
     reuse_session: Field::Boolean,
     enqueue_messages: Field::Boolean,
+    skip_if_pending_session: Field::Boolean,
     last_session_id: Field::Number,
     trigger_conditions: Field::HasMany,
     created_at: Field::DateTime,
@@ -42,6 +43,7 @@ class TriggerDashboard < Administrate::BaseDashboard
     sessions_created_count
     reuse_session
     enqueue_messages
+    skip_if_pending_session
     last_session_id
     trigger_conditions
     created_at
