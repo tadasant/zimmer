@@ -36,7 +36,7 @@
 # Declaring the subclass is not the whole job. Nothing discovers a storage kind
 # by reflection, so a new subclass is invisible to the reapers until it is named
 # in each of them by hand — and invariant 3 above is exactly the failure that
-# produces. Register a new kind in all four:
+# produces. Register a new kind at all five call sites:
 #
 #   Session#reclaim_session_directories        (app/models/session.rb)
 #   DurableSessionStorage                      (app/jobs/concerns/durable_session_storage.rb, twice)
