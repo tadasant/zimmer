@@ -2303,7 +2303,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # Verify logs show the detection
     @log_buffer.flush
     log_contents = @session.logs.pluck(:content).join("\n")
-    assert_match(/API server error detected on successful exit/, log_contents)
+    assert_match(/Retryable API error detected on successful exit/, log_contents)
   end
 
   test "handle_exit returns failed when API error retry is exhausted" do
@@ -2325,6 +2325,159 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     assert_equal :failed, decision.action
     assert_match(/API error retry limit exhausted/, decision.error_message)
+  end
+
+  # ===========================================================================
+  # Malformed tool calls (#668)
+  #
+  # Claude Code writes its own report of an unparseable tool call as a
+  # <synthetic> assistant entry with isApiErrorMessage: true and NO error field,
+  # then exits 1 — its turn-finished convention. Every type-based classifier
+  # declines an untyped entry, so before #668 the turn fell all the way through
+  # to the terminal-API-error backstop: session failed, #alerts paged, no retry.
+  # Production session 8878 lost a finished deliverable on its upload step to it.
+  # ===========================================================================
+
+  test "handle_exit retries an untyped malformed tool call instead of failing the turn" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_malformed_tool_call
+
+    @mock_cli_adapter.resume_hook = ->(opts) { { pid: 54321, stderr_log_path: "/tmp/stderr2.log" } }
+    @mock_process_manager.running_hook = ->(pid) { true }
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    # Exit 1 is Claude's "turn finished" convention, which is how this failure
+    # arrives: a normal-looking exit over a transcript that died.
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action,
+      "a tool call that would not parse is a sampling artifact — respawn and take another draw"
+
+    @log_buffer.flush
+    assert_match(/Retryable API error detected on successful exit/, @session.logs.pluck(:content).join("\n"))
+  end
+
+  # The other half. Retrying bets the failure is stochastic; a deterministically
+  # unserializable payload (an oversized base64 tool argument) fails identically
+  # every time. A budget that runs out means the bet was wrong, so it must fail
+  # AND page — a repeating failure retried into silence is the worse bug.
+  test "handle_exit alerts when a malformed tool call outlives the retry budget" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_malformed_tool_call
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/API error retry limit exhausted/, decision.error_message)
+    assert alert, "a malformed tool call with no retries left is not transient — it must page"
+    assert_equal "Malformed tool call the retry ladder did not clear", alert[0]
+    assert_match(/deterministically unserializable/, alert[1][:details])
+    assert_equal "ProcessLifecycleManager#handle_retryable_api_error", alert[1][:source]
+    assert_match(/claude_code/, alert[1][:dedup_key],
+      "keyed on the runtime only, so a fleet-wide wave is one message rather than one per session"
+    )
+  end
+
+  # `api_error_retry_count` is shared across every retryable class, so a ladder
+  # burned on a 5xx outage can leave the very first malformed tool call with
+  # nothing to spend. The alert must still fire — the conclusion "no draw left to
+  # take" holds — and must NOT claim six respawns died this way, because none did.
+  test "the malformed tool call alert does not claim retries that were spent on something else" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_malformed_tool_call
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert alert
+    assert_match(/no retry budget left/, alert[1][:details])
+    assert_no_match(/died the same way|all 6 respawns/, alert[1][:details],
+      "the count is not ours to claim — the budget may have been spent on a 5xx outage"
+    )
+  end
+
+  # The path that would otherwise have turned a page into silence. A retry runs,
+  # advances api_error_last_checked_line past the entry, and the respawn writes
+  # nothing new — so api_error_for_retry? now declines and the turn falls to the
+  # terminal backstop, where the wording is "recognized" and normally would not
+  # page. For this class the retry ladder IS the alerting mechanism, so it must.
+  test "handle_exit still pages for a malformed tool call whose retry cursor is already spent" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_malformed_tool_call
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
+
+    alert = nil
+    AlertService.stubs(:raise_alert).with do |title, opts|
+      alert = [ title, opts ]
+      true
+    end.returns(true)
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Turn ended on an API error no recovery path claimed/, decision.error_message)
+    assert alert, "classifying the wording must not have converted this page into silence"
+    assert_equal "Malformed tool call the retry ladder did not clear", alert[0]
+    assert_equal "ProcessLifecycleManager#handle_terminal_api_error", alert[1][:source]
+  end
+
+  # The noise constraint on the exception above: an ordinary recognized wording
+  # reaching the backstop is a dead turn, not an unknown failure mode, and still
+  # must not page.
+  test "handle_exit does not page for a recognized server error whose retry cursor is already spent" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_api_server_error("500 Internal Server Error")
+    @session.update!(metadata: @session.metadata.merge("api_error_last_checked_line" => 99))
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Turn ended on an API error no recovery path claimed/, decision.error_message)
+  end
+
+  # The noise constraint on the alert above: an ordinary exhausted ladder (a 5xx
+  # storm, say) is a known failure mode with its own failure_reason, and adding a
+  # page to it is not what #668 asked for.
+  test "handle_exit does not raise the malformed-tool-call alert for an exhausted server-error ladder" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_api_server_error("500 Internal Server Error")
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+    AlertService.expects(:raise_alert).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
   end
 
   test "handle_exit returns needs_input when account quota limit is reached and no rotation available" do
@@ -2913,6 +3066,29 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
       {"type": "assistant", "message": {"content": [{"type": "text", "text": "Hi there!"}]}}
       #{api_server_error_json(message, error_type: error_type)}
+    JSONL
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), transcript_content)
+  end
+
+  # The tail of the production transcript from session 8878 (#668): the
+  # assistant's last real message, Claude Code's own in-turn retry prompt, and
+  # the synthetic entry it wrote when that retry also failed. Note the absence of
+  # an "error" key on the last one — the entry is untyped by construction.
+  def setup_transcript_with_malformed_tool_call
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    synthetic = JSON.generate({
+      "type" => "assistant",
+      "isApiErrorMessage" => true,
+      "message" => {
+        "model" => "<synthetic>",
+        "content" => [ { "type" => "text", "text" => "The model's tool call could not be parsed (retry also failed)." } ]
+      }
+    })
+    transcript_content = <<~JSONL
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Real MP3 downloaded. Uploading it so Tadas can play it."}]}}
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Your tool call was malformed and could not be parsed. Please retry."}]}}
+      #{synthetic}
     JSONL
     @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), transcript_content)
   end
