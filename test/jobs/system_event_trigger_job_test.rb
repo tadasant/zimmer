@@ -141,7 +141,7 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
     assert_equal true, AppSetting.current.reload.quota_pool_available
   end
 
-  test "a pass skipped for a pending session still re-arms when a second trigger delivered nothing" do
+  test "the trigger fires for real again, and spends the edge, once the pending session finishes" do
     wake_trigger(skip_if_pending_session: true)
     SystemEventTriggerJob.perform_now("quota_available")
 
@@ -153,6 +153,31 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
       SystemEventTriggerJob.perform_now("quota_available")
     end
     assert_equal true, AppSetting.current.reload.quota_pool_available
+  end
+
+  # The mixed pass: one trigger skips because its work is already in hand, another
+  # raises. `handled` is non-zero, so the edge stays spent — deliberately. Putting
+  # it back would re-run the whole pass on the next sweep, where the first trigger
+  # skips again and the second raises again; the alert the failure already raised
+  # is what surfaces it, not an endlessly re-armed edge.
+  test "a pass where one trigger skipped and another raised does not put the edge back" do
+    skipping = wake_trigger(skip_if_pending_session: true)
+    SystemEventTriggerJob.perform_now("quota_available")
+    AppSetting.current.update!(quota_pool_available: true)
+
+    # A second trigger whose agent root no longer resolves: its fire raises for
+    # real rather than by a stub, so the first trigger still takes the skip path.
+    raising = wake_trigger
+    raising.update_columns(agent_root_name: "definitely-not-a-real-agent-root")
+    AlertService.stubs(:raise_alert)
+
+    assert_no_difference -> { Session.count } do
+      SystemEventTriggerJob.perform_now("quota_available")
+    end
+
+    assert_equal "enabled", raising.reload.status
+    assert_equal true, AppSetting.current.reload.quota_pool_available
+    assert_equal 1, Session.for_trigger(skipping.id).count
   end
 
   test "an unknown event name does nothing" do

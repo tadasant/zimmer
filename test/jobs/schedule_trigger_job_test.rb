@@ -168,6 +168,36 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_not TriggerCondition.exists?(condition_id), "Condition should be cascade-deleted with the trigger"
   end
 
+  # The dedup skip must not look like a fire. For a one-time schedule that is the
+  # difference between "runs when the pending session is done" and "the trigger is
+  # destroyed and the work never happens".
+  test "a one-time schedule skipped for a pending session keeps its trigger and stays due" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    trigger.update!(skip_if_pending_session: true)
+    one_time_condition.update!(last_triggered_at: nil)
+
+    pending = sessions(:waiting)
+    pending.update!(metadata: pending.metadata.merge("trigger_id" => trigger.id))
+
+    assert_no_difference("Session.count") do
+      travel_to(Time.zone.parse("2026-04-15 19:00:00 UTC")) { ScheduleTriggerJob.perform_now }
+    end
+
+    assert Trigger.exists?(trigger.id), "the skipped one-time trigger must survive"
+    assert_nil one_time_condition.reload.last_triggered_at, "the schedule must stay due"
+
+    # And it fires for real once the pending session is done.
+    pending.update_columns(status: Session.statuses[:archived])
+    assert_difference("Session.count", 1) do
+      travel_to(Time.zone.parse("2026-04-15 19:00:00 UTC")) { ScheduleTriggerJob.perform_now }
+    end
+    assert_not Trigger.exists?(trigger.id), "and only then is the one-time trigger spent"
+  end
+
   test "does not auto-delete trigger for recurring schedules" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)

@@ -35,7 +35,7 @@ class Api::V1::TriggersController < Api::BaseController
   # Get a single trigger with recent sessions.
   def show
     recent_sessions = Session
-      .where("metadata->>'trigger_id' = ?", @trigger.id.to_s)
+      .for_trigger(@trigger.id)
       .order(created_at: :desc)
       .limit(10)
 

@@ -210,6 +210,28 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal [ "tadasant/zimmer#3:ready to merge" ], @label_condition.reload.github_seen_items
   end
 
+  # A GitHub item is durable state, unlike a broadcast event: leaving it unseen
+  # costs nothing and gets the work done once the pending session is out of the way.
+  test "an item skipped for a pending session is left unseen and fires on a later tick" do
+    trigger = @label_condition.trigger
+    trigger.update!(skip_if_pending_session: true)
+    pending = sessions(:waiting)
+    pending.update!(metadata: pending.metadata.merge("trigger_id" => trigger.id))
+
+    labelled = [ item(number: 3, labels: [ "ready to merge" ]) ]
+
+    stub_search(label: labelled) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [], @label_condition.reload.github_seen_items
+
+    pending.update_columns(status: Session.statuses[:archived])
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#3:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+
   test "label query batches every watched repo and label into one request" do
     @label_condition.update!(configuration: @label_condition.configuration.merge(
       "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ],

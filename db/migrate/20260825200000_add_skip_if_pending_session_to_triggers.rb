@@ -28,6 +28,13 @@ class AddSkipIfPendingSessionToTriggers < ActiveRecord::Migration[8.0]
       add_column :triggers, :skip_if_pending_session, :boolean, default: false, null: false
     end
 
+    # A concurrent build that fails (lock timeout, deadlock) leaves the index
+    # behind marked INVALID — present enough for `if_not_exists` to skip, useless
+    # to the planner. Left alone, a rerun records the migration as applied while
+    # the fire path stays unindexed, and there is no prod shell to REINDEX from.
+    # So drop an invalid one first; a valid one is left untouched.
+    drop_invalid_index!("index_sessions_on_trigger_id")
+
     add_index :sessions,
       "((metadata ->> 'trigger_id'::text))",
       name: "index_sessions_on_trigger_id",
@@ -49,5 +56,20 @@ class AddSkipIfPendingSessionToTriggers < ActiveRecord::Migration[8.0]
   def down
     remove_index :sessions, name: "index_sessions_on_trigger_id", algorithm: :concurrently, if_exists: true
     remove_column :triggers, :skip_if_pending_session, if_exists: true
+  end
+
+  private
+
+  def drop_invalid_index!(name)
+    invalid = select_value(<<~SQL.squish)
+      SELECT 1 FROM pg_class c
+      JOIN pg_index i ON i.indexrelid = c.oid
+      WHERE c.relname = #{quote(name)} AND NOT i.indisvalid
+      LIMIT 1
+    SQL
+    return if invalid.blank?
+
+    say "Dropping INVALID index #{name} left by a failed concurrent build"
+    execute("DROP INDEX CONCURRENTLY IF EXISTS #{quote_table_name(name)}")
   end
 end
