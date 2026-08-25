@@ -101,6 +101,22 @@ class ExperimentalSettingsRegistry
       # No landed_at: this ships OFF and is rolled out deliberately, so only
       # sessions that run after it is switched on get tagged. Inferring a cohort
       # from timestamps would be inventing one.
+    ),
+    Setting.new(
+      key: "provenance_via_mcp",
+      title: "Provenance context on demand",
+      description: "Stop baking the session hierarchy and the human-message record into every " \
+                   "user turn; leave a short pointer with the counts and let the session fetch " \
+                   "the full record with the `get_session_provenance` MCP tool when it needs it. " \
+                   "The record is re-injected on every turn today and bills again on every turn " \
+                   "it stays in context, while most sessions never read an older human message. " \
+                   "Turning this off restores the always-injected blocks exactly.",
+      attribute: :provenance_via_mcp_enabled,
+      default_on: -> { AppSetting::DEFAULT_PROVENANCE_VIA_MCP_ENABLED }
+      # No landed_at: nothing before this commit ran with provenance on demand,
+      # but the column ships ON, so every session from here on is tagged live.
+      # Sessions that predate it are honestly labelled as untagged rather than
+      # backfilled into a cohort that did not exist.
     )
   ].freeze
 

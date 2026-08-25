@@ -35,6 +35,11 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::QuickSearchSessions", group: "sessions", write: false),
       Definition.new(klass: "Mcp::Tools::GetSession", group: "sessions", write: false, composite_groups: %w[self_session]),
       Definition.new(klass: "Mcp::Tools::GetConfigs", group: "sessions", write: false, composite_groups: %w[self_session]),
+      # In self_session as well as sessions: with provenance offered on demand
+      # rather than injected, the filtered self-session server is the only
+      # surface every session carries, so a tool only on the full `zimmer`
+      # server would leave those sessions no way to read their own record.
+      Definition.new(klass: "Mcp::Tools::GetSessionProvenance", group: "sessions", write: false, composite_groups: %w[self_session]),
       Definition.new(klass: "Mcp::Tools::GetTranscriptArchive", group: "sessions", write: false),
 
       # Sessions — writes

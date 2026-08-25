@@ -86,6 +86,24 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
     AppSetting.delete_all
   end
 
+  # The provenance experiment is the other default-ON row, and the one that
+  # changes what every prompt carries — so it has to be visible and togglable
+  # from here without a deploy.
+  test "the provenance-on-demand toggle renders, defaults ON, and flips to OFF" do
+    AppSetting.delete_all
+
+    get settings_url
+    assert_select "input[type=checkbox][name='app_setting[provenance_via_mcp_enabled]'][checked]"
+    assert_select "#experimental-settings", text: /Provenance context on demand is\s+ON \(recommended default\)/
+
+    AppSetting.create!(provenance_via_mcp_enabled: false)
+    get settings_url
+    assert_select "input[name='app_setting[provenance_via_mcp_enabled]'][checked]", count: 0
+    assert_select "#experimental-settings", text: /Provenance context on demand is\s+OFF\./
+  ensure
+    AppSetting.delete_all
+  end
+
   # The mirrored case: an extension's recommendation is its own default_enabled?,
   # which is OFF — so the same partial has to label the opposite state.
   test "an experimental extension banner marks its own default as recommended" do

@@ -314,6 +314,16 @@ keep their totals — only the per-feature split is limited.
 chose to inject and can therefore choose to stop injecting, shrink, or serve from a cheaper
 model; `:harness` and `:work` are cost you can see but not directly legislate.
 
+### When a feature moves rather than disappears
+
+Shrinking an injected block usually means the content still gets read — it just arrives
+another way. `provenance_via_mcp` is the worked example: with it on, `session_hierarchy` and
+`human_messages` shrink to a pointer, and what a session then fetches with
+`get_session_provenance` lands on its own `provenance_tool` line rather than in the shared
+"MCP responses" bucket. Without that third line the experiment would read as pure savings
+while the bytes had merely moved. When you shrink something, give what replaces it a line of
+its own, placed **before** the generic detector that would otherwise swallow it.
+
 ### What the attribution cannot see
 
 - **Extended thinking is under-counted.** The harness writes `thinking: ""` into the
@@ -380,6 +390,12 @@ ago on the one tick where nothing has been observed yet and every session really
 
 For `mcp_tool_search` the boundary is **2026-08-22 13:55:34 UTC** (`b59d9ad7`, which shipped
 it on for everyone).
+
+`provenance_via_mcp` has no boundary even though it also ships **on**. Nothing before it ran
+with provenance on demand, so a date-derived "before" cohort would be every session Zimmer
+has ever run, compared against a handful — a ratio that would look like an answer and be one
+only about the date. Every session from the deploy on is tagged live; earlier ones stay
+honestly untagged.
 
 ### Why the report hedges as hard as it does
 
