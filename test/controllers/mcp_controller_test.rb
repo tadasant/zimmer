@@ -113,8 +113,8 @@ class McpControllerTest < ActionDispatch::IntegrationTest
   test "tools/list is scoped by tool_groups" do
     tools = rpc("tools/list", path: "/mcp?tool_groups=self_session")["result"]["tools"].map { |t| t["name"] }
 
-    assert_equal %w[get_session get_configs action_session send_push_notification wake_me_up_later
-                    wake_me_up_when_session_changes_state].sort, tools.sort
+    assert_equal %w[get_session get_session_provenance get_configs action_session send_push_notification
+                    wake_me_up_later wake_me_up_when_session_changes_state].sort, tools.sort
     refute_includes tools, "start_session"
   end
 

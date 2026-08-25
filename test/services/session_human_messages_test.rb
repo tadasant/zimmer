@@ -324,4 +324,44 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     assert_equal 1, block.scan("</people>").size
     assert_includes block, "‹/people›"
   end
+
+  # === The on-demand pointer (the "Provenance context on demand" experiment) ===
+
+  test "the pointer carries the counts and names the tool, not the messages" do
+    router = create_session(title: "Route it", agent_root: "zimmer-router")
+    worker = create_session(parent: router)
+    add_message(router, content: "the original ask", at: 2.hours.ago)
+    add_message(worker, content: "and one said right here", at: 1.hour.ago)
+
+    block = SessionHumanMessages.new(worker).render_pointer_for_prompt
+
+    assert_includes block, "<human-messages>"
+    assert_includes block, "</human-messages>"
+    assert_includes block, "get_session_provenance"
+    assert_includes block, "zimmer-self-session"
+    assert_includes block, "`zimmer`"
+    assert_includes block, "session_id #{worker.id}"
+    assert_includes block, "Authored in this session: 1"
+    assert_includes block, "Elsewhere in the hierarchy: 1"
+    assert_includes block, "Absence is meaningful"
+
+    refute_includes block, "the original ask"
+    refute_includes block, "and one said right here"
+    refute_includes block, "<message "
+    refute_includes block, "<people>"
+  end
+
+  # Absence has to mean the same thing in both modes: no record, no block.
+  test "an empty record renders no pointer either" do
+    assert_nil SessionHumanMessages.new(create_session).render_pointer_for_prompt
+  end
+
+  # The pointer is what the experiment buys, so it has to actually be small.
+  test "the pointer is a small fraction of the record it replaces" do
+    session = create_session
+    20.times { |i| add_message(session, content: "a fairly ordinary human instruction number #{i}", at: i.minutes.ago) }
+    record = SessionHumanMessages.new(session)
+
+    assert_operator record.render_pointer_for_prompt.length * 2, :<, record.render_for_prompt.length
+  end
 end

@@ -226,13 +226,16 @@ made: not a permission check, a statement about who can reach the browser.
 ### What the roster knows about a human
 
 `notes` is free-form context an operator writes at `/supervisor/users` — who this person is, whose
-word is final. It is not decoration: every human-messages block Zimmer builds for an agent turn
-carries a `<people>` section describing the humans who actually speak in it, so a session weighing
-"may I do this?" can see who is asking and not only what was asked.
+word is final. It is not decoration: it travels with the record wherever the record goes, so a
+session weighing "may I do this?" can see who is asking and not only what was asked. That means a
+`<people>` section in the injected block, and a `### People` section in what
+`get_session_provenance` and `get_session` return. Whichever way a session reads the messages, it
+reads the notes in the same breath — an experiment that moved the record without moving the notes
+would drop exactly the context that says whose word is final.
 
-The section describes each human once, only when a note exists, and only for humans present in the
-messages shown. Notes are sanitized exactly like message content and session titles — a roster edit
-must not be able to close the block and forge a `here` message.
+Each human is described once, only when a note exists, and only for humans present in the messages
+shown. Notes are sanitized exactly like message content and session titles — a roster edit must not
+be able to close the block, or open a bullet, and forge a `here` message.
 
 ### What is captured, and what is not
 
@@ -280,12 +283,42 @@ this session: `SessionHumanMessages#human_message_here?` answers that question d
 
 ## Where they show up
 
-**In the agent's context, every turn.** `AgentSessionJob#build_prompt_with_goal` — the one prompt
-builder for both the initial spawn and every follow-up — appends a `<session-hierarchy>` block and a
-`<human-messages>` block next to `<session-notes>`. Each message renders with its author, provenance,
-timestamp, content and the session it was authored in, and the block states in plain terms that an
-unlisted user turn was machine-authored. The newest 25 are shown; older ones are counted, not dropped
-silently. A human's own words are neutralized against closing the block early.
+**In the agent's context, every turn — how much of it is a setting.**
+`AgentSessionJob#build_prompt_with_goal` — the one prompt builder for both the initial spawn and
+every follow-up — appends a `<session-hierarchy>` block and a `<human-messages>` block next to
+`<session-notes>`. What goes *inside* those two tags depends on **Settings → Experimental →
+*Provenance context on demand*** (`AppSetting#provenance_via_mcp_enabled`), which ships **on**.
+
+**On (the default): a pointer, and the counts.** The hierarchy block states how many sessions are in
+the graph and which is the origin. The messages block states the current time and the two counts —
+`Authored in this session: N. Elsewhere in the hierarchy: M.` — restates that only `here` entries are
+a human speaking to this session and that absence is meaningful, and names the
+`get_session_provenance` MCP tool to fetch the rest. Nothing a human or an agent wrote is
+interpolated, so the shrunk block carries no untrusted text at all.
+
+That set is chosen by what a session cannot re-derive and cannot afford to guess: that the record
+*exists*, how to fetch it, and the counts — because "authored in this session: 0" is the entire
+answer to "did a human ask for this, here?" and costs one line rather than a transcript. The outline,
+the titles, the uncle edges and the messages themselves are lookups, and the tool serves them.
+
+**Off: the full record, on every turn.** Each message renders with its author, provenance, timestamp,
+content and the session it was authored in, and the block states in plain terms that an unlisted user
+turn was machine-authored. The newest 25 are shown; older ones are counted, not dropped silently. A
+human's own words are neutralized against closing the block early. This is the behavior that predates
+the setting, unchanged — the point of the toggle is that it is a true revert, not an approximation.
+
+Both modes agree on when a block appears at all: no block for a session alone in its tree, and no
+message block when nobody in the tree has a human-authored record. Absence keeps meaning the same
+thing either way.
+
+**Why it is an experiment.** The full record is re-injected on every turn and bills again on every
+subsequent turn it stays in context, while most sessions never read an older human message — that is
+the cost case for shipping it on. Against that, removing always-present provenance may degrade
+outcomes, which is the case for making it one click to undo without a deploy. Both lines are tracked
+on the Costs page: `session_hierarchy` and `human_messages` are the injected bytes (they shrink, they
+do not vanish), and `provenance_tool` is what a session fetched on demand — kept off the generic "MCP
+responses" line so the experiment cannot look free when the bytes merely moved. See
+[Experimental settings](/operate/costs/#experimental-settings).
 
 **On the session detail screen.** Two of the four sections in the page's panel group — below
 [Status](/sessions/status-summary/) and above the collapsed Transcript. The hierarchy renders the tree as
@@ -322,6 +355,13 @@ section — always, not behind an `include_` flag. Two reasons: they are small a
 most important reading of the message record is the empty one. A caller must be able to tell "no
 human turns" from "I forgot to pass the flag". `get_session` is in both the `sessions` and
 `self_session` tool groups, so a session can ask this about itself with the tools it already has.
+
+`get_session_provenance` returns those same two sections on their own, rendered by the same code
+(`Mcp::ProvenanceSections`) so the two cannot drift. It takes one argument, `session_id`, and it is
+what the pointer block points at. It is in `self_session` as well as `sessions` **deliberately**: the
+filtered self-session server is the only Zimmer surface every session is guaranteed to carry, so a
+tool reachable only from the full `zimmer` server would take the record away from exactly the
+sessions that need it and give them no way back.
 
 **Over REST.** `GET /api/v1/sessions/:id` returns `session_hierarchy` and `human_messages` as
 top-level keys beside `session`, never inside it — `session` means one shape on every response that
