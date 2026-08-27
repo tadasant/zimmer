@@ -123,8 +123,24 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
     )
   end
 
+  def refused_quota_probe
+    QuotaCheckService::Result.new(
+      success: false,
+      unreachable: false,
+      error_message: "No rate-limit headers in response (HTTP 401)"
+    )
+  end
+
   def spawned_as!(email)
     @session.update!(metadata: @session.metadata.merge(AuthRecoveryCoordinator::IDENTITY_KEY => email))
+  end
+
+  def spawned_with_scoped_token!(account, fingerprint: AuthRecoveryCoordinator.credential_fingerprint(account))
+    @session.update!(metadata: @session.metadata.merge(
+      AuthRecoveryCoordinator::IDENTITY_KEY => account.email,
+      AuthRecoveryCoordinator::CREDENTIAL_MODE_KEY => true,
+      AuthRecoveryCoordinator::CREDENTIAL_FINGERPRINT_KEY => fingerprint
+    ))
   end
 
   # Take the runtime's pool lock on a SEPARATE Postgres backend, which is what a
@@ -189,7 +205,189 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
-  # Branch 2 — nobody rotated: rotate, rather than re-injecting what just failed
+  # Branch 2 — session-scoped credentials: repair the process before the pool
+  # ===========================================================================
+
+  test "re-seeds a session-scoped process when the DB access token and quota are healthy" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    spawned_as!(@primary.email)
+    token_before = @primary.claude_access_token
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :reseeded, plan.outcome
+    assert_equal @primary.email, plan.account.email
+    assert plan.consumes_budget?
+    assert_equal token_before, @primary.reload.claude_access_token,
+      "A readiness probe must not rotate the current account's credential chain"
+    assert_equal 0, AccountRotationEvent.count
+    assert_equal "auth_recovery", @primary.latest_snapshot.trigger
+  end
+
+  test "rotates when the same session-scoped token fails again after being re-seeded" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    spawned_with_scoped_token!(@primary)
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :rotated, plan.outcome
+    assert_equal @secondary.email, plan.account.email
+    assert_equal 1, AccountRotationEvent.count,
+      "A token the child already retried must not consume the whole recovery budget through repeated reseeds"
+  end
+
+  test "uses the failed process mode when the session-scoped setting was turned off mid-run" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+    spawned_with_scoped_token!(@primary, fingerprint: Digest::SHA256.hexdigest("older-access-token"))
+    token_before = @primary.claude_access_token
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :reseeded, plan.outcome
+    assert_equal token_before, @primary.reload.claude_access_token,
+      "Turning the toggle off must not make recovery refresh the account a scoped child was holding"
+  end
+
+  test "falls back to the observed session flag for scoped processes that predate spawn metadata" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+    spawned_as!(@primary.email)
+    SessionExperimentalFlag.create!(
+      session: @session,
+      setting_key: AuthRecoveryCoordinator::SESSION_SCOPED_SETTING_KEY,
+      value_at_start: true,
+      value_at_end: true,
+      source: SessionExperimentalFlag::OBSERVED,
+      first_observed_at: 1.minute.ago,
+      last_observed_at: 1.minute.ago
+    )
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :reseeded, plan.outcome
+  end
+
+  test "uses non-consuming recovery when a shared-file process outlives the setting turning on" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    @session.update!(metadata: @session.metadata.merge(
+      AuthRecoveryCoordinator::IDENTITY_KEY => @primary.email,
+      AuthRecoveryCoordinator::CREDENTIAL_MODE_KEY => false,
+      AuthRecoveryCoordinator::CREDENTIAL_FINGERPRINT_KEY => nil
+    ))
+    token_before = @primary.claude_access_token
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :reseeded, plan.outcome
+    assert_equal token_before, @primary.reload.claude_access_token
+  end
+
+  test "re-seeds the only account with quota instead of parking it as unusable" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    drain_pool_by_quota!(except: @primary)
+    @primary.update!(status: :quota_exceeded)
+    spawned_as!(@primary.email)
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :reseeded, plan.outcome
+    assert_equal @primary.email, plan.account.email
+    assert_equal "active", @primary.reload.status,
+      "The fresh clear reading must converge the sticky label before account selection"
+    assert_equal AuthOutageParkService::AUTH_UNRECOVERABLE, coordinator.park_reason_for_pool,
+      "The pool shape still says a human would be needed if recovery parked, but recovery must use the serviceable account"
+  end
+
+  test "refreshes a refused session-scoped access token once and re-seeds the repaired account" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    spawned_as!(@primary.email)
+    token_before = @primary.claude_access_token
+    healthy = QuotaCheckService::Result.new(
+      success: true, subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 0.5, utilization_7d: 0.3, status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now
+    )
+    QuotaCheckService.stubs(:check_with_token).returns(refused_quota_probe, healthy)
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :reseeded, plan.outcome
+    assert_not_equal token_before, @primary.reload.claude_access_token
+    assert_includes plan.detail, "refreshed the rejected access token"
+    assert_equal 0, AccountRotationEvent.count
+  end
+
+  test "rotates a session-scoped account only when its live reading says quota is spent" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    spawned_as!(@primary.email)
+    token_before = @primary.claude_access_token
+    spent = QuotaCheckService::Result.new(
+      success: true, subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 1.0, utilization_7d: 1.0, status_5h: "rejected", status_7d: "rejected",
+      reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now
+    )
+    healthy = QuotaCheckService::Result.new(
+      success: true, subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 0.2, utilization_7d: 0.3, status_5h: "allowed", status_7d: "allowed",
+      reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now
+    )
+    # Coordinator probe + rotation's outgoing snapshot both see the current
+    # account spent; the incoming account's activation snapshot is clear.
+    QuotaCheckService.stubs(:check_with_token).returns(spent, spent, healthy)
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :rotated, plan.outcome
+    assert_equal token_before, @primary.reload.claude_access_token,
+      "Quota evidence must not spend the outgoing account's refresh token"
+    assert_equal "quota_exceeded", @primary.status
+    assert_equal 1, AccountRotationEvent.count
+  end
+
+  test "preserves a spent five-hour probe when rotation's second probe is unreachable" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    drain_pool_by_quota!(except: @primary)
+    spawned_with_scoped_token!(@primary, fingerprint: Digest::SHA256.hexdigest("older-access-token"))
+
+    five_hour_spent = QuotaCheckService::Result.new(
+      success: true, subscription_type: "claude_max", rate_limit_tier: "tier_4",
+      utilization_5h: 1.0, utilization_7d: 0.4, status_5h: "rejected", status_7d: "allowed",
+      reset_5h: 3.hours.from_now, reset_7d: 5.days.from_now
+    )
+    unreachable = QuotaCheckService::Result.new(
+      success: false,
+      unreachable: true,
+      error_message: "API request timed out"
+    )
+    QuotaCheckService.stubs(:check_with_token).returns(five_hour_spent, unreachable)
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :quota_exhausted, plan.outcome
+    assert_equal "quota_exceeded", @primary.reload.status,
+      "The first definitive probe must survive an inconclusive rotation probe"
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, coordinator.park_reason_for_pool
+  end
+
+  test "does not call a non-active current account re-seeded after an inconclusive probe" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    @primary.update!(status: :needs_reauth)
+    spawned_with_scoped_token!(@primary, fingerprint: Digest::SHA256.hexdigest("older-access-token"))
+    unreachable = QuotaCheckService::Result.new(
+      success: false,
+      unreachable: true,
+      error_message: "API request timed out"
+    )
+    QuotaCheckService.stubs(:check_with_token).returns(unreachable)
+
+    plan = coordinator.resolve!("/tmp/test-clone")
+
+    assert_equal :rotated, plan.outcome
+    assert_equal @secondary.email, plan.account.email
+    assert_includes plan.detail, @secondary.email
+  end
+
+  # ===========================================================================
+  # Branch 3 — shared-file credentials: rotate rather than re-injecting a failure
   # ===========================================================================
 
   test "rotates away from the identity the runtime rejected instead of re-injecting it" do
@@ -275,7 +473,7 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
-  # Branch 3 — the pool is out of runway
+  # Branch 4 — the pool is out of runway
   # ===========================================================================
 
   test "parks with quota_exhausted when the last account is rotated away and the rest are over quota" do
@@ -529,6 +727,21 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
 
     assert_equal @primary.email, @session.reload.metadata[AuthRecoveryCoordinator::IDENTITY_KEY]
     assert_not_nil @session.metadata[AuthRecoveryCoordinator::IDENTITY_AT_KEY]
+  end
+
+  test "record_spawn_credentials! stores the actual mode and a one-way token fingerprint" do
+    AuthRecoveryCoordinator.record_spawn_credentials!(
+      session_id: @session.id,
+      account: @primary,
+      session_scoped: true
+    )
+
+    metadata = @session.reload.metadata
+    assert_equal true, metadata[AuthRecoveryCoordinator::CREDENTIAL_MODE_KEY]
+    assert_equal Digest::SHA256.hexdigest(@primary.claude_access_token),
+      metadata[AuthRecoveryCoordinator::CREDENTIAL_FINGERPRINT_KEY]
+    assert_not_equal @primary.claude_access_token,
+      metadata[AuthRecoveryCoordinator::CREDENTIAL_FINGERPRINT_KEY]
   end
 
   test "record_identity! is a no-op for the boot warm-up path, which has no session" do

@@ -45,6 +45,31 @@ class ClaudeSpawnEnvSessionCredentialsTest < ActiveSupport::TestCase
     assert_not env.key?("CLAUDE_CODE_OAUTH_TOKEN")
   end
 
+  test "records shared-file fallback as the actual spawn mode" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+    session = Session.create!(
+      prompt: "Shared mode", agent_runtime: "claude_code", status: :running,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem", session_id: SecureRandom.uuid
+    )
+
+    Host.new(session_id: session.id, logger: @logger).apply!
+
+    metadata = session.reload.metadata
+    assert_equal false, metadata[AuthRecoveryCoordinator::CREDENTIAL_MODE_KEY]
+    assert_nil metadata[AuthRecoveryCoordinator::CREDENTIAL_FINGERPRINT_KEY]
+  end
+
+  test "spawn credential observability remains fail-open when its account lookup fails" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+    ClaudeAccount.stubs(:current_account).raises(ActiveRecord::ConnectionNotEstablished, "database unavailable")
+
+    env = Host.new(session_id: 886, logger: @logger).apply!
+
+    assert_not env.key?("CLAUDE_CONFIG_DIR")
+    assert_not env.key?("CLAUDE_CODE_OAUTH_TOKEN")
+  end
+
   test "with the setting on, the session gets its own config dir and the current account's access token" do
     AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
 
@@ -53,6 +78,23 @@ class ClaudeSpawnEnvSessionCredentialsTest < ActiveSupport::TestCase
     assert_equal File.join(@config_base, "886"), env["CLAUDE_CONFIG_DIR"]
     assert_equal @account.claude_access_token, env["CLAUDE_CODE_OAUTH_TOKEN"]
     assert Dir.exist?(env["CLAUDE_CONFIG_DIR"]), "the config dir must exist by the time the process starts"
+  end
+
+  test "records the token generation actually handed to a scoped child" do
+    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
+    session = Session.create!(
+      prompt: "Scoped mode", agent_runtime: "claude_code", status: :running,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem", session_id: SecureRandom.uuid
+    )
+
+    Host.new(session_id: session.id, logger: @logger).apply!
+
+    metadata = session.reload.metadata
+    assert_equal true, metadata[AuthRecoveryCoordinator::CREDENTIAL_MODE_KEY]
+    assert_equal AuthRecoveryCoordinator.credential_fingerprint(@account),
+      metadata[AuthRecoveryCoordinator::CREDENTIAL_FINGERPRINT_KEY]
+    assert_equal @account.email, metadata[AuthRecoveryCoordinator::IDENTITY_KEY]
   end
 
   # The whole point. A refresh token in the child's environment would let the CLI

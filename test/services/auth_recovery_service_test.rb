@@ -454,6 +454,26 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert_includes @session.logs.pluck(:content).join(" "), "no attempt charged"
   end
 
+  test "re-seeding a healthy current account spends budget and names the repair" do
+    setup_transcript_with_auth_error
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 4242, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+    detail = "proved current@example.com still has a valid access token and quota, then re-seeded it"
+    service = create_service(coordinator: FakeCoordinator.new(
+      plan(:reseeded, email: "current@example.com", detail: detail)
+    ))
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :success, service.attempt_recovery("/tmp/test-clone")
+
+    @session.reload
+    assert_equal 1, @session.metadata["auth_recovery_count"]
+    logs = @session.logs.pluck(:content).join(" ")
+    assert_includes logs, detail
+    assert_includes logs, "Retrying 1/3"
+  end
+
   test "adoptions beyond MAX_FREE_ADOPTIONS start spending the recovery budget" do
     setup_transcript_with_auth_error
 
