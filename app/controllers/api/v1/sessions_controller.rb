@@ -89,7 +89,19 @@ class Api::V1::SessionsController < Api::BaseController
   #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one).
   #   - precedence: where this session sits in the spot queue — higher is handled sooner, on an
   #     absolute scale. Omit to land one point above the parent, or at the default with no parent.
+  #   - idempotency_key: names THIS create attempt so it is safe to retry. Repeating the call
+  #     with the same key returns the session the first call made — 200 with
+  #     "idempotent_replay": true rather than 201 — and queues no second agent job. Without
+  #     one, a create whose response is lost (a gateway timeout after the row committed) is
+  #     indistinguishable from one that never landed, and retrying duplicates the session.
   def create
+    # Answered before anything is built: the retry this exists for is a caller
+    # that already has its session and cannot tell. See Sessions::IdempotentCreate.
+    idempotency_key = session_params[:idempotency_key].presence
+    if (replayed = Sessions::IdempotentCreate.existing(idempotency_key))
+      return render json: { session: session_json(replayed), idempotent_replay: true }, status: :ok
+    end
+
     @session = Session.new(session_params.except(:agent_root))
     # Machine-created. When the caller passed a parent_session_id this is an agent
     # continuing an existing line of work, so assign_genesis inherits that parent's
@@ -105,7 +117,17 @@ class Api::V1::SessionsController < Api::BaseController
     # chain. This always leaves an explicit model in config.
     resolve_agent_root_defaults!
 
-    if @session.save
+    # The lookup above answers the sequential retry; this answers the concurrent
+    # one, where the first request is still inside its INSERT when the second
+    # arrives. A reused result means the winning request already queued the agent
+    # job, so this one queues nothing.
+    result = Sessions::IdempotentCreate.save(@session, idempotency_key)
+
+    if result.nil?
+      render_api_error("Validation failed", @session.errors.full_messages, status: :unprocessable_entity)
+    elsif result.reused?
+      render json: { session: session_json(result.session), idempotent_replay: true }, status: :ok
+    else
       # Queue the agent job if a prompt was provided
       if @session.prompt.present?
         job = AgentSessionJob.enqueue_new_session(@session.id)
@@ -113,8 +135,6 @@ class Api::V1::SessionsController < Api::BaseController
       end
 
       render json: { session: session_json(@session) }, status: :created
-    else
-      render_api_error("Validation failed", @session.errors.full_messages, status: :unprocessable_entity)
     end
   rescue AgentRootsConfig::AgentRootNotFoundError => e
     render_api_error("Invalid agent_root", e.message, status: :unprocessable_entity)
@@ -1188,6 +1208,7 @@ class Api::V1::SessionsController < Api::BaseController
       :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
       :title, :slug, :goal, :execution_provider, :is_autonomous,
       :parent_session_id, :auto_compact_window, :scheduling_class, :precedence,
+      :idempotency_key,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
     )
   end

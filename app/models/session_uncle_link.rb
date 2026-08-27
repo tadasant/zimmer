@@ -19,7 +19,7 @@ class SessionUncleLink < ApplicationRecord
   validates :session_id, uniqueness: { scope: :uncle_session_id }
   validate :must_not_be_self_edge
 
-  after_create_commit -> { session.broadcast_provenance_change_to_hierarchy }
+  after_create_commit -> { session.enqueue_provenance_broadcast }
   after_destroy_commit :broadcast_provenance_change_after_destroy
 
   scope :for_session, ->(session_id) { where(session_id: session_id) }
@@ -38,7 +38,7 @@ class SessionUncleLink < ApplicationRecord
 
   def broadcast_provenance_change_after_destroy
     [ session_id, uncle_session_id ].uniq.each do |changed_session_id|
-      Session.find_by(id: changed_session_id)&.broadcast_provenance_change_to_hierarchy
+      Session.find_by(id: changed_session_id)&.enqueue_provenance_broadcast
     end
   end
 end

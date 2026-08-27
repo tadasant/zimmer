@@ -286,6 +286,27 @@ and at change time. `start_session` names the same four lists (`mcp_servers`, `s
 `hooks`), so a hook that is noise for the task is dropped at launch rather than corrected by a
 follow-up `change_hooks` — which, for a clone-only session, would race the job start.
 
+### `start_session` is only safe to retry if you name the attempt
+
+`start_session` takes an optional `idempotency_key`. Pass a string unique to the unit of work you are
+spawning and the create becomes safe to repeat: a second call with the same key returns the session
+the first one made — the result says so in its heading, *Existing Session Returned (idempotency_key
+matched)* — and queues no second agent job.
+
+Without one, a failed `start_session` is genuinely ambiguous. The 504 a caller sees on a slow create
+comes from the reverse proxy, not from Zimmer, so it is an HTML page rather than a JSON-RPC error
+envelope, it carries no session id, and it arrives *after* the row has committed. Every observed
+occurrence had in fact created a healthy session that went on to run to completion. Retrying that —
+the obvious reading of an error — spawns a second clone, a second agent holding a Claude quota slot,
+and two agents opening two PRs for one task.
+
+So: **with** a key, retry on any error including a timeout. **Without** one, do not retry — call
+`quick_search_sessions` with the title you passed and check whether the session is already there. The
+key is not a fingerprint of the arguments, so use a fresh one for each new unit of work; reusing a key
+returns the session it created the first time. See [Creating a
+session](/extend/rest-api/#idempotency_key--making-the-create-safe-to-retry) for the REST equivalent
+and the concurrency guarantee behind both.
+
 Two tools deliver a message to a session that already exists, and both let you choose whether to
 interrupt. `action_session` `follow_up` queues the prompt when the session is `running` and sends it
 straight through when the session is `waiting` or `needs_input`. `force_immediate: true` interrupts

@@ -185,7 +185,13 @@ class Session < ApplicationRecord
   # every open detail page in that lineage. The fresh GET path already computes
   # this correctly; this keeps already-open pages from staying on the solitary
   # snapshot they rendered before the child existed.
-  after_create_commit :broadcast_provenance_change_to_hierarchy, if: -> { lineage_parent_id.present? }
+  # Enqueued, never inline. The fan-out is O(lineage²) row loads and renders —
+  # see SessionProvenanceBroadcastJob — and running it in the callback put all of
+  # it inside the HTTP request that created the session, which is how a create
+  # that only queues work ended up tripping the reverse proxy's gateway timeout
+  # (#577). Every consumer is a Turbo Stream repainting an open tab, so a second
+  # of delay costs nothing and holding the request costs the caller its answer.
+  after_create_commit :enqueue_provenance_broadcast, if: -> { lineage_parent_id.present? }
 
   # Define the enum for status column - this provides helper methods and query scopes
   # AASM uses this enum for state transitions with enum: true option
@@ -412,6 +418,14 @@ class Session < ApplicationRecord
   PROMPT_MAX_LENGTH = 500_000
   GOAL_MAX_LENGTH = 50_000
 
+  # Cap on the client-supplied idempotency key. A key is a token the caller
+  # invents to name one create attempt — a UUID, or "issue-577-fix" — so it wants
+  # to be long enough for a readable, collision-proof label and nowhere near long
+  # enough to be a payload. Bounded because it lands in a btree index, and an
+  # unbounded string there is both a slow index and a way to push other rows out
+  # of a page for free.
+  IDEMPOTENCY_KEY_MAX_LENGTH = 255
+
   # Upper bound for the Claude Code auto-compact window (context window, in
   # tokens). 1M is well above any realistic Claude Code model context (~200K)
   # while still preventing runaway/typo values from polluting the spawn env.
@@ -487,6 +501,15 @@ class Session < ApplicationRecord
   validates :git_root, presence: true
   validates :branch, presence: true
   validates :slug, uniqueness: true, format: { with: /\A[a-z0-9-]+\z/, message: "only allows lowercase letters, numbers, and hyphens" }, allow_nil: true
+  # The model-side half of the idempotency key. The database index is the half
+  # that actually holds under concurrency — two racing creates are two requests
+  # on two Puma threads, and neither `exists?` can see the row the other is
+  # mid-INSERT on — so this validation exists to turn the common, sequential
+  # duplicate into a readable error rather than a RecordNotUnique backtrace. The
+  # creating surfaces (Mcp::Tools::StartSession, Api::V1::SessionsController)
+  # never reach either: they look the key up first and return the existing
+  # session. See Sessions::IdempotentCreate.
+  validates :idempotency_key, uniqueness: true, length: { maximum: IDEMPOTENCY_KEY_MAX_LENGTH }, allow_nil: true
   validates :title, length: { maximum: 100, message: "is too long (maximum 100 characters)" }, allow_nil: true
   validates :goal, length: { maximum: GOAL_MAX_LENGTH, message: "is too long (maximum #{GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
   validates :session_notes, length: { maximum: 50_000, message: "is too long (maximum 50,000 characters)" }, allow_nil: true
@@ -1989,6 +2012,14 @@ class Session < ApplicationRecord
     Rails.logger.error "[Session] Broadcast custom metadata change failed for session #{id}: #{e.message}"
     ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "custom_metadata_change" })
   end
+
+  # The enqueue side of the provenance fan-out. Public alongside the method it
+  # defers to, because the other two writers of a lineage edge (SessionUncleLink,
+  # HumanMessage) call it on the session they changed.
+  def enqueue_provenance_broadcast
+    SessionProvenanceBroadcastJob.perform_later(id)
+  end
+  public :enqueue_provenance_broadcast
 
   def broadcast_provenance_change_to_hierarchy
     SessionHierarchy.new(self).session_ids.each do |viewer_id|

@@ -3,6 +3,8 @@
 require "test_helper"
 
 class HumanMessageTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   setup do
     @session = sessions(:running)
   end
@@ -163,12 +165,14 @@ class HumanMessageTest < ActiveSupport::TestCase
       true
     end
 
-    child.human_messages.create!(
-      author: "tadasant",
-      channel: HumanMessage::WEB_UI,
-      content: "human context for the child",
-      occurred_at: Time.current
-    )
+    perform_enqueued_jobs(only: SessionProvenanceBroadcastJob) do
+      child.human_messages.create!(
+        author: "tadasant",
+        channel: HumanMessage::WEB_UI,
+        content: "human context for the child",
+        occurred_at: Time.current
+      )
+    end
 
     parent_broadcast = broadcasts.find do |stream, options|
       stream == "session_#{parent.id}_status" &&
