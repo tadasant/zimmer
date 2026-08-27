@@ -185,7 +185,13 @@ class Session < ApplicationRecord
   # every open detail page in that lineage. The fresh GET path already computes
   # this correctly; this keeps already-open pages from staying on the solitary
   # snapshot they rendered before the child existed.
-  after_create_commit :broadcast_provenance_change_to_hierarchy, if: -> { lineage_parent_id.present? }
+  # Enqueued, never inline. The fan-out is O(lineage²) row loads and renders —
+  # see SessionProvenanceBroadcastJob — and running it in the callback put all of
+  # it inside the HTTP request that created the session, which is how a create
+  # that only queues work ended up tripping the reverse proxy's gateway timeout
+  # (#577). Every consumer is a Turbo Stream repainting an open tab, so a second
+  # of delay costs nothing and holding the request costs the caller its answer.
+  after_create_commit :enqueue_provenance_broadcast, if: -> { lineage_parent_id.present? }
 
   # Define the enum for status column - this provides helper methods and query scopes
   # AASM uses this enum for state transitions with enum: true option
@@ -412,6 +418,17 @@ class Session < ApplicationRecord
   PROMPT_MAX_LENGTH = 500_000
   GOAL_MAX_LENGTH = 50_000
 
+  # Cap on the client-supplied idempotency key. A key is a token the caller
+  # invents to name one create attempt, and it should be a fresh UUID rather than
+  # anything derived from the task: the column is a single global namespace, so
+  # two callers that independently derive "issue-577-fix" from the same issue
+  # would collide, and the second one's session would silently never be created.
+  # A duplicate is visible; a no-op is not. Bounded because it lands in a btree
+  # index, and an
+  # unbounded string there is both a slow index and a way to push other rows out
+  # of a page for free.
+  IDEMPOTENCY_KEY_MAX_LENGTH = 255
+
   # Upper bound for the Claude Code auto-compact window (context window, in
   # tokens). 1M is well above any realistic Claude Code model context (~200K)
   # while still preventing runaway/typo values from polluting the spawn env.
@@ -487,6 +504,25 @@ class Session < ApplicationRecord
   validates :git_root, presence: true
   validates :branch, presence: true
   validates :slug, uniqueness: true, format: { with: /\A[a-z0-9-]+\z/, message: "only allows lowercase letters, numbers, and hyphens" }, allow_nil: true
+  # An absent key must reach the column as NULL, never as "". The partial unique
+  # index is `WHERE idempotency_key IS NOT NULL`, and `allow_nil` does not cover
+  # an empty string — so a client that always serializes the field ("" when it has
+  # no key, which is ordinary JSON-client behavior) would take the empty key on its
+  # first create and then be refused, permanently, on every create after it. That
+  # is a worse failure than the one this column exists to fix. Normalized on the
+  # model rather than in each controller so both create surfaces, and anything
+  # written later, cannot disagree about it.
+  normalizes :idempotency_key, with: ->(value) { value.presence }
+
+  # The model-side half of the idempotency key. The database index is the half
+  # that actually holds under concurrency — two racing creates are two requests
+  # on two Puma threads, and neither `exists?` can see the row the other is
+  # mid-INSERT on — so this validation exists to turn the common, sequential
+  # duplicate into a readable error rather than a RecordNotUnique backtrace. The
+  # creating surfaces (Mcp::Tools::StartSession, Api::V1::SessionsController)
+  # never reach either: they look the key up first and return the existing
+  # session. See Sessions::IdempotentCreate.
+  validates :idempotency_key, uniqueness: true, length: { maximum: IDEMPOTENCY_KEY_MAX_LENGTH }, allow_nil: true
   validates :title, length: { maximum: 100, message: "is too long (maximum 100 characters)" }, allow_nil: true
   validates :goal, length: { maximum: GOAL_MAX_LENGTH, message: "is too long (maximum #{GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
   validates :session_notes, length: { maximum: 50_000, message: "is too long (maximum 50,000 characters)" }, allow_nil: true
@@ -1989,6 +2025,24 @@ class Session < ApplicationRecord
     Rails.logger.error "[Session] Broadcast custom metadata change failed for session #{id}: #{e.message}"
     ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "custom_metadata_change" })
   end
+
+  # The enqueue side of the provenance fan-out. Public alongside the method it
+  # defers to, because the other two writers of a lineage edge (SessionUncleLink,
+  # HumanMessage) call it on the session they changed.
+  def enqueue_provenance_broadcast
+    SessionProvenanceBroadcastJob.perform_later(id)
+  rescue => e
+    # Swallowed for the same reason broadcast_provenance_change_to_hierarchy
+    # swallows its own failures, and it matters more here: this runs from
+    # after_create_commit, so an exception propagates to the caller — and the
+    # caller is the HTTP request that just created the session. A failed enqueue
+    # would answer a committed create with a 500, which is precisely the
+    # "the write landed and the caller was told it failed" shape #577 is about.
+    # A panel that does not repaint is a stale open tab; nothing is lost.
+    Rails.logger.error "[Session] Enqueue provenance broadcast failed for session #{id}: #{e.message}"
+    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "provenance_change_enqueue" })
+  end
+  public :enqueue_provenance_broadcast
 
   def broadcast_provenance_change_to_hierarchy
     SessionHierarchy.new(self).session_ids.each do |viewer_id|

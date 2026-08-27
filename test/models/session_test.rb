@@ -750,13 +750,19 @@ class SessionTest < ActiveSupport::TestCase
       true
     end
 
-    child = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      prompt: "Child",
-      title: "Spawned child",
-      parent_session_id: parent.id,
-      status: :waiting
-    )
+    # The fan-out is deferred to SessionProvenanceBroadcastJob so it stays out of
+    # the request that creates the session (#577); the panel content it produces
+    # is unchanged, so the test drains the job and asserts the same thing.
+    child = nil
+    perform_enqueued_jobs(only: SessionProvenanceBroadcastJob) do
+      child = Session.create!(
+        git_root: "https://github.com/test/repo.git",
+        prompt: "Child",
+        title: "Spawned child",
+        parent_session_id: parent.id,
+        status: :waiting
+      )
+    end
 
     parent_broadcast = broadcasts.find do |stream, options|
       stream == "session_#{parent.id}_status" &&
