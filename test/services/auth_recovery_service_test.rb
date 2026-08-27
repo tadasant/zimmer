@@ -142,6 +142,26 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
       "Non-API-error message mentioning /login must not be treated as an auth failure"
   end
 
+  # Production session 9760 was a status-summary fork. Its imported source
+  # transcript contained an old auth failure, but the fork then wrote a complete
+  # summary. Looking only for the newest API error ignored that successful answer
+  # and parked a turn that had already finished.
+  test "does not recover an old auth error after a successful assistant answer" do
+    setup_transcript_directory
+    @mock_file_system.write(@transcript_file, <<~JSONL)
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Original task"}]}}
+      #{auth_error_json("Failed to authenticate. API Error: 401 OAuth access token has been revoked.")}
+      {"type": "last-prompt"}
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Write the status summary"}]}}
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "The work is complete."}]}}
+      {"type": "last-prompt"}
+    JSONL
+
+    service = create_service
+    assert_not service.auth_error_detected?("/tmp/test-clone"),
+      "A successful answer after an imported auth error is a completed turn, not a fresh auth failure"
+  end
+
   # Most-recent-error-wins: an older auth error followed by a newer 500 must NOT
   # be classified as an auth failure (the 500 is the operative current error,
   # handled by ApiErrorRetryService).
