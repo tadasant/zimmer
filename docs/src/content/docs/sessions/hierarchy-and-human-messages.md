@@ -338,6 +338,16 @@ which at `MAX_DEPTH` costs a phone 64px of a roughly 343px row.
 An open detail screen refreshes this panel when the hierarchy changes or when a human message is
 recorded anywhere in that hierarchy, so it does not stay pinned to the tree it rendered on first load.
 
+That refresh is a **background job**, `SessionProvenanceBroadcastJob`, not a callback in the request
+that changed the graph. The fan-out is quadratic in the size of the lineage — the panel is re-rendered
+once for every session in the tree (up to `MAX_NODES`, 150), and each of those renders builds that
+viewer's own hierarchy and human-message record, loading whole `Session` rows. Run inline, all of it
+sat inside the HTTP request that spawned the session, which is how spawning a session under a
+long-lived router could outrun the reverse proxy's timeout and hand the caller a 504 for a session
+that had already been created (see [Creating a
+session](/extend/rest-api/#idempotency_key--making-the-create-safe-to-retry)). Every consumer is a
+Turbo Stream repainting an already-open tab, so a repaint a moment later costs nothing.
+
 The panel header states **both** counts, always — `3 messages in this session · 0 elsewhere in the hierarchy`.
 A header that named only the first would describe a narrower search than the one that ran, and a
 reader would have no way to tell "nothing was said elsewhere" from "elsewhere was never looked at".

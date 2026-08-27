@@ -3,6 +3,8 @@
 require "test_helper"
 
 class SessionUncleLinkTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   def create_session
     Session.create!(
       agent_runtime: "claude_code",
@@ -58,7 +60,9 @@ class SessionUncleLinkTest < ActiveSupport::TestCase
       true
     end
 
-    SessionUncleLink.create!(session: junior, uncle_session: senior)
+    perform_enqueued_jobs(only: SessionProvenanceBroadcastJob) do
+      SessionUncleLink.create!(session: junior, uncle_session: senior)
+    end
 
     junior_broadcast = broadcasts.find do |stream, options|
       stream == "session_#{junior.id}_status" &&

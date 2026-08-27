@@ -373,6 +373,46 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     )
   end
 
+  # --- idempotency_key (#577) ---
+
+  test "the key is persisted on the session it created" do
+    @tool.call("agent_root" => "zimmer", "prompt" => "x", "title" => "Keyed", "idempotency_key" => "unit-key")
+
+    assert_equal "unit-key", Session.order(:id).last.idempotency_key
+  end
+
+  test "a replay does no create work and queues no job" do
+    @tool.call("agent_root" => "zimmer", "prompt" => "x", "title" => "Keyed", "idempotency_key" => "unit-replay")
+
+    assert_no_difference "Session.count" do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        result = @tool.call("agent_root" => "zimmer", "prompt" => "x", "title" => "Keyed", "idempotency_key" => "unit-replay")
+        assert_includes result, "## Existing Session Returned (idempotency_key matched)"
+      end
+    end
+  end
+
+  # The lookup must not become a way around the connection's own limits: a
+  # restricted connection is refused before the key is ever read.
+  test "a restricted connection is rejected on a disallowed root even when it sends a key" do
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "zimmer", "title" => "x", "idempotency_key" => "restricted-key")
+    end
+    assert_match(/not permitted/, error.message)
+  end
+
+  test "omitting the key leaves the column null and keeps every create distinct" do
+    assert_difference "Session.count", 2 do
+      2.times { @tool.call("agent_root" => "zimmer", "prompt" => "x", "title" => "Unkeyed") }
+    end
+
+    assert_equal [ nil, nil ], Session.order(:id).last(2).map(&:idempotency_key)
+  end
+
   test "a restricted connection may omit mcp_servers and take the root's defaults" do
     tool = Mcp::Tools::StartSession.new(
       context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "zimmer")

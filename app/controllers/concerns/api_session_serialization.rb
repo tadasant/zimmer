@@ -24,6 +24,10 @@ module ApiSessionSerialization
     json = {
       id: session.id,
       slug: session.slug,
+      # The key the create attempt was named with, or null. Read-side of
+      # Sessions::IdempotentCreate: a caller that lost a create's response and is
+      # now looking at a list of sessions can tell which one its key made.
+      idempotency_key: session.idempotency_key,
       title: session.title,
       status: session.status,
       agent_runtime: session.agent_runtime,

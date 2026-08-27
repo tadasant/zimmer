@@ -2378,6 +2378,24 @@ that reports failure — so callers cannot get it wrong rather than merely not g
 
 ## API
 
+### A gateway timeout on a create still arrives as HTML, not as a JSON-RPC error
+
+A request that outruns the reverse proxy's read timeout is answered by the **proxy**, not by Zimmer,
+with its own `504 — Gateway Timeout` HTML page. An MCP client parsing that gets a parse failure
+rather than a transport error it can classify, and there is no correlation id in it to match against
+anything. Nothing in this application can change that: by the time the page is written, the app is
+not in the conversation. The timeout value and the error-page format are deployment configuration —
+the Caddy layer in front of the app — not application code.
+
+What Zimmer does instead is remove the two reasons this mattered. The create is
+[idempotent when you name the attempt](/extend/rest-api/#idempotency_key--making-the-create-safe-to-retry),
+so a caller no longer has to *classify* the error to act on it — it retries with the same
+`idempotency_key` and gets the session either way. And the create no longer does the O(lineage²)
+provenance fan-out that put it near the timeout in the first place (see [Hierarchy and human
+messages](/sessions/hierarchy-and-human-messages/)). A caller that passes no key is still exposed to
+the original ambiguity, which is why the tool description tells it to search by title rather than
+retry. Tracked in [#577](https://github.com/tadasant/zimmer/issues/577).
+
 ### Queue recovery mode is deliberately outside the health cooldown, and the web control is anonymous
 
 `QueueRecoveryMode` (see [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode)) is
