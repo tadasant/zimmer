@@ -45,6 +45,11 @@ module Sessions
   # first is the same answer a fingerprint check would produce minus an error
   # nobody could act on.
   module IdempotentCreate
+    # The unique index the whole mechanism rests on. Named here because the only
+    # discriminator Postgres offers, once ActiveRecord has wrapped the error, is
+    # the constraint name inside the message text.
+    KEY_INDEX = "index_sessions_on_idempotency_key"
+
     # One create's outcome. `reused` is the whole point: a caller that wants to
     # say "no new session was made" needs to be told, and a caller that must not
     # enqueue a second agent job needs to be told before it does.
@@ -85,8 +90,24 @@ module Sessions
       elsif session.errors.of_kind?(:idempotency_key, :taken)
         conflict(key)
       end
-    rescue ActiveRecord::RecordNotUnique
+    rescue ActiveRecord::RecordNotUnique => e
+      raise if other_index?(e)
+
       conflict(key) || raise
+    end
+
+    # True when the violation names a unique index that is NOT the idempotency
+    # key's — a duplicate `slug`, say, which must stay an error rather than
+    # becoming a silent, wrong "here is your session".
+    #
+    # A message that names no index at all falls through to the key check instead
+    # of raising. That direction is deliberate: matching on Postgres's wording is
+    # a string copy rather than a contract, and an unrecognised phrasing must not
+    # turn the retry this class exists for back into the 500 it was built to
+    # remove.
+    def other_index?(error)
+      named = error.message[/unique constraint "([^"]+)"/, 1]
+      named.present? && named != KEY_INDEX
     end
 
     # @return [Result, nil] nil when nothing holds the key, so the caller can

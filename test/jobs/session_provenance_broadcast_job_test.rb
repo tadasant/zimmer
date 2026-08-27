@@ -97,6 +97,20 @@ class SessionProvenanceBroadcastJobTest < ActiveSupport::TestCase
                     "(create #{create_queries}, fan-out #{fanout_queries})"
   end
 
+  # after_create_commit raises to the caller, and the caller is the HTTP request
+  # that just created the session. A failed enqueue must not answer a committed
+  # create with a 500 — that is the #577 shape one layer along.
+  test "a failing enqueue does not take the create down with it" do
+    parent = create_session(title: "Parent")
+    SessionProvenanceBroadcastJob.stubs(:perform_later).raises(StandardError, "queue is down")
+
+    child = nil
+    assert_nothing_raised do
+      child = create_session(title: "Child", parent_session_id: parent.id)
+    end
+    assert child.persisted?
+  end
+
   test "a session deleted before the job runs is a no-op, not a failure" do
     session = create_session
     id = session.id

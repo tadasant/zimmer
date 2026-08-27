@@ -54,7 +54,7 @@ module Mcp
       PRECEDENCE_DESC = PrecedenceDocs::START_SESSION
 
       IDEMPOTENCY_KEY_DESC = <<~TEXT.strip
-        Names THIS create attempt so it is safe to retry. Invent a string that is unique to the unit of work you are spawning (a UUID, or something like "issue-577-fix-2026-08-27") and pass it. If the call errors — including a gateway timeout, where the session may well have been created before the response was lost — call start_session again with the SAME key: Zimmer returns the session the first call made instead of creating a second one, and never queues a second agent. Without a key there is no way to tell a create that never landed from one whose response was lost, and retrying spawns a duplicate. Max #{Session::IDEMPOTENCY_KEY_MAX_LENGTH} characters. The key is not a fingerprint of the arguments: reusing one for genuinely different work returns the first session, so use a fresh key for each new unit of work.
+        Names THIS create attempt so it is safe to retry. **Generate a fresh UUID** and pass it. If the call errors — including a gateway timeout, where the session may well have been created before the response was lost — call start_session again with the SAME key: Zimmer returns the session the first call made instead of creating a second one, and never queues a second agent. Without a key there is no way to tell a create that never landed from one whose response was lost, and retrying spawns a duplicate. Max #{Session::IDEMPOTENCY_KEY_MAX_LENGTH} characters. Do NOT derive the key from the task, an issue number, or a date: keys share one global namespace, so two callers that independently derive "issue-577-fix" would collide and the second one's session would silently never be created — a duplicate is at least visible, a missing session is not. The key is not a fingerprint of the arguments either: reusing one returns the first session whatever you pass, so use a fresh UUID for each new unit of work.
       TEXT
 
       AUTO_COMPACT_WINDOW_DESC = <<~TEXT.strip
@@ -88,7 +88,7 @@ module Mcp
 
         **Retries and timeouts — pass `idempotency_key`:** this create is safe to retry only if you name the attempt. Pass an `idempotency_key` unique to the unit of work; repeating the call with the same key returns the session the first call created and queues no second agent. This matters because the call can fail *after* the session is created: a gateway timeout is returned by the proxy in front of Zimmer, so it carries no session id and cannot tell you whether the write landed — and in every observed case it had. So:
 
-        - **With an `idempotency_key`:** on any error, including a timeout, retry with the same key. You get the existing session back, or a new one if the first call really did not land. That is the guarantee; you do not need to go looking.
+        - **With an `idempotency_key`:** on any error, including a timeout, retry with the same key. You get the existing session back, or a new one if the first call really did not land. That is the guarantee; you do not need to go looking. The replayed result reports whether an agent job is queued on that session — if it says none is, the session exists but never started, and `action_session` with `restart` starts it.
         - **Without one:** do NOT retry — a retry duplicates the session, the clone, and the agent's quota slot. Call `quick_search_sessions` with the title you passed and check whether the session already exists.
 
         **Use cases:**
@@ -144,7 +144,10 @@ module Mcp
         # Answered before any of the create work — the retry this exists for is a
         # caller that already got its session and does not know it, so the cheap
         # lookup is the whole response. Placed after the restriction check so a
-        # restricted connection cannot use a guessed key as a way around it.
+        # restricted connection still has to name one of its allowed roots to get
+        # here. It is not a read-scope: the returned session may belong to any
+        # root, exactly as `get_session` in this same tool group already reads any
+        # session by id.
         idempotency_key = args["idempotency_key"].presence
         replayed = Sessions::IdempotentCreate.existing(idempotency_key)
         return format_session(replayed, reused: true) if replayed
@@ -331,9 +334,20 @@ module Mcp
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
 
         if reused
+          lines << "- **Job ID:** #{session.job_id}" if session.job_id.present?
           lines << ""
           lines << "*A session with this `idempotency_key` already existed, so no new session was created " \
                    "and no second agent job was queued. This is the session your earlier call made.*"
+          # Reported rather than assumed. The winning call queues the agent job a
+          # moment after the row commits, so a worker killed in between leaves a
+          # session that is real, has a prompt, and will never start on its own.
+          # A replay that stayed silent would hand that session back as if it were
+          # running — the same unobservable failure one layer along.
+          if session.prompt.present? && session.job_id.blank?
+            lines << ""
+            lines << "**No agent job is queued on this session.** It was created but never started — " \
+                     'use action_session with the "restart" action to start it.'
+          end
           return lines.join("\n")
         end
 

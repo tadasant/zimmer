@@ -97,6 +97,60 @@ class Sessions::IdempotentCreateTest < ActiveSupport::TestCase
     end
   end
 
+  # The failure this guards: a client that always serializes the field sends ""
+  # when it has no key. Without normalization that lands in the column, the
+  # partial index (WHERE NOT NULL) covers it, and every subsequent create from
+  # that client is refused as a duplicate — permanently.
+  test "an empty or whitespace key is no key at all" do
+    assert_difference "Session.count", 2 do
+      build(key: "").save!
+      build(key: "   ").save!
+    end
+
+    assert_equal [ nil, nil ], Session.order(:id).last(2).map(&:idempotency_key)
+    assert_nil Sessions::IdempotentCreate.existing("")
+  end
+
+  test "a save with a blank key is never treated as a replay" do
+    build(key: "").save!
+
+    result = nil
+    assert_difference "Session.count", 1 do
+      result = Sessions::IdempotentCreate.save(build(key: ""), "")
+    end
+
+    assert result.created?
+  end
+
+  # The rescue must not launder a violation on some other unique index into a
+  # cheerful "here is your session".
+  test "a RecordNotUnique naming a different index is re-raised even when the key is held" do
+    build(key: "held").save!
+
+    loser = build(key: "held")
+    loser.stubs(:save).raises(
+      ActiveRecord::RecordNotUnique,
+      'duplicate key value violates unique constraint "index_sessions_on_slug"'
+    )
+
+    assert_raises(ActiveRecord::RecordNotUnique) { Sessions::IdempotentCreate.save(loser, "held") }
+  end
+
+  test "a RecordNotUnique naming the key index is a replay" do
+    winner = build(key: "held-by-index", title: "First")
+    winner.save!
+
+    loser = build(key: "held-by-index")
+    loser.stubs(:save).raises(
+      ActiveRecord::RecordNotUnique,
+      "duplicate key value violates unique constraint \"#{Sessions::IdempotentCreate::KEY_INDEX}\""
+    )
+
+    result = Sessions::IdempotentCreate.save(loser, "held-by-index")
+    assert result.reused?
+    assert_equal winner.id, result.session.id
+  end
+
   test "any number of sessions may carry no key at all" do
     assert_difference "Session.count", 3 do
       3.times { build.save! }
