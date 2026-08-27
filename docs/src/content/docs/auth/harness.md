@@ -943,14 +943,22 @@ this session onto a new account. It is a per-session record, so it can lag: noth
 consequence is bounded and named under
 [a stale spawn identity](/limitations/#a-stale-spawn-identity-can-cost-one-extra-respawn).
 
+The spawn environment also records `auth_session_scoped_credentials` and a SHA-256 fingerprint of
+the access-token generation actually handed to a scoped child. Those are process facts, not current
+settings: a toggle can change while the child is alive, and recovery still has to interpret its
+failure in the mode it ran under. The fingerprint contains no token value; it only answers whether
+the DB generation moved since this process started.
+
 ```mermaid
 flowchart TD
     A["Not logged in"] --> L{"Pool lock free?"}
     L -- "no, held past POOL_LOCK_WAIT" --> F["rotation_in_flight:<br/>resume, charge one attempt"]
     L -- yes --> B{"current account ==<br/>the one we spawned with?"}
     B -- "no — pool already moved" --> C["adopted:<br/>re-inject, charge nothing"]
-    B -- "yes, session-scoped" --> P{"Does the DB access token<br/>serve a Messages API probe?"}
-    P -- "yes, windows clear" --> R["reseeded:<br/>keep account, charge one attempt"]
+    B -- "yes, failed or next spawn<br/>is session-scoped" --> P{"Does the DB access token<br/>serve a Messages API probe?"}
+    P -- "yes, windows clear" --> V{"Token generation changed<br/>since failed spawn?"}
+    V -- "yes (or legacy unknown)" --> R["reseeded:<br/>keep account, charge one attempt"]
+    V -- "no — same token failed again" --> D
     P -- "refused" --> T["refresh once, probe again"]
     T -- "repaired, windows clear" --> R
     P -- "quota spent" --> D
@@ -980,10 +988,13 @@ value.
 
 Recovery therefore starts with the same one-token Messages API call that supplies quota readings.
 It does not spend the single-use refresh token. A clear reading proves both that the DB-held access
-token authenticates and that the account can serve, so Zimmer keeps the account and re-spawns the
-session with that token (`:reseeded`). If Anthropic refuses the stored access token, Zimmer refreshes
+token authenticates and that the account can serve; when its fingerprint differs from the failed
+process's, Zimmer keeps the account and re-spawns the session with the newer token (`:reseeded`). A
+legacy process with no fingerprint gets one such re-seed, and the replacement records its generation
+at spawn. If that exact generation reports auth failure again, recovery rotates rather than spending
+all three attempts on the same value. If Anthropic refuses the stored access token, Zimmer refreshes
 once and probes the replacement; a repaired, clear account is likewise re-seeded. Rotation is only
-reached on live quota evidence or when the token cannot be repaired.
+reached on live quota evidence, failed repair, or a repeated failure of the same token generation.
 
 This ordering is load-bearing. A refresh replaces the account's access token, invalidating the value
 already present in every running session environment. Using refresh as the first "probe" caused an

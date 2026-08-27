@@ -147,27 +147,47 @@ module ClaudeSpawnEnv
   #
   # Relies on the including adapter exposing `@zimmer_session_id`.
   def apply_session_scoped_credentials(env_vars)
-    return env_vars unless ClaudeSessionConfigDirectory.active_for?(@zimmer_session_id)
+    unless ClaudeSessionConfigDirectory.active_for?(@zimmer_session_id)
+      record_spawn_credentials(session_scoped: false)
+      return env_vars
+    end
 
-    token = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)&.claude_access_token
+    account = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
+    token = account&.claude_access_token
     if token.blank?
       # active_for? just saw one, so this is a rotation landing between the two
       # reads. Fall back rather than hand the child a config dir with no token.
       @logger.warn "The current Claude account lost its access token between the gate and the spawn; " \
         "falling back to the shared credentials file for this spawn"
+      record_spawn_credentials(account: account, session_scoped: false)
       return env_vars
     end
 
     config_dir = ClaudeSessionConfigDirectory.ensure_for(@zimmer_session_id)
     env_vars["CLAUDE_CONFIG_DIR"] = config_dir
     env_vars["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    record_spawn_credentials(account: account, session_scoped: true)
     @logger.info "Set CLAUDE_CONFIG_DIR=#{config_dir} and CLAUDE_CODE_OAUTH_TOKEN (session-scoped credentials)"
     env_vars
   rescue => e
     @logger.warn "Failed to apply session-scoped credentials: #{e.message}"
     env_vars.delete("CLAUDE_CONFIG_DIR")
     env_vars.delete("CLAUDE_CODE_OAUTH_TOKEN")
+    record_spawn_credentials(account: account, session_scoped: false)
     env_vars
+  end
+
+  def record_spawn_credentials(account: nil, session_scoped:)
+    account ||= ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
+    AuthRecoveryCoordinator.record_spawn_credentials!(
+      session_id: @zimmer_session_id,
+      account: account,
+      session_scoped: session_scoped
+    )
+  rescue => e
+    # This is recovery observability, not a prerequisite for starting the child.
+    # Keep the existing fail-open contract even if its DB lookup is unavailable.
+    @logger.info "Could not record Claude spawn credentials: #{e.message}"
   end
 
   # When ANTHROPIC_BASE_URL is set (e.g., pointing to a mock API for testing),
