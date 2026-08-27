@@ -949,7 +949,14 @@ flowchart TD
     L -- "no, held past POOL_LOCK_WAIT" --> F["rotation_in_flight:<br/>resume, charge one attempt"]
     L -- yes --> B{"current account ==<br/>the one we spawned with?"}
     B -- "no — pool already moved" --> C["adopted:<br/>re-inject, charge nothing"]
-    B -- yes --> D["Probe the outgoing token,<br/>then rotate_for_quota!"]
+    B -- "yes, session-scoped" --> P{"Does the DB access token<br/>serve a Messages API probe?"}
+    P -- "yes, windows clear" --> R["reseeded:<br/>keep account, charge one attempt"]
+    P -- "refused" --> T["refresh once, probe again"]
+    T -- "repaired, windows clear" --> R
+    P -- "quota spent" --> D
+    T -- "still refused or quota spent" --> D["rotate_for_quota!"]
+    B -- "yes, shared-file" --> S["Refresh-classify outgoing token"]
+    S --> D
     D -- succeeded --> E["rotated:<br/>re-inject, charge one attempt"]
     D -- "no_available_accounts" --> G{"Any account<br/>serviceable on its<br/>own reading?"}
     G -- yes --> I["AUTH_UNRECOVERABLE park<br/>(a human must re-authenticate)"]
@@ -963,15 +970,34 @@ long-running session for the fleet's activity. Adoptions are separately capped a
 `MAX_FREE_ADOPTIONS` (3) per window, after which they start costing budget — a free retry that
 never converges is the same unbounded loop the attempt cap exists to stop.
 
-### Why the outgoing account is probed before rotating
+### Why the session-scoped access token is probed before rotating
 
 "Not logged in" is the runtime's word for both *your token is dead* and *you are out of quota*, and
-those two want opposite instructions in the outage banner. So the outgoing account's refresh token
-is probed (`RuntimeAuthProvider#refresh!`) before it is rotated away: a permanent OAuth failure
-marks it `needs_reauth`, which `rotate!` leaves alone rather than relabelling. Whether the account is
-then labelled `quota_exceeded` is decided by [its own reading and the rotation's
-reason](#a-rotation-is-not-evidence-about-quota), not by the fact a rotation happened. The pool's
-resulting shape is what `AuthRecoveryCoordinator#park_reason_for_pool` reads — through
+those two want opposite instructions in the outage banner. Session-scoped credentials add a third
+case: the process can hold the access token from before some other process refreshed the same DB
+account. The account is healthy, but that already-running process cannot see its replacement env
+value.
+
+Recovery therefore starts with the same one-token Messages API call that supplies quota readings.
+It does not spend the single-use refresh token. A clear reading proves both that the DB-held access
+token authenticates and that the account can serve, so Zimmer keeps the account and re-spawns the
+session with that token (`:reseeded`). If Anthropic refuses the stored access token, Zimmer refreshes
+once and probes the replacement; a repaired, clear account is likewise re-seeded. Rotation is only
+reached on live quota evidence or when the token cannot be repaired.
+
+This ordering is load-bearing. A refresh replaces the account's access token, invalidating the value
+already present in every running session environment. Using refresh as the first "probe" caused an
+auth-recovery cascade: one stale process refreshed the healthy current account, every sibling began
+reporting "Not logged in", and each sibling refreshed it again before parking because the other
+accounts were quota-capped. `/quotas` correctly showed the current account with room throughout;
+recovery made that room unreachable to the processes it had just invalidated.
+
+Shared-file mode retains refresh-before-rotation classification: the CLI can own a newer refresh
+chain on disk there, and a permanent OAuth failure marks the outgoing account `needs_reauth` rather
+than letting rotation relabel it. In either mode, whether an account is labelled `quota_exceeded` is
+decided by [its own reading and the rotation's reason](#a-rotation-is-not-evidence-about-quota), not
+by the fact a rotation happened. The pool's resulting shape is what
+`AuthRecoveryCoordinator#park_reason_for_pool` reads — through
 [`serviceable_for`](#one-predicate-for-is-the-pool-drained), so it reads the readings rather than the
 labels. The distinction is made on evidence, not on prose.
 
