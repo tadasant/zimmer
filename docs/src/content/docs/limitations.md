@@ -2588,6 +2588,17 @@ Also:
   `heartbeat_at` column shipped behave the same way.
 - Alerts inside a 1-hour dedup window are swallowed, even genuinely new ones.
   ([#86](https://github.com/tadasant/zimmer/issues/86))
+- A `<turbo-frame>` whose fetch comes back without the frame in it no longer shows Turbo's bare
+  "Content missing" — `app/javascript/lib/frame_missing_recovery.js` cancels `turbo:frame-missing`,
+  follows a redirect through as the whole-page visit it is, says what any other response actually
+  was, and retries a `429`/`500`/`502`/`503`/`504` three times over about 16 seconds. What it does
+  *not* do is recover the content: a `404` or a `403` is reported and not retried, and an outage
+  longer than the retry budget leaves the panel showing the message until you press Retry or
+  reload. The three frames this shows up in are the dashboard's `cli_badge` and
+  `notification_badge` and the session drawer's `session_detail`. Two edges are knowingly left: a
+  miss on a frame with no `src` (one reached by a link navigation) gets the message without a Retry
+  button, because there is no URL to try again; and a miss dispatched after the frame has left the
+  document is cancelled silently, because there is nothing left to paint into.
 
 ---
 
