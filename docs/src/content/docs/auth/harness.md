@@ -854,9 +854,15 @@ Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
 ## Mid-run auth loss
 
-`AuthRecoveryService` watches the transcript for an authentication failure and, on the **first**
-match, hands the decision to `AuthRecoveryCoordinator` rather than re-spawning. Bounded by
-`MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUTIVE_WINDOW` (15 minutes).
+`AuthRecoveryService` watches the transcript for an authentication failure and, when the turn
+**ends on one**, hands the decision to `AuthRecoveryCoordinator` rather than treating the exit as a
+normal pause. Only the last main-chain `user` or `assistant` entry is eligible: runtime bookkeeping
+entries are skipped, as are sidechain entries. An older auth error followed by successful assistant
+output is a completed turn and is not recovered. This is the same terminal-conversation rule used
+by [the API-error backstop](#a-turn-that-dies-on-an-api-error-can-never-look-finished), and it matters
+for status-summary forks that import an existing transcript before appending their own successful
+answer. Recovery is bounded by `MAX_RECOVERY_ATTEMPTS` attempts within `CONSECUTIVE_WINDOW`
+(15 minutes).
 
 It recognizes the failure two ways, and the order matters:
 
