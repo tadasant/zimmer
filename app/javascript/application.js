@@ -1,4 +1,9 @@
 // Configure your import map in config/importmap.rb. Read more: https://github.com/rails/importmap-rails
+//
+// Imported ahead of Turbo deliberately: this binds the `turbo:frame-missing`
+// listener that keeps Turbo's "Content missing" placeholder off the screen, and it
+// has to be listening before the first frame can finish a fetch.
+import "lib/frame_missing_recovery"
 import "@hotwired/turbo-rails"
 import "controllers"
 
