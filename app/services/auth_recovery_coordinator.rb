@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+
 # Decides what a session should do the FIRST time its runtime reports
 # "Not logged in · Please run /login", coordinating that decision with any
 # account rotation another session may already be running and with what the pool
@@ -43,9 +45,12 @@
 #                       the one the process was spawned with. Someone else's
 #                       rotation already did the work; re-inject and resume.
 #                       Costs the session nothing (see AuthRecoveryService).
-#   :rotated            Nobody else moved the pool and this session is still on
-#                       the identity that just failed. Re-injecting it would
-#                       reproduce the wall, so rotate to a different account.
+#   :reseeded           Under session-scoped credentials, the DB-held access
+#                       token is serviceable but the process reported an auth
+#                       failure. The process was holding an older token, so keep
+#                       the account and hand the next process the current one.
+#   :rotated            Nobody else moved the pool and the current account
+#                       cannot serve. Rotate to a different account.
 #   :rotation_in_flight The lock was held for longer than a rotation takes.
 #                       Another process is mid-rotation and slow; do not mutate
 #                       the pool underneath it. Resume and let the bounded retry
@@ -59,16 +64,23 @@
 #                       throttled — every account needs a human to re-authenticate
 #                       it. AUTH_UNRECOVERABLE, correctly this time.
 #
-# == Why the outgoing account is probed before rotating ==
+# == Why session-scoped recovery probes the access token first ==
 #
 # "Not logged in" is the runtime's word for both "your token is dead" and "you
-# are out of quota", so the text cannot tell those apart — and the whole point of
-# the QUOTA_EXHAUSTED / AUTH_UNRECOVERABLE distinction is that they tell the user
-# opposite things. Refreshing the outgoing account's token before rotating away
-# separates them on evidence rather than on prose: a refresh that fails
-# permanently marks the account needs_reauth (no reset will fix it), a refresh
-# that succeeds leaves it quota_exceeded (a reset will). The pool's resulting
-# shape is what #park_reason_for_pool reads.
+# are out of quota", so the text cannot tell those apart. Under session-scoped
+# credentials, it also cannot tell "this process holds the access token from
+# before another process refreshed the same account" from either one.
+#
+# A refresh is not a read-only probe there: Anthropic replaces the access token,
+# immediately stranding every running process that was handed the prior value.
+# Each spawn records a one-way fingerprint of the access-token generation it was
+# actually handed. Recovery probes the stored access token through the Messages
+# API first, and a clear reading is re-seeded only when that fingerprint moved
+# (or is absent on one legacy process). The same generation failing twice rotates
+# instead of spending the whole retry budget on an unchanged token. Only a token
+# Anthropic actually refuses is refreshed, and a successful repair is re-seeded.
+# Shared-file mode keeps the old refresh-before-rotation classification because
+# the CLI can own a newer refresh chain on disk in that mode.
 #
 # This adds NO new string matching. What reaches the coordinator is decided by
 # AuthRecoveryService.auth_error?, which reads the transcript entry's structured
@@ -84,11 +96,14 @@ class AuthRecoveryCoordinator
   # that failed" — the distinction the old code never made.
   IDENTITY_KEY = "auth_identity_email"
   IDENTITY_AT_KEY = "auth_identity_recorded_at"
+  CREDENTIAL_MODE_KEY = "auth_session_scoped_credentials"
+  CREDENTIAL_FINGERPRINT_KEY = "auth_access_token_fingerprint"
+  SESSION_SCOPED_SETTING_KEY = "session_scoped_credentials"
 
-  # What the coordinator decided. `account` is the identity now on disk for the
-  # outcomes that resolved to one; nil for the two park outcomes.
+  # What the coordinator decided. `account` is the identity selected for the
+  # next spawn for outcomes that resolved to one; nil for the two park outcomes.
   Plan = Data.define(:outcome, :account, :detail) do
-    def resolved? = %i[adopted rotated rotation_in_flight].include?(outcome)
+    def resolved? = %i[adopted reseeded rotated rotation_in_flight].include?(outcome)
     def park? = %i[quota_exhausted unusable].include?(outcome)
 
     # An adoption is somebody else's rotation doing this session a favour. It is
@@ -126,6 +141,35 @@ class AuthRecoveryCoordinator
     # Best effort: a missing marker degrades one recovery decision to "rotate",
     # which is still strictly better than the old "re-inject the same thing".
     Rails.logger.info "[AuthRecoveryCoordinator] Could not record auth identity: #{e.message}"
+  end
+
+  # Record what the child process is ACTUALLY about to receive, at the spawn-env
+  # seam where fail-open fallback has already decided between the shared file and
+  # a session-scoped access token. The global setting can change while a process
+  # is alive, so recovery must not infer the failed process's mode from its value
+  # later. The fingerprint is one-way and exists only to answer whether the DB
+  # token generation changed since this process was spawned.
+  def self.record_spawn_credentials!(session_id:, account:, session_scoped:)
+    session = Session.find_by(id: session_id)
+    return unless session
+
+    updates = {
+      CREDENTIAL_MODE_KEY => !!session_scoped,
+      CREDENTIAL_FINGERPRINT_KEY => session_scoped ? credential_fingerprint(account) : nil
+    }
+    if account.respond_to?(:email) && account.email.present?
+      updates[IDENTITY_KEY] = account.email
+      updates[IDENTITY_AT_KEY] = Time.current.iso8601
+    end
+
+    session.update!(metadata: (session.metadata || {}).merge(updates))
+  rescue => e
+    Rails.logger.info "[AuthRecoveryCoordinator] Could not record spawn credentials: #{e.message}"
+  end
+
+  def self.credential_fingerprint(account)
+    token = account&.claude_access_token
+    token.present? ? Digest::SHA256.hexdigest(token) : nil
   end
 
   # Resolve this session's dead on-disk identity against the pool.
@@ -216,9 +260,16 @@ class AuthRecoveryCoordinator
   end
 
   # This session is still holding the identity that just failed, and nobody else
-  # is moving the pool. Re-injecting would re-spawn into the same wall, so move.
+  # is moving the pool. With isolated access tokens the process may simply be
+  # holding the value from before another refresh, so prove whether the DB token
+  # can serve before deciding that the account itself must move.
   def rotate_away_from(current, working_directory)
-    classify_outgoing!(current)
+    if session_scoped_claude?
+      plan = reseed_serviceable_current(current, working_directory)
+      return plan if plan
+    else
+      classify_outgoing!(current)
+    end
 
     result = auth_provider.rotate_for_quota!(
       triggered_by: session ? "session:#{session.id}" : nil,
@@ -249,6 +300,118 @@ class AuthRecoveryCoordinator
       account: account,
       detail: "rotated from #{current.email} to #{account.email}"
     )
+  end
+
+  # A session-scoped Claude process receives one access-token VALUE at spawn.
+  # Refreshing the account later replaces that value in the DB, but cannot update
+  # the environment of an already-running process. Its next request then reports
+  # "Not logged in" even while the DB-held token and the account's quota are both
+  # healthy. The non-consuming Messages API probe distinguishes that stale child
+  # from a bad account without rotating the credential chain again.
+  #
+  # Returns a :reseeded plan when the current account can serve, otherwise nil so
+  # the ordinary rotation/park path handles live quota exhaustion or a credential
+  # that could not be repaired.
+  def reseed_serviceable_current(current, working_directory)
+    probe = probe_access_token(current)
+    repaired = false
+
+    if access_token_refused?(probe) && current.can_refresh_token?
+      @logger.info("Stored access token was refused — refreshing once before rotating",
+        account: current.email)
+      refresh = auth_provider.refresh!(current)
+      return nil unless refresh.ok?
+
+      repaired = true
+      current.reload
+      probe = probe_access_token(current)
+    end
+
+    if probe.success?
+      snapshot = QuotaSnapshotService.save_snapshot(current, probe, trigger: "auth_recovery")
+      unless snapshot.windows_clear?
+        # Preserve this definitive result before AccountRotationService performs
+        # its own best-effort outgoing probe. If that second request is
+        # unreachable, the already-saved five-hour-cap evidence must still make
+        # the account ineligible and make an exhausted pool park for quota.
+        current.mark_quota_exceeded! unless current.quota_exceeded?
+        return nil
+      end
+
+      # The display already derives this answer from the reading, but account
+      # selection reads the sticky status column. Converge it before #inject so
+      # the same account the probe just proved healthy is not skipped as stale.
+      current.update!(status: :active) if current.quota_exceeded?
+    elsif !probe.unreachable?
+      return nil
+    end
+
+    # A healthy DB token only proves the failed child was stale when its token
+    # generation differs. A legacy child has no fingerprint, so allow one reseed;
+    # the replacement records one at the actual spawn seam. If that same value
+    # fails again, rotate instead of spending the whole retry budget reusing it.
+    return nil unless repaired || spawned_token_stale?(current)
+    return nil unless current.active?
+
+    account = inject(working_directory)
+    return park_plan(injection_failed: true) unless account
+
+    if account.id != current.id
+      self.class.record_identity!(session, account)
+      @logger.warn("Credential injection selected a different identity after the probe",
+        from: current.email, to: account.email)
+      return Plan.new(
+        outcome: :rotated,
+        account: account,
+        detail: "selected #{account.email} after #{current.email} stopped being eligible during recovery"
+      )
+    end
+
+    self.class.record_identity!(session, account)
+    detail = if repaired
+      "refreshed the rejected access token and re-seeded #{account.email}"
+    elsif probe.unreachable?
+      "kept #{account.email} because the access-token probe was inconclusive and re-seeded it without rotating"
+    else
+      "proved #{account.email} still has a valid access token and quota, then re-seeded it"
+    end
+
+    @logger.info("Re-seeded the current session-scoped identity", account: account.email, repaired: repaired)
+    Plan.new(outcome: :reseeded, account: account, detail: detail)
+  rescue => e
+    # A probe failure must not bypass recovery altogether. Falling through to
+    # rotation preserves the prior bounded behaviour while the error remains
+    # visible in structured logs.
+    @logger.info("Could not probe the session-scoped access token before recovery", error: e.message)
+    nil
+  end
+
+  def probe_access_token(account)
+    QuotaCheckService.check_with_token(account.claude_access_token)
+  end
+
+  def access_token_refused?(probe)
+    !probe.success? && !probe.unreachable?
+  end
+
+  def session_scoped_claude?
+    return false unless runtime.to_s == ClaudeAuthProvider::RUNTIME
+
+    spawned_session_scoped? || AppSetting.session_scoped_credentials_enabled?
+  end
+
+  def spawned_session_scoped?
+    metadata = session&.metadata || {}
+    return metadata[CREDENTIAL_MODE_KEY] if metadata.key?(CREDENTIAL_MODE_KEY)
+
+    flag = session&.session_experimental_flags&.find_by(setting_key: SESSION_SCOPED_SETTING_KEY)
+    flag&.value_at_end == true
+  end
+
+  def spawned_token_stale?(current)
+    spawned = session&.metadata&.dig(CREDENTIAL_FINGERPRINT_KEY)
+    current_fingerprint = self.class.credential_fingerprint(current)
+    spawned.blank? || (current_fingerprint.present? && spawned != current_fingerprint)
   end
 
   # Refresh the outgoing account's token so the status it is about to be parked

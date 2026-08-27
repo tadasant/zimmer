@@ -31,9 +31,10 @@ require "automated_prompts"
 #    "re-inject the current active account" unconditionally, which re-spawned
 #    into the identical wall whenever that account was itself the problem. The
 #    coordinator instead decides, under a pool-wide lock, between adopting a
-#    rotation someone else already ran, rotating the pool itself, waiting out a
-#    rotation in flight, and giving up with the park reason the pool's shape
-#    justifies. Its class docs carry the full decision tree.
+#    rotation someone else already ran, re-seeding a stale session-scoped child,
+#    rotating the pool itself, waiting out a rotation in flight, and giving up
+#    with the park reason the pool's shape justifies. Its class docs carry the
+#    full decision tree.
 # 3. Re-spawn the session via resume and verify the new process stays running.
 #
 # Bounded by MAX_RECOVERY_ATTEMPTS attempts within CONSECUTIVE_WINDOW, so a
@@ -332,6 +333,8 @@ class AuthRecoveryService
     when :adopted
       "Not logged in — the account pool already rotated to #{plan.account.email} while this session was " \
         "running. Adopted it and #{budget}."
+    when :reseeded
+      "Not logged in — #{plan.detail}. #{budget.capitalize}."
     when :rotated
       "Not logged in — the runtime rejected the active account, so Zimmer #{plan.detail} rather than " \
         "re-injecting credentials that just failed. #{budget.capitalize}."
