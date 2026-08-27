@@ -129,7 +129,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `priority_class`, `genesis`, `show_archived`, `page`, `per_page`. Zimmer's own status-summary forks are never listed |
 | `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` filters as `/sessions`. Missing/oversized `q` → 400 (the only 400 in the API). Status-summary forks are never listed |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
-| `POST` | `/sessions` | → 201. See below. |
+| `POST` | `/sessions` | → 201, or **200 with `idempotent_replay: true`** when `idempotency_key` matches an earlier create. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `custom_metadata`. Promoting a **waiting** session to `priority` also [starts it now](/sessions/spot-and-priority/#starting-a-queued-session-now), which is what makes "moved to priority and started" true rather than aspirational — the deferred re-check it was carrying can be an hour out. Only the transition into `priority` does it, so a PATCH that touches the title cannot restart a session. When it acts, the response carries a `start` object (`outcome`: `started` / `refused`, plus a `message`); it is absent when the promotion started nothing |
 | `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}`. **422** while any message is still queued for the session, since archiving discards it; `force: true` overrides deliberately and the discarded messages are retired to `undelivered` — see [lifecycle](/sessions/lifecycle/) |
@@ -164,8 +164,8 @@ left half-queued, and the call answers 404, 409, 422, or 500.
 
 Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
 `title`, `slug`, `goal`, `execution_provider`, `is_autonomous`, `parent_session_id`,
-`auto_compact_window`, `scheduling_class`, `precedence`, `mcp_servers[]`, `catalog_skills[]`, `catalog_hooks[]`,
-`catalog_plugins[]`, `config{}`, `custom_metadata{}`.
+`auto_compact_window`, `scheduling_class`, `precedence`, `idempotency_key`, `mcp_servers[]`,
+`catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`, `config{}`, `custom_metadata{}`.
 
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
 default to false wherever they appear.
@@ -216,6 +216,32 @@ column with one legal setting rather than a choice — every agent runs on the Z
 unsandboxed. See [Agents run unsandboxed on the app host](/limitations/#agents-run-unsandboxed-on-the-app-host).
 
 The `AgentSessionJob` is enqueued only if `prompt` is present.
+
+#### `idempotency_key` — making the create safe to retry
+
+`idempotency_key` (≤255 chars) names **this create attempt**, so that repeating it is not the same as
+asking for a second session. Send a string unique to the unit of work you are spawning; repeat the
+call with the same key and you get back the session the first call made — `200` with
+`"idempotent_replay": true` beside the `session` object, instead of `201` — and no second
+`AgentSessionJob` is queued.
+
+This exists because a create can fail *after* it succeeds. The reverse proxy in front of Zimmer
+returns its own 504 page when a request outruns its timeout, and that page arrives long after the row
+has committed: the session exists, is healthy, and runs to completion, while the caller holds an error
+carrying no session id and nothing to distinguish "the create never landed" from "the create landed
+and only the response was lost". Retrying — the obvious move — spawns a second clone, a second agent
+holding a Claude quota slot, and eventually two branches and two PRs for one task.
+
+So: **with** a key, retry on any error, including a timeout. **Without** one, do not retry — search
+for the session by title first (`GET /sessions/search`) and see whether it is already there.
+
+Uniqueness is enforced by a unique index on the column, not only by a model validation, so two
+concurrent creates racing on the same key resolve to one session rather than two: the loser is handed
+the winner's session. The key is not a fingerprint of the request — a repeat returns the session that
+key created whatever arguments came with the repeat, so use a fresh key for each new unit of work.
+
+Every session object carries `idempotency_key` (null on the sessions that were created without one),
+so a caller reading a list can tell which session its key made.
 
 #### Which runtime and model you get
 

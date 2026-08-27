@@ -53,6 +53,10 @@ module Mcp
 
       PRECEDENCE_DESC = PrecedenceDocs::START_SESSION
 
+      IDEMPOTENCY_KEY_DESC = <<~TEXT.strip
+        Names THIS create attempt so it is safe to retry. Invent a string that is unique to the unit of work you are spawning (a UUID, or something like "issue-577-fix-2026-08-27") and pass it. If the call errors — including a gateway timeout, where the session may well have been created before the response was lost — call start_session again with the SAME key: Zimmer returns the session the first call made instead of creating a second one, and never queues a second agent. Without a key there is no way to tell a create that never landed from one whose response was lost, and retrying spawns a duplicate. Max #{Session::IDEMPOTENCY_KEY_MAX_LENGTH} characters. The key is not a fingerprint of the arguments: reusing one for genuinely different work returns the first session, so use a fresh key for each new unit of work.
+      TEXT
+
       AUTO_COMPACT_WINDOW_DESC = <<~TEXT.strip
         Optional per-session auto-compact (context) window override, in tokens. **You should generally rely on the default of 200,000** — omit this parameter and the API default applies. Only override in the rare situation where the spawned session is suffering from compaction thrashing because it doesn't have enough space to work — in that case, retry with `1000000` (1 million tokens). Compaction thrashing is currently the only known reason to set this preemptively.
       TEXT
@@ -81,6 +85,11 @@ module Mcp
         **Scheduling class:** Pass `scheduling_class: "spot"` for long, unattended work nobody is waiting on, so it yields to work a human is watching when the Claude Code quota gets tight. Omit it and the session takes its parent's explicit class, or its genesis's default.
 
         **Precedence:** Spot sessions start in precedence order, highest first, on an absolute scale (100000 comes before 50). Omit `precedence` in the ordinary case: a session you spawn is placed one point above the session in `parent_session_id`, which keeps a tree of work together. Set it when this work genuinely outranks — or is genuinely less urgent than — the rest of the spot queue.
+
+        **Retries and timeouts — pass `idempotency_key`:** this create is safe to retry only if you name the attempt. Pass an `idempotency_key` unique to the unit of work; repeating the call with the same key returns the session the first call created and queues no second agent. This matters because the call can fail *after* the session is created: a gateway timeout is returned by the proxy in front of Zimmer, so it carries no session id and cannot tell you whether the write landed — and in every observed case it had. So:
+
+        - **With an `idempotency_key`:** on any error, including a timeout, retry with the same key. You get the existing session back, or a new one if the first call really did not land. That is the guarantee; you do not need to go looking.
+        - **Without one:** do NOT retry — a retry duplicates the session, the clone, and the agent's quota slot. Call `quick_search_sessions` with the title you passed and check whether the session already exists.
 
         **Use cases:**
         - Start a new agent task on a repository
@@ -116,6 +125,7 @@ module Mcp
             description: SCHEDULING_CLASS_DESC
           },
           precedence: { type: "integer", description: PRECEDENCE_DESC },
+          idempotency_key: { type: "string", description: IDEMPOTENCY_KEY_DESC },
           auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC }
         },
         required: []
@@ -131,6 +141,14 @@ module Mcp
         # restricted connection may spawn.
         enforce_root_constraints!(agent_root_name, args.key?("mcp_servers") ? string_array(args["mcp_servers"]) : nil)
 
+        # Answered before any of the create work — the retry this exists for is a
+        # caller that already got its session and does not know it, so the cheap
+        # lookup is the whole response. Placed after the restriction check so a
+        # restricted connection cannot use a guessed key as a way around it.
+        idempotency_key = args["idempotency_key"].presence
+        replayed = Sessions::IdempotentCreate.existing(idempotency_key)
+        return format_session(replayed, reused: true) if replayed
+
         session = Session.new(session_attributes(args))
         # A router spawning downstream work passes parent_session_id, and that
         # session belongs to the same line of work as its parent — assign_genesis
@@ -143,7 +161,15 @@ module Mcp
         session.record_explicit_mcp_servers(session.mcp_servers) if explicit_list?(args, "mcp_servers")
         apply_agent_root_defaults!(session, agent_root_name, args: args, explicit_runtime: args["agent_runtime"].present?) if agent_root_name
         ensure_model!(session)
-        session.save!
+
+        # The lookup above answers the sequential retry; this answers the
+        # concurrent one, where the first call is still inside its INSERT when
+        # the second arrives. Either way a reused result means the agent job was
+        # already queued by the call that won, so nothing more happens here —
+        # queueing a second one is the duplicate this whole path exists to avoid.
+        result = Sessions::IdempotentCreate.save(session, idempotency_key)
+        raise ActiveRecord::RecordInvalid, session unless result
+        return format_session(result.session, reused: true) if result.reused?
 
         if session.prompt.present?
           job = AgentSessionJob.enqueue_new_session(session.id)
@@ -207,6 +233,7 @@ module Mcp
         attrs[:parent_session_id] = args["parent_session_id"] unless args["parent_session_id"].nil?
         attrs[:scheduling_class] = scheduling_class(args) if args["scheduling_class"].present?
         attrs[:precedence] = precedence(args) unless args["precedence"].nil?
+        attrs[:idempotency_key] = args["idempotency_key"] if args["idempotency_key"].present?
         attrs
       end
 
@@ -289,15 +316,26 @@ module Mcp
         session.config = (session.config || {}).merge("model" => ModelCatalog.default_for(session.agent_runtime))
       end
 
-      def format_session(session)
+      # @param reused [Boolean] true when this call created nothing and is handing
+      #   back the session an earlier call with the same idempotency_key made. Said
+      #   in the heading rather than a footnote: a caller retrying a timeout is
+      #   deciding whether it now has one session or two, and that is the answer.
+      def format_session(session, reused: false)
         lines = [
-          "## Session Started Successfully",
+          reused ? "## Existing Session Returned (idempotency_key matched)" : "## Session Started Successfully",
           "",
           "- **ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **Status:** #{session.status}"
         ]
         lines << "- **Slug:** #{session.slug}" if session.slug.present?
+
+        if reused
+          lines << ""
+          lines << "*A session with this `idempotency_key` already existed, so no new session was created " \
+                   "and no second agent job was queued. This is the session your earlier call made.*"
+          return lines.join("\n")
+        end
 
         if session.job_id.present?
           lines << "- **Job ID:** #{session.job_id}"

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_25_200000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_27_183000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -564,6 +564,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_25_200000) do
     t.boolean "heartbeat_enabled", default: false, null: false
     t.integer "heartbeat_interval_seconds", default: 60, null: false
     t.datetime "heartbeat_last_beat_at"
+    t.string "idempotency_key"
     t.boolean "is_autonomous", default: true, null: false
     t.string "job_id"
     t.datetime "last_broadcast_to_index_at"
@@ -605,6 +606,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_25_200000) do
     t.index ["heartbeat_enabled"], name: "index_sessions_on_heartbeat_enabled", where: "heartbeat_enabled"
     t.index ["id"], name: "index_sessions_on_id_where_transcript_present", where: "(transcript IS NOT NULL)"
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"
+    t.index ["idempotency_key"], name: "index_sessions_on_idempotency_key", unique: true, where: "(idempotency_key IS NOT NULL)"
     t.index ["job_id"], name: "index_sessions_on_job_id"
     t.index ["parent_session_id"], name: "index_sessions_on_parent_session_id"
     t.index ["precedence", "created_at", "id"], name: "index_sessions_on_precedence_ranked", order: { precedence: :desc }, where: "(status <> 3)"
