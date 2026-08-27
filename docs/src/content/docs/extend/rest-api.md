@@ -235,10 +235,21 @@ holding a Claude quota slot, and eventually two branches and two PRs for one tas
 So: **with** a key, retry on any error, including a timeout. **Without** one, do not retry — search
 for the session by title first (`GET /sessions/search`) and see whether it is already there.
 
+One thing a replay does not promise: that the session it hands back is *running*. The winning request
+queues the agent job a moment after the row commits, so a worker killed in between leaves a session
+that is real, carries a prompt, and never started. A replay reports the session as it is — check
+`job_id` on the returned object, and `POST /sessions/:id/restart` if it is null.
+
 Uniqueness is enforced by a unique index on the column, not only by a model validation, so two
 concurrent creates racing on the same key resolve to one session rather than two: the loser is handed
 the winner's session. The key is not a fingerprint of the request — a repeat returns the session that
 key created whatever arguments came with the repeat, so use a fresh key for each new unit of work.
+
+**Use a fresh UUID, and do not derive the key from the task.** Keys share one global namespace, so
+two callers that independently build `issue-577-fix` from the same issue collide, and the second
+one's session is silently never created — which is a worse outcome than the duplicate this closes,
+because a duplicate is visible and a no-op is not. An empty string is treated as no key at all, so a
+client that always serializes the field is not quietly locked to one session.
 
 Every session object carries `idempotency_key` (null on the sessions that were created without one),
 so a caller reading a list can tell which session its key made.

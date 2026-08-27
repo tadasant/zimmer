@@ -419,9 +419,12 @@ class Session < ApplicationRecord
   GOAL_MAX_LENGTH = 50_000
 
   # Cap on the client-supplied idempotency key. A key is a token the caller
-  # invents to name one create attempt — a UUID, or "issue-577-fix" — so it wants
-  # to be long enough for a readable, collision-proof label and nowhere near long
-  # enough to be a payload. Bounded because it lands in a btree index, and an
+  # invents to name one create attempt, and it should be a fresh UUID rather than
+  # anything derived from the task: the column is a single global namespace, so
+  # two callers that independently derive "issue-577-fix" from the same issue
+  # would collide, and the second one's session would silently never be created.
+  # A duplicate is visible; a no-op is not. Bounded because it lands in a btree
+  # index, and an
   # unbounded string there is both a slow index and a way to push other rows out
   # of a page for free.
   IDEMPOTENCY_KEY_MAX_LENGTH = 255
@@ -501,6 +504,16 @@ class Session < ApplicationRecord
   validates :git_root, presence: true
   validates :branch, presence: true
   validates :slug, uniqueness: true, format: { with: /\A[a-z0-9-]+\z/, message: "only allows lowercase letters, numbers, and hyphens" }, allow_nil: true
+  # An absent key must reach the column as NULL, never as "". The partial unique
+  # index is `WHERE idempotency_key IS NOT NULL`, and `allow_nil` does not cover
+  # an empty string — so a client that always serializes the field ("" when it has
+  # no key, which is ordinary JSON-client behavior) would take the empty key on its
+  # first create and then be refused, permanently, on every create after it. That
+  # is a worse failure than the one this column exists to fix. Normalized on the
+  # model rather than in each controller so both create surfaces, and anything
+  # written later, cannot disagree about it.
+  normalizes :idempotency_key, with: ->(value) { value.presence }
+
   # The model-side half of the idempotency key. The database index is the half
   # that actually holds under concurrency — two racing creates are two requests
   # on two Puma threads, and neither `exists?` can see the row the other is
@@ -2018,6 +2031,16 @@ class Session < ApplicationRecord
   # HumanMessage) call it on the session they changed.
   def enqueue_provenance_broadcast
     SessionProvenanceBroadcastJob.perform_later(id)
+  rescue => e
+    # Swallowed for the same reason broadcast_provenance_change_to_hierarchy
+    # swallows its own failures, and it matters more here: this runs from
+    # after_create_commit, so an exception propagates to the caller — and the
+    # caller is the HTTP request that just created the session. A failed enqueue
+    # would answer a committed create with a 500, which is precisely the
+    # "the write landed and the caller was told it failed" shape #577 is about.
+    # A panel that does not repaint is a stale open tab; nothing is lost.
+    Rails.logger.error "[Session] Enqueue provenance broadcast failed for session #{id}: #{e.message}"
+    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "provenance_change_enqueue" })
   end
   public :enqueue_provenance_broadcast
 

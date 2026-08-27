@@ -93,6 +93,31 @@ class StartSessionLostResponseTest < ActionDispatch::IntegrationTest
                  "a caller without a key needs the search-first workaround in the contract it reads")
   end
 
+  # A session created but never started — a worker killed between the commit and
+  # the enqueue — must not be handed back as though it were running. Reproduced
+  # by clearing job_id on the session the first call made.
+  test "MCP: a replay says so when the session it returns has no agent job" do
+    args = spawn_args.merge("idempotency_key" => "issue-577-never-started")
+    start_session(args)
+    Session.find_by!(idempotency_key: "issue-577-never-started").update_columns(job_id: nil)
+
+    text = text_of(start_session(args))
+
+    assert_includes text, "No agent job is queued on this session"
+    assert_includes text, "restart"
+  end
+
+  test "MCP: a replay reports the job id when there is one" do
+    args = spawn_args.merge("idempotency_key" => "issue-577-has-job")
+    start_session(args)
+    session = Session.find_by!(idempotency_key: "issue-577-has-job")
+
+    text = text_of(start_session(args))
+
+    assert_includes text, "- **Job ID:** #{session.job_id}"
+    refute_includes text, "No agent job is queued"
+  end
+
   # --- POST /api/v1/sessions ---
 
   test "REST: a retry after a lost response duplicates the session when no idempotency_key was sent" do
@@ -102,6 +127,22 @@ class StartSessionLostResponseTest < ActionDispatch::IntegrationTest
       post "/api/v1/sessions", params: rest_args.to_json, headers: @headers
       assert_response :created
     end
+  end
+
+  # The critical case: a client that always serializes the field sends "" when it
+  # has no key. If that landed in the column, every later create from that client
+  # would be refused as a duplicate.
+  test "REST: an empty idempotency_key is treated as no key, not as one shared key" do
+    body = rest_args.merge(idempotency_key: "")
+
+    assert_difference "Session.count", 2 do
+      post "/api/v1/sessions", params: body.to_json, headers: @headers
+      assert_response :created
+      post "/api/v1/sessions", params: body.to_json, headers: @headers
+      assert_response :created
+    end
+
+    assert_nil JSON.parse(response.body)["session"]["idempotency_key"]
   end
 
   test "REST: a retry with the same idempotency_key replays the first session with 200" do

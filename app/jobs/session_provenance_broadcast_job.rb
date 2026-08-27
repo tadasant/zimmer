@@ -28,11 +28,11 @@
 class SessionProvenanceBroadcastJob < ApplicationJob
   queue_as :default
 
-  # A session deleted between the enqueue and the run has no panel to repaint,
-  # and no reader waiting for one.
-  discard_on ActiveJob::DeserializationError
-
   def perform(session_id)
+    # A session deleted between the enqueue and the run has no panel to repaint,
+    # and no reader waiting for one. The argument is an id rather than the record,
+    # so this is the check that covers it — there is no GlobalID to fail to
+    # deserialize.
     session = Session.find_by(id: session_id)
     return unless session
 
