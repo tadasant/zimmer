@@ -24,9 +24,9 @@ require "automated_prompts"
 #
 # == How recovery works ==
 #
-# 1. Detect an authentication failure as the most recent API-error entry in the
-#    transcript (auth_error_detected?) — by the entry's structured `error` type
-#    first, and by its prose second. See AUTH_ERROR_TYPES.
+# 1. Detect an authentication failure only when it is the transcript's terminal
+#    conversational entry (auth_error_detected?) — by the entry's structured
+#    `error` type first, and by its prose second. See AUTH_ERROR_TYPES.
 # 2. Ask AuthRecoveryCoordinator what to do about it. Recovery used to mean
 #    "re-inject the current active account" unconditionally, which re-spawned
 #    into the identical wall whenever that account was itself the problem. The
@@ -125,6 +125,7 @@ class AuthRecoveryService
   # whose text matched none of the prose below, so no classifier claimed it, and
   # the turn — a human's unanswered message — was parked as if it had completed.
   AUTH_ERROR_TYPES = %w[authentication_failed oauth_error].freeze
+  CONVERSATIONAL_ENTRY_TYPES = %w[user assistant].freeze
 
   # Prose fallback, for entries the runtime records with an EMPTY error type —
   # which is how "Not logged in · Please run /login" is recorded. Each
@@ -198,19 +199,23 @@ class AuthRecoveryService
     execute_recovery(working_directory)
   end
 
-  # Check whether the MOST RECENT API-error entry in the transcript is the
+  # Check whether the transcript's TERMINAL CONVERSATIONAL entry is the
   # recoverable "Not logged in / Please run /login" signature.
   #
   # Exposed as a public method so ClaudeRetryStrategy#auth_recovery_needed? can
   # gate on it before ProcessLifecycleManager routes to this service.
   #
-  # We consider only the LAST isApiErrorMessage entry (after the line marker) so
-  # that "most recent error wins": a stale auth entry followed by a newer 5xx is
-  # NOT treated as an auth failure (ApiErrorRetryService handles the 5xx), and a
-  # newer auth entry following an older 5xx IS treated as an auth failure.
+  # This is deliberately stronger than "the most recent API error is auth". A
+  # status-summary fork imports the source session's whole transcript, including
+  # old auth failures, before appending its own prompt and successful answer. The
+  # old detector ignored that later answer, falsely recovered the completed turn,
+  # and parked it when the pool had no alternative account. Only an API error that
+  # is itself the last user/assistant entry can be what this turn died on.
+  # Runtime bookkeeping entries and sidechain entries do not count, matching
+  # ApiErrorRetryService#terminal_api_error.
   #
   # @param working_directory [String] Working directory for locating the transcript
-  # @return [Boolean] true if the latest API error is a recoverable auth error
+  # @return [Boolean] true if the terminal conversational entry is a recoverable auth error
   def auth_error_detected?(working_directory)
     return false unless working_directory
 
@@ -221,33 +226,39 @@ class AuthRecoveryService
     content = file_system.read(transcript_path)
     return false if content.blank?
 
-    last_checked_line = session.metadata&.dig("auth_error_last_checked_line") || 0
-    current_line_number = 0
-    last_api_error = nil
+    lines = content.lines
+    terminal = nil
 
-    content.lines.each do |line|
-      current_line_number += 1
-      next if current_line_number <= last_checked_line
+    lines.each_with_index.reverse_each do |line, index|
       next if line.strip.blank?
 
       begin
         entry = JSON.parse(line)
-        next unless entry["isApiErrorMessage"] == true
-
-        # Track the most recent API error (regardless of kind) so a later
-        # non-auth error correctly shadows an earlier auth one. Type and text are
-        # kept apart because the type is the durable half of the signature.
-        last_api_error = { type: entry["error"].to_s, text: extract_message_text(entry) }
       rescue JSON::ParserError
         next
       end
+
+      next unless entry.is_a?(Hash)
+      next unless CONVERSATIONAL_ENTRY_TYPES.include?(entry["type"])
+      next if entry["isSidechain"] == true
+
+      terminal = [ entry, index + 1 ]
+      break
     end
 
-    return false if last_api_error.nil?
+    return false unless terminal
 
-    if self.class.auth_error?(last_api_error[:type], last_api_error[:text])
-      @logger.info("Recoverable auth error detected in transcript (most recent API error)",
-        line_number: current_line_number, error_type: last_api_error[:type].presence)
+    entry, line_number = terminal
+    last_checked_line = session.metadata&.dig("auth_error_last_checked_line").to_i
+    return false if line_number <= last_checked_line
+    return false unless entry["isApiErrorMessage"] == true
+
+    error_type = entry["error"].to_s
+    message_text = extract_message_text(entry)
+
+    if self.class.auth_error?(error_type, message_text)
+      @logger.info("Recoverable auth error detected as terminal conversational entry",
+        line_number: line_number, error_type: error_type.presence)
       return true
     end
 
