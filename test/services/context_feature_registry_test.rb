@@ -95,19 +95,24 @@ class ContextFeatureRegistryTest < ActiveSupport::TestCase
     assert_operator claimed["goal"], :>, suffix.length / 2
   end
 
-  # With the provenance blocks gone, <unavailable-mcp-servers> is what can now
-  # follow the goal suffix. Without it in the lookahead the goal region would
-  # swallow the degraded-server block and bill it as goal text.
-  test "the goal detector stops at the degraded-server block" do
+  # With the provenance blocks gone, <unavailable-mcp-servers> and
+  # <attached-files> are what can follow the goal suffix. A lookahead missing
+  # either would let the goal region swallow that block and bill it as goal text.
+  test "the goal detector stops at every block that can follow it" do
     goal = "\n\nThe user has indicated the goal for this task is: finish the PR."
-    degraded = "\n\n<unavailable-mcp-servers>\n<info>pulse-fetch did not connect.</info>\n</unavailable-mcp-servers>"
-    claimed = ContextFeatureRegistry.classify(block(text: "Task.#{goal}#{degraded}"))
 
-    assert_operator claimed["goal"].to_i, :>, 0
-    # The goal stops at the block boundary; the degraded-server bytes fall to
-    # the prompt's own line rather than being billed as goal text.
-    assert_operator claimed["goal"].to_i, :<=, goal.length
-    assert_operator claimed["prompt"].to_i, :>=, degraded.length
+    {
+      "the degraded-server block" => "\n\n<unavailable-mcp-servers>\n<info>pulse-fetch did not connect.</info>\n</unavailable-mcp-servers>",
+      "the attached-files block" => "\n\n<attached-files>\nThe user has attached the following file(s) to this message:\n- /tmp/a.png\n</attached-files>"
+    }.each do |what, trailer|
+      claimed = ContextFeatureRegistry.classify(block(text: "Task.#{goal}#{trailer}"))
+
+      assert_operator claimed["goal"].to_i, :>, 0, "the goal itself should still be claimed alongside #{what}"
+      # The goal stops at the block boundary; the trailing block's bytes fall to
+      # the prompt's own line rather than being billed as goal text.
+      assert_operator claimed["goal"].to_i, :<=, goal.length, "the goal region swallowed #{what}"
+      assert_operator claimed["prompt"].to_i, :>=, trailer.length, "#{what} was not left for another line"
+    end
   end
 
   test "every registered feature has a label and a blurb the page can render" do
