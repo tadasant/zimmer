@@ -175,15 +175,4 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to settings_path
     assert_equal({}, AppSetting.current.extension_states)
   end
-
-  test "the provenance-on-demand toggle is written back from the experimental form" do
-    patch app_settings_path, params: { app_setting: { provenance_via_mcp_enabled: "0" } }
-
-    assert_redirected_to settings_path
-    refute AppSetting.current.provenance_via_mcp_enabled?
-
-    patch app_settings_path, params: { app_setting: { provenance_via_mcp_enabled: "1" } }
-
-    assert AppSetting.current.provenance_via_mcp_enabled?
-  end
 end

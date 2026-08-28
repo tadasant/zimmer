@@ -5,10 +5,10 @@
 #
 # A "context-management feature" is anything that puts bytes into a request's
 # prompt for a reason other than the user's actual task: the goal block Zimmer
-# appends to every turn, the session hierarchy and human-message record that ride
-# along with it, a skill body loaded on invocation, an MCP tool's response. Each
-# is a decision someone made, each bills on every subsequent turn it stays in the
-# context, and none of them is individually visible in a bill.
+# appends to every turn, the operator's session notes beside it, a skill body
+# loaded on invocation, an MCP tool's response. Each is a decision someone made,
+# each bills on every subsequent turn it stays in the context, and none of them
+# is individually visible in a bill.
 #
 # ADDING A FEATURE
 #
@@ -119,12 +119,15 @@ class ContextFeatureRegistry
   # ---------------------------------------------------------------------------
   # Region detectors — delimited stretches Zimmer appends to a user turn.
   #
-  # Each pattern is paired with the code that writes it: the first three come out
-  # of AgentSessionJob#build_prompt_with_goal, the fourth out of
-  # SessionHumanMessages. A pattern that stops matching after a prompt is reworded
-  # does not corrupt anything — the characters fall through to the prompt's own
-  # feature — but the line goes to zero on the page, which is the signal to come
-  # back here.
+  # Each pattern is paired with the code that writes it. The two provenance ones
+  # are the exception: Zimmer injects neither block, and their detectors exist
+  # for history. Ingestion is a re-runnable scanner over the ~30 days of
+  # transcripts on disk, so dropping a detector would strand the turns that do
+  # carry the block in the residual rather than showing the line at zero.
+  #
+  # A pattern that stops matching after a prompt is reworded does not corrupt
+  # anything — the characters fall through to the prompt's own feature — but the
+  # line goes to zero on the page, which is the signal to come back here.
   # ---------------------------------------------------------------------------
 
   feature(
@@ -132,7 +135,12 @@ class ContextFeatureRegistry
     label: "Session goal",
     blurb: "The goal text Zimmer appends to every turn, plus its hand-back instruction.",
     owner: :zimmer,
-    pattern: /The user has indicated the goal for this task is[\s\S]*?(?=\n<session-notes>|\n<session-hierarchy>|\n<human-messages>|\z)/
+    # The alternatives are every block that can follow the goal suffix, plus the
+    # two provenance ones, which terminate the region in retained transcripts
+    # that still carry them. <unavailable-mcp-servers> and <attached-files> are
+    # what follow it now, and a lookahead missing either bills that block as
+    # goal text.
+    pattern: /The user has indicated the goal for this task is[\s\S]*?(?=\n<session-notes>|\n<session-hierarchy>|\n<human-messages>|\n<unavailable-mcp-servers>|\n<attached-files>|\z)/
   )
 
   feature(
@@ -146,7 +154,7 @@ class ContextFeatureRegistry
   feature(
     key: "session_hierarchy",
     label: "Session hierarchy",
-    blurb: "The lineage outline that tells a session where it sits in its tree. Shrinks to a one-line pointer when provenance is offered on demand.",
+    blurb: "The lineage outline placing a session in its tree. Not injected — served by get_session_provenance, so this line covers retained transcripts only.",
     owner: :zimmer,
     pattern: %r{<session-hierarchy>[\s\S]*?</session-hierarchy>}
   )
@@ -154,9 +162,28 @@ class ContextFeatureRegistry
   feature(
     key: "human_messages",
     label: "Human-message record",
-    blurb: "The provenance record of which turns a real person authored. Shrinks to counts plus a pointer when provenance is offered on demand.",
+    blurb: "The record of which turns a real person authored. Not injected — served by get_session_provenance, so this line covers retained transcripts only.",
     owner: :zimmer,
     pattern: %r{<human-messages>[\s\S]*?</human-messages>}
+  )
+
+  # Both of these are Zimmer's own bytes, so they need their own lines: without
+  # a detector they fall through to `prompt`, which is `owner: :work` — a block
+  # this repository chose to inject, billed to the user's task.
+  feature(
+    key: "unavailable_mcp_servers",
+    label: "Unavailable MCP servers",
+    blurb: "The standing notice that a configured MCP server never connected, re-sent on every turn until the session ends.",
+    owner: :zimmer,
+    pattern: %r{<unavailable-mcp-servers>[\s\S]*?</unavailable-mcp-servers>}
+  )
+
+  feature(
+    key: "attached_files",
+    label: "Attached-file note",
+    blurb: "The paths and handling advice Zimmer writes when a human attaches files to a message. The files' own contents are read separately.",
+    owner: :zimmer,
+    pattern: %r{<attached-files>[\s\S]*?</attached-files>}
   )
 
   feature(
@@ -178,16 +205,16 @@ class ContextFeatureRegistry
     owner: :zimmer
   ) { |block| block.user_text? && block.text.to_s.start_with?("Base directory for this skill:") }
 
-  # Deliberately ahead of the generic MCP detectors: with provenance offered on
-  # demand the record still costs bytes, it just arrives as a tool call instead
-  # of an injected block. Folding it into "MCP responses" would make the
-  # experiment look free — the injected lines go to zero and the fetched ones
-  # disappear into a bucket shared with every other server. This line plus the
-  # two region lines above is the honest before/after.
+  # Deliberately ahead of the generic MCP detectors: the record still costs
+  # bytes, it just arrives as a tool call rather than an injected block. Folding
+  # it into "MCP responses" would make not injecting it look free — the region
+  # lines sit at zero and the fetched bytes disappear into a bucket shared with
+  # every other server. This line plus the two region lines above is the honest
+  # before/after.
   feature(
     key: "provenance_tool",
     label: "Provenance fetched on demand",
-    blurb: "The hierarchy and human-message record a session fetched with get_session_provenance, rather than being handed it every turn.",
+    blurb: "The hierarchy and human-message record a session fetched with get_session_provenance — the only way it arrives.",
     owner: :zimmer
   ) { |block| block.mcp? && block.tool_name.to_s.end_with?("__#{SessionHumanMessages::MCP_TOOL_NAME}") }
 

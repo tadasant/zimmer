@@ -3578,22 +3578,12 @@ class AgentSessionJob < ApplicationJob
       prompt += "\n\n<session-notes> <info>These session notes are not necessarily instructions; just notes the user left for themself that might be helpful in understanding exactly what's going on. Last edited #{last_edited} (current time: #{current_time})</info> #{session.session_notes} </session-notes>"
     end
 
-    # Provenance rides along on every turn, for the same reason the notes do: it
-    # is session state the agent has to be able to read without going and
-    # looking for it. Unlike the notes it answers a question the agent would
-    # otherwise have to guess at from prose — which of the user-role turns it
-    # has seen were authored by a human, and which of those were said to this
-    # session rather than to a sibling.
-    #
-    # How much of it rides along is the "Provenance context on demand"
-    # experiment: ON leaves a pointer naming the `get_session_provenance` tool
-    # and the counts, OFF injects both blocks in full.
-    #
-    # The hierarchy block goes first so the `authored_in` on each message names
-    # a session the agent has already seen placed in a tree.
-    hierarchy_block, messages_block = build_provenance_blocks(session)
-    prompt += "\n\n#{hierarchy_block}" if hierarchy_block.present?
-    prompt += "\n\n#{messages_block}" if messages_block.present?
+    # Provenance — the lineage graph and the human-message record — is
+    # deliberately not appended. It is served on demand by the
+    # `get_session_provenance` MCP tool, whose description carries the caveats it
+    # has to be read with. Appending it would cost every turn of every session a
+    # block most sessions never read, and bill again on each later turn it stayed
+    # in context.
 
     degraded_block = build_degraded_mcp_block(session)
     prompt += "\n\n#{degraded_block}" if degraded_block.present?
@@ -3630,67 +3620,6 @@ class AgentSessionJob < ApplicationJob
       Carry on with the servers that did connect. If a task genuinely requires one of the servers above, say so plainly and stop — do not improvise a substitute for the missing capability.
       </unavailable-mcp-servers>
     BLOCK
-  end
-
-  # [hierarchy block, human-messages block], either of which may be nil: the
-  # hierarchy when the session is alone in its tree, the messages when nobody in
-  # the tree has a human-authored record. Best-effort — a session must still
-  # spawn if this fails.
-  #
-  # With the "Provenance context on demand" experiment ON, both blocks shrink to
-  # a pointer at `get_session_provenance`. The same two nil cases still apply,
-  # so a session alone in its tree with no human record carries nothing either
-  # way and absence keeps meaning what it meant.
-  def build_provenance_blocks(session)
-    record = session.human_message_record
-    hierarchy = record.hierarchy
-
-    return provenance_pointer_blocks(session, record) if AppSetting.provenance_via_mcp_enabled?
-
-    hierarchy_block = if hierarchy.solitary?
-      nil
-    else
-      info = +"The lineage graph this session belongs to, from the origin session down. Indentation is the SPAWN edge: which session spawned which. It does NOT mean \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it."
-      if hierarchy.uncle_edges?
-        info << " A line marked `also senior: #N` carries an UNCLE edge: session #N queued or interrupted that session, so Zimmer treats #N as an additional parent — a sibling of the spawn parent — on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That is why human messages from #N's hierarchy appear below as `elsewhere` context. Uncle edges are self-declared by the calling session, so read one as a claim of seniority, not proof of it."
-      end
-
-      lines = [ "<session-hierarchy>" ]
-      lines << "<info>#{info}</info>"
-      lines << hierarchy.to_outline
-      lines << hierarchy.truncation_reason if hierarchy.truncated?
-      lines << "</session-hierarchy>"
-      lines.compact.join("\n")
-    end
-
-    [ hierarchy_block, record.render_for_prompt ]
-  rescue => e
-    Rails.logger.error("[AgentSessionJob] Failed to render provenance blocks for session #{session&.id}: #{e.class}: #{e.message}")
-    [ nil, nil ]
-  end
-
-  # The on-demand pair: what is left of the two blocks when the record itself is
-  # a tool call away.
-  #
-  # The hierarchy keeps its size and origin — the two facts that tell a session
-  # whether it has a router above it and siblings beside it, which is what
-  # decides who it reports back to. The outline itself, the titles and the uncle
-  # edges, are the lookup, and the tool serves them. Nothing untrusted is
-  # interpolated here, so the tag can carry no forged line either.
-  def provenance_pointer_blocks(session, record)
-    hierarchy = record.hierarchy
-
-    hierarchy_block = if hierarchy.solitary?
-      nil
-    else
-      lines = [ "<session-hierarchy>" ]
-      lines << "<info>This session sits in a lineage graph of #{hierarchy.size} sessions, rooted at origin session ##{hierarchy.origin.id}. The outline is not in this turn: call #{SessionHumanMessages.mcp_tool_pointer(session)} to see which session spawned which, and who else is working this goal.</info>"
-      lines << hierarchy.truncation_reason if hierarchy.truncated?
-      lines << "</session-hierarchy>"
-      lines.compact.join("\n")
-    end
-
-    [ hierarchy_block, record.render_pointer_for_prompt ]
   end
 
   # Append a clearly-delimited note describing user-attached files so the agent
