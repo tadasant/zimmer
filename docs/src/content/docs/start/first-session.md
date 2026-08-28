@@ -64,7 +64,7 @@ you're doing."
 The `needs_input` list is your to-do list, and it only works if it stays short. That's the design
 intent: agents are instructed to archive themselves when they run to completion, so a session still
 sitting there is one that stopped because it genuinely needs *you* — it lacked the scope or tools to
-finish, it is holding a PR whose merge disposition is unsettled, you invoked it yourself to explore
+finish, it is holding a PR the merge gate has held for you, you invoked it yourself to explore
 or ask something, or it hit an ambiguity too dangerous and irreversible to guess at. Those four
 cases are spelled out in [Goals and stop conditions](/sessions/goals/).
 
