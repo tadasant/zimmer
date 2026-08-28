@@ -326,6 +326,53 @@ Every uncertain condition **allows** the session, and the reason is named so the
 
 A monitoring gap must not become an outage of all automated work.
 
+### Three ceilings, two reason strings
+
+`at_utilization_limit` covers **two** ceilings that behave differently, and the difference matters:
+only one of them stops work that is already running.
+
+| `Decision#ceiling` | What it means | Does it pause running spot sessions? | What lifts it |
+| --- | --- | --- | --- |
+| `fleet_cap` | Every session slot is taken. No window is involved. | No | A running session finishes |
+| `spot_budget` | A window's non-reserved budget is spent. | **Yes** | The window rolls over |
+| `pacing_curve` | The budget has room, but the fleet is spending it faster than the window can carry. | No | The fleet's burn falls |
+
+The two window ceilings share one reason string because `at_utilization_limit` is **persisted** on
+sessions — it is written into `spot_pause_reason` and read back by the banner on every session
+carrying it, so splitting the string would make those banners unreadable. `Decision#ceiling` derives
+the distinction instead, and `/quotas` and `get_spot_policy` both report it.
+
+`SpotHoldExplanation` turns it into the two sentences those surfaces render: *why it's held*, and
+*held until*.
+
+### "Held until" is a condition, not a clock
+
+Only `spot_budget` has a time in it. The other two are conditions, and Zimmer states them as
+conditions rather than reaching for the nearest plausible number.
+
+The pacing curve is the case worth spelling out. The sustainable rate is *the budget left divided by
+the time left*, so while the fleet burns faster than that rate the numerator falls faster than the
+denominator and **the rate keeps dropping**. Waiting widens the gap. What lifts a pacing hold is the
+fleet's burn falling, which means running sessions ending — and nothing in the model predicts when
+that happens.
+
+So the surfaces say: *"When the fleet's burn falls to or below $X/min"*, where `$X` is the sustainable
+rate less what the next session is itself projected to spend — the gate tests the sum of the two, and
+`Window#within_pace?` is `<=`. The budget and a free slot still have to hold, and the sentence says
+so. The window's rollover is offered after it, labelled as an **upper bound on the wait rather than a
+forecast of it** — the rollover refills the budget, so the hold cannot outlast it.
+
+When one session on its own is priced above the whole sustainable rate, there is no fleet burn low
+enough to admit it and the copy says so: nothing fits beside the work already in flight, and with
+nothing running at all the [idle-fleet waiver](#there-is-always-room-for-one-session) admits one
+session so the deployment runs in a duty cycle.
+
+A hold can involve both window ceilings at once — one window's budget spent while the other is only
+ahead of its curve. `Decision#ceiling` reports `spot_budget` then, because that is the stricter of
+the two, and `Decision#budget_spent_windows` is what the copy names: saying "the 5-hour and weekly
+windows' budget is spent" would be false of the second, and bounding the wait on the weekly rollover
+would over-claim a window that clears as soon as the fleet slows.
+
 ### What "hold" does
 
 A held session stays in `waiting` — the status Zimmer already uses for "created, not started" — and
@@ -466,9 +513,13 @@ sessions:
 
 | The gate says | What happens to running spot sessions |
 | --- | --- |
-| `at_utilization_limit` | Every running spot session is **paused**. |
+| `at_utilization_limit`, ceiling `spot_budget` | Every running spot session is **paused**. |
+| `at_utilization_limit`, ceiling `pacing_curve` | Nothing. The pace is an admission device: killing a running turn to enforce a curve spends a lost tool call protecting nothing, since the same money is spent either way, just later. It is also what keeps the idle-fleet waiver coherent — otherwise the sweep would pause the session the waiver had just admitted, and the two would flap. |
 | `fleet_at_cap` | Nothing. A running session already holds its slot; pausing it would free that slot only for another spot session the same cap would hold. |
 | anything else | Sessions dormant in the queue are **resumed**, highest precedence first (oldest pause first within a tie). |
+
+`SpotSessionPause` reads `Decision#stops_running_work?`, not `held?`, which is what draws that
+first line. A fleet merely ahead of the curve is throttled at the door and never interrupted.
 
 Priority sessions are never paused, on any reading. Nor are Codex sessions (they spend nothing
 against a Claude window) or status-summary forks (Zimmer's own seconds-long bookkeeping).
@@ -535,7 +586,7 @@ nothing interrupted this session:
 
 - `spot_pause_reason` is `user_spot_queue`, so the banner, `get_session` and the session log all say
   a human parked it rather than describing a turn it never lost. It is also left out of the
-  "paused mid-run" count on `/quotas`, which is about what the ceiling cost.
+  "spot sessions asleep in the queue" count on `/quotas`, which is about what the ceiling cost.
 - A session that resolves to **priority** is set to `spot`, since the sweep resumes a non-spot
   sleeper on its very next pass. **Make this session priority** on the banner reverses it, and that
   next sweep resumes the session — which is the intended way back out.
@@ -777,7 +828,8 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read each window's estimated capacity, dollars remaining, dollars reserved, and spot budget left | Account Pool section and spot gate card on `/quotas` | `get_spot_policy` |
 | Read the fleet's burn rate and the sustainable rate the curve allows | Spot gate card on `/quotas` | `get_spot_policy` |
 | Read the $/min of each harness + model combination | Burn rate table on `/costs` | `get_costs` |
-| Read how many running spot sessions the ceiling has paused | Spot gate card on `/quotas` | `get_spot_policy` |
+| Read which of the three ceilings is holding spot work, and what lifts it | Spot gate card on `/quotas` | `get_spot_policy` |
+| Read how many spot sessions are asleep in the spot queue | Spot gate card on `/quotas` | `get_spot_policy` |
 | Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
 | Toggle gating, set the two priority reserves, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
 | One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |

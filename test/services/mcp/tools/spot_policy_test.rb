@@ -86,15 +86,50 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_match(/Spot sessions:\*\* HELD/, output)
     assert_match(/Reason:\*\* `at_utilization_limit`/, output)
     assert_match(/Has room for a spot session:\*\* no — spot budget spent/, output)
+    # `at_utilization_limit` covers two ceilings. An agent reading this tool has
+    # to be able to tell which, because only one of them pauses running work.
+    assert_match(/Ceiling holding spot work:\*\* `spot_budget`/, output)
+    assert_match(/Why it's held:\*\* The 5-hour window's spot budget is spent/, output)
+    assert_match(/Held until:\*\* No sooner than the 5-hour window's rollover/, output)
+  end
+
+  # The other half of the same reason string: ahead of the curve, budget intact.
+  # The tool must not describe this as a spent budget, and must not offer a
+  # rollover as if it were an ETA.
+  test "get_spot_policy tells a pacing hold apart from a spent budget" do
+    ClaudeAccountQuotaSnapshot.delete_all
+    HarnessModelBurnRate.delete_all
+    account = ClaudeAccount.create!(email: "mcp-pacing@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: 0.30, utilization_7d: 0.05,
+      reset_5h: 100.minutes.from_now, reset_7d: 2.days.from_now, active_session_count: 1,
+      trigger: "usage_sample")
+    QuotaCapacityEstimate.create!(window_key: QuotaCapacityEstimate::FIVE_HOUR, capacity_usd: 1000.0,
+      sample_cost_usd: 500.0, sample_utilization: 0.5, observation_count: 5, computed_at: Time.current)
+    HarnessModelBurnRate.create!(harness: "zimmer", model: "claude-opus-5", usd_per_minute: 4.0,
+      sample_cost_usd: 400.0, sample_minutes: 100.0, sample_session_count: 25, computed_at: Time.current)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "running", status: :running,
+                    genesis: SessionGenesis::WEB_UI, agent_runtime: "claude_code")
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_max_concurrent_sessions: 10,
+                                spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
+
+    output = get_policy
+    assert_match(/Reason:\*\* `at_utilization_limit`/, output)
+    assert_match(/Ceiling holding spot work:\*\* `pacing_curve`/, output)
+    assert_match(/Why it's held:\*\* The 5-hour window's spot budget still has \$500 left/, output)
+    assert_match(/already running are not paused for this/, output)
+    assert_match(/Held until:\*\* When the fleet's burn falls to or below/, output)
+    assert_match(/upper bound on the wait, not a forecast/, output)
   end
 
   # Parity with /quotas, which renders the same count: the decision above answers
   # "would a session STARTING now be held", and this answers "did anything that
   # was already running get stopped" — an agent whose own turn was cut short has
   # to be able to read that second answer.
-  test "get_spot_policy reports how many running spot sessions the ceiling paused" do
+  test "get_spot_policy reports how many spot sessions are asleep in the queue" do
     output = get_policy
-    assert_match(/Spot sessions paused mid-run:\*\* 0/, output)
+    assert_match(/Spot sessions asleep in the spot queue:\*\* 0/, output)
+    assert_match(/asleep in the spot queue:\*\* 0\. The ceiling has stopped nothing/, output)
 
     Session.create!(
       git_root: "https://github.com/t/r.git", prompt: "work", status: :waiting,
@@ -106,7 +141,13 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
       }
     )
 
-    assert_match(/Spot sessions paused mid-run:\*\* 1/, get_policy)
+    output = get_policy
+    assert_match(/Spot sessions asleep in the spot queue:\*\* 1/, output)
+    # The count is of DORMANT sessions, and the sentence has to say so — reading
+    # it as running sessions is what made the figure look like a contradiction
+    # beside the concurrency limit.
+    assert_match(/It was paused mid-run when a window's spot budget ran out/, output)
+    assert_match(/asleep rather than running/, output)
   end
 
   # Parity with /quotas: an agent asking why it is held has to see the same

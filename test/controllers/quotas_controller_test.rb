@@ -383,6 +383,81 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       genesis_class_path(genesis: kind.key, priority_class: SessionGenesis::SPOT)
   end
 
+  # The regression this whole change exists for. With the fleet ahead of the
+  # pacing curve the page used to print "running spot sessions are being paused
+  # too", which is false: only a spent budget ever pauses a running turn.
+  test "show explains a pacing hold without claiming running sessions are being paused" do
+    hold_spot_work(utilization_5h: 0.30, burn: 4.0, running: 1)
+    paused_spot_session
+
+    get quotas_url
+
+    assert_response :success
+    assert_select "#spot-gate-hold-explainer" do
+      assert_select "dt", text: "Why it's held:"
+      assert_select "dt", text: "Held until:"
+    end
+    body = response.body
+    assert_match(/spot budget still has \$500 left/, body)
+    assert_match(/already running are not paused for this/, body)
+    assert_match(/When the fleet&#39;s burn falls to or below/, body)
+    refute_match(/running spot sessions are being paused too/, body)
+
+    assert_select "#spot-paused-count", "1"
+    assert_match(/Spot sessions asleep in the queue/, body)
+    assert_match(/It was paused mid-run when a window&#39;s spot budget ran out/, body)
+    assert_match(/The ceiling is not pausing anything right now/, body)
+    # The old label read as a count of running sessions, which is what made "17"
+    # look like it contradicted "Sessions running 4 of 5".
+    refute_match(/Running spot sessions paused for the ceiling/, body)
+  end
+
+  test "show says the ceiling IS pausing running work when the budget is spent" do
+    hold_spot_work(utilization_5h: 0.85, burn: 2.0, running: 0)
+
+    get quotas_url
+
+    assert_response :success
+    assert_match(/spot budget is spent/, response.body)
+    assert_match(/No sooner than the 5-hour window&#39;s rollover/, response.body)
+  end
+
+  # Puts the pool in a state where SpotGateService holds spot work, with a
+  # calibrated window so the decision is taken in dollars — the production path.
+  def hold_spot_work(utilization_5h:, burn:, running:)
+    ClaudeAccountQuotaSnapshot.delete_all
+    HarnessModelBurnRate.delete_all
+    Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
+    ClaudeAccount.for_runtime("claude_code").update_all(is_current: false)
+    account = ClaudeAccount.create!(email: "gate-copy@example.com", runtime: "claude_code",
+                                    oauth_config: { "x" => 1 }, is_current: true)
+    ClaudeAccountQuotaSnapshot.create!(claude_account: account,
+      utilization_5h: utilization_5h, utilization_7d: 0.05,
+      reset_5h: 100.minutes.from_now, reset_7d: 2.days.from_now,
+      active_session_count: 1, trigger: "usage_sample")
+    QuotaCapacityEstimate.create!(window_key: QuotaCapacityEstimate::FIVE_HOUR, capacity_usd: 1000.0,
+      sample_cost_usd: 500.0, sample_utilization: 0.5, observation_count: 5, computed_at: Time.current)
+    HarnessModelBurnRate.create!(harness: "zimmer", model: "claude-opus-5", usd_per_minute: burn,
+      sample_cost_usd: burn * 100, sample_minutes: 100.0, sample_session_count: 25,
+      computed_at: Time.current)
+    running.times do |i|
+      Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{i}",
+                      genesis: SessionGenesis::WEB_UI, status: :running, agent_runtime: "claude_code")
+    end
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_max_concurrent_sessions: 10,
+                                spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
+  end
+
+  def paused_spot_session
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "paused", status: :waiting,
+                    genesis: SessionGenesis::GITHUB_ISSUE,
+                    metadata: {
+                      SpotSessionPause::PAUSED_AT => 1.hour.ago.utc.iso8601,
+                      SpotSessionPause::PAUSED_REASON => SpotGateService::UTILIZATION_REASON,
+                      SpotSessionPause::PAUSED_DETAIL => "Holding spot sessions."
+                    })
+  end
+
   # The gate reads the Claude Code quota windows, so it has nothing to say on
   # the Codex tab — the same reason the aggregate stats are Claude-only.
   test "show omits the spot gate on the Codex tab" do

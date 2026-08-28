@@ -259,9 +259,21 @@ class SpotSessionPause
       [ resumable, sessions.size - resumable.size ]
     end
 
-    # How many sessions are paused for the ceiling right now — the number
-    # /quotas and `get_spot_policy` report, so both surfaces can say that
-    # holding spot sessions stopped running ones too.
+    # The standing population of sessions the ceiling has stopped and not yet put
+    # back — the number /quotas and `get_spot_policy` report.
+    #
+    # Three things it is NOT, each of which it has been misread as:
+    #
+    # - Not a count of RUNNING sessions. Every one of these is dormant in
+    #   `waiting`. It is therefore unrelated to `spot_max_concurrent_sessions`
+    #   and routinely larger than it — a backlog of 17 beside a fleet cap of 5 is
+    #   the normal shape, not a contradiction.
+    # - Not a cumulative tally. It is a live `COUNT` over the queue, so it falls
+    #   as the sweep resumes sessions.
+    # - Not "paused in this instant". These were paused at some point when a
+    #   window's spot budget was spent; a fleet merely ahead of the pacing curve
+    #   pauses nothing, so the backlog can sit here while nothing is being
+    #   stopped. SpotHoldExplanation is what tells the two apart on the page.
     #
     # Deliberately NOT every dormant session in the queue: a session a human
     # parked there had its turn taken away by that human, not by the ceiling, and
