@@ -137,9 +137,10 @@ class ContextFeatureRegistry
     owner: :zimmer,
     # The alternatives are every block that can follow the goal suffix, plus the
     # two provenance ones, which terminate the region in retained transcripts
-    # that still carry them. Without <unavailable-mcp-servers> the goal would
-    # swallow the degraded-server block on a turn that carries one.
-    pattern: /The user has indicated the goal for this task is[\s\S]*?(?=\n<session-notes>|\n<session-hierarchy>|\n<human-messages>|\n<unavailable-mcp-servers>|\z)/
+    # that still carry them. <unavailable-mcp-servers> and <attached-files> are
+    # what follow it now, and a lookahead missing either bills that block as
+    # goal text.
+    pattern: /The user has indicated the goal for this task is[\s\S]*?(?=\n<session-notes>|\n<session-hierarchy>|\n<human-messages>|\n<unavailable-mcp-servers>|\n<attached-files>|\z)/
   )
 
   feature(
