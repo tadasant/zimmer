@@ -79,7 +79,10 @@ class AoEventSubject
     # emitted its own event with its own marker; this one is superseded.
     def stale?
       return false unless event_name == "session_needs_input"
-      return false unless Session.exists?(session.id)
+      # Gone between the emit and here. Stale in the same sense AccountSubject
+      # means it: there is no longer a subject for this event to be about, and
+      # firing would hand every watcher a label built from a deleted row.
+      return true unless Session.exists?(session.id)
 
       session.reload
 

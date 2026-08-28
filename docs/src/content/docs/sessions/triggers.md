@@ -402,14 +402,53 @@ So `session_needs_input` is now **settled**:
    `custom_metadata["needs_input_count"]` counter the debounced push notification already used.
    One `pause` bumps the counter once and hands the same marker to both consumers.
 2. When the job runs, `AoEventSubject::SessionSubject#stale?` drops the event unless the session is
-   still `Session#resting_in_needs_input?` — in `needs_input`, holding no unexecuted `pending_sleep`,
-   with nothing queued for it — and unless the marker still matches, which is what supersedes an
-   event a later transition has already replaced.
+   still `Session#resting_in_needs_input?`, and unless the marker still matches — which is what
+   supersedes an event a later transition has already replaced.
 
 `session_failed` and `session_archived` are untouched: no delay, no re-check, because a terminal
-state cannot flap. The immediate-fire path
-(`Trigger#fire_ao_event_immediately_if_state_matches`) is untouched too — it only fires when the
-watched session is *already* in the target state, which is a rest by construction.
+state cannot flap.
+
+#### `resting_in_needs_input?` asks about status, and only status
+
+That looks too weak to do the job, and it is worth saying why it is not — and why the richer
+versions are worse.
+
+Every boundary this suppresses leaves `needs_input` for somewhere else. `execute_pending_sleep`
+runs *synchronously inside the pause callback*, so a session that slept on its own wake is already
+`waiting` before the job is even enqueued; a session whose queued message drained is `running`,
+because `EnqueuedMessageDrainJob::DELAY` is well inside the window. Status catches both.
+
+The two richer disqualifiers — a lingering `pending_sleep`, a still-pending enqueued message — can
+only *still* be true when the window closes if the thing that was going to move the session has
+failed. `sleep!` raised and left the flag behind. The drain exhausted `MAX_ATTEMPTS` and left the
+rows `pending` on an idle session, or one of its three `skip_reason` refusals is holding the message
+indefinitely. Those sessions are stuck at rest, and they are exactly the ones a watcher must hear
+about — so treating them as "not a rest" would not delay the wake, it would **lose** it. `pause`
+only fires from `running`, so once a session is at rest nothing re-emits the event; there is no
+second chance.
+
+The cost of the narrow check is an occasionally early wake — a drain whose first attempt fails
+resumes the session at `DELAY + RETRY_DELAY`, just past the window. That trade is the right way
+round. A wake that arrives seconds early costs a re-poll; a wake that never arrives costs a router
+its whole backstop interval.
+
+#### What is and is not covered
+
+The **immediate-fire path** (`Trigger#fire_ao_event_immediately_if_state_matches`) is unchanged in
+code but not in behaviour: it enqueues the same job, so it now runs through the same rest check.
+Registering a watcher on a session sitting in `needs_input` still fires at once — but if that
+session gets going again before the job runs, the fire is dropped rather than delivered against a
+session that has moved on. It carries no marker and no wait, which is also how
+`DISPATCH_LATENCY_WARN_THRESHOLD` tells it apart from a settled job and declines to discount its
+latency.
+
+**Broadcast (unscoped) `session_needs_input` conditions are settled too.** They ride the same job, so
+a broadcast trigger no longer fires on a turn boundary either — and it inherits the 30-second delay.
+
+`block_on_elicitation` emits through the settled path as well. An elicitation the user answers in
+seconds flips the session back to `running` via `unblock_from_elicitation`, which is a turn-boundary
+flap by another name; one that is still waiting on a human survives the window and wakes the
+watcher, which is right, because that is a session genuinely asking for something.
 
 The settle window is a constant, not a per-trigger option. A wake on a transition the watched
 session had already left is not useful to any caller, so there is no posture to configure; the

@@ -182,6 +182,7 @@ class Mcp::Tools::WakeMeUpWhenSessionChangesStateTest < ActiveSupport::TestCase
 
     assert_match "## Wake-Up Scheduled Successfully", result
   end
+
   # === event_names: one trigger over a set of events ===
 
   test "event_names creates ONE trigger carrying one condition per event" do
@@ -330,5 +331,58 @@ class Mcp::Tools::WakeMeUpWhenSessionChangesStateTest < ActiveSupport::TestCase
 
     assert_match "Missing required parameter: session_id", error.message
     assert_match "does not name a calling session", error.message
+  end
+  test "a defaulted requester is named in the receipt so a mis-aimed wake is recoverable" do
+    requester = sessions(:needs_input)
+
+    result = tool(session_id: requester.id).call(
+      "watched_session_id" => sessions(:running).id,
+      "event_names" => %w[session_archived],
+      "prompt" => "Watched archived"
+    )
+
+    assert_match "No `session_id` was given, so this acted on the calling session (##{requester.id})", result
+  end
+
+  test "an explicit session_id produces no defaulting notice" do
+    result = tool(session_id: sessions(:needs_input).id).call(
+      "session_id" => sessions(:running).id,
+      "watched_session_id" => sessions(:active_session).id,
+      "event_names" => %w[session_failed],
+      "prompt" => "Explicit"
+    )
+
+    assert_no_match(/No `session_id` was given/, result)
+  end
+
+  test "an explicit but blank session_id is an error, not a silent fallback to the caller" do
+    error = assert_no_difference "Trigger.count" do
+      assert_raises(Mcp::ToolError) do
+        tool(session_id: sessions(:needs_input).id).call(
+          "session_id" => "",
+          "watched_session_id" => sessions(:running).id,
+          "event_names" => %w[session_archived],
+          "prompt" => "Blank"
+        )
+      end
+    end
+
+    assert_match "Missing required parameter: session_id", error.message
+    assert sessions(:needs_input).reload.needs_input?, "the caller must not have been slept by mistake"
+  end
+
+  test "a connection naming a session that no longer exists says so rather than defaulting elsewhere" do
+    error = assert_no_difference "Trigger.count" do
+      assert_raises(Mcp::ToolError) do
+        tool(session_id: 999_999_999).call(
+          "watched_session_id" => sessions(:running).id,
+          "event_names" => %w[session_archived],
+          "prompt" => "Ghost caller"
+        )
+      end
+    end
+
+    assert_match "names session 999999999 as the caller", error.message
+    assert_match "no such session exists", error.message
   end
 end

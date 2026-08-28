@@ -338,6 +338,38 @@ class RuntimeConfigPostProcessor
   # Everything else in the entry is left alone: the values are MERGED into the
   # existing `env` table, never replacing it, because that table is where a
   # server's credentials live.
+  def inject_elicitation_env!(servers)
+    values = elicitation_env
+    return if values.empty?
+
+    written = servers.filter_map do |name, entry|
+      next unless entry.is_a?(Hash)
+      # stdio only — an HTTP/SSE entry (`url`, no `command`) has no child process
+      # and therefore no environment to write.
+      next if entry["command"].blank?
+
+      env = (entry["env"] ||= {})
+      # An `env` that is not a table is a malformed entry the runtime will reject
+      # on its own terms; skip rather than making this step the thing that raises.
+      next unless env.is_a?(Hash)
+
+      values.each do |var, value|
+        env[var] = value
+        drop_forwarded_env_var!(entry, var)
+      end
+      name
+    end
+
+    return if written.empty?
+
+    # Say so in the session log. The failure this fixes was silent on both ends —
+    # the server could not reach the endpoint and nothing recorded that it had not
+    # been told where the endpoint was. CliSpawnEnv logs the same for the agent
+    # process; this is the other half.
+    Rails.logger.info "[#{self.class.name}] Wrote #{ElicitationEndpoint::VARIABLES.join(' + ')} " \
+      "into the env of #{written.size} stdio MCP server(s): #{written.join(', ')}"
+  end
+
   # Tell every Zimmer MCP entry in this config which session it belongs to.
   #
   # Injection already stamps the entries it writes, but a Zimmer server can also
@@ -378,38 +410,6 @@ class RuntimeConfigPostProcessor
     uri.to_s
   rescue URI::InvalidURIError
     url
-  end
-
-  def inject_elicitation_env!(servers)
-    values = elicitation_env
-    return if values.empty?
-
-    written = servers.filter_map do |name, entry|
-      next unless entry.is_a?(Hash)
-      # stdio only — an HTTP/SSE entry (`url`, no `command`) has no child process
-      # and therefore no environment to write.
-      next if entry["command"].blank?
-
-      env = (entry["env"] ||= {})
-      # An `env` that is not a table is a malformed entry the runtime will reject
-      # on its own terms; skip rather than making this step the thing that raises.
-      next unless env.is_a?(Hash)
-
-      values.each do |var, value|
-        env[var] = value
-        drop_forwarded_env_var!(entry, var)
-      end
-      name
-    end
-
-    return if written.empty?
-
-    # Say so in the session log. The failure this fixes was silent on both ends —
-    # the server could not reach the endpoint and nothing recorded that it had not
-    # been told where the endpoint was. CliSpawnEnv logs the same for the agent
-    # process; this is the other half.
-    Rails.logger.info "[#{self.class.name}] Wrote #{ElicitationEndpoint::VARIABLES.join(' + ')} " \
-      "into the env of #{written.size} stdio MCP server(s): #{written.join(', ')}"
   end
 
   # Give each stdio server that shares an `npx` install with another server in

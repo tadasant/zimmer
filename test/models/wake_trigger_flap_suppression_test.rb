@@ -75,16 +75,136 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     assert_nil trigger.trigger_conditions.sole.reload.last_triggered_at
   end
 
-  test "a watched session pausing with a message queued for it does not wake its watcher" do
+  test "a watched session whose queued message drains does not wake its watcher" do
     trigger = watch(@watched, "session_needs_input")
     @watched.enqueued_messages.create!(content: "follow up", position: 1)
 
+    args = capture_needs_input_job { @watched.pause! }
+
+    # EnqueuedMessageDrainJob's DELAY is well inside the settle window, so by the
+    # time the wake is evaluated the session is going again. That is what makes
+    # this a boundary rather than a rest — not the presence of the message.
+    @watched.reload.resume!
+
+    travel_to SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.from_now do
+      AoEventTriggerJob.perform_now(*args)
+    end
+
+    assert @watcher.reload.needs_input?, "the drain resumed it, so nobody should have been woken"
+    assert Trigger.exists?(trigger.id)
+  end
+
+  test "a queued message that never drains still wakes the watcher — a stuck rest is a rest" do
+    trigger = watch(@watched, "session_needs_input")
+    @watched.enqueued_messages.create!(content: "follow up", position: 1)
+
+    # EnqueuedMessageDrainJob gives up after MAX_ATTEMPTS and deliberately leaves
+    # the rows pending on an idle session; three `skip_reason` refusals hold a
+    # message indefinitely too. `pause` only fires from `running`, so nothing
+    # re-emits this event — suppressing here would lose the wake for good rather
+    # than delay it, and the session really is sitting at rest.
     pause_and_settle(@watched)
 
-    assert @watched.reload.needs_input?, "it did cross into needs_input"
-    assert @watcher.reload.needs_input?,
-      "but a drain is on its way to resume it, so it is not at rest and nobody should be woken"
+    assert @watched.reload.needs_input?
+    assert_not Trigger.exists?(trigger.id), "the wake must be delivered, not dropped"
+    assert @watcher.reload.running?
+  end
+
+  test "a session left holding an unexecuted pending_sleep still wakes its watcher" do
+    trigger = watch(@watched, "session_needs_input")
+
+    # execute_pending_sleep's rescue: `sleep!` raised, the flag survives, and its
+    # own comment says the session "sits in needs_input on the user's homepage as
+    # if it wanted attention". A watcher of that session must be told.
+    @watched.stubs(:sleep!).raises(StandardError, "sleep failed")
+    schedule_self_wake(@watched)
+    pause_and_settle(@watched)
+
+    assert @watched.reload.needs_input?
+    assert_equal true, @watched.metadata["pending_sleep"]
+    assert_not Trigger.exists?(trigger.id), "the wake must be delivered, not dropped"
+    assert @watcher.reload.running?
+  end
+
+  test "an elicitation the user answers inside the window does not wake the watcher" do
+    trigger = watch(@watched, "session_needs_input")
+
+    # Creating the elicitation is what drives block_on_elicitation! — the session
+    # syncs its own state off it (Elicitation#sync_session_elicitation_state).
+    args = capture_needs_input_job { create_blocking_elicitation(@watched) }
+    assert @watched.reload.needs_input?
+
+    # Answered in seconds. Resolving the elicitation syncs the session back to
+    # `running` on its own, which is the unblock_from_elicitation transition.
+    @watched.elicitations.each { |e| e.update!(status: "accept") }
+    assert @watched.reload.running?
+
+    travel_to SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.from_now do
+      AoEventTriggerJob.perform_now(*args)
+    end
+
+    assert @watcher.reload.needs_input?, "a round-trip that resolved is a flap, not a rest"
     assert Trigger.exists?(trigger.id)
+  end
+
+  test "an elicitation still waiting on a human DOES wake the watcher" do
+    trigger = watch(@watched, "session_needs_input")
+
+    pause_and_settle_on(@watched) { create_blocking_elicitation(@watched) }
+
+    assert_not Trigger.exists?(trigger.id), "the child is asking a human something — that is a real rest"
+    assert @watcher.reload.running?
+  end
+
+  test "a session deleted before the window closes is stale, not a fire" do
+    trigger = watch(@watched, "session_needs_input")
+
+    args = capture_needs_input_job { @watched.pause! }
+    watched_id = @watched.id
+    @watched.destroy!
+
+    travel_to SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.from_now do
+      assert_nothing_raised { AoEventTriggerJob.perform_now(*args) }
+    end
+
+    assert_nil Session.find_by(id: watched_id)
+    assert @watcher.reload.needs_input?, "there is no subject left for the event to be about"
+    assert Trigger.exists?(trigger.id)
+  end
+
+  # === the immediate-fire path shares the same rest check ===
+
+  test "registering a watcher on a session already resting in needs_input fires at once" do
+    @watched.update!(status: :needs_input)
+
+    run_deferred_commit_callbacks_inline
+    trigger = nil
+    perform_enqueued_jobs(only: AoEventTriggerJob) do
+      trigger = watch(@watched, "session_needs_input", reset_watcher: false)
+    end
+
+    assert_not Trigger.exists?(trigger.id), "Trigger#fire_ao_event_immediately_if_state_matches delivered it"
+    assert @watcher.reload.running?
+  end
+
+  test "the immediate-fire path is subject to the same check and drops a session that has moved on" do
+    @watched.update!(status: :needs_input)
+
+    run_deferred_commit_callbacks_inline
+    args = nil
+    trigger = nil
+    before = enqueued_jobs.size
+    trigger = watch(@watched, "session_needs_input")
+    job = enqueued_jobs[before..].find { |e| e[:job] == AoEventTriggerJob }
+    assert job, "expected the immediate-fire path to enqueue a wake"
+    args = ActiveJob::Arguments.deserialize(job[:args])
+
+    # It got going again between the enqueue and the job running.
+    @watched.reload.resume!
+    AoEventTriggerJob.perform_now(*args)
+
+    assert Trigger.exists?(trigger.id), "the watched session is no longer at rest"
+    assert @watcher.reload.needs_input?
   end
 
   test "a session that churns past the settle window supersedes the earlier event" do
@@ -188,7 +308,11 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
   # One trigger watching one event, in the shape wake_me_up_when_session_changes_state
   # builds. Created directly rather than through the tool so the requester's status
   # is under the test's control.
-  def watch(watched, event_name, watcher: @watcher)
+  # `reset_watcher: false` for the immediate-fire tests: `perform_enqueued_jobs`
+  # runs the wake inline as it is enqueued, i.e. inside Trigger.create!, so the
+  # status reset below would land AFTER the fire and clobber the resume it is
+  # supposed to be observing.
+  def watch(watched, event_name, watcher: @watcher, reset_watcher: true)
     Trigger.create!(
       name: "Wake ##{watcher.id} on #{event_name} of ##{watched.id}",
       agent_root_name: "zimmer",
@@ -205,7 +329,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
       # Trigger creation sleeps a needs_input requester as a side effect. Put it
       # back where the test wants it: what is under test is whether the FIRE
       # resumes it, and `waiting` and `needs_input` are both resumable.
-      watcher.update_columns(status: Session.statuses[:needs_input])
+      watcher.update_columns(status: Session.statuses[:needs_input]) if reset_watcher
     end
   end
 
@@ -218,10 +342,27 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
   # Pause, then run the wake the pause emitted — after the settle window, which is
   # when the real worker picks it up.
   def pause_and_settle(session)
-    args = capture_needs_input_job { session.pause! }
+    pause_and_settle_on(session) { session.pause! }
+  end
+
+  # The same, for a transition other than `pause` that emits the settled event.
+  def pause_and_settle_on(_session, &block)
+    args = capture_needs_input_job(&block)
     travel_to SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.from_now do
       AoEventTriggerJob.perform_now(*args)
     end
+  end
+
+  def create_blocking_elicitation(session)
+    Elicitation.create!(
+      session: session,
+      request_id: "req-#{SecureRandom.hex(8)}",
+      mode: "form",
+      message: "Approve?",
+      requested_schema: { "type" => "object" },
+      meta: {},
+      expires_at: 1.hour.from_now
+    )
   end
 
   # The arguments the pause enqueued, so the test can perform the job at the far

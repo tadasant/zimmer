@@ -1576,7 +1576,33 @@ The terminal case is an alert, not a resolution. After three failed attempts the
 leaving the messages `pending` — deliberately, because they are still deliverable and retiring them
 to `undelivered` would destroy a message to record that one job could not deliver it. What that means
 in practice is that the invariant is restored by a human giving the session a turn, and until then
-the session is idle with work queued for it.
+the session is idle with work queued for it — and any session watching it for `session_needs_input`
+is woken, because a session stuck at rest is a rest (see the settle-window entry below).
+
+### A `session_needs_input` wake arrives up to 30 seconds late
+
+`pause` fires at every turn boundary, including boundaries the session leaves again microseconds
+later, so `session_needs_input` is held for `SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW` and
+dropped unless the session is still at rest when the window closes — see
+[a turn boundary is not a rest](/sessions/lifecycle/#a-turn-boundary-is-not-a-rest).
+
+The cost is latency on the one event that can flap. A session waiting on a peer that pauses to ask a
+question learns about it up to 30 seconds after the fact, and `AoEventTriggerJob` runs on its own
+queue precisely *because* wakes are latency-sensitive. `session_failed` and `session_archived` are
+not settled and still fire on the transition, so the event that ends most waits — a child
+self-archiving — is unaffected. Broadcast (unscoped) `session_needs_input` conditions inherit the
+delay too, which matters for a trigger that spawns a session on any autonomous session going idle.
+
+The window is a constant with no per-trigger override, on the grounds that no caller wants a wake
+about a state the watched session had already left. If a use case ever does need the un-settled edge,
+it needs a new option rather than a smaller constant.
+
+There is a second edge in the other direction. The rest check is status-only, so a session whose
+queued message is still undelivered when the window closes — the three states below — **does** wake
+its watchers. That is deliberate: nothing re-emits this event, so suppressing there would lose the
+wake rather than delay it. The consequence is that the three states below now also mean a watcher
+gets woken about a session that is idle with work stuck behind it, which is the honest signal but not
+a finished one.
 
 ### 🔴 Every turn a session finishes costs a second agent turn, for the Status summary
 

@@ -129,7 +129,7 @@ module Mcp
           - **Session ID:** #{session.id}
           - **Wake At:** #{scheduled_at} (#{timezone})
           - **Trigger ID:** #{trigger.id}
-          - **Trigger Name:** #{trigger.name}
+          - **Trigger Name:** #{trigger.name}#{defaulted_requester_notice(session)}
 
           **You must end your conversation turn now.** The session will be automatically transitioned to waiting (immediately if currently needs_input; after the current turn ends if currently running) and resumed at the scheduled time with the provided prompt.
 

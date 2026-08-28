@@ -135,7 +135,7 @@ module Mcp
           - **Watched Session ID:** #{watched_session_id}
           - **Events:** #{event_names.join(', ')}
           - **Trigger ID:** #{trigger.id}
-          - **Trigger Name:** #{trigger.name}
+          - **Trigger Name:** #{trigger.name}#{defaulted_requester_notice(session)}
 
           **You must end your conversation turn now.** The requester session will be automatically transitioned to waiting (immediately if currently needs_input; after the current turn ends if currently running) and resumed when the watched session reaches one of the states above.
 
