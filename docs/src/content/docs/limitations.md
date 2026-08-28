@@ -3209,9 +3209,10 @@ The sweep collects paths with `find` and then hands them to `chown` in a second 
 
 ## A PR session waits for a merge message that three cases can prevent
 
-The PR goals hold a session in `needs_input` until its PR merges, and
-`GitHubPullRequestPollerJob` releases it by delivering `AutomatedPrompts.pr_merged_message`.
-That is the whole exit condition, and it has three ways to not fire.
+The PR goals hold a session open until its PR merges — asleep in `waiting` on the `open-pr` skill's
+bounded self-wake, then at rest in `needs_input` — and `GitHubPullRequestPollerJob` releases it by
+delivering `AutomatedPrompts.pr_merged_message`. That is the whole exit condition, and it has three
+ways to not fire.
 
 **The PR URL was never recorded.** The poller iterates `Session.with_github_prs`, which needs
 `custom_metadata["github_pull_request_urls"]` populated, and that is filled by
