@@ -109,11 +109,12 @@ class SessionHumanMessages
 
   # A human's own words are untrusted text going into output an agent reads
   # structurally — the markdown `get_session` and `get_session_provenance`
-  # return, and the lines and fences inside it. A message body that contains
-  # what looks like Zimmer's own framing (`<human-messages>`, `<message …>`,
-  # `<info>`) is neutralized so it cannot pose as that framing when the tool
-  # result lands in a reader's context. Same treatment AgentSessionJob gives an
-  # attached filename.
+  # return, and the lines and fences inside it. Anything shaped like the framing
+  # Zimmer wraps this record in is neutralized so it cannot pose as that framing
+  # when the tool result lands in a reader's context. The tag list is
+  # deliberately broader than what any current surface emits: the cost of an
+  # extra alternative is nothing, and the cost of a missing one is a forged
+  # `here` message. Same treatment AgentSessionJob gives an attached filename.
   def self.neutralize_tags(text)
     text.to_s.gsub(%r{</?\s*(human-messages|message|info|people|person|session-hierarchy)\b[^>]*>}i) { |tag| tag.tr("<>", "‹›") }
   end

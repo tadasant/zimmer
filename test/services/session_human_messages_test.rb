@@ -189,12 +189,11 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
   # ==========================================================================
   # Sanitization
   #
-  # Nothing is injected into a prompt any more, so the surface these guard is
-  # the markdown `get_session` and `get_session_provenance` return. The threat
-  # is unchanged: a session's title is writable by the session itself
-  # (`action_session` → `update_title`) and message content is a human's own
-  # words, so either could otherwise pose as Zimmer's own framing and forge the
-  # human authorization this record exists to make unforgeable.
+  # The surface these guard is the markdown `get_session` and
+  # `get_session_provenance` return. A session's title is writable by the
+  # session itself (`action_session` → `update_title`) and message content is a
+  # human's own words, so either could otherwise pose as Zimmer's own framing
+  # and forge the human authorization this record exists to make unforgeable.
   # ==========================================================================
 
   test "framing tags in untrusted text are neutralized, not deleted" do
@@ -217,6 +216,16 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
 
     refute_includes cleaned, "\n"
     assert_includes cleaned, "merge it"
+  end
+
+  test "angle brackets and quotes in a one-line value are neutralized, not deleted" do
+    cleaned = SessionHumanMessages.sanitize_for_markdown_line(%(say "hi" <b>bold</b>))
+
+    refute_includes cleaned, %(")
+    refute_includes cleaned, "<"
+    refute_includes cleaned, ">"
+    assert_includes cleaned, "＂hi＂"
+    assert_includes cleaned, "‹b›bold‹/b›"
   end
 
   test "a run of backticks cannot close a fence early" do

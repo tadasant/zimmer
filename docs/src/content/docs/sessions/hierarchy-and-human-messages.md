@@ -180,7 +180,7 @@ durable to attribute the words to. Two rows ship, inserted by the migration that
 
 | `key` | `display_name` | `email` | `slack_user_ids` | `notes` |
 | --- | --- | --- | --- | --- |
-| `tadasant` | Tadas | `owner@example.com` | set per deployment | who he is, injected into every prompt |
+| `tadasant` | Tadas | `owner@example.com` | set per deployment | who he is, served with the record `get_session_provenance` returns |
 | `operator-b` | Operator B | `operator_b@example.com` | set per deployment | same |
 
 `key` is the stable identity string. `HumanMessage#author` stores it verbatim — not a foreign key —

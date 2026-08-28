@@ -191,7 +191,7 @@ class SessionHierarchy
   # one-node diagram.
   def solitary? = nodes.size <= 1
 
-  # Compact indented rendering for the agent's prompt and for MCP output.
+  # Compact indented rendering, for the MCP tools that serve this graph.
   #
   # Titles are neutralized, not trusted. A session's title is writable by the
   # session itself (`action_session` → `update_title`), so an agent could
@@ -202,7 +202,7 @@ class SessionHierarchy
   # An uncle edge is named rather than drawn: indentation can express one parent
   # and this graph has more than one, so a session's extra seniors are spelled
   # out on its line. Without that they would be silently invisible here while
-  # visibly changing which human messages the prompt carries.
+  # visibly widening which human messages the record carries.
   def to_outline
     nodes.map do |node|
       marker = node.current? ? " ← this session" : ""

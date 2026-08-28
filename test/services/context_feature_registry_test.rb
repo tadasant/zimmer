@@ -102,17 +102,27 @@ class ContextFeatureRegistryTest < ActiveSupport::TestCase
     goal = "\n\nThe user has indicated the goal for this task is: finish the PR."
 
     {
-      "the degraded-server block" => "\n\n<unavailable-mcp-servers>\n<info>pulse-fetch did not connect.</info>\n</unavailable-mcp-servers>",
-      "the attached-files block" => "\n\n<attached-files>\nThe user has attached the following file(s) to this message:\n- /tmp/a.png\n</attached-files>"
-    }.each do |what, trailer|
-      claimed = ContextFeatureRegistry.classify(block(text: "Task.#{goal}#{trailer}"))
+      "unavailable_mcp_servers" => "\n\n<unavailable-mcp-servers>\n<info>pulse-fetch did not connect.</info>\n</unavailable-mcp-servers>",
+      "attached_files" => "\n\n<attached-files>\nThe user has attached the following file(s) to this message:\n- /tmp/a.png\n</attached-files>"
+    }.each do |key, trailer|
+      text = "Task.#{goal}#{trailer}"
+      claimed = ContextFeatureRegistry.classify(block(text: text))
 
-      assert_operator claimed["goal"].to_i, :>, 0, "the goal itself should still be claimed alongside #{what}"
-      # The goal stops at the block boundary; the trailing block's bytes fall to
-      # the prompt's own line rather than being billed as goal text.
-      assert_operator claimed["goal"].to_i, :<=, goal.length, "the goal region swallowed #{what}"
-      assert_operator claimed["prompt"].to_i, :>=, trailer.length, "#{what} was not left for another line"
+      assert_equal text.length, claimed.values.sum, "every byte should still land somewhere alongside #{key}"
+      assert_operator claimed["goal"].to_i, :>, 0, "the goal itself should still be claimed alongside #{key}"
+      # The goal stops at the block boundary, and the trailing block lands on its
+      # own line rather than being billed as goal text or as the user's task.
+      assert_operator claimed["goal"].to_i, :<=, goal.length, "the goal region swallowed the #{key} block"
+      assert_operator claimed[key].to_i, :>, trailer.length / 2, "the #{key} block was not claimed by its own detector"
     end
+  end
+
+  # Both blocks are Zimmer's own bytes. Without a detector they fall through to
+  # `prompt`, whose owner is :work — which would bill a block this repository
+  # chose to inject to the user's task instead.
+  test "the blocks that follow the goal are owned by Zimmer, not by the work" do
+    assert_includes ContextFeatureRegistry.zimmer_keys, "unavailable_mcp_servers"
+    assert_includes ContextFeatureRegistry.zimmer_keys, "attached_files"
   end
 
   test "every registered feature has a label and a blurb the page can render" do
