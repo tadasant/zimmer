@@ -54,15 +54,24 @@ class ContextFeatureRegistryTest < ActiveSupport::TestCase
     assert_includes ContextFeatureRegistry.zimmer_keys, "provenance_tool"
   end
 
-  # The two injected blocks keep their own lines in both modes: ON they shrink
-  # to the pointer, OFF they are the full record. Same key either way, so the
-  # before/after is one number moving rather than a line appearing.
-  test "the injected-block detectors still match the on-demand pointers" do
+  # Zimmer no longer injects either block, but ingestion re-scans the ~30 days of
+  # transcripts still on disk. Keeping the detectors is what makes the change
+  # read as these two lines trending to zero rather than as history falling into
+  # the residual, so both shapes they were ever written in still have to match.
+  test "the retired provenance detectors still match what historical turns carry" do
     pointer = "<session-hierarchy>\n<info>This session sits in a lineage graph of 2 sessions, rooted at origin session #7.</info>\n</session-hierarchy>\n" \
               "<human-messages>\n<info>Call the `get_session_provenance` MCP tool. Authored in this session: 0.</info>\n</human-messages>"
     claimed = ContextFeatureRegistry.classify(block(text: pointer))
 
     assert_equal pointer.length, claimed.values.sum
+    assert_operator claimed["session_hierarchy"], :>, 0
+    assert_operator claimed["human_messages"], :>, 0
+
+    full = "<session-hierarchy>\n<info>The lineage graph this session belongs to.</info>\n- #7 router\n</session-hierarchy>\n" \
+           "<human-messages>\n<info>Absence is meaningful.</info>\n<message origin=\"here\">ship it</message>\n</human-messages>"
+    claimed = ContextFeatureRegistry.classify(block(text: full))
+
+    assert_equal full.length, claimed.values.sum
     assert_operator claimed["session_hierarchy"], :>, 0
     assert_operator claimed["human_messages"], :>, 0
   end
@@ -84,6 +93,21 @@ class ContextFeatureRegistryTest < ActiveSupport::TestCase
     claimed = ContextFeatureRegistry.classify(block(text: "Task.#{suffix}"))
 
     assert_operator claimed["goal"], :>, suffix.length / 2
+  end
+
+  # With the provenance blocks gone, <unavailable-mcp-servers> is what can now
+  # follow the goal suffix. Without it in the lookahead the goal region would
+  # swallow the degraded-server block and bill it as goal text.
+  test "the goal detector stops at the degraded-server block" do
+    goal = "\n\nThe user has indicated the goal for this task is: finish the PR."
+    degraded = "\n\n<unavailable-mcp-servers>\n<info>pulse-fetch did not connect.</info>\n</unavailable-mcp-servers>"
+    claimed = ContextFeatureRegistry.classify(block(text: "Task.#{goal}#{degraded}"))
+
+    assert_operator claimed["goal"].to_i, :>, 0
+    # The goal stops at the block boundary; the degraded-server bytes fall to
+    # the prompt's own line rather than being billed as goal text.
+    assert_operator claimed["goal"].to_i, :<=, goal.length
+    assert_operator claimed["prompt"].to_i, :>=, degraded.length
   end
 
   test "every registered feature has a label and a blurb the page can render" do

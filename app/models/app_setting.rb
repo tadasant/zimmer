@@ -45,14 +45,6 @@ class AppSetting < ApplicationRecord
   # what makes flipping this back a rollback rather than a migration.
   DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED = false
 
-  # Whether a session's provenance context — the session hierarchy and the
-  # human-message record — is offered through the `get_session_provenance` MCP
-  # tool instead of being baked into every user turn. ON is the default: the
-  # full record is re-injected on every turn and bills on every subsequent turn
-  # it stays in context, while most sessions never look at an older human
-  # message. OFF restores the always-injected blocks exactly.
-  DEFAULT_PROVENANCE_VIA_MCP_ENABLED = true
-
   # How many sessions may run at once. The gate admits spot work in parallel up to
   # the concurrency the quota can carry, and this is the brake on that — 10 is the
   # number Tadas named. Every running session counts against it, priority included;
@@ -118,13 +110,6 @@ class AppSetting < ApplicationRecord
       DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED
     end
     alias_method :session_scoped_credentials_enabled?, :session_scoped_credentials_enabled
-
-    # No persisted row exists, so provenance delivery resolves to its shipped
-    # default. A DB-less boot never falls back to the heavier injected blocks.
-    def provenance_via_mcp_enabled
-      DEFAULT_PROVENANCE_VIA_MCP_ENABLED
-    end
-    alias_method :provenance_via_mcp_enabled?, :provenance_via_mcp_enabled
   end.new(default_runtime: nil, default_model: nil)
 
   validates :default_runtime,
@@ -190,16 +175,6 @@ class AppSetting < ApplicationRecord
     rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
       DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED
     end
-
-    # Whether the hierarchy and human-message blocks are offered on demand over
-    # MCP rather than injected into every turn. Read on the prompt-building path
-    # for every turn of every session, so it falls back to the shipped default
-    # whenever the row can't be read rather than raising mid-prompt.
-    def provenance_via_mcp_enabled?
-      current.provenance_via_mcp_enabled?
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
-      DEFAULT_PROVENANCE_VIA_MCP_ENABLED
-    end
   end
 
   # Whether the extension with `id` is enabled on this row, defaulting to
@@ -241,16 +216,6 @@ class AppSetting < ApplicationRecord
     return DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED unless has_attribute?(:session_scoped_credentials_enabled)
 
     !!self[:session_scoped_credentials_enabled]
-  end
-
-  # Whether provenance is offered over MCP for this row. Returns the shipped
-  # default when the column isn't present — the window where new code boots
-  # against a schema that predates the migration — so prompt building degrades
-  # to the default instead of raising.
-  def provenance_via_mcp_enabled?
-    return DEFAULT_PROVENANCE_VIA_MCP_ENABLED unless has_attribute?(:provenance_via_mcp_enabled)
-
-    !!self[:provenance_via_mcp_enabled]
   end
 
   # The configured model when it is valid for `runtime`, otherwise the runtime's

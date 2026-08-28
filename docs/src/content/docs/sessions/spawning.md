@@ -82,13 +82,11 @@ every follow-up turn, so anything it appends rides along on every turn:
 | --- | --- |
 | The goal suffix | `session.goal` is set — a goal ID resolves to its description, free text passes through |
 | `<session-notes>` | `session_notes` is non-blank |
-| `<session-hierarchy>` | the session was spawned by another or has spawned one — see [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/) |
-| `<human-messages>` | any session in that hierarchy has a human-authored message |
+| `<unavailable-mcp-servers>` | a server this session was configured with failed to connect |
 
-The last two shrink to a pointer at the `get_session_provenance` MCP tool — the counts, and how to
-fetch the rest — when Settings → Experimental → *Provenance context on demand* is on, which is the
-default. Turning it off restores the full injected record. When each block appears at all is the same
-either way. See [Hierarchy and human
+**Provenance is not appended.** The session hierarchy and the human-message record are served by the
+`get_session_provenance` MCP tool, on demand, rather than injected — and that tool's description is
+where the caveats they have to be read with are stated. See [Hierarchy and human
 messages](/sessions/hierarchy-and-human-messages/#where-they-show-up).
 
 A blank base prompt is returned untouched, which is what lets the initial-spawn guard catch a
