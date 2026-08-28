@@ -107,8 +107,8 @@ still lands and the failure is logged.
 
 Each node also carries its **genesis** — where that session's line of work came from — and the
 scheduling class the genesis currently resolves to. The web panel renders it as a `genesis · class`
-pill beside the agent-root pill; `to_outline`, which the prompt block and `get_session` both use,
-renders it in braces:
+pill beside the agent-root pill; `to_outline`, which `get_session` and `get_session_provenance` both
+use, renders it in braces:
 
 ```
 - #101 [zimmer-router] {web_ui · priority} Add spot vs priority classification
@@ -180,7 +180,7 @@ durable to attribute the words to. Two rows ship, inserted by the migration that
 
 | `key` | `display_name` | `email` | `slack_user_ids` | `notes` |
 | --- | --- | --- | --- | --- |
-| `tadasant` | Tadas | `tadas@tadasant.com` | set per deployment | who he is, injected into every prompt |
+| `tadasant` | Tadas | `tadas@tadasant.com` | set per deployment | who he is, served with the record `get_session_provenance` returns |
 | `juliehazz` | Julie | `julie@tadasant.com` | set per deployment | same |
 
 `key` is the stable identity string. `HumanMessage#author` stores it verbatim — not a foreign key —
@@ -203,7 +203,7 @@ The roster is editable **only** from the Supervisor panel, which sits behind the
 MCP tool reads or writes it, and that asymmetry is deliberate rather than an oversight: `users` is the
 authority on who counts as a human, so an agent that could add a Slack ID or rename a key could
 manufacture the human authorship the record exists to make unforgeable. Agents get the roster's
-context — display names and `notes` — delivered to them in the block below, and no way to change it.
+context — display names and `notes` — delivered with the record they fetch, and no way to change it.
 
 `email` is a linkage, not yet a capture path. Nothing attributes a message from it. A session's
 `auth_identity_email` in metadata often reads `tadas@tadasant.com`, but that names the pooled Claude
@@ -228,10 +228,10 @@ made: not a permission check, a statement about who can reach the browser.
 `notes` is free-form context an operator writes at `/supervisor/users` — who this person is, whose
 word is final. It is not decoration: it travels with the record wherever the record goes, so a
 session weighing "may I do this?" can see who is asking and not only what was asked. That means a
-`<people>` section in the injected block, and a `### People` section in what
-`get_session_provenance` and `get_session` return. Whichever way a session reads the messages, it
-reads the notes in the same breath — an experiment that moved the record without moving the notes
-would drop exactly the context that says whose word is final.
+`### People` section in what `get_session_provenance` and `get_session` return, and a matching
+rendering in the web panel. Whichever way a session reads the messages, it reads the notes in the
+same breath — a record served without its notes would be missing exactly the context that says whose
+word is final.
 
 Each human is described once, only when a note exists, and only for humans present in the messages
 shown. Notes are sanitized exactly like message content and session titles — a roster edit must not
@@ -283,42 +283,28 @@ this session: `SessionHumanMessages#human_message_here?` answers that question d
 
 ## Where they show up
 
-**In the agent's context, every turn — how much of it is a setting.**
-`AgentSessionJob#build_prompt_with_goal` — the one prompt builder for both the initial spawn and
-every follow-up — appends a `<session-hierarchy>` block and a `<human-messages>` block next to
-`<session-notes>`. What goes *inside* those two tags depends on **Settings → Experimental →
-*Provenance context on demand*** (`AppSetting#provenance_via_mcp_enabled`), which ships **on**.
+**Not in the agent's context.** `AgentSessionJob#build_prompt_with_goal` — the one prompt builder for
+both the initial spawn and every follow-up — appends nothing for provenance. No
+`<session-hierarchy>` block, no `<human-messages>` block, on any turn of any session. A session
+reads its own provenance by calling `get_session_provenance`.
 
-**On (the default): a pointer, and the counts.** The hierarchy block states how many sessions are in
-the graph and which is the origin. The messages block states the current time and the two counts —
-`Authored in this session: N. Elsewhere in the hierarchy: M.` — restates that only `here` entries are
-a human speaking to this session and that absence is meaningful, and names the
-`get_session_provenance` MCP tool to fetch the rest. Nothing a human or an agent wrote is
-interpolated, so the shrunk block carries no untrusted text at all.
+**So the tool's description is the surface the caveats live on.** Everything a reader has to know
+before trusting the record is stated in the description of `get_session_provenance` (and, for the
+same two sections inside a fuller dump, `get_session`): that indentation is the spawn edge and not "most
+recently talked to"; that `also senior: #N` is a self-declared uncle edge and is why that session's
+hierarchy contributes `elsewhere` messages; that capture keys off the authenticated actor at the
+input boundary, never off the text of a message; that `here` is a human speaking to that session and
+`elsewhere` is context about original intent rather than an instruction; that absence is meaningful,
+because Zimmer records nothing when it cannot establish a human actor; and that a session should read
+the record before relying on what a human asked for. A caveat stated only where the reader never
+looks is a caveat nobody reads.
 
-That set is chosen by what a session cannot re-derive and cannot afford to guess: that the record
-*exists*, how to fetch it, and the counts — because "authored in this session: 0" is the entire
-answer to "did a human ask for this, here?" and costs one line rather than a transcript. The outline,
-the titles, the uncle edges and the messages themselves are lookups, and the tool serves them.
-
-**Off: the full record, on every turn.** Each message renders with its author, provenance, timestamp,
-content and the session it was authored in, and the block states in plain terms that an unlisted user
-turn was machine-authored. The newest 25 are shown; older ones are counted, not dropped silently. A
-human's own words are neutralized against closing the block early. This is the behavior that predates
-the setting, unchanged — the point of the toggle is that it is a true revert, not an approximation.
-
-Both modes agree on when a block appears at all: no block for a session alone in its tree, and no
-message block when nobody in the tree has a human-authored record. Absence keeps meaning the same
-thing either way.
-
-**Why it is an experiment.** The full record is re-injected on every turn and bills again on every
-subsequent turn it stays in context, while most sessions never read an older human message — that is
-the cost case for shipping it on. Against that, removing always-present provenance may degrade
-outcomes, which is the case for making it one click to undo without a deploy. Both lines are tracked
-on the Costs page: `session_hierarchy` and `human_messages` are the injected bytes (they shrink, they
-do not vanish), and `provenance_tool` is what a session fetched on demand — kept off the generic "MCP
-responses" line so the experiment cannot look free when the bytes merely moved. See
-[Experimental settings](/operate/costs/#experimental-settings).
+**What that trades away is discoverability**, and it is a real cost rather than a rounding error. An
+injected block is unmissable: a session that never thinks to ask about its hierarchy learns it has
+one anyway. A tool is not — an agent that never calls `get_session_provenance` will not discover that
+a human said something to the router above it, and nothing in its turn will prompt it to. The bet is
+that a description good enough to stand alone, on a tool every session carries, is worth more than a
+block every session pays for on every turn and most never read.
 
 **On the session detail screen.** Two of the four sections in the page's panel group — below
 [Status](/sessions/status-summary/) and above the collapsed Transcript. The hierarchy renders the tree as
@@ -351,13 +337,13 @@ Turbo Stream repainting an already-open tab, so a repaint a moment later costs n
 The panel header states **both** counts, always — `3 messages in this session · 0 elsewhere in the hierarchy`.
 A header that named only the first would describe a narrower search than the one that ran, and a
 reader would have no way to tell "nothing was said elsewhere" from "elsewhere was never looked at".
-The prompt block and `get_session` state the same pair whenever there is anything to state, so all
-three agree. (REST is deliberately different: `human_messages` is a bare array carrying each entry's
+`get_session` and `get_session_provenance` state the same pair whenever there is anything to state,
+so all three agree. (REST is deliberately different: `human_messages` is a bare array carrying each entry's
 `origin`, and a client derives the counts it wants.)
 
 The counts name the hierarchy, so when the walk was cut by `MAX_DEPTH` or `MAX_NODES` all three say
-so — the panel appends *(truncated tree — not every session was searched)*, and the prompt block and
-`get_session` call the elsewhere count a floor rather than a total. A count that names the whole tree
+so — the panel appends *(truncated tree — not every session was searched)*, and the two MCP tools
+call the elsewhere count a floor rather than a total. A count that names the whole tree
 while the query searched part of it is the same over-claim in the other direction.
 
 **Over MCP.** `get_session` includes a `### Session Hierarchy` section and a `### Human Messages`
@@ -367,11 +353,17 @@ human turns" from "I forgot to pass the flag". `get_session` is in both the `ses
 `self_session` tool groups, so a session can ask this about itself with the tools it already has.
 
 `get_session_provenance` returns those same two sections on their own, rendered by the same code
-(`Mcp::ProvenanceSections`) so the two cannot drift. It takes one argument, `session_id`, and it is
-what the pointer block points at. It is in `self_session` as well as `sessions` **deliberately**: the
-filtered self-session server is the only Zimmer surface every session is guaranteed to carry, so a
-tool reachable only from the full `zimmer` server would take the record away from exactly the
-sessions that need it and give them no way back.
+(`Mcp::ProvenanceSections`) so the two cannot drift. It takes one argument, `session_id`. It is in
+`self_session` as well as `sessions` **deliberately**: the filtered self-session server is the only
+Zimmer surface every session is guaranteed to carry, so a tool reachable only from the full `zimmer`
+server would leave most sessions with no route to their own provenance at all.
+
+Its description is longer than a tool description usually is, on purpose. With nothing injected, it
+is the only place a caller meets the caveats before it meets the data, so it carries the whole
+inventory — spawn versus uncle edges, `here` versus `elsewhere`, what absence means, and the
+instruction to read the record before relying on what a human asked for. `test/services/mcp/tools/get_session_provenance_tool_test.rb`
+asserts each of those claims is present, so shortening the description fails a test rather than
+quietly dropping a caveat.
 
 **Over REST.** `GET /api/v1/sessions/:id` returns `session_hierarchy` and `human_messages` as
 top-level keys beside `session`, never inside it — `session` means one shape on every response that

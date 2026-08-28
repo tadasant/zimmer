@@ -3512,6 +3512,32 @@ Two narrower gaps while both exist:
   than a repair. If the setting is later turned off, the next `ensure_active_account!` rewrites the
   file from the DB — but until then the stale bytes sit there.
 
+## An agent that never calls `get_session_provenance` never learns it has a hierarchy
+
+Zimmer injects nothing about provenance into a session's turns — no `<session-hierarchy>` block, no
+`<human-messages>` block. The lineage graph and the human-message record are served by the
+`get_session_provenance` MCP tool, on demand, and that tool's description carries every caveat the
+injected blocks used to state. See [Hierarchy and human
+messages](/sessions/hierarchy-and-human-messages/#where-they-show-up).
+
+The cost is discoverability, and it is real. An injected block is unmissable: a session that never
+thought to ask about its lineage learned it had one anyway, and learned that only `here` messages
+were spoken to it. A tool is not. An agent that never calls it will not find out that a human said
+something to the router above it, will not know which siblings share its goal, and nothing in its
+turn will prompt it to look. The failure is silent in the worst direction — the session proceeds as
+if no human context existed, which is indistinguishable from there being none.
+
+Three things bound it rather than fix it: the tool is in the `self_session` group, so every session
+carries it; its description leads with the instruction to call it before relying on what a human
+asked for; and a test asserts each caveat is present in that description, so it cannot be shortened
+into uselessness. None of that makes an agent call it.
+
+The trade is deliberate. The blocks were re-injected on every turn of every session and billed again
+on each later turn they stayed in context, while most sessions never read an older human message.
+Whether the outcome cost exceeds the token saving is not something the current instrumentation can
+answer: the Costs page shows `session_hierarchy` and `human_messages` trending to zero and
+`provenance_tool` picking up, which measures the bytes, not the decisions.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

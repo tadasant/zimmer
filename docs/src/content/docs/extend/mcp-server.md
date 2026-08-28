@@ -182,11 +182,11 @@ this?" must be able to tell "no human turns" from "I forgot the flag." Entries a
 human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). See
 [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
 
-`get_session_provenance` returns those same two sections on their own, for one `session_id`. It is
-the tool a session calls when Settings → Experimental → *Provenance context on demand* is on (the
-default) and its turns therefore carry a pointer rather than the record. Like `get_session` it is in
-`self_session` as well as `sessions`, because the auto-injected self-session server is the only
-surface every session carries.
+`get_session_provenance` returns those same two sections on their own, for one `session_id`. Zimmer
+injects neither into a session's turns, so this is the tool a session calls to read its own
+provenance — and its description, not a block in the prompt, is where the caveats that record has to
+be read with are stated. Like `get_session` it is in `self_session` as well as `sessions`, because
+the auto-injected self-session server is the only surface every session carries.
 
 Note the corollary for
 anything calling `action_session` with `follow_up`: a follow-up issued over this API is

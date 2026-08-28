@@ -8531,11 +8531,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal false, result, "Should not trigger for long messages containing error-like phrases"
   end
 
-  # === build_prompt_with_goal with the hierarchy and its human messages ===
-  #
-  # build_prompt_with_goal is the single prompt builder for BOTH the initial
-  # spawn and every follow-up turn, so asserting here is asserting that these
-  # ride along on every turn — the same guarantee session notes have.
+  # Lineage fixtures for the prompt-building tests below.
 
   def create_lineage_session(parent: nil, title: nil, agent_root: nil)
     session = Session.create!(
@@ -8593,223 +8589,78 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_not_includes result, "<unavailable-mcp-servers>"
   end
 
-  # Turn the "Provenance context on demand" experiment OFF, which is the mode
-  # that bakes both blocks into every turn. It ships ON, so the tests below that
-  # assert on the full injected record have to say so — and that they still pass
-  # unchanged is what makes the off path a real revert rather than an
-  # approximation.
-  def inject_provenance!
-    AppSetting.editable.update!(provenance_via_mcp_enabled: false)
-  end
+  # === build_prompt_with_goal and provenance ===
+  #
+  # Provenance is NOT injected. build_prompt_with_goal is the single prompt
+  # builder for both the initial spawn and every follow-up turn, so asserting
+  # here is asserting that no turn of any session carries either block. A
+  # session reads its hierarchy and human-message record by calling
+  # `get_session_provenance`.
 
-  test "build_prompt_with_goal injects human messages on every turn" do
-    inject_provenance!
-    add_human_message(@session, content: "Refactor the billing service", at: Time.utc(2026, 8, 2, 4, 5, 6))
-
-    job = AgentSessionJob.new
-    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
-
-    assert_includes result, "<human-messages>"
-    assert_includes result, "</human-messages>"
-    assert_includes result, 'origin="here"'
-    assert_includes result, 'author="Tadas (tadasant)"'
-    assert_includes result, 'channel="Zimmer web UI"'
-    assert_includes result, 'at="2026-08-02T04:05:06Z"'
-    assert_includes result, "Refactor the billing service"
-    assert_includes result, "Absence is meaningful"
-  end
-
-  # The widened behaviour: messages from ANYWHERE in the hierarchy reach the
-  # session doing the work, each labelled with the session it was said in.
-  test "build_prompt_with_goal injects the whole hierarchy's human messages and the tree" do
-    inject_provenance!
+  test "build_prompt_with_goal injects no provenance blocks, even with a hierarchy and human messages" do
     router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
     worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
     sibling = create_lineage_session(parent: router, title: "Also do it", agent_root: "zimmer")
     add_human_message(router, content: "the original ask", at: 2.hours.ago)
     add_human_message(sibling, content: "a correction said to a sibling", at: 90.minutes.ago)
     add_human_message(worker, content: "and one said right here", at: 1.hour.ago)
+    worker.update!(goal: "Open a PR", session_notes: "the operator's own note")
 
-    job = AgentSessionJob.new
-    result = job.send(:build_prompt_with_goal, "Fix the bug", worker)
+    result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", worker)
 
-    assert_includes result, "<session-hierarchy>"
-    assert_includes result, "- ##{router.id} [zimmer-router] {unknown · priority} Route it"
-    assert_includes result, "← this session"
-    assert_includes result, "does NOT mean \"most recently talked to\""
+    refute_includes result, "<session-hierarchy>"
+    refute_includes result, "<human-messages>"
+    refute_includes result, "get_session_provenance"
+    refute_includes result, "the original ask"
+    refute_includes result, "a correction said to a sibling"
+    refute_includes result, "and one said right here"
+    refute_includes result, "Authored in this session"
+    refute_includes result, "Route it"
 
-    assert_includes result, "the original ask"
-    assert_includes result, "a correction said to a sibling"
-    assert_includes result, "and one said right here"
-    assert_includes result, %(authored_in="session ##{router.id} — zimmer-router · Route it")
-    assert_includes result, %(authored_in="this session (##{worker.id})")
-    assert_includes result, "Authored in this session: 1"
-    assert_includes result, "Elsewhere in the hierarchy: 2"
+    # The record still exists and is still reachable — it moved to the tool, it
+    # did not disappear.
+    record = worker.human_message_record
+    assert_equal 1, record.here_count
+    assert_equal 2, record.elsewhere_count
 
-    # Printed so the rendered blocks are visible in CI output as evidence of
-    # what actually reaches the agent, not just that some strings matched.
-    puts "\n--- INJECTED PROVENANCE BLOCKS ---\n#{result[/<session-hierarchy>.*<\/human-messages>/m]}\n--- END INJECTED PROVENANCE BLOCKS ---\n"
+    # Everything else Zimmer appends is untouched.
+    assert_includes result, "Fix the bug"
+    assert_includes result, "The user has indicated the goal for this task is: Open a PR"
+    assert_includes result, "<session-notes>"
+
+    # Printed so what actually reaches the agent is visible in CI output, not
+    # just that some strings failed to match.
+    puts "\n--- PROMPT FOR A SESSION WITH A HIERARCHY AND 3 HUMAN MESSAGES ---\n#{result}\n--- END PROMPT ---\n"
   end
 
-  # The other walk direction on the injection surface: a router's own turn
-  # carries what a human said to the sessions it spawned.
-  test "build_prompt_with_goal injects a descendant's human messages into an ancestor's prompt" do
-    inject_provenance!
-    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
-    # Real roots.json keys: agent_root_key resolves against the catalog rather
-    # than echoing the metadata, so an unknown name renders as "—".
-    helper = create_lineage_session(parent: worker, title: "Help out", agent_root: "agents")
-    add_human_message(worker, content: "said to the worker", at: 2.hours.ago)
-    add_human_message(helper, content: "said to the worker's own child", at: 1.hour.ago)
-
-    job = AgentSessionJob.new
-    result = job.send(:build_prompt_with_goal, "Fix the bug", router)
-
-    assert_includes result, "said to the worker"
-    assert_includes result, "said to the worker's own child"
-    assert_includes result, %(authored_in="session ##{worker.id} — zimmer · Do it")
-    assert_includes result, %(authored_in="session ##{helper.id} — agents · Help out")
-    assert_includes result, "Authored in this session: 0"
-    assert_includes result, "Elsewhere in the hierarchy: 2"
-    refute_includes result, 'origin="here"'
-  end
-
-  # The per-turn injection is one of the three surfaces an uncle edge has to
-  # reach. Indentation can only express one parent, so the edge is named on the
-  # line — without that it would silently change which human messages the prompt
-  # carries while being invisible in the tree the agent reads.
-  test "build_prompt_with_goal names an uncle edge and carries its hierarchy's human messages" do
-    inject_provenance!
+  test "build_prompt_with_goal injects nothing for an uncle edge either" do
     senior = create_lineage_session(title: "Senior", agent_root: "zimmer-router")
     target = create_lineage_session(title: "Target", agent_root: "zimmer")
     SessionUncleLink.create!(session: target, uncle_session: senior, source: "test")
     add_human_message(senior, content: "what the human told the senior", at: 1.hour.ago)
 
-    job = AgentSessionJob.new
-    result = job.send(:build_prompt_with_goal, "Fix the bug", target)
+    result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", target)
 
-    assert_includes result, "<session-hierarchy>"
-    assert_includes result, "(also senior: ##{senior.id})"
-    assert_includes result, "carries an UNCLE edge"
-    # The whole reason the edge exists: the senior's human context reaches the
-    # junior, and arrives marked `elsewhere` rather than `here`.
-    assert_includes result, "what the human told the senior"
-    assert_includes result, 'origin="elsewhere"'
-    refute_includes result, 'origin="here"'
-  end
-
-  test "build_prompt_with_goal omits the uncle legend when the graph has no uncle edges" do
-    inject_provenance!
-    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
-    add_human_message(router, content: "the ask", at: 1.hour.ago)
-
-    result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", worker)
-
-    assert_includes result, "<session-hierarchy>"
     refute_includes result, "also senior"
     refute_includes result, "UNCLE edge"
+    refute_includes result, "what the human told the senior"
+    # The edge still widens the record the tool serves.
+    assert_equal 1, target.human_message_record.elsewhere_count
   end
 
-  test "build_prompt_with_goal reports zero here-messages when only elsewhere ones exist" do
-    inject_provenance!
-    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_lineage_session(parent: router)
-    add_human_message(router, content: "original intent from the router's human", at: 1.hour.ago)
-
-    job = AgentSessionJob.new
-    result = job.send(:build_prompt_with_goal, "Fix the bug", worker)
-
-    assert_includes result, 'origin="elsewhere"'
-    refute_includes result, 'origin="here"'
-    assert_includes result, "Authored in this session: 0"
-  end
-
-  # === build_prompt_with_goal with provenance offered on demand (setting ON) ===
-  # The shipped default. What has to survive: that the record exists, the two
-  # counts, and how to fetch the rest. What must not: the messages themselves.
-
-  test "build_prompt_with_goal replaces the human-message list with a pointer and the counts" do
-    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
-    add_human_message(router, content: "the original ask", at: 2.hours.ago)
-    add_human_message(worker, content: "and one said right here", at: 1.hour.ago)
-
-    result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", worker)
-
-    assert_includes result, "<human-messages>"
-    assert_includes result, "get_session_provenance"
-    # Both Zimmer servers are named: which one a session carries is not knowable
-    # at prompt-build time, and a router (the case with a record to fetch) gets
-    # the full-surface one INSTEAD of the self-session one.
-    assert_includes result, "zimmer-self-session"
-    assert_includes result, "`zimmer`"
-    assert_includes result, "session_id #{worker.id}"
-    assert_includes result, "Authored in this session: 1"
-    assert_includes result, "Elsewhere in the hierarchy: 1"
-    assert_includes result, "Absence is meaningful"
-
-    # The point of the experiment: the words themselves are no longer re-sent.
-    refute_includes result, "the original ask"
-    refute_includes result, "and one said right here"
-    refute_includes result, "<message origin="
-
-    puts "\n--- ON-DEMAND PROVENANCE BLOCKS ---\n#{result[/<session-hierarchy>.*<\/human-messages>/m]}\n--- END ON-DEMAND PROVENANCE BLOCKS ---\n"
-  end
-
-  test "build_prompt_with_goal replaces the hierarchy outline with its size and origin" do
-    router = create_lineage_session(title: "Route it", agent_root: "zimmer-router")
-    worker = create_lineage_session(parent: router, title: "Do it", agent_root: "zimmer")
-    add_human_message(router, content: "the ask", at: 1.hour.ago)
-
-    result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", worker)
-
-    assert_includes result, "<session-hierarchy>"
-    assert_includes result, "lineage graph of 2 sessions"
-    assert_includes result, "origin session ##{router.id}"
-    refute_includes result, "← this session"
-    refute_includes result, "Route it"
-  end
-
-  # Absence has to keep meaning the same thing in both modes, so the two nil
-  # cases are the same ones: no tree, and no human-authored record.
-  test "build_prompt_with_goal appends no pointer blocks for a solitary session with no human messages" do
-    result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", @session)
-
-    refute_includes result, "<human-messages>"
-    refute_includes result, "<session-hierarchy>"
-    refute_includes result, "get_session_provenance"
-  end
-
-  test "build_prompt_with_goal still builds a prompt when the on-demand pointer fails to render" do
-    add_human_message(@session, content: "something")
-    SessionHumanMessages.any_instance.stubs(:render_pointer_for_prompt).raises(StandardError, "boom")
+  test "build_prompt_with_goal leaves the degraded-server block adjacent to the goal" do
+    # With the two provenance blocks gone, <unavailable-mcp-servers> is what now
+    # follows the goal suffix on a turn that carries one. The cost page's goal
+    # region detector stops there, so the two must stay separable.
+    @session.update!(goal: "Open a PR", metadata: (@session.metadata || {}).merge(
+      "mcp_degraded_servers" => [ { "name" => "pulse-fetch", "reason" => "they did not connect after 3 retries" } ]
+    ))
 
     result = AgentSessionJob.new.send(:build_prompt_with_goal, "Fix the bug", @session)
 
-    assert_includes result, "Fix the bug"
-    refute_includes result, "<human-messages>"
-  end
-
-  test "build_prompt_with_goal appends no blocks for a solitary session with no human messages" do
-    inject_provenance!
-    job = AgentSessionJob.new
-    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
-
-    refute_includes result, "<human-messages>"
+    assert_includes result, "The user has indicated the goal for this task is: Open a PR"
+    assert_includes result, "\n\n<unavailable-mcp-servers>"
     refute_includes result, "<session-hierarchy>"
-  end
-
-  test "build_prompt_with_goal still builds a prompt when provenance rendering fails" do
-    inject_provenance!
-    add_human_message(@session, content: "something")
-    SessionHumanMessages.any_instance.stubs(:render_for_prompt).raises(StandardError, "boom")
-
-    job = AgentSessionJob.new
-    result = job.send(:build_prompt_with_goal, "Fix the bug", @session)
-
-    assert_includes result, "Fix the bug"
     refute_includes result, "<human-messages>"
   end
 
