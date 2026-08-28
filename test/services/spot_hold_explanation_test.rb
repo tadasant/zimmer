@@ -125,19 +125,21 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
     held_until = explain(pacing_hold).lines.last.sentence
 
     # $5.00/min sustainable less the $4.00/min the next session is priced at.
-    assert_match(%r{When the fleet's burn falls below \$1\.00/min}, held_until)
+    assert_match(%r{When the fleet's burn falls to or below \$1\.00/min}, held_until)
     assert_match(%r{\$5\.00/min sustainable, less the \$4\.00/min}, held_until)
     assert_match(/Waiting alone does not get there/, held_until)
     assert_match(/upper bound on the wait, not a forecast/, held_until)
     # The rollover is offered as the backstop, and it is the window that refused.
-    assert_match(/5-hour window's rollover refills the budget, about .* from now/, held_until)
+    assert_match(/5-hour window's rollover refills the budget in about 2 hours/, held_until)
+    refute_match(/about about/, held_until)
     assert_match(/estimated from the pool average/, held_until)
   end
 
   test "a spent budget is held until the rollover, and says no sooner" do
     held_until = explain(budget_hold).lines.last.sentence
 
-    assert_match(/No sooner than the 5-hour window's rollover, about .* from now/, held_until)
+    assert_match(/No sooner than the 5-hour window's rollover, in about 2 hours/, held_until)
+    refute_match(/about about/, held_until)
     assert_match(/Only a rollover puts money back in the budget/, held_until)
   end
 
@@ -158,9 +160,9 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
   end
 
   # One session alone priced above the sustainable rate: there is no fleet burn
-  # low enough that admits it, and saying "falls below -$1.00/min" would be
-  # nonsense. The duty cycle the idle-fleet waiver produces is the real answer.
-  test "a session priced above the whole sustainable rate says the fleet must empty" do
+  # low enough to admit it, and "falls to or below -$1.00/min" would be nonsense.
+  # The duty cycle the idle-fleet waiver produces is the real answer.
+  test "a session priced above the whole sustainable rate points at the idle-fleet waiver" do
     calibrate(capacity_usd: 1000.0)
     seed(current_5h: 0.30, reset_5h: 100.minutes.from_now)
     burn_rate(6.0)
@@ -170,7 +172,7 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
     assert_equal :pacing_curve, decision.ceiling
 
     held_until = explain(decision).lines.last.sentence
-    assert_match(/Not until the fleet empties/, held_until)
+    assert_match(/Not while anything is running/, held_until)
     refute_match(/falls below -/, held_until)
   end
 
@@ -182,6 +184,9 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
     assert_match(/\AEach was paused mid-run when a window's spot budget ran out/, pacing)
     assert_match(/asleep rather than running, so they count toward neither the sessions-running figure nor the concurrency limit/, pacing)
     assert_match(/The ceiling is not pausing anything right now/, pacing)
+    # The resume condition is the whole gate, not just the budget: during a pacing
+    # hold the budget already has room and these sessions still do not resume.
+    assert_match(/once the gate allows spot work again — budget, pacing curve and a free slot/, pacing)
   end
 
   test "a spent budget says the ceiling IS pausing running sessions right now" do
@@ -190,7 +195,7 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
   end
 
   test "zero asleep is stated rather than left as a bare zero" do
-    assert_equal "None is asleep in the spot queue.",
+    assert_equal "The ceiling has stopped nothing, or has already put everything back.",
       explain(pacing_hold, paused_count: 0).sessions_asleep
   end
 
@@ -198,6 +203,73 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
     singular = explain(pacing_hold, paused_count: 1).sessions_asleep
     assert_match(/\AIt was paused mid-run/, singular)
     assert_match(/It resumes automatically/, singular)
+  end
+
+  # --- mixed ceilings ----------------------------------------------------------
+
+  # With one window's budget spent and the other only ahead of its curve, both
+  # are `at_limit?` but only the first is "spent". Copy built from every holding
+  # window would say the weekly budget is gone when it has money left, and would
+  # bound the wait by a rollover that window does not have to reach.
+  test "a mixed hold calls only the spent window spent, and bounds on that window alone" do
+    calibrate(capacity_usd: 1000.0)
+    calibrate(capacity_usd: 1000.0, window: QuotaCapacityEstimate::WEEKLY)
+    seed(current_5h: 0.85, current_7d: 0.30,
+         reset_5h: 100.minutes.from_now, reset_7d: 5.days.from_now)
+    burn_rate(2.0)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    assert_equal :spot_budget, decision.ceiling
+    assert_equal %w[5-hour weekly], decision.held_windows.keys
+    assert_equal [ "5-hour" ], decision.budget_spent_windows.keys,
+      "the weekly window is ahead of its curve, not spent"
+
+    lines = explain(decision).lines
+    assert_match(/The 5-hour window's spot budget is spent/, lines.first.sentence)
+    refute_match(/weekly/, lines.first.sentence)
+    # The 5-hour window's 100 minutes, not the weekly window's 5 days.
+    assert_match(/No sooner than the 5-hour window's rollover, in about 2 hours/, lines.last.sentence)
+  end
+
+  # --- no burn rates to price with ---------------------------------------------
+
+  # A fresh deployment, or a stalled burn-rate cron: both rates are nil. The copy
+  # must not print "plus the an unknown rate", and must not silently subtract a
+  # zero it is calling unknown.
+  test "a pacing hold with no sampled burn rates names the curve instead of a rate" do
+    seed(current_5h: 0.70, reset_5h: 100.minutes.from_now)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    assert_equal :pacing_curve, decision.ceiling
+    assert_nil decision.fleet_burn_usd_per_minute
+
+    lines = explain(decision).lines
+    assert_match(/past where its pacing curve says it should be by now/, lines.first.sentence)
+    assert_match(/falls back inside what the window can carry/, lines.last.sentence)
+    [ lines.first.sentence, lines.last.sentence ].each do |sentence|
+      refute_match(/an unknown rate/, sentence)
+      refute_match(/\$0\.00/, sentence)
+    end
+  end
+
+  # A rate three orders of magnitude below a budget figure still has to render as
+  # a number a reader can act on.
+  test "a sub-cent threshold is not rounded away to zero" do
+    calibrate(capacity_usd: 1000.0)
+    seed(current_5h: 0.7992, reset_5h: 100.minutes.from_now)
+    burn_rate(0.006)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    assert_equal :pacing_curve, decision.ceiling
+    # $0.80 of budget over 100 minutes is $0.008/min sustainable, less the
+    # $0.006/min the next session is priced at: a $0.002/min threshold.
+
+    held_until = explain(decision).lines.last.sentence
+    refute_match(%r{\$0\.00/min}, held_until,
+      "a real threshold must not render as $0.00/min")
   end
 
   # --- not held ----------------------------------------------------------------

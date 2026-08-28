@@ -356,15 +356,22 @@ denominator and **the rate keeps dropping**. Waiting widens the gap. What lifts 
 fleet's burn falling, which means running sessions ending — and nothing in the model predicts when
 that happens.
 
-So the surfaces say: *"When the fleet's burn falls below $X/min"*, where `$X` is the sustainable rate
-less what the next session is itself projected to spend. The window's rollover is offered after it,
-labelled as an **upper bound on the wait rather than a forecast of it** — the rollover refills the
-budget, so the hold cannot outlast it.
+So the surfaces say: *"When the fleet's burn falls to or below $X/min"*, where `$X` is the sustainable
+rate less what the next session is itself projected to spend — the gate tests the sum of the two, and
+`Window#within_pace?` is `<=`. The budget and a free slot still have to hold, and the sentence says
+so. The window's rollover is offered after it, labelled as an **upper bound on the wait rather than a
+forecast of it** — the rollover refills the budget, so the hold cannot outlast it.
 
 When one session on its own is priced above the whole sustainable rate, there is no fleet burn low
-enough to admit it and the copy says so: the hold clears when the fleet empties, at which point the
-[idle-fleet waiver](#there-is-always-room-for-one-session) admits one session and the
-deployment runs in a duty cycle.
+enough to admit it and the copy says so: nothing fits beside the work already in flight, and with
+nothing running at all the [idle-fleet waiver](#there-is-always-room-for-one-session) admits one
+session so the deployment runs in a duty cycle.
+
+A hold can involve both window ceilings at once — one window's budget spent while the other is only
+ahead of its curve. `Decision#ceiling` reports `spot_budget` then, because that is the stricter of
+the two, and `Decision#budget_spent_windows` is what the copy names: saying "the 5-hour and weekly
+windows' budget is spent" would be false of the second, and bounding the wait on the weekly rollover
+would over-claim a window that clears as soon as the fleet slows.
 
 ### What "hold" does
 

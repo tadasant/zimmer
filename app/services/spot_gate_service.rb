@@ -274,6 +274,30 @@ class SpotGateService
       { "5-hour" => five_hour, "weekly" => weekly }.compact.select { |_label, r| r.at_limit? }
     end
 
+    # The subset of those whose non-reserved budget is actually SPENT, as opposed
+    # to merely being outrun.
+    #
+    # The two are not the same set, and conflating them puts a false sentence on
+    # the page: with the 5-hour budget spent and the weekly window only ahead of
+    # its curve, `ceiling` is `:spot_budget` while `held_windows` still names both
+    # — so copy built from `held_windows` would say the weekly budget is spent
+    # when it has money left. It also decides the rollover: a pace-held window can
+    # clear the moment the fleet slows, so including it in a "no sooner than"
+    # bound over-claims.
+    def budget_spent_windows
+      held_windows.select { |_label, r| r.stops_running_work? }
+    end
+
+    # The latest rollover among `windows`, or nil when any of them has no
+    # rollover time to read. The LATEST, because every window has to clear before
+    # spot work runs again, so the last one is the binding constraint.
+    def latest_rollover(windows)
+      seconds = windows.each_value.map { |r| r.window.seconds_remaining }
+      return nil if seconds.empty? || seconds.any?(&:nil?)
+
+      seconds.max
+    end
+
     # The burn rate the fleet has to fall below before the pacing curve releases
     # spot work: the tightest sustainable rate among the windows now holding it.
     # Nil when no window holding this decision is denominated in dollars, or when
@@ -293,8 +317,9 @@ class SpotGateService
     #
     #   :fleet_cap     — a slot frees when a session ends. Nothing predicts that.
     #   :spot_budget   — the money is gone. Only a rollover puts it back, so the
-    #                    rollover IS the answer, and it is a lower bound: the
-    #                    pool average has to actually fall too.
+    #                    rollover IS the answer, and it is a lower bound: the pool
+    #                    average has to actually fall, and any window that is
+    #                    merely ahead of its curve has to come back too.
     #   :burn_must_fall — the pacing case, and the one worth being blunt about.
     #                    The sustainable rate is what is LEFT over the time LEFT.
     #                    While the fleet outruns it the numerator falls faster
@@ -305,19 +330,15 @@ class SpotGateService
     #                    and refills the budget. So the seconds here are an upper
     #                    bound on the wait, not a forecast of it.
     #
-    # The rollover is the LATEST of the holding windows: every one of them has to
-    # clear, so the last one to roll over is the binding constraint.
+    # Each kind draws its rollover from the windows that kind is actually about —
+    # see #budget_spent_windows for why the two sets differ.
     def resume_outlook
-      kind = case ceiling
-      when :fleet_cap then return [ :fleet_cap, nil ]
-      when :spot_budget then :spot_budget
-      when :pacing_curve then :burn_must_fall
-      else return [ nil, nil ]
+      case ceiling
+      when :fleet_cap then [ :fleet_cap, nil ]
+      when :spot_budget then [ :spot_budget, latest_rollover(budget_spent_windows) ]
+      when :pacing_curve then [ :burn_must_fall, latest_rollover(held_windows) ]
+      else [ nil, nil ]
       end
-
-      rollovers = held_windows.each_value.map { |r| r.window.seconds_remaining }
-
-      [ kind, rollovers.any?(&:nil?) || rollovers.empty? ? nil : rollovers.max ]
     end
 
     def to_h
@@ -539,7 +560,7 @@ class SpotGateService
   # this — a fleet of priority work crowding spot work out is the intent.
   def at_fleet_cap(pool, fleet_cap)
     decision(
-      allowed: false, reason: "fleet_at_cap",
+      allowed: false, reason: FLEET_CAP_REASON,
       detail: "Holding spot sessions: #{slots_phrase(fleet_cap)} taken. Every running session " \
               "counts, priority included — priority work is meant to crowd spot work out. Raise the " \
               "limit on /quotas to widen it.",

@@ -118,7 +118,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_match(/Ceiling holding spot work:\*\* `pacing_curve`/, output)
     assert_match(/Why it's held:\*\* The 5-hour window's spot budget still has \$500 left/, output)
     assert_match(/already running are not paused for this/, output)
-    assert_match(/Held until:\*\* When the fleet's burn falls below/, output)
+    assert_match(/Held until:\*\* When the fleet's burn falls to or below/, output)
     assert_match(/upper bound on the wait, not a forecast/, output)
   end
 
@@ -129,7 +129,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   test "get_spot_policy reports how many spot sessions are asleep in the queue" do
     output = get_policy
     assert_match(/Spot sessions asleep in the spot queue:\*\* 0/, output)
-    assert_match(/asleep in the spot queue:\*\* 0\. None is asleep in the spot queue\./, output)
+    assert_match(/asleep in the spot queue:\*\* 0\. The ceiling has stopped nothing/, output)
 
     Session.create!(
       git_root: "https://github.com/t/r.git", prompt: "work", status: :waiting,
