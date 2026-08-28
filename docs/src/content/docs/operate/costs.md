@@ -316,13 +316,18 @@ model; `:harness` and `:work` are cost you can see but not directly legislate.
 
 ### When a feature moves rather than disappears
 
-Shrinking an injected block usually means the content still gets read — it just arrives
-another way. `provenance_via_mcp` is the worked example: with it on, `session_hierarchy` and
-`human_messages` shrink to a pointer, and what a session then fetches with
-`get_session_provenance` lands on its own `provenance_tool` line rather than in the shared
-"MCP responses" bucket. Without that third line the experiment would read as pure savings
-while the bytes had merely moved. When you shrink something, give what replaces it a line of
-its own, placed **before** the generic detector that would otherwise swallow it.
+Dropping an injected block usually means the content still gets read — it just arrives another
+way. Provenance is the worked example: `session_hierarchy` and `human_messages` are no longer
+injected at all, and what a session fetches with `get_session_provenance` instead lands on its own
+`provenance_tool` line rather than in the shared "MCP responses" bucket. Without that third line the
+change would read as pure savings while the bytes had merely moved. When you stop injecting
+something, give what replaces it a line of its own, placed **before** the generic detector that
+would otherwise swallow it.
+
+**Keep the detector for the block you stopped injecting.** Ingestion re-scans the transcripts still
+on disk, so a removed detector does not zero a line — it strands a month of history in the residual.
+`session_hierarchy` and `human_messages` still match, and trending to zero on new transcripts while
+`provenance_tool` picks up is the before/after.
 
 ### What the attribution cannot see
 
@@ -391,11 +396,14 @@ ago on the one tick where nothing has been observed yet and every session really
 For `mcp_tool_search` the boundary is **2026-08-22 13:55:34 UTC** (`b59d9ad7`, which shipped
 it on for everyone).
 
-`provenance_via_mcp` has no boundary even though it also ships **on**. Nothing before it ran
-with provenance on demand, so a date-derived "before" cohort would be every session Zimmer
-has ever run, compared against a handful — a ratio that would look like an answer and be one
-only about the date. Every session from the deploy on is tagged live; earlier ones stay
-honestly untagged.
+### Retiring a setting
+
+When the question a setting was asking has been answered and the losing branch is deleted, its
+registry entry and its `AppSetting` column go with it. The `session_experimental_flags` rows already
+written under that key are left alone — they honestly record what those sessions ran under — and the
+report simply stops rendering a section for a key the registry no longer knows. `provenance_via_mcp`
+went that way: the answer was to stop injecting provenance entirely, so there is no longer a switch
+to compare across, and the before/after lives on the context-features table instead.
 
 ### Why the report hedges as hard as it does
 

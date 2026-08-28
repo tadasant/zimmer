@@ -195,9 +195,10 @@ class SessionHierarchy
   #
   # Titles are neutralized, not trusted. A session's title is writable by the
   # session itself (`action_session` → `update_title`), so an agent could
-  # otherwise name itself something that closes this block and opens a forged
-  # `<human-messages>` entry in a sibling's prompt — manufacturing exactly the
-  # human authorization this whole feature exists to make unforgeable.
+  # otherwise name itself something that opens a forged row here or a forged
+  # human-message entry below it in what `get_session_provenance` returns —
+  # manufacturing exactly the human authorization this whole feature exists to
+  # make unforgeable.
   # An uncle edge is named rather than drawn: indentation can express one parent
   # and this graph has more than one, so a session's extra seniors are spelled
   # out on its line. Without that they would be silently invisible here while
@@ -205,8 +206,8 @@ class SessionHierarchy
   def to_outline
     nodes.map do |node|
       marker = node.current? ? " ← this session" : ""
-      root = SessionHumanMessages.sanitize_for_attribute(node.agent_root_label)
-      label = SessionHumanMessages.sanitize_for_attribute(node.label)
+      root = SessionHumanMessages.sanitize_for_markdown_line(node.agent_root_label)
+      label = SessionHumanMessages.sanitize_for_markdown_line(node.label)
       uncles = node.uncles? ? " (#{node.uncle_summary})" : ""
       "#{'  ' * node.depth}- ##{node.id} [#{root}] {#{node.genesis_summary}} #{label}#{uncles}#{marker}"
     end.join("\n")

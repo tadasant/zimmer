@@ -91,7 +91,8 @@ module Supervisor
       }
 
       assert_equal "Tadas is master", @tadas.reload.notes
-      assert_includes SessionHumanMessages.new(session).render_for_prompt, "Tadas is master"
+      described = SessionHumanMessages.new(session).described_authors(limit: 25)
+      assert_equal [ "Tadas is master" ], described.map(&:author_notes)
     end
 
     test "a new human can be added" do

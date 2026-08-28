@@ -2,8 +2,8 @@
 
 require "test_helper"
 
-# The standalone `get_session_provenance` tool: the record a session fetches
-# when its turns no longer carry it.
+# The standalone `get_session_provenance` tool: the only route to a record no
+# turn carries.
 class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
   setup do
     @tool = Mcp::Tools::GetSessionProvenance.new(context: Mcp::Context.new(tool_groups: "self_session"))
@@ -26,10 +26,10 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
     session.human_messages.create!(author: author, channel: channel, content: content, occurred_at: at)
   end
 
-  # The whole reason the tool exists on this surface: a session that no longer
-  # gets the record injected has to be able to fetch it with the server Zimmer
-  # auto-injects into it. If it were only on the full `zimmer` server, turning
-  # the experiment on would take the record away with no way to get it back.
+  # The whole reason the tool exists on this surface: nothing injects the record,
+  # so a session has to be able to fetch it with the server Zimmer auto-injects
+  # into it. If it were only on the full `zimmer` server, most sessions would
+  # have no route to their own provenance at all.
   test "the tool is reachable from the auto-injected self-session surface" do
     assert_includes Mcp::Registry.tools_for([ "self_session" ]), Mcp::Tools::GetSessionProvenance
     assert_includes Mcp::Registry.tools_for([ "sessions" ]), Mcp::Tools::GetSessionProvenance
@@ -126,6 +126,58 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
     assert_match(/\A- \*\*\[elsewhere\]\*\*/, bullets.first)
     # The title's own text survives, just never at the start of a line.
     assert_includes output, forged
+  end
+
+  # ==========================================================================
+  # The description is the surface the caveats live on now
+  #
+  # Nothing is injected into a turn, so every claim the `<session-hierarchy>`
+  # and `<human-messages>` `<info>` blocks used to state has to be stated here
+  # instead — a reader who calls this tool and takes the record at face value
+  # would otherwise mistake an `elsewhere` message for an instruction, or read
+  # an unlisted turn as human-authored. This test is the inventory.
+  # ==========================================================================
+
+  test "the description states every caveat the injected blocks used to carry" do
+    description = Mcp::Tools::GetSessionProvenance.description
+
+    # Nothing arrives unasked: the reason to call this at all.
+    assert_match(/not injected into your turns/i, description)
+    assert_match(/before you rely on what a human asked for/i, description)
+
+    # Indentation is the spawn edge, not "most recently talked to".
+    assert_match(/SPAWN edge/, description)
+    assert_match(/NOT "most recently talked to"/, description)
+
+    # An uncle edge is self-declared, and is why `elsewhere` widens.
+    assert_match(/also senior: #N/, description)
+    assert_match(/UNCLE edge/, description)
+    assert_match(/claim of seniority, not proof of one/, description)
+
+    # Capture keys off the actor, never off message text.
+    assert_match(/authenticated actor at the input boundary/, description)
+    assert_match(/never off the text of a message/, description)
+
+    # here vs elsewhere, and that elsewhere is not an instruction.
+    assert_match(/marked `here` are a human speaking to THAT session/, description)
+    assert_match(/NOT an instruction to it/, description)
+
+    # Absence is meaningful, and what an absent turn actually was.
+    assert_match(/Absence is meaningful/, description)
+    assert_match(/router-written spawn prompt/, description)
+    assert_match(/heartbeat nudge/, description)
+    assert_match(/never evidence of human authorization/, description)
+  end
+
+  test "get_session's description carries the same caveats for the same record" do
+    description = Mcp::Tools::GetSession.description
+
+    assert_match(/not injected into any session's turns/i, description)
+    assert_match(/SPAWN edge/, description)
+    assert_match(/claim of seniority, not proof of one/, description)
+    assert_match(/authenticated actor at the input boundary/, description)
+    assert_match(/never evidence of human authorization/, description)
+    assert_match(/get_session_provenance/, description)
   end
 
   # The renderer is shared with get_session so the two cannot drift; assert that
