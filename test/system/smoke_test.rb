@@ -51,7 +51,14 @@ class SmokeTest < ApplicationSystemTestCase
     # budget and prevents the form-submit redirect from arriving in time.
     # The smoke test isn't exercising trigger semantics — that's covered
     # by AoEventTriggerJob's own tests.
+    #
+    # `set` is stubbed alongside `perform_later` because the session_needs_input
+    # wake is enqueued as `AoEventTriggerJob.set(wait: ...).perform_later(...)`,
+    # and that call reaches ActiveJob through the ConfiguredJob `set` returns —
+    # never through the class method stubbed below. Returning the class itself
+    # collapses the chain back onto the stub.
     AoEventTriggerJob.stubs(:perform_later)
+    AoEventTriggerJob.stubs(:set).returns(AoEventTriggerJob)
   end
 
   teardown do
