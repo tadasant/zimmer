@@ -993,6 +993,144 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
+  # The other exit door: a process nobody reaped (zimmer#476)
+  #
+  # AgentSessionJob notices a dead agent process two ways. `wait_nonblock` is the
+  # normal one and hands a real status to #handle_exit. The other is a signal-0
+  # liveness check that catches a process reaped somewhere else — and it used to
+  # park the session without classifying anything at all, so every recovery below
+  # was unreachable through it.
+  #
+  # These pin what #handle_unreaped_exit does and does not do: every rung that
+  # reads evidence applies, and nothing that would require a status it does not
+  # have is invented.
+  # ===========================================================================
+
+  test "handle_unreaped_exit parks a turn that produced output" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_unreaped_exit(working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "a turn that wrote something and then vanished is still a completed turn"
+    assert_equal :idle, manager.current_state
+    assert_nil @session.reload.metadata["failure_reason"],
+      "a missing status is not evidence of failure"
+  end
+
+  test "handle_unreaped_exit restarts a turn whose runtime never wrote a line" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+
+    recovery_pid = 99999
+    call_count = 0
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      call_count += 1
+      { pid: call_count == 1 ? 12345 : recovery_pid, stderr_log_path: stderr_path }
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_unreaped_exit(working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action,
+      "the empty-turn backstop must be reachable through the signal-0 door too"
+    assert_equal recovery_pid, manager.current_pid
+    assert_equal 1, @session.reload.metadata["empty_turn_recovery_count"]
+  end
+
+  test "handle_unreaped_exit leaves a conversation the runtime did persist alone" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+    write_runtime_transcript("/tmp/test-clone", @session.session_id)
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_unreaped_exit(working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input, decision.action,
+      "a lagging poller must not be enough to abandon a conversation that exists"
+    assert_nil @session.reload.metadata["empty_turn_recovery_count"]
+  end
+
+  test "handle_unreaped_exit routes a context length error to compact recovery" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_with_api_error("Prompt is too long")
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_unreaped_exit(working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_match(/Context length/, decision.error_message)
+    assert_match(/Context length error detected/, @session.logs.pluck(:content).join("\n"))
+  end
+
+  test "handle_unreaped_exit defers to the recovery service when the kill was recovery-initiated" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_file_system.write(stderr_path, "")
+    @session.update!(metadata: @session.metadata.merge("recovery_termination_initiated" => true))
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_unreaped_exit(working_dir: "/tmp/test-clone")
+
+    assert_equal :aborted, decision.action,
+      "the recovery service owns the transition it set out to make"
+    assert_equal :idle, manager.current_state
+  end
+
+  test "handle_unreaped_exit aborts when the session is no longer running" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+    @session.pause!
+
+    decision = manager.handle_unreaped_exit(working_dir: "/tmp/test-clone")
+
+    assert_equal :aborted, decision.action
+  end
+
+  test "handle_unreaped_exit does not answer an exit another job now owns" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil, running_job_id: "job-b")
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = ProcessLifecycleManager.new(
+      session: @session,
+      cli_adapter: @mock_cli_adapter,
+      process_manager: @mock_process_manager,
+      log_buffer: @log_buffer,
+      file_system: @mock_file_system,
+      owning_job_id: "job-a"
+    )
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_unreaped_exit(working_dir: "/tmp/test-clone")
+
+    assert_equal :aborted, decision.action,
+      "a superseded job must not answer this exit with a respawn"
+    assert_equal 1, @mock_cli_adapter.executed_commands.length
+  end
+
+  # ===========================================================================
   # Held runtime session id ("Session ID … is already in use")
   #
   # The other half of the 4668 dead end: a replacement process left running by an
@@ -1834,7 +1972,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     # Verify logs show the context length error was detected
     log_contents = @session.logs.pluck(:content).join("\n")
-    assert_match(/Context length error detected on successful exit/, log_contents)
+    assert_match(/Context length error detected/, log_contents)
   end
 
   # ===========================================================================
@@ -2303,7 +2441,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # Verify logs show the detection
     @log_buffer.flush
     log_contents = @session.logs.pluck(:content).join("\n")
-    assert_match(/Retryable API error detected on successful exit/, log_contents)
+    assert_match(/Retryable API error detected/, log_contents)
   end
 
   test "handle_exit returns failed when API error retry is exhausted" do
@@ -2357,7 +2495,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "a tool call that would not parse is a sampling artifact — respawn and take another draw"
 
     @log_buffer.flush
-    assert_match(/Retryable API error detected on successful exit/, @session.logs.pluck(:content).join("\n"))
+    assert_match(/Retryable API error detected/, @session.logs.pluck(:content).join("\n"))
   end
 
   # The other half. Retrying bets the failure is stochastic; a deterministically
@@ -2536,7 +2674,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     @log_buffer.flush
     log_contents = @session.logs.pluck(:content).join("\n")
-    assert_match(/Not logged in detected on successful exit/, log_contents)
+    assert_match(/Not logged in detected/, log_contents)
   end
 
   test "handle_exit routes to auth recovery on a non-zero failure exit and continues" do
@@ -2750,7 +2888,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
     @log_buffer.flush
     log_contents = @session.logs.pluck(:content).join("\n")
-    assert_match(/Not logged in detected on successful exit/, log_contents)
+    assert_match(/Not logged in detected/, log_contents)
     assert_no_match(/Process exited successfully/, log_contents,
       "The turn did not complete, so nothing may report that it did")
   end

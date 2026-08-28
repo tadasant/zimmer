@@ -3017,6 +3017,11 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Test fallback process detection (Issue pulsemcp/agents#316)
+  #
+  # The session set up above carries a transcript, so this is the "the runtime
+  # wrote something and then vanished" case: a completed turn, and the fallback
+  # door parks it. The companion tests below cover the same door for a runtime
+  # that wrote nothing and for one whose stop has a classifiable cause (zimmer#476).
   test "should detect dead process via signal check when wait fails" do
     job = AgentSessionJob.new
 
@@ -3062,6 +3067,146 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify warning log was created
     warning_log = @session.logs.find { |log| log.content.include?("detected via signal check") }
     assert_not_nil warning_log
+
+    assert_equal 1, mock_cli_adapter.executed_commands.length,
+      "a turn that produced output must not be restarted"
+  end
+
+  # === The signal-0 fallback classifies the exit (zimmer#476) =================
+  #
+  # The monitoring loop has two doors onto a dead agent process. Section 2 reaps a
+  # status and runs the recovery ladder; this one — the signal-0 liveness check —
+  # used to pause the session without classifying anything, so a process that died
+  # before writing a line parked with a blank transcript and waited for a human to
+  # type "continue". These pin that both doors now agree.
+
+  test "signal-check fallback restarts a turn whose runtime wrote nothing, then parks once the budget is spent" do
+    job = AgentSessionJob.new
+
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+
+    # The runtime never wrote a line — neither store holds anything.
+    @session.update!(transcript: nil)
+
+    pid_counter = 12345
+    mock_cli_adapter.execute_hook = ->(opts) do
+      pid_counter += 1
+      { pid: pid_counter, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+
+    # wait never reports the exit; only the signal check notices the process is gone.
+    mock_process_manager.wait_hook = ->(pid, flags) { nil }
+    mock_process_manager.running_hook = ->(pid) { false }
+
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; true; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.stub(:sleep, ->(_duration) { }) do
+            job.perform(@session.id)
+          end
+        end
+      end
+    end
+
+    @session.reload
+
+    assert_equal ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES,
+      @session.metadata["empty_turn_recovery_count"],
+      "the empty-turn backstop must be reachable through the signal-0 door"
+    assert_equal 1 + ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES,
+      mock_cli_adapter.executed_commands.length,
+      "each restart re-spawns the turn rather than parking it"
+    assert_equal "needs_input", @session.status,
+      "the backstop is bounded — the session still comes to rest once the budget is spent"
+  end
+
+  test "signal-check fallback fails the session with a classified reason when recovery is exhausted" do
+    job = AgentSessionJob.new
+
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "Error: prompt is too long for the context window")
+
+    pid_counter = 12345
+    mock_cli_adapter.execute_hook = ->(opts) do
+      pid_counter += 1
+      { pid: pid_counter, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+    mock_cli_adapter.resume_hook = ->(opts) do
+      pid_counter += 1
+      { pid: pid_counter, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+
+    # Every process is gone by the time we look, and wait never reports any of them.
+    mock_process_manager.wait_hook = ->(pid, flags) { nil }
+    mock_process_manager.running_hook = ->(pid) { false }
+
+    original_new = ContextLengthRetryService.method(:new)
+    ContextLengthRetryService.define_singleton_method(:new) do |session, cli_adapter:, process_manager:, log_buffer:, file_system: nil|
+      service = original_new.call(session, cli_adapter: cli_adapter, process_manager: process_manager, log_buffer: log_buffer, file_system: file_system)
+      service.define_singleton_method(:sleep) { |_| }
+      service
+    end
+
+    begin
+      GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+        TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+          mock_poller = Object.new
+          def mock_poller.poll_and_broadcast; true; end
+          mock_poller
+        }) do
+          Thread.stub(:new, ->(&block) {
+            mock_thread = Object.new
+            def mock_thread.alive?; false; end
+            def mock_thread.kill; end
+            def mock_thread.join(*); end
+            mock_thread
+          }) do
+            job.stub(:sleep, ->(_duration) { }) do
+              job.perform(@session.id)
+            end
+          end
+        end
+      end
+    ensure
+      ContextLengthRetryService.define_singleton_method(:new) do |session, cli_adapter:, process_manager:, log_buffer:, file_system: nil|
+        original_new.call(session, cli_adapter: cli_adapter, process_manager: process_manager, log_buffer: log_buffer, file_system: file_system)
+      end
+    end
+
+    @session.reload
+
+    assert_equal "failed", @session.status,
+      "a stop the ladder classified as terminal must fail rather than park unexplained"
+    assert_equal "context_length_compact_failed", @session.metadata["failure_reason"],
+      "both exit doors name a failure the same way"
+    assert_equal 2, @session.metadata["compact_retry_count"]
   end
 
   # Test transcript polling failure tracking (Issue pulsemcp/agents#316)
