@@ -114,6 +114,32 @@ class SpotGateService
   # persisted would make the banners on those sessions unreadable.
   UTILIZATION_REASON = "at_utilization_limit"
 
+  # Every session slot is taken. Named for the same reason as above: surfaces
+  # branch on it, and a bare string in three files drifts.
+  FLEET_CAP_REASON = "fleet_at_cap"
+
+  # THREE things hold spot work, and they behave differently enough that a
+  # surface which does not name which one is holding is telling the reader very
+  # little. `Decision#ceiling` answers with one of these.
+  #
+  #   :fleet_cap    — every session slot is taken. Nothing to do with quota.
+  #                   Clears when a running session finishes.
+  #   :spot_budget  — a window's non-reserved budget is spent. The ONLY one that
+  #                   also pauses spot sessions already running
+  #                   (Reading#stops_running_work?), and the only one a clock
+  #                   fixes: the money comes back when the window rolls over.
+  #   :pacing_curve — the budget still has room, but the fleet is spending it
+  #                   faster than the window can carry from here. Running work is
+  #                   never interrupted for this. It clears when the fleet's burn
+  #                   falls, which waiting alone does not do — see
+  #                   Decision#resume_outlook.
+  #
+  # `:spot_budget` and `:pacing_curve` share `UTILIZATION_REASON` on the wire,
+  # because that string is persisted on sessions and cannot be split without
+  # breaking the banners on the ones already carrying it. So the distinction is
+  # derived here rather than encoded in the reason.
+  CEILINGS = %i[fleet_cap spot_budget pacing_curve].freeze
+
   # One quota window's capacity model, plus what this decision made of it.
   # Wraps QuotaCapacityModel::Window so a Decision is a value that can be
   # rendered without re-reading the database.
@@ -232,10 +258,73 @@ class SpotGateService
       fleet_burn_usd_per_minute.to_f + candidate_burn_usd_per_minute.to_f
     end
 
+    # Which of the three CEILINGS is holding spot work, or nil when none is.
+    def ceiling
+      return nil if allowed?
+      return :fleet_cap if reason == FLEET_CAP_REASON
+      return nil unless reason == UTILIZATION_REASON
+
+      stops_running_work? ? :spot_budget : :pacing_curve
+    end
+
+    # The windows that refused, labelled. Empty unless a window is what refused.
+    def held_windows
+      return {} unless reason == UTILIZATION_REASON
+
+      { "5-hour" => five_hour, "weekly" => weekly }.compact.select { |_label, r| r.at_limit? }
+    end
+
+    # The burn rate the fleet has to fall below before the pacing curve releases
+    # spot work: the tightest sustainable rate among the windows now holding it.
+    # Nil when no window holding this decision is denominated in dollars, or when
+    # none has a rollover time to divide by.
+    def sustainable_usd_per_minute
+      rates = held_windows.each_value.select(&:dollars?)
+        .filter_map { |r| r.window.sustainable_units_per_minute }
+        .reject(&:infinite?)
+
+      rates.min
+    end
+
+    # When the hold lifts on its own, as far as the model can honestly say.
+    #
+    # Returns `[kind, seconds]`, where `seconds` is a rollover time and may be
+    # nil. There is no fourth answer that is a real ETA, and this is the point:
+    #
+    #   :fleet_cap     — a slot frees when a session ends. Nothing predicts that.
+    #   :spot_budget   — the money is gone. Only a rollover puts it back, so the
+    #                    rollover IS the answer, and it is a lower bound: the
+    #                    pool average has to actually fall too.
+    #   :burn_must_fall — the pacing case, and the one worth being blunt about.
+    #                    The sustainable rate is what is LEFT over the time LEFT.
+    #                    While the fleet outruns it the numerator falls faster
+    #                    than the denominator, so the rate keeps dropping and
+    #                    waiting makes the gap WIDER, never narrower. The hold
+    #                    lifts when the fleet's burn falls — running sessions
+    #                    ending is what does that — or when the window rolls over
+    #                    and refills the budget. So the seconds here are an upper
+    #                    bound on the wait, not a forecast of it.
+    #
+    # The rollover is the LATEST of the holding windows: every one of them has to
+    # clear, so the last one to roll over is the binding constraint.
+    def resume_outlook
+      kind = case ceiling
+      when :fleet_cap then return [ :fleet_cap, nil ]
+      when :spot_budget then :spot_budget
+      when :pacing_curve then :burn_must_fall
+      else return [ nil, nil ]
+      end
+
+      rollovers = held_windows.each_value.map { |r| r.window.seconds_remaining }
+
+      [ kind, rollovers.any?(&:nil?) || rollovers.empty? ? nil : rollovers.max ]
+    end
+
     def to_h
       {
         allowed: allowed?,
         reason: reason,
+        ceiling: ceiling,
         detail: detail,
         active_sessions: active_sessions,
         fleet_cap: fleet_cap,

@@ -34,10 +34,26 @@ module Mcp
 
         That covers every spot TURN, not just first starts — a session woken by a trigger, a follow-up, a
         poller or a restart is deferred the same way, so while a window is ahead of its curve the only
-        way a spot-designated session runs is to be promoted to priority first. Spot sessions already
-        running are paused mid-run as well. A held or paused session goes dormant in `waiting` and comes
-        back on its own — a paused one once the fleet is back under the curve with a few points of the
-        window to spare, a held one at the re-check its `spot_hold_retry_at` names.
+        way a spot-designated session runs is to be promoted to priority first. A held or paused session
+        goes dormant in `waiting` and comes back on its own — a paused one once the fleet is back under
+        the curve with a few points of the window to spare, a held one at the re-check its
+        `spot_hold_retry_at` names.
+
+        THREE different ceilings hold spot work, and `ceiling` in the output names which one is doing it,
+        because they clear in three different ways:
+
+        - `fleet_cap` — every session slot is taken. Clears when a running session finishes.
+        - `spot_budget` — a window's non-reserved budget is spent. The ONLY ceiling that also pauses spot
+          sessions already running, and the only one a clock fixes: the money comes back at rollover.
+        - `pacing_curve` — the budget still has room, but the fleet is spending it faster than the window
+          can carry. New turns wait at the door; work already running is never interrupted for this. It
+          clears when the fleet's burn falls, which is running sessions ending — waiting does not do it,
+          because the sustainable rate is the budget left over the time left and keeps falling while the
+          fleet outruns it.
+
+        `spot_budget` and `pacing_curve` share the reason string `at_utilization_limit` on the wire; it
+        is persisted on sessions and cannot be split without breaking their banners, so read `ceiling`
+        rather than the reason when you need to tell them apart.
 
         Windows are read ON AVERAGE across every account, including ones in needs_reauth. When a window
         has no usable dollar estimate yet, the same curve is applied to percentages instead and the
@@ -56,9 +72,13 @@ module Mcp
         Returns:
         - the gate setting (on/off, both priority reserves as a percentage AND as dollars, and the max
           sessions at once)
-        - the current decision: running or held, the reason, and how many sessions are running
+        - the current decision: running or held, the reason, which ceiling is holding, and how many
+          sessions are running
+        - when the hold lifts, as far as the model can honestly say — for two of the three ceilings that
+          is a condition rather than a time, and it is stated as one instead of being dressed up as an ETA
         - what the running fleet is burning in $/min, and what one more session is projected to add
-        - how many running spot sessions are currently paused for the ceiling, and what brings them back
+        - how many spot sessions are asleep in the spot queue (dormant in `waiting`, NOT running — this
+          number is unrelated to the concurrency limit and routinely exceeds it), and what brings them back
         - each window in full: estimated capacity, dollars remaining, dollars reserved, spot budget left,
           how long until it rolls over, the sustainable burn rate that empties it exactly then, and where
           the pacing curve says the window should be right now
@@ -87,6 +107,8 @@ module Mcp
         # The same method /quotas renders, so the page and this tool cannot answer
         # the same question differently.
         decision = SpotGateService.evaluate
+        paused_count = SpotSessionPause.paused_count
+        explanation = SpotHoldExplanation.new(decision, paused_count: paused_count)
         classes = SessionGenesis.effective_classes(setting.genesis_class_overrides)
         counts = Session.genesis_counts
 
@@ -103,7 +125,12 @@ module Mcp
           "",
           "- **Spot sessions:** #{decision.allowed? ? "running" : "HELD"}",
           "- **Reason:** `#{decision.reason}`",
+          "- **Ceiling holding spot work:** #{decision.ceiling ? "`#{decision.ceiling}`" : "none"}",
           "- **Detail:** #{decision.detail}",
+          # The same two lines the /quotas card renders, from the same object, so
+          # an agent reading this tool and a human reading the page are told the
+          # same thing about which ceiling is holding and what lifts it.
+          *explanation.lines.map { |line| "- **#{line.label}:** #{line.sentence}" },
           "- **Running Claude Code sessions:** #{decision.active_sessions}",
           "- **Fleet burn rate:** #{rate(decision.fleet_burn_usd_per_minute)} " \
           "(every running session, priority included — they spend against the same windows)",
@@ -111,13 +138,11 @@ module Mcp
           "(from the last #{HarnessModelBurnRate::SAMPLE_SESSIONS} sessions of its harness+model combination, " \
           "or the fleet average when that combination has never been sampled)",
           # The decision above is about a session TAKING A TURN — its first or its
-          # next. This is the same policy applied to the ones already mid-turn,
-          # which is what keeps the budget a ceiling on spend rather than a floor
-          # under when new work stops. Same number the /quotas card shows.
-          "- **Spot sessions paused mid-run:** #{SpotSessionPause.paused_count} " \
-          "(paused while a window has no room for them; they resume automatically once the fleet is back " \
-          "under the curve with #{SpotGateService::RESUME_MARGIN_PCT} points of the window to spare, and " \
-          "priority sessions are never paused)"
+          # next. This is the standing population the `spot_budget` ceiling has
+          # already stopped: sessions dormant in `waiting`, not running ones, so
+          # this figure has nothing to do with the concurrency limit and is
+          # regularly larger than it. Same number the /quotas card shows.
+          "- **Spot sessions asleep in the spot queue:** #{paused_count}. #{explanation.sessions_asleep}"
         ]
 
         if decision.pool_size

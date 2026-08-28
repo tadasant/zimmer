@@ -333,9 +333,11 @@ class QuotasController < ApplicationController
   def load_spot_gate
     @app_setting ||= AppSetting.current
     @spot_decision = SpotGateService.evaluate
-    # Running spot sessions the ceiling has stopped. The decision above says what
-    # would happen to a session STARTING now; this says what already happened to
-    # the ones that were in flight when a window arrived at its target.
+    # The standing population of sessions the `spot_budget` ceiling stopped and
+    # has not yet put back. The decision above says what would happen to a
+    # session STARTING now; this says how many are already asleep. They are
+    # dormant in `waiting`, so this number is unrelated to the concurrency limit
+    # and is routinely larger than it — see SpotSessionPause.paused_count.
     @spot_paused_count = SpotSessionPause.paused_count
     # The capacity model behind the reserve controls: the form types a
     # percentage and prints the dollars that percentage carves out, and both
