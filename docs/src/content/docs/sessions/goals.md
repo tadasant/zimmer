@@ -171,8 +171,11 @@ exactly four sanctioned reasons to send it:
 
 1. The agent lacked the authorization scope or tools to finish, with no parent session to report
    back to.
-2. The session opened a PR whose merge disposition is unsettled. It archives when the PR merges;
-   a PR the merge gate holds keeps its session here for the human who must review and merge it.
+2. The session opened a PR whose merge disposition is unsettled. *How* it holds is the `open-pr`
+   skill's terminal steps rather than this list: asleep in `waiting` on a bounded self-wake while
+   the merge gate is still rating the PR, because that is a machine wait. A PR the gate *holds* is
+   a human handoff, and that is what brings the session to rest here, for the human who must review
+   and merge it. Either way it archives when the PR merges.
 3. A human invoked the session to explore something or answer a question — it is the user's to
    close.
 4. Rare: an ambiguity both too dangerous and too irreversible to guess at.
@@ -187,10 +190,11 @@ Slack `#updates` if it is a read-only FYI and the session has a Slack server, an
 archives. Anything the agent noticed but could not fix goes in a **GitHub issue**, which is the
 other half of why a session can archive at all: an issue is a work item, and a parked session is
 not. The prompt also names four things that *look* like reasons to park and are not: waiting on a
-machine (CI, an outage, a rate limit, a peer session: none of those is a human, and an unmerged PR
-is the one carve-out), a blocker another session is already fixing, a reason that went stale while
-the agent worked (the PR merged; the question is moot), and finishing with nothing to show (a sweep
-that found nothing and a gate that aborted both ran to completion).
+machine (CI, an outage, a rate limit, a peer session: none of those is a human, and a PR whose
+merge disposition is unsettled is the one carve-out), a blocker another session is already fixing,
+a reason that went stale while the agent worked (the PR merged; the question is moot), and
+finishing with nothing to show (a sweep that found nothing and a gate that aborted both ran to
+completion).
 
 The second of those is the one agents miss, because it looks like a handoff rather than a wait: red
 CI on `main` from a failure unrelated to the agent's own diff, an upstream fix in flight. The prompt
