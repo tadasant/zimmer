@@ -423,8 +423,9 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_nil self_server["command"], "Injected self-session server must not shell out to npx"
     assert_nil self_server["args"], "Injected self-session server must not shell out to npx"
     assert_nil self_server["type"], "Codex infers the transport from `url` — no type discriminator"
-    assert_equal "http://localhost:3000/mcp?tool_groups=self_session", self_server["url"],
-      "self-session URL must target the local instance in the test env, scoped to the self_session tools"
+    assert_equal "http://localhost:3000/mcp?session_id=#{@session.id}&tool_groups=self_session", self_server["url"],
+      "self-session URL must target the local instance in the test env, scoped to the self_session tools, " \
+      "and stamped with the session it was written for"
     assert_equal({ "X-API-Key" => "local-key" }, self_server["http_headers"],
       "Codex carries literal headers under http_headers")
     assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
@@ -476,7 +477,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "post_process! should synthesize the Codex config when AIR wrote none"
     self_server = read_config.dig("mcp_servers", SELF_SESSION_SERVER)
     assert_not_nil self_server, "Self-session Zimmer server should be injected into the synthesized config"
-    assert_equal "http://localhost:3000/mcp?tool_groups=self_session", self_server["url"]
+    assert_equal "http://localhost:3000/mcp?session_id=#{@session.id}&tool_groups=self_session", self_server["url"]
     assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
 
@@ -549,7 +550,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       "ensure_baseline! must create the Codex config in its .codex/ subdirectory"
     self_server = read_config.dig("mcp_servers", SELF_SESSION_SERVER)
     assert_not_nil self_server, "ensure_baseline! should inject the self-session entry"
-    assert_equal "http://localhost:3000/mcp?tool_groups=self_session", self_server["url"]
+    assert_equal "http://localhost:3000/mcp?session_id=#{@session.id}&tool_groups=self_session", self_server["url"]
     assert_equal({ "X-API-Key" => "local-key" }, self_server["http_headers"])
     assert_equal [ SELF_SESSION_SERVER ], processor.injected_mcp_servers
   end
@@ -569,8 +570,8 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     build_processor.post_process!
 
     entry = read_config.dig("mcp_servers", "zimmer-sessions")
-    assert_equal "http://localhost:3000/mcp?tool_groups=sessions", entry["url"],
-      "Only the origin is rewritten — the query string carries the entry's scoping"
+    assert_equal "http://localhost:3000/mcp?tool_groups=sessions&session_id=#{@session.id}", entry["url"],
+      "Only the origin is rewritten — the query string carries the entry's scoping, plus the session stamp"
     assert_equal "local-key", entry.dig("http_headers", "X-API-Key"),
       "Retarget stamps the current instance's API key into Codex's http_headers table"
   end
@@ -621,8 +622,9 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       build_processor.post_process!
 
       entry = read_config.dig("mcp_servers", SUBAGENT_SERVER)
-      assert_equal "https://zimmer.example.com/mcp", entry["url"],
-        "In production the catalog URL already points at the instance serving the session"
+      assert_equal "https://zimmer.example.com/mcp?session_id=#{@session.id}", entry["url"],
+        "In production the catalog URL already points at the instance serving the session, so only " \
+        "the session stamp is added"
       assert_equal "prod-key", entry.dig("http_headers", "X-API-Key")
     end
   end
@@ -681,7 +683,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       ELICITATION_SESSION_ID = "#{@session.id}"
       ELICITATION_TTL_MS = "#{Elicitation::DEFAULT_EXPIRATION.to_i * 1000}"
       [mcp_servers.zimmer]
-      url = "http://localhost:3000/mcp"
+      url = "http://localhost:3000/mcp?session_id=#{@session.id}"
       [mcp_servers.zimmer.http_headers]
       X-API-Key = "local-key"
     TOML

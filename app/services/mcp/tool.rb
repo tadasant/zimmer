@@ -99,6 +99,35 @@ module Mcp
       session
     end
 
+    # The session that is CALLING — the one a self-management tool acts on when its
+    # `session_id` argument is omitted.
+    #
+    # Nothing in an MCP request body identifies the caller, so the identity comes
+    # from the connection: RuntimeConfigPostProcessor stamps `session_id` onto the
+    # URL of the Zimmer entry it writes into a session's own runtime config, and
+    # Mcp::Context carries it through. An explicit argument always wins — a session
+    # is still free to schedule a wake for a different session.
+    #
+    # Falling back is what removes a whole round trip from every wake-up: without
+    # it the agent's first call fails schema validation on a required argument it
+    # cannot see the value of, and it has to look its own id up and call again.
+    def requester_session(args)
+      identifier = args["session_id"]
+      return find_session(identifier) if identifier.present?
+
+      if context.self_session_id
+        session = Session.find_by(id: context.self_session_id)
+        return session if session
+
+        raise ToolError, "This MCP connection names session #{context.self_session_id} as the caller, " \
+                         "but no such session exists. Pass an explicit session_id."
+      end
+
+      raise ToolError, "Missing required parameter: session_id. This MCP connection does not name a " \
+                       "calling session, so the session to act on has to be given explicitly. " \
+                       "Pass the id of the session this tool should act on."
+    end
+
     def enforce_allowed_root!(agent_root_name)
       return unless context.restricted?
 

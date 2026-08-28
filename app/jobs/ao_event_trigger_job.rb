@@ -42,7 +42,13 @@ class AoEventTriggerJob < ApplicationJob
   # CLAUDE.md — a self-resolving hiccup is .info, a genuinely late wake is .warn).
   DISPATCH_LATENCY_WARN_THRESHOLD = 120 # seconds
 
-  def perform(event_name, subject_id)
+  # @param settle_marker [Integer, nil] only supplied for session_needs_input,
+  #   which is emitted at every turn boundary and therefore has to be re-checked
+  #   after a settle window before it can wake anybody (see
+  #   SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW). The default keeps jobs
+  #   enqueued by an older deploy — and every other event, which is terminal and
+  #   cannot flap — working unchanged.
+  def perform(event_name, subject_id, settle_marker = nil)
     warn_on_high_dispatch_latency(event_name, subject_id)
 
     unless TriggerCondition::AO_EVENT_NAMES.include?(event_name)
@@ -50,7 +56,7 @@ class AoEventTriggerJob < ApplicationJob
       return
     end
 
-    subject = AoEventSubject.resolve(event_name, subject_id)
+    subject = AoEventSubject.resolve(event_name, subject_id, settle_marker)
     return unless subject
 
     # The condition the event announced can un-happen between enqueue and here —
@@ -76,6 +82,10 @@ class AoEventTriggerJob < ApplicationJob
 
     enqueued = enqueued_at.is_a?(Time) ? enqueued_at : Time.parse(enqueued_at.to_s)
     latency = Time.current - enqueued
+    # session_needs_input is deliberately held for the settle window, which is
+    # part of the wait and not queue starvation. Discount it so the threshold
+    # keeps measuring the thing it was added to measure.
+    latency -= settle_window_for(event_name)
     return if latency <= DISPATCH_LATENCY_WARN_THRESHOLD
 
     Rails.logger.warn(
@@ -85,6 +95,12 @@ class AoEventTriggerJob < ApplicationJob
     )
   rescue => e
     Rails.logger.info "[AoEventTriggerJob] Could not compute dispatch latency: #{e.class}: #{e.message}"
+  end
+
+  def settle_window_for(event_name)
+    return 0 unless event_name == "session_needs_input"
+
+    SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.to_i
   end
 
   def fire_event(event_name, subject)

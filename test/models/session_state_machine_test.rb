@@ -1875,9 +1875,67 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     ActiveRecord.stubs(:after_all_transactions_commit).yields
 
-    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_needs_input", session.id ]) do
+    assert_enqueued_with(
+      job: AoEventTriggerJob,
+      args: [ "session_needs_input", session.id, session.needs_input_transition_count + 1 ]
+    ) do
       session.pause!
     end
+  end
+
+  test "the session_needs_input wake is held for the settle window, unlike the terminal events" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    assert_enqueued_with(
+      job: AoEventTriggerJob,
+      at: SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.from_now
+    ) do
+      session.pause!
+    end
+
+    # Terminal events cannot flap, so they are not delayed.
+    other = sessions(:running)
+    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_failed", other.id ]) do
+      other.fail!
+    end
+  end
+
+  test "one pause bumps the needs_input counter exactly once" do
+    session = sessions(:waiting)
+    session.update!(status: :running, push_notifications_enabled: true)
+    before = session.needs_input_transition_count
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+    session.pause!
+
+    assert_equal before + 1, session.reload.needs_input_transition_count,
+      "the wake fan-out and the push notification share one counter; two bumps would " \
+      "make each one's marker stale to the other and suppress both"
+  end
+
+  # === resting_in_needs_input? — what makes a pause a REST rather than a boundary ===
+
+  test "resting_in_needs_input? is false for every way a pause is not a rest" do
+    session = sessions(:needs_input)
+    assert session.resting_in_needs_input?
+
+    session.update!(status: :running)
+    assert_not session.resting_in_needs_input?, "a running session is not resting"
+
+    session.update!(status: :waiting)
+    assert_not session.resting_in_needs_input?, "a sleeping session is not resting"
+
+    session.update!(status: :needs_input, metadata: (session.metadata || {}).merge("pending_sleep" => true))
+    assert_not session.resting_in_needs_input?,
+      "a session holding an unexecuted sleep intent is on its way to waiting, not resting"
+
+    session.update!(metadata: session.metadata.except("pending_sleep"))
+    session.enqueued_messages.create!(content: "follow up", position: 1)
+    assert_not session.resting_in_needs_input?,
+      "a session with a message queued for it is about to be resumed, not resting"
   end
 
   test "fail transition enqueues AoEventTriggerJob with session_failed" do

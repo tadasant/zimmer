@@ -374,6 +374,47 @@ and the subject decides which rules apply:
 For a **session** event: with `watched_session_id` it's session-scoped and one-shot. Without it, it's
 a broadcast, and it only fires for `is_autonomous` sessions.
 
+#### `session_needs_input` means "came to rest", and it is settled before it fires
+
+`failed` and `archived` are terminal: once a session is there, it stays there, and the event can be
+delivered the moment the transition commits. `needs_input` is not terminal, and that asymmetry used
+to be invisible.
+
+`pause` runs at **every turn boundary**, including the boundaries a session leaves again
+immediately. Two of them are routine:
+
+- A session asleep on its own `wake_me_up_later` wakes, takes a turn and sleeps again. `pause`'s
+  own `execute_pending_sleep` runs it straight back to `waiting`, *inside the same callback*, so
+  the `needs_input` leg lasts microseconds.
+- A session pauses with a message queued for it. `EnqueuedMessageDrainJob` resumes it a few seconds
+  later.
+
+Neither is a session that needs anything, but both emitted `session_needs_input` and woke every
+watcher subscribed to it. Because a fired one-time wake destroys its siblings, each spurious wake
+cost the watcher a full agent turn *and* the re-registration of every wake it still wanted — the
+"flap storm" that production router session #9964 hit four times in 25 minutes while its one healthy
+child cycled through the open-pr skill's bounded self-wake.
+
+So `session_needs_input` is now **settled**:
+
+1. `SessionStateMachine#fire_settled_needs_input_ao_event` enqueues `AoEventTriggerJob` with a
+   `wait:` of `NEEDS_INPUT_SETTLE_WINDOW` (30 seconds) and a marker — the same
+   `custom_metadata["needs_input_count"]` counter the debounced push notification already used.
+   One `pause` bumps the counter once and hands the same marker to both consumers.
+2. When the job runs, `AoEventSubject::SessionSubject#stale?` drops the event unless the session is
+   still `Session#resting_in_needs_input?` — in `needs_input`, holding no unexecuted `pending_sleep`,
+   with nothing queued for it — and unless the marker still matches, which is what supersedes an
+   event a later transition has already replaced.
+
+`session_failed` and `session_archived` are untouched: no delay, no re-check, because a terminal
+state cannot flap. The immediate-fire path
+(`Trigger#fire_ao_event_immediately_if_state_matches`) is untouched too — it only fires when the
+watched session is *already* in the target state, which is a rest by construction.
+
+The settle window is a constant, not a per-trigger option. A wake on a transition the watched
+session had already left is not useful to any caller, so there is no posture to configure; the
+knob would only be a way to get it wrong.
+
 An **account** event has no session to watch, no autonomy flag to consult, and no session the trigger
 could have created — so it is always broadcast, and `watched_session_id` is rejected on it outright.
 It is throttled at the source instead: at most one fire per account per 12 hours, released when a
@@ -958,17 +999,21 @@ row-locks each watched session *inside the creation transaction* and enqueues th
 if the watched session is already in the target state. This closes the footgun where you
 register a watcher after the transition already happened and then sleep forever.
 
-**Sibling cleanup.** The recommended pattern is to register three `ao_event` watchers
-(`needs_input`, `failed`, `archived`) plus a `wake_me_up_later` deadline backstop — whichever
-fires first wins. After a successful one-time fire, `destroy_sibling_wakes!` deletes the others
-pointing at the same session. Unless the follow-up was *dropped*, in which case siblings are
-preserved.
+**Sibling cleanup.** After a successful one-time fire, `destroy_sibling_wakes!` deletes the other
+one-time wakes pointing at the same requester — they are moot, since the requester has already been
+resumed. Unless the follow-up was *dropped*, in which case siblings are preserved.
 
-:::note[Most of those siblings are dead weight]
-`app/models/trigger.rb:190` says so out loud: *"backstop sibling group, and only one of them ever
-fires usefully."* It's a correct design given the primitives, but it means a single logical
-"wait for that session" creates four trigger rows.
-:::
+**One trigger, several events.** A Trigger ORs its conditions, so
+`wake_me_up_when_session_changes_state` takes `event_names` (an array) and builds **one** trigger
+carrying one `ao_event` condition per event, all scoped to the same watched session.
+`one_time_reuse_trigger?` already asks `all?` of the conditions and `AoEventTriggerJob` fires per
+condition before destroying the trigger, so the multi-condition shape needed nothing new from
+either.
+
+That is what makes sibling-destroy cheap. The recommended pattern is now **two** rows for a whole
+wait — one `event_names` watcher plus a `wake_me_up_later` deadline backstop — where it used to be
+four, and a woken turn that decides to keep waiting re-registers two things rather than four. The
+singular `event_name` is still accepted and still builds a single-condition trigger.
 
 **A sleep with no trigger at all.** "Pause Until" has one choice that creates nothing: **Spot
 Queue** sleeps the session and leaves it for the spot scheduler

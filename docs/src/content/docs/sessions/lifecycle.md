@@ -105,7 +105,7 @@ three callers that decline, and why the guard lives here rather than in a prompt
 ### `pause` — `running → needs_input`
 
 Fired when the agent's turn ends (the process exits normally). This is the workhorse
-transition, and it does eight things beyond changing status:
+transition, and it does nine things beyond changing status:
 
 1. `warn_if_pr_goal_captured_no_url` — if the session's goal mentions a pull request and
    `custom_metadata["github_pull_request_urls"]` is still empty, write one `warning` log to the
@@ -115,23 +115,59 @@ transition, and it does eight things beyond changing status:
    per event: `fail` and `archive` call it too, and the dedup is on the warning log itself, so a
    session that pauses, warns, and later archives says it once.
 2. `cleanup_running_job` — clears `running_job_id`.
-3. `fire_ao_event_triggers("session_needs_input")` — wakes anything watching this session.
-4. `enqueue_debounced_needs_input_push_notification` — see below.
-5. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
-6. `enqueue_status_summary_refresh` — the **only** automatic trigger for the
+3. `bump_needs_input_transition_counter` — one increment of
+   `custom_metadata["needs_input_count"]`, handed to both of the next two steps as their debounce
+   marker. Bumped here rather than inside either consumer, because two bumps would make each one's
+   marker stale to the other and suppress both. It has its own rescue for the same reason every
+   other side effect does: a raise here must not wedge the transition.
+4. `fire_settled_needs_input_ao_event(marker)` — wakes anything watching this session, *if the
+   session is still at rest when the settle window closes*. See
+   [a turn boundary is not a rest](#a-turn-boundary-is-not-a-rest).
+5. `enqueue_debounced_needs_input_push_notification(marker)` — see below.
+6. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
+7. `enqueue_status_summary_refresh` — the **only** automatic trigger for the
    [Status summary](/sessions/status-summary/). The generator still refuses when the session has
    not moved since the last one, so a transition that added no transcript costs nothing.
-7. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
+8. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
    sleep was deferred to here; now it fires.
-8. `drain_enqueued_messages_after_pause` — if the session is coming to rest with a message still
+9. `drain_enqueued_messages_after_pause` — if the session is coming to rest with a message still
    queued for it, schedule the delivery. See [below](#a-session-does-not-idle-on-its-own-queue).
    Runs last, and after `execute_pending_sleep`, so it reads the state the sleep left behind: a
    session that just went dormant is asleep with a wake armed, not idling.
 
-Steps 3–6 are skipped for one kind of session: a **status-summary fork**, which is Zimmer's own
+Steps 3–7 are skipped for one kind of session: a **status-summary fork**, which is Zimmer's own
 throwaway (marked in metadata by `SessionStatusSummaryGenerator::FORK_MARKER`). Its pause means its
 one turn is finished, so it is harvested and archived instead of notifying anyone or landing in the
 action queue.
+
+#### A turn boundary is not a rest
+
+`pause` runs at the end of **every** turn, and plenty of those turns end with the session on its way
+somewhere else rather than waiting for anyone. Steps 8 and 9 above are the two routine cases, and
+both are decided *inside this same callback*: a session holding a `pending_sleep` goes straight back
+to `waiting`, and a session with a queued message is resumed by `EnqueuedMessageDrainJob` seconds
+later.
+
+That made `session_needs_input` a much noisier signal than its name suggests. Router session #9964
+was woken four times in 25 minutes by child #9966 — a completely healthy session that had opened a
+PR and was cycling through the open-pr skill's bounded self-wake, crossing `needs_input` for
+microseconds on each pass back to `waiting`. Every one of those wakes cost the router a full agent
+turn and four trigger writes, because a fired one-time wake destroys its siblings and they all had
+to be re-registered.
+
+So the event is now **settled** rather than emitted on the edge. The job is enqueued with a
+`wait:` of `SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW` (30 seconds) and the marker from step 3;
+when it runs, it is dropped unless `Session#resting_in_needs_input?` still holds — the session is in
+`needs_input`, holds no unexecuted `pending_sleep`, and has nothing queued for it — and unless the
+marker still matches, which is how a later transition supersedes an earlier one's event.
+
+`fail` and `archive` emit through the unchanged `fire_ao_event_triggers`, immediately: a terminal
+state cannot flap, and delaying the event that ends a wait would be pure latency. The full mechanism
+is in [Triggers](/sessions/triggers/#session_needs_input-means-came-to-rest-and-it-is-settled-before-it-fires).
+
+`resting_in_needs_input?` deliberately does **not** treat an armed one-time wake as a disqualifier.
+The system-recovery preserve branch leaves a session resting in `needs_input` with its watchers
+still armed precisely so an operator can see it, and that rest is real.
 
 The debounce is worth understanding. Sessions sometimes flap `running → needs_input →
 running` between turns, and without debouncing every flap would push a notification. So the
