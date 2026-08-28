@@ -162,12 +162,21 @@ when it runs, it is dropped unless `Session#resting_in_needs_input?` still holds
 marker still matches, which is how a later transition supersedes an earlier one's event.
 
 `fail` and `archive` emit through the unchanged `fire_ao_event_triggers`, immediately: a terminal
-state cannot flap, and delaying the event that ends a wait would be pure latency. The full mechanism
-is in [Triggers](/sessions/triggers/#session_needs_input-means-came-to-rest-and-it-is-settled-before-it-fires).
+state cannot flap, and delaying the event that ends a wait would be pure latency.
 
-`resting_in_needs_input?` deliberately does **not** treat an armed one-time wake as a disqualifier.
-The system-recovery preserve branch leaves a session resting in `needs_input` with its watchers
-still armed precisely so an operator can see it, and that rest is real.
+`resting_in_needs_input?` asks about **status and nothing else**, which is deliberate and is the
+part worth reading the reasoning for — it is in
+[Triggers](/sessions/triggers/#resting_in_needs_input-asks-about-status-and-only-status). The short
+version: every richer test considered can only still be true when the window closes if the thing
+that was going to move the session has failed, and those sessions are precisely the ones a watcher
+must hear about. Nothing re-emits this event, so suppressing them would lose the wake rather than
+delay it.
+
+`block_on_elicitation` emits through the same settled path, and bumps the same counter. That is a
+change: it never bumped before. It matters only in the narrow case where a `pause` and an
+elicitation land inside the 60-second push debounce, where the elicitation now invalidates the
+in-flight `needs_input` push — which is the right outcome, since that path already sends its own
+`elicitation_pending` push and the transition's comment says avoiding a double-notify is the point.
 
 The debounce is worth understanding. Sessions sometimes flap `running → needs_input →
 running` between turns, and without debouncing every flap would push a notification. So the

@@ -698,24 +698,34 @@ module SessionStateMachine
     cleared
   end
 
-  # Whether this session is genuinely AT REST in `needs_input`, as opposed to
-  # merely passing through it at a turn boundary.
+  # Whether this session is still AT REST in `needs_input`, as opposed to having
+  # merely passed through it at a turn boundary.
   #
   # Read by AoEventSubject::SessionSubject#stale? once the settle window has
-  # elapsed. The three disqualifiers are the three ways `pause` is not a rest:
-  # the session has already slept (its own wake is armed and it is `waiting`),
-  # it is still holding a sleep intent it has not executed yet, or a message is
-  # queued for it and EnqueuedMessageDrainJob is on its way to resume it.
+  # elapsed, and it asks about STATUS only. That is deliberate, and it is the
+  # narrowest question that does the job:
   #
-  # An armed one-time wake is deliberately NOT a disqualifier on its own: the
-  # system-recovery preserve branch leaves a session resting in `needs_input`
-  # with watchers armed precisely so a human can see it, and that rest is real.
+  # - The turn boundaries this exists to suppress all leave `needs_input` for
+  #   somewhere else. A session that slept on its own wake is `waiting` (its
+  #   `execute_pending_sleep` runs synchronously inside the pause callback, long
+  #   before this is asked); one whose queued message drained is `running` (that
+  #   drain is scheduled at EnqueuedMessageDrainJob::DELAY, well inside the
+  #   window). Status catches both.
+  # - Every richer disqualifier considered — a lingering `pending_sleep`, a
+  #   still-pending enqueued message — can only still be true HERE when the thing
+  #   that was going to move the session has failed or given up. `sleep!` raised;
+  #   the drain exhausted its attempts and left the rows pending; a `skip_reason`
+  #   is holding the message indefinitely. Those are exactly the sessions that
+  #   are stuck at rest, and a watcher must be told about them. This event is
+  #   emitted once and `pause` only fires from `running`, so nothing re-emits it:
+  #   suppressing there would not delay the wake, it would lose it for good.
+  #
+  # The cost is an occasionally early wake — a drain whose first attempt failed
+  # resumes the session at DELAY + RETRY_DELAY, just past this window. That trade
+  # is the right way round: a wake that arrives seconds early is a re-poll, and a
+  # wake that never arrives is a router asleep until its backstop.
   def resting_in_needs_input?
-    return false unless needs_input?
-    return false if metadata&.dig("pending_sleep") == true
-    return false if enqueued_messages.pending.exists?
-
-    true
+    needs_input?
   end
 
   # The current value of the counter #bump_needs_input_transition_counter writes.
@@ -1642,7 +1652,15 @@ module SessionStateMachine
   #
   # The marker is passed in rather than bumped here, because the wake fan-out
   # debounces against the same counter and one transition must produce one bump.
+  #
+  # A nil marker means the bump failed, and the push is then skipped rather than
+  # sent un-markered. SendPushNotificationJob's `stale_needs_input_transition?`
+  # does not gate at all on a nil marker, so enqueuing one would push 60 seconds
+  # later even if the session had long since flapped back to `running` — which is
+  # both the thing the debounce exists to prevent and worse than the behaviour
+  # before this counter had two consumers, where a failed bump meant no push.
   def enqueue_debounced_needs_input_push_notification(marker)
+    return if marker.nil?
     return unless push_notifications_enabled?
 
     # The NEEDS_INPUT_DEBOUNCE wait is long enough that the AASM
@@ -1677,8 +1695,10 @@ module SessionStateMachine
     update_column(:custom_metadata, metadata_hash.merge("needs_input_count" => next_count))
     next_count
   rescue => e
-    # Log-only: losing the marker costs debounce precision, not correctness, and
-    # the state re-check that does the real suppression is unaffected.
+    # Log-only: the wake still settles on state, which is the check doing the real
+    # suppression, and the push is skipped entirely — see the guard in
+    # #enqueue_debounced_needs_input_push_notification for why it must not be
+    # sent un-markered.
     report_swallowed_side_effect(__method__, e, alert: false)
     nil
   end
