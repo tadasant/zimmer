@@ -235,7 +235,8 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "tells you when the PR merges, and *that message is your signal to archive*"
     assert_includes prompt, "A merge gate that holds the PR means no message arrives until a human merges it"
     # The PR has to be carved out of "waiting on a machine", or the two rules collide.
-    assert_includes prompt, "The one exception is reason 2 above: an open PR parks you"
+    assert_includes prompt, "The one exception is reason 2 above, and it is narrower than it looks: a PR the merge gate has *held*"
+    assert_includes prompt, "A PR nobody has rated yet is an ordinary machine wait — sleep on it"
     # Reason 2 has to outrank the one-session rule, or a router with several PR children
     # gets contradictory instructions.
     assert_includes prompt, "Reason 2 outranks this rule"
@@ -246,6 +247,52 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "put the PR URL in your final message and archive rather than waiting forever"
     assert_includes prompt, "the PR was closed without merging (the work is over)"
     assert_includes prompt, "find your PR already merged, archive then"
+  end
+
+  # Reason 2 says *that* a PR session holds the work; the `open-pr` skill's terminal
+  # steps say *how*. When this paragraph spelled the how out itself as "stays in
+  # `needs_input` while that PR is open", a session that had not loaded the skill read
+  # a positive instruction to park while the merge gate was still only rating the PR —
+  # an action-queue slot claimed while nothing yet needed a human.
+  test "reason 2 defers the how-to-rest to the open-pr skill instead of parking straight away" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "*How* you hold it is the `open-pr` skill's terminal steps, not this rule"
+    assert_includes prompt, "a PR merely waiting for the merge gate to rate it is a machine wait"
+    assert_includes prompt, "schedule a bounded self-wake and end the turn in `waiting`"
+    assert_includes prompt, "merged, or closed unmerged, means archive"
+    assert_includes prompt,
+      "a fresh merge-gate `HELD` verdict, a label that has come off, a spent wake budget, " \
+      "or a PR state you could not read means come to rest in `needs_input`"
+    assert_includes prompt, "a PR still open and unrated means sleep again"
+    assert_includes prompt, "Sleeping and stopping are the same holding pattern"
+
+    # A gate *hold* is the one PR state that is a genuine human handoff, so the queue
+    # is right there — the distinction the old blanket "stay in the queue" flattened.
+    assert_includes prompt, "a PR the gate has held is a human handoff, not a machine wait"
+
+    # A session with no skill and no way to schedule a wake still needs a stated ending.
+    assert_includes prompt, "If the `open-pr` skill is not available to you"
+    # A vendored copy of the skill that predates its terminal steps is "available" and still
+    # leaves the session with no stated ending, so the fallback has to name it.
+    assert_includes prompt, "a copy of it that has no terminal steps"
+    assert_includes prompt, "come to rest in `needs_input` holding the PR instead; that is the fallback, not a failure"
+
+    # Neither may reason 2 lose what it already got right.
+    assert_includes prompt, "Do not merge your own PR, and do not archive yet — the archive-early cases below are the only exceptions"
+  end
+
+  test "reason 2 no longer tells a PR session to park for the whole time the PR is open" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    refute_includes prompt, "stays in `needs_input` while that PR is open",
+      "reason 2 must not instruct a session to park while the merge gate is still only rating the PR"
+    refute_includes prompt, "an open PR parks you",
+      "the waiting-on-a-machine carve-out must not re-assert the parking rule reason 2 dropped"
+    refute_includes prompt, "which is exactly the point — you stay in the queue for that human",
+      "the queue belongs to a PR the gate has *held*, not to every open PR"
+    refute_includes prompt, "that parks a *finished* PR",
+      "the blocked-by-a-session carve-out must not describe reason 2 as parking either"
   end
 
   test "includes the file-a-GitHub-issue principle" do
@@ -281,13 +328,13 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
       "expected the prompt to explain why this case gets escalated despite being a machine wait"
   end
 
-  # Reason 2 parks a session on an open PR, so without this carve-out the two
+  # Reason 2 holds a session on a finished PR, so without this carve-out the two
   # rules collide on exactly the case that motivated the bullet: a PR that is
   # not green because its base is red.
-  test "the blocked-by-a-session rule is reconciled with reason 2's open-PR parking" do
+  test "the blocked-by-a-session rule is reconciled with reason 2's open-PR holding" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "Reason 2 does not cover it: that parks a *finished* PR awaiting a merge decision"
+    assert_includes prompt, "Reason 2 does not cover it: that holds a *finished* PR awaiting a merge decision"
   end
 
   test "the blocked-by-a-session rule tells the agent to search for the session working the blocker" do
