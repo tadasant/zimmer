@@ -113,6 +113,25 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     assert_equal "undelivered", queued.reload.status
   end
 
+  # The archive guidelines are read at the exact moment a session decides whether to
+  # end, so they have to agree with the system prompt's sanctioned reason 2 rather
+  # than restate the older "stay in needs_input until the PR merges" rule it dropped.
+  test "the archive guidelines defer a PR session's how-to-rest to the open-pr skill" do
+    description = Mcp::Tools::SelfSessionActionSession.to_h[:description]
+
+    assert_includes description, "How it holds is the `open-pr` skill's terminal steps"
+    assert_includes description, "asleep in `waiting` on a bounded self-wake while the merge gate is still rating the PR"
+    assert_includes description, "at rest in `needs_input` once the gate *holds* it"
+    # The exits that do not depend on the gate ever answering.
+    assert_includes description, "the wake budget is spent, or the PR state cannot be read"
+    # The merge message is still the archive signal, and an unrecorded URL still has a way out.
+    assert_includes description, "that message is the signal to archive"
+    assert_includes description, "report the URL and archive rather than waiting"
+
+    refute_includes description, "stay in `needs_input` until that PR merges",
+      "the guidelines must not park a session for the whole time its PR is open"
+  end
+
   test "force is declared on the self-session schema" do
     properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.deep_symbolize_keys[:properties]
 

@@ -173,9 +173,10 @@ exactly four sanctioned reasons to send it:
    back to.
 2. The session opened a PR whose merge disposition is unsettled. *How* it holds is the `open-pr`
    skill's terminal steps rather than this list: asleep in `waiting` on a bounded self-wake while
-   the merge gate is still rating the PR, because that is a machine wait. A PR the gate *holds* is
-   a human handoff, and that is what brings the session to rest here, for the human who must review
-   and merge it. Either way it archives when the PR merges.
+   the merge gate is still rating the PR, because that is a machine wait. What brings the session
+   to rest here is a PR the gate *holds* — a human handoff, for the human who must review and merge
+   it — or the self-wake budget running out with no verdict at all. Either way it archives when the
+   PR merges.
 3. A human invoked the session to explore something or answer a question — it is the user's to
    close.
 4. Rare: an ambiguity both too dangerous and too irreversible to guess at.
