@@ -80,6 +80,7 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 7 tools a session needs to run itself |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
+| `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The groups are `sessions`, `notifications`, `triggers`, `health` (each with a `_readonly` variant),
 plus the composite `self_session`. Omitting `tool_groups` enables all four base groups. An unknown
@@ -97,6 +98,16 @@ capability/config edits on the full surface — `change_mcp_servers`, `change_mo
 its own capabilities, goal, or organizational placement through the server injected into it. (The
 *action* is narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to
 pass its own. See the caution above.)
+
+The injected entry's URL also carries `session_id=<id>` — the session the config was written for.
+Nothing in an MCP request body identifies its caller (the API key is shared by the whole fleet and
+the transport is stateless), so this is the only place that knowledge exists. The wake-up tools use
+it to default their `session_id` argument, which is the difference between a session's first wake
+call working and it failing on an argument the agent cannot see the value of. It is a **default and
+not a scope**: `tool_groups` and `allowed_agent_roots` still decide everything the connection may
+reach, and an explicit `session_id` always wins. `RuntimeConfigPostProcessor` stamps it onto every
+Zimmer entry in a session's config, including catalog-provided ones, and leaves alone any entry that
+already names a session.
 
 ## Restricting what a connection may spawn: `allowed_agent_roots`
 
@@ -338,8 +349,22 @@ Queue the additive messages. Interrupt the ones that change the plan.
 
 The two wake-up tools are the ones worth knowing by name. `wake_me_up_later` sleeps the calling
 session and creates a one-time trigger that resumes it at a wall-clock time; `wake_me_up_when_session_changes_state`
-resumes it when *another* session hits `needs_input`, `failed`, or `archived`. Together they are how
+resumes it when *another* session reaches `needs_input`, `failed`, or `archived`. Together they are how
 a session waits on CI, on a deploy, or on a session it spawned, without burning a process on `sleep`.
+
+Two things about them are worth stating because they shape how much a wait costs:
+
+- **`session_id` is optional on both.** The injected entry names the session it was written for, so
+  a session waking *itself* — the overwhelmingly common case — just omits it. Pass it only to
+  schedule a wake for a different session, where it still wins over the connection's own.
+- **`event_names` takes the whole set at once.** One call with
+  `["session_archived", "session_needs_input", "session_failed"]` creates **one** trigger with one
+  condition per event, so a complete wait is two rows — that watcher plus a `wake_me_up_later`
+  deadline backstop — rather than four. The singular `event_name` still works.
+
+And `session_needs_input` no longer fires on a turn boundary the watched session leaves again at
+once. Zimmer settles it first, so a wake that reaches you is a session that actually came to rest →
+[a turn boundary is not a rest](/sessions/lifecycle/#a-turn-boundary-is-not-a-rest).
 
 ### `get_costs`
 

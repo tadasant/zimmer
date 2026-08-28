@@ -143,8 +143,12 @@ module SessionStateMachine
             # slot in the action queue.
             harvest_status_summary
           else
-            fire_ao_event_triggers("session_needs_input")
-            enqueue_debounced_needs_input_push_notification
+            # One bump, two consumers. Both the wake fan-out and the push are
+            # debounced against the same counter, so bumping it twice would make
+            # each one's marker stale to the other and suppress both.
+            marker = bump_needs_input_transition_counter
+            fire_settled_needs_input_ao_event(marker)
+            enqueue_debounced_needs_input_push_notification(marker)
             enqueue_session_inference_if_needed
             enqueue_status_summary_refresh
           end
@@ -201,7 +205,10 @@ module SessionStateMachine
         after do
           log_state_change("Session blocked on MCP elicitation, waiting for user response")
           set_blocked_on_elicitation_marker
-          fire_ao_event_triggers("session_needs_input")
+          # Settled like the pause path: an elicitation the user answers in
+          # seconds flips straight back to `running` via unblock_from_elicitation,
+          # which is a turn-boundary flap by another name.
+          fire_settled_needs_input_ao_event(bump_needs_input_transition_counter)
         end
       end
 
@@ -689,6 +696,31 @@ module SessionStateMachine
     end
     broadcast_lost_elicitation_banner if surfaced
     cleared
+  end
+
+  # Whether this session is genuinely AT REST in `needs_input`, as opposed to
+  # merely passing through it at a turn boundary.
+  #
+  # Read by AoEventSubject::SessionSubject#stale? once the settle window has
+  # elapsed. The three disqualifiers are the three ways `pause` is not a rest:
+  # the session has already slept (its own wake is armed and it is `waiting`),
+  # it is still holding a sleep intent it has not executed yet, or a message is
+  # queued for it and EnqueuedMessageDrainJob is on its way to resume it.
+  #
+  # An armed one-time wake is deliberately NOT a disqualifier on its own: the
+  # system-recovery preserve branch leaves a session resting in `needs_input`
+  # with watchers armed precisely so a human can see it, and that rest is real.
+  def resting_in_needs_input?
+    return false unless needs_input?
+    return false if metadata&.dig("pending_sleep") == true
+    return false if enqueued_messages.pending.exists?
+
+    true
+  end
+
+  # The current value of the counter #bump_needs_input_transition_counter writes.
+  def needs_input_transition_count
+    custom_metadata&.dig("needs_input_count").to_i
   end
 
   private
@@ -1555,17 +1587,64 @@ module SessionStateMachine
   # execution time and only fires if the session is still idle.
   NEEDS_INPUT_DEBOUNCE = 60.seconds
 
+  # Settle window for `session_needs_input` wake-ups — the same idea as
+  # NEEDS_INPUT_DEBOUNCE, applied to the trigger fan-out rather than to pushes.
+  #
+  # `pause` is emitted at every turn boundary, and a turn boundary is not a rest.
+  # A healthy session that is asleep on its own `wake_me_up_later` wakes, takes a
+  # turn, and sleeps again: `running → needs_input → waiting`, with the
+  # `needs_input` leg lasting microseconds because `execute_pending_sleep` runs
+  # inside this very callback. A session with a queued message does the same in
+  # reverse via EnqueuedMessageDrainJob (its DELAY is 10s, comfortably inside this
+  # window). Firing a watcher's wake on those legs woke it to learn nothing, and
+  # cost it a full agent turn plus the re-registration of every sibling wake the
+  # fire destroyed — the "flap storm".
+  #
+  # Shorter than the push debounce on purpose: a wake is latency-sensitive in a
+  # way a phone notification is not (AoEventTriggerJob runs on its own queue for
+  # exactly that reason), and the flaps this suppresses resolve in well under a
+  # second. Only `session_needs_input` is settled; `session_failed` and
+  # `session_archived` are terminal, cannot flap, and still fire immediately.
+  NEEDS_INPUT_SETTLE_WINDOW = 30.seconds
+
+  # Fire `session_needs_input` wake-ups once the session has actually come to
+  # rest there, rather than the instant it crosses the state.
+  #
+  # Two mechanisms, because the flap has both a synchronous and an asynchronous
+  # form. The wait window covers the asynchronous one; the marker covers a
+  # session that churns through further transitions inside the window. Both are
+  # re-checked by AoEventSubject::SessionSubject#stale? at execution time, which
+  # is the only place that can see where the session actually ended up.
+  def fire_settled_needs_input_ao_event(marker)
+    session_id = id
+    ActiveRecord.after_all_transactions_commit do
+      AoEventTriggerJob
+        .set(wait: NEEDS_INPUT_SETTLE_WINDOW)
+        .perform_later("session_needs_input", session_id, marker)
+    rescue => e
+      # Inside the block for the same reason as fire_ao_event_triggers: the body
+      # is deferred past this transaction, so a method-level rescue would only
+      # see a failure to register the callback. A swallowed enqueue means every
+      # watcher of this session misses the transition.
+      report_swallowed_side_effect(:fire_settled_needs_input_ao_event, e, alert: true)
+    end
+  rescue => e
+    report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
   # Enqueue a debounced needs_input push notification.
   #
-  # Increments a transition counter in custom_metadata so the deferred job can
-  # detect whether the session has churned through additional state changes
-  # during the wait window. If a flap (resume → pause) happens during the
-  # window, the original job's marker won't match the new counter and the
-  # job will no-op; the new pause will schedule its own debounced job.
-  def enqueue_debounced_needs_input_push_notification
+  # The transition counter in custom_metadata lets the deferred job detect
+  # whether the session has churned through additional state changes during the
+  # wait window. If a flap (resume → pause) happens during the window, the
+  # original job's marker won't match the new counter and the job will no-op;
+  # the new pause will schedule its own debounced job.
+  #
+  # The marker is passed in rather than bumped here, because the wake fan-out
+  # debounces against the same counter and one transition must produce one bump.
+  def enqueue_debounced_needs_input_push_notification(marker)
     return unless push_notifications_enabled?
 
-    marker = bump_needs_input_transition_counter
     # The NEEDS_INPUT_DEBOUNCE wait is long enough that the AASM
     # state-transition transaction commits before the worker dequeues the
     # job, so the marker row is visible by then. ActiveJob's
@@ -1581,15 +1660,27 @@ module SessionStateMachine
     report_swallowed_side_effect(__method__, e, alert: false)
   end
 
-  # Increment and persist the needs_input transition counter, returning the
-  # new value. Used as a debounce marker for the deferred push job. The
-  # counter is monotonic across the session's lifetime; it is never reset on
-  # resume, so values are unique per transition but not minimal.
+  # Increment and persist the needs_input transition counter, returning the new
+  # value. Used as the debounce marker by both deferred consumers — the wake
+  # fan-out and the push job. The counter is monotonic across the session's
+  # lifetime; it is never reset on resume, so values are unique per transition
+  # but not minimal.
+  #
+  # Called directly from the `pause` callback rather than from inside one of its
+  # consumers, so it needs its own rescue: an unguarded raise here would wedge
+  # the transition, which is the one thing a side effect must never do. Nil
+  # degrades both consumers to their un-markered behaviour — the wake still
+  # settles on state, the push still gates on state — rather than losing them.
   def bump_needs_input_transition_counter
     metadata_hash = custom_metadata.presence || {}
     next_count = metadata_hash["needs_input_count"].to_i + 1
     update_column(:custom_metadata, metadata_hash.merge("needs_input_count" => next_count))
     next_count
+  rescue => e
+    # Log-only: losing the marker costs debounce precision, not correctness, and
+    # the state re-check that does the real suppression is unaffected.
+    report_swallowed_side_effect(__method__, e, alert: false)
+    nil
   end
 
   # Enqueue SessionTitleJob (which both titles and categorizes) when either

@@ -15,7 +15,7 @@ module Mcp
   # allowed_agent_roots restricts which agent roots start_session may spawn and
   # which sessions the cross-session wake tool may watch.
   class Context
-    attr_reader :tool_groups, :allowed_agent_roots, :base_url, :caller_fingerprint
+    attr_reader :tool_groups, :allowed_agent_roots, :base_url, :caller_fingerprint, :self_session_id
 
     # The SDK wraps whatever is handed to `MCP::Server.new(server_context:)` in an
     # MCP::ServerContext (which carries progress/cancellation plumbing and
@@ -38,11 +38,20 @@ module Mcp
     # @param caller_fingerprint [String, nil] an opaque digest of this connection's API key, used
     #   only to give HealthActionCooldown a per-caller bucket. It grants nothing and scopes nothing
     #   — tool_groups and allowed_agent_roots above are the only things that govern reach.
-    def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil)
+    # @param session_id [String, Integer, nil] the session this connection was written FOR.
+    #   RuntimeConfigPostProcessor stamps it onto the URL of the Zimmer server it injects into a
+    #   session's own runtime config, which is the only place the caller's identity is knowable —
+    #   the API key is shared by the whole fleet and the endpoint is stateless, so a request
+    #   otherwise says nothing about who is making it. It is a DEFAULT for the "which session is
+    #   asking" argument on the self-management tools, and nothing more: it widens no scope, and
+    #   an explicit session_id argument still wins.
+    def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil,
+                   session_id: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
       @allowed_agent_roots = parse_list(allowed_agent_roots).presence
       @base_url = base_url.presence || SelfSessionInjector.new.self_target[:base_url]
       @caller_fingerprint = caller_fingerprint.presence || HealthActionCooldown::ANONYMOUS
+      @self_session_id = normalize_session_id(session_id)
     end
 
     def tools
@@ -59,6 +68,18 @@ module Mcp
     end
 
     private
+
+    # Positive integers only. A blank, zero, negative or non-numeric value means
+    # the connection carries no caller identity, which is the pre-existing
+    # behaviour and must stay a clean "not supplied" rather than a bad default
+    # that sends a wake at some unrelated session.
+    def normalize_session_id(value)
+      id = value.to_s.strip
+      return nil unless id.match?(/\A\d+\z/)
+
+      id = id.to_i
+      id.positive? ? id : nil
+    end
 
     def parse_list(value)
       case value
