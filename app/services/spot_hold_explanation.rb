@@ -53,13 +53,17 @@ class SpotHoldExplanation
 
   # @return [Array<Line>] empty when spot work is running — there is no hold to
   #   explain.
+  # Memoized: the /quotas card asks whether there are any before rendering them,
+  # and every sentence is rebuilt from the decision each time otherwise.
   def lines
-    return [] if @decision.allowed?
-
-    [
-      Line.new(label: "Why it's held", sentence: why),
-      Line.new(label: "Held until", sentence: held_until)
-    ]
+    @lines ||= if @decision.allowed?
+      []
+    else
+      [
+        Line.new(label: "Why it's held", sentence: why),
+        Line.new(label: "Held until", sentence: held_until)
+      ]
+    end
   end
 
   # Rendered whether or not spot work is held. "0 asleep" is the answer to "did
@@ -69,7 +73,7 @@ class SpotHoldExplanation
   # Deliberately does not restate the count. Both surfaces print the number
   # immediately before this sentence, so repeating it reads as a stutter.
   def sessions_asleep
-    return "None is asleep in the spot queue." if @paused_count.zero?
+    return "The ceiling has stopped nothing, or has already put everything back." if @paused_count.zero?
 
     if @paused_count == 1
       "It was paused mid-run when a window's spot budget ran out, and is asleep rather than running, " \
@@ -110,30 +114,47 @@ class SpotHoldExplanation
       "work out of them."
   end
 
+  # Names only the windows whose budget is actually SPENT, not every window that
+  # refused. With the 5-hour budget gone and the weekly window merely ahead of its
+  # curve, `held_windows` holds both and "the 5-hour and weekly windows' spot
+  # budget is spent" would be false of the second.
   def spot_budget_why
-    "The #{windows_phrase} spot budget is spent — everything above the priority reserve. This is the " \
-      "one ceiling that also pauses spot sessions already running, so the window stops climbing into " \
-      "the reserve instead of eating it."
+    "The #{windows_phrase(@decision.budget_spent_windows)} spot budget is spent — everything above the " \
+      "priority reserve. This is the one ceiling that also pauses spot sessions already running, so the " \
+      "window stops climbing into the reserve instead of eating it."
+  end
+
+  def pacing_curve_why
+    "The #{windows_phrase(@decision.held_windows)} spot budget still has #{remaining_phrase} left, but " \
+      "#{pace_comparison}. New spot turns wait at the door so what is left is spread over the rest of " \
+      "the window. Spot sessions already running are not paused for this; only a spent budget does that."
   end
 
   # The comparison the gate actually made: the fleet PLUS the session being
   # admitted, against the sustainable rate. Printing the fleet's burn alone would
   # show a number below the sustainable rate and leave the reader wondering why
   # anything is held.
-  def pacing_curve_why
-    "The #{windows_phrase} spot budget still has #{remaining_phrase} left, but the fleet at " \
-      "#{rate(@decision.fleet_burn_usd_per_minute)} plus the #{rate(@decision.candidate_burn_usd_per_minute)} " \
-      "the next spot session is priced at comes to #{rate(@decision.projected_burn_usd_per_minute)}, against " \
-      "#{rate(@decision.sustainable_usd_per_minute)} sustainable. New spot turns wait at the door so what " \
-      "is left is spread over the rest of the window. Spot sessions already running are not paused for " \
-      "this; only a spent budget does that."
+  #
+  # A window with no calibrated dollars, or a deployment with no sampled burn
+  # rates yet, is paced on cumulative percentages instead — there is no rate to
+  # print, and inventing one would be worse than naming the curve.
+  def pace_comparison
+    fleet = @decision.fleet_burn_usd_per_minute
+    candidate = @decision.candidate_burn_usd_per_minute
+    sustainable = @decision.sustainable_usd_per_minute
+    return "the window is already past where its pacing curve says it should be by now" if
+      fleet.nil? || candidate.nil? || sustainable.nil?
+
+    "the fleet at #{rate(fleet)} plus the #{rate(candidate)} the next spot session is priced at comes " \
+      "to #{rate(@decision.projected_burn_usd_per_minute)}, against #{rate(sustainable)} sustainable"
   end
 
   def spot_budget_until(seconds)
-    return "The #{windows_phrase} rollover, which could not be read." if seconds.nil?
+    windows = windows_phrase(@decision.budget_spent_windows)
+    return "The #{windows} rollover, which could not be read." if seconds.nil?
 
-    "No sooner than the #{windows_phrase} rollover, about #{rollover_phrase(seconds)}. Only a " \
-      "rollover puts money back in the budget."
+    "No sooner than the #{windows} rollover, #{rollover_phrase(seconds)}. Only a rollover puts money " \
+      "back in the budget."
   end
 
   def burn_must_fall_until(seconds)
@@ -143,40 +164,51 @@ class SpotHoldExplanation
 
     return sentence if seconds.nil?
 
-    "#{sentence} Failing that, the #{windows_phrase} rollover refills the budget, about " \
-      "#{rollover_phrase(seconds)} — an upper bound on the wait, not a forecast of it."
+    "#{sentence} Failing that, the #{windows_phrase(@decision.held_windows)} rollover refills the " \
+      "budget #{rollover_phrase(seconds)} — an upper bound on the wait, not a forecast of it."
   end
 
-  # How far the FLEET has to fall, which is the sustainable rate less what the
-  # session being admitted is itself projected to spend. When that is zero or
-  # negative, one session alone is priced above what the window can sustain, and
-  # the only thing that runs is the duty cycle the idle-fleet waiver produces.
+  # How far the FLEET has to fall: the sustainable rate less what the session
+  # being admitted is itself projected to spend, because the gate tests the sum
+  # of the two. "To or below" rather than "below" — Window#within_pace? is `<=`.
+  #
+  # When that headroom is zero or negative, one session on its own is priced
+  # above what the window can sustain, so no amount of fleet burn admits it while
+  # anything is running. What runs then is the duty cycle the idle-fleet waiver
+  # produces, and the copy says that rather than printing a negative threshold.
   def burn_threshold_clause
     sustainable = @decision.sustainable_usd_per_minute
-    return "When the fleet's burn falls back inside what the window can sustain." if sustainable.nil?
+    candidate = @decision.candidate_burn_usd_per_minute
+    return "When the fleet's spending falls back inside what the window can carry." if
+      sustainable.nil? || candidate.nil?
 
-    headroom = sustainable - @decision.candidate_burn_usd_per_minute.to_f
-    if headroom.positive?
-      "When the fleet's burn falls below #{rate(headroom)} — #{rate(sustainable)} sustainable, less the " \
-        "#{rate(@decision.candidate_burn_usd_per_minute)} the next spot session is priced at."
-    else
-      "Not until the fleet empties. One session on its own is priced above the #{rate(sustainable)} this " \
-        "window can sustain, so nothing fits beside the work already running; with nothing running at " \
-        "all the pace test is waived and a single session goes again."
-    end
+    headroom = sustainable - candidate
+    return above_sustainable_clause(sustainable) unless headroom.positive?
+
+    "When the fleet's burn falls to or below #{rate(headroom)} — #{rate(sustainable)} sustainable, less " \
+      "the #{rate(candidate)} the next spot session is priced at. The budget and a free slot have to " \
+      "hold as well."
+  end
+
+  def above_sustainable_clause(sustainable)
+    "Not while anything is running: one session on its own is priced above the #{rate(sustainable)} " \
+      "this window can sustain, so nothing fits beside the work already in flight. With nothing running " \
+      "at all the pace test is waived and a single session goes again."
   end
 
   # Always named as an estimate: this is a pool AVERAGE of when each account's
-  # window turns over, not a clock Zimmer owns.
+  # window turns over, not a clock Zimmer owns. No "about" of its own —
+  # `distance_of_time_in_words` supplies one for most durations, and prepending a
+  # second gives "about about 2 hours".
   def rollover_phrase(seconds)
-    "#{distance_of_time_in_words(seconds)} from now (estimated from the pool average)"
+    "in #{distance_of_time_in_words(seconds)} (estimated from the pool average)"
   end
 
-  # "weekly" or "5-hour and weekly", possessive, for a sentence about the windows
-  # that actually refused. Falls back to a bare "window's" when the decision
-  # carries no window at all, which is the fleet-cap case.
-  def windows_phrase
-    labels = @decision.held_windows.keys
+  # "weekly window's" or "5-hour and weekly windows'", for a sentence about a
+  # specific set of windows. Falls back to a bare "window's" when the set is
+  # empty, which is the fleet-cap case.
+  def windows_phrase(windows)
+    labels = windows.keys
     return "window's" if labels.empty?
 
     "#{labels.to_sentence} #{'window'.pluralize(labels.size)}#{labels.size > 1 ? "'" : "'s"}"
@@ -191,19 +223,28 @@ class SpotHoldExplanation
 
   # Whether the ceiling is pausing work RIGHT NOW, which is the question the old
   # copy answered wrong. Only a spent budget ever is.
+  #
+  # The resume condition is the WHOLE gate, not just the budget: SpotSessionPause
+  # resumes on `SpotGateService.resume_decision.allowed?`, which tests the cap,
+  # the pacing curve and a free slot. Saying "back inside the budget" would
+  # promise a resume during a pacing hold that has room but no pace.
   def resumption_clause
     verb = @decision.ceiling == :spot_budget ? "is pausing running spot sessions right now" :
       "is not pausing anything right now"
     subject = @paused_count == 1 ? "It resumes" : "They resume"
 
-    "The ceiling #{verb}. #{subject} automatically once the fleet is back inside the budget with " \
-      "#{SpotGateService::RESUME_MARGIN_PCT} points of the window to spare."
+    "The ceiling #{verb}. #{subject} automatically once the gate allows spot work again — budget, " \
+      "pacing curve and a free slot — with #{SpotGateService::RESUME_MARGIN_PCT} points of the window " \
+      "held back on top of the reserve while they come back."
   end
 
+  # A $/min figure. Rates run three orders of magnitude smaller than budgets, so
+  # two decimals would render a real $0.004/min threshold as "$0.00/min".
   def rate(value)
     return "an unknown rate" if value.nil?
+    return "an unbounded rate" if value.respond_to?(:infinite?) && value.infinite?
 
-    "#{money(value)}/min"
+    "#{helpers.number_to_currency(value, precision: value.abs < 0.01 ? 4 : 2)}/min"
   end
 
   def money(value)

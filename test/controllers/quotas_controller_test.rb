@@ -400,7 +400,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     body = response.body
     assert_match(/spot budget still has \$500 left/, body)
     assert_match(/already running are not paused for this/, body)
-    assert_match(/When the fleet&#39;s burn falls below/, body)
+    assert_match(/When the fleet&#39;s burn falls to or below/, body)
     refute_match(/running spot sessions are being paused too/, body)
 
     assert_select "#spot-paused-count", "1"
