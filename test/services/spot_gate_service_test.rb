@@ -761,6 +761,138 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal "at_utilization_limit", decision.reason
   end
 
+  # --- which ceiling is holding ------------------------------------------------
+
+  # `at_utilization_limit` covers two ceilings that behave differently, and
+  # before #ceiling existed there was no way for a surface to tell them apart —
+  # which is how /quotas came to announce that running sessions were being paused
+  # during holds that pause nothing.
+  test "a spent budget and a fleet ahead of the curve are different ceilings" do
+    calibrate(capacity_usd: 1000.0)
+    seed(current_5h: 0.30, reset_5h: 100.minutes.from_now)
+    burn_rate(4.0)
+    running_session(0)
+
+    pacing = SpotGateService.evaluate
+    assert_equal SpotGateService::UTILIZATION_REASON, pacing.reason
+    assert_equal :pacing_curve, pacing.ceiling
+    refute pacing.stops_running_work?, "the pace never interrupts a running turn"
+
+    seed(current_5h: 0.85, reset_5h: 100.minutes.from_now)
+    budget = SpotGateService.evaluate
+    assert_equal SpotGateService::UTILIZATION_REASON, budget.reason
+    assert_equal :spot_budget, budget.ceiling
+    assert budget.stops_running_work?
+  end
+
+  # CEILINGS is the documented set every surface branches over, so a fourth
+  # ceiling added without updating it would be a silent gap in the copy.
+  test "every ceiling a decision can report is one of the documented CEILINGS" do
+    seed(current_5h: 0.10)
+    assert_nil SpotGateService.evaluate.ceiling
+
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    running_session(0)
+    assert_includes SpotGateService::CEILINGS, SpotGateService.evaluate.ceiling
+
+    @setting.update!(spot_max_concurrent_sessions: 10)
+    seed(current_5h: 0.95)
+    assert_includes SpotGateService::CEILINGS, SpotGateService.evaluate.ceiling
+  end
+
+  test "the fleet cap is its own ceiling, and an allowed decision has none" do
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    seed(current_5h: 0.10)
+    running_session(0)
+
+    assert_equal :fleet_cap, SpotGateService.evaluate.ceiling
+
+    @setting.update!(spot_max_concurrent_sessions: 10)
+    assert_nil SpotGateService.evaluate.ceiling
+  end
+
+  # --- what the surfaces need to explain the hold ------------------------------
+
+  test "held_windows names only the windows that actually refused" do
+    calibrate(capacity_usd: 1000.0)
+    seed(current_5h: 0.85, current_7d: 0.05, reset_5h: 100.minutes.from_now)
+    burn_rate(2.0)
+
+    decision = SpotGateService.evaluate
+    assert_equal [ "5-hour" ], decision.held_windows.keys,
+      "the weekly window has no dollar estimate and is nowhere near its curve"
+  end
+
+  # The rate the copy tells a reader to get under. It has to come from the window
+  # that refused, not from whichever window happens to be first.
+  test "sustainable_usd_per_minute is the tightest rate among the holding windows" do
+    calibrate(capacity_usd: 1000.0)
+    seed(current_5h: 0.30, current_7d: 0.05, reset_5h: 100.minutes.from_now)
+    burn_rate(4.0)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    assert_equal [ "5-hour" ], decision.held_windows.keys
+    assert_in_delta 5.0, decision.sustainable_usd_per_minute, 0.05,
+      "$500 of spot budget left over 100 minutes"
+  end
+
+  # `held_windows` is every window that refused; `budget_spent_windows` is the
+  # subset whose money is actually gone. Copy that conflates them says a window
+  # with budget left is spent, and bounds the wait on a rollover that window
+  # does not have to reach.
+  test "budget_spent_windows is narrower than held_windows on a mixed hold" do
+    calibrate(capacity_usd: 1000.0)
+    calibrate(capacity_usd: 1000.0, window: QuotaCapacityEstimate::WEEKLY)
+    seed(current_5h: 0.85, current_7d: 0.30,
+         reset_5h: 100.minutes.from_now, reset_7d: 5.days.from_now)
+    burn_rate(2.0)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+    assert_equal :spot_budget, decision.ceiling
+    assert_equal %w[5-hour weekly], decision.held_windows.keys
+    assert_equal [ "5-hour" ], decision.budget_spent_windows.keys
+
+    kind, seconds = decision.resume_outlook
+    assert_equal :spot_budget, kind
+    assert_in_delta 100.minutes.to_i, seconds, 60,
+      "the bound comes from the spent window, not the one merely ahead of its curve"
+  end
+
+  # Both windows holding means both have to clear, so the LATEST rollover is the
+  # binding one — an outlook built from the earliest would promise release while
+  # the other window still refused.
+  test "resume_outlook takes the latest rollover of the holding windows" do
+    calibrate(capacity_usd: 1000.0)
+    calibrate(capacity_usd: 1000.0, window: QuotaCapacityEstimate::WEEKLY)
+    seed(current_5h: 0.85, current_7d: 0.85,
+         reset_5h: 100.minutes.from_now, reset_7d: 20.hours.from_now)
+    burn_rate(2.0)
+
+    decision = SpotGateService.evaluate
+    assert_equal %w[5-hour weekly], decision.held_windows.keys
+    kind, seconds = decision.resume_outlook
+    assert_equal :spot_budget, kind
+    assert_in_delta 20.hours.to_i, seconds, 60
+  end
+
+  # There is no honest ETA for either of these, and resume_outlook says so with a
+  # nil rather than reaching for the nearest number.
+  test "resume_outlook offers no time for the fleet cap" do
+    @setting.update!(spot_max_concurrent_sessions: 1)
+    seed(current_5h: 0.10)
+    running_session(0)
+
+    assert_equal [ :fleet_cap, nil ], SpotGateService.evaluate.resume_outlook
+  end
+
+  test "resume_outlook offers no time when nothing is held" do
+    seed(current_5h: 0.10)
+
+    assert_equal [ nil, nil ], SpotGateService.evaluate.resume_outlook
+  end
+
   private
 
   def running_session(index, genesis: SessionGenesis::WEB_UI)
