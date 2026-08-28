@@ -5,10 +5,10 @@
 #
 # A "context-management feature" is anything that puts bytes into a request's
 # prompt for a reason other than the user's actual task: the goal block Zimmer
-# appends to every turn, the session hierarchy and human-message record that ride
-# along with it, a skill body loaded on invocation, an MCP tool's response. Each
-# is a decision someone made, each bills on every subsequent turn it stays in the
-# context, and none of them is individually visible in a bill.
+# appends to every turn, the operator's session notes beside it, a skill body
+# loaded on invocation, an MCP tool's response. Each is a decision someone made,
+# each bills on every subsequent turn it stays in the context, and none of them
+# is individually visible in a bill.
 #
 # ADDING A FEATURE
 #
@@ -165,6 +165,25 @@ class ContextFeatureRegistry
     blurb: "The record of which turns a real person authored. Not injected — served by get_session_provenance, so this line covers retained transcripts only.",
     owner: :zimmer,
     pattern: %r{<human-messages>[\s\S]*?</human-messages>}
+  )
+
+  # Both of these are Zimmer's own bytes, so they need their own lines: without
+  # a detector they fall through to `prompt`, which is `owner: :work` — a block
+  # this repository chose to inject, billed to the user's task.
+  feature(
+    key: "unavailable_mcp_servers",
+    label: "Unavailable MCP servers",
+    blurb: "The standing notice that a configured MCP server never connected, re-sent on every turn until the session ends.",
+    owner: :zimmer,
+    pattern: %r{<unavailable-mcp-servers>[\s\S]*?</unavailable-mcp-servers>}
+  )
+
+  feature(
+    key: "attached_files",
+    label: "Attached-file note",
+    blurb: "The paths and handling advice Zimmer writes when a human attaches files to a message. The files' own contents are read separately.",
+    owner: :zimmer,
+    pattern: %r{<attached-files>[\s\S]*?</attached-files>}
   )
 
   feature(

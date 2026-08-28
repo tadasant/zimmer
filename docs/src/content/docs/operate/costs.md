@@ -238,10 +238,12 @@ than left to inform the scheduler forever.
 ## Context features
 
 `token_usage_features` answers a question the usage tables cannot: not *what did this call
-cost*, but *what was it carrying*. The injected goal block, the session hierarchy, the
-human-message record, skill bodies, MCP responses, tool output, extended thinking — each is
-a decision someone made, each bills again on every turn it stays in the context, and none of
-them is individually visible in a bill.
+cost*, but *what was it carrying*. The injected goal block, the operator's session notes,
+skill bodies, MCP responses, tool output, extended thinking — each is a decision someone
+made, each bills again on every turn it stays in the context, and none of them is
+individually visible in a bill. (The session hierarchy and the human-message record have
+their own lines too, and are the worked example of a feature that stopped being injected —
+see [When a feature moves rather than disappears](#when-a-feature-moves-rather-than-disappears).)
 
 ### These numbers are estimates, and the page says so
 
@@ -328,6 +330,13 @@ would otherwise swallow it.
 on disk, so a removed detector does not zero a line — it strands a month of history in the residual.
 `session_hierarchy` and `human_messages` still match, and trending to zero on new transcripts while
 `provenance_tool` picks up is the before/after.
+
+**And give a detector to whatever the removal exposes.** A block with no detector falls through to
+`prompt`, whose owner is `:work` — so a block Zimmer chose to inject gets billed to the user's task.
+Dropping the provenance blocks left `<unavailable-mcp-servers>` and `<attached-files>` sitting
+directly after the goal suffix with nothing claiming them, so both got a line of their own
+(`unavailable_mcp_servers`, `attached_files`), and the `goal` region's lookahead was widened to stop
+at each of them rather than swallowing them.
 
 ### What the attribution cannot see
 

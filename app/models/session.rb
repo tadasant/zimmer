@@ -572,8 +572,8 @@ class Session < ApplicationRecord
   end
 
   # The whole family of sessions this one belongs to — origin at the root, every
-  # descendant below. Not memoized: the per-turn prompt build and the detail
-  # screen both want current state.
+  # descendant below. Not memoized: the detail screen, the two provenance MCP
+  # tools and the REST show action all want current state.
   def hierarchy
     SessionHierarchy.new(self)
   end
