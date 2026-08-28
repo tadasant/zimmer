@@ -194,10 +194,11 @@ that found nothing and a gate that aborted both ran to completion).
 
 The second of those is the one agents miss, because it looks like a handoff rather than a wait: red
 CI on `main` from a failure unrelated to the agent's own diff, an upstream fix in flight. The prompt
-tells the agent to look for the session already working the blocker, set all three
-`wake_me_up_when_session_changes_state` events on it — `session_archived`, `session_needs_input` and
-`session_failed`, since a clean finish self-archives without passing through `needs_input` — plus a
-`wake_me_up_later` deadline as a backstop, and then resume its own work once the blocker clears.
+tells the agent to look for the session already working the blocker, make one
+`wake_me_up_when_session_changes_state` call naming all three events — `session_archived`,
+`session_needs_input` and `session_failed`, since a clean finish self-archives without passing
+through `needs_input` — plus a `wake_me_up_later` deadline as a backstop, and then resume its own
+work once the blocker clears.
 Escalating is right only when nobody is on the blocker, or after about three hours.
 
 Whether agents comply is, again, a matter of the model obeying English.

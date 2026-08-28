@@ -42,13 +42,15 @@ class SelfSessionInjector
   # @param existing_servers [Array<Hash>] one entry per MCP server already present,
   #   each shaped `{ name: String, url: String|nil }`. The caller extracts these from
   #   its native config so the dedup rule stays format-agnostic.
+  # @param session_id [Integer, nil] the session this config is being written for,
+  #   stamped onto the endpoint so its own tools know who is calling.
   # @yield [String, String, Hash] entry name, endpoint URL, headers; the block writes
   #   the entry in the runtime's native format.
   # @return [String, nil] the injected entry name, or nil if injection was skipped.
-  def inject!(existing_servers:)
+  def inject!(existing_servers:, session_id: nil)
     return nil if self_session_capable_present?(existing_servers)
 
-    yield(SELF_SESSION_SERVER_NAME, endpoint_url(tool_groups: "self_session"), headers)
+    yield(SELF_SESSION_SERVER_NAME, endpoint_url(tool_groups: "self_session", session_id: session_id), headers)
     SELF_SESSION_SERVER_NAME
   end
 
@@ -87,10 +89,11 @@ class SelfSessionInjector
   # scoped. Used both to build injected entries and to retarget catalog-resolved
   # Zimmer servers, so a local-dev or staging session orchestrates itself rather
   # than production.
-  def endpoint_url(tool_groups: nil, allowed_agent_roots: nil)
+  def endpoint_url(tool_groups: nil, allowed_agent_roots: nil, session_id: nil)
     query = {}
     query["tool_groups"] = tool_groups if tool_groups.present?
     query["allowed_agent_roots"] = allowed_agent_roots if allowed_agent_roots.present?
+    query["session_id"] = session_id.to_s if session_id.present?
 
     url = "#{self_target[:base_url].to_s.chomp('/')}/mcp"
     query.any? ? "#{url}?#{query.to_query}" : url

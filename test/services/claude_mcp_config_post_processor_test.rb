@@ -656,9 +656,10 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     build_processor.post_process!
 
     zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
-    assert_equal "http://localhost:3000/mcp", zimmer["url"],
+    assert_equal "http://localhost:3000/mcp?session_id=#{@session.id}", zimmer["url"],
       "The zimmer entry's origin should be retargeted to localhost in test/dev env " \
-      "so the session orchestrates the local Zimmer instance, not production"
+      "so the session orchestrates the local Zimmer instance, not production, and " \
+      "stamped with the session it was written for"
     assert_equal "local-test-key", zimmer.dig("headers", "X-API-Key"),
       "The zimmer entry's API key should be retargeted to the local key in test/dev env"
   end
@@ -681,11 +682,11 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     result = read_config
 
     zimmer = result.dig("mcpServers", SUBAGENT_SERVER)
-    assert_equal "http://localhost:3000/mcp", zimmer["url"]
+    assert_equal "http://localhost:3000/mcp?session_id=#{@session.id}", zimmer["url"]
     assert_equal "local-test-key", zimmer.dig("headers", "X-API-Key")
 
     sessions_entry = result.dig("mcpServers", "zimmer-sessions")
-    assert_equal "http://localhost:3000/mcp?tool_groups=sessions&allowed_agent_roots=some-root",
+    assert_equal "http://localhost:3000/mcp?tool_groups=sessions&allowed_agent_roots=some-root&session_id=#{@session.id}",
       sessions_entry["url"],
       "Retarget must rewrite only the origin — the query string carries the entry's scoping"
     assert_equal "local-test-key", sessions_entry.dig("headers", "X-API-Key")
@@ -757,9 +758,9 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       build_processor.post_process!
 
       zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
-      assert_equal "https://zimmer.example.com/mcp", zimmer["url"],
-        "In production env, a zimmer entry's URL must be pass-through " \
-        "(the catalog already points at the right place)"
+      assert_equal "https://zimmer.example.com/mcp?session_id=#{@session.id}", zimmer["url"],
+        "In production env, a zimmer entry's origin and key must be pass-through " \
+        "(the catalog already points at the right place) — only the session stamp is added"
       assert_equal "real-prod-key", zimmer.dig("headers", "X-API-Key"),
         "In production env, a zimmer entry's API key must be pass-through"
     end
@@ -781,7 +782,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       build_processor.post_process!
 
       entry = read_config.dig("mcpServers", "zimmer-sessions")
-      assert_equal "https://staging.zimmer.example.com/mcp?tool_groups=sessions", entry["url"],
+      assert_equal "https://staging.zimmer.example.com/mcp?tool_groups=sessions&session_id=#{@session.id}", entry["url"],
         "In staging env, a zimmer entry should be retargeted to the staging instance"
       assert_equal "test-staging-api-key", entry.dig("headers", "X-API-Key"),
         "In staging env, a zimmer entry should carry the staging key"
@@ -838,10 +839,10 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     build_processor.post_process!
     result = read_config
 
-    assert_equal "http://localhost:9999/mcp?tool_groups=sessions",
+    assert_equal "http://localhost:9999/mcp?tool_groups=sessions&session_id=#{@session.id}",
       result.dig("mcpServers", "zimmer-sessions", "url"),
       "When ZIMMER_LOCAL_BASE_URL is set, retarget should use that exact origin"
-    assert_equal "http://localhost:9999/mcp?tool_groups=self_session",
+    assert_equal "http://localhost:9999/mcp?session_id=#{@session.id}&tool_groups=self_session",
       result.dig("mcpServers", SELF_SESSION_SERVER, "url"),
       "The injected self-session entry should be built against the same overridden origin"
   end
@@ -857,7 +858,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     self_session = read_config.dig("mcpServers", SELF_SESSION_SERVER)
     assert_not_nil self_session, "ensure_baseline! should inject the self-session entry"
-    assert_equal "http://localhost:3000/mcp?tool_groups=self_session", self_session["url"],
+    assert_equal self_session_url, self_session["url"],
       "Self-session URL must target localhost in dev, not zimmer.example.com — and keep its tool_groups scoping"
     assert_equal "local-test-key", self_session.dig("headers", "X-API-Key"),
       "Self-session API key must be the local key in dev, not the prod key"
@@ -941,7 +942,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       "mcpServers" => {
         SUBAGENT_SERVER => {
           "type" => "http",
-          "url" => "http://localhost:3000/mcp",
+          "url" => "http://localhost:3000/mcp?session_id=#{@session.id}",
           "headers" => { "X-API-Key" => "local-key" }
         },
         "some-npx-server" => {
@@ -1048,9 +1049,11 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     JSON.parse(@mock_fs.read(File.join(@working_dir, ".mcp.json")))
   end
 
-  # The /mcp endpoint of the instance under test, scoped to the self-session tools.
-  def self_session_url
-    "http://localhost:3000/mcp?tool_groups=self_session"
+  # The /mcp endpoint of the instance under test, scoped to the self-session tools
+  # and stamped with the session the config is being written for. Query order is
+  # SelfSessionInjector's — Hash#to_query sorts its keys.
+  def self_session_url(session = @session)
+    "http://localhost:3000/mcp?session_id=#{session.id}&tool_groups=self_session"
   end
 
   def query_params(url)

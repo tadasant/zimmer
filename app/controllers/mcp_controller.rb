@@ -8,6 +8,11 @@ require "mcp"
 #   POST /mcp?tool_groups=sessions               → session orchestration only
 #   POST /mcp?tool_groups=self_session           → the self-management subset
 #   POST /mcp?tool_groups=sessions&allowed_agent_roots=zimmer
+#   POST /mcp?tool_groups=self_session&session_id=42
+#
+# `session_id` names the session the entry was written for, so a tool that acts
+# on "the calling session" can default to it. It is a default, never a scope:
+# tool_groups and allowed_agent_roots remain the only things that govern reach.
 #
 # The protocol itself (JSON-RPC framing, version negotiation, tools/list,
 # tools/call, ping, notifications) is the official MCP Ruby SDK's. This controller
@@ -84,7 +89,13 @@ class McpController < Api::BaseController
         tool_groups: query["tool_groups"],
         allowed_agent_roots: query["allowed_agent_roots"],
         base_url: request.base_url,
-        caller_fingerprint: HealthActionCooldown.fingerprint(api_key_from_request)
+        caller_fingerprint: HealthActionCooldown.fingerprint(api_key_from_request),
+        # Which session this connection was written for, so the self-management
+        # tools can default their "which session is asking" argument instead of
+        # making the agent restate an id it cannot see. Read from the query string
+        # for the same reason as the two above: a JSON body must not be able to
+        # set it.
+        session_id: query["session_id"]
       )
     end
   end

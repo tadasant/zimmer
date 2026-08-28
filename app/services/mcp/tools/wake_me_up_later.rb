@@ -59,7 +59,7 @@ module Mcp
           This guidance does NOT apply when waking at a known wall-clock time (e.g., "9am tomorrow") — use the calculated time directly.
 
           **Parameters:**
-          - **session_id**: The session to wake up. Works from either `needs_input` or `running` state — if you call this tool from within your own currently-running session, the sleep transition is recorded and takes effect after the current turn ends.
+          - **session_id**: OPTIONAL. The session to wake up. Omit it to wake YOURSELF — a session's own Zimmer MCP entry names it, so the tool already knows who is calling. Pass it only to schedule a wake for a DIFFERENT session. Works from either `needs_input` or `running` state — if you call this tool from within your own currently-running session, the sleep transition is recorded and takes effect after the current turn ends.
           - **wake_at**: ISO 8601 datetime without offset for when to wake up (e.g., "2026-04-15T14:30:00")
           - **timezone**: IANA timezone for interpreting wake_at (default: "UTC", e.g., "America/New_York")
           - **prompt**: The prompt to send when waking up the session
@@ -90,7 +90,7 @@ module Mcp
         properties: {
           session_id: {
             oneOf: [ { type: "string" }, { type: "number" } ],
-            description: "Session ID (numeric) or slug (string). Accepts sessions in needs_input or running state — from a running session, the sleep takes effect after the current turn ends."
+            description: "OPTIONAL — omit to wake the calling session. Session ID (numeric) or slug (string). Accepts sessions in needs_input or running state — from a running session, the sleep takes effect after the current turn ends."
           },
           wake_at: {
             type: "string",
@@ -105,7 +105,7 @@ module Mcp
             description: "The prompt to send when waking up the session."
           }
         },
-        required: [ "session_id", "wake_at", "prompt" ]
+        required: [ "wake_at", "prompt" ]
       })
 
       def call(args)
@@ -113,7 +113,7 @@ module Mcp
         prompt = require_arg(args, :prompt).to_s
         timezone = args["timezone"].presence || "UTC"
 
-        session = find_session(args["session_id"])
+        session = requester_session(args)
 
         trigger = begin
           Sessions::ScheduleWakeUp.call(session: session, wake_at: wake_at, timezone: timezone, prompt: prompt)
@@ -129,7 +129,7 @@ module Mcp
           - **Session ID:** #{session.id}
           - **Wake At:** #{scheduled_at} (#{timezone})
           - **Trigger ID:** #{trigger.id}
-          - **Trigger Name:** #{trigger.name}
+          - **Trigger Name:** #{trigger.name}#{defaulted_requester_notice(session)}
 
           **You must end your conversation turn now.** The session will be automatically transitioned to waiting (immediately if currently needs_input; after the current turn ends if currently running) and resumed at the scheduled time with the provided prompt.
 

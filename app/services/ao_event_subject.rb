@@ -21,16 +21,21 @@ class AoEventSubject
   # exactly as it was before this seam existed.
   Skip = Data.define(:level, :message)
 
+  # @param settle_marker [Integer, nil] the needs_input transition counter as it
+  #   stood when the event was emitted. Only meaningful for session_needs_input;
+  #   nil for every other event and for jobs enqueued before this argument
+  #   existed, which is what makes the settle check opt-in rather than a
+  #   behaviour change for in-flight work.
   # @return [AoEventSubject, nil] nil when the subject row is gone — it was
   #   deleted between the event being enqueued and this job running, which is
   #   routine and not an error.
-  def self.resolve(event_name, subject_id)
+  def self.resolve(event_name, subject_id, settle_marker = nil)
     if TriggerCondition::ACCOUNT_AO_EVENT_NAMES.include?(event_name)
       account = ClaudeAccount.find_by(id: subject_id)
       account && AccountSubject.new(account)
     elsif TriggerCondition::SESSION_AO_EVENT_NAMES.include?(event_name)
       session = Session.find_by(id: subject_id)
-      session && SessionSubject.new(session)
+      session && SessionSubject.new(session, event_name: event_name, settle_marker: settle_marker)
     else
       # Dispatched explicitly rather than defaulting to a session, so an event
       # added to AO_EVENT_NAMES but not mapped here fails loudly. Falling through
@@ -43,17 +48,60 @@ class AoEventSubject
 
   # A session transitioning to needs_input / failed / archived.
   class SessionSubject
-    attr_reader :session
+    attr_reader :session, :event_name, :settle_marker
 
-    def initialize(session) = @session = session
+    def initialize(session, event_name: nil, settle_marker: nil)
+      @session = session
+      @event_name = event_name.to_s
+      @settle_marker = settle_marker
+    end
 
     def id = session.id
 
     def to_s = "session ##{session.id}"
 
-    # A session event is about a transition that has already happened, so there is
-    # nothing to re-check: the session is in the state the event names.
-    def stale? = false
+    # `failed` and `archived` are terminal: the transition has happened and there
+    # is nothing to re-check. `needs_input` is not, and that asymmetry is the whole
+    # flap.
+    #
+    # `pause` fires at every turn boundary, including the boundaries of a session
+    # that is merely cycling — waking on its own `wake_me_up_later`, taking a
+    # turn, and sleeping again, or pausing with a message already queued for it.
+    # Those sessions are back in `waiting` or `running` microseconds later, but the
+    # event they emitted on the way through woke every watcher subscribed to
+    # `session_needs_input`. Each such wake cost the watcher a full agent turn and
+    # destroyed its sibling wakes, which it then had to re-register — four trigger
+    # writes per flap.
+    #
+    # So a `session_needs_input` event is stale unless, once the settle window has
+    # elapsed, the session is still resting there and has not churned through
+    # further transitions since the event was emitted. A newer transition has
+    # emitted its own event with its own marker; this one is superseded.
+    def stale?
+      return false unless event_name == "session_needs_input"
+      # Gone between the emit and here. Stale in the same sense AccountSubject
+      # means it: there is no longer a subject for this event to be about, and
+      # firing would hand every watcher a label built from a deleted row.
+      return true unless Session.exists?(session.id)
+
+      session.reload
+
+      if settle_marker && session.needs_input_transition_count != settle_marker
+        Rails.logger.info(
+          "[AoEventSubject] session ##{session.id} churned past the settle window " \
+          "(marker #{settle_marker}, now #{session.needs_input_transition_count}) — superseded"
+        )
+        return true
+      end
+
+      return false if session.resting_in_needs_input?
+
+      Rails.logger.info(
+        "[AoEventSubject] session ##{session.id} did not settle in needs_input " \
+        "(status=#{session.status}) — turn-boundary flap, not a rest"
+      )
+      true
+    end
 
     def skip(condition)
       scoped = condition.session_scoped_ao_event?

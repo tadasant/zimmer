@@ -304,19 +304,23 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "check the tracking issue for a linked session or PR"
   end
 
-  test "the blocked-by-a-session rule requires all three state wakes plus a deadline backstop" do
+  test "the blocked-by-a-session rule asks for all three state wakes in one call, plus a deadline backstop" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "set `wake_me_up_when_session_changes_state` on that session for all three of"
-    assert_includes prompt, "`session_archived`, `session_needs_input` and `session_failed`"
+    assert_includes prompt, "one `wake_me_up_when_session_changes_state` call on that session with"
+    # One call over the SET of events, not three calls: the tool takes event_names,
+    # builds one trigger with a condition per event, and so leaves one row to
+    # re-register instead of three.
+    assert_includes prompt, %(event_names: ["session_archived", "session_needs_input", "session_failed"])
+    assert_includes prompt, "That is two calls, and two rows"
     # A clean finish self-archives without ever passing through needs_input, so a
     # lone needs_input wake never fires — the reason all three are required.
     assert_includes prompt, "a clean finish self-archives without passing through `needs_input`"
     assert_includes prompt, "plus a `wake_me_up_later` deadline as a backstop"
     # Trigger#destroy_sibling_wakes! keys on last_session_id — the requester's
     # own wakes are the ones destroyed, not the watched session's.
-    assert_includes prompt, "A fired one-time wake destroys your other one-time wakes"
-    assert_includes prompt, "re-register every round"
+    assert_includes prompt, "A fired one-time wake still destroys your other one-time wakes"
+    assert_includes prompt, "re-register both every round"
     assert_includes prompt, "a wake means re-poll and decide, not that anyone finished"
   end
 
