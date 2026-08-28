@@ -12,7 +12,8 @@
 #   2. Inject the self-session Zimmer MCP server unless an existing Zimmer server
 #      already covers the self_session tool group.
 #   3. Retarget Zimmer MCP server entries at the current Zimmer instance so a
-#      local-dev or staging session orchestrates itself, not production.
+#      local-dev or staging session orchestrates itself, not production, and stamp
+#      each with `session_id` so its tools know which session is calling them.
 #   4. Write the elicitation address (ELICITATION_REQUEST_URL / _SESSION_ID) into
 #      every stdio server's own `env` table.
 #   5. Resolve ${VAR} interpolations from SecretsLoader.
@@ -76,6 +77,7 @@ class RuntimeConfigPostProcessor
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
     retarget_zimmer_servers_to_current_env!(servers)
+    stamp_session_id_on_zimmer_servers!(servers)
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
     isolate_colliding_npx_caches!(servers)
@@ -112,6 +114,7 @@ class RuntimeConfigPostProcessor
     return if injected_mcp_servers.empty?
 
     retarget_zimmer_servers_to_current_env!(servers)
+    stamp_session_id_on_zimmer_servers!(servers)
     # A no-op today — everything reachable on this path is an auto-injected HTTP
     # Zimmer entry, and only stdio servers have an environment. It runs anyway so
     # the two paths stay identical: a stdio server that ever reaches here must not
@@ -242,7 +245,10 @@ class RuntimeConfigPostProcessor
     end
 
     servers[name] = build_http_entry(
-      url: self_session_injector.endpoint_url(allowed_agent_roots: root.default_subagent_roots.join(",")),
+      url: self_session_injector.endpoint_url(
+        allowed_agent_roots: root.default_subagent_roots.join(","),
+        session_id: session.id
+      ),
       headers: self_session_injector.headers
     )
 
@@ -255,7 +261,7 @@ class RuntimeConfigPostProcessor
       { name: name, url: entry["url"] }
     end
 
-    injected_name = self_session_injector.inject!(existing_servers: existing) do |name, url, headers|
+    injected_name = self_session_injector.inject!(existing_servers: existing, session_id: session.id) do |name, url, headers|
       servers[name] = build_http_entry(url: url, headers: headers)
     end
 
@@ -362,6 +368,48 @@ class RuntimeConfigPostProcessor
     # process; this is the other half.
     Rails.logger.info "[#{self.class.name}] Wrote #{ElicitationEndpoint::VARIABLES.join(' + ')} " \
       "into the env of #{written.size} stdio MCP server(s): #{written.join(', ')}"
+  end
+
+  # Tell every Zimmer MCP entry in this config which session it belongs to.
+  #
+  # Injection already stamps the entries it writes, but a Zimmer server can also
+  # arrive from the catalog (a root's default_mcp_servers), and that entry is the
+  # one a session in production is most likely to be holding — retarget is a no-op
+  # there, so nothing else would ever add the parameter. The config file is written
+  # per session, so stamping the session's own id is always correct.
+  #
+  # It is a DEFAULT for "which session is asking", never a grant: Mcp::Context uses
+  # it only to fill in an omitted session_id argument, and `tool_groups` /
+  # `allowed_agent_roots` are untouched. An entry that already names a session is
+  # left alone rather than overwritten, so a deliberately hand-pointed entry keeps
+  # pointing where it was aimed.
+  def stamp_session_id_on_zimmer_servers!(servers)
+    servers.each do |name, entry|
+      next unless entry.is_a?(Hash)
+      next unless self_session_injector.zimmer_server_name?(name)
+      next if entry["url"].blank?
+
+      entry["url"] = with_session_id(entry["url"], session.id)
+    end
+  rescue => e
+    # Never fatal. Without the stamp the tools simply ask for session_id explicitly,
+    # which is the behaviour every session had before this existed.
+    Rails.logger.warn(
+      "[RuntimeConfigPostProcessor] Could not stamp session_id onto Zimmer MCP entries " \
+      "for session #{session.id}: #{e.class}: #{e.message}"
+    )
+  end
+
+  def with_session_id(url, session_id)
+    uri = URI.parse(url.to_s)
+    query = Rack::Utils.parse_query(uri.query)
+    return url if query["session_id"].present?
+
+    query["session_id"] = session_id.to_s
+    uri.query = Rack::Utils.build_query(query)
+    uri.to_s
+  rescue URI::InvalidURIError
+    url
   end
 
   # Give each stdio server that shares an `npx` install with another server in

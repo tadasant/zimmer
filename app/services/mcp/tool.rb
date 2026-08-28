@@ -99,6 +99,63 @@ module Mcp
       session
     end
 
+    # The session that is CALLING — the one a self-management tool acts on when its
+    # `session_id` argument is omitted.
+    #
+    # Nothing in an MCP request body identifies the caller, so the identity comes
+    # from the connection: RuntimeConfigPostProcessor stamps `session_id` onto the
+    # URL of the Zimmer entry it writes into a session's own runtime config, and
+    # Mcp::Context carries it through. An explicit argument always wins — a session
+    # is still free to schedule a wake for a different session.
+    #
+    # Falling back is what removes a whole round trip from every wake-up: without
+    # it the agent's first call fails schema validation on a required argument it
+    # cannot see the value of, and it has to look its own id up and call again.
+    def requester_session(args)
+      # `args.key?` rather than `.present?`: an argument that was SENT but blank is
+      # a caller that tried to name a session and got it wrong, and silently acting
+      # on a different one is the worst available answer. find_session rejects it.
+      return find_session(args["session_id"]) if args.key?("session_id") && !args["session_id"].nil?
+
+      if context.self_session_id
+        session = Session.find_by(id: context.self_session_id)
+        if session
+          @requester_defaulted = true
+          return session
+        end
+
+        raise ToolError, "This MCP connection names session #{context.self_session_id} as the caller, " \
+                         "but no such session exists. Pass an explicit session_id."
+      end
+
+      raise ToolError, "Missing required parameter: session_id. This MCP connection does not name a " \
+                       "calling session, so the session to act on has to be given explicitly. " \
+                       "Pass the id of the session this tool should act on."
+    end
+
+    # Whether the session this tool acted on came from the connection rather than
+    # the arguments. A wake tool says so in its receipt: `session_id` is optional
+    # now, so a caller that MEANT to sleep some other session and forgot the
+    # argument has slept itself, and the only cheap way to make that recoverable
+    # is to state it in the same turn. Nil until #requester_session has run.
+    def requester_defaulted?
+      @requester_defaulted == true
+    end
+
+    # Named in a wake tool's receipt whenever `session_id` was omitted, because
+    # omitting it is now legal and the wrong session going to sleep is otherwise
+    # silent. Both wake tools are in the `triggers` group as well as
+    # `self_session`, so a caller holding a full-surface connection can genuinely
+    # have meant a different session — and the sleep it just scheduled is on
+    # itself. Saying so in the same turn is what makes that recoverable.
+    def defaulted_requester_notice(session)
+      return "" unless requester_defaulted?
+
+      "\n\n⚠️ **No `session_id` was given, so this acted on the calling session (##{session.id})** — " \
+        "the session this MCP connection belongs to. If you meant a different one, it is this session " \
+        "that is now scheduled to sleep: pass `session_id` explicitly and cancel this trigger."
+    end
+
     def enforce_allowed_root!(agent_root_name)
       return unless context.restricted?
 

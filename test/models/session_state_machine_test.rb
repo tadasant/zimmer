@@ -1875,9 +1875,94 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     ActiveRecord.stubs(:after_all_transactions_commit).yields
 
-    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_needs_input", session.id ]) do
+    assert_enqueued_with(
+      job: AoEventTriggerJob,
+      args: [ "session_needs_input", session.id, session.needs_input_transition_count + 1 ]
+    ) do
       session.pause!
     end
+  end
+
+  test "the session_needs_input wake is held for the settle window, unlike the terminal events" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    assert_enqueued_with(
+      job: AoEventTriggerJob,
+      at: SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.from_now
+    ) do
+      session.pause!
+    end
+
+    # Terminal events cannot flap, so they are not delayed.
+    other = sessions(:running)
+    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_failed", other.id ]) do
+      other.fail!
+    end
+  end
+
+  test "a failed counter bump skips the push rather than sending it ungated" do
+    session = sessions(:waiting)
+    session.update!(status: :running, push_notifications_enabled: true)
+    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    # SendPushNotificationJob#stale_needs_input_transition? does not gate at all
+    # on a nil marker, so an un-markered push would fire 60s later whatever the
+    # session did in between. Before the counter had two consumers, a failed bump
+    # meant no push; it still does.
+    assert_no_enqueued_jobs(only: SendPushNotificationJob) do
+      assert_nothing_raised { session.pause! }
+    end
+    assert_equal :needs_input, session.status.to_sym
+
+    # The wake is still emitted — it settles on state, which the failed bump did
+    # not touch.
+    assert_enqueued_jobs 1, only: AoEventTriggerJob
+  end
+
+  test "one pause bumps the needs_input counter exactly once" do
+    session = sessions(:waiting)
+    session.update!(status: :running, push_notifications_enabled: true)
+    before = session.needs_input_transition_count
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+    session.pause!
+
+    assert_equal before + 1, session.reload.needs_input_transition_count,
+      "the wake fan-out and the push notification share one counter; two bumps would " \
+      "make each one's marker stale to the other and suppress both"
+  end
+
+  # === resting_in_needs_input? — what makes a pause a REST rather than a boundary ===
+
+  test "resting_in_needs_input? asks about status, and only status" do
+    session = sessions(:needs_input)
+    assert session.resting_in_needs_input?
+
+    session.update!(status: :running)
+    assert_not session.resting_in_needs_input?, "a running session is not resting"
+
+    session.update!(status: :waiting)
+    assert_not session.resting_in_needs_input?,
+      "a session that slept on its own wake is not resting — this is the flap"
+
+    # The two richer disqualifiers considered are deliberately absent. Each can
+    # only still be true when the settle window closes if the thing that was going
+    # to move the session has failed: `sleep!` raised, or the drain gave up. Those
+    # sessions ARE stuck at rest, and since `pause` only fires from `running`,
+    # nothing re-emits this event — suppressing would lose the wake, not delay it.
+    session.update!(status: :needs_input, metadata: (session.metadata || {}).merge("pending_sleep" => true))
+    assert session.resting_in_needs_input?,
+      "a sleep intent that outlived the pause callback means sleep! raised — that is a stuck rest"
+
+    session.update!(metadata: session.metadata.except("pending_sleep"))
+    session.enqueued_messages.create!(content: "follow up", position: 1)
+    assert session.resting_in_needs_input?,
+      "a message still queued at settle time means the drain has not landed — also a stuck rest"
   end
 
   test "fail transition enqueues AoEventTriggerJob with session_failed" do

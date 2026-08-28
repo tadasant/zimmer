@@ -25,6 +25,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -42,6 +43,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
   test "skips non-autonomous sessions" do
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -60,6 +62,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     # Create a session that was created by this trigger
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -78,6 +81,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     # Session was created by a different trigger
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -94,6 +98,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     @trigger.update!(status: "disabled")
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -123,6 +128,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -143,6 +149,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentRootsConfig.stubs(:find!).raises(AgentRootsConfig::AgentRootNotFoundError.new("Not found"))
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -174,6 +181,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     failed_condition = failed_trigger.trigger_conditions.first
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -191,6 +199,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
   test "does not fire session_needs_input trigger on session_failed event" do
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -225,6 +234,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     archived_condition = archived_trigger.trigger_conditions.first
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -253,6 +263,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     archived_condition = archived_trigger.trigger_conditions.first
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -281,6 +292,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     )
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -365,6 +377,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -372,6 +385,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
       metadata: {}
     )
     other_session = Session.create!(
+      status: :needs_input,
       prompt: "Other",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -408,6 +422,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -449,6 +464,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     refute @condition.session_scoped_ao_event?
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -469,6 +485,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched (user-paused, non-autonomous)",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -494,6 +511,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -527,6 +545,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -579,6 +598,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -656,6 +676,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -704,6 +725,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -755,6 +777,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -835,6 +858,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -917,13 +941,31 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
   # ActiveJob restores enqueued_at as a Time object at perform time (Rails 8.1),
   # so the Time path is the real production path. A String can still appear (e.g.
   # a manually enqueued/legacy payload), so both branches are exercised.
+  # A settled session_needs_input carries a marker and a 30s wait; the immediate-fire
+  # path and any job from before that argument existed carry neither. Only the first
+  # gets the window discounted, or a genuinely late immediate wake reports 30s less
+  # than it took and never warns.
+  test "the settle window is discounted only for the jobs that actually carried it" do
+    late_by = AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD + 10
+
+    settled = AoEventTriggerJob.new("session_needs_input", 123, 7)
+    settled.enqueued_at = Time.current - late_by
+    Rails.logger.expects(:warn).never
+    settled.send(:warn_on_high_dispatch_latency, "session_needs_input", 123, 7)
+
+    unsettled = AoEventTriggerJob.new("session_needs_input", 123)
+    unsettled.enqueued_at = Time.current - late_by
+    Rails.logger.expects(:warn).with(regexp_matches(/High dispatch latency/)).once
+    unsettled.send(:warn_on_high_dispatch_latency, "session_needs_input", 123, nil)
+  end
+
   test "warns when enqueue-to-perform latency exceeds the threshold (Time enqueued_at — production path)" do
     job = AoEventTriggerJob.new("session_needs_input", 123)
     job.enqueued_at = Time.current - (AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD + 80)
 
     Rails.logger.expects(:warn).with(regexp_matches(/High dispatch latency/)).once
 
-    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123, nil)
   end
 
   test "warns when latency exceeds the threshold (String enqueued_at — fallback path)" do
@@ -932,7 +974,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     Rails.logger.expects(:warn).with(regexp_matches(/High dispatch latency/)).once
 
-    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123, nil)
   end
 
   test "does not warn when dispatch latency is within the threshold" do
@@ -941,7 +983,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     Rails.logger.expects(:warn).never
 
-    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+    job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123, nil)
   end
 
   test "does not warn (and does not raise) when enqueued_at is missing" do
@@ -951,7 +993,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     Rails.logger.expects(:warn).never
 
     assert_nothing_raised do
-      job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123)
+      job.send(:warn_on_high_dispatch_latency, "session_needs_input", 123, nil)
     end
   end
 
@@ -965,6 +1007,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     @trigger.update_columns(burst_active_until: 5.minutes.from_now)
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1001,6 +1044,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1039,6 +1083,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AlertService.stubs(:raise_alert)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1070,6 +1115,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AlertService.stubs(:raise_alert)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1106,6 +1152,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     refute @condition.session_scoped_ao_event?
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1134,6 +1181,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     # And it really does fire on the next event.
     Trigger.any_instance.unstub(:create_session!)
     later_session = Session.create!(
+      status: :needs_input,
       prompt: "Later session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1156,6 +1204,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1194,6 +1243,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1226,6 +1276,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     watched_session = Session.create!(
+      status: :needs_input,
       prompt: "Watched",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1271,6 +1322,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     )
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
@@ -1315,6 +1367,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     AlertService.expects(:raise_alert).never
 
     session = Session.create!(
+      status: :needs_input,
       prompt: "Test session",
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo",
