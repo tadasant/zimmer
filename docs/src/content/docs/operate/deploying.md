@@ -250,14 +250,18 @@ in a package manifest (skipping `node_modules`, where a vendored Starlight belon
 dependency tree). A scan it could not run exits non-zero too: a guardrail that reports OK when its own
 machinery is broken looks exactly like a passing check, which is worse than no check at all.
 
-The scan also skips the top-level `tmp/` and `log/` — not by name, so a `docs/tmp/` is still walked.
-`.dockerignore` excludes `/tmp/*` and `/log/*` outright, so nothing under either can reach the build
-context or the image; there is no copy there to miss. They are also the directories a running test
-suite churns hardest, and a directory that vanishes between `find`'s readdir and its stat makes
-`find` exit non-zero — which used to redden the guardrail on unrelated churn rather than on the
-invariant. For churn anywhere else, the two reasons a scan can fail are told apart by retrying it:
-a tree that changed underneath the walk clears on the next attempt, while a `find` that genuinely
-cannot run fails every attempt and still exits 2, saying how many it took.
+The scan also skips the top-level `tmp/` and `log/` — anchored to the root it was pointed at, not
+matched by name, so a `docs/tmp/` further down is still walked. Those are the two directories a
+running test suite scribbles scratch directories into, and a directory that vanishes between
+`find`'s readdir and its stat makes `find` exit non-zero, which reddens the guardrail over a race
+with whatever else is running rather than over the invariant. What the prune costs differs by
+caller: `.dockerignore` excludes `/tmp/*` and `/log/*` (keeping only the `.keep` placeholders), so
+for the build-context audit the prune skips ground that is provably empty, while against the built
+image `/rails/tmp` holds whatever the build's own `RUN` steps left there — see
+[the docs guardrail does not look in the image's `tmp/`](/limitations/#the-docs-guardrail-does-not-look-in-the-images-tmp).
+For churn anywhere else, the two reasons a scan can fail are told apart by retrying it: a tree that
+changed underneath the walk clears on the next attempt, while a `find` that genuinely cannot run
+fails every attempt and still exits 2, saying how many it took.
 
 | Where | Against what | When it fires |
 | --- | --- | --- |

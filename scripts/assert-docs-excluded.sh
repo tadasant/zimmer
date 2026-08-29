@@ -94,24 +94,41 @@ scan_failed() {
   exit 2
 }
 
-# What the scans do not walk into, and why none of it can hide a second copy of the site:
+# What the scans do not walk into:
 #
 #   node_modules, .git   anywhere in the tree. A Starlight dependency vendored under
 #                        node_modules belongs to some other package's tree, not to ours.
-#   tmp/, log/           at the TOP of the tree only -- not by name, so a docs/tmp/ or a
-#                        site/log/ is still scanned. .dockerignore excludes /tmp/* and
-#                        /log/* outright, so nothing under either can reach the build
-#                        context or the image: there is no copy there to catch. They are
-#                        also the two directories a running test suite churns hardest,
-#                        and a directory that vanishes between find's readdir and its
-#                        stat makes find exit non-zero -- which used to redden this
-#                        guardrail on unrelated churn rather than on the invariant.
+#   tmp/, log/           at the TOP of the tree only -- anchored to $root, not matched by
+#                        name, so a docs/tmp/ or a site/log/ further down is still walked.
+#
+# The tmp/ and log/ prunes are what keep this check on the invariant instead of on the
+# churn around it: they are the two directories a test suite scribbles scratch dirs into,
+# and a directory that vanishes between find's readdir and its stat makes find exit
+# non-zero, which reddens the guardrail over a race with whatever else is running.
+#
+# What the prune costs, stated exactly, because it differs per caller. .dockerignore
+# excludes /tmp/* and /log/* (keeping only the .keep placeholders), so nothing under
+# either reaches the build context: for the Dockerfile.docs-audit caller the prune skips
+# ground that is provably empty. The Dockerfile caller runs against the built image,
+# where /rails/tmp holds whatever the build's own RUN steps left behind (assets:precompile
+# writes tmp/cache), so there the prune is a narrow blind spot: a RUN step that wrote the
+# docs into /rails/tmp would go uncaught. That is the same class of gap as an ADD from a
+# URL -- something a Dockerfile edit introduces deliberately, not something .dockerignore
+# stops -- and it is recorded in docs/src/content/docs/limitations.md.
 #
 # Retrying is how the two reasons find can fail are told apart, without parsing
 # locale-dependent messages off stderr: a tree that changed underneath the scan is
 # transient and clears, while a find that cannot run -- broken binary, unreadable tree --
 # fails every single attempt and still exits 2, loudly.
 SCAN_ATTEMPTS=3
+# Overridable so tests can exercise all three attempts without burning the wall clock.
+# The attempt count itself is not overridable: that would let a caller turn the retry off.
+SCAN_RETRY_DELAY="${SCAN_RETRY_DELAY:-1}"
+
+# find's -path takes a glob, so a root holding a glob metacharacter would change what the
+# prunes below match -- `/tmp/a*b/tmp` also matches `/tmp/a*b/sub/tmp`, over-pruning a
+# nested tmp/ the scan is supposed to walk. Escape them once, here.
+root_glob=$(printf '%s' "$root_prefix" | sed 's/[][*?\\]/\\&/g')
 
 # $@: the find expression to apply to each surviving path (without -print).
 # Sets $scan_output to the newline-separated matches. Returns non-zero if every attempt
@@ -121,7 +138,7 @@ scan() {
   while :; do
     if scan_output=$(find "$root" \
       \( -name node_modules -o -name .git \
-         -o -path "$root_prefix/tmp" -o -path "$root_prefix/log" \) -prune -o \
+         -o -path "$root_glob/tmp" -o -path "$root_glob/log" \) -prune -o \
       "$@" -print); then
       return 0
     fi
@@ -129,7 +146,7 @@ scan() {
       return 1
     fi
     attempt=$((attempt + 1))
-    sleep 1
+    sleep "$SCAN_RETRY_DELAY"
   done
 }
 
@@ -155,9 +172,10 @@ starlight=""
 if [ -n "$manifests" ]; then
   # `elif [ "$?" -gt 1 ]` reads grep's status: 1 is "no match", anything higher is a file
   # grep could not read, which must not be mistaken for a clean manifest. The `-e` guard
-  # is the same race the prunes above are about, one step later: a manifest deleted
-  # between the find and the grep is a tree that changed, not a manifest we failed to
-  # read. Anything still on disk that grep choked on is the real thing, and still exits 2.
+  # is the same race the prunes above are about, one step later: a manifest the find
+  # listed and the grep could no longer open is a tree that changed underneath the scan.
+  # It tests reachability by name, which is the tolerable case and nothing wider -- a
+  # manifest still reachable and still unreadable is a scan that failed, and exits 2.
   if ! starlight=$(printf '%s\n' "$manifests" | while IFS= read -r manifest; do
     if grep -q '@astrojs/starlight' "$manifest"; then
       printf '%s\n' "$manifest"
