@@ -137,6 +137,29 @@ class Session < ApplicationRecord
   # once per completed turn, per session — and vanishes only when archived.
   after_update_commit :broadcast_update_to_sessions_index, if: :should_broadcast_to_index?
   after_create_commit :broadcast_create_to_sessions_index, unless: :status_summary_fork?
+
+  # The Ranked view is a work queue, and a queue that does not show work arriving
+  # is a queue you have to reload to trust. Two events change a session's PLACE in
+  # it without changing its status:
+  #
+  #   * it was created — offer it to every open `/?view=ranked`, which decides for
+  #     itself whether its filters admit it;
+  #   * it was promoted or demoted elsewhere — its row belongs in the other
+  #     section now.
+  #
+  # A status change goes through `broadcast_status_change` instead, which sends
+  # the pill and the membership delivery together. A precedence change sends
+  # nothing: re-sorting an open page for a number nobody on it typed would move
+  # rows out from under a pointer.
+  #
+  # ONE registration, not two. `after_create_commit` and `after_update_commit` are
+  # both `after_commit` on the same callback chain, and ActiveSupport dedupes
+  # symbol filters by identity — declaring this method for `:create` and again for
+  # `:update` silently keeps only the second, which is how the create half of this
+  # went missing the first time it was written.
+  after_commit :broadcast_ranked_membership,
+    on: [ :create, :update ],
+    if: -> { !status_summary_fork? && (previously_new_record? || saved_change_to_scheduling_class?) }
   after_destroy_commit :broadcast_remove_from_sessions_index
 
   # Deleting the row deletes the bytes it owns. `dependent: :destroy` above covers
@@ -1858,6 +1881,10 @@ class Session < ApplicationRecord
     # This ensures that if one broadcast fails (e.g., due to rendering error),
     # the remaining broadcasts still execute.
     broadcast_status_badge
+    # Membership first: a row this status change has just made eligible is
+    # inserted by the delivery, and the pill replace below then lands on an
+    # element that exists. The other order would drop it.
+    broadcast_ranked_membership
     broadcast_ranked_row
     broadcast_follow_up_form
     broadcast_running_loader
@@ -1887,24 +1914,49 @@ class Session < ApplicationRecord
   # would let a background status change destroy an interaction in progress. The
   # pill is the only part of the row a status change can actually stale.
   #
-  # A trashed session leaves instead: the Ranked view's default filter excludes
-  # archived work, and the card grid already removes rather than replaces on
-  # archive, so the two views agree. The row does not come back on unarchive
-  # without a reload, which is the same deal the card grid offers.
+  # It is sent for an archived session too, so a page whose operator ticked
+  # "Archived" watches the pill turn into "Trashed" rather than watching the row
+  # vanish. Whether that row *stays* is the membership delivery's decision, not
+  # this one's — see #broadcast_ranked_membership.
   def broadcast_ranked_row
-    if archived?
-      broadcast_remove_to(RANKED_STREAM, target: "ranked_row_#{id}")
-    else
-      broadcast_replace_to(
-        RANKED_STREAM,
-        target: "ranked_row_status_#{id}",
-        partial: "sessions/ranked_row_status",
-        locals: { agent_session: self }
-      )
-    end
+    broadcast_replace_to(
+      RANKED_STREAM,
+      target: "ranked_row_status_#{id}",
+      partial: "sessions/ranked_row_status",
+      locals: { agent_session: self }
+    )
   rescue => e
     Rails.logger.error "[Session] Broadcast ranked row failed for session #{id}: #{e.message}"
     ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "ranked_row" })
+  end
+
+  # Tell every open Ranked view that this session's PLACE in the queue may have
+  # changed: it was just created, its status moved, or it changed scheduling
+  # class.
+  #
+  # It cannot say what to do about that, because it does not know who is
+  # listening. One stream serves every open page and each has its own filters —
+  # the operator watching live work and the one who ticked "Archived" to go
+  # through the trash are on the same channel, and a session going archived means
+  # "leave" to the first and "stay, relabelled" to the second. Broadcasting a
+  # `remove` would be right for one of them and wrong for the other, which is
+  # exactly the bug this replaces.
+  #
+  # So it ships the facts and the rendered row inside an inert <template>, and the
+  # page judges it against its own filters. See `_ranked_delivery` for the
+  # envelope and `ranked_queue_controller#deliveryTargetConnected` for the rules.
+  #
+  # Rendered through SessionsController rather than the partial: form is that the
+  # row is full of route helpers and this callback fires from background jobs.
+  def broadcast_ranked_membership
+    html = SessionsController.render(
+      partial: "sessions/ranked_delivery",
+      locals: { agent_session: self }
+    )
+    broadcast_append_to(RANKED_STREAM, target: "ranked_deliveries", html: html)
+  rescue => e
+    Rails.logger.error "[Session] Broadcast ranked membership failed for session #{id}: #{e.message}"
+    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "ranked_membership" })
   end
 
   def broadcast_follow_up_form

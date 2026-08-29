@@ -657,10 +657,18 @@
             order, both editable in place. Honors the same filters as every other
             view — with its own default, since a queue of work that has not started
             is mostly `waiting`. %>
+        <%# The filters travel into the partial because the rows update live and a
+            broadcast has to be judged against the filters THIS page is showing.
+            `live_insert` is off whenever a search, an agent root or a genesis is
+            narrowing the list — the three the client cannot evaluate for a
+            session it has never rendered. %>
         <%= render "sessions/ranked_sessions",
               priority_sessions: @ranked_priority_sessions,
               spot_sessions: @ranked_spot_sessions,
-              section_limit: @ranked_section_limit %>
+              section_limit: @ranked_section_limit,
+              status_filter: @status_filter,
+              priority_class_filter: @priority_class_filter,
+              live_insert: !@search_active %>
       <% elsif @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
         <%# Flat sort views: a single list sorted solely by the chosen factor
             (last touched, or created desc). No category grouping, no custom/

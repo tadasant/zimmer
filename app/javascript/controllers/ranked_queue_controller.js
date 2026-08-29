@@ -20,15 +20,41 @@ import Sortable from "sortablejs"
 // Every write is optimistic and every failure rolls back to what the server last
 // confirmed, so a rejected edit cannot leave the page showing an order the
 // database does not have.
+//
+// The fourth thing it does is not an interaction at all: it decides what arrives
+// over the ranked stream. The server broadcasts one message to every open queue
+// and cannot know which of them is filtered to what, so a membership change comes
+// as an envelope — the session's filterable facts plus its row inside an inert
+// <template> — and this controller judges it against the filters the page was
+// rendered with. See `deliveryTargetConnected`.
 export default class extends Controller {
   static targets = [
     "priorityList", "spotList", "priorityEmpty", "spotEmpty", "row",
     "precedenceInput", "precedenceReadout", "error",
-    "priorityCount", "spotCount", "promoteAction", "demoteAction"
+    "priorityCount", "spotCount", "promoteAction", "demoteAction", "delivery"
   ]
-  static values = { slotGap: Number }
+  static values = {
+    slotGap: Number,
+    // A cap, not a page: the server renders at most this many rows per section
+    // and says so, and a live insert must not quietly exceed it.
+    sectionLimit: Number,
+    // The statuses this page is showing. Empty means "every status".
+    statusFilter: Array,
+    // "spot", "priority", or "" for both.
+    priorityClassFilter: String,
+    // False when a search, an agent root or a genesis is narrowing this page.
+    // Those three cannot be evaluated client-side for a session the page has
+    // never rendered, so it declines to insert rather than guessing.
+    liveInsert: Boolean
+  }
 
   connect() {
+    // Deliveries that arrive while a row is in hand. Inserting or removing a
+    // sibling mid-drag is exactly the disruption the narrow broadcast existed to
+    // avoid, so they wait for the drop.
+    this.heldDeliveries = []
+    this.dragging = false
+
     this.sortable = Sortable.create(this.spotListTarget, {
       animation: 150,
       // A long press rather than an immediate grab on touch, so the page still
@@ -36,7 +62,12 @@ export default class extends Controller {
       delay: 200,
       delayOnTouchOnly: true,
       handle: "[data-ranked-queue-target='handle']",
-      onEnd: (event) => this.persistDrop(event)
+      onStart: () => { this.dragging = true },
+      onEnd: (event) => {
+        this.dragging = false
+        this.persistDrop(event)
+        this.flushDeliveries()
+      }
     })
 
     // The section headers and the "nothing here" placeholders are server-rendered
@@ -53,6 +84,132 @@ export default class extends Controller {
   disconnect() {
     if (this.sortable) this.sortable.destroy()
     if (this.listObserver) this.listObserver.disconnect()
+    this.heldDeliveries = []
+  }
+
+  // ---- Membership deliveries ------------------------------------------------
+
+  // A session was created, changed status, or changed scheduling class, and the
+  // server has offered this page the news. What to do with it is entirely a
+  // question about THIS page's filters:
+  //
+  //   * a status the filter excludes  -> the row leaves (this is how a trashed
+  //     session disappears from a queue of live work, and how it STAYS, reading
+  //     "Trashed", on a page whose operator ticked "Archived" to see the trash)
+  //   * a scheduling class that no longer matches the section it is in -> move it
+  //   * admitted and not on the page yet -> insert it, in precedence order
+  //   * anything else -> ignore it
+  //
+  // The envelope is consumed and removed either way, so nothing accumulates.
+  deliveryTargetConnected(element) {
+    const envelope = this.readEnvelope(element)
+    element.remove()
+    if (!envelope) return
+
+    if (this.dragging) {
+      this.heldDeliveries.push(envelope)
+      return
+    }
+    this.applyDelivery(envelope)
+  }
+
+  readEnvelope(element) {
+    const id = element.dataset.sessionId
+    if (!id) return null
+
+    // The row lives in a <template>: inert, and its ids are not in the document,
+    // so an envelope for a row the page rejects never leaves a duplicate behind.
+    const template = element.querySelector("template")
+    const source = template ? template.content.firstElementChild : null
+
+    return {
+      id: id,
+      status: element.dataset.status,
+      schedulingClass: element.dataset.schedulingClass,
+      precedence: element.dataset.precedence,
+      row: source ? document.importNode(source, true) : null
+    }
+  }
+
+  flushDeliveries() {
+    const held = this.heldDeliveries
+    this.heldDeliveries = []
+    held.forEach((envelope) => this.applyDelivery(envelope))
+  }
+
+  applyDelivery(envelope) {
+    const existing = this.rowFor(envelope.id)
+    const admitted = this.admits(envelope)
+
+    if (existing) {
+      if (!admitted) {
+        this.evictRow(existing)
+      } else {
+        this.reseatRow(existing, envelope)
+      }
+      return
+    }
+
+    if (!admitted || !this.liveInsertValue || !envelope.row) return
+    this.insertRow(envelope)
+  }
+
+  // The two filter dimensions a page can evaluate for a session it has never
+  // rendered. The other three — search, agent root, genesis — are the server's
+  // to judge, which is why `liveInsert` turns inserts off when one is in force.
+  // Removal stays sound under all five: a row on screen already matched them, and
+  // neither a status nor a class change can alter that.
+  admits(envelope) {
+    if (this.hasStatusFilterValue && this.statusFilterValue.length > 0 &&
+        !this.statusFilterValue.includes(envelope.status)) {
+      return false
+    }
+    if (this.priorityClassFilterValue && this.priorityClassFilterValue !== envelope.schedulingClass) {
+      return false
+    }
+    return true
+  }
+
+  evictRow(row) {
+    if (this.inUse(row)) return
+    row.remove()
+    this.refreshCounts()
+  }
+
+  reseatRow(row, envelope) {
+    const spot = envelope.schedulingClass === "spot"
+    const list = spot ? this.spotListTarget : this.priorityListTarget
+    // Already where it belongs. A status change does not re-sort the queue, so
+    // there is nothing else to do to a row that is seated correctly.
+    if (row.parentElement === list) return
+    if (this.inUse(row)) return
+
+    row.dataset.precedence = envelope.precedence
+    this.setRowMode(row, spot)
+    this.insertInOrder(list, row)
+    this.refreshCounts()
+  }
+
+  insertRow(envelope) {
+    const spot = envelope.schedulingClass === "spot"
+    const list = spot ? this.spotListTarget : this.priorityListTarget
+    // The server truncates at the same number and says it has. Growing past it
+    // live would make the "showing the first N" note a lie.
+    if (this.hasSectionLimitValue && list.children.length >= this.sectionLimitValue) return
+
+    this.insertInOrder(list, envelope.row)
+    this.refreshCounts()
+  }
+
+  // A row holding focus or a half-typed value is never moved or taken away — the
+  // same rule the reconnect backfill applies (see live_region_backfill.js).
+  // Losing an update is recoverable; losing what someone was typing is not.
+  inUse(row) {
+    if (row.contains(document.activeElement)) return true
+
+    return Array.from(row.querySelectorAll("input, textarea")).some((field) => {
+      return String(field.value).trim() !== "" && field.value !== field.defaultValue
+    })
   }
 
   // ---- Inline editing -------------------------------------------------------
@@ -155,8 +312,26 @@ export default class extends Controller {
 
   // ---- DOM plumbing ---------------------------------------------------------
 
+  // Queried rather than read off `rowTargets`, because a row this controller has
+  // just inserted is not registered as a target yet — Stimulus notices it on the
+  // next microtask, and a delivery acts now.
   rowFor(sessionId) {
-    return this.rowTargets.find((row) => row.dataset.sessionId === String(sessionId))
+    return this.element.querySelector(
+      `[data-ranked-queue-target='row'][data-session-id='${CSS.escape(String(sessionId))}']`
+    )
+  }
+
+  // Put a row where `Session.ranked` would put it: precedence descending, ties
+  // broken oldest-first. Ids are monotonic, so id ascending is the same order as
+  // created_at ascending — the same comparator `sortSpotRows` already uses.
+  insertInOrder(list, row) {
+    const follower = Array.from(list.children).find((sibling) => {
+      if (sibling === row) return false
+      const delta = Number(row.dataset.precedence) - Number(sibling.dataset.precedence)
+      if (delta !== 0) return delta > 0
+      return Number(row.dataset.sessionId) < Number(sibling.dataset.sessionId)
+    })
+    list.insertBefore(row, follower || null)
   }
 
   // Both rank cells are rendered on every row and one of them is hidden, so both
@@ -166,7 +341,16 @@ export default class extends Controller {
   applyPrecedence(row, value) {
     row.dataset.precedence = String(value)
     const input = row.querySelector("[data-ranked-queue-target='precedenceInput']")
-    if (input) input.value = String(value)
+    if (input) {
+      input.value = String(value)
+      // The committed value becomes the field's baseline, so "is someone
+      // mid-edit here" stays a question about what is typed rather than about
+      // what was typed an hour ago. Both `inUse` above and the reconnect
+      // backfill's `isDirty` read `defaultValue`, and a row that never reset it
+      // would be pinned as in-use for the rest of the page's life — never
+      // reseated, never removed.
+      input.defaultValue = String(value)
+    }
     const readout = row.querySelector("[data-ranked-queue-target='precedenceReadout']")
     if (readout) readout.textContent = String(value)
   }
@@ -232,6 +416,7 @@ export default class extends Controller {
       input.classList.toggle("hidden", !spot)
       input.disabled = !spot
       input.value = row.dataset.precedence
+      input.defaultValue = row.dataset.precedence
     }
     if (readout) {
       readout.classList.toggle("hidden", spot)
