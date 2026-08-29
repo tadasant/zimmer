@@ -107,9 +107,9 @@ class CacheClearService
 
     # Clear .npm-cache directories inside agent clone working directories.
     #
-    # ClaudeCliAdapter#configure_mcp_env sets NPM_CONFIG_CACHE to
-    # <working_dir>/.npm-cache for each session, isolating npx installs
-    # per clone. These per-clone caches can become corrupted just like
+    # RuntimeConfigPostProcessor#pin_npx_caches_to_clone! points every npx MCP
+    # server's NPM_CONFIG_CACHE at <working_dir>/.npm-cache (or a per-server root
+    # beneath it), isolating npx installs per clone. These per-clone caches can become corrupted just like
     # the global cache and need to be cleared too.
     #
     # Uses Dir.glob to find .npm-cache dirs at any depth under the clones
