@@ -1748,8 +1748,10 @@ class SessionsController < ApplicationController
               @session.start!
             end
 
-            # Enqueue job to resume monitoring without spawning a new process
-            AgentSessionJob.enqueue_for_monitoring(@session.id)
+            # Enqueue job to resume monitoring without spawning a new process.
+            # Pin it to the pid we just proved alive: if something spawns a new turn
+            # before the job runs, it stands down instead of adopting that turn.
+            AgentSessionJob.enqueue_for_monitoring(@session.id, monitor_pid: process_pid)
 
             @session.logs.create!(
               content: "Monitoring job restored successfully",
@@ -3971,8 +3973,9 @@ class SessionsController < ApplicationController
       session.update!(running_job_id: nil)
 
       # Enqueue a new AgentSessionJob to resume monitoring without spawning a new process.
-      # The monitoring job will verify process status in the correct PID namespace.
-      AgentSessionJob.enqueue_for_monitoring(session.id)
+      # The monitoring job will verify process status in the correct PID namespace, and
+      # only for this pid — the one this restore was decided about.
+      AgentSessionJob.enqueue_for_monitoring(session.id, monitor_pid: process_pid)
 
       session.logs.create!(
         content: "Monitoring job enqueued - will verify process status and reconnect if alive",

@@ -236,11 +236,30 @@ class SessionRecoveryService
     add_log("Claude CLI process #{process_pid} is still running", level: "verbose")
     add_log("Attempting to recover session by resuming monitoring of existing process", level: "info")
 
-    # Enqueue recovery job and update running_job_id atomically
-    recovery_job = AgentSessionJob.enqueue_for_monitoring(session.id, delay: 5.seconds)
+    # The recovery job adopts the pid this decision was made about, not whatever
+    # `process_pid` happens to say five seconds from now.
+    recovery_job = AgentSessionJob.enqueue_for_monitoring(
+      session.id, delay: 5.seconds, monitor_pid: process_pid
+    )
 
-    with_db_retry do
-      session.update!(running_job_id: recovery_job.job_id)
+    # Claiming `running_job_id` on the job's behalf is what lets it past the
+    # concurrent-job guard when it runs — the session it is rescuing is, by definition,
+    # recorded as owned by a job that is gone. That claim has to be conditional. Between
+    # reading this session and getting here, another job can start driving it and spawn a
+    # turn; taking ownership from that job makes its own monitoring loop see ownership
+    # move and terminate the process it just spawned (zimmer#489). Standing down costs a
+    # cleanup cycle, and the next sweep re-decides against current state.
+    unless claim_ownership_for_recovery(recovery_job.job_id, process_pid)
+      add_log(
+        "Not taking ownership for recovery job #{recovery_job.job_id}: this session has moved on " \
+        "since the orphan check (its job or its process changed), so another job is driving it",
+        level: "warning"
+      )
+      @logger.info(
+        "Skipped recovery ownership claim - session changed since orphan check",
+        process_pid: process_pid, job_id: recovery_job.job_id
+      )
+      return
     end
 
     add_log(
@@ -249,6 +268,27 @@ class SessionRecoveryService
     )
 
     @logger.info("Recovered orphaned session with running process", process_pid: process_pid, job_id: recovery_job.job_id)
+  end
+
+  # Compare-and-set the recovery job into `running_job_id`, conditional on both facts
+  # the recovery decision was made from still holding: the owning job this session was
+  # judged orphaned on, and the process the recovery job has been sent to adopt.
+  #
+  # @return [Boolean] true when ownership was taken
+  def claim_ownership_for_recovery(recovery_job_id, process_pid)
+    owner_at_decision = session.running_job_id
+
+    updated = with_db_retry do
+      scope = Session.where(id: session.id)
+      scope = owner_at_decision.nil? ? scope.where(running_job_id: nil) : scope.where(running_job_id: owner_at_decision)
+      scope.where("metadata->>'process_pid' = ?", process_pid.to_s)
+           .update_all(running_job_id: recovery_job_id, updated_at: Time.current)
+    end
+
+    return false unless updated.positive?
+
+    session.reload
+    true
   end
 
   # Recover session when the Claude CLI process has stopped

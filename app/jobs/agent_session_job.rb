@@ -91,22 +91,27 @@ class AgentSessionJob < ApplicationJob
   #
   # @param session_id [Integer] The session ID to resume monitoring
   # @param delay [ActiveSupport::Duration] Optional delay before the job runs (default: none)
+  # @param monitor_pid [Integer, nil] The pid the CALLER decided to adopt, captured at
+  #   decision time. `metadata["process_pid"]` is a single slot that the next spawn
+  #   overwrites, so a job that re-reads it when it runs can adopt a process nobody ever
+  #   decided about — see the stand-down check in #perform (zimmer#489). Omit it only
+  #   where the caller genuinely has no pid in hand.
   # @return [AgentSessionJob] The enqueued job instance
   # @raise [ArgumentError] if session_id is nil
   #
   # @example Resume monitoring immediately
-  #   AgentSessionJob.enqueue_for_monitoring(session.id)
+  #   AgentSessionJob.enqueue_for_monitoring(session.id, monitor_pid: pid)
   #
   # @example Resume monitoring after 5 seconds
-  #   AgentSessionJob.enqueue_for_monitoring(session.id, delay: 5.seconds)
-  def self.enqueue_for_monitoring(session_id, delay: nil)
+  #   AgentSessionJob.enqueue_for_monitoring(session.id, delay: 5.seconds, monitor_pid: pid)
+  def self.enqueue_for_monitoring(session_id, delay: nil, monitor_pid: nil)
     raise ArgumentError, "session_id cannot be nil" if session_id.nil?
 
-    if delay
-      set(wait: delay).perform_later(session_id, nil, resume_monitoring: true)
-    else
-      perform_later(session_id, nil, resume_monitoring: true)
-    end
+    options = { resume_monitoring: true }
+    options[:monitor_pid] = monitor_pid.to_i if monitor_pid.present?
+
+    target = delay ? set(wait: delay) : self
+    target.perform_later(session_id, nil, **options)
   end
 
   # Enqueue a job to set up a clone-only session without starting Claude CLI
@@ -259,7 +264,7 @@ class AgentSessionJob < ApplicationJob
   # This method handles both cases:
   # - Direct calls: perform(session_id, prompt, resume_monitoring: true)
   # - Deserialized calls: perform(session_id, prompt, { "resume_monitoring" => true })
-  def perform(session_id, follow_up_prompt = nil, options = nil, resume_monitoring: false, clone_only: false, images: nil, files: nil)
+  def perform(session_id, follow_up_prompt = nil, options = nil, resume_monitoring: false, clone_only: false, images: nil, files: nil, monitor_pid: nil)
     # Handle options hash from ActiveJob deserialization
     # Use fetch to correctly handle explicit false values (|| would skip false and use default)
     if options.is_a?(Hash)
@@ -267,6 +272,7 @@ class AgentSessionJob < ApplicationJob
       clone_only = options.fetch("clone_only", options.fetch(:clone_only, clone_only))
       images = options.fetch("images", options.fetch(:images, images))
       files = options.fetch("files", options.fetch(:files, files))
+      monitor_pid = options.fetch("monitor_pid", options.fetch(:monitor_pid, monitor_pid))
     end
 
     session = Session.find(session_id)
@@ -282,6 +288,11 @@ class AgentSessionJob < ApplicationJob
     stderr_log_path = nil
     log_streaming_thread = nil
     reusing_existing_clone = false
+    # Set when the monitoring loop hands its live process to a monitoring job that has
+    # taken ownership. The `ensure` block below reloads the session and kills the process
+    # for any terminal status it finds — so without this, a session the adopting job
+    # pauses inside that window gets the very turn we just handed over killed anyway.
+    handed_off_process = false
     log_buffer = LogBuffer.new(session)
     lifecycle_manager = create_lifecycle_manager(session, log_buffer)
 
@@ -332,6 +343,26 @@ class AgentSessionJob < ApplicationJob
           end
         end
       end
+
+      # Adopt the process that was decided on, or nothing at all.
+      #
+      # A monitoring job carries `monitor_pid`: the pid its enqueuer looked at when it
+      # decided this session had a live process worth re-attaching to. That decision and
+      # this execution are seconds apart — five, by design, for the orphan-cleanup path —
+      # and `metadata["process_pid"]` is a single slot that any spawn in between
+      # overwrites. Re-reading it here would adopt a process nobody decided about: in
+      # zimmer#489 the recovery decision named the pre-deploy pid 5845 and this job
+      # adopted the pid 966 that another job had spawned in the meantime.
+      #
+      # Standing down is the whole correction, and it has to happen HERE, before
+      # `running_job_id` is claimed below. Claiming it is what moves ownership away from
+      # the job that is actually driving the new turn, and the ownership backstop in that
+      # job's monitoring loop then terminates the only live process on the session.
+      #
+      # There is nothing to reconnect to and nothing to clean up: the pid we were sent for
+      # is gone, and the pid that replaced it belongs to a job that spawned it and is
+      # supervising it.
+      return if resume_monitoring && monitoring_job_stands_down?(session, monitor_pid, log_buffer)
 
       # A pause outranks every reason there is to start this session.
       #
@@ -528,6 +559,13 @@ class AgentSessionJob < ApplicationJob
         if validation_result[:warning]
           log_buffer.add(validation_result[:warning], level: "warning")
         end
+
+        # Ask the same question again, now that `running_job_id` has been claimed above.
+        # The entry check ran before the claim, and a spawn landing in between would have
+        # overwritten `process_pid` — adopting it here would repeat exactly the mistake
+        # this guard exists to prevent, through a narrower window. Standing down releases
+        # the claim we just made rather than carrying it into a process nobody sent us for.
+        return if monitoring_job_stands_down?(session, monitor_pid, log_buffer)
 
         # Use lifecycle_manager to resume monitoring
         resume_result = lifecycle_manager.resume_monitoring(
@@ -1436,6 +1474,29 @@ class AgentSessionJob < ApplicationJob
         # on a legitimate exit handled by branch 1b), so a transient nil never
         # triggers a spurious kill.
         if session.running_job_id.present? && session.running_job_id != job_id
+          # Not every new owner is a replacement. A job enqueued with
+          # `resume_monitoring: true` spawns nothing — it exists to re-attach to a
+          # process someone else started — so the premise this branch rests on does not
+          # hold for it. Terminating here would destroy the only live turn on the
+          # session and leave the adopting job to "reconnect" to a corpse, which is
+          # exactly what zimmer#489 recorded. Hand the process over instead: stop
+          # supervising it, so only one job ever does, but leave it running. If the
+          # adopting job stands down too, the process is still alive and the orphan
+          # sweep re-attaches to it — strictly better than a killed turn.
+          if AgentJobIntent.monitor_only?(session.running_job_id)
+            log_buffer.add(
+              "Session ownership moved to monitoring job #{session.running_job_id} (this job is " \
+              "#{job_id}); that job re-attaches to a running process rather than spawning one, so " \
+              "PID #{process_pid} is left running for it to adopt",
+              level: "info"
+            )
+            log_buffer.flush
+            handed_off_process = true
+            # Final poll before handing off, mirroring the branches around this one.
+            poll_and_broadcast_transcript(session)
+            return
+          end
+
           log_buffer.add(
             "Session ownership moved to job #{session.running_job_id} (this job is #{job_id}); " \
             "terminating superseded turn (PID #{process_pid}) to avoid orphaning it",
@@ -1778,7 +1839,11 @@ class AgentSessionJob < ApplicationJob
 
       # Only cleanup if session is in a terminal state
       # Don't cleanup for needs_input (includes paused sessions waiting for follow-up)
-      if session
+      #
+      # A handed-off process is exempt from all of it. This job stopped supervising it on
+      # purpose, and the job that took ownership is the one responsible for terminating it
+      # and for cleaning up the clone it is still using.
+      if session && !handed_off_process
         session.reload
         if session.archived?
           # Kill the process; leave the clone alone.
@@ -1831,6 +1896,42 @@ class AgentSessionJob < ApplicationJob
   end
 
   private
+
+  # Has this monitoring job been sent for a process the session no longer has?
+  #
+  # A monitoring job carries `monitor_pid`: the pid its enqueuer looked at when it decided
+  # this session had a live process worth re-attaching to. That decision and this execution
+  # are seconds apart — five, by design, for the orphan-cleanup path — and
+  # `metadata["process_pid"]` is a single slot that any spawn in between overwrites.
+  # Re-reading it and adopting whatever it says is how a recovery decided about pid 5845
+  # came to adopt the pid 966 another job had spawned meanwhile, and the ownership claim
+  # that came with it made THAT job's monitoring loop kill its own fresh process (zimmer#489).
+  #
+  # Asked twice, deliberately: once before `running_job_id` is claimed, so the common case
+  # never disturbs the job that is driving the session, and once immediately before
+  # adoption, because the claim itself opens a second, narrower window.
+  #
+  # @return [Boolean] true when the job stood down and #perform must return
+  def monitoring_job_stands_down?(session, monitor_pid, log_buffer)
+    return false if monitor_pid.blank?
+
+    current_pid = session.reload.metadata&.dig("process_pid")
+    return false if current_pid.blank? || current_pid.to_i == monitor_pid.to_i
+
+    log_buffer.add(
+      "Standing down: this monitoring job was enqueued to adopt PID #{monitor_pid}, but the " \
+      "session's process is now PID #{current_pid} — a newer turn owns it, so there is nothing " \
+      "here to reconnect to",
+      level: "warning"
+    )
+    # Only if we are still the recorded owner. A monitoring job's enqueuer may claim
+    # ownership on its behalf, and leaving that claim behind on a job that has exited would
+    # leave the session recorded as driven by nobody. nil is what the orphan sweep reads as
+    # "nobody is driving this", so it re-decides against the current pid.
+    session.update!(running_job_id: nil) if session.running_job_id == job_id
+    log_buffer.flush
+    true
+  end
 
   # The actionable "why" for a session that reached a failed terminal status.
   #
