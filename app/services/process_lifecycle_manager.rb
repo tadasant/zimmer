@@ -361,43 +361,8 @@ class ProcessLifecycleManager
     end
 
     begin
-      # Check session status before making retry decisions
-      session.reload
-      unless session.running?
-        add_log("Session no longer running (status: #{session.status}), skipping exit handling", level: "info")
-        @mutex.synchronize { @state = :idle }
-        return ExitDecision.new(action: :aborted)
-      end
-
-      # Ownership. Several branches below answer an exit by spawning a replacement
-      # (SIGTERM retry, signal-death retry, compaction, API-error retry), and each is
-      # right only while this job still owns the session's turn. Once another job has
-      # taken ownership, the exit we are handling is very often one *it* caused —
-      # `AgentProcessLiveness` terminating this turn's process before spawning its own is
-      # exactly that — and respawning in answer to it puts a second agent back on the
-      # clone the guard just cleared. The monitoring loop enforces the same invariant one
-      # level up when it reloads the session; this enforces it at the point where the
-      # decision to spawn is actually made. A nil `running_job_id` means "not superseded"
-      # (a pause clears it), matching the loop's reading.
-      if owning_job_id.present? && session.running_job_id.present? && session.running_job_id != owning_job_id
-        add_log(
-          "Session ownership moved to job #{session.running_job_id} (this job is #{owning_job_id}); " \
-          "not answering this exit with a respawn",
-          level: "info"
-        )
-        @mutex.synchronize { @state = :idle }
-        return ExitDecision.new(action: :aborted)
-      end
-
-      # Check if this exit was triggered by prompt-too-long hang detection.
-      # The monitoring loop terminated the process after detecting the hung state,
-      # so we route directly to compact recovery regardless of exit status.
-      if session.metadata&.dig("prompt_too_long_hang_detected")
-        with_db_retry do
-          session.remove_metadata!("prompt_too_long_hang_detected")
-        end
-        add_log("Routing to compact recovery after 'Prompt is too long' hang detection", level: "info")
-        return handle_context_length_error(working_dir)
+      if (preflight = exit_handling_preflight(working_dir))
+        return preflight
       end
 
       # Success case - process completed normally
@@ -407,83 +372,8 @@ class ProcessLifecycleManager
       # retry strategy owns that convention via #normal_completion_exit? so this
       # classifier is runtime-aware instead of hardcoding `exitstatus == 1`.
       if status.success? || retry_strategy.normal_completion_exit?(status)
-        # Check if this was a /compact command that needs automatic continuation
-        # When the /compact process completes successfully, we should automatically
-        # continue with the user's task instead of waiting for manual input
-        if session.metadata&.dig("pending_compact_continuation")
-          return handle_compact_continuation(working_dir)
-        end
-
-        # Check for context length errors - route to compact/retry system
-        if retry_strategy.context_length_error?(stderr_log_path: @stderr_log_path)
-          add_log("Context length error detected on successful exit - attempting compact recovery", level: "info")
-          return handle_context_length_error(working_dir)
-        end
-
-        # Check for a rotation-induced "Not logged in / Please run /login" auth
-        # failure — the active account was rotated out from under this in-flight
-        # session, invalidating its on-disk credentials. Recoverable: refresh the
-        # identity and resume. Checked BEFORE the API-error path because the auth
-        # error is recorded the same way (isApiErrorMessage: true); placing it
-        # first lets "most recent error wins" route a fresh auth failure here even
-        # if an older retryable 5xx is also present.
-        if retry_strategy.auth_recovery_needed?(working_dir: working_dir)
-          add_log("Not logged in detected on successful exit - attempting auth recovery", level: "info")
-          return handle_auth_recovery(working_dir)
-        end
-
-        # Check for transient API errors (500, 529, rate limits) and the CLI's own
-        # unparseable-tool-call report — retry with exponential backoff
-        if retry_strategy.api_error_for_retry?(working_dir: working_dir)
-          add_log("Retryable API error detected on successful exit - attempting retry with backoff", level: "info")
-          return handle_retryable_api_error(working_dir)
-        end
-
-        # Check for failed resume - Claude CLI exits 0 even when it can't find the
-        # session to resume, producing "No conversation found with session ID" in stderr.
-        # Instead of permanently failing, attempt to recover by starting a fresh CLI
-        # session with the best durable prompt. This handles deploy-interrupt recovery
-        # where the CLI session was too short-lived to persist on Anthropic's servers.
-        # (Runtimes that signal a failed resume with a NON-zero exit — e.g. Codex —
-        # are caught by the matching check in the failure branch below.)
-        if retry_strategy.failed_resume_recovery_needed?(stderr_log_path: @stderr_log_path)
-          add_log("Resume failed: runtime session no longer exists. Attempting fresh start recovery.", level: "warning")
-          return handle_failed_resume_recovery(working_dir)
-        end
-
-        # The runtime refused to start because the session id it was handed is
-        # still held. Recoverable by minting a new one — see #handle_session_id_conflict.
-        if session_id_conflict?
-          return handle_session_id_conflict(working_dir)
-        end
-
-        # Last, because every branch above is a *specific* diagnosis and this one
-        # is the catch-all: the process exited cleanly having written nothing at
-        # all. That is never a completed turn, so drive the session forward
-        # instead of parking it with an empty transcript for a human to notice.
-        if empty_turn_recovery_needed?(working_dir)
-          return handle_empty_turn(working_dir)
-        end
-
-        # The invariant that makes a silently-absorbed turn impossible: a turn
-        # whose LAST conversational entry is an API error did not complete, no
-        # matter how the runtime worded that error.
-        #
-        # Every branch above is a *specific* diagnosis matched against the
-        # runtime's prose, and every one of them can go stale. This one asks a
-        # structural question instead, and asks it LAST — so an answer here means
-        # not one of those branches claimed a turn that plainly died. That covers
-        # both halves of the failure: a wording nobody knows, and a wording some
-        # classifier does know but has already spent its retry cursor on.
-        #
-        # This is the 2026-08-20 incident (session 6412): Claude Code recorded
-        # `"error":"authentication_failed"` / "Failed to authenticate: OAuth
-        # session expired and could not be refreshed", exited 1 — its
-        # turn-finished convention — and Zimmer parked the session as `needs_input`
-        # with "Process exited successfully", leaving a human's message unanswered
-        # and nothing in the logs to find it by.
-        if (terminal_error = unhandled_terminal_api_error(working_dir))
-          return handle_terminal_api_error(terminal_error)
+        if (decision = diagnose_completed_turn(working_dir))
+          return decision
         end
 
         add_log("Process exited successfully", level: "info")
@@ -595,6 +485,68 @@ class ProcessLifecycleManager
     end
   end
 
+  # Handle a process that is GONE but that `Process.wait` never reported.
+  #
+  # The monitoring loop has two ways of noticing an agent process has ended.
+  # `wait_nonblock` is the normal one and hands a real `Process::Status` to
+  # #handle_exit. This is the other one: a signal-0 liveness check catching a
+  # process that was reaped somewhere else (another thread, another job, the
+  # init process after a parent died) or that never produced a status we own.
+  # Before this method existed that door skipped classification entirely and
+  # parked the session, so a first-connect failure reached through it stranded a
+  # session in `needs_input` with a blank transcript.
+  #
+  # What it deliberately does NOT do is invent a status. Nobody reaped this
+  # process, so its exit code and signal are genuinely unknown, and every
+  # synthesised value is a lie with a consequence: a fake 0 asserts "the turn
+  # completed", a fake SIGTERM/SIGKILL spends a resume budget on a death that
+  # may never have happened. So the two status-driven rungs of the ladder —
+  # SIGTERM retry and signal-death resume — are not reachable from here, and
+  # neither is the unclassified-failure tail: the ABSENCE of a status is not
+  # evidence of failure.
+  #
+  # Everything that reads evidence rather than the status does apply, because
+  # none of it cares how the process died: compaction, auth recovery, retryable
+  # API errors, failed resume, a held session id, the empty-turn restart, and
+  # the terminal-API-error backstop. With no evidence to act on, the answer is
+  # the same `:needs_input` this branch has always produced.
+  #
+  # @param working_dir [String] Working directory for spawning any recovery
+  # @return [ExitDecision] Decision on what to do next
+  def handle_unreaped_exit(working_dir:)
+    @mutex.synchronize do
+      @state = :handling_exit
+      @current_pid = nil
+    end
+
+    begin
+      if (preflight = exit_handling_preflight(working_dir))
+        return preflight
+      end
+
+      # Same deference as the matching check in #handle_exit: the recovery
+      # service killed this process and owns the transition that follows. It is
+      # checked here rather than after a status test because there is no status.
+      if session.metadata&.dig("recovery_termination_initiated")
+        add_log("Process disappeared after a recovery-initiated termination, deferring to recovery service", level: "info")
+        @mutex.synchronize { @state = :idle }
+        return ExitDecision.new(action: :aborted)
+      end
+
+      if (decision = diagnose_completed_turn(working_dir))
+        return decision
+      end
+
+      add_log("Process is gone (signal check) and nothing on record explains it as a recoverable failure — treating the turn as complete", level: "info")
+
+      @mutex.synchronize { @state = :idle }
+      ExitDecision.new(action: :needs_input)
+    rescue
+      @mutex.synchronize { @state = :idle }
+      raise
+    end
+  end
+
   # Check if the process is currently running
   #
   # @return [Boolean] true if process is running
@@ -628,6 +580,143 @@ class ProcessLifecycleManager
   end
 
   private
+
+  # The checks both exit doors run before any classification: is this exit still
+  # ours to answer, and was it caused by something the loop already diagnosed?
+  #
+  # @return [ExitDecision, nil] a decision that ends exit handling, or nil to continue
+  def exit_handling_preflight(working_dir)
+    # Check session status before making retry decisions
+    session.reload
+    unless session.running?
+      add_log("Session no longer running (status: #{session.status}), skipping exit handling", level: "info")
+      @mutex.synchronize { @state = :idle }
+      return ExitDecision.new(action: :aborted)
+    end
+
+    # Ownership. Several branches below answer an exit by spawning a replacement
+    # (SIGTERM retry, signal-death retry, compaction, API-error retry), and each is
+    # right only while this job still owns the session's turn. Once another job has
+    # taken ownership, the exit we are handling is very often one *it* caused —
+    # `AgentProcessLiveness` terminating this turn's process before spawning its own is
+    # exactly that — and respawning in answer to it puts a second agent back on the
+    # clone the guard just cleared. The monitoring loop enforces the same invariant one
+    # level up when it reloads the session; this enforces it at the point where the
+    # decision to spawn is actually made. A nil `running_job_id` means "not superseded"
+    # (a pause clears it), matching the loop's reading.
+    if owning_job_id.present? && session.running_job_id.present? && session.running_job_id != owning_job_id
+      add_log(
+        "Session ownership moved to job #{session.running_job_id} (this job is #{owning_job_id}); " \
+        "not answering this exit with a respawn",
+        level: "info"
+      )
+      @mutex.synchronize { @state = :idle }
+      return ExitDecision.new(action: :aborted)
+    end
+
+    # Check if this exit was triggered by prompt-too-long hang detection.
+    # The monitoring loop terminated the process after detecting the hung state,
+    # so we route directly to compact recovery regardless of exit status.
+    if session.metadata&.dig("prompt_too_long_hang_detected")
+      with_db_retry do
+        session.remove_metadata!("prompt_too_long_hang_detected")
+      end
+      add_log("Routing to compact recovery after 'Prompt is too long' hang detection", level: "info")
+      return handle_context_length_error(working_dir)
+    end
+
+    nil
+  end
+
+  # The evidence-driven half of the recovery ladder: every rung that asks what
+  # the runtime WROTE (stderr, the transcript, session metadata) rather than what
+  # exit code it carried. Shared by both exit doors — #handle_exit runs it for an
+  # exit the runtime calls normal, #handle_unreaped_exit runs it for a process
+  # whose status nobody holds.
+  #
+  # @return [ExitDecision, nil] a decision that ends exit handling, or nil when
+  #   no rung claimed the exit
+  def diagnose_completed_turn(working_dir)
+    # Check if this was a /compact command that needs automatic continuation
+    # When the /compact process completes successfully, we should automatically
+    # continue with the user's task instead of waiting for manual input
+    if session.metadata&.dig("pending_compact_continuation")
+      return handle_compact_continuation(working_dir)
+    end
+
+    # Check for context length errors - route to compact/retry system
+    if retry_strategy.context_length_error?(stderr_log_path: @stderr_log_path)
+      add_log("Context length error detected - attempting compact recovery", level: "info")
+      return handle_context_length_error(working_dir)
+    end
+
+    # Check for a rotation-induced "Not logged in / Please run /login" auth
+    # failure — the active account was rotated out from under this in-flight
+    # session, invalidating its on-disk credentials. Recoverable: refresh the
+    # identity and resume. Checked BEFORE the API-error path because the auth
+    # error is recorded the same way (isApiErrorMessage: true); placing it
+    # first lets "most recent error wins" route a fresh auth failure here even
+    # if an older retryable 5xx is also present.
+    if retry_strategy.auth_recovery_needed?(working_dir: working_dir)
+      add_log("Not logged in detected - attempting auth recovery", level: "info")
+      return handle_auth_recovery(working_dir)
+    end
+
+    # Check for transient API errors (500, 529, rate limits) and the CLI's own
+    # unparseable-tool-call report — retry with exponential backoff
+    if retry_strategy.api_error_for_retry?(working_dir: working_dir)
+      add_log("Retryable API error detected - attempting retry with backoff", level: "info")
+      return handle_retryable_api_error(working_dir)
+    end
+
+    # Check for failed resume - Claude CLI exits 0 even when it can't find the
+    # session to resume, producing "No conversation found with session ID" in stderr.
+    # Instead of permanently failing, attempt to recover by starting a fresh CLI
+    # session with the best durable prompt. This handles deploy-interrupt recovery
+    # where the CLI session was too short-lived to persist on Anthropic's servers.
+    # (Runtimes that signal a failed resume with a NON-zero exit — e.g. Codex —
+    # are caught by the matching check in #handle_exit's failure branch.)
+    if retry_strategy.failed_resume_recovery_needed?(stderr_log_path: @stderr_log_path)
+      add_log("Resume failed: runtime session no longer exists. Attempting fresh start recovery.", level: "warning")
+      return handle_failed_resume_recovery(working_dir)
+    end
+
+    # The runtime refused to start because the session id it was handed is
+    # still held. Recoverable by minting a new one — see #handle_session_id_conflict.
+    if session_id_conflict?
+      return handle_session_id_conflict(working_dir)
+    end
+
+    # Last, because every branch above is a *specific* diagnosis and this one
+    # is the catch-all: the process ended having written nothing at all. That is never a completed turn, so drive the session forward
+    # instead of parking it with an empty transcript for a human to notice.
+    if empty_turn_recovery_needed?(working_dir)
+      return handle_empty_turn(working_dir)
+    end
+
+    # The invariant that makes a silently-absorbed turn impossible: a turn
+    # whose LAST conversational entry is an API error did not complete, no
+    # matter how the runtime worded that error.
+    #
+    # Every branch above is a *specific* diagnosis matched against the
+    # runtime's prose, and every one of them can go stale. This one asks a
+    # structural question instead, and asks it LAST — so an answer here means
+    # not one of those branches claimed a turn that plainly died. That covers
+    # both halves of the failure: a wording nobody knows, and a wording some
+    # classifier does know but has already spent its retry cursor on.
+    #
+    # This is the 2026-08-20 incident (session 6412): Claude Code recorded
+    # `"error":"authentication_failed"` / "Failed to authenticate: OAuth
+    # session expired and could not be refreshed", exited 1 — its
+    # turn-finished convention — and Zimmer parked the session as `needs_input`
+    # with "Process exited successfully", leaving a human's message unanswered
+    # and nothing in the logs to find it by.
+    if (terminal_error = unhandled_terminal_api_error(working_dir))
+      return handle_terminal_api_error(terminal_error)
+    end
+
+    nil
+  end
 
   # Handle SIGTERM exit with potential retry
   #
