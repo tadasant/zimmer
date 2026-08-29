@@ -3475,14 +3475,21 @@ guard would stand down on exactly the sessions that need recovering.
 
 The cost is that it only answers for the process it lives in. A re-pick that lands in a *second*
 worker process finds an empty set, concludes nothing is running, and takes the recovery path —
-delivering the nudge this guard exists to suppress. Zimmer prod runs a single `good_job` worker,
-so today every re-pick lands where the entry is; a deployment that scales the worker horizontally
-would see the old behaviour return in proportion to how often the poll lands on the other process.
+delivering the nudge this guard exists to suppress. Zimmer's `worker` role is one container on one host running one
+`bundle exec good_job start` (`config/deploy.production.yml`), so today every re-pick lands where
+the entry is; scaling that role horizontally would see the old behaviour return in proportion to
+how often the poll lands on the other process.
 
 There is no durable version of the signal available. GoodJob writes no `locked_by_id` under the
 `:advisory` strategy, so the row itself records nothing about who is executing it, and a PID check
 cannot distinguish a live execution from a [reparented
 orphan](/sessions/spawning/#one-live-agent-process-per-session) whose monitor really did die.
+
+The same set is what `CleanupOrphanedSessionsJob` and `DeploymentRecoveryJob` consult before
+calling a `running` session orphaned, and GoodJob's cron runs inside the worker, so today all
+three actors read the same set. Scaling the `worker` role past one container splits them.
+
+---
 
 ## Two narrow gaps in the InterruptError stand-down
 

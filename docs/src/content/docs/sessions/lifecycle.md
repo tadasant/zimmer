@@ -316,9 +316,19 @@ its set with it, so the genuine case never sees a false hit.
 Standing down there means standing down completely: no `running_job_id` cleared, no `paused_by`
 written, no pause, no nudge. Each would be an act against a session whose agent is mid-turn.
 
+**Suppressing the handler's own nudge is not enough on its own**, because the re-pick leaves the
+row lying about itself. GoodJob stamps it with an `error` at re-pick time and a `finished_at`
+when the raise is rescued, and `CleanupOrphanedSessionsJob#orphaned_running_session?` and
+`DeploymentRecoveryJob#orphaned_running_session?` both return true on either of those *before*
+they reach any liveness question. So a phantom re-pick the handler correctly ignored would still
+be swept within five minutes, running the identical cascade under a different log line. Both
+sweeps therefore ask `AgentSessionJob.executing?` first, and GoodJob's cron runs inside the
+worker, so the set they read is the one the live execution registered in.
+
 The set is deliberately not durable. A re-pick landing in a second worker process finds it
-empty and falls through to the recovery path, which is the safe direction; Zimmer runs one
-worker, so in practice the re-pick lands where the entry is. That gap is recorded in
+empty and falls through to the recovery path, which is the safe direction; Zimmer's `worker`
+role is one container running one `good_job` process, so in practice every re-pick and every
+sweep lands where the entry is. That gap is recorded in
 [limitations](/limitations/#the-phantom-re-pick-guard-is-process-local).
 
 #### A finished turn is not an interruption

@@ -1964,12 +1964,13 @@ class AgentSessionJobTest < ActiveJob::TestCase
       metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
     )
 
-    AgentSessionJob::LIVE_EXECUTIONS.add(SecureRandom.uuid)
+    other_job_id = SecureRandom.uuid
+    AgentSessionJob::LIVE_EXECUTIONS.add(other_job_id)
     begin
       error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
       job.send(:handle_interrupt_error, error)
     ensure
-      AgentSessionJob::LIVE_EXECUTIONS.clear
+      AgentSessionJob::LIVE_EXECUTIONS.delete(other_job_id)
     end
 
     @session.reload
@@ -2005,6 +2006,80 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert_not AgentSessionJob::LIVE_EXECUTIONS.include?(job.job_id),
       "the entry must be cleared even when the job raises"
+  end
+
+  test "a re-picked execution never registers itself, so the guard cannot swallow a real interrupt" do
+    # The load-bearing invariant. GoodJob's InterruptErrors around_perform is declared on
+    # ApplicationJob and a superclass's around callback wraps its subclasses', so the
+    # raise lands before this class's callback can register anything. If that ever
+    # inverted — a `prepend: true`, or the callback moving up to ApplicationJob above the
+    # `include` — the re-picked execution WOULD register, and then every interrupt,
+    # including a genuine deploy kill, would stand down and strand the session forever.
+    # That is the catastrophic direction, so it gets a test rather than a comment.
+    job = AgentSessionJob.new(@session.id)
+    registered = nil
+    job.define_singleton_method(:handle_interrupt_error) do |_error|
+      registered = AgentSessionJob::LIVE_EXECUTIONS.include?(job_id)
+    end
+
+    GoodJob::CurrentThread.within do |current_thread|
+      current_thread.execution_interrupted = Time.current
+      job.perform_now
+    end
+
+    assert_equal false, registered,
+      "a re-picked execution must reach handle_interrupt_error with NOTHING registered"
+    assert_not AgentSessionJob::LIVE_EXECUTIONS.include?(job.job_id),
+      "and must leave nothing behind either"
+  end
+
+  test "the recovery sweeps do not call a session with a live execution orphaned" do
+    # Suppressing the handler's own nudge is not enough. GoodJob stamps the re-picked row
+    # with an `error` at re-pick time and a `finished_at` when the raise is rescued, and
+    # both sweeps return true on either of those BEFORE any liveness question — so a
+    # phantom re-pick this handler correctly ignored would still be swept five minutes
+    # later, running the identical cascade under a different log line.
+    @session.start!
+    job_id = SecureRandom.uuid
+    @session.update!(running_job_id: job_id, session_id: SecureRandom.uuid)
+    # Past the sweep's 30-second grace period for a session that has only just been
+    # created and has not been picked up yet.
+    @session.update_column(:created_at, 1.hour.ago)
+    @session.reload
+
+    # The row as a phantom re-pick leaves it: started, errored, finished — while the
+    # original execution runs on.
+    GoodJob::Job.create!(
+      id: job_id,
+      active_job_id: job_id,
+      job_class: "AgentSessionJob",
+      queue_name: "agents",
+      priority: 0,
+      serialized_params: { "job_class" => "AgentSessionJob", "job_id" => job_id },
+      created_at: 10.minutes.ago,
+      scheduled_at: 10.minutes.ago,
+      performed_at: 10.minutes.ago,
+      finished_at: Time.current,
+      error: "GoodJob::InterruptedError: Interrupted after starting perform at '2026-02-21 10:00:00 UTC'"
+    )
+
+    cleanup = CleanupOrphanedSessionsJob.new
+    recovery = DeploymentRecoveryJob.new
+
+    assert cleanup.send(:orphaned_running_session?, @session),
+      "a finished, errored row with no live execution IS orphaned — the sweep must still catch it"
+    assert recovery.send(:orphaned_running_session?, @session),
+      "same for the deployment sweep"
+
+    AgentSessionJob::LIVE_EXECUTIONS.add(job_id)
+    begin
+      assert_not cleanup.send(:orphaned_running_session?, @session),
+        "the row lies; a job executing in this process is driving the session"
+      assert_not recovery.send(:orphaned_running_session?, @session),
+        "the deployment sweep must ask the same question"
+    ensure
+      AgentSessionJob::LIVE_EXECUTIONS.delete(job_id)
+    end
   end
 
   test "handle_interrupt_error stands down for a session parked on an auth outage" do

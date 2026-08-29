@@ -203,10 +203,31 @@ class AgentSessionJob < ApplicationJob
   #
   # It is deliberately not durable. A re-pick landing in a second worker process would
   # find an empty set and fall through to the recovery path, which is the safe
-  # direction and today's behaviour. Zimmer prod runs one worker
-  # (`ConnectionBudget.execution_mode` is :external, one `good_job` process), so in
-  # practice the re-pick lands here. docs/limitations.md records the gap.
+  # direction and today's behaviour. Zimmer's `worker` role is a single container on a
+  # single host running one `bundle exec good_job start`
+  # (`config/deploy.production.yml`), and GoodJob's cron runs inside it too — so both
+  # the re-pick and the recovery sweeps land in the process that holds this set.
+  # docs/limitations.md records the gap that opens if the role is ever scaled out.
   LIVE_EXECUTIONS = Concurrent::Set.new
+
+  # Is `job_id` executing on a thread in this process right now?
+  #
+  # Public because the two recovery sweeps have to ask it as well. Suppressing the
+  # handler's own nudge is not enough on its own: GoodJob stamps the re-picked row with
+  # an `error` at re-pick time and a `finished_at` when the raise is rescued, and both
+  # `CleanupOrphanedSessionsJob#orphaned_running_session?` and
+  # `DeploymentRecoveryJob#orphaned_running_session?` return true on either of those
+  # *before* they reach any liveness question. So a phantom re-pick that this handler
+  # correctly ignored would still leave a `running` session pointing at a row that reads
+  # finished — and the 5-minute cron would then run the identical cascade under a
+  # different log line. The guard has to be visible to all three actors, not just to the
+  # handler.
+  #
+  # @param job_id [String, nil]
+  # @return [Boolean]
+  def self.executing?(job_id)
+    job_id.present? && LIVE_EXECUTIONS.include?(job_id)
+  end
 
   # Register this job's execution for as long as it is on a thread here.
   #
@@ -2230,7 +2251,7 @@ class AgentSessionJob < ApplicationJob
     # guard exists to stop, and it is self-feeding: production session 10360 took 16 of
     # these in 71 minutes, each fire naming the job the previous fire's nudge had just
     # spawned, with the agent process alive and never terminated throughout.
-    if LIVE_EXECUTIONS.include?(job_id)
+    if self.class.executing?(job_id)
       Rails.logger.info(
         "[AgentSessionJob] Skipping InterruptError recovery for session #{session_id}: " \
         "job #{job_id} is still executing in this process (row re-picked, not interrupted)"
