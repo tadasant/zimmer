@@ -1174,11 +1174,15 @@ module Mcp
         errors = []
 
         # One bulk call is one caller action, so it owes the caller one page
-        # rather than one per session. The archive transition raises more than
-        # the stranded-queue alert — a swallowed side effect on each session
-        # pages too — and those alerts dedup per session by design, so nothing
-        # else collapses a burst from one call. Every page in `#alerts` spawns a
-        # triage session downstream, which is what makes N of them expensive.
+        # rather than one per session, and every page in `#alerts` spawns a
+        # triage session downstream — which is what makes N of them expensive.
+        #
+        # Defensive here rather than load-bearing, and worth being honest about
+        # which: the only alert this loop can currently burst is the
+        # stranded-queue one, which a forced archive no longer raises and an
+        # unforced one never reaches (the refusal above stops it). The batch is
+        # what keeps that true of the next per-session alert somebody adds.
+        # HealthMonitorService's sweep is where it does real work today.
         AlertBatcher.with_batch do
           Session.where(id: session_ids).where.not(status: :archived).each do |session|
             if session.may_archive?

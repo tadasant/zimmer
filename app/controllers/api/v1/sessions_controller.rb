@@ -1045,9 +1045,8 @@ class Api::V1::SessionsController < Api::BaseController
     force = ActiveModel::Type::Boolean.new.cast(params[:force])
 
     # One request is one caller action, so it owes the caller one page rather
-    # than one per session — see the MCP twin. The alerts the archive transition
-    # can raise all dedup per session by design, so nothing else collapses a
-    # burst from one bulk call.
+    # than one per session — see the MCP twin, including why this is defensive
+    # here and load-bearing on HealthMonitorService's sweep.
     AlertBatcher.with_batch do
       sessions.each do |session|
         queued = force ? [] : Sessions::ArchiveGuard.pending_messages(session)

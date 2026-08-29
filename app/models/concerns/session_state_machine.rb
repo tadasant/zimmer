@@ -71,6 +71,10 @@ module SessionStateMachine
   # What the archive line says when the caller set no actor.
   ARCHIVE_ACTOR_UNRECORDED = "an unrecorded caller"
 
+  # How many retired row ids the forced-strand ledger line names before it
+  # summarises the rest. See record_forced_strand.
+  FORCED_STRAND_IDS_LOGGED = 20
+
   # Whether this archive was a caller overriding Sessions::ArchiveGuard.
   #
   # Only the caller-facing surfaces set it — the MCP `archive` and
@@ -1013,14 +1017,24 @@ module SessionStateMachine
     #
     # `force` is the whole discriminator, and it is the only thing Zimmer knows
     # about the caller's intent at this point. Sessions::ArchiveGuard refuses an
-    # archive over a non-empty queue and prints the queued messages in the
-    # refusal, so a caller that comes back with `force: true` was shown exactly
-    # what it was about to discard and chose to discard it. That is an accepted
-    # loss, not a silent one, and paging a human about a loss they authorized is
-    # what turned one sanctioned spot-queue cleanup into seven pages — and seven
+    # archive over a non-empty queue and prints every queued message in the
+    # refusal, and the refusal says in as many words that force is for a caller
+    # that has read them — so `force: true` is the caller ASSERTING it read the
+    # queue and is discarding it deliberately. That is an accepted loss rather
+    # than a silent one, and paging a human about a loss they authorized is what
+    # turned one sanctioned spot-queue cleanup into seven pages — and seven
     # router sessions — on 2026-08-29. The forced branch records instead: the
     # rows retire, the archive line names them, and record_forced_strand leaves a
     # queryable entry on the log plane.
+    #
+    # It is an assertion, not a proof, and the gap is worth naming: every surface
+    # skips the guard entirely when `force` is set, so a caller that sends it on
+    # its FIRST call was never refused and never shown anything. On a batch the
+    # flag covers every session in it. Nothing here can tell those apart from a
+    # caller that answered a refusal — which is why the record is the answer and
+    # silence is not. `force` is deliberately hard to reach by accident: it is
+    # off by default, named last in the refusal, and hedged in its own schema
+    # description.
     #
     # An UNFORCED strand is the failure this alert was built for, and stays at
     # full volume whatever the messages were. The system-initiated archives
@@ -1132,14 +1146,19 @@ module SessionStateMachine
 
     session_id = id
     actor = archive_actor.presence || ARCHIVE_ACTOR_UNRECORDED
-    rows = stranded.map { |message| "##{message.id}(#{message.origin})" }.join(" ")
     count = stranded.size
+    # Bounded like every other rendering of a retired queue here — the previews
+    # at 200 chars on the page, at 120 on the archive line. `retired=` carries
+    # the true count, so a queue too long to list still reports its size.
+    listed = stranded.first(FORCED_STRAND_IDS_LOGGED)
+    rows = listed.map { |message| "##{message.id}(#{message.origin})" }.join(" ")
+    rows += " +#{count - listed.size} more" if count > listed.size
 
     ActiveRecord.after_all_transactions_commit do
       Rails.logger.warn(
         "[StrandedQueue] session=#{session_id} forced=true actor=#{actor.inspect} retired=#{count} " \
-        "messages=#{rows} — archived over a queue Sessions::ArchiveGuard had already shown the caller, " \
-        "which forced anyway. Recorded rather than paged: the loss was authorized."
+        "messages=#{rows} — the caller passed `force`, which asserts it read the queue and is " \
+        "discarding it deliberately. Recorded rather than paged: the loss was authorized."
       )
     rescue => e
       Rails.logger.error(

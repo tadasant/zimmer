@@ -732,11 +732,20 @@ thrown away stays readable afterwards. What it does not do is page.
 
 #### A forced archive records, it does not page
 
-The alert exists for a message that was **discarded without anyone reading it**. `force` is exactly
-the evidence that somebody did read it: `Sessions::ArchiveGuard` refuses first and prints every
-pending message in the refusal, so a caller that comes back with `force: true` was shown what it was
-about to throw away and chose to throw it away. Paging a human about a discard a caller has already
-been talked through is paging them about Zimmer working.
+The alert exists for a message that was **discarded without anyone reading it**. `force` is the
+caller asserting that it did read it: `Sessions::ArchiveGuard` refuses first, prints every pending
+message in the refusal, and the refusal says in as many words that force is only for a caller that
+has read them. Paging a human about a discard a caller has already been talked through is paging
+them about Zimmer working.
+
+**It is an assertion, not a proof, and the gap is worth stating.** Every surface skips the guard
+outright when `force` is set, so a caller that sends it on its *first* call is never refused and
+never shown anything — and on a batch the one flag covers every session in it, including ones whose
+queues the caller has not seen. Nothing at strand time can tell that caller from one that answered a
+refusal. What makes this the right trade anyway is that the alternative was worse in practice, and
+that the forced branch is not silent: `force` is off by default, named last in the refusal and hedged
+in its own schema description, and every forced discard still leaves the row, the archive line, and
+the ledger entry below.
 
 So the branch is on the archive, not on the message:
 
@@ -780,15 +789,22 @@ them is the summary that hides the other N−1. That is right for the count and 
 which is what produced seven separate pages — and seven router sessions — from one call.
 
 So the three archive paths that walk a list wrap themselves in `AlertBatcher`: MCP `bulk_archive`,
-`POST /api/v1/sessions/bulk_archive`, and `HealthMonitorService`'s stale-session sweep. Every session
-is still named, in one consolidated `… (×N)` message instead of N of them.
+`POST /api/v1/sessions/bulk_archive`, and `HealthMonitorService`'s stale-session sweep. One
+consolidated `… (×N)` message replaces N of them, and the `×N` in the title is always the true count.
 
-The sweep is the path this matters most on, because it is the only one that can strand *unforced* on
-many sessions at once — the two caller-facing bulk paths can only strand when the caller forced, and
-a forced strand no longer pages at all. The batch still earns its place on those two: the archive
-transition can raise other alerts (a swallowed side effect on each session pages too), and those
-dedup per session for the same reason. The web UI's bulk action is not wrapped because it never
-strands: it skips any session with a queue and reports the count.
+**The body is bounded and the tail is cut.** `AlertBatcher` clamps an aggregate to 2,700 characters,
+which is Slack's section limit with headroom, so somewhere around half a dozen stranded-queue
+occurrences the later ones stop being spelled out. That is a real loss of the per-session detail this
+alert exists to give, and it is the reason the batch is a delivery fix rather than a reporting one:
+the complete record is the archive line on each session and the `undelivered` rows themselves, both
+of which survive whatever the page has room for.
+
+The sweep is the path this matters most on, because it is the only one of the three that can strand
+*unforced* across many sessions at once — the two caller-facing bulk paths only strand when the
+caller forced, and a forced strand no longer pages at all. On those two the batch is defensive: it
+keeps the one-page-per-call property true of whatever per-session alert is added next. The web UI's
+bulk action is not wrapped because it never strands: it skips any session with a queue and reports
+the count.
 
 Every state that can archive is covered, `needs_input` and `failed` included. Nothing drains their
 queues, which makes the discard there certain rather than merely likely — and a refusal without an
