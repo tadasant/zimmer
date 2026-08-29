@@ -3,41 +3,35 @@
 require "test_helper"
 require "json"
 
-# The GoodJob cron table used to be three copied literals, one per environment file, and
-# nothing kept them in step. A job added to one and forgotten in another was scheduled
-# there and silently never ran here: no error, no log, no alert.
+# The check on config/cron_schedule.rb.
 #
-# That is not hypothetical. GithubTriggerPollerJob was added to production.rb only, and
-# the omission was invisible until the trigger was exercised end-to-end on staging: the
-# UI accepted the trigger, the condition validated, and the poller simply never ticked.
+# A cron entry that goes missing is silent: no error, no log, no alert, just a job that
+# never runs. GithubTriggerPollerJob was once scheduled in production and not staging, and
+# the omission was invisible until the trigger was exercised end-to-end there -- the UI
+# accepted it, the condition validated, and the poller simply never ticked.
 #
-# The table now lives once, in config/cron_schedule.rb, and each entry names the
-# environments it runs in. This file is the check on that table. Its first job is the
-# boring one -- pin the fully resolved hash per environment against a snapshot, so a
-# typo'd expression, a dropped entry or a duplicated key fails CI instead of quietly
-# stopping a job forever. The snapshot was captured from the three literals as they
-# stood before the refactor (tadasant/zimmer#457), which is what makes that refactor
-# provably behaviour-preserving; changing a job's schedule now means updating it, on
-# purpose, in a diff a reviewer can read.
+# So the first job here is the boring one: pin the fully resolved hash for every
+# environment against test/fixtures/files/good_job_cron_schedule.json, so a typo'd
+# expression, a dropped entry or a duplicated key fails CI rather than quietly stopping a
+# job forever. That snapshot is a record of what the three environment files scheduled
+# before tadasant/zimmer#457 consolidated them, which is what makes the consolidation
+# provably behaviour-preserving. Changing a schedule means regenerating it, on purpose, in
+# a diff a reviewer can read -- the command is in docs/operate/background-jobs.md.
 class CronScheduleTest < ActiveSupport::TestCase
   SCHEDULE_FILE = Rails.root.join("config/cron_schedule.rb")
   PINNED = JSON.parse(Rails.root.join("test/fixtures/files/good_job_cron_schedule.json").read).freeze
 
-  # Entries production schedules and staging does not, each with the reason. Adding to
-  # this list should be a conscious decision, not a way to silence the test below.
+  # Jobs production schedules and staging does not, each with the reason. Adding to this
+  # list is a conscious decision, not a way to silence the test below.
   #
-  # Both of these are inherited, unratified omissions rather than decisions anyone made:
-  # the reason recorded here predates tadasant/zimmer#457 and nobody has ruled on whether
-  # staging should run them. It is repeated on the entries themselves in
-  # config/cron_schedule.rb. Development running SlackTriggerHealthCheckJob is hard to
-  # square with the stated reason, which is the strongest sign it wants a human's answer.
-  # tadasant/zimmer#686 is the open decision.
+  # The reason on both came with the schedule rather than from anyone ruling on it, and
+  # staging is in AlertService::ALERTING_ENVIRONMENTS, so it is a live question rather
+  # than a settled one: tadasant/zimmer#686. The same note is on the entries themselves.
   NOT_ON_STAGING = {
     "EgressHealthCheckJob" =>
       "alerting canary: it pages #eng-alerts, and a staging copy would double-page on " \
       "production's own signals",
-    "SlackTriggerHealthCheckJob" =>
-      "same -- though development schedules it, which the reason does not explain"
+    "SlackTriggerHealthCheckJob" => "same"
   }.freeze
 
   def resolved(environment)
@@ -87,9 +81,10 @@ class CronScheduleTest < ActiveSupport::TestCase
   end
 
   test "the schedule file is required at boot rather than autoloaded" do
-    # config/environments/*.rb runs before eager loading, so an autoloaded constant here
-    # would raise NameError during boot -- in the worker process, where a schedule that
-    # fails to load is a fleet with no cron at all.
+    # config/environments/*.rb runs before autoload paths are configured, so an autoloaded
+    # constant here would raise NameError during :load_environment_config -- loudly, but
+    # in the worker process, which is the one that would otherwise run the whole fleet's
+    # cron.
     assert_includes Rails.root.join("config/application.rb").read, %(require_relative "cron_schedule")
   end
 
@@ -103,6 +98,30 @@ class CronScheduleTest < ActiveSupport::TestCase
     assert_equal names.size, CronSchedule::ENTRIES.size,
                  "config/cron_schedule.rb has #{names.size} entry names in its source but " \
                  "#{CronSchedule::ENTRIES.size} in ENTRIES"
+  end
+
+  test "no entry carries a key nothing reads" do
+    # `for` hand-builds the hash GoodJob gets, so a key it does not know about is dropped
+    # on the floor. GoodJob::CronEntry reads `set`, `args`, `kwargs` and
+    # `enabled_by_default` too; writing one of those on an entry without teaching `for`
+    # about it would look configured and do nothing.
+    CronSchedule::ENTRIES.each do |name, entry|
+      assert_empty entry.keys - CronSchedule::ENTRY_KEYS,
+                   "cron entry #{name} carries keys nothing reads: #{(entry.keys - CronSchedule::ENTRY_KEYS).inspect}"
+    end
+  end
+
+  test "every scheduled job class appears in the background-jobs docs table" do
+    # AGENTS.md sends any cron change to that page, and a job missing from it is a job
+    # nobody operating Zimmer knows runs. Asserted rather than trusted, because the page
+    # had silently fallen three jobs behind the schedule.
+    page = Rails.root.join("docs/src/content/docs/operate/background-jobs.md").read
+    undocumented = CronSchedule::ENTRIES.values.map { |entry| entry[:class] }.uniq
+                                        .reject { |name| page.include?("`#{name}`") }
+
+    assert_empty undocumented,
+                 "These scheduled jobs are not named in docs/src/content/docs/operate/background-jobs.md: " \
+                 "#{undocumented.sort.join(', ')}. Add a row to its cron table."
   end
 
   # --- what runs where -----------------------------------------------------------
@@ -158,12 +177,12 @@ class CronScheduleTest < ActiveSupport::TestCase
 
   # --- the resolver --------------------------------------------------------------
 
-  test "for/1 hands GoodJob only the keys it reads" do
+  test "for/1 hands GoodJob exactly the keys it builds, and nothing of ours" do
     CronSchedule::ENVIRONMENTS.each do |environment|
       CronSchedule.for(environment).each do |name, entry|
-        assert_equal CronSchedule::GOOD_JOB_KEYS, entry.keys,
-                     "#{name} resolves to #{entry.keys.inspect} in #{environment}; GoodJob reads " \
-                     "#{CronSchedule::GOOD_JOB_KEYS.inspect} and `environments` is ours, not its"
+        assert_equal CronSchedule::GOOD_JOB_KEYS.to_set, entry.keys.to_set,
+                     "#{name} resolves to #{entry.keys.inspect} in #{environment}; `for` builds " \
+                     "#{CronSchedule::GOOD_JOB_KEYS.inspect}, and `environments` is ours, not GoodJob's"
       end
     end
   end
@@ -207,6 +226,8 @@ class CronScheduleTest < ActiveSupport::TestCase
       assert_raises(RuntimeError) { CronSchedule.validate!({ broken: valid.except(key) }) }
     end
 
+    assert_raises(RuntimeError) { CronSchedule.validate!({ broken: valid.merge(cron_overides: "typo") }) }
+    assert_raises(RuntimeError) { CronSchedule.validate!({ broken: valid.merge(set: { priority: -10 }) }) }
     assert_raises(RuntimeError) { CronSchedule.validate!({ broken: valid.merge(environments: []) }) }
     assert_raises(RuntimeError) { CronSchedule.validate!({ broken: valid.merge(environments: %i[qa]) }) }
     assert_raises(RuntimeError) do
