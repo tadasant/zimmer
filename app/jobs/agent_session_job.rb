@@ -1539,35 +1539,12 @@ class AgentSessionJob < ApplicationJob
                 "#{runtime_label} CLI failed: #{exit_decision.error_message}",
                 level: "error"
               )
-              # Map error messages to specific failure reasons
-              failure_reason = case exit_decision.error_message
-              when /SIGTERM retry limit exhausted/i
-                "sigterm_retries_exhausted"
-              when /Context length compact limit exhausted/i
-                "context_length_compact_failed"
-              when /API error retry limit exhausted/i
-                "api_error_retries_exhausted"
-              when /Signal death resume limit exhausted/i
-                "signal_death_retries_exhausted"
-              when /Turn ended on an API error no recovery path claimed/i
-                # The backstop in ProcessLifecycleManager#handle_exit: a turn that
-                # died on an API error no recovery path claimed. Its own bucket
-                # because it is the one failure class that means a classifier has
-                # gone stale, and the health dashboard is where that shows up.
-                "terminal_api_error"
-              when /Clone directory no longer exists/i
-                # Benign terminal case: the clone was GC'd after the session was torn
-                # down, so a continuation re-spawn is impossible (not a system fault).
-                "clone_removed"
-              else
-                "process_failed"
-              end
               session.update!(
                 metadata: (session.metadata || {}).except(
                   "transcript_recovery_expected",
                   "transcript_recovery_base_line_count"
                 ).merge(
-                  "failure_reason" => failure_reason,
+                  "failure_reason" => failure_reason_for(exit_decision.error_message),
                   "exit_status" => exit_decision.error_message
                 )
               )
@@ -1599,26 +1576,102 @@ class AgentSessionJob < ApplicationJob
           )
           # Do one final transcript poll
           poll_and_broadcast_transcript(session)
-          # Try to hand off to a queued message BEFORE pausing to avoid a
-          # running → needs_input → running flap that fires ao_event watchers
-          # spuriously (see comment at the :needs_input exit-decision branch).
-          # Don't remove the running loader on the handoff path — the session
-          # stays running and the new job will keep the loader visible.
-          if process_next_enqueued_message_if_available(session, log_buffer)
+
+          # Classify the exit before deciding anything, exactly as section 2 does.
+          # This door used to skip classification entirely and fall straight to the
+          # pause below, so a process that died before writing a line parked the
+          # session with a blank transcript for a human to restart — the same shape
+          # the empty-turn backstop closes on the other door (issue #476).
+          #
+          # #handle_unreaped_exit runs the evidence-driven half of the recovery
+          # ladder: the rungs that read stderr, the transcript and session metadata,
+          # none of which need an exit status. The status-driven rungs (SIGTERM
+          # retry, signal-death resume) and the unclassified-failure tail are
+          # deliberately unreachable from here — nobody reaped this process, so
+          # there is no status, and inventing one would either spend a resume budget
+          # on a death that may not have happened or assert a completion we cannot
+          # see. See the method's own comment.
+          exit_decision =
+            if session.archived?
+              nil
+            else
+              lifecycle_manager.handle_unreaped_exit(working_dir: working_directory)
+            end
+
+          if exit_decision&.action == :continue
+            # A recovery spawned a replacement process — keep monitoring it rather
+            # than ending the turn. Same bookkeeping as section 2's :continue.
+            session.reload
+            process_pid = session.metadata&.dig("process_pid")
+            stderr_log_path = session.stderr_log_path
+            last_sigterm_retry_at = Time.current
+            last_api_error_retry_at = Time.current
+            last_signal_death_at = Time.current
+            log_streaming_thread&.kill if log_streaming_thread&.alive?
+            log_streaming_thread = start_log_streaming(session, process_pid, stderr_log_path, working_directory)
+            next
+          end
+
+          case exit_decision&.action
+          when :failed
             log_buffer.add(
-              "Enqueued message being processed, exiting current job (handoff path — no pause flap)",
+              "#{runtime_label} CLI failed: #{exit_decision.error_message}",
+              level: "error"
+            )
+            session.update!(
+              metadata: (session.metadata || {}).except(
+                "transcript_recovery_expected",
+                "transcript_recovery_base_line_count"
+              ).merge(
+                "failure_reason" => failure_reason_for(exit_decision.error_message),
+                "exit_status" => exit_decision.error_message
+              )
+            )
+            session.fail! if session.may_fail?
+          when :aborted
+            # Someone else owns this exit (the session left running, another job took
+            # the turn, or the recovery service killed the process and will transition
+            # it). Leave the session alone, exactly as section 2 does.
+            log_buffer.add(
+              "Exit handling aborted - session status changed",
               level: "info"
             )
-            log_buffer.flush
-            return
+          else
+            # :needs_input, or a session already archived: the turn is over.
+            #
+            # A parked exit (AuthOutageParkService) is not a completed turn — it must
+            # reach pause!, which consumes the park's pending_sleep, and must not hand
+            # off to a queued message that would re-spawn into the same wall. Read the
+            # marker rather than the error string, matching section 2.
+            parked_reason = session.reload.metadata&.dig("auth_outage_reason")
+            parked = parked_reason.present?
+            if parked
+              log_buffer.add(
+                "Session paused: #{exit_decision&.error_message || parked_reason}",
+                level: "warning"
+              )
+            end
+            # Try to hand off to a queued message BEFORE pausing to avoid a
+            # running → needs_input → running flap that fires ao_event watchers
+            # spuriously (see comment at the :needs_input exit-decision branch).
+            # Don't remove the running loader on the handoff path — the session
+            # stays running and the new job will keep the loader visible.
+            if !parked && process_next_enqueued_message_if_available(session, log_buffer)
+              log_buffer.add(
+                "Enqueued message being processed, exiting current job (handoff path — no pause flap)",
+                level: "info"
+              )
+              log_buffer.flush
+              return
+            end
+            # A stop with the turn still undelivered and the pool still empty is the outage,
+            # not a completed turn. Parking marks the session pending_sleep, so the pause
+            # below carries it through to `waiting` instead of the human's action queue.
+            AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
+            session.pause! if session.may_pause?
+            # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
+            @broadcast_service.session_status(session)
           end
-          # A stop with the turn still undelivered and the pool still empty is the outage,
-          # not a completed turn. Parking marks the session pending_sleep, so the pause
-          # below carries it through to `waiting` instead of the human's action queue.
-          AuthOutageParkService.park_undelivered_turn!(session, log_buffer: log_buffer)
-          session.pause! if session.may_pause?
-          # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
-          @broadcast_service.session_status(session)
           remove_running_loader(session)
           log_buffer.add(
             "[DIAGNOSTIC] Exiting monitoring loop - process no longer running (signal check)",
@@ -2494,6 +2547,35 @@ class AgentSessionJob < ApplicationJob
       broadcast_service: @broadcast_service
     )
     poller.poll_and_broadcast
+  end
+
+  # Map an ExitDecision's error message to the failure_reason the health
+  # dashboard buckets on. Shared by both exit doors — the reaped path in section 2
+  # and the signal-0 fallback in section 3 — so a failure is named the same way
+  # however the loop noticed the process had gone.
+  def failure_reason_for(error_message)
+    case error_message
+    when /SIGTERM retry limit exhausted/i
+      "sigterm_retries_exhausted"
+    when /Context length compact limit exhausted/i
+      "context_length_compact_failed"
+    when /API error retry limit exhausted/i
+      "api_error_retries_exhausted"
+    when /Signal death resume limit exhausted/i
+      "signal_death_retries_exhausted"
+    when /Turn ended on an API error no recovery path claimed/i
+      # The backstop in ProcessLifecycleManager#handle_exit: a turn that died on an
+      # API error no recovery path claimed. Its own bucket because it is the one
+      # failure class that means a classifier has gone stale, and the health
+      # dashboard is where that shows up.
+      "terminal_api_error"
+    when /Clone directory no longer exists/i
+      # Benign terminal case: the clone was GC'd after the session was torn down,
+      # so a continuation re-spawn is impossible (not a system fault).
+      "clone_removed"
+    else
+      "process_failed"
+    end
   end
 
   # Remove the running loader when session completes
