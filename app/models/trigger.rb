@@ -558,6 +558,21 @@ class Trigger < ApplicationRecord
       trigger_conditions.all? { |c| c.one_time_schedule? || c.session_scoped_ao_event? }
   end
 
+  # True when NO condition on this trigger is a one-shot — neither a one-time
+  # schedule nor a session-scoped ao_event.
+  #
+  # Not the negation of #one_time_reuse_trigger?, and the gap between them is the
+  # point. That method demands that EVERY condition be one-shot, so a trigger
+  # mixing a recurring schedule with a one-time one satisfies neither: it is not
+  # a wake, and it is not purely recurring either. #coalesce_recurring_fire?
+  # keys on this rather than on `!one_time_reuse_trigger?` so that mixed shape
+  # keeps its previous behaviour — ScheduleTriggerJob would otherwise consume its
+  # one-shot schedule, and destroy the trigger, on a fire that delivered nothing.
+  def purely_recurring?
+    trigger_conditions.any? &&
+      trigger_conditions.none? { |c| c.one_time_schedule? || c.session_scoped_ao_event? }
+  end
+
   # Outcome of the most recent #follow_up_session! call on this in-memory
   # trigger instance. One of:
   #   :delivered             — session was resumed and a job was enqueued
@@ -1052,15 +1067,6 @@ class Trigger < ApplicationRecord
     return false unless purely_recurring?
 
     session.enqueued_messages.pending.exists?
-  end
-
-  # True when no condition on this trigger is a one-shot — neither a one-time
-  # schedule nor a session-scoped ao_event. Strictly narrower than
-  # `!one_time_reuse_trigger?`: a trigger mixing recurring and one-shot
-  # conditions is excluded by both this and #one_time_reuse_trigger?.
-  def purely_recurring?
-    trigger_conditions.any? &&
-      trigger_conditions.none? { |c| c.one_time_schedule? || c.session_scoped_ao_event? }
   end
 
   # Record whether this fire actually reached the session, and page when a run
