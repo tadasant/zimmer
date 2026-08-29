@@ -3,16 +3,11 @@
 require "test_helper"
 require "mocha/minitest"
 
-class GithubTriggerPollerJobTest < ActiveJob::TestCase
-  setup do
-    @label_condition = trigger_conditions(:github_label_condition)
-    @issue_condition = trigger_conditions(:github_issue_condition)
-    # perform preflights `gh auth status` via GithubSearchService.auth_preflight. Default
-    # it to authenticated so the behavioral tests below exercise the polling path rather
-    # than the graceful-degradation early return; each failing state has its own tests.
-    stub_preflight(GithubSearchService::PREFLIGHT_AUTHENTICATED)
-  end
-
+# Every class in this file drives GithubTriggerPollerJob#perform, which preflights
+# `gh auth status` through GithubSearchService.auth_preflight before it polls anything.
+# Each therefore has to stub that preflight in setup, or every test in it silently
+# exercises the graceful-degradation early return instead of the polling path.
+module GithubTriggerPollerPreflightStubs
   # Stands in for GithubSearchService.auth_preflight, which the poller reads to decide
   # whether to poll and — the point of #542 — what to say when it does not.
   def stub_preflight(state, detail = nil)
@@ -25,6 +20,18 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     capture_log_entries(&block).filter_map do |severity, message|
       message if severity == "WARN" && message.start_with?("[GithubTriggerPollerJob]")
     end
+  end
+end
+
+class GithubTriggerPollerJobTest < ActiveJob::TestCase
+  include GithubTriggerPollerPreflightStubs
+
+  setup do
+    @label_condition = trigger_conditions(:github_label_condition)
+    @issue_condition = trigger_conditions(:github_issue_condition)
+    # Default the preflight to authenticated so the behavioral tests below exercise the
+    # polling path rather than the early return; each failing state has its own tests.
+    stub_preflight(GithubSearchService::PREFLIGHT_AUTHENTICATED)
   end
 
   # An item shaped like the search-API fields the poller actually reads.
@@ -357,8 +364,8 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   #
   # An environment whose worker has no gh credential (observed on staging: every tick
   # failed with "please run: gh auth login") must not shell out per condition and alert
-  # per failure every minute. The poller preflights GithubSearchService.configured? and
-  # skips the whole tick when it is false — the same shape as SlackTriggerPollerJob's
+  # per failure every minute. The poller preflights GithubSearchService.auth_preflight and
+  # skips the whole tick unless it authenticated — the same shape as SlackTriggerPollerJob's
   # `return unless SlackService.configured?`. This is deliberately distinct from a
   # transient API failure on a CONFIGURED host, which still raises and alerts (above).
 
@@ -847,9 +854,11 @@ end
 # null_store in test, so these need a real store swapped in, and that swap should not
 # ride along on the 29 behavioural tests that have no use for it.
 class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
+  include GithubTriggerPollerPreflightStubs
+
   setup do
     @label_condition = trigger_conditions(:github_label_condition)
-    GithubSearchService.stubs(:configured?).returns(true)
+    stub_preflight(GithubSearchService::PREFLIGHT_AUTHENTICATED)
 
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -935,7 +944,7 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
 
   test "a tick skipped for a missing gh credential does not record the heartbeat" do
     # An unconfigured host never polls, so it must not look alive. (The health check
-    # makes the same configured? check, so this gap never pages there.)
+    # makes the same credential check, so this gap never pages there.)
     stub_preflight(GithubSearchService::PREFLIGHT_UNCONFIGURED, "no github.com credential is configured")
 
     GithubTriggerPollerJob.perform_now
@@ -964,9 +973,11 @@ end
 # Its own class for the same reason the heartbeat suite is: the streak lives in
 # Rails.cache, which is null_store in test, so these need a real store swapped in.
 class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
+  include GithubTriggerPollerPreflightStubs
+
   setup do
     @label_condition = trigger_conditions(:github_label_condition)
-    GithubSearchService.stubs(:configured?).returns(true)
+    stub_preflight(GithubSearchService::PREFLIGHT_AUTHENTICATED)
 
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -1145,7 +1156,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
 
   test "a 401 that never clears still pages, on this tick and every tick after" do
     # The half of the fix that must not regress. A revoked credential that somehow reaches
-    # the search (rather than being caught by the `configured?` preflight) is a real
+    # the search (rather than being caught by the auth preflight) is a real
     # failure, and retrying must delay the page by seconds — not remove it.
     only_label_condition!
     GithubSearchService.stubs(:sleep)
