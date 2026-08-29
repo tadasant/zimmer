@@ -218,6 +218,31 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     JS
   end
 
+  # Block until Stimulus has connected the named controller.
+  #
+  # A controller that fills a field on connect leaves the field server-rendered
+  # empty until it runs, and `assert_equal` on a field's value does not retry the
+  # way Capybara's matchers do — so a bare read after `visit` measures the pre-JS
+  # DOM and can agree with the expected answer by accident.
+  def wait_for_stimulus_controller(identifier, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      connected = page.evaluate_script(<<~JS, identifier)
+        (function (identifier) {
+          const el = document.querySelector(`[data-controller~="${identifier}"]`)
+          if (!el || !window.Stimulus) return false
+          return Boolean(window.Stimulus.getControllerForElementAndIdentifier(el, identifier))
+        })(arguments[0])
+      JS
+      return if connected
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        raise Capybara::ExpectationNotMet,
+          "the #{identifier} Stimulus controller did not connect within #{timeout}s"
+      end
+      sleep 0.05
+    end
+  end
+
   # Select an agent root via the agent-root-select Stimulus controller.
   #
   # The radios on the new session form are hidden — they exist only to
