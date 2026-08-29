@@ -524,6 +524,29 @@ class AuthOutageParkService
       .order(Arel.sql("metadata->>'auth_outage_parked_at' ASC NULLS FIRST"))
   end
 
+  # Is this session dormant on an auth outage — the row-level form of the query
+  # .parked_sessions runs over the fleet?
+  #
+  # The predicate exists because "dormant on purpose" is a question other code has
+  # to ask about ONE session it is already holding, and the alternative is each
+  # caller re-deriving `auth_outage_reason` and hoping it stays the marker.
+  # `SpotSessionPause.paused?` is the sibling for the other park, and this reads
+  # the same way at the call site.
+  #
+  # The `waiting` half is deliberate and matches .parked_sessions. A running
+  # session can carry `auth_outage_reason` for the moments between #record_outage!
+  # and the sleep that follows it, and it is not dormant then — it is a session
+  # about to go to sleep, and answering "yes" for it would let a caller stand down
+  # on a park that has not happened yet.
+  #
+  # @param session [Session, nil]
+  # @return [Boolean]
+  def self.parked?(session)
+    return false unless session&.waiting?
+
+    session.metadata&.dig("auth_outage_reason").present?
+  end
+
   # Can the sweep hand this runtime's pool to a session it is about to start?
   #
   # The `status` column, deliberately, and not the evidence-based

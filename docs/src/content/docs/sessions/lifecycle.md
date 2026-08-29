@@ -277,11 +277,65 @@ Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
 importantly, it cancels pending one-time wake-up triggers targeting this session, so a scheduled
 wake doesn't fire on a session you already resumed by hand.
 
+#### A live execution is not an interruption
+
+"Interrupted" is one column. `GoodJob::Job#perform` raises `InterruptError` whenever it picks a
+row that already has a `performed_at` — it never asks whether anything is still executing that
+row, because in the case it was written for (a worker that died) there is nothing left to ask.
+
+A row becomes re-pickable the moment its advisory lock goes away, and with GoodJob's default
+`:advisory` strategy that lock is a **session-scoped lock on one pooled Postgres connection,
+held for the whole execution**. For every other job in Zimmer that window is milliseconds. For
+an agent session it is the length of an agent's turn — minutes to hours, and the worker's own
+comment in `config/environments/production.rb` already says so. Lose that one connection
+anywhere in that window and the lock is released while the agent is still working; the dequeue
+scope is `finished_at IS NULL` and does not exclude rows that have a `performed_at`, so the
+poller picks the live row straight back up.
+
+That is a **phantom re-pick**, and it was the dominant source of recovery nudges. Over three
+hours of production logs on 2026-08-29, ~38 interrupt events across ~19 sessions produced ~36
+delivered nudges and **not one** stand-down by any existing guard. Every fire's embedded
+`Interrupted after starting perform at '<time>'` was 30 seconds to 8 minutes older than the
+fire itself; in every one the previously spawned CLI was still running and had never been
+terminated, and a second CLI was spawned two to seven seconds later — two agents against one
+clone. One session took **16 nudges in 71 minutes** in a self-feeding loop, each fire naming
+the job the previous fire's nudge had just spawned. The fires arrived in fleet-wide clusters
+(three different sessions inside the same second, seven such moments in three hours), which is
+one worker losing many locks at once rather than per-session flakiness — the connection-layer
+saturation of [#329](https://github.com/tadasant/zimmer/issues/329) is the mechanism that fits.
+
+So the handler's **first** guard asks whether this job is still executing, here, right now.
+`AgentSessionJob::LIVE_EXECUTIONS` is a process-local set of `job_id`s currently inside
+`#perform`. A re-picked execution never registers in it: GoodJob's `InterruptErrors`
+`around_perform` is declared on `ApplicationJob`, and a superclass's around callback wraps its
+subclasses', so it raises before the inner one can add anything. A hit therefore means a
+*different* thread in this same process is inside `#perform` for this same job — which is only
+true when the lock was lost out from under a live execution. A worker that really died takes
+its set with it, so the genuine case never sees a false hit.
+
+Standing down there means standing down completely: no `running_job_id` cleared, no `paused_by`
+written, no pause, no nudge. Each would be an act against a session whose agent is mid-turn.
+
+**Suppressing the handler's own nudge is not enough on its own**, because the re-pick leaves the
+row lying about itself. GoodJob stamps it with an `error` at re-pick time and a `finished_at`
+when the raise is rescued, and `CleanupOrphanedSessionsJob#orphaned_running_session?` and
+`DeploymentRecoveryJob#orphaned_running_session?` both return true on either of those *before*
+they reach any liveness question. So a phantom re-pick the handler correctly ignored would still
+be swept within five minutes, running the identical cascade under a different log line. Both
+sweeps therefore ask `AgentSessionJob.executing?` first, and GoodJob's cron runs inside the
+worker, so the set they read is the one the live execution registered in.
+
+The set is deliberately not durable. A re-pick landing in a second worker process finds it
+empty and falls through to the recovery path, which is the safe direction; Zimmer's `worker`
+role is one container running one `good_job` process, so in practice every re-pick and every
+sweep lands where the entry is. That gap is recorded in
+[limitations](/limitations/#the-phantom-re-pick-guard-is-process-local).
+
 #### A finished turn is not an interruption
 
-`GoodJob::InterruptError` is raised when GoodJob re-picks a job row it considers interrupted —
-started, never finished, no lock. `AgentSessionJob#handle_interrupt_error` treats that as "the
-deploy killed us mid-turn" and resumes the session with `AutomatedPrompts::SYSTEM_RECOVERY`.
+The other way a row is re-picked when nothing was interrupted is after the turn already ended.
+`AgentSessionJob#handle_interrupt_error` used to treat every re-pick as "the deploy killed us
+mid-turn" and resume the session with `AutomatedPrompts::SYSTEM_RECOVERY`.
 
 That is right when the session was still `running`. It is wrong when the turn had already
 finished. A normal completion transitions `running → needs_input` and, in the same callback
@@ -341,6 +395,18 @@ wake fire.
 The discriminator is `Session#awaiting_scheduled_wake?`, not a metadata flag, because a session that
 slept successfully carries none: `execute_pending_sleep` clears `pending_sleep` once `sleep!`
 succeeds, and writes no `paused_by`. The armed-wake query is the only signal there is.
+
+**Parked on an outage.** `AuthOutageParkService` parks a session in `waiting` when every account
+in the pool is out of quota, and it arms nothing at all — its own sweep over
+`metadata->>'auth_outage_reason'` is what wakes it. So it matched neither of the signals above
+and fell through to the recovery path, which stamps `paused_by: "recovery"` over the park. The
+auto-continue then declines (the session is `waiting`, not `needs_input`) — but the marker is
+the part that does the damage: `DeploymentRecoveryJob` and `CleanupOrphanedSessionsJob` both
+match `[:needs_input, :waiting]` with `paused_by = 'recovery'`, so within a sweep or two they
+resume a session into the outage that parked it. [Quota depletion is budget
+pacing](/sessions/spot-and-priority/), not a failure signal; a park is a wait, and this was how
+the wait got ended early. `AuthOutageParkService.parked?` is the discriminator, the row-level
+sibling of `SpotSessionPause.paused?`.
 
 **Anything else in `waiting` that has run.** Chiefly the window between the session id being issued
 and `start!` firing, which spans the clone, the AIR prepare and the spawn — seconds to minutes, and a
