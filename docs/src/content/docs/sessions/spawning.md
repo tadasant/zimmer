@@ -585,7 +585,7 @@ elapsed time, classifying the recorded `good_jobs` row as one of:
 | `queued` | Enqueued, not yet picked up — a worker will get to it | Stands down |
 | `scheduled` | Parked on a future retry backoff (e.g. the transient-clone retry) | Stands down |
 | `dead_worker` | Locked by a capsule that is gone: SIGKILL, OOM, evicted container | Supersedes |
-| `interrupted` | Started, then lost its lock — the worker died mid-`perform` | Supersedes |
+| `interrupted` | Started, then lost its lock — usually a dead worker, sometimes a [phantom re-pick](/sessions/lifecycle/#a-live-execution-is-not-an-interruption) | Supersedes |
 | `abandoned` | Sat queued and unclaimed past `ABANDONED_QUEUED_JOB_AGE` (30 min) | Supersedes |
 
 Liveness is asked of the database, not of the operating system. Zimmer runs the Kamal `web` and
