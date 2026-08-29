@@ -386,6 +386,12 @@ recovery](/sessions/lifecycle/#waiting-is-three-different-situations-and-none-of
 Only the re-check job schedules the next re-check, so anything that ends the chain strands the
 session for good.
 
+Archiving a held session ends it deliberately. The delayed job is left in the queue — nothing
+cancels it — but `AgentSessionJob` refuses an archived session before it reaches the gate, so
+that job fires once, logs why it stopped, and schedules nothing further. The hold record is left
+on the session as it stands: it is the history of why the session sat in the queue until it was
+trashed, and an archived session shows no hold banner anyway.
+
 The jitter matters at a backlog: without it, sessions held in the same minute re-check in the same
 minute forever, every one of them reading the same fleet size before any of them has started.
 

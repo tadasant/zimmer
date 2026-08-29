@@ -985,6 +985,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "spawn_failed", @session.metadata["failure_reason"]
   end
 
+  # An archived session's follow-up is refused at the door now, rather than
+  # deep in the follow-up branch: #perform stands down before the spot gate, so
+  # the "cannot be resumed" line further down is never reached for a session in
+  # the trash. The outcome this test has always been about — stays archived,
+  # spawns nothing — is unchanged; only where it is decided, and what the log
+  # says, moved. See AgentSessionJobArchivedSessionTest and issue #630.
   test "should skip follow-up when session is in non-resumable state" do
     session_id = SecureRandom.uuid
     clone_path = "/tmp/test-clone"
@@ -1016,8 +1022,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "archived", @session.status
 
     # Verify the skip was logged
-    skip_log = @session.logs.find { |log| log.content.include?("cannot be resumed") }
-    assert skip_log, "Should log that follow-up was skipped"
+    skip_log = @session.logs.find { |log| log.content.include?("it is in the trash") }
+    assert skip_log, "Should log that the turn was refused because the session is archived"
 
     # Verify no process was spawned
     assert_empty mock_cli_adapter.resumed_sessions
