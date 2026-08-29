@@ -14,7 +14,7 @@ class ClaudeTranscriptSource < TranscriptSource
 
   # @see TranscriptSource#transcript_directory
   def transcript_directory(working_directory:)
-    return nil unless working_directory
+    return nil unless working_directory.present?
 
     home_dir = File.expand_path("~")
     claude_projects_dir = File.join(home_dir, ".claude", "projects")

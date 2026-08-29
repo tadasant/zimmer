@@ -553,12 +553,12 @@ class AuthRecoveryService
 
   # Find the transcript file path for the session.
   def find_transcript_path(working_directory)
-    transcript_dir = TranscriptRuntime.source_for(session, file_system: file_system)
-      .transcript_directory(working_directory: working_directory)
+    source = TranscriptRuntime.source_for(session, file_system: file_system)
+    transcript_dir = source.transcript_directory(working_directory: working_directory)
     return nil unless transcript_dir
     return nil unless file_system.directory?(transcript_dir)
 
-    TranscriptFileLocator.find_main_transcript(session, transcript_dir, file_system: file_system)
+    source.find_main_transcript(transcript_directory: transcript_dir, session: session)
   rescue => e
     @logger.error("Error finding transcript path", error: e.message)
     nil
