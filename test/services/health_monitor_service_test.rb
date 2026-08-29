@@ -702,15 +702,17 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     # AlertBatcher calls on flush, so counting it counts Slack posts.
     AlertService.stubs(:enabled?).returns(true)
     emitted = []
-    AlertService.stubs(:emit).with do |title, options|
+    # `once` is the assertion — one sweep owes the operator one page, not one
+    # per session — so the count is enforced by Mocha at teardown rather than by
+    # the capture, which is only here to let the body be inspected below.
+    AlertService.expects(:emit).once.with do |title, options|
       emitted << [ title, options[:details] ]
       true
     end.returns(true)
 
     @service.archive_old_sessions(older_than: 7.days)
 
-    assert_equal 1, emitted.size, "one sweep owes the operator one page, not one per session"
-    title, details = emitted.first
+    title, details = emitted.last
     assert_equal "Queued messages stranded by an archive (\u00d72)", title
     stale.each do |session|
       assert_includes details, "Session #{session.id} was archived",
