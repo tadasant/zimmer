@@ -492,9 +492,9 @@ class ProcessLifecycleManager
   # #handle_exit. This is the other one: a signal-0 liveness check catching a
   # process that was reaped somewhere else (another thread, another job, the
   # init process after a parent died) or that never produced a status we own.
-  # Before this method existed that door skipped classification entirely and
-  # parked the session, so a first-connect failure reached through it stranded a
-  # session in `needs_input` with a blank transcript.
+  # Both doors classify, because a failure does not care which one it arrives
+  # through: a first-connect failure reaching this one unclassified strands a
+  # session in `needs_input` with a blank transcript (prod session 4668).
   #
   # What it deliberately does NOT do is invent a status. Nobody reaped this
   # process, so its exit code and signal are genuinely unknown, and every

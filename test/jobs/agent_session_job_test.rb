@@ -3076,9 +3076,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
   #
   # The monitoring loop has two doors onto a dead agent process. Section 2 reaps a
   # status and runs the recovery ladder; this one — the signal-0 liveness check —
-  # used to pause the session without classifying anything, so a process that died
-  # before writing a line parked with a blank transcript and waited for a human to
-  # type "continue". These pin that both doors now agree.
+  # has no status to read, and pausing on it without classifying anything is how a
+  # process that died before writing a line parks with a blank transcript and waits
+  # for a human to type "continue". These pin that both doors agree.
 
   test "signal-check fallback restarts a turn whose runtime wrote nothing, then parks once the budget is spent" do
     job = AgentSessionJob.new
@@ -3137,6 +3137,109 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "each restart re-spawns the turn rather than parking it"
     assert_equal "needs_input", @session.status,
       "the backstop is bounded — the session still comes to rest once the budget is spent"
+  end
+
+  test "signal-check fallback leaves a recovery-initiated kill to the recovery service" do
+    job = AgentSessionJob.new
+
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+
+    # CleanupOrphanedSessionsJob killed this process and owns the transition that
+    # follows it.
+    @session.update!(metadata: (@session.metadata || {}).merge("recovery_termination_initiated" => true))
+
+    mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+    mock_process_manager.wait_hook = ->(pid, flags) { nil }
+    mock_process_manager.running_hook = ->(pid) { false }
+
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; true; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.stub(:sleep, ->(_duration) { }) do
+            job.perform(@session.id)
+          end
+        end
+      end
+    end
+
+    @session.reload
+
+    assert_equal "running", @session.status,
+      "the loop must not race the recovery service to the transition"
+    assert_includes @session.logs.pluck(:content).join("\n"), "Exit handling aborted"
+  end
+
+  test "signal-check fallback does not hand a parked session off to a queued message" do
+    job = AgentSessionJob.new
+
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+
+    # An auth/quota park marks the still-running session before the loop reaches
+    # its pause. Sending the queued message would re-spawn straight into the wall
+    # the park exists to describe.
+    @session.update!(metadata: (@session.metadata || {}).merge(
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED
+    ))
+    @session.enqueued_messages.create!(content: "next thing please", position: 1, status: "pending")
+
+    mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+    mock_process_manager.wait_hook = ->(pid, flags) { nil }
+    mock_process_manager.running_hook = ->(pid) { false }
+
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; true; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.stub(:sleep, ->(_duration) { }) do
+            job.perform(@session.id)
+          end
+        end
+      end
+    end
+
+    @session.reload
+
+    assert_equal 1, @session.enqueued_messages.pending.count,
+      "a parked session must keep its queued message rather than re-spawning into the same wall"
+    assert_not @session.running?,
+      "the park still has to reach a pause, got #{@session.status}"
   end
 
   test "signal-check fallback fails the session with a classified reason when recovery is exhausted" do
