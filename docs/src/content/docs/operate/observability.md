@@ -140,6 +140,31 @@ red. `test/initializers/` covers each override's contract and additionally asser
 `ActionCable::VERSION::STRING`, so a Rails upgrade fails that guard and lands the prompt to
 re-read the upstream source on the upgrade PR itself.
 
+### A lifecycle state the session has not reached yet is logged at INFO, not ERROR
+
+The third variant of the same rule, and the one that catches application code rather than a
+framework. A piece of session metadata that a later step writes is *absent* before that step
+runs, so reporting the absence at ERROR turns a normal point in the lifecycle into a page.
+
+`TranscriptPollerService#get_transcript_directory` reads `working_directory`, which
+`AgentSessionJob` writes with the clone, before `start!` moves the session to `running`. A
+`spot` session held for quota headroom sits in `waiting` for as long as the hold lasts, and
+the poller can touch it minutes before it is ever spawned — so the first production
+occurrence of that ERROR line was a session on which nothing had gone wrong and nothing was
+left for a human to do ([#473](https://github.com/tadasant/zimmer/issues/473)).
+
+**The session's own state is what tells the two cases apart, not the missing value** — "no
+`working_directory`" is exactly what they share:
+
+| The session is… | Level | Because |
+| --- | --- | --- |
+| `waiting` — held for quota, queued behind the fleet cap, waiting on a clone | INFO | it has not been spawned, so there is nothing to have written the key |
+| anything else — `running`, `needs_input`, `failed` | ERROR | it got past the spawn, so the key should be there and its absence is a real defect |
+
+The exemption is drawn no wider than `waiting` deliberately. Widening it to "any session
+without the key" would swallow the case the line exists to catch, which is the worse of the
+two failures: an alert nobody needs is noise, a defect nobody sees is not.
+
 ## How environments are told apart
 
 Every batch carries two resource attributes:
