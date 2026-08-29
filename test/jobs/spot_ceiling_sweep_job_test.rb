@@ -33,9 +33,10 @@ class SpotCeilingSweepJobTest < ActiveSupport::TestCase
   # Every environment that runs cron has to carry the entry, or the ceiling
   # simply does not exist there — the sweep is the only thing that applies it.
   test "production and staging both schedule the sweep" do
-    %w[production staging].each do |env|
-      config = File.read(Rails.root.join("config/environments/#{env}.rb"))
-      assert_match(/class: "SpotCeilingSweepJob"/, config, "#{env} does not schedule the spot ceiling sweep")
+    %i[production staging].each do |env|
+      scheduled = CronSchedule.for(env).values.map { |entry| entry[:class] }
+
+      assert_includes scheduled, "SpotCeilingSweepJob", "#{env} does not schedule the spot ceiling sweep"
     end
   end
 end
