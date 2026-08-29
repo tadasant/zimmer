@@ -2321,6 +2321,14 @@ deferring, alerts, and lets the ordinary once-a-minute cron take over.
 Fixed in [#77](https://github.com/tadasant/zimmer/issues/77). The delay above is what that fix traded
 the dropped ticks for.
 
+"Nothing is lost" holds only because a cursor advances for work that actually completed, and one path
+broke that: a throttled recent-history read degraded to an empty slice, which reads as "quiet
+channel", and the sweep advanced its cursors past the messages that slice hid
+([#522](https://github.com/tadasant/zimmer/issues/522)). That read raises instead, and every caller
+makes it before anything fires — so **a channel whose recent history a poll cannot read is skipped
+whole for that poll**, including top-level @mentions it had already fetched. Those fire on the
+deferred poll. Later, rather than never.
+
 ### `thread_ts` is not supported for bot mentions
 
 You can watch a thread for new messages, but not for bot mentions, and not for passive listening
