@@ -39,6 +39,11 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
   # through a plain `sh` keeps any interactive shell's `find` alias out of the answer.
   REAL_FIND = Open3.capture2("sh", "-c", "command -v find").first.strip
 
+  # The shim tests run without the retry delay: they exercise all three attempts, and
+  # three real seconds per test is wall clock every CI run of the unit suite pays for
+  # nothing. The attempt COUNT is deliberately not overridable, here or in the script.
+  NO_RETRY_DELAY = { "SCAN_RETRY_DELAY" => "0" }.freeze
+
   # The exact invocation each caller must keep. Both are load-bearing: an image whose
   # build no longer runs the script is an image with no guardrail on it.
   IMAGE_ASSERTION = "RUN /rails/scripts/assert-docs-excluded.sh --root /rails"
@@ -53,11 +58,18 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
   # provoke for real -- a directory disappearing mid-walk, a manifest deleted between the
   # find that listed it and the grep that reads it.
   def with_find_shim(dir, body)
+    refute_empty REAL_FIND, "Could not resolve the real `find`, which every shim below execs."
+
     bin = File.join(dir, "bin")
     FileUtils.mkdir_p(bin)
     File.write(File.join(bin, "find"), body)
     File.chmod(0o755, File.join(bin, "find"))
-    { "PATH" => "#{bin}:#{ENV['PATH']}" }
+    NO_RETRY_DELAY.merge("PATH" => "#{bin}:#{ENV['PATH']}")
+  end
+
+  # How many times a shim that counts its invocations was called.
+  def shim_calls(dir)
+    File.exist?(File.join(dir, "calls")) ? File.read(File.join(dir, "calls")).to_i : 0
   end
 
   test "the script is executable, since Docker runs it directly" do
@@ -144,8 +156,13 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
       FileUtils.mkdir_p(File.join(dir, "tree/site"))
       File.write(File.join(dir, "tree/site/package.json"), '{"dependencies":{"@astrojs/starlight":"^0.36.0"}}')
 
-      # A `find` that always errors, ahead of the real one on PATH.
-      env = with_find_shim(dir, "#!/bin/sh\nexit 9\n")
+      # A `find` that always errors, ahead of the real one on PATH, counting its calls.
+      env = with_find_shim(dir, <<~SHIM)
+        #!/bin/sh
+        n=$(cat #{dir}/calls 2>/dev/null || echo 0)
+        echo $((n + 1)) > #{dir}/calls
+        exit 9
+      SHIM
 
       output, status = detect(File.join(dir, "tree"), env)
 
@@ -155,17 +172,22 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
 
         #{output}
       MSG
-      assert_match(/after \d+ attempts/, output, <<~MSG)
+      assert_match "after 3 attempts", output, <<~MSG
         The retry that absorbs a vanishing directory must not absorb a find that cannot
         run: a permanent failure is expected to exhaust every attempt and say so. Output:
 
         #{output}
       MSG
+      assert_equal 3, shim_calls(dir), <<~MSG
+        The script gave up after #{shim_calls(dir)} call(s) to a permanently broken find,
+        not the 3 it claims. Retrying fewer times than advertised makes the message a lie;
+        retrying more would mean the bound is not the bound.
+      MSG
     end
   end
 
-  # The flake this replaced: the detector runs over the live working tree while the rest
-  # of the suite creates and deletes tmp/ scratch directories, and a directory that
+  # The flake this guards against: the detector runs over the live working tree while the
+  # rest of the suite creates and deletes tmp/ scratch directories, and a directory that
   # vanishes between find's readdir and its stat makes find exit non-zero. That is the
   # tree changing underneath the scan, not a scan that could not run -- the two are told
   # apart by retrying, since only the second one fails every attempt.
@@ -254,15 +276,17 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
 
         #{output}
       MSG
-    ensure
-      File.chmod(0o644, File.join(dir, "site/package.json"))
+      assert_match "could not read a package manifest", output, <<~MSG
+        It exited 2, but for the wrong reason -- every failure path in the script exits 2,
+        so the status alone does not prove the manifest guard is what fired. Output:
+
+        #{output}
+      MSG
     end
   end
 
-  # Pruning is only safe where nothing it skips could ever reach the image. These two are
-  # the volatile directories the suite churns hardest, and .dockerignore already keeps
-  # their contents out of the build context entirely -- asserted below, because that
-  # exclusion is what makes the prune a no-op for the invariant rather than a blind spot.
+  # The two directories a running suite scribbles scratch dirs into, and the reason this
+  # check stopped reddening on a race with unrelated tests.
   test "the volatile top-level directories are not walked" do
     Dir.mktmpdir do |dir|
       FileUtils.mkdir_p(File.join(dir, "tmp/test_skills_deadbeef"))
@@ -276,15 +300,20 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
     end
   end
 
+  # What the prune costs is not the same for both callers, and this pins the half that is
+  # free: with these rules in place nothing under tmp/ or log/ reaches the build context,
+  # so Dockerfile.docs-audit's scan skips ground that is provably empty. (The Dockerfile
+  # caller scans the built image, where /rails/tmp holds what the build's RUN steps wrote
+  # -- a narrow blind spot, recorded in docs/src/content/docs/limitations.md.)
   test "dockerignore keeps the pruned directories out of the build context" do
     ignored = File.read(DOCKERIGNORE).lines.map(&:strip)
 
     %w[/tmp/* /log/*].each do |rule|
       assert_includes ignored, rule, <<~MSG
-        scripts/assert-docs-excluded.sh prunes the top-level tmp/ and log/ from its scans,
-        and the only reason that is safe is this line: nothing under them reaches the build
-        context, so there is no copy of the docs there to miss. Remove the rule and the
-        prune becomes a hole. Restore #{rule}, or stop pruning it.
+        scripts/assert-docs-excluded.sh prunes the top-level tmp/ and log/ from its scans.
+        This line is what makes that free for the build-context audit: with it, nothing
+        under them is in the context to miss. Remove it and the prune widens into a hole
+        on both callers instead of one. Restore #{rule}, or stop pruning it.
       MSG
     end
   end
@@ -300,6 +329,30 @@ class DocsExcludedFromImageTest < ActiveSupport::TestCase
 
       refute_predicate status, :success?, "Expected a nested tmp/ to be scanned. Output:\n#{output}"
       assert_match "site/tmp/astro.config.mjs", output
+    end
+  end
+
+  # find's -path takes a glob, so an unescaped root containing a metacharacter would make
+  # the top-level prune match further down as well -- "/a*b/tmp" also matches
+  # "/a*b/sub/tmp", swallowing the nested tmp/ the test above insists on.
+  test "a root containing glob metacharacters prunes only its own top-level tmp" do
+    Dir.mktmpdir do |parent|
+      dir = File.join(parent, "a*b")
+      FileUtils.mkdir_p(File.join(dir, "tmp"))
+      File.write(File.join(dir, "tmp/astro.config.mjs"), "export default {}\n")
+      FileUtils.mkdir_p(File.join(dir, "sub/tmp"))
+      File.write(File.join(dir, "sub/tmp/astro.config.mjs"), "export default {}\n")
+
+      output, status = detect(dir)
+
+      refute_predicate status, :success?, <<~MSG
+        The nested sub/tmp/ was pruned along with the top-level one, because the root's
+        `*` leaked into find's -path glob. Output:
+
+        #{output}
+      MSG
+      assert_match "sub/tmp/astro.config.mjs", output
+      refute_match %r{a\*b/tmp/astro\.config\.mjs}, output, "The top-level tmp/ should still be pruned."
     end
   end
 
