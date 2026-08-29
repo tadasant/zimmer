@@ -1914,6 +1914,139 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "an mcp_retry-parked session must still be recovered, not stood down"
   end
 
+  test "handle_interrupt_error stands down when this job is still executing in this process" do
+    # The phantom re-pick. GoodJob calls a row "interrupted" on one column —
+    # `performed_at` is set when it picks the row — and with the `:advisory` lock
+    # strategy that row becomes re-pickable the instant its session-scoped advisory
+    # lock goes away, which for a job holding one Postgres connection for hours is a
+    # thing that happens on its own. The execution is still running; nothing was
+    # interrupted.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+
+    AgentSessionJob::LIVE_EXECUTIONS.add(job.job_id)
+    begin
+      error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+      assert_no_enqueued_jobs only: AgentSessionJob do
+        job.send(:handle_interrupt_error, error)
+      end
+    ensure
+      AgentSessionJob::LIVE_EXECUTIONS.delete(job.job_id)
+    end
+
+    @session.reload
+    assert @session.running?, "the turn must be left alone, got #{@session.status}"
+    assert_equal job.job_id, @session.running_job_id,
+      "clearing running_job_id would make a working session read as orphaned"
+    assert_nil @session.metadata["paused_by"],
+      "no paused_by may be written — both recovery sweeps act on 'recovery'"
+    assert @session.logs.any? { |log| log.content.include?("re-picked while this job was still running it") },
+      "expected a log saying nothing was interrupted"
+    assert_not @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
+      "a phantom re-pick must not be reported as an interruption"
+  end
+
+  test "handle_interrupt_error still recovers when a DIFFERENT job is executing here" do
+    # The registry is keyed on this job's own id, not on "is anything running". A
+    # genuinely interrupted job whose session has since been picked up elsewhere must
+    # not be waved through by a sibling's entry.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+
+    AgentSessionJob::LIVE_EXECUTIONS.add(SecureRandom.uuid)
+    begin
+      error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+      job.send(:handle_interrupt_error, error)
+    ensure
+      AgentSessionJob::LIVE_EXECUTIONS.clear
+    end
+
+    @session.reload
+    assert @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
+      "a genuinely interrupted job must still be recovered"
+  end
+
+  test "an execution registers itself for its whole run and clears the entry after" do
+    # The registry is only sound in both directions. Missing the entry while the job
+    # runs makes the guard inert; leaking it afterwards makes the NEXT interrupt of
+    # that job stand down when it should have recovered.
+    job = AgentSessionJob.new(@session.id)
+    seen = false
+    job.define_singleton_method(:perform) do |*|
+      seen = AgentSessionJob::LIVE_EXECUTIONS.include?(job_id)
+    end
+
+    job.perform_now
+
+    assert seen, "expected #perform to run with its job_id registered"
+    assert_not AgentSessionJob::LIVE_EXECUTIONS.include?(job.job_id),
+      "the entry must be cleared when the job finishes"
+  end
+
+  test "a raising execution still clears its live-execution entry" do
+    # The clear is in an `ensure` because the paths out of #perform include a raise —
+    # and an entry leaked by a job that blew up is the worst version of the leak: that
+    # session's next genuine interrupt would be waved through and never recovered.
+    job = AgentSessionJob.new(@session.id)
+    job.define_singleton_method(:perform) { |*| raise "boom" }
+
+    assert_raises(RuntimeError) { job.perform_now }
+
+    assert_not AgentSessionJob::LIVE_EXECUTIONS.include?(job.job_id),
+      "the entry must be cleared even when the job raises"
+  end
+
+  test "handle_interrupt_error stands down for a session parked on an auth outage" do
+    # AuthOutageParkService parks a session in `waiting` with no wake armed and no
+    # spot-queue record — its own sweep is what wakes it. Falling through to recovery
+    # stamps paused_by: "recovery" over the park, and both recovery sweeps match
+    # [:needs_input, :waiting] on exactly that marker, so a session parked because
+    # every account is out of quota gets resumed into the outage that parked it.
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.pause!
+    @session.reload.update!(metadata: @session.metadata.merge(
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => Time.current.utc.iso8601
+    ))
+    @session.sleep!
+    @session.reload
+    assert @session.waiting?
+    assert_not @session.awaiting_scheduled_wake?, "the park arms nothing — that is the point"
+    assert_not SpotSessionPause.paused?(@session), "and it writes no spot-queue record either"
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.waiting?, "a parked session must stay parked, got #{@session.status}"
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.metadata["auth_outage_reason"],
+      "the park record must survive"
+    assert_not_equal "recovery", @session.metadata["paused_by"],
+      "stamping paused_by: recovery is what lets the sweeps end the park early"
+    assert @session.logs.any? { |log| log.content.include?("the account pool to recover") },
+      "expected a log naming what it is actually waiting for"
+  end
+
   test "handle_interrupt_error falls back to needs_input when auto-continue cannot proceed" do
     # Session without session_id or working_directory — auto-continue should skip
     @session.start!
