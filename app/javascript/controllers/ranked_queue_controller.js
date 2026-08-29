@@ -71,10 +71,10 @@ export default class extends Controller {
     })
 
     // The section headers and the "nothing here" placeholders are server-rendered
-    // from the row count, and rows now leave on their own: a trashed session is
-    // removed by a Turbo Stream that knows nothing about this controller. Watch
-    // the lists rather than trying to intercept the stream, so the counts stay
-    // true whoever changed them — a broadcast, a promote, or a demote.
+    // from the row count, so they go stale the moment a row arrives or leaves.
+    // Watch the lists themselves rather than every path that can change them, so
+    // the counts stay true whoever moved a row — a membership delivery, a
+    // promote, a demote, or a drag.
     this.listObserver = new MutationObserver(() => this.refreshCounts())
     ;[this.priorityListTarget, this.spotListTarget].forEach((list) => {
       this.listObserver.observe(list, { childList: true })
@@ -442,8 +442,8 @@ export default class extends Controller {
   }
 
   // The header badges count rows, so they have to be recounted whenever the lists
-  // change — including when a Turbo Stream removes a trashed row out from under
-  // the page.
+  // change — including when a membership delivery adds or takes away a row out
+  // from under the page.
   refreshCounts() {
     this.refreshEmptyStates()
     const pairs = [

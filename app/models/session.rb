@@ -154,12 +154,23 @@ class Session < ApplicationRecord
   #
   # ONE registration, not two. `after_create_commit` and `after_update_commit` are
   # both `after_commit` on the same callback chain, and ActiveSupport dedupes
-  # symbol filters by identity — declaring this method for `:create` and again for
-  # `:update` silently keeps only the second, which is how the create half of this
-  # went missing the first time it was written.
+  # symbol filters by identity, so declaring this method for `:create` and again
+  # for `:update` keeps only the second — silently, and the create half of the
+  # feature simply does not happen.
+  #
+  # `saved_change_to_status?` excludes the case `broadcast_status_change` already
+  # covers. A save that changes the status AND the class in one go satisfies both
+  # halves, and without this it would put two identical envelopes on the stream.
+  # (`status_changed_in_transaction?` would be the more precise test and must NOT
+  # be used here: reading it CLEARS the flag `broadcast_status_change` is about to
+  # read, and this callback is declared first, so it runs first — it would silence
+  # every status broadcast in the app.)
   after_commit :broadcast_ranked_membership,
     on: [ :create, :update ],
-    if: -> { !status_summary_fork? && (previously_new_record? || saved_change_to_scheduling_class?) }
+    if: -> {
+      !status_summary_fork? &&
+        (previously_new_record? || (saved_change_to_scheduling_class? && !saved_change_to_status?))
+    }
   after_destroy_commit :broadcast_remove_from_sessions_index
 
   # Deleting the row deletes the bytes it owns. `dependent: :destroy` above covers

@@ -102,6 +102,23 @@ class SessionRankedBroadcastTest < ActiveSupport::TestCase
     assert_includes envelope, "Demote to spot"
   end
 
+  # A save that satisfies BOTH triggers — the status one, which reaches this
+  # broadcast through `broadcast_status_change`, and the scheduling-class one,
+  # which reaches it through its own `after_commit` — must still send exactly one
+  # envelope. A duplicate is idempotent on the page, but it is two renders and two
+  # websocket messages for one event, and the fan-out is per open queue.
+  test "changing the status and the class in one save sends one delivery, not two" do
+    session = create_session(scheduling_class: SessionGenesis::SPOT, precedence: 100)
+
+    payloads = ranked_broadcasts do
+      session.update!(status: :running, scheduling_class: SessionGenesis::PRIORITY)
+    end
+
+    envelope = deliveries(payloads).sole
+    assert_includes envelope, "data-status=\"running\""
+    assert_includes envelope, "data-scheduling-class=\"priority\""
+  end
+
   test "a precedence change alone does not disturb an open queue" do
     session = create_session(scheduling_class: SessionGenesis::SPOT, precedence: 100)
 
