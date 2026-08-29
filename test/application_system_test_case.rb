@@ -33,6 +33,14 @@ Capybara.reuse_server = true
 # The full diagnosis is in docs/src/content/docs/operate/testing.md.
 Capybara.disable_animation = true
 
+# Chrome reports a node detached by a page swap as a generic `UnknownError`, not
+# as the `StaleElementReferenceError` Capybara's retry loop knows to swallow — so
+# a query that races a re-render errors the test instead of being retried. The
+# full diagnosis is in test/support/detached_node_error_translation.rb and in
+# docs/src/content/docs/operate/testing.md.
+require_relative "support/detached_node_error_translation"
+DetachedNodeErrorTranslation.install!
+
 # Generate a unique user data directory for each parallel test worker
 # This allows Chrome to reuse profile data between tests, significantly
 # reducing browser startup time while maintaining isolation between workers.
