@@ -268,6 +268,58 @@ CI's Chrome is no longer the only place a screenshot can come from. An agent ses
 itself with [`bin/agent-dev`](/sessions/dev-server/) and drive it with the Playwright browsers already
 in the image — provided the `devdb` accessory is running on that host.
 
+### The detached node: a stale handle Chrome reports as something else
+
+The other way a browser test dies on a page it never meant to be on is subtler, because it does not
+look like a test problem at all. The backtrace names Selenium and Capybara and contains no line of
+ours.
+
+Capybara resolves a set of candidate elements, then calls back on each handle as a separate round
+trip: *is it displayed?*, *what is its text?* Replace the document in between and the handle belongs
+to a document that no longer exists. WebDriver's answer for that is `StaleElementReferenceError`,
+which Capybara lists in `invalid_element_errors`; its `synchronize` loop swallows those and retries
+by re-resolving against the page that exists now. That retry is why a Capybara suite tolerates a
+re-rendering page at all. Chrome answers with a generic `UnknownError` carrying a CDP payload
+instead:
+
+```
+Selenium::WebDriver::Error::UnknownError: unknown error: unhandled inspector error:
+{"code":-32000,"message":"Node with given id does not belong to the document"}
+```
+
+That matches nothing in the list, so it escapes the retry and errors the test.
+
+The exposure is wider than "tests that hold an element across a re-render", which is the shape you go
+looking for and mostly will not find. `Capybara::Node::Document#text` is `find(:xpath, "/html")`
+followed by a text read on the result, so **`assert_text` runs the visibility filter and then a text
+read against the `<html>` element itself** — two calls on a handle no test ever named. Any document
+swap can detach it mid-query: a `data: { turbo: false }` form submit, a Turbo visit, a Turbo Stream
+replacing a subtree. (`page.evaluate_script` is safe: `Capybara::Session` sends it straight to the
+driver rather than through the document node.)
+
+That is [run 33249577977](https://github.com/tadasant/zimmer/actions/runs/33249577977), where
+`CostsMobileTest#test_the_calendar_range_is_reachable_and_usable_on_a_phone` errored on the page load
+its own Apply button had started. One error in 296 runs, on a commit that touched nothing near the
+Costs UI.
+
+`test/support/detached_node_error_translation.rb` translates the error back into the one Chrome
+should have raised, and `test/application_system_test_case.rb` installs it. The failure then lands in
+the retry Capybara already has, which re-resolves and asks the document that exists. A test that
+genuinely wants an element that is gone still fails on its own assertion once the wait expires.
+
+The translation is a net under two rules, not a replacement for them:
+
+- **After an interaction that navigates, wait on something only the new page can satisfy.** The
+  calendar test waited on `assert_text "Showing"`, a word that is on the page *before* Apply too, so
+  it was satisfied by the outgoing document and everything after it raced the swap.
+  `assert_current_path` reads the driver's URL rather than resolving an element, which makes it the
+  one wait that cannot observe a detached node.
+- **Set an `<input type="date">` from a `Date`, not from its `iso8601` string.** Capybara sets a Date
+  through the value property; hand it a String and it falls back to typing characters into the
+  field's segments, which land in whatever order the browser's locale puts them. The same calendar
+  test submitted `2026-08-26`, applied a range in the year **828**, and passed, because the only
+  assertion on the result was that the word "Showing" appeared somewhere.
+
 ## The catalog coupling — read this before you debug
 
 :::danger[A broken catalog fails every session test at once]

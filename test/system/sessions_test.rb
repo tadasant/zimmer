@@ -624,28 +624,38 @@ class SessionsTest < ApplicationSystemTestCase
     assert_text "Session #{session.id}"
   end
 
-  # Test default goal selection
+  # The assertions are unconditional, which is the point: the catalog's default
+  # root (`general-agent`) declares no `default_goal`, so a body guarded on one
+  # runs nothing at all and passes while the form pre-selects whatever it likes. A
+  # root with a default goal has to pre-select it; a root without one has to leave
+  # the field empty rather than invent a goal.
   test "new session form selects default goal for default agent root" do
     visit new_session_url
 
-    # Find the default agent root
+    # The field is server-rendered empty and filled by the goal controller on
+    # connect, and the empty case's expected value is "" — so reading before the
+    # controller runs would agree with the right answer for the wrong reason.
+    wait_for_stimulus_controller("goal")
+
     default_agent_root = AgentRootsConfig.default
+    assert default_agent_root, "the new session form has no default agent root to pre-select a goal for"
 
-    # If the default agent root has a default goal, verify it's selected
-    if default_agent_root&.default_goal.present?
-      goal = GoalsConfig.find(default_agent_root.default_goal)
-      expected_description = goal&.description
+    expected_description =
+      if default_agent_root.default_goal.present?
+        GoalsConfig.find(default_agent_root.default_goal)&.description.to_s
+      else
+        ""
+      end
 
-      # The visible input field should show the description
-      goal_input = find("input[data-goal-target='input']")
-      assert_equal expected_description, goal_input.value,
-        "Expected goal input to show '#{expected_description}' for default agent root '#{default_agent_root.name}'"
+    # The visible input field should show the description
+    goal_input = find("input[data-goal-target='input']")
+    assert_equal expected_description, goal_input.value,
+      "Expected goal input to show #{expected_description.inspect} for default agent root '#{default_agent_root.name}'"
 
-      # The hidden field should also have the description
-      hidden_field = find("input[data-goal-target='hiddenField']", visible: false)
-      assert_equal expected_description, hidden_field.value,
-        "Expected hidden goal field to have '#{expected_description}'"
-    end
+    # The hidden field should carry the same value
+    hidden_field = find("input[data-goal-target='hiddenField']", visible: false)
+    assert_equal expected_description, hidden_field.value,
+      "Expected hidden goal field to have #{expected_description.inspect}"
   end
 
   test "changing agent root updates goal to agent root's default" do
