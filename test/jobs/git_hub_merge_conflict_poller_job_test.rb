@@ -448,6 +448,5 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
 
     message = session.enqueued_messages.sole
     assert_equal "automated_merge_conflict", message.origin
-    assert_not message.archive_satisfied?
   end
 end

@@ -686,10 +686,10 @@ So `archive` moves them to `undelivered`, a fourth, terminal status alongside
   never delivered and is now marked undelivered: "What do you mean I pulled yellow onion?..."
   ```
 
-- An alert fires, deduped per session. Unlike the unresolved-PR clause this *is* an anomaly: a
-  message was accepted and never delivered, and the only reason to find that out from a user
-  noticing is that nothing else said it — with [one exemption](#the-pr-merged-notice-does-not-page),
-  for the message that has no such user.
+- An alert fires, deduped per session, **unless the caller forced past the archive guard** — see
+  [a forced archive records, it does not page](#a-forced-archive-records-it-does-not-page). Unlike
+  the unresolved-PR clause an unforced strand *is* an anomaly: a message was accepted and never
+  delivered, and the only reason to find that out from a user noticing is that nothing else said it.
 
 The row itself is kept, not destroyed — its content is the thing the sender was promised delivery
 of — and the session page lists it, marked as never delivered. That listing sits outside the
@@ -727,55 +727,68 @@ message arrives as the next turn, and the archive succeeds after that because th
 is choosing to discard it. It is named last in the error and hedged in its own schema description,
 because it exists for the exception rather than the rule. Forcing does not make the discard
 invisible: the messages are still retired to `undelivered`, the archive line still names them, and
-the alert still fires — [with one exemption](#the-pr-merged-notice-does-not-page) — so what was
-thrown away stays readable afterwards.
+the discard is [recorded on the log plane](#a-forced-archive-records-it-does-not-page) — so what was
+thrown away stays readable afterwards. What it does not do is page.
 
-#### The PR-merged notice does not page
+#### A forced archive records, it does not page
 
-Every queued message records who wrote it, in `enqueued_messages.origin`. `caller` is anything
-queued on someone's behalf, which is most of the queue — the web form, the two REST endpoints, MCP
-`manage_enqueued_messages` and `action_session`, a trigger's follow-up, the GitHub comment poller.
-The `automated_*` origins are the notices Zimmer addresses to a session on its own behalf, written
-when a poller sees GitHub move. The column is settable by no request; it is emitted on the REST
-payload and in the MCP list, so an archive that retired a message without paging can be explained
-from outside the database.
+The alert exists for a message that was **discarded without anyone reading it**. `force` is exactly
+the evidence that somebody did read it: `Sessions::ArchiveGuard` refuses first and prints every
+pending message in the refusal, so a caller that comes back with `force: true` was shown what it was
+about to throw away and chose to throw it away. Paging a human about a discard a caller has already
+been talked through is paging them about Zimmer working.
 
-The alert is skipped for exactly one combination: an `automated_pr_merged` notice, discarded by a
-caller who **forced** past `Sessions::ArchiveGuard`. Both halves are required.
+So the branch is on the archive, not on the message:
 
-- **The message.** That notice says a single thing — the PR merged, so archive if nothing is left
-  in this session's scope. No third party was promised the delivery: the PR poller marks the PR
-  notified when it queues the row, and nobody but the session can read it. So there is nobody to
-  find out from, which is the entire premise of the alert.
-- **The force.** Forcing means the caller was refused, shown the message, and re-called anyway — so
-  the one party the notice addressed has read it and acted. A **system-initiated** archive
-  (`HealthMonitorService`'s stale sweep, `SessionStatusSummaryHarvestJob`, status-summary fork
-  cleanup) never consults the guard, so nobody has read anything, and it still pages. That is not a
-  detail: a fork wrongly credited with its source's PR gets the merge notice queued onto it and is
-  then archived by the harvest job, and this alert is how that bug was found. Keyed on the message
-  alone, the exemption would have silenced its own smoke detector.
+| The archive | What happens |
+| --- | --- |
+| **Forced** past `Sessions::ArchiveGuard` | Rows retire, the archive line names them, and a `[StrandedQueue]` line goes to the log plane at WARN. No page. |
+| **Unforced** — every system-initiated archive | Rows retire, the archive line names them, **and it pages**, whatever the messages were. |
 
-Production session 6377 is the motivating case. Its PR merged while it was mid-turn, so the notice
-queued rather than being delivered; the session later woke, judged its work finished, and archived.
-The guard refused, it read the notice in the refusal and re-called with `force`, and Zimmer paged a
-human about discarding a message it had written to itself telling it to do exactly what it had just
-done.
+Production made the case on 2026-08-29. A spot-queue cleanup Tadas had asked for worked a list of
+eleven sessions that had refused archive over undelivered queued messages, read each queue as the
+refusal instructs, and forced. Seven pages landed in `#alerts` in three seconds, and because every
+alert in that channel spawns a router session, one authorized cleanup burned seven of them. The
+messages were stale recovery nudges and a router's own backstop wake — nothing anybody was waiting
+on, and nothing the `origin` vocabulary could distinguish from a message somebody was.
 
-Three things this exemption is *not*:
+Three things this is *not*:
 
-- **Not a hole in the guard.** `Sessions::ArchiveGuard` still refuses over a PR-merged notice, and
-  that refusal is load-bearing: it is what puts the message in front of an agent that has not seen
-  it, so the agent can act on the notice's *other* branch — "you were waiting on this merge to
-  keep going" — instead of archiving past it. Session 6377's agent read it and chose correctly.
-  Only the page is dropped.
-- **Not silence.** The row still retires to `undelivered` and the archive line still names it.
-- **Not "automated messages don't page".** `automated_merge_conflict` keeps alerting, and the
-  contrast is the point: an unresolved merge conflict is still true after the archive, and nothing
-  else reports it. The exemption is about one message's *meaning*, not about who typed it.
+- **Not a hole in the guard.** `Sessions::ArchiveGuard` still refuses, and that refusal is the
+  load-bearing part: it is what puts the message in front of a caller that has not seen it. Only the
+  page is dropped, and only once the caller has answered the refusal.
+- **Not silence.** The row still retires to `undelivered`, the archive line still names it, and
+  `SessionStateMachine#record_forced_strand` writes a line the log plane can be queried on — session,
+  actor, count, and each row's id and origin. That is the fleet-wide question the per-session archive
+  line cannot answer: *what has been force-discarded, and by whom?* It is logged at **WARN** on
+  purpose; `Zimmer backend logging errors (excludes staging)` pages on ERROR and FATAL, and writing
+  it at ERROR would move the page rather than remove it.
+- **Not "automated messages don't page".** The `origin` column still records who wrote each
+  message — `caller` for anything queued on someone's behalf, `automated_pr_merged` and
+  `automated_merge_conflict` for the notices Zimmer addresses to a session on its own behalf — and it
+  is emitted on the REST payload and in the MCP list, so a retired queue can be explained from
+  outside the database. But no origin is exempt by itself. A system sweep that strands a PR-merged
+  notice still pages, and that matters: a fork wrongly credited with its source's PR gets the merge
+  notice queued onto it and is then archived by the harvest job, and this alert is how that bug was
+  found.
 
-A queue holding both still pages, and pages about the caller's message alone — and it says how many
-notices were retired alongside it, so the page and the archive line cannot disagree about the
-count.
+##### One bulk archive is one page
+
+The alert's dedup key is per session and deliberately does not collapse across sessions: a sweep that
+strands queues on N sessions has discarded N distinct messages, and one alert standing in for all of
+them is the summary that hides the other N−1. That is right for the count and wrong for the delivery,
+which is what produced seven separate pages — and seven router sessions — from one call.
+
+So the three archive paths that walk a list wrap themselves in `AlertBatcher`: MCP `bulk_archive`,
+`POST /api/v1/sessions/bulk_archive`, and `HealthMonitorService`'s stale-session sweep. Every session
+is still named, in one consolidated `… (×N)` message instead of N of them.
+
+The sweep is the path this matters most on, because it is the only one that can strand *unforced* on
+many sessions at once — the two caller-facing bulk paths can only strand when the caller forced, and
+a forced strand no longer pages at all. The batch still earns its place on those two: the archive
+transition can raise other alerts (a swallowed side effect on each session pages too), and those
+dedup per session for the same reason. The web UI's bulk action is not wrapped because it never
+strands: it skips any session with a queue and reports the count.
 
 Every state that can archive is covered, `needs_input` and `failed` included. Nothing drains their
 queues, which makes the discard there certain rather than merely likely — and a refusal without an

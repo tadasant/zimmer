@@ -677,6 +677,48 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert old_session.archived?
   end
 
+  # 2026-08-29: the stranded-queue alert dedups per session on purpose, so a
+  # sweep that catches N sessions with queues posted N separate pages in one
+  # tick — and every page in `#alerts` spawns its own triage session. The sweep
+  # archives without consulting Sessions::ArchiveGuard, so those strands are
+  # unforced and must stay loud; what they must not be is N messages.
+  test "archive_old_sessions collapses a burst of stranded-queue alerts into one page" do
+    stale = 2.times.map do |i|
+      session = Session.create!(
+        prompt: "Stale session #{i}",
+        agent_runtime: "claude_code",
+        status: :needs_input,
+        git_root: "https://github.com/test/repo.git",
+        branch: "main",
+        execution_provider: "local_filesystem"
+      )
+      session.enqueued_messages.create!(content: "queued for ##{session.id}", position: 1, status: "pending")
+      session.update_column(:updated_at, 10.days.ago)
+      session
+    end
+
+    # The environment gate is off in `test` and is covered by AlertServiceTest;
+    # this is about how many messages one sweep produces. `emit` is what
+    # AlertBatcher calls on flush, so counting it counts Slack posts.
+    AlertService.stubs(:enabled?).returns(true)
+    emitted = []
+    AlertService.stubs(:emit).with do |title, options|
+      emitted << [ title, options[:details] ]
+      true
+    end.returns(true)
+
+    @service.archive_old_sessions(older_than: 7.days)
+
+    assert_equal 1, emitted.size, "one sweep owes the operator one page, not one per session"
+    title, details = emitted.first
+    assert_equal "Queued messages stranded by an archive (\u00d72)", title
+    stale.each do |session|
+      assert_includes details, "Session #{session.id} was archived",
+        "the aggregate still names every session it collapsed"
+      assert_equal "undelivered", session.enqueued_messages.sole.status
+    end
+  end
+
   # === Overall Status Tests ===
 
   test "overall_status is healthy when all subsystems are healthy" do

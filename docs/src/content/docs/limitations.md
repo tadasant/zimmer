@@ -1616,8 +1616,9 @@ of the three to `zimmer`. Same root cause as [#67](https://github.com/tadasant/z
 
 Archiving a session moves whatever is still queued for it to `undelivered`
 ([lifecycle](/sessions/lifecycle/)). That closes the silence — the archive line names the messages,
-an alert fires (except for a PR-merged notice a caller forced past the guard, which the archive
-answers rather than discards), and the queue can no longer claim a delivery that is not coming — but nothing
+an alert fires (unless the caller forced past the archive guard, having been shown the messages —
+that discard is recorded on the log plane instead of paged), and the queue can no longer claim a
+delivery that is not coming — but nothing
 re-routes them. If the session is later unarchived, the retired messages stay retired: `undelivered`
 is terminal precisely so a weeks-old message cannot arrive as if it had just been sent. Getting the
 content acted on means someone re-sending it.

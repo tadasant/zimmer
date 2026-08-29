@@ -449,7 +449,6 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     message = sessions(:running).enqueued_messages.create!(content: "queued by a human", position: 1)
 
     assert_equal "caller", message.origin
-    assert_not message.archive_satisfied?
   end
 
   test "rejects an origin that is not in the vocabulary" do
@@ -459,16 +458,14 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     assert_includes message.errors[:origin], "nonsense is not a valid origin"
   end
 
-  # An archive complies with the PR-merged notice rather than discarding it: its
-  # whole instruction is "the PR merged, archive if nothing is left in scope".
-  test "only the PR-merged notice is satisfied by an archive" do
+  # The vocabulary is what lets a reader of a retired queue tell a message
+  # somebody is waiting on from one Zimmer wrote to itself.
+  test "accepts every origin in the vocabulary" do
     session = sessions(:running)
 
-    merged = session.enqueued_messages.create!(content: "merged", position: 1, origin: "automated_pr_merged")
-    conflict = session.enqueued_messages.create!(content: "conflict", position: 2, origin: "automated_merge_conflict")
-
-    assert merged.archive_satisfied?
-    assert_not conflict.archive_satisfied?,
-      "an unresolved merge conflict stays true after the archive, and nothing else reports it"
+    EnqueuedMessage::ORIGINS.each_with_index do |origin, index|
+      message = session.enqueued_messages.create!(content: origin, position: index + 1, origin: origin)
+      assert_equal origin, message.reload.origin
+    end
   end
 end
