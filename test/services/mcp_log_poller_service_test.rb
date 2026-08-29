@@ -636,6 +636,51 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
     assert_equal "pending", result[:server_statuses]["context7"][:status]
   end
 
+  # === Credential rejection printed on a stdio server's own stderr (issue #645) ===
+
+  test "a stdio server that dies on its own auth health check carries the rejection into the persisted error" do
+    # The verbatim log Claude Code wrote for @pulsemcp/pulse-fetch across six production
+    # sessions (most recently 8135), replayed through the real poller. Only the server
+    # name differs — pulse-fetch is not in this repo's catalog, and the mechanism does
+    # not depend on which server it is.
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
+    log_file = File.join(server_dir, "2026-08-23T14-02-11-004Z.jsonl")
+
+    @mock_file_system.mkdir_p(mcp_cache_dir)
+    @mock_file_system.mkdir_p(server_dir)
+    @mock_file_system.write(log_file, to_jsonl([
+      { "debug" => "Starting connection with timeout of 180000ms", "timestamp" => "2026-08-23T14:02:11Z" },
+      { "error" => "Server stderr: Pulse Fetch starting with services: native, BrightData\n" \
+                   "Running authentication health checks...\n" \
+                   "BrightData: Invalid API key - authentication failed",
+        "timestamp" => "2026-08-23T14:02:14Z" },
+      { "debug" => "Connection failed after 3941ms (CONNECTION_CLOSED): Connection closed",
+        "timestamp" => "2026-08-23T14:02:15Z" }
+    ]))
+
+    service = McpLogPollerService.new(@session, file_system: @mock_file_system)
+    result = service.poll
+
+    status = result[:server_statuses]["context7"]
+    assert_equal "failed", status[:status]
+
+    service.update_session_mcp_status(result[:server_statuses])
+    persisted_error = @session.reload.custom_metadata["mcp_failed_servers"].first["error"]
+
+    # What AgentSessionJob's classifier is actually handed. The transport contributed
+    # nothing but "Connection closed"; everything that names the cause came from the
+    # server's own stderr.
+    assert_match(/Connection closed/, persisted_error)
+    assert_match(/Server stderr:/, persisted_error)
+    assert_match(/BrightData: Invalid API key - authentication failed/, persisted_error)
+
+    job = AgentSessionJob.new
+    assert_not job.send(:auth_error?, persisted_error),
+      "AUTH_ERROR_PATTERN sees no 401/oauth/invalid_token here — this is why it was retried as transient"
+    assert job.send(:server_rejected_credentials?, persisted_error),
+      "the credential rejection the server printed is what makes this definitive"
+  end
+
   private
 
   def mcp_cache_dir

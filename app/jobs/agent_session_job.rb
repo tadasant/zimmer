@@ -2790,7 +2790,7 @@ class AgentSessionJob < ApplicationJob
     #
     # McpOauthCredentialInjector.oauth_capable_server? is the same predicate the
     # pre-spawn OAuth gate uses, so both paths agree on what an OAuth server is.
-    auth_failures = failed_servers.select { |server| auth_error?(server["error"]) }
+    auth_failures, other_failures = failed_servers.partition { |server| auth_error?(server["error"]) }
     oauth_capable_failures, static_credential_failures = auth_failures.partition do |server|
       McpOauthCredentialInjector.oauth_capable_server?(server["name"])
     end
@@ -2835,6 +2835,38 @@ class AgentSessionJob < ApplicationJob
     end
 
     oauth_failures = dead_credential_failures + unauthorized_failures
+
+    # Second source of the same verdict, for the servers that never get to report a
+    # transport-level auth error at all. A stdio server that runs its own credential
+    # health check at startup and exits when it fails hands the runtime nothing but
+    # "Connection closed" — the rejection is only ever in the text it printed on its
+    # own stderr, which McpLogPollerService folds into the very same `error` blob:
+    #
+    #   Server stderr: BrightData: Invalid API key - authentication failed |
+    #   Connection failed after 3941ms (CONNECTION_CLOSED): Connection closed
+    #
+    # Read on the `error` field alone that is a bare transport failure, so it rode
+    # the retry ladder for ~3.5 minutes to reach a verdict its first attempt already
+    # had, and reported "did not connect after 3 retries" instead of "its credentials
+    # were rejected" (GitHub issue #645).
+    #
+    # Two deliberate narrowings, because a false positive here fails *silently* — it
+    # stops retrying something that would have worked, and nothing errors:
+    #
+    #   1. #server_rejected_credentials? matches only the server's own stderr text,
+    #      and only on phrases that mean a credential was rejected — not the broad
+    #      AUTH_ERROR_PATTERN, whose "oauth"/"401" words appear too easily in noise.
+    #   2. OAuth-capable servers are excluded, so this can only ever route to the
+    #      definitive-but-survivable branch below. It can never reach oauth_required,
+    #      which fails the session.
+    #
+    # An OAuth-capable server that says this on stderr keeps its existing behaviour:
+    # the retry ladder, then degrade.
+    stderr_credential_failures = other_failures.select do |server|
+      server_rejected_credentials?(server["error"]) &&
+        !McpOauthCredentialInjector.oauth_capable_server?(server["name"])
+    end
+    static_credential_failures += stderr_credential_failures
 
     if already_authorized.any?
       names = already_authorized.map { |s| s["name"] }
@@ -2883,11 +2915,19 @@ class AgentSessionJob < ApplicationJob
       # whole transcript. The server is left out and the session runs on the ones that
       # did connect.
       static_credential_failures.each do |server|
-        credential_vars = ServersConfig.find(server["name"])&.required_headers || []
+        # required_variables, not required_headers: a stdio server carries its
+        # credential in an env var (`SLACK_BOT_TOKEN`), and naming the variable the
+        # operator has to fix is the whole point of this message. For a remote server
+        # this is a superset of the headers it used to report.
+        credential_vars = ServersConfig.find(server["name"])&.required_variables || []
         hint = credential_vars.any? ? " Check the credential(s): #{credential_vars.join(', ')}." : ""
 
+        # The blob a stdio failure carries is the whole captured stderr; the line that
+        # actually says the credential was rejected is what the operator needs to read.
+        detail = credential_rejection_detail(server["error"]) || server["error"]
+
         log_buffer.add(
-          "MCP server '#{server['name']}' rejected its credentials (#{server['error']}). " \
+          "MCP server '#{server['name']}' rejected its credentials (#{detail}). " \
           "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}",
           level: "error"
         )
@@ -2990,6 +3030,60 @@ class AgentSessionJob < ApplicationJob
   # @return [Boolean] true when the error looks like an authentication rejection
   def auth_error?(error)
     error.to_s.match?(AUTH_ERROR_PATTERN)
+  end
+
+  # The marker Claude Code puts in front of every line it captured from an MCP
+  # server's own stdio stderr ("Server stderr: <line>"). McpLogPollerService joins
+  # those entries into the failed server's `error`, so its presence is what tells us
+  # a phrase in the blob was spoken by the child process rather than by the runtime's
+  # transport layer.
+  SERVER_STDERR_MARKER = /Server stderr:/i
+
+  # Phrases that mean "a provider rejected the credential we were configured with",
+  # deliberately much narrower than AUTH_ERROR_PATTERN.
+  #
+  # AUTH_ERROR_PATTERN is safe to keep broad because it is only ever applied to the
+  # transport's own summary of why a connection failed. This one is applied to
+  # arbitrary text a third-party process printed on stderr, where a bare "oauth" or
+  # "401" is as likely to be a package name, a port, or a byte count as a rejection —
+  # and a false positive here is silent, since it stops retrying a server that would
+  # have connected. So this matches only wordings whose whole meaning is "the
+  # credential was refused", and nothing that merely smells of authentication.
+  CREDENTIAL_REJECTED_PATTERN = Regexp.union(
+    /invalid[\s_-]*api[\s_-]*key/i,
+    /(?:authentication|authorization)\s+failed/i,
+    /(?:invalid|bad|incorrect)\s+credentials/i
+  )
+
+  # True when a failed server's captured output shows the server itself reporting
+  # that its credential was rejected — the signature of a stdio server that runs an
+  # auth health check at startup and exits (GitHub issue #645).
+  #
+  # BOTH conditions are required, the same belt-and-braces shape
+  # NpxCacheHealService#npx_cache_corruption? uses (a marker plus a `_npx`
+  # reference): the text has to name a credential rejection AND have come from the
+  # server's own stderr. A server's persisted error only ever carries stderr from
+  # its own process, so co-location is enough to attribute the line to it.
+  #
+  # @param error [String, nil] the raw error text reported for a failed MCP server
+  # @return [Boolean]
+  def server_rejected_credentials?(error)
+    text = error.to_s
+    text.match?(SERVER_STDERR_MARKER) && text.match?(CREDENTIAL_REJECTED_PATTERN)
+  end
+
+  # The single line of a captured-stderr blob that says the credential was rejected,
+  # so the operator-facing log names the real cause instead of restating the whole
+  # startup transcript.
+  #
+  # @param error [String, nil]
+  # @return [String, nil] the matching line, or nil when nothing in the text matches
+  def credential_rejection_detail(error)
+    error.to_s
+         .split(/\r?\n|\s+\|\s+/)
+         .map(&:strip)
+         .find { |line| line.match?(CREDENTIAL_REJECTED_PATTERN) }
+         &.truncate(300)
   end
 
   # Retires the stored credential for an OAuth server whose refresh token the
