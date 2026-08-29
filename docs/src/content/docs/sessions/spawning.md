@@ -16,6 +16,19 @@ session goes back to `waiting`. See [Spot and priority](/sessions/spot-and-prior
 `clone_only` (no agent is spawned) and `resume_monitoring` (re-attaching to a process already
 running) skip the check, because neither spends anything.
 
+Ahead of that gate sits a shorter question: **is this session in the trash?** `archived` is
+terminal, so an archived session takes no turn — the job logs why on the session's own timeline
+and stops, without spawning anything and without re-enqueuing itself. That refusal is what ends
+the spot re-check chain when a held session is archived mid-hold: the hold's delayed job is left
+in the queue and simply refused on its next fire, rather than holding the session again and
+scheduling another. It applies to every route in, not just the spot one — a recovery nudge, a
+fired wake, a poller message and a restart all arrive at the same door. `resume_monitoring` is
+the one exemption, and it is deliberate: that job re-attaches to a process that is *already*
+running, and the monitoring loop's own archived check is what terminates it. Standing it down
+would leave a live agent nobody is watching. Unarchiving is unaffected — every unarchive path
+leaves `archived` before it enqueues anything, so an unarchived session's follow-up reads as a
+live session here.
+
 ## What gets spawned
 
 **Claude Code:**
