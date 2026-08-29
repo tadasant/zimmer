@@ -8,19 +8,19 @@
 #
 # **Off the clone entirely.** `NPM_CONFIG_CACHE=<working_dir>/.npm-cache` used to be
 # set only on the agent process (ClaudeSpawnEnv#configure_mcp_env) and inherited from
-# there. That inheritance is not something a config generator can rely on: Codex sets
-# no such variable at all and builds each stdio server's environment from a fixed
-# whitelist plus the names the entry lists in `env_vars`, and the Claude path skips
-# #configure_mcp_env whenever the session's `mcp_servers` column is empty even though
-# `.mcp.json` on disk still carries the root's `default_in_roots` servers. A server
-# that inherits nothing falls back to npm's user-level `~/.npm/_npx`, which is shared
-# by every session on the host and sits outside every clone-scoped mechanism Zimmer
-# has — NpxBinExecutableGuard, NpxCacheHealService and CacheClearService all walk the
-# clone. That is what failed production session 7335: `ENOTEMPTY … rename` on
-# `/home/rails/.npm/_npx/a4bcc792b5155234/node_modules/playwright`, two concurrent
-# sessions installing the same package into one host-wide tree (zimmer#595). So the
-# cache location is written into every npx entry's own `env` table, where no
-# inheritance rule can drop it.
+# there. Codex never sets it: CodexRuntimeAdapter's spawn env has no such variable,
+# and Codex builds each stdio server's environment from a fixed whitelist plus exactly
+# what the entry's own `env`/`env_vars` name — so under Codex every npx MCP server
+# resolved against npm's user-level `~/.npm/_npx`. That cache is shared by every
+# session on the host and sits outside every clone-scoped mechanism Zimmer has:
+# NpxCacheHealService and CacheClearService walk the clone, and NpxBinExecutableGuard
+# walks it and only runs on the Claude path anyway. `ENOTEMPTY … rename` on
+# `/home/rails/.npm/_npx/a4bcc792b5155234/node_modules/playwright` is what two
+# concurrent sessions installing into one host-wide tree looks like (zimmer#595).
+#
+# Inheritance is the wrong mechanism for a config generator to depend on either way,
+# so the cache location is written into every npx entry's own `env` table, where no
+# runtime's environment rules can drop it.
 #
 # **Colliding inside one clone.** npx keys its install directory purely on the
 # package spec:
@@ -93,6 +93,11 @@ module NpxCacheIsolator
   # worth pointing anywhere. Matched exactly, and by the same predicate #cache_key
   # uses, so the pinning and the collision detection can never disagree about
   # which entries are in scope.
+  #
+  # Exactly `npx` and nothing else: `sh -c "npx …"`, an absolute `/usr/bin/npx`,
+  # `npm exec`, `bunx` and `pnpm dlx` are all out of scope and keep whatever cache
+  # they inherit. Every catalog entry Zimmer ships uses the bare form, and widening
+  # the match would mean guessing which argument of a wrapper is the package.
   def npx_entry?(entry)
     entry.is_a?(Hash) && entry["command"] == "npx"
   end

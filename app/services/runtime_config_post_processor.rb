@@ -122,6 +122,9 @@ class RuntimeConfigPostProcessor
     # be the one server on the instance that silently loses its approval address.
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
+    # Also a no-op today, and for the same reason: nothing reachable here is an npx
+    # entry. It runs anyway so the two paths stay identical, on the same argument as
+    # the elicitation injection above.
     pin_npx_caches_to_clone!(servers)
 
     persist_config!(config)
@@ -451,14 +454,13 @@ class RuntimeConfigPostProcessor
 
     return if pinned.empty?
 
+    detail = if isolated.any?
+      " #{isolated.size} of them share an npx package (#{isolated.join(', ')}) and got a cache root " \
+        "of their own, so their installs cannot race the same _npx directory."
+    end
+
     Rails.logger.info "[#{self.class.name}] Pinned #{NpxCacheIsolator::NPM_CACHE_VAR} inside the clone " \
-      "for #{pinned.size} npx MCP server(s): #{pinned.join(', ')}."
-
-    return if isolated.empty?
-
-    Rails.logger.info "[#{self.class.name}] #{isolated.size} of those share an npx package " \
-      "(#{isolated.join(', ')}) — each got its own #{NpxCacheIsolator::NPM_CACHE_VAR} so their " \
-      "installs cannot race the same _npx cache directory."
+      "for #{pinned.size} npx MCP server(s): #{pinned.join(', ')}.#{detail}"
   end
 
   # The elicitation variables as the agent process will see them, so a server's

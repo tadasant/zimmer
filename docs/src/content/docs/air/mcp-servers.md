@@ -255,18 +255,20 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 - `MCP_TIMEOUT = 180000` (3 minutes) — a flat startup timeout for **every** MCP server.
   Tracked in [#113](https://github.com/tadasant/zimmer/issues/113).
-- Every `npx`-launched server gets `NPM_CONFIG_CACHE` written into **its own `env` table** by
-  `RuntimeConfigPostProcessor`, pointing at the clone's `.npm-cache`. So `npx` servers in *different*
-  sessions never fight over a shared cache.
-- It is written per entry rather than inherited from the agent process on purpose. Inheritance is not
-  something a config generator can rely on: Codex sets no such variable at all and builds each stdio
-  server's environment from a fixed whitelist plus the names the entry lists in `env_vars`, and the
-  Claude path skips `configure_mcp_env` whenever the session's `mcp_servers` column is empty even
-  though `.mcp.json` on disk still carries the root's `default_in_roots` servers. A server that
-  inherits nothing falls back to npm's user-level `~/.npm/_npx` — shared by every session on the host,
-  and outside every clone-scoped mechanism below. That is what killed production session 7335:
-  `ENOTEMPTY … rename` on `/home/rails/.npm/_npx/<hash>/node_modules/playwright`, two concurrent
-  sessions installing into one host-wide tree ([#595](https://github.com/tadasant/zimmer/issues/595)).
+- Every server whose `command` is `npx` gets `NPM_CONFIG_CACHE` written into **its own `env` table**
+  by `RuntimeConfigPostProcessor`, pointing at the clone's `.npm-cache`. So `npx` MCP servers in
+  *different* sessions never fight over a shared cache. The match is exact: `sh -c "npx …"`, an
+  absolute `/usr/bin/npx`, `npm exec`, `bunx` and `pnpm dlx` are out of scope and keep whatever cache
+  they inherit. Every catalog entry uses the bare form.
+- It is written per entry rather than inherited from the agent process on purpose. Codex never sets
+  the variable — `CodexRuntimeAdapter`'s spawn env has none, and Codex builds each stdio server's
+  environment from a fixed whitelist plus exactly what the entry's own `env`/`env_vars` name — so
+  before this, every npx MCP server under Codex resolved against npm's user-level `~/.npm/_npx`,
+  shared by every session on the host and outside every clone-scoped mechanism below. `ENOTEMPTY …
+  rename` on `/home/rails/.npm/_npx/<hash>/node_modules/playwright` is what two concurrent sessions
+  installing into one host-wide tree looks like
+  ([#595](https://github.com/tadasant/zimmer/issues/595)). Claude does export the variable, but a
+  config generator relying on inheritance is the wrong shape either way.
 - Within one session two servers can still collide, because `npx` keys its install directory on the
   package spec alone: two servers running the byte-identical `npx -y <pkg>@latest` resolve to the same
   `_npx/<hash>` and, on a cold clone, race to populate it. `NpxCacheIsolator` finds those servers at
@@ -285,8 +287,12 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   on `exec` with `EACCES` identically on every retry, so the server is left out for the life of the
   clone ([#467](https://github.com/tadasant/zimmer/issues/467)). Codex sessions are not covered — see
   [Limitations](/limitations/#the-npx-bin-permission-repair-only-reaches-claude-sessions-and-only-on-the-next-launch).
-- `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the npm and
-  python packages listed in `mcp.json`, so a cold session doesn't pay the download.
+- `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the python
+  packages listed in `mcp.json`, and `npm install -g` the npm ones. The npm half no longer helps an
+  MCP server: `NPM_CONFIG_CACHE` moves the *whole* npm cache into the clone, `_cacache` included, so
+  a cold clone pays the registry download for every npx server. That has been true on Claude since
+  the per-clone cache landed and is now true on Codex too — see
+  [Limitations](/limitations/#a-cold-clone-pays-the-npm-download-for-every-npx-mcp-server).
 
 ## The fourteen that ship
 

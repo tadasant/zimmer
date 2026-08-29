@@ -1210,6 +1210,23 @@ And it repairs the tree it finds on the way *in*, so a package that installs bro
 is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
 A session recovers by itself; it does not connect on the first attempt.
 
+### A cold clone pays the npm download for every npx MCP server
+
+`RuntimeConfigPostProcessor` points each npx MCP server's `NPM_CONFIG_CACHE` at the session's clone.
+`NPM_CONFIG_CACHE` moves the *whole* npm cache, not just the `_npx` install root — `_cacache`, the
+tarball store, comes with it. So the packages `bin/preinstall-mcp-packages` warms into the image's
+`~/.npm` at build time are not read by any MCP server, and the first launch in a fresh clone fetches
+every one of them from the registry.
+
+That has been the case on Claude since the per-clone cache landed, and Claude absorbs it with
+`MCP_TIMEOUT=180000` (3 minutes). Zimmer sets no equivalent for Codex, whose own default startup
+timeout is much shorter, so a Codex session on a cold clone is the case most likely to time out on a
+large package. Tracked in [#702](https://github.com/tadasant/zimmer/issues/702).
+
+The fix is not to un-pin the cache — a host-shared cache is what
+[#595](https://github.com/tadasant/zimmer/issues/595) was — but either to warm the clone's cache at
+prepare time or to give Codex entries an explicit startup timeout.
+
 ### No extension can ship in a built image
 
 `.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
