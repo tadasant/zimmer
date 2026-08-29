@@ -79,7 +79,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `infra/`, `.github/workflows/**`, `Dockerfile*` | `operate/deploying.md`, `operate/provisioning.md` |
 | sshd, the firewall, `admin_ssh_pubkeys`, Tailscale SSH | `operate/ssh-access.md` |
 | `config/goals.json`, `app/services/orchestrator_system_prompt_builder.rb` | `sessions/goals.md` |
-| any cron job | `operate/background-jobs.md` |
+| any cron job (`config/cron_schedule.rb`) | `operate/background-jobs.md` |
 | an ops action that would otherwise need a prod shell | `operate/deploying.md` (Ops actions ship with the deploy) |
 | `config/initializers/otel_logs_exporter.rb`, `config/initializers/sentry.rb`, `lib/tasks/obs.rake` | `operate/observability.md` |
 | `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |

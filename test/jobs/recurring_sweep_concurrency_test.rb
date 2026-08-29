@@ -10,8 +10,6 @@ require "test_helper"
 # while `pollers` — where every recurring job is already a singleton — sat at 2.
 # This test is what stops the next sweep from being added back unguarded.
 class RecurringSweepConcurrencyTest < ActiveSupport::TestCase
-  PRODUCTION_ENV_FILE = Rails.root.join("config/environments/production.rb")
-
   # Recurring `default` jobs that must NOT be keyed on their class, each with the
   # reason. An arity check cannot express this — every one of these takes
   # arguments, but so do jobs that should be guarded, and `CertExpiryMonitorJob`
@@ -28,12 +26,11 @@ class RecurringSweepConcurrencyTest < ActiveSupport::TestCase
       "re-enqueues itself with retry_credential_ids/attempt to chain a retry"
   }.freeze
 
-  # The production cron table is a literal hash in the environment file, which no
-  # test environment loads. Reading the class names out of it directly is what
-  # keeps this test honest about the schedule that actually ships.
+  # Resolved from the real schedule (config/cron_schedule.rb), not from a list kept
+  # here, which is what keeps this test honest about what actually ships.
   def self.cron_job_class_names
-    names = PRODUCTION_ENV_FILE.read.scan(/^\s*class:\s*"(\w+)"/).flatten.uniq
-    raise "no cron entries found in #{PRODUCTION_ENV_FILE}" if names.empty?
+    names = CronSchedule.for(:production).values.map { |entry| entry[:class] }.uniq
+    raise "no cron entries found in config/cron_schedule.rb" if names.empty?
 
     names
   end
@@ -42,7 +39,7 @@ class RecurringSweepConcurrencyTest < ActiveSupport::TestCase
     unresolvable = self.class.cron_job_class_names.reject { |name| name.safe_constantize }
 
     assert_empty unresolvable,
-                 "config/environments/production.rb schedules job classes that do not exist: " \
+                 "the production cron schedule names job classes that do not exist: " \
                  "#{unresolvable.join(', ')}"
   end
 
