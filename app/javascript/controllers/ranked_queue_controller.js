@@ -201,13 +201,21 @@ export default class extends Controller {
     this.refreshCounts()
   }
 
-  // A row holding focus or a half-typed value is never moved or taken away — the
-  // same rule the reconnect backfill applies (see live_region_backfill.js).
-  // Losing an update is recoverable; losing what someone was typing is not.
+  // A row someone is TYPING IN is never moved or taken away — the same bargain the
+  // reconnect backfill strikes (see live_region_backfill.js). Losing an update is
+  // recoverable; losing a half-typed rank is not.
+  //
+  // "Typing in" is narrower than "holds focus", and the difference is not
+  // academic: the row's own ⋮ menu is inside the row, so a click on its Trash
+  // entry leaves focus on a link in the row that click just archived. The broad
+  // rule read that as an edit in progress and refused to remove the row — the
+  // exact staleness this whole change exists to fix, reintroduced by its own
+  // safety net. Only a focused text field counts.
   inUse(row) {
-    if (row.contains(document.activeElement)) return true
+    const fields = Array.from(row.querySelectorAll("input, textarea"))
+    if (fields.includes(document.activeElement)) return true
 
-    return Array.from(row.querySelectorAll("input, textarea")).some((field) => {
+    return fields.some((field) => {
       return String(field.value).trim() !== "" && field.value !== field.defaultValue
     })
   }
