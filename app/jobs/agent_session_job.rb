@@ -182,6 +182,12 @@ class AgentSessionJob < ApplicationJob
   # is set generously so real failure output is preserved in full.
   EXCEPTION_MESSAGE_MAX_CHARS = 20_000
 
+  # Cap on the refused prompt echoed into the session's log when an archived
+  # session's turn is dropped. Long enough to recognise which prompt was lost,
+  # short enough that a trashed session's timeline does not gain a wall of text
+  # nobody will act on.
+  REFUSED_PROMPT_LOG_MAX_CHARS = 200
+
   # Only retry on specific transient errors, not all StandardErrors
   # This prevents duplicate job executions that could create multiple PRs
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 3
@@ -363,6 +369,50 @@ class AgentSessionJob < ApplicationJob
       # is gone, and the pid that replaced it belongs to a job that spawned it and is
       # supervising it.
       return if resume_monitoring && monitoring_job_stands_down?(session, monitor_pid, log_buffer)
+
+      # A session in the trash takes no turn.
+      #
+      # `archived` is terminal, and until this guard existed nothing on the path
+      # to the spot gate said so. The concurrency guard above passes, because a
+      # held session carries no `running_job_id` — SpotSessionHold#return_to_queue!
+      # clears it — and the pause guard below is scoped to `waiting?`, so an
+      # archived session walked straight into SpotSessionHold.hold_if_needed,
+      # which gates only on `session.spot?`. That held it again, bumped
+      # `spot_hold_count`, rewrote the hold metadata and enqueued the NEXT delayed
+      # job, which arrived here to do the same thing. The loop could only end when
+      # the session stopped being spot, which an archived session never does:
+      # session 7456 was archived on 2026-08-22 and was still re-holding itself,
+      # at hold #26, a day later.
+      #
+      # The other end of the same missing guard is quieter and worse. When the
+      # gate ALLOWS — a quota window frees, gating is off, or SpotGateService
+      # fails open — `hold_if_needed` returns false and this job carries on into
+      # the normal start path, spawning an agent against a clone
+      # DeferredCloneCleanupJob may already have deleted.
+      #
+      # Refusing before the gate ends both, and it ends them for every route in
+      # rather than for the spot one alone: a recovery nudge, a fired wake, a
+      # poller-delivered comment and a restart all arrive here the same way.
+      #
+      # ONE shape of turn still passes, and the exemption is load-bearing:
+      # `resume_monitoring` re-attaches to a process that is ALREADY running, and
+      # the monitoring loop's own `archived?` check is what terminates that
+      # process and lets the clone cleanup proceed. Standing that job down is the
+      # one way this guard could leave an archived session worse than it found it
+      # — with a live agent nobody is watching.
+      #
+      # It does NOT refuse a session that has been UNARCHIVED. Every unarchive
+      # path leaves `archived` before anything is enqueued — UnarchiveSessionService
+      # transitions to `needs_input` inside its own lock, and the follow-up is
+      # delivered afterwards — so unarchive-plus-follow-up (#400, #439) reads as a
+      # live session here, exactly as it should.
+      #
+      # Standing down does NOT re-enqueue. That is the entire point: this is where
+      # the re-check chain is supposed to stop.
+      if !resume_monitoring && refuse_archived_session(session, follow_up_prompt, log_buffer)
+        log_buffer.flush
+        return
+      end
 
       # A pause outranks every reason there is to start this session.
       #
@@ -2262,6 +2312,49 @@ class AgentSessionJob < ApplicationJob
                "so recovery left it alone.",
       level: "info"
     )
+  end
+
+  # Whether this turn must stand down because the session is in the trash,
+  # recording why when it must.
+  #
+  # Nothing is re-enqueued and nothing is retried: an archived session has no
+  # later moment at which this turn becomes a good idea, so the chain of delayed
+  # jobs SpotSessionHold builds ends on the first one that reaches this.
+  #
+  # No DB read, so nothing to rescue — the status is already on the row this job
+  # loaded. That matters at a choke point every session start flows through: a
+  # guard that can raise is a guard that can stop sessions starting.
+  #
+  # The hold record is deliberately LEFT ALONE, which is the opposite of what the
+  # pause guard below does. SpotSessionHold::HELD_RETRY_AT is only ever in the
+  # future while the delayed job it names is still pending, and the job firing AT
+  # it is this one, so the stamp this reads is already past and promises nobody
+  # anything. What it does still say is why the session sat in the queue until it
+  # was trashed — the count and reason this defect was diagnosed from — and an
+  # archived session shows no hold banner anyway (the partial requires
+  # `waiting?`). Clearing it would delete the evidence and correct no lie.
+  #
+  # A dropped prompt is NAMED rather than swallowed. A held turn rides its prompt
+  # on the delayed job, so refusing the job discards that prompt; the session's
+  # own timeline is where somebody asking "what happened to my message" looks,
+  # and archiving already reports its stranded queue there the same way.
+  def refuse_archived_session(session, follow_up_prompt, log_buffer)
+    return false unless session.archived?
+
+    message = "Not starting this session: it is in the trash. An archived session takes no turn, " \
+              "so this job stops here rather than queueing another re-check."
+    if follow_up_prompt.present?
+      message += " The prompt it was carrying was not delivered: " \
+                 "#{follow_up_prompt.to_s.truncate(REFUSED_PROMPT_LOG_MAX_CHARS)}"
+    end
+
+    Rails.logger.info(
+      "[AgentSessionJob] Session #{session.id} not started: it is archived (follow_up=#{follow_up_prompt.present?})"
+    )
+    # A session log rather than only a Rails log: the session's own timeline is
+    # where "why did nothing happen to this session" is asked from.
+    log_buffer&.add(message, level: follow_up_prompt.present? ? "warning" : "info")
+    true
   end
 
   # Whether this start must stand down for a pause, recording why when it must.
