@@ -684,6 +684,26 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_empty past_edge,
       "an open row menu ends past the #{MOBILE_WIDTH}px viewport:\n  #{past_edge.join("\n  ")}"
 
+    # A row that ARRIVED over the stream has to be as narrow as one the server
+    # rendered — it is built from the same partial, but it is inserted by
+    # JavaScript into a list the server never sized for it, and the operator
+    # reading this screen on a phone is the person who would find out otherwise.
+    find("body").click # close the menu without navigating
+    arrival = Session.create!(
+      title: LONG_TOKEN_TITLE, prompt: "x", status: :running,
+      git_root: "https://github.com/test/repo.git",
+      scheduling_class: SessionGenesis::SPOT, precedence: 654_321
+    )
+    assert_selector "#ranked_row_#{arrival.id}", wait: 5
+    page.save_screenshot("tmp/screenshots/proof-ranked-live-insert-375.png")
+
+    assert_no_horizontal_overflow("ranked queue after a row arrived over the stream")
+    past_edge = elements_past_right_edge("#ranked_sessions")
+    assert_empty past_edge,
+      "a row inserted by a broadcast ends past the #{MOBILE_WIDTH}px viewport:\n  #{past_edge.join("\n  ")}"
+    assert_title_not_clipped(find("#ranked_row_#{arrival.id} a", text: LONG_TOKEN_TITLE),
+      "a live-inserted ranked row title")
+
     # And the laptop keeps the single-line row it had: rank, status, title, root.
     page.driver.browser.manage.window.resize_to(1400, 900)
     visit root_path(view: SessionsController::VIEW_MODE_RANKED)

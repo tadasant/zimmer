@@ -6,7 +6,27 @@
     session listed on the Ranked view while its detail drawer is open would then
     have two elements claiming the same id. It is also sized for a card.
 
+    A running session spins. The queue is read to answer "what is actually moving
+    right now", and a colour alone does not carry that across a column of forty
+    rows. Same spinner the card grid's badge uses, sized down for a row, and it
+    arrives and leaves with the pill because the pill is what the ranked stream
+    replaces.
+
+    `motion-safe:` rather than a bare `animate-spin`: a reader who asked their OS
+    for reduced motion gets the glyph without the rotation. The pill's own
+    "Running" text is the accessible name either way, which is why the svg is
+    `aria-hidden` — labelling it would have a screen reader announce "Running
+    running".
+
     Locals:
       agent_session - the session %>
 <span id="ranked_row_status_<%= agent_session.id %>" data-live-region="replace"
-      class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium <%= status_badge_classes(agent_session) %>"><%= agent_session.archived? ? "Trashed" : agent_session.status.humanize %></span>
+      class="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium <%= status_badge_classes(agent_session) %>">
+  <% if agent_session.status == "running" %>
+    <svg class="h-3 w-3 shrink-0 motion-safe:animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+  <% end %>
+  <span><%= agent_session.archived? ? "Trashed" : agent_session.status.humanize %></span>
+</span>

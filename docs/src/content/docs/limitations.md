@@ -2654,16 +2654,25 @@ Also:
   session is prepended into a grid that filters it out. Both correct themselves on the next reload.
   Fixing it properly means either per-filter stream names or a client that re-evaluates the filter
   on each broadcast.
-- **The Ranked view's live update is deliberately narrow.** `/?view=ranked` broadcasts one element
-  per row — the status pill — because the row also holds a precedence the user may be mid-edit on
-  and a position SortableJS may be dragging, and replacing the whole row would destroy either. So a
-  status change never re-sorts the queue, never moves a row between the Priority and Spot sections
-  when its scheduling class changes elsewhere, and never inserts a session that has newly started
-  matching the filters. A trashed row does leave — which, like the card grid above, ignores the
-  status filter: an operator who ticked "Archived" specifically to see the trash watches the row
-  vanish, and a reload puts it back reading "Trashed". Everything in this paragraph is corrected by
-  a reload, and by the reopen backfill: both lists are `data-live-region="sync"`, so a page whose
-  socket died is reconciled against a fresh render on reconnect.
+- **The Ranked view inserts and removes rows live, but still never re-sorts them.** `/?view=ranked`
+  sends two kinds of message. A status change replaces one element per row — the status pill — and
+  nothing else, because the row also holds a precedence the user may be mid-edit on and a position
+  SortableJS may be dragging. A membership change (a session created, a status moved, a scheduling
+  class changed) sends an envelope instead: the session's filterable facts plus its row inside an
+  inert `<template>`, which the page judges against its own filters. So a new session does appear in
+  the right section at its precedence position, a promote or demote elsewhere does move the row
+  between Priority and Spot, and a trashed row leaves a page filtered to live work while *staying*,
+  relabelled "Trashed", on a page whose operator ticked "Archived" to look at the trash. What still
+  does not happen: the queue is never re-sorted when someone else changes a precedence, and a row is
+  never inserted into a page narrowed by a search, an agent-root filter or a genesis filter — the
+  client cannot evaluate those three for a session it has never rendered, so it declines rather than
+  guessing. Removal stays sound under all of them, because a row on screen already matched them and
+  neither a status nor a class change can alter that. Three safety rules cost a little more
+  freshness: deliveries are held while a row is being dragged and applied on drop, a row holding
+  focus or a half-typed value is never moved or removed, and a section already at its 200-row cap
+  takes no insert. All of it is corrected by a reload, and by the reopen backfill: both lists are
+  `data-live-region="sync"`, so a page whose socket died is reconciled against a fresh render on
+  reconnect.
 - Notes autosave as you type (a 1.5s debounce) and flush again on disconnect via a keepalive
   `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
   keystrokes — not the note.

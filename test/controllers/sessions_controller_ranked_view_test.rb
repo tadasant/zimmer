@@ -137,29 +137,72 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     assert_select "##{"ranked_row_status_#{session.id}"}", text: "Waiting"
   end
 
-  test "a status change broadcasts just the row's status pill" do
+  test "a status change replaces the row's status pill and nothing else of the row" do
     session = spot(10)
 
     streams = capture_turbo_stream_broadcasts(Session::RANKED_STREAM) do
       session.update!(status: :running)
     end
 
-    assert_equal 1, streams.size
-    assert_equal "replace", streams.first["action"]
-    assert_equal "ranked_row_status_#{session.id}", streams.first["target"]
-    assert_includes streams.first.to_s, "Running"
+    pill = streams.find { |s| s["target"] == "ranked_row_status_#{session.id}" }
+    assert_not_nil pill, "a status change must repaint the row's pill"
+    assert_equal "replace", pill["action"]
+    assert_includes pill.to_s, "Running"
+
+    # The row around the pill is never replaced: it holds a precedence the user
+    # may be mid-edit on and a position SortableJS may be dragging.
+    assert_empty streams.select { |s| s["target"] == "ranked_row_#{session.id}" }
   end
 
-  test "trashing a session removes its row from the queue rather than restyling it" do
+  # Whether the row still BELONGS on a given page depends on that page's filters,
+  # and one stream serves all of them. So a status change also ships an envelope
+  # the page judges for itself, rather than an instruction it must obey.
+  test "a status change also offers every open queue a membership delivery" do
+    session = spot(10)
+
+    streams = capture_turbo_stream_broadcasts(Session::RANKED_STREAM) do
+      session.update!(status: :running)
+    end
+
+    delivery = streams.find { |s| s["target"] == "ranked_deliveries" }
+    assert_not_nil delivery, "the queue cannot decide membership without the facts"
+    assert_equal "append", delivery["action"]
+    assert_includes delivery.to_s, "data-status=\"running\""
+    assert_includes delivery.to_s, "data-scheduling-class=\"spot\""
+  end
+
+  test "trashing a session hands the queue a delivery rather than removing the row itself" do
     session = spot(10)
 
     streams = capture_turbo_stream_broadcasts(Session::RANKED_STREAM) do
       session.update!(status: :archived)
     end
 
-    assert_equal 1, streams.size
-    assert_equal "remove", streams.first["action"]
-    assert_equal "ranked_row_#{session.id}", streams.first["target"]
+    # A bare `remove` was right for an operator watching live work and wrong for
+    # one who ticked "Archived" to go through the trash. Both are on this stream,
+    # so the server states the fact and the page decides.
+    assert_empty streams.select { |s| s["action"] == "remove" }
+
+    pill = streams.find { |s| s["target"] == "ranked_row_status_#{session.id}" }
+    assert_includes pill.to_s, "Trashed"
+
+    delivery = streams.find { |s| s["target"] == "ranked_deliveries" }
+    assert_includes delivery.to_s, "data-status=\"archived\""
+  end
+
+  # The other half of the same capability: a session that did not exist when the
+  # page rendered is offered to it too, which is what makes the queue show
+  # arriving work without a reload.
+  test "creating a session offers it to every open queue" do
+    streams = capture_turbo_stream_broadcasts(Session::RANKED_STREAM) do
+      @created = spot(700)
+    end
+
+    delivery = streams.sole
+    assert_equal "append", delivery["action"]
+    assert_equal "ranked_deliveries", delivery["target"]
+    assert_includes delivery.to_s, "data-session-id=\"#{@created.id}\""
+    assert_includes delivery.to_s, "data-precedence=\"700\""
   end
 
   # A rank edit is not a status change, and a broadcast landing on a row whose

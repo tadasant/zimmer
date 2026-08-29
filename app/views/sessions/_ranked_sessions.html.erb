@@ -12,23 +12,42 @@
     Locals:
       priority_sessions - priority sessions matching the filters, ranked
       spot_sessions     - spot sessions matching the filters, ranked
-      section_limit     - how many rows each section renders at most %>
+      section_limit     - how many rows each section renders at most
+      status_filter     - the statuses this page is showing ([] means all)
+      priority_class_filter - "spot", "priority", or nil for both
+      live_insert       - false when a filter the client cannot evaluate (search,
+                          agent root, genesis) is narrowing the page %>
 <%# A queue that goes stale is a queue you cannot trust, so the rows subscribe to
-    their own stream. `Session#broadcast_ranked_row` replaces ONE element per row —
-    the status pill — which is what keeps a live update from fighting the two
-    interactions on this screen: an arriving status change cannot clobber a
-    precedence the user is halfway through typing, and it cannot renumber or
-    re-seat a row mid-drag, because it never touches the input, the handle, or the
-    row's position. The one structural change it makes is removing a row that has
-    been trashed, mirroring what the card grid does on the other views — including
-    when the operator ticked "Archived" and wanted to see it, which a reload puts
-    back reading "Trashed".
+    their own stream. Two kinds of message arrive on it.
 
-    What it deliberately does NOT do: re-sort the queue, or move a row between the
-    two sections when its scheduling class changes elsewhere. Both would move the
-    row out from under a pointer that is on it.
+    A status change replaces ONE element per row — the status pill — and nothing
+    else. That is what keeps a live update from fighting the two interactions on
+    this screen: it cannot clobber a precedence the user is halfway through
+    typing, and it cannot renumber or re-seat a row mid-drag, because it never
+    touches the input, the handle, or the row's position.
 
-    None of that staleness is permanent, because both lists are also
+    A membership change ships an ENVELOPE instead (`_ranked_delivery`), because
+    whether a row belongs on your screen depends on filters only your page knows.
+    One stream serves every open page, so the server ships the session's
+    filterable facts plus the row rendered inside an inert <template>, and
+    `ranked-queue#deliveryTargetConnected` decides: insert it in precedence order,
+    move it between the sections, take it away, or ignore it. That is how a
+    newly-created session appears in the right section without a reload, and how a
+    trashed one leaves a page filtered to live work while STAYING on a page whose
+    operator ticked "Archived" specifically to look at the trash.
+
+    Three things keep that safe. Deliveries are held while SortableJS has a row in
+    hand and flushed on drop, so nothing is inserted under a moving pointer. A row
+    holding focus or a dirty field is never moved or removed, the same rule the
+    reconnect backfill uses. And an arriving delivery never writes another row's
+    precedence input — it only ever adds, moves or removes whole rows.
+
+    What it still deliberately does NOT do: re-sort the queue when someone else
+    changes a precedence, or insert a row on a page narrowed by a search, an agent
+    root or a genesis — the client cannot evaluate those three, so it declines
+    rather than guessing (`live_insert`).
+
+    Neither gap is permanent, because both lists are also
     `data-live-region="sync"`. A page whose socket died — every reopen of the iOS
     PWA — is reconciled against a fresh render on reconnect, which recovers the
     order, the grouping and any row the stream never delivered. `syncChildren`
@@ -38,7 +57,11 @@
 <section class="mb-8"
          id="ranked_sessions"
          data-controller="ranked-queue"
-         data-ranked-queue-slot-gap-value="<%= SessionPrecedence::SLOT_GAP %>">
+         data-ranked-queue-slot-gap-value="<%= SessionPrecedence::SLOT_GAP %>"
+         data-ranked-queue-section-limit-value="<%= section_limit %>"
+         data-ranked-queue-status-filter-value="<%= status_filter.to_json %>"
+         data-ranked-queue-priority-class-filter-value="<%= priority_class_filter %>"
+         data-ranked-queue-live-insert-value="<%= live_insert %>">
   <div class="mb-4">
     <h2 class="text-lg font-semibold text-gray-800">Ranked</h2>
     <p class="text-sm text-gray-500">
@@ -99,4 +122,11 @@
   <%# One live region for the whole view, so a failed write says so without a
       page reload swallowing the drag the user just made. %>
   <p class="mt-3 text-sm text-red-600 hidden" role="alert" data-ranked-queue-target="error"></p>
+
+  <%# Where membership deliveries land. Outside both lists on purpose: it is not a
+      `data-live-region`, so the reconnect backfill neither reconciles it nor
+      counts its children as rows, and the lists' MutationObserver does not see a
+      delivery as a row arriving. Each envelope is consumed and removed the moment
+      it connects, so this stays empty between messages. %>
+  <div id="ranked_deliveries" hidden></div>
 </section>
