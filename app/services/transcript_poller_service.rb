@@ -573,13 +573,41 @@ class TranscriptPollerService
     working_directory = @session.metadata&.dig("working_directory")
 
     unless working_directory
-      Rails.logger.error "[TranscriptPollerService] No working_directory found in session metadata for session #{@session.id}"
+      log_missing_working_directory
       return nil
     end
 
     transcript_dir = @source.transcript_directory(working_directory: working_directory)
     Rails.logger.debug "[TranscriptPollerService] Calculated transcript directory: #{transcript_dir}"
     transcript_dir
+  end
+
+  # Report a missing working_directory at the level the session's own lifecycle
+  # state justifies.
+  #
+  # The metadata key is written by the spawn (AgentSessionJob writes it with the
+  # clone, before `start!` moves the session to running), so its absence means two
+  # unrelated things. A session still in `waiting` has not been spawned yet, and
+  # the absence is the correct state — the case that prompted this was a `spot`
+  # session held for quota headroom, which the poller can touch minutes before it
+  # ever starts. A session that has started and has no working_directory is a real
+  # defect, because the spawn should have written one.
+  #
+  # It has to be the state that discriminates, not the metadata: "no
+  # working_directory" is exactly what both cases share. `waiting` is also the
+  # right test rather than the spot-hold markers — a held session is only one kind
+  # of pre-start session, and every other reason for sitting in `waiting` (queued
+  # behind the fleet cap, waiting on a clone) is equally benign.
+  #
+  # Drawn no wider than `waiting` on purpose. Every other state keeps paging: a
+  # session that reached running, needs_input or failed got past the spawn, and
+  # silencing those would trade an alert nobody needs for a failure nobody sees.
+  def log_missing_working_directory
+    if @session.waiting?
+      Rails.logger.info "[TranscriptPollerService] Session #{@session.id} has no working_directory yet — still waiting, not spawned"
+    else
+      Rails.logger.error "[TranscriptPollerService] No working_directory found in session metadata for session #{@session.id} (status: #{@session.status})"
+    end
   end
 
   # Broadcast the running loader via BroadcastService

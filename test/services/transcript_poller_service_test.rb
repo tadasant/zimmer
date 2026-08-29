@@ -174,6 +174,64 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal false, result, "Should return false when working_directory is missing"
   end
 
+  # === A missing working_directory is only an error once the session has started (#473) ===
+  # `working_directory` is written by the spawn, so a session that has not been
+  # spawned yet is *expected* not to have one. Logging that at .error paged
+  # #alerts every time the poller touched a spot session held for quota headroom.
+
+  test "a waiting session with no working_directory logs below error" do
+    waiting_session = sessions(:waiting)
+    waiting_session.update!(metadata: {})
+
+    Rails.logger.expects(:error).never
+    Rails.logger.expects(:info).with(regexp_matches(/Session #{waiting_session.id} has no working_directory yet/)).at_least_once
+
+    service = TranscriptPollerService.new(waiting_session, file_system: @mock_file_system)
+
+    assert_nil service.send(:get_transcript_directory),
+      "still returns nil — this is a log-level change, not a behavior change"
+  end
+
+  test "a spot-held session with no working_directory logs below error" do
+    held_session = sessions(:waiting)
+    held_session.update!(metadata: {
+      "spot_hold_reason" => "forecast_breached",
+      "spot_hold_detail" => "Holding spot sessions: 5-hour window forecast at 261% (limit 80%)."
+    })
+
+    Rails.logger.expects(:error).never
+
+    service = TranscriptPollerService.new(held_session, file_system: @mock_file_system)
+
+    assert_nil service.send(:get_transcript_directory)
+  end
+
+  test "a started session with no working_directory still logs at error" do
+    running_session = sessions(:running)
+    running_session.update!(metadata: {})
+
+    Rails.logger.expects(:error).with(regexp_matches(/No working_directory found in session metadata for session #{running_session.id}/)).at_least_once
+
+    service = TranscriptPollerService.new(running_session, file_system: @mock_file_system)
+
+    assert_nil service.send(:get_transcript_directory)
+  end
+
+  test "the pre-start exemption is drawn no wider than waiting" do
+    # A session that reached needs_input or failed got past the spawn, so a
+    # missing working_directory there is as anomalous as it is while running.
+    [ :needs_input, :failed ].each do |fixture|
+      session = sessions(fixture)
+      session.update!(metadata: {})
+
+      Rails.logger.expects(:error).with(regexp_matches(/No working_directory found in session metadata for session #{session.id}/)).at_least_once
+
+      service = TranscriptPollerService.new(session, file_system: @mock_file_system)
+
+      assert_nil service.send(:get_transcript_directory)
+    end
+  end
+
   test "poll_and_broadcast returns nil when waiting for transcript directory" do
     # Setup session with working_directory
     @session.update!(metadata: { "working_directory" => "/tmp/test-clone" })
