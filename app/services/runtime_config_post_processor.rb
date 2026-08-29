@@ -17,6 +17,8 @@
 #   4. Write the elicitation address (ELICITATION_REQUEST_URL / _SESSION_ID) into
 #      every stdio server's own `env` table.
 #   5. Resolve ${VAR} interpolations from SecretsLoader.
+#   6. Pin every npx server's npm cache inside the clone (NPM_CONFIG_CACHE), so no
+#      server resolves against the host-shared `~/.npm/_npx`.
 #
 # A catalog entry's `command`/`args` are written through verbatim — in particular,
 # no `--prefix` is spliced into an npx invocation. `--prefix /tmp` makes npm treat
@@ -24,16 +26,15 @@
 # `/tmp/node_modules/.bin`, which is absent on the host; the `chmod 0755` that
 # accompanies bin-linking then does not land on the package entrypoint and the
 # server dies on `exec` with EACCES for the life of the clone (zimmer#467). It also
-# points npm at a host-shared path, defeating the per-clone cache isolation. npx
-# resolves against that per-clone `_npx` cache (NPM_CONFIG_CACHE,
-# ClaudeSpawnEnv#configure_mcp_env) with no prefix flag, which is what the catalog
-# entries already assume.
+# points npm at a host-shared path, defeating the per-clone cache isolation. The
+# cache is redirected through the entry's own `env` instead (step 6), which is what
+# the catalog entries already assume and needs no prefix flag.
 #
 # The injected servers are streamable-HTTP entries pointing at this instance's
 # native /mcp endpoint (see McpController) — Zimmer speaks MCP itself, so nothing
 # is spawned via npx to reach it.
 #
-# Steps 1-4 operate purely on the normalized server hash (`command`/`args`/`env`
+# Steps 1-4 and 6 operate purely on the normalized server hash (`command`/`args`/`env`
 # for stdio, `url`/header-table for http) that both formats share, so they live
 # here as concrete shared logic. Steps tied to the file format and serialization
 # (read/parse, server-table extraction, per-entry secret resolution, write)
@@ -80,7 +81,7 @@ class RuntimeConfigPostProcessor
     stamp_session_id_on_zimmer_servers!(servers)
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
-    isolate_colliding_npx_caches!(servers)
+    pin_npx_caches_to_clone!(servers)
 
     persist_config!(config)
   end
@@ -121,7 +122,7 @@ class RuntimeConfigPostProcessor
     # be the one server on the instance that silently loses its approval address.
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
-    isolate_colliding_npx_caches!(servers)
+    pin_npx_caches_to_clone!(servers)
 
     persist_config!(config)
   end
@@ -412,37 +413,51 @@ class RuntimeConfigPostProcessor
     url
   end
 
-  # Give each stdio server that shares an `npx` install with another server in
-  # this config its own npm cache, so the two cannot race to populate the same
-  # `_npx/<hash>` directory on a cold clone.
+  # Write every `npx`-launched stdio server's npm cache location into its own env
+  # table: the clone's shared cache, or an isolated root within it for a server
+  # that shares an npx package with another server here.
+  #
+  # Writing it per entry rather than relying on the agent process's exported
+  # NPM_CONFIG_CACHE is the point. A server that inherits nothing resolves against
+  # npm's user-level `~/.npm/_npx`, which every session on the host shares and no
+  # clone-scoped guard can reach — see NpxCacheIsolator for the two ways that
+  # inheritance goes missing, and for what it cost production session 7335.
   #
   # This is the prevention half of the npx-cache story; NpxCacheHealService is the
-  # repair half. See NpxCacheIsolator for why a per-clone cache is not enough and
-  # why only colliding servers are isolated.
+  # repair half.
   #
   # Runs after #resolve_secrets! so the args it reads are the final ones the
   # runtime will execute.
-  def isolate_colliding_npx_caches!(servers)
+  def pin_npx_caches_to_clone!(servers)
     return if working_directory.blank?
 
-    isolated = NpxCacheIsolator.colliding_server_names(servers).filter_map do |name|
+    shared = NpxCacheIsolator.shared_cache_dir(working_directory)
+    isolated = []
+
+    pinned = NpxCacheIsolator.cache_dirs_for(servers, working_directory).filter_map do |name, cache_dir|
       entry = servers[name]
       env = (entry["env"] ||= {})
       next unless env.is_a?(Hash)
       # An explicit cache location in the catalog entry is the operator's call.
       next if env[NpxCacheIsolator::NPM_CACHE_VAR].present?
 
-      env[NpxCacheIsolator::NPM_CACHE_VAR] = NpxCacheIsolator.cache_dir_for(working_directory, name)
+      env[NpxCacheIsolator::NPM_CACHE_VAR] = cache_dir
       # Codex would otherwise have two sources for one variable (see
       # #inject_elicitation_env!); the literal we just wrote is the one Zimmer means.
       drop_forwarded_env_var!(entry, NpxCacheIsolator::NPM_CACHE_VAR)
+      isolated << name unless cache_dir == shared
       name
     end
 
+    return if pinned.empty?
+
+    Rails.logger.info "[#{self.class.name}] Pinned #{NpxCacheIsolator::NPM_CACHE_VAR} inside the clone " \
+      "for #{pinned.size} npx MCP server(s): #{pinned.join(', ')}."
+
     return if isolated.empty?
 
-    Rails.logger.info "[#{self.class.name}] #{isolated.size} MCP server(s) share an npx package " \
-      "(#{isolated.join(', ')}) — giving each its own #{NpxCacheIsolator::NPM_CACHE_VAR} so their " \
+    Rails.logger.info "[#{self.class.name}] #{isolated.size} of those share an npx package " \
+      "(#{isolated.join(', ')}) — each got its own #{NpxCacheIsolator::NPM_CACHE_VAR} so their " \
       "installs cannot race the same _npx cache directory."
   end
 

@@ -202,7 +202,8 @@ Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH` (see below),
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default 1,000,000), and when MCP is on: `MCP_TIMEOUT=180000`,
 a clone-local `NPM_CONFIG_CACHE`, and one filesystem side effect — `NpxBinExecutableGuard` restores
 the execute bit on any bin target in that cache which lost it
-([MCP servers](/air/mcp-servers/#timeouts-and-caching)).
+([MCP servers](/air/mcp-servers/#timeouts-and-caching)). The MCP servers themselves do not depend on
+inheriting that variable: each `npx` entry carries its own copy, written into the config file.
 
 With [session-scoped credentials](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)
 on, Claude also sets `CLAUDE_CONFIG_DIR` — a durable per-session directory at

@@ -1200,9 +1200,11 @@ received behaves as if the operator never set it. A catalog entry that names the
 without one — the failure that orphaned production session 4388 three times in 31 minutes
 ([#467](https://github.com/tadasant/zimmer/issues/467)). Two edges come with it.
 
-It runs from `ClaudeSpawnEnv#configure_mcp_env`, so a Codex session never calls it. Codex also never
-sets `NPM_CONFIG_CACHE`, so its npx servers install into the host-shared `~/.npm` cache, which the
-guard's clones-base safety check would refuse to touch anyway.
+It runs from `ClaudeSpawnEnv#configure_mcp_env`, so a Codex session never calls it. A Codex session's
+npx servers do install inside the clone — `RuntimeConfigPostProcessor` writes `NPM_CONFIG_CACHE` into
+each entry's own `env` table, so the guard's clones-base safety check would accept the paths — but
+nothing on the Codex spawn path invokes the guard, so a bin target that lost its execute bit there
+stays broken.
 
 And it repairs the tree it finds on the way *in*, so a package that installs broken during a launch
 is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
