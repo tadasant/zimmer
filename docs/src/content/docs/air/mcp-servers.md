@@ -166,6 +166,24 @@ classifies the failure and takes one of three routes:
 | Anything else, first three times | The retry ladder: `MAX_MCP_CONNECTION_RETRIES = 3`, backing off 30s / 60s / 120s. Most connect failures are transient — a server still starting after a deploy, an `npx` cache race — and self-heal here. |
 | Anything else, definitively | The server is **left out** and the session runs on. Also taken immediately, with no retries, for a static credential the provider rejected: a wrong API token does not become right in 30 seconds. |
 
+"A static credential the provider rejected" is read from two places, because a stdio server never
+gets to report a 401. A server that runs its own credential health check at startup and exits when
+it fails hands the runtime nothing but `Connection closed`; the rejection is only ever in the text
+it printed on its **own stderr**, which `McpLogPollerService` folds into the same error blob:
+
+```
+Server stderr: BrightData: Invalid API key - authentication failed | Connection failed after 3941ms (CONNECTION_CLOSED): Connection closed
+```
+
+So the classifier reads that blob twice. The broad `AUTH_ERROR_PATTERN` (`401`, `unauthorized`,
+`oauth`, `invalid_token`) covers what the transport says, and a much narrower stderr check —
+a `Server stderr:` marker **plus** a phrase whose whole meaning is "the credential was refused"
+(`invalid api key`, `authentication failed`, `bad credentials`) — covers what the child process
+said. Both narrowings are deliberate: a false positive here fails silently, since it stops retrying
+a server that would have connected, so the stderr check never fires on the broad pattern's words
+and never routes to the fatal `oauth_required` branch — an OAuth-capable server keeps the ladder
+([#645](https://github.com/tadasant/zimmer/issues/645)).
+
 Leaving a server out means:
 
 - It is marked `failed` in `mcp_servers_status`, so the session page and the JSON consumers show it red.
