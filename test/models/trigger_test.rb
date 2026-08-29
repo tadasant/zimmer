@@ -3436,4 +3436,215 @@ class TriggerTest < ActiveSupport::TestCase
       assert_operator @seeded.prompt_template.lines.size, :>, 5, "the prompt lost its line structure"
     end
   end
+
+  # === Regression: a recurring reuse trigger must not stack duplicate prompts ===
+  #
+  # The 2026-08-29 incident. Trigger 4730 ("Daily Backlog Groomer") re-uses one
+  # long-lived spot session. That session sat `waiting`, held at the quota gate,
+  # for six days. Every nightly fire took #follow_up_session!'s DELIVERY branch —
+  # the one for an idle session — which had no duplicate guard at all, because
+  # the only guard lived on the `running?` branch. #deliver_follow_up! resumed the
+  # session into a job, SpotSessionHold deferred that job and converted the
+  # "delivery" into one more queued row, and the cycle repeated nightly.
+  #
+  # Five byte-identical copies accumulated, none was ever delivered, and
+  # `last_triggered_at` advanced every night — so the schedule reported six
+  # consecutive successes for work that never ran. Nothing said otherwise until
+  # an unrelated self-archive stranded the backlog days later.
+  #
+  # These tests pin the two halves of the fix: the queue must not grow, and the
+  # miss must not be silent.
+
+  # Stand in for a spot session parked at the quota gate: idle, holding an
+  # undelivered prompt, taking no turns.
+  def quota_held_session_for(trigger)
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = trigger.create_session!(prompt: "Initial prompt")
+    trigger.update!(reuse_session: true, last_session_id: session.id)
+    session.update_column(:status, Session.statuses[:waiting])
+    session
+  end
+
+  test "recurring reuse trigger does not stack a second prompt onto a waiting session that already holds one" do
+    session = quota_held_session_for(@trigger)
+    session.enqueued_messages.create!(content: "Last night's prompt", position: 1, status: "pending")
+
+    assert_no_difference("session.enqueued_messages.count") do
+      reused = @trigger.create_session!(prompt: "Tonight's prompt")
+      assert_equal session.id, reused.id
+    end
+
+    assert_equal :skipped_pending_exists, @trigger.last_follow_up_status
+  end
+
+  test "repeated nightly fires against a quota-held session leave one prompt queued, not one per night" do
+    session = quota_held_session_for(@trigger)
+
+    # Night one lands: the gate has not deferred anything yet, so the prompt is
+    # delivered and (in production) SpotSessionHold queues it behind the
+    # deferred turn. Model that outcome directly.
+    session.enqueued_messages.create!(content: "Nightly prompt", position: 1, status: "pending")
+
+    # Nights two through six. Before the fix each of these appended another
+    # byte-identical copy.
+    5.times { @trigger.create_session!(prompt: "Nightly prompt") }
+
+    assert_equal 1, session.enqueued_messages.pending.count,
+      "a recurring trigger stacked duplicate prompts onto a session that never consumed the first"
+  end
+
+  test "archiving after repeated coalesced fires strands one prompt rather than a nightly backlog" do
+    session = quota_held_session_for(@trigger)
+    session.enqueued_messages.create!(content: "Nightly prompt", position: 1, status: "pending")
+    5.times { @trigger.create_session!(prompt: "Nightly prompt") }
+
+    session.reload.archive!
+
+    stranded = session.enqueued_messages.undelivered
+    assert_equal 1, stranded.count,
+      "the archive stranded one message per missed night instead of the single coalesced prompt"
+  end
+
+  test "a one-time wake trigger still delivers into a waiting session that holds a pending message" do
+    trigger = triggers(:one_time_schedule_trigger)
+    session = quota_held_session_for(trigger)
+    assert trigger.reload.one_time_reuse_trigger?,
+      "fixture must be a one-time reuse trigger for this exemption to be under test"
+
+    session.enqueued_messages.create!(content: "Something else queued", position: 1, status: "pending")
+
+    trigger.create_session!(prompt: "Wake up")
+
+    # A wake is a one-shot signal, not a drumbeat: coalescing it would lose it.
+    assert_equal :delivered, trigger.last_follow_up_status
+  end
+
+  # === Missed-fire bookkeeping ===
+
+  test "a coalesced fire increments the missed-fire count and stamps when the run started" do
+    session = quota_held_session_for(@trigger)
+    session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+
+    @trigger.create_session!(prompt: "Tonight")
+    assert_equal 1, @trigger.reload.missed_fire_count
+    first_at = @trigger.first_missed_fire_at
+    assert_not_nil first_at
+
+    @trigger.create_session!(prompt: "Tomorrow")
+    assert_equal 2, @trigger.reload.missed_fire_count
+    assert_equal first_at.to_i, @trigger.first_missed_fire_at.to_i,
+      "the stamp must mark when the run of misses began, not the most recent one"
+    assert @trigger.missing_fires?
+  end
+
+  test "a fire that actually lands clears the missed-fire run" do
+    session = quota_held_session_for(@trigger)
+    session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+    @trigger.create_session!(prompt: "Missed")
+    assert_equal 1, @trigger.reload.missed_fire_count
+
+    # The session takes its turn and the queue drains.
+    session.enqueued_messages.destroy_all
+
+    @trigger.create_session!(prompt: "Landed")
+
+    assert_equal 0, @trigger.reload.missed_fire_count
+    assert_nil @trigger.first_missed_fire_at
+    assert_not @trigger.missing_fires?
+  end
+
+  test "a run of coalesced fires against a stale queue raises an alert" do
+    session = quota_held_session_for(@trigger)
+    message = session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+    message.update_column(:created_at, (Trigger::MISSED_FIRE_MIN_QUEUE_AGE + 1.hour).ago)
+
+    raised = []
+    AlertService.stubs(:raise_alert).with { |title, **| raised << title; true }
+
+    Trigger::MISSED_FIRE_ALERT_THRESHOLD.times { @trigger.create_session!(prompt: "Nightly") }
+
+    assert_includes raised, "Recurring trigger is not reaching its session"
+  end
+
+  test "a single coalesced fire does not alert" do
+    session = quota_held_session_for(@trigger)
+    message = session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+    message.update_column(:created_at, (Trigger::MISSED_FIRE_MIN_QUEUE_AGE + 1.hour).ago)
+
+    raised = []
+    AlertService.stubs(:raise_alert).with { |title, **| raised << title; true }
+
+    @trigger.create_session!(prompt: "Nightly")
+
+    assert_not_includes raised, "Recurring trigger is not reaching its session"
+  end
+
+  test "coalesced fires against a queue that is merely busy do not alert" do
+    session = quota_held_session_for(@trigger)
+    # Queued moments ago: a session mid-turn, not a session that cannot consume.
+    session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+
+    raised = []
+    AlertService.stubs(:raise_alert).with { |title, **| raised << title; true }
+
+    (Trigger::MISSED_FIRE_ALERT_THRESHOLD + 1).times { @trigger.create_session!(prompt: "Nightly") }
+
+    assert_not_includes raised, "Recurring trigger is not reaching its session"
+  end
+
+  # === skip_if_pending_session is inert on the reuse path ===
+
+  test "a fresh spawn clears a missed-fire run left by the session it replaced" do
+    session = quota_held_session_for(@trigger)
+    session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+    @trigger.create_session!(prompt: "Missed")
+    assert_equal 1, @trigger.reload.missed_fire_count
+
+    # The reuse candidate becomes unusable, so the next fire spawns instead. The
+    # count belonged to the old session's queue and must not follow the trigger.
+    session.update_column(:status, Session.statuses[:failed])
+
+    @trigger.create_session!(prompt: "Fresh")
+
+    assert_equal 0, @trigger.reload.missed_fire_count
+    assert_nil @trigger.first_missed_fire_at
+  end
+
+  test "a dropped follow-up neither counts as a miss nor clears an existing run" do
+    session = quota_held_session_for(@trigger)
+    @trigger.update!(enqueue_messages: false)
+    session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+    @trigger.create_session!(prompt: "Missed")
+    assert_equal 1, @trigger.reload.missed_fire_count
+
+    # Busy session, enqueue_messages off, and nothing left in the queue: the
+    # follow-up is dropped by the pre-existing "don't barge" rule.
+    session.enqueued_messages.destroy_all
+    session.update_column(:status, Session.statuses[:running])
+
+    @trigger.create_session!(prompt: "Dropped")
+
+    assert_equal :dropped, @trigger.last_follow_up_status
+    assert_equal 1, @trigger.reload.missed_fire_count,
+      "a dropped follow-up is not progress and must not clear a run of real misses"
+  end
+
+  test "skip_if_pending_session_inert? is true for a reuse trigger and false for a spawning one" do
+    @trigger.update!(skip_if_pending_session: true, reuse_session: false)
+    assert_not @trigger.skip_if_pending_session_inert?
+
+    @trigger.update!(reuse_session: true)
+    assert @trigger.skip_if_pending_session_inert?
+
+    @trigger.update!(skip_if_pending_session: false)
+    assert_not @trigger.skip_if_pending_session_inert?
+  end
 end
