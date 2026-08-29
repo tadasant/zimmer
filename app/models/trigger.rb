@@ -388,6 +388,12 @@ class Trigger < ApplicationRecord
   def create_session!(prompt:, genesis: nil)
     @last_fire_burst_suppressed = false
     @last_fire_pending_session = nil
+    # Reset with its siblings. The jobs read #last_follow_up_dropped? after
+    # #create_session! on paths that never reach #follow_up_session! — the
+    # one-time-reuse "target not reusable" return below, and every spawn — where
+    # a value left over from a previous fire on this instance would be read as
+    # this fire's outcome.
+    @last_follow_up_status = nil
     @genesis_override = genesis
 
     # Heal any catalog references that no longer exist before creating or
@@ -443,10 +449,17 @@ class Trigger < ApplicationRecord
     end
 
     spawned = spawn_unless_pending_session!(prompt: prompt)
-    # A trigger that spawns has a session to talk to again — and #create_new_session!
-    # has already repointed `last_session_id` at it, so the queue that was holding
-    # the old one's prompts is no longer this trigger's concern.
-    clear_missed_fires! if spawned
+    # A trigger that spawned a REAL session has somewhere to talk to again, and
+    # the queue that was holding the old session's prompts is no longer its
+    # concern — #create_new_session! has already repointed `last_session_id` at
+    # the new one, which is exactly the identity tested here.
+    #
+    # A burst-notice session is not that. #spawn_burst_notice_session!
+    # deliberately leaves `last_session_id` alone (a reuse trigger must never
+    # follow up INTO the notice), so the trigger still points at the stuck
+    # session. Clearing on it would restart the count from zero on every fire
+    # while the trigger is bursting, and the alert would never arrive.
+    clear_missed_fires! if spawned && last_session_id == spawned.id
     spawned
   end
 
@@ -479,15 +492,21 @@ class Trigger < ApplicationRecord
     missed_fire_count.to_i.positive?
   end
 
-  # Whether `skip_if_pending_session` can actually do anything on this trigger.
+  # Whether `skip_if_pending_session` is doing nothing on this trigger right now.
   #
-  # It cannot when the trigger reuses a session: `skip_if_pending_session` is
-  # consulted only by #spawn_unless_pending_session!, and a reuse trigger with a
-  # live `last_session_id` returns out of #create_session! through
-  # #follow_up_session! well before that. So the checkbox is inert, and every
-  # surface that renders it used to claim it was in force — the trigger page and
-  # `search_triggers` both said "Yes (nothing pending — the next fire spawns)"
-  # about a setting that could never fire.
+  # It is consulted only by #spawn_unless_pending_session!, on the SPAWN path. A
+  # reuse trigger holding a live, reusable `last_session_id` returns out of
+  # #create_session! through #follow_up_session! well before that, so on those
+  # fires the checkbox is inert — and every surface that renders it used to claim
+  # it was in force, the trigger page and `search_triggers` both saying "Yes
+  # (nothing pending — the next fire spawns)" about a branch that could not run.
+  #
+  # "Right now", not "structurally": the same trigger DOES reach the spawn path
+  # on a fire where it has no reusable target — it has never fired, or the target
+  # was archived or failed and a recurring trigger spawns a replacement. The
+  # setting applies in full on those fires. The surfaces say so in those words,
+  # rather than promising more than this cheap predicate checks; resolving the
+  # target here would put a session lookup in every row of the trigger list.
   #
   # Surfaced rather than validated away: existing triggers carry the combination
   # (trigger 4730, the Daily Backlog Groomer, is one), and a create/update
@@ -993,13 +1012,24 @@ class Trigger < ApplicationRecord
   # Whether this fire should be coalesced into a prompt the target session is
   # already holding rather than adding another copy.
   #
-  # Scoped to RECURRING triggers on purpose. A recurring trigger is a drumbeat:
-  # if the session has not consumed the last beat, a second one is duplication,
-  # and the queue is the wrong place to accumulate a backlog of them. A one-time
-  # wake is the opposite — a one-shot signal that must deliver durably across
-  # the race window #follow_up_session! documents — so it is exempt here and
-  # keeps the narrower guard on the `running?` branch, which treats an existing
-  # pending message as already representing the watched event.
+  # Scoped to PURELY RECURRING triggers on purpose. A recurring trigger is a
+  # drumbeat: if the session has not consumed the last beat, a second one is
+  # duplication, and the queue is the wrong place to accumulate a backlog of
+  # them. A one-shot signal is the opposite — it must deliver durably across the
+  # race window #follow_up_session! documents — so it is exempt here and keeps
+  # the narrower guard on the `running?` branch, which treats an existing pending
+  # message as already representing the watched event.
+  #
+  # The test is #purely_recurring?, NOT `!one_time_reuse_trigger?`, and the
+  # difference is load-bearing. `one_time_reuse_trigger?` requires *every*
+  # condition to be one-shot, so a trigger mixing a recurring schedule with a
+  # one-time one would fail it and be coalesced here — and ScheduleTriggerJob
+  # keys its auto-delete on `condition.one_time_schedule?`, checking only
+  # #last_follow_up_dropped? before destroying the trigger. A coalesced fire is
+  # not `:dropped`, so that trigger would be destroyed and its one-shot schedule
+  # consumed having delivered nothing. Refusing to coalesce any trigger that
+  # carries a one-shot condition at all keeps the pre-existing behaviour intact
+  # for those shapes and confines this to the daily-cron shape the incident had.
   #
   # Deliberately NOT gated behind `skip_if_pending_session`. That setting is a
   # SPAWN-path control (see #spawn_unless_pending_session!) and is unreachable
@@ -1019,9 +1049,18 @@ class Trigger < ApplicationRecord
   # occurrence (the session consumes the queue, and the next fire lands) and it
   # is now counted rather than silent.
   def coalesce_recurring_fire?(session)
-    return false if one_time_reuse_trigger?
+    return false unless purely_recurring?
 
     session.enqueued_messages.pending.exists?
+  end
+
+  # True when no condition on this trigger is a one-shot — neither a one-time
+  # schedule nor a session-scoped ao_event. Strictly narrower than
+  # `!one_time_reuse_trigger?`: a trigger mixing recurring and one-shot
+  # conditions is excluded by both this and #one_time_reuse_trigger?.
+  def purely_recurring?
+    trigger_conditions.any? &&
+      trigger_conditions.none? { |c| c.one_time_schedule? || c.session_scoped_ao_event? }
   end
 
   # Record whether this fire actually reached the session, and page when a run
@@ -1053,24 +1092,35 @@ class Trigger < ApplicationRecord
   end
 
   def record_missed_fire!(session)
-    count = missed_fire_count.to_i + 1
-    first_at = first_missed_fire_at || Time.current
-    update_columns(missed_fire_count: count, first_missed_fire_at: first_at)
+    # Atomic, because two jobs can fire one trigger concurrently
+    # (ScheduleTriggerJob and AoEventTriggerJob overlap) and this runs outside
+    # the session lock. A read-modify-write on a possibly-stale attribute would
+    # undercount the run and reach the alert threshold late.
+    Trigger.update_counters(id, missed_fire_count: 1)
+    reload
+    update_columns(first_missed_fire_at: Time.current) if first_missed_fire_at.nil?
 
+    count = missed_fire_count.to_i
+    first_at = first_missed_fire_at || Time.current
     return unless count >= MISSED_FIRE_ALERT_THRESHOLD
 
-    oldest = session.enqueued_messages.pending.ordered.first
-    stalled_since = oldest&.created_at
+    # By `created_at`, not by `position`: #reorder_to lets a caller shuffle
+    # positions, so the lowest-positioned row is not necessarily the oldest, and
+    # age is the whole point of this gate.
+    stalled_since = session.enqueued_messages.pending.minimum(:created_at)
     return if stalled_since.blank? || stalled_since > MISSED_FIRE_MIN_QUEUE_AGE.ago
 
     AlertService.raise_alert(
       "Recurring trigger is not reaching its session",
       details: "Trigger '#{name}' (ID: #{id}) has had #{count} consecutive fires coalesced away since " \
                "#{first_at.iso8601}. It reuses session #{session.id}, which has been holding an " \
-               "undelivered prompt since #{stalled_since.iso8601} and has taken no turn in the meantime.\n\n" \
+               "undelivered prompt since #{stalled_since.iso8601}.\n\n" \
                "The scheduled work has not run for #{count} occurrence(s). Nothing is queued up behind " \
-               "this — the duplicate copies are deliberately not stacked — so the schedule resumes on its " \
-               "own as soon as session #{session.id} takes a turn.\n\n" \
+               "this — the duplicate copies are deliberately not stacked — so the schedule resumes as " \
+               "soon as session #{session.id} takes a turn and drains its queue.\n\n" \
+               "Check that something WILL make it take one. A spot session held for quota headroom " \
+               "re-checks on its own; a session sitting in `waiting` for any other reason may need to " \
+               "be started by hand, because nothing sweeps a waiting session's queue.\n\n" \
                "If that session is a spot session held for quota headroom, this is budget pacing rather " \
                "than a failure: either let it drain, or make it priority to start it now. If it is stuck " \
                "for any other reason, that is the thing to fix.\n\n" \

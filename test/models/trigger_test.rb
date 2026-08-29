@@ -3473,6 +3473,32 @@ class TriggerTest < ActiveSupport::TestCase
     session
   end
 
+  # One production night, end to end.
+  #
+  # The trigger fires. If it DELIVERED, `deliver_follow_up!` resumed the session
+  # (`waiting` -> `running`) and handed a prompt to a job — and for a spot session
+  # held at the quota gate that job is refused: SpotSessionHold files the prompt
+  # in `enqueued_messages` behind the turn already deferred and returns the
+  # session to `waiting` (#queue_behind_scheduled_turn). Replaying that
+  # conversion here is the whole point. A test that stubs
+  # `AgentSessionJob.enqueue_with_prompt` and stops there removes the very
+  # mechanism the queue grew through, and would pass just as well unfixed.
+  #
+  # The resume is what marks a delivery: a coalesced fire does not resume, so the
+  # session is still `waiting` afterwards and no row is filed.
+  def fire_one_night!(trigger, session, prompt)
+    was_idle = session.reload.waiting?
+    trigger.create_session!(prompt: prompt)
+
+    if was_idle && session.reload.running?
+      position = (session.enqueued_messages.maximum(:position) || 0) + 1
+      session.enqueued_messages.create!(content: prompt, position: position, status: "pending")
+      session.update_column(:status, Session.statuses[:waiting])
+    end
+
+    session.reload
+  end
+
   test "recurring reuse trigger does not stack a second prompt onto a waiting session that already holds one" do
     session = quota_held_session_for(@trigger)
     session.enqueued_messages.create!(content: "Last night's prompt", position: 1, status: "pending")
@@ -3483,34 +3509,52 @@ class TriggerTest < ActiveSupport::TestCase
     end
 
     assert_equal :skipped_pending_exists, @trigger.last_follow_up_status
+    # The session was NOT resumed, which is what stops the spot gate filing
+    # another copy. Without this the assertion above passes unfixed too.
+    assert session.reload.waiting?, "a coalesced fire must not resume the session"
   end
 
   test "repeated nightly fires against a quota-held session leave one prompt queued, not one per night" do
     session = quota_held_session_for(@trigger)
 
-    # Night one lands: the gate has not deferred anything yet, so the prompt is
-    # delivered and (in production) SpotSessionHold queues it behind the
-    # deferred turn. Model that outcome directly.
-    session.enqueued_messages.create!(content: "Nightly prompt", position: 1, status: "pending")
+    6.times { fire_one_night!(@trigger, session, "Nightly prompt") }
 
-    # Nights two through six. Before the fix each of these appended another
-    # byte-identical copy.
-    5.times { @trigger.create_session!(prompt: "Nightly prompt") }
-
+    # Unfixed this is 6: every night took the delivery branch, which had no
+    # duplicate guard, and the spot gate turned each delivery into another row.
     assert_equal 1, session.enqueued_messages.pending.count,
       "a recurring trigger stacked duplicate prompts onto a session that never consumed the first"
   end
 
   test "archiving after repeated coalesced fires strands one prompt rather than a nightly backlog" do
     session = quota_held_session_for(@trigger)
-    session.enqueued_messages.create!(content: "Nightly prompt", position: 1, status: "pending")
-    5.times { @trigger.create_session!(prompt: "Nightly prompt") }
+    6.times { fire_one_night!(@trigger, session, "Nightly prompt") }
 
     session.reload.archive!
 
-    stranded = session.enqueued_messages.undelivered
-    assert_equal 1, stranded.count,
+    assert_equal 1, session.enqueued_messages.undelivered.count,
       "the archive stranded one message per missed night instead of the single coalesced prompt"
+  end
+
+  test "a trigger mixing recurring and one-shot conditions is never coalesced" do
+    # ScheduleTriggerJob keys its auto-delete on `condition.one_time_schedule?`
+    # and checks only #last_follow_up_dropped? before destroying the trigger. A
+    # coalesced fire is not `:dropped`, so coalescing such a trigger would let a
+    # one-shot schedule be consumed — and the trigger deleted — having delivered
+    # nothing. #purely_recurring? is what keeps them out.
+    @trigger.trigger_conditions.create!(
+      condition_type: "schedule",
+      configuration: { "type" => "one_time", "scheduled_at" => 1.day.from_now.iso8601 }
+    )
+    session = quota_held_session_for(@trigger)
+    session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+
+    assert_not @trigger.reload.purely_recurring?
+    assert_not @trigger.one_time_reuse_trigger?, "fixture must be the MIXED shape, not an all-one-shot one"
+
+    @trigger.create_session!(prompt: "Tonight")
+
+    assert_not_equal :skipped_pending_exists, @trigger.last_follow_up_status
+    assert_equal 0, @trigger.reload.missed_fire_count
   end
 
   test "a one-time wake trigger still delivers into a waiting session that holds a pending message" do
