@@ -1,0 +1,543 @@
+{
+  "production": {
+    "outcome_analysis_batch_pump": {
+      "cron": "* * * * *",
+      "class": "OutcomeAnalysisBatchPumpJob",
+      "description": "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
+    },
+    "cleanup_orphaned_sessions": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupOrphanedSessionsJob",
+      "description": "Cleanup orphaned sessions every 5 minutes"
+    },
+    "heartbeat_sweep": {
+      "cron": "*/30 * * * * *",
+      "class": "HeartbeatSweepJob",
+      "description": "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
+    },
+    "github_pull_request_poller": {
+      "cron": "*/30 * * * * *",
+      "class": "GitHubPullRequestPollerJob",
+      "description": "Poll GitHub PR status for sessions with PR URLs"
+    },
+    "stale_clone_cleanup": {
+      "cron": "0 * * * *",
+      "class": "StaleCloneCleanupJob",
+      "description": "Clean up stale clone directories from archived sessions"
+    },
+    "elicitation_endpoint_health_check": {
+      "cron": "*/5 * * * *",
+      "class": "ElicitationEndpointHealthCheckJob",
+      "description": "Probe the MCP approval (elicitation) endpoint agents are pointed at"
+    },
+    "github_comment_poller": {
+      "cron": "*/30 * * * * *",
+      "class": "GithubCommentPollerJob",
+      "description": "Poll GitHub PR comments for sessions with PR URLs"
+    },
+    "github_merge_conflict_poller": {
+      "cron": "*/2 * * * *",
+      "class": "GitHubMergeConflictPollerJob",
+      "description": "Poll GitHub PRs for merge conflicts and notify sessions"
+    },
+    "token_usage_ingestion": {
+      "cron": "*/10 * * * *",
+      "class": "TokenUsageIngestionJob",
+      "description": "Sweep recent transcripts into the token-spend ledger"
+    },
+    "token_usage_backfill": {
+      "cron": "*/5 * * * *",
+      "class": "TokenUsageBackfillJob",
+      "description": "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box"
+    },
+    "experimental_flag_backfill": {
+      "cron": "*/15 * * * *",
+      "class": "ExperimentalFlagBackfillJob",
+      "description": "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
+    },
+    "cli_status_refresh": {
+      "cron": "*/2 * * * *",
+      "class": "CliStatusRefreshJob",
+      "description": "Refresh CLI tool status cache (gh, claude, fly)"
+    },
+    "catalog_refresh": {
+      "cron": "*/15 * * * *",
+      "class": "CatalogRefreshJob",
+      "description": "Refresh catalog repo (skills, servers, agent roots) from tadasant/zimmer-catalog"
+    },
+    "queue_recovery_mode_expiry": {
+      "cron": "* * * * *",
+      "class": "QueueRecoveryModeExpiryJob",
+      "description": "Lift queue recovery mode once its TTL has elapsed (runs on `agents`, the queue recovery mode never pauses)"
+    },
+    "slack_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "SlackTriggerPollerJob",
+      "description": "Poll Slack channels for triggers and create sessions"
+    },
+    "github_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "GithubTriggerPollerJob",
+      "description": "Poll GitHub for label-added and new-issue trigger conditions and create sessions"
+    },
+    "slack_trigger_health_check": {
+      "cron": "45 * * * *",
+      "class": "SlackTriggerHealthCheckJob",
+      "description": "Detect Slack trigger feeds that have silently stopped firing and alert"
+    },
+    "github_trigger_health_check": {
+      "cron": "*/5 * * * *",
+      "class": "GithubTriggerHealthCheckJob",
+      "description": "Alert #eng-alerts when GitHub trigger polling has silently stopped succeeding"
+    },
+    "schedule_trigger": {
+      "cron": "* * * * *",
+      "class": "ScheduleTriggerJob",
+      "description": "Check schedule triggers and create sessions when due"
+    },
+    "refresh_mcp_oauth_tokens": {
+      "cron": "*/30 * * * *",
+      "class": "RefreshMcpOauthTokensJob",
+      "description": "Proactively refresh MCP OAuth tokens before they expire"
+    },
+    "refresh_x_oauth_tokens": {
+      "cron": "*/15 * * * *",
+      "class": "RefreshXOauthTokensJob",
+      "description": "Proactively refresh X (Twitter) OAuth access tokens before they expire"
+    },
+    "transcript_archive": {
+      "cron": "*/10 * * * *",
+      "class": "TranscriptArchiveJob",
+      "description": "Incrementally build/update transcript archive zip file"
+    },
+    "warm_skills_cache": {
+      "cron": "0 */4 * * *",
+      "class": "WarmSkillsCacheJob",
+      "description": "Warm the Claude skills cache for follow-up prompt slash command typeahead"
+    },
+    "cleanup_expired_elicitations": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupExpiredElicitationsJob",
+      "description": "Expire pending elicitations past their expiration time"
+    },
+    "cleanup_runtime_login_attempts": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupRuntimeLoginAttemptsJob",
+      "description": "Reap orphaned UI login attempts and prune old terminal rows"
+    },
+    "empty_trash": {
+      "cron": "0 * * * *",
+      "class": "EmptyTrashJob",
+      "description": "Permanently delete clones for trashed sessions past retention period"
+    },
+    "claude_code_update": {
+      "cron": "0 6 * * *",
+      "class": "ClaudeCodeUpdateJob",
+      "description": "Update Claude Code CLI to the latest version"
+    },
+    "status_summary_backstop": {
+      "cron": "*/5 * * * *",
+      "class": "StatusSummaryBackstopJob",
+      "description": "Re-run a status-summary generation that never landed, for sessions already at rest"
+    },
+    "quota_reset_checker": {
+      "cron": "*/15 * * * *",
+      "class": "QuotaResetCheckerJob",
+      "description": "Check if quota-exceeded accounts have reset and restore them to active"
+    },
+    "spot_ceiling_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "SpotCeilingSweepJob",
+      "description": "Pause running spot sessions when a quota window reaches its target, and resume them when it falls"
+    },
+    "burn_rate_recompute": {
+      "cron": "*/20 * * * *",
+      "class": "BurnRateRecomputeJob",
+      "description": "Recompute the $/min burn rate of every harness+model combination from the token ledger"
+    },
+    "quota_capacity_calibration": {
+      "cron": "*/15 * * * *",
+      "class": "QuotaCapacityCalibrationJob",
+      "description": "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window"
+    },
+    "claude_usage_sampler": {
+      "cron": "*/15 * * * *",
+      "class": "ClaudeUsageSamplerJob",
+      "description": "Sample the serving Claude account's quota so the per-session usage rate has a time series"
+    },
+    "refresh_runtime_auth_tokens": {
+      "cron": "*/5 * * * *",
+      "class": "RefreshRuntimeAuthTokensJob",
+      "description": "Proactively refresh runtime login-credential tokens before they expire (fans out per runtime)"
+    },
+    "docker_cleanup": {
+      "cron": "0 */6 * * *",
+      "class": "DockerCleanupJob",
+      "description": "Clean up stale dev-server containers, prune old Docker images, and handle emergency disk situations"
+    },
+    "orphan_clone_filesystem_cleanup": {
+      "cron": "30 */6 * * *",
+      "class": "OrphanCloneFilesystemCleanupJob",
+      "description": "Remove clone directories on disk with no matching session in the database"
+    },
+    "cleanup_stale_triggers": {
+      "cron": "15 * * * *",
+      "class": "CleanupStaleTriggersJob",
+      "description": "Destroy orphaned one-time wake-up triggers (archived target session or lapsed schedule)"
+    },
+    "zombie_reaper": {
+      "cron": "*/5 * * * *",
+      "class": "ZombieReaperJob",
+      "description": "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)"
+    },
+    "cert_expiry_monitor": {
+      "cron": "0 7 * * *",
+      "class": "CertExpiryMonitorJob",
+      "description": "Check public TLS certs (ao/obs hosts) and alert when expiry nears — catches broken auto-renewal"
+    },
+    "system_health_monitor": {
+      "cron": "*/2 * * * *",
+      "class": "SystemHealthMonitorJob",
+      "description": "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    },
+    "egress_health_check": {
+      "cron": "* * * * *",
+      "class": "EgressHealthCheckJob",
+      "description": "Probe the primary DNS resolver's public egress; drive the network-degraded banner"
+    },
+    "mangled_clone_report": {
+      "cron": "0 8 * * *",
+      "class": "MangledCloneReportJob",
+      "description": "Report how many mangled clones the archive-side mass-deletion guard defused in the last day"
+    }
+  },
+  "staging": {
+    "outcome_analysis_batch_pump": {
+      "cron": "* * * * *",
+      "class": "OutcomeAnalysisBatchPumpJob",
+      "description": "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
+    },
+    "cleanup_orphaned_sessions": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupOrphanedSessionsJob",
+      "description": "Cleanup orphaned sessions every 5 minutes"
+    },
+    "heartbeat_sweep": {
+      "cron": "*/30 * * * * *",
+      "class": "HeartbeatSweepJob",
+      "description": "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
+    },
+    "github_pull_request_poller": {
+      "cron": "*/30 * * * * *",
+      "class": "GitHubPullRequestPollerJob",
+      "description": "Poll GitHub PR status for sessions with PR URLs"
+    },
+    "stale_clone_cleanup": {
+      "cron": "0 * * * *",
+      "class": "StaleCloneCleanupJob",
+      "description": "Clean up stale clone directories from archived sessions"
+    },
+    "elicitation_endpoint_health_check": {
+      "cron": "*/5 * * * *",
+      "class": "ElicitationEndpointHealthCheckJob",
+      "description": "Probe the MCP approval (elicitation) endpoint agents are pointed at"
+    },
+    "github_comment_poller": {
+      "cron": "*/30 * * * * *",
+      "class": "GithubCommentPollerJob",
+      "description": "Poll GitHub PR comments for sessions with PR URLs"
+    },
+    "github_merge_conflict_poller": {
+      "cron": "*/2 * * * *",
+      "class": "GitHubMergeConflictPollerJob",
+      "description": "Poll GitHub PRs for merge conflicts and notify sessions"
+    },
+    "token_usage_ingestion": {
+      "cron": "*/10 * * * *",
+      "class": "TokenUsageIngestionJob",
+      "description": "Sweep recent transcripts into the token-spend ledger"
+    },
+    "token_usage_backfill": {
+      "cron": "*/5 * * * *",
+      "class": "TokenUsageBackfillJob",
+      "description": "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box"
+    },
+    "experimental_flag_backfill": {
+      "cron": "*/15 * * * *",
+      "class": "ExperimentalFlagBackfillJob",
+      "description": "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
+    },
+    "cli_status_refresh": {
+      "cron": "*/2 * * * *",
+      "class": "CliStatusRefreshJob",
+      "description": "Refresh CLI tool status cache (gh, claude, fly)"
+    },
+    "catalog_refresh": {
+      "cron": "*/15 * * * *",
+      "class": "CatalogRefreshJob",
+      "description": "Refresh catalog repo (skills, servers, agent roots) from tadasant/zimmer-catalog"
+    },
+    "queue_recovery_mode_expiry": {
+      "cron": "* * * * *",
+      "class": "QueueRecoveryModeExpiryJob",
+      "description": "Lift queue recovery mode once its TTL has elapsed (runs on `agents`, the queue recovery mode never pauses)"
+    },
+    "slack_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "SlackTriggerPollerJob",
+      "description": "Poll Slack channels for triggers and create sessions"
+    },
+    "github_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "GithubTriggerPollerJob",
+      "description": "Poll GitHub for label-added and new-issue trigger conditions and create sessions"
+    },
+    "github_trigger_health_check": {
+      "cron": "*/5 * * * *",
+      "class": "GithubTriggerHealthCheckJob",
+      "description": "Alert #eng-alerts when GitHub trigger polling has silently stopped succeeding"
+    },
+    "schedule_trigger": {
+      "cron": "* * * * *",
+      "class": "ScheduleTriggerJob",
+      "description": "Check schedule triggers and create sessions when due"
+    },
+    "refresh_mcp_oauth_tokens": {
+      "cron": "*/30 * * * *",
+      "class": "RefreshMcpOauthTokensJob",
+      "description": "Proactively refresh MCP OAuth tokens before they expire"
+    },
+    "refresh_x_oauth_tokens": {
+      "cron": "*/15 * * * *",
+      "class": "RefreshXOauthTokensJob",
+      "description": "Proactively refresh X (Twitter) OAuth access tokens before they expire"
+    },
+    "transcript_archive": {
+      "cron": "*/10 * * * *",
+      "class": "TranscriptArchiveJob",
+      "description": "Incrementally build/update transcript archive zip file"
+    },
+    "warm_skills_cache": {
+      "cron": "0 */4 * * *",
+      "class": "WarmSkillsCacheJob",
+      "description": "Warm the Claude skills cache for follow-up prompt slash command typeahead"
+    },
+    "cleanup_expired_elicitations": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupExpiredElicitationsJob",
+      "description": "Expire pending elicitations past their expiration time"
+    },
+    "cleanup_runtime_login_attempts": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupRuntimeLoginAttemptsJob",
+      "description": "Reap orphaned UI login attempts and prune old terminal rows"
+    },
+    "empty_trash": {
+      "cron": "0 * * * *",
+      "class": "EmptyTrashJob",
+      "description": "Permanently delete clones for trashed sessions past retention period"
+    },
+    "claude_code_update": {
+      "cron": "0 6 * * *",
+      "class": "ClaudeCodeUpdateJob",
+      "description": "Update Claude Code CLI to the latest version"
+    },
+    "status_summary_backstop": {
+      "cron": "*/5 * * * *",
+      "class": "StatusSummaryBackstopJob",
+      "description": "Re-run a status-summary generation that never landed, for sessions already at rest"
+    },
+    "quota_reset_checker": {
+      "cron": "*/15 * * * *",
+      "class": "QuotaResetCheckerJob",
+      "description": "Check if quota-exceeded accounts have reset and restore them to active"
+    },
+    "spot_ceiling_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "SpotCeilingSweepJob",
+      "description": "Pause running spot sessions when a quota window reaches its target, and resume them when it falls"
+    },
+    "burn_rate_recompute": {
+      "cron": "*/20 * * * *",
+      "class": "BurnRateRecomputeJob",
+      "description": "Recompute the $/min burn rate of every harness+model combination from the token ledger"
+    },
+    "quota_capacity_calibration": {
+      "cron": "*/15 * * * *",
+      "class": "QuotaCapacityCalibrationJob",
+      "description": "Re-estimate what each Claude quota window is worth in Opus dollars, from spend over that window"
+    },
+    "claude_usage_sampler": {
+      "cron": "*/15 * * * *",
+      "class": "ClaudeUsageSamplerJob",
+      "description": "Sample the serving Claude account's quota so the per-session usage rate has a time series"
+    },
+    "refresh_runtime_auth_tokens": {
+      "cron": "*/5 * * * *",
+      "class": "RefreshRuntimeAuthTokensJob",
+      "description": "Proactively refresh runtime login-credential tokens before they expire (fans out per runtime)"
+    },
+    "docker_cleanup": {
+      "cron": "0 */6 * * *",
+      "class": "DockerCleanupJob",
+      "description": "Clean up stale dev-server containers, prune old Docker images, and handle emergency disk situations"
+    },
+    "orphan_clone_filesystem_cleanup": {
+      "cron": "30 */6 * * *",
+      "class": "OrphanCloneFilesystemCleanupJob",
+      "description": "Remove clone directories on disk with no matching session in the database"
+    },
+    "cleanup_stale_triggers": {
+      "cron": "15 * * * *",
+      "class": "CleanupStaleTriggersJob",
+      "description": "Destroy orphaned one-time wake-up triggers (archived target session or lapsed schedule)"
+    },
+    "zombie_reaper": {
+      "cron": "*/5 * * * *",
+      "class": "ZombieReaperJob",
+      "description": "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)"
+    },
+    "cert_expiry_monitor": {
+      "cron": "0 7 * * *",
+      "class": "CertExpiryMonitorJob",
+      "description": "Check public TLS certs (ao/obs hosts) and alert when expiry nears — catches broken auto-renewal"
+    },
+    "system_health_monitor": {
+      "cron": "*/2 * * * *",
+      "class": "SystemHealthMonitorJob",
+      "description": "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    },
+    "mangled_clone_report": {
+      "cron": "0 8 * * *",
+      "class": "MangledCloneReportJob",
+      "description": "Report how many mangled clones the archive-side mass-deletion guard defused in the last day"
+    }
+  },
+  "development": {
+    "cleanup_orphaned_sessions": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupOrphanedSessionsJob",
+      "description": "Cleanup orphaned sessions every 5 minutes"
+    },
+    "outcome_analysis_batch_pump": {
+      "cron": "* * * * *",
+      "class": "OutcomeAnalysisBatchPumpJob",
+      "description": "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
+    },
+    "heartbeat_sweep": {
+      "cron": "*/30 * * * * *",
+      "class": "HeartbeatSweepJob",
+      "description": "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
+    },
+    "github_pull_request_poller": {
+      "cron": "*/30 * * * * *",
+      "class": "GitHubPullRequestPollerJob",
+      "description": "Poll GitHub PR status for sessions with PR URLs"
+    },
+    "stale_clone_cleanup": {
+      "cron": "0 * * * *",
+      "class": "StaleCloneCleanupJob",
+      "description": "Clean up stale clone directories from archived sessions"
+    },
+    "github_comment_poller": {
+      "cron": "*/30 * * * * *",
+      "class": "GithubCommentPollerJob",
+      "description": "Poll GitHub PR comments for sessions with PR URLs"
+    },
+    "github_merge_conflict_poller": {
+      "cron": "*/2 * * * *",
+      "class": "GitHubMergeConflictPollerJob",
+      "description": "Poll GitHub PRs for merge conflicts and notify sessions"
+    },
+    "experimental_flag_backfill": {
+      "cron": "*/15 * * * *",
+      "class": "ExperimentalFlagBackfillJob",
+      "description": "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
+    },
+    "cli_status_refresh": {
+      "cron": "*/2 * * * *",
+      "class": "CliStatusRefreshJob",
+      "description": "Refresh CLI tool status cache (gh, claude, fly)"
+    },
+    "catalog_refresh": {
+      "cron": "*/15 * * * *",
+      "class": "CatalogRefreshJob",
+      "description": "Refresh catalog repo (skills, servers, agent roots) from tadasant/zimmer-catalog"
+    },
+    "queue_recovery_mode_expiry": {
+      "cron": "* * * * *",
+      "class": "QueueRecoveryModeExpiryJob",
+      "description": "Lift queue recovery mode once its TTL has elapsed (runs on `agents`, the queue recovery mode never pauses)"
+    },
+    "slack_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "SlackTriggerPollerJob",
+      "description": "Poll Slack channels for triggers and create sessions"
+    },
+    "slack_trigger_health_check": {
+      "cron": "45 * * * *",
+      "class": "SlackTriggerHealthCheckJob",
+      "description": "Detect Slack trigger feeds that have silently stopped firing and alert"
+    },
+    "schedule_trigger": {
+      "cron": "* * * * *",
+      "class": "ScheduleTriggerJob",
+      "description": "Check schedule triggers and create sessions when due"
+    },
+    "refresh_mcp_oauth_tokens": {
+      "cron": "*/30 * * * *",
+      "class": "RefreshMcpOauthTokensJob",
+      "description": "Proactively refresh MCP OAuth tokens before they expire"
+    },
+    "refresh_x_oauth_tokens": {
+      "cron": "*/15 * * * *",
+      "class": "RefreshXOauthTokensJob",
+      "description": "Proactively refresh X (Twitter) OAuth access tokens before they expire"
+    },
+    "transcript_archive": {
+      "cron": "*/10 * * * *",
+      "class": "TranscriptArchiveJob",
+      "description": "Incrementally build/update transcript archive zip file"
+    },
+    "warm_skills_cache": {
+      "cron": "0 */4 * * *",
+      "class": "WarmSkillsCacheJob",
+      "description": "Warm the Claude skills cache for follow-up prompt slash command typeahead"
+    },
+    "cleanup_expired_elicitations": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupExpiredElicitationsJob",
+      "description": "Expire pending elicitations past their expiration time"
+    },
+    "empty_trash": {
+      "cron": "0 * * * *",
+      "class": "EmptyTrashJob",
+      "description": "Permanently delete clones for trashed sessions past retention period"
+    },
+    "claude_code_update": {
+      "cron": "0 6 * * *",
+      "class": "ClaudeCodeUpdateJob",
+      "description": "Update Claude Code CLI to the latest version"
+    },
+    "refresh_runtime_auth_tokens": {
+      "cron": "*/5 * * * *",
+      "class": "RefreshRuntimeAuthTokensJob",
+      "description": "Proactively refresh runtime login-credential tokens before they expire (fans out per runtime)"
+    },
+    "cleanup_stale_triggers": {
+      "cron": "15 * * * *",
+      "class": "CleanupStaleTriggersJob",
+      "description": "Destroy orphaned one-time wake-up triggers (archived target session or lapsed schedule)"
+    },
+    "zombie_reaper": {
+      "cron": "*/5 * * * *",
+      "class": "ZombieReaperJob",
+      "description": "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)"
+    },
+    "system_health_monitor": {
+      "cron": "*/2 * * * *",
+      "class": "SystemHealthMonitorJob",
+      "description": "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    }
+  }
+}
