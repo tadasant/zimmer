@@ -8063,6 +8063,186 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_match(/session continues on the servers that did connect/, log_text)
   end
 
+  # The verbatim failure Claude Code recorded for the stdio server @pulsemcp/pulse-fetch
+  # across six production sessions (most recently 8135), in the shape McpLogPollerService
+  # persists it: the server's own stderr first, then the transport's summary. The server
+  # ran its startup auth health check, printed the rejection, and exited — so the transport
+  # saw nothing but "Connection closed" (GitHub issue #645).
+  STDIO_HEALTH_CHECK_CREDENTIAL_ERROR =
+    "Server stderr: Pulse Fetch starting with services: native, BrightData\n" \
+    "Running authentication health checks...\n" \
+    "BrightData: Invalid API key - authentication failed | " \
+    "Connection failed after 3941ms (CONNECTION_CLOSED): Connection closed"
+
+  test "check_and_handle_mcp_failure leaves a stdio server that died on its own auth health check out on the FIRST attempt" do
+    # Before #645 this rode the full 30s + 60s + 120s ladder — three terminate/resume
+    # cycles to reach a verdict the first attempt already had — and then reported
+    # "did not connect after 3 retries" instead of naming the rejected credential.
+    @session.update!(
+      status: :running,
+      mcp_servers: [ "slack-workspace" ],
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "slack-workspace", "status" => "failed", "error" => STDIO_HEALTH_CHECK_CREDENTIAL_ERROR }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_nil @session.metadata["mcp_retry_count"],
+      "a server that failed its own credential health check must not ride the retry ladder"
+    assert_not_equal "failed", @session.status, "definitive is not fatal — the session runs on without it"
+    assert_equal [ "slack-workspace" ], @session.metadata["mcp_degraded_servers"].map { |s| s["name"] }
+    assert_equal "their credentials were rejected", @session.metadata["mcp_degraded_servers"].first["reason"]
+
+    # The operator-facing message names the real cause and the variable to fix,
+    # rather than restating the whole startup transcript.
+    log_buffer.flush
+    log_text = @session.logs.pluck(:content).join("\n")
+    assert_match(/BrightData: Invalid API key - authentication failed/, log_text)
+    assert_match(/authenticates with a static token, not OAuth/, log_text)
+    assert_match(/SLACK_BOT_TOKEN/, log_text)
+    assert_no_match(/did not connect after \d+ retries/, log_text)
+  end
+
+  test "check_and_handle_mcp_failure still rides the retry ladder when stderr does not say the credentials were rejected" do
+    # The false-positive guard, in the direction that fails silently: a genuinely
+    # transient stdio crash still gets its three attempts. This is the real
+    # ERR_UNSUPPORTED_DIR_IMPORT signature — captured stderr, ending in the same
+    # bare "Connection closed" the credential rejection ends in.
+    transient_error =
+      "Server stderr: node:internal/modules/esm/resolve:263\n" \
+      "Error [ERR_UNSUPPORTED_DIR_IMPORT]: Directory import '/clone/.npm-cache/x/zod/v4' " \
+      "is not supported resolving ES modules | " \
+      "Connection failed after 1436ms: MCP error -32000: Connection closed"
+
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "slack-workspace", "status" => "failed", "error" => transient_error }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_equal 1, @session.metadata["mcp_retry_count"]
+    assert_equal "mcp_retry", @session.metadata["paused_by"]
+    assert_nil @session.metadata["mcp_degraded_servers"]
+  end
+
+  test "check_and_handle_mcp_failure keeps the credential-rejection match scoped to the server's own stderr" do
+    # Same words, but spoken by the transport rather than by the child process — and in
+    # the second case with a stderr entry sitting right beside it in the same blob,
+    # which is how McpLogPollerService joins a server's entries. Requiring the marker
+    # and the phrase in the SAME segment is what keeps connection noise from silently
+    # stopping the retries.
+    [
+      "Connection failed after 1200ms: authentication failed",
+      "Server stderr: listening on stdio | Connection failed after 1200ms: authentication failed"
+    ].each do |transport_error|
+      @session.update!(
+        status: :running,
+        metadata: (@session.metadata || {}).except("mcp_retry_count", "paused_by"),
+        custom_metadata: {
+          "should_fail_session" => true,
+          "mcp_failed_servers" => [
+            { "name" => "slack-workspace", "status" => "failed", "error" => transport_error }
+          ],
+          "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace"
+        }
+      )
+
+      job = AgentSessionJob.new
+      job.process_manager = MockProcessManager.new
+      job.broadcast_service = BroadcastService.new
+      log_buffer = LogBuffer.new(@session)
+
+      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+      assert_equal 1, @session.reload.metadata["mcp_retry_count"],
+        "#{transport_error.inspect} must stay on the retry ladder"
+      assert_nil @session.metadata["mcp_degraded_servers"]
+    end
+  end
+
+  test "check_and_handle_mcp_failure never routes a stderr credential rejection to the session-killing oauth_required branch" do
+    # An OAuth-capable server keeps its existing behaviour — the retry ladder, then
+    # degrade. The widened match can only ever reach the definitive-but-survivable
+    # branch, so a false positive costs three retries at most, never the transcript.
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "notion", "status" => "failed", "error" => STDIO_HEALTH_CHECK_CREDENTIAL_ERROR }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: notion"
+      }
+    )
+    McpOauthCredentialInjector.stubs(:oauth_capable_server?).with("notion").returns(true)
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_nil @session.metadata["failure_reason"]
+    assert_nil @session.metadata["oauth_required_servers"]
+    assert_equal 1, @session.metadata["mcp_retry_count"]
+  end
+
+  test "server_rejected_credentials? requires both a stderr marker and a credential-rejection phrase" do
+    job = AgentSessionJob.new
+
+    assert job.send(:server_rejected_credentials?, STDIO_HEALTH_CHECK_CREDENTIAL_ERROR)
+    assert job.send(:server_rejected_credentials?, "Server stderr: error: invalid_api_key")
+    assert job.send(:server_rejected_credentials?, "Server stderr: FATAL: invalid API token")
+
+    # Phrase without the marker, marker without the phrase, and neither.
+    assert_not job.send(:server_rejected_credentials?, "authentication failed")
+    assert_not job.send(:server_rejected_credentials?, "Server stderr: listening on 401 sockets")
+    assert_not job.send(:server_rejected_credentials?, "Connection closed")
+    assert_not job.send(:server_rejected_credentials?, nil)
+
+    # Both present, but in different joined segments: the phrase is the transport's,
+    # not the server's, so it does not count.
+    assert_not job.send(
+      :server_rejected_credentials?,
+      "Server stderr: listening on stdio | Connection failed after 1200ms: authentication failed"
+    )
+  end
+
+  test "credential_rejection_detail picks the rejection line out of a captured stderr blob" do
+    job = AgentSessionJob.new
+
+    assert_equal "BrightData: Invalid API key - authentication failed",
+      job.send(:credential_rejection_detail, STDIO_HEALTH_CHECK_CREDENTIAL_ERROR)
+    assert_nil job.send(:credential_rejection_detail, STATIC_CREDENTIAL_401_ERROR),
+      "a 401 with no rejection wording falls back to reporting the whole error"
+  end
+
   test "check_and_handle_mcp_failure still classifies a 401 from an OAuth-capable server as oauth_required" do
     # The other half of the contract: genuine OAuth servers must keep reaching the banner,
     # and must carry a usable server_url (a nil url renders a dead Authorize button).

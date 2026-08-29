@@ -166,6 +166,28 @@ classifies the failure and takes one of three routes:
 | Anything else, first three times | The retry ladder: `MAX_MCP_CONNECTION_RETRIES = 3`, backing off 30s / 60s / 120s. Most connect failures are transient — a server still starting after a deploy, an `npx` cache race — and self-heal here. |
 | Anything else, definitively | The server is **left out** and the session runs on. Also taken immediately, with no retries, for a static credential the provider rejected: a wrong API token does not become right in 30 seconds. |
 
+"A static credential the provider rejected" is read from two places, because a server can name the
+rejection in words the transport's own error never carries. A stdio server that runs a credential
+health check at startup and exits when it fails hands the runtime nothing but `Connection closed`;
+what the provider actually said is only in the text the server printed on its **own stderr**, which
+`McpLogPollerService` folds into the same error blob, joining every entry it saw with `" | "`:
+
+```
+Server stderr: BrightData: Invalid API key - authentication failed | Connection failed after 3941ms (CONNECTION_CLOSED): Connection closed
+```
+
+So the classifier reads that blob twice. The broad `AUTH_ERROR_PATTERN` (`401`, `unauthorized`,
+`oauth`, `invalid_token`) covers what the transport says. A much narrower check covers what the
+child process said: a `Server stderr:` marker **and** a phrase whose whole meaning is "the
+credential was refused" (`invalid api key`, `authentication failed`, `bad credentials`), both in the
+**same** joined segment — otherwise a transport-level `Connection failed: authentication failed`
+sitting beside an unrelated stderr line would read as something the server never reported.
+
+Both narrowings are deliberate, because a false positive here fails silently: it stops retrying a
+server that would have connected, and nothing errors. So the stderr check never fires on the broad
+pattern's words, and it never routes to the fatal `oauth_required` branch — an OAuth-capable server
+keeps the ladder ([#645](https://github.com/tadasant/zimmer/issues/645)).
+
 Leaving a server out means:
 
 - It is marked `failed` in `mcp_servers_status`, so the session page and the JSON consumers show it red.
