@@ -57,6 +57,28 @@ class DetachedNodeErrorTranslationTest < ActiveSupport::TestCase
     assert_equal :visible, DetachedNodeErrorTranslation.translating { :visible }
   end
 
+  # A stand-in for the node class, where every read raises what Chrome raises for
+  # a detached handle. Prepending the translation over it exercises each wrapper
+  # without a browser.
+  DETACHED_READER = Class.new do
+    def visible? = raise(Selenium::WebDriver::Error::UnknownError, CDP_MESSAGE)
+    def visible_text = raise(Selenium::WebDriver::Error::UnknownError, CDP_MESSAGE)
+    def all_text = raise(Selenium::WebDriver::Error::UnknownError, CDP_MESSAGE)
+  end
+
+  test "every read Capybara performs on a resolved handle is translated" do
+    # `Capybara::Node::Document#text` is `find(:xpath, "/html").text`, so the
+    # visibility filter and the text read are two chances to touch the same
+    # detached handle. Covering only the first leaves `assert_text` exposed.
+    node = Class.new(DETACHED_READER) { prepend DetachedNodeErrorTranslation }.new
+
+    %i[visible? visible_text all_text].each do |reader|
+      assert_raises(Selenium::WebDriver::Error::StaleElementReferenceError, reader.to_s) do
+        node.public_send(reader)
+      end
+    end
+  end
+
   test "install! lands ahead of Capybara's own visible? on the node class Chrome uses" do
     DetachedNodeErrorTranslation.install!
 

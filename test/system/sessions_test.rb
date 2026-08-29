@@ -624,15 +624,18 @@ class SessionsTest < ApplicationSystemTestCase
     assert_text "Session #{session.id}"
   end
 
-  # Test default goal selection
-  #
-  # Both branches assert, and that is the point: the catalog's default root
-  # (`general-agent`) declares no `default_goal`, so a body guarded on one runs no
-  # assertions at all — a vacuous pass that survives the form pre-selecting
-  # nothing. A root with a default goal has to pre-select it; a root without one
-  # has to leave the field empty rather than invent a goal.
+  # The assertions are unconditional, which is the point: the catalog's default
+  # root (`general-agent`) declares no `default_goal`, so a body guarded on one
+  # runs nothing at all and passes while the form pre-selects whatever it likes. A
+  # root with a default goal has to pre-select it; a root without one has to leave
+  # the field empty rather than invent a goal.
   test "new session form selects default goal for default agent root" do
     visit new_session_url
+
+    # The field is server-rendered empty and filled by the goal controller on
+    # connect, and the empty case's expected value is "" — so reading before the
+    # controller runs would agree with the right answer for the wrong reason.
+    wait_for_stimulus_controller("goal")
 
     default_agent_root = AgentRootsConfig.default
     assert default_agent_root, "the new session form has no default agent root to pre-select a goal for"
