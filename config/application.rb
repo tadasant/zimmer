@@ -14,8 +14,8 @@ Bundler.require(*Rails.groups)
 require_relative "connection_budget"
 
 # The GoodJob cron table, once, for all three environments that have one. Not autoloaded:
-# config/environments/*.rb reads it, and those run before eager loading -- a cron table
-# that failed to load would boot a worker with an empty schedule and no error.
+# config/environments/*.rb reads it, and those run before autoload paths are configured,
+# so the constant has to already exist by then.
 require_relative "cron_schedule"
 
 module Zimmer

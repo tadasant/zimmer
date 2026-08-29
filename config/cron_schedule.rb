@@ -1,40 +1,36 @@
 # frozen_string_literal: true
 
-# The GoodJob cron table, written once.
+# The GoodJob cron table: every scheduled job, and the environments each one runs in.
 #
-# WHY THIS FILE EXISTS
-# --------------------
-# The schedule used to be three separate `config.good_job.cron = { ... }` literals, one
-# per environment file. For the entries production and staging shared, every cron
-# expression and every job class was byte-identical -- roughly 190 lines of configuration
-# whose only job was to stay identical, maintained by hand.
+# WHY IT LIVES HERE
+# -----------------
+# A cron entry that is absent does not error, does not log and does not alert -- the job
+# simply never runs. `SlackTriggerHealthCheckJob`'s own header explains that it exists
+# because a Slack feed "went dark for days" before anyone noticed; a schedule that can
+# lose an entry without saying so is the same failure one level up, and a schedule kept
+# in three copies is how an entry gets lost.
 #
-# It had already drifted, and the drift was invisible. A cron entry that is missing does
-# not error, does not log, and does not alert: the job simply never runs.
-# `SlackTriggerHealthCheckJob`'s own header explains that it exists because a Slack feed
-# "went dark for days" before anyone noticed -- and at the time of this refactor it was
-# itself scheduled in production and development, but not staging. Nothing recorded
-# whether that was deliberate.
-#
-# So the table lives here, once, and each entry names the environments it runs in. An
-# environment that skips a job now says so in a `%i[...]` list, which is a statement a
-# reviewer can disagree with, rather than an absence nobody can see.
+# So there is one table, and an environment that skips a job says so in a `%i[...]` list
+# a reviewer can disagree with rather than by an absence nobody diffs.
+# `test/config/cron_schedule_test.rb` pins the resolved hash for every environment
+# against `test/fixtures/files/good_job_cron_schedule.json`.
 #
 # LOAD ORDER
 # ----------
-# `config/environments/*.rb` runs during `Rails.application.initialize!`, BEFORE eager
-# loading, so nothing here can be autoloaded -- and GoodJob reads `config.good_job.cron`
-# at boot in the worker process, so getting this wrong boots a worker with no schedule
-# and no error. `config/application.rb` requires this file explicitly, the same way it
-# requires `config/connection_budget.rb`. Keep it plain Ruby with no Rails dependencies.
+# `config/environments/*.rb` reads this during `Rails.application.initialize!`, before
+# autoload paths are configured, so nothing here can be autoloaded. `config/application.rb`
+# requires it explicitly, the same way it requires `config/connection_budget.rb`. Keep it
+# plain Ruby with no Rails dependencies.
 #
 # ADDING A JOB
 # ------------
 # 1. Add an entry below with the environments it should run in.
-# 2. Update the expected schedule in `test/config/cron_schedule_test.rb` -- it pins the
-#    fully resolved hash per environment, so a new job, a changed cadence or a dropped
-#    entry all show up as a failing diff rather than as silence.
-# 3. Add it to the table in `docs/src/content/docs/operate/background-jobs.md`.
+# 2. Regenerate `test/fixtures/files/good_job_cron_schedule.json` and read the diff. That
+#    file pins the resolved hash per environment, so a new job, a changed cadence or a
+#    dropped entry shows up as a failing test rather than as silence. The command is in
+#    `docs/src/content/docs/operate/background-jobs.md`.
+# 3. Add a row to the table in that same page. The test asserts every scheduled class
+#    appears there.
 module CronSchedule
   module_function
 
@@ -42,8 +38,15 @@ module CronSchedule
   # GoodJob's cron, and a scheduled sweep firing mid-test would be a source of flakes.
   ENVIRONMENTS = %i[production staging development].freeze
 
-  # Keys GoodJob itself reads out of each entry, in the order it wants them.
+  # The keys `for` hands to GoodJob. `GoodJob::CronEntry` reads more than these -- `set`,
+  # `args`, `kwargs`, `enabled_by_default` -- so an entry needing one of those has to be
+  # added here AND to `for`. Writing it on an entry alone would be silently discarded,
+  # which is why `validate!` rejects any key it does not recognise.
   GOOD_JOB_KEYS = %i[cron class description].freeze
+
+  # Every key an entry may carry. Anything else is a typo, or a GoodJob option `for`
+  # would drop on the floor.
+  ENTRY_KEYS = (GOOD_JOB_KEYS + %i[environments cron_overrides]).freeze
 
   # Every entry:
   #
@@ -55,13 +58,16 @@ module CronSchedule
   #   environments:    which environments schedule it. Not optional: a job that runs
   #                    everywhere still has to say so.
   #   cron_overrides:  optional, `{ environment => cron }` for an entry that runs on a
-  #                    different cadence somewhere. Nothing needs one today; it is here
-  #                    so that the next environment-specific cadence is a one-line
-  #                    written difference instead of a reason to fork the table again.
+  #                    different cadence somewhere. No entry needs one; it is the seam
+  #                    tadasant/zimmer#457 asked for, so that an environment-specific
+  #                    cadence is a written difference rather than a reason to fork the
+  #                    table again.
   #
-  # Development runs a deliberate subset. Broadly: nothing that spends money or quota,
-  # nothing that pages #eng-alerts, and nothing that reaps the deployed droplet's disk.
-  # Where the reason is more specific than that, it is written on the entry.
+  # Development runs a deliberate subset: nothing that spends money or quota, and nothing
+  # that reaps the deployed droplet's disk. Paging is not what decides it --
+  # AlertService::ALERTING_ENVIRONMENTS is production and staging, so a monitor scheduled
+  # in development cannot reach #eng-alerts. Where the reason for an omission is more
+  # specific than that, it is written on the entry.
   ENTRIES = {
     outcome_analysis_batch_pump: {
       cron: "* * * * *", # Every minute — the engine behind "Analyze All" concurrency
@@ -169,13 +175,13 @@ module CronSchedule
       description: "Poll GitHub for label-added and new-issue trigger conditions and create sessions",
       environments: %i[production staging]
     },
-    # UNREVIEWED DIVERGENCE, inherited from the pre-refactor environment files. Staging
-    # does not run this; production and development do. The reason on record lives in
-    # test/config/cron_schedule_test.rb's NOT_ON_STAGING list -- "alerting canaries, and a
-    # staging copy would double-page on production's own signals" -- and development
-    # running it anyway is hard to square with that. Nobody has ruled on it; this refactor
-    # preserved the behaviour rather than changing it, so the omission is now at least
-    # written down. tadasant/zimmer#686 is the open decision.
+    # Staging does not run this; production and development do. The reason on record
+    # (test/config/cron_schedule_test.rb's NOT_ON_STAGING) is that it is an alerting
+    # canary and a staging copy would double-page on production's own signals. That reason
+    # came with the schedule rather than from a decision, and it is only about staging:
+    # AlertService::ALERTING_ENVIRONMENTS excludes development, so the development copy
+    # cannot page anything. Staging can, so whether staging should run it is a real and
+    # open question -- tadasant/zimmer#686.
     slack_trigger_health_check: {
       cron: "45 * * * *", # Every hour at minute 45 (offset from other hourly jobs)
       class: "SlackTriggerHealthCheckJob",
@@ -324,9 +330,8 @@ module CronSchedule
     # laptop (VPN, captive portal, offline) would waste I/O and flash a false "network
     # egress degraded" banner locally.
     #
-    # Staging is the UNREVIEWED DIVERGENCE, inherited from the pre-refactor environment
-    # files, on the same footing as slack_trigger_health_check above. tadasant/zimmer#686
-    # is the open decision.
+    # Staging is the open question, on the same footing as slack_trigger_health_check
+    # above -- tadasant/zimmer#686.
     egress_health_check: {
       cron: "* * * * *", # Every minute
       class: "EgressHealthCheckJob",
@@ -345,7 +350,7 @@ module CronSchedule
   # `{ name => { cron:, class:, description: } }`.
   #
   # `entries` is a seam for the tests, which exercise the resolver against a table of
-  # two entries rather than against the forty-odd real ones. Nothing else passes it.
+  # three entries rather than against the forty-odd real ones. Nothing else passes it.
   def for(environment, entries = ENTRIES)
     environment = environment.to_sym
     unless ENVIRONMENTS.include?(environment)
@@ -356,7 +361,7 @@ module CronSchedule
       next unless entry[:environments].include?(environment)
 
       schedule[name] = {
-        cron: entry[:cron_overrides]&.fetch(environment, nil) || entry[:cron],
+        cron: entry.dig(:cron_overrides, environment) || entry[:cron],
         class: entry[:class],
         description: entry[:description]
       }
@@ -364,13 +369,20 @@ module CronSchedule
   end
 
   # Run at load, so a malformed table fails the boot it would otherwise pass silently.
-  # An entry that names an environment nobody schedules, or an override for an
-  # environment the entry does not run in, is a job that never fires -- the exact
-  # failure this file exists to make loud.
+  # An entry that names an environment nobody schedules, an override for an environment
+  # the entry does not run in, or a key `for` would quietly drop is a job that does not
+  # run as written -- the exact failure this file exists to make loud.
   def validate!(entries = ENTRIES)
     entries.each do |name, entry|
       GOOD_JOB_KEYS.each do |key|
         raise "cron entry #{name.inspect} is missing #{key.inspect}" if entry[key].nil?
+      end
+
+      stray = entry.keys - ENTRY_KEYS
+      if stray.any?
+        raise "cron entry #{name.inspect} carries keys nothing reads: #{stray.inspect}. " \
+              "A misspelled key, or a GoodJob option (set/args/kwargs/enabled_by_default) " \
+              "that `for` would discard -- teach `for` about it rather than writing it here"
       end
 
       environments = entry[:environments]

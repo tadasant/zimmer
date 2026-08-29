@@ -41,8 +41,9 @@ with nothing to say whether that was deliberate. **A cron entry that is absent d
 not log and does not alert** — the job simply never runs — so an omission has to be a written
 statement rather than a line nobody diffs.
 
-The entries below are the production schedule. See [What runs where](#what-runs-where) for the
-environments that run less than all of it.
+The table below is the production schedule; `test/config/cron_schedule_test.rb` asserts every
+scheduled class appears in it. See [What runs where](#what-runs-where) for the environments that run
+less than all of it.
 
 From `config.good_job.cron`:
 
@@ -54,6 +55,7 @@ From `config.good_job.cron`:
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
 | 1m | `QueueRecoveryModeExpiryJob` | Lift queue recovery mode once its TTL has elapsed |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
+| 1m | `OutcomeAnalysisBatchPumpJob` | Advance every running Outcomes "Analyze All" batch: reconcile in-flight analyses, spawn the next wave |
 | 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
 | 2m | `GitHubMergeConflictPollerJob` | Detect merge conflicts on open PRs |
 | 2m | `CliStatusRefreshJob` | Refresh the `gh` / `claude` / `codex` version cache |
@@ -77,9 +79,11 @@ From `config.good_job.cron`:
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
+| hourly :15 | `CleanupStaleTriggersJob` | Destroy orphaned one-time wake-up triggers — an archived target session, or a schedule that has lapsed |
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
+| daily 06:00 | `ClaudeCodeUpdateJob` | Update the Claude Code CLI to the latest version |
 | daily 08:00 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
-| — | `ZombieReaperJob`, `DeferredCloneCleanupJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
+| — | `ZombieReaperJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
 :::note[Sub-minute cron works]
 The `*/30 * * * * *` entries are six-field cron, with a leading seconds field, and they do what they
@@ -107,34 +111,46 @@ adding a job means updating the snapshot in the same commit, deliberately, in a 
 see. The snapshot was captured from the three environment literals as they stood before #457, which
 is what makes that refactor provably behaviour-preserving.
 
+Regenerate it with the command below, then **read the diff** — committing it blind defeats the point
+of a pin:
+
+```sh
+bin/rails runner 'puts JSON.pretty_generate(CronSchedule::ENVIRONMENTS.to_h { |e| [e.to_s, CronSchedule.for(e)] })' \
+  > test/fixtures/files/good_job_cron_schedule.json
+```
+
 | Environment | Runs |
 | --- | --- |
 | `production` | everything |
 | `staging` | everything except `EgressHealthCheckJob` and `SlackTriggerHealthCheckJob` |
-| `development` | a deliberate subset: nothing that spends money or quota, nothing that pages `#eng-alerts`, nothing that reaps the deployed droplet's disk |
+| `development` | a deliberate subset: nothing that spends money or quota, nothing that reaps the deployed droplet's disk. Paging is not the criterion — `AlertService::ALERTING_ENVIRONMENTS` is `production` and `staging`, so a monitor scheduled in development cannot reach `#eng-alerts` anyway |
 | `test` | nothing. The suite does not run GoodJob's cron; a sweep firing mid-test would be a source of flakes |
 
 :::caution[The two staging omissions are inherited, not decided]
 `EgressHealthCheckJob` and `SlackTriggerHealthCheckJob` run in production and not in staging. The
 reason on record — they page `#eng-alerts`, and a staging copy would double-page on production's own
-signals — predates #457, and nobody has ruled on it. Development schedules
-`SlackTriggerHealthCheckJob` anyway, which that reason does not explain.
+signals — came with the schedule rather than from anyone ruling on it. It is only ever an argument
+about staging: development schedules `SlackTriggerHealthCheckJob` too, and cannot page from there,
+because `AlertService::ALERTING_ENVIRONMENTS` is `production` and `staging`. Staging *is* in that
+list, so the question is real.
 
-#457 preserved the behaviour rather than changing it, so the divergence is now at least declared on
-the entries and in the test's `NOT_ON_STAGING` list. Whether staging *should* run them is
+#457 preserved the behaviour rather than changing it, so the divergence is at least declared on the
+entries and in the test's `NOT_ON_STAGING` list. Whether staging should run them is
 [#686](https://github.com/tadasant/zimmer/issues/686), still open.
 :::
 
-:::note[Adding a job is a four-file change, and each file fails loudly if you miss it]
+:::note[Adding a job is a four-file change, and every one of them fails CI if you miss it]
 1. An entry in `config/cron_schedule.rb`, naming its `environments:`.
-2. The snapshot in `test/fixtures/files/good_job_cron_schedule.json` (the pin fails otherwise).
-3. A row in the table above.
+2. The snapshot in `test/fixtures/files/good_job_cron_schedule.json` — the pin fails otherwise.
+3. A row in the table above — the docs assertion fails otherwise.
 4. `include SingletonSweep`, if it is a recurring sweep on the `default` queue —
    `test/jobs/recurring_sweep_concurrency_test.rb` enforces that.
 
 `config/cron_schedule.rb` is required from `config/application.rb`, not autoloaded: environment
-files run before eager loading, and GoodJob reads `config.good_job.cron` at boot in the worker
-process, so an autoloaded constant here would boot a worker with no schedule.
+files run before autoload paths are configured, so `CronSchedule` has to already exist when
+`config.good_job.cron = CronSchedule.for(:production)` runs. Getting that wrong is at least loud —
+the boot dies with `NameError` during `:load_environment_config` rather than starting a worker with
+a partial schedule.
 :::
 
 ## A deleted session takes its directories with it

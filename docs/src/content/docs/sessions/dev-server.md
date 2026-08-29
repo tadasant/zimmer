@@ -129,13 +129,16 @@ the mechanism the script relies on.)
   environment are present. It is not a sandbox. It binds `127.0.0.1` by default for that
   reason; `BINDING=0.0.0.0` would offer it to every other container on the Kamal bridge.
 
-:::caution[A dev boot runs the whole cron schedule]
+:::caution[A dev boot runs the development cron schedule]
 `config/environments/development.rb` sets `config.good_job.enable_cron = true`, and
-GoodJob runs `:async` in-process — so booting the app on a live host starts Zimmer's
-entire cron schedule against a database that is *empty*, on a filesystem that is not.
+GoodJob runs `:async` in-process — so booting the app on a live host starts every job
+`CronSchedule.for(:development)` resolves to (see
+[Background jobs](/operate/background-jobs/#what-runs-where)) against a database that is
+*empty*, on a filesystem that is not.
 
 "Empty database, nothing to act on" is the wrong intuition for the set-difference
-sweeps: `OrphanCloneFilesystemCleanupJob` and `StaleCloneCleanupJob` define an orphan as
+sweeps. `StaleCloneCleanupJob` is on the development schedule and
+`OrphanCloneFilesystemCleanupJob` is not, but both define an orphan as
 a directory under `~/.zimmer/clones` with no owning `Session` row, so an empty database
 makes *every live clone* look orphaned. They are safe here only because of a specific
 fence — `SWEEPS_DEFAULT_DURABLE_ROOT = %w[production staging]` and
