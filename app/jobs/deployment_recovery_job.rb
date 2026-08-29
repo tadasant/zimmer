@@ -114,6 +114,15 @@ class DeploymentRecoveryJob < ApplicationJob
     # No job ID means definitely orphaned
     return true if session.running_job_id.blank?
 
+    # A job executing on a thread in this process is driving the session, whatever its
+    # row says. Asked BEFORE the two row-state checks below, because a phantom re-pick
+    # makes the row lie: GoodJob stamps `error` when it re-picks a row that already has
+    # a `performed_at`, and `finished_at` when the resulting InterruptError is rescued —
+    # while the original execution runs on. Both checks would then call a healthy
+    # session orphaned and start a second agent against the same clone. See
+    # AgentSessionJob::LIVE_EXECUTIONS.
+    return false if AgentSessionJob.executing?(session.running_job_id)
+
     # Check if the job exists and is healthy
     job = GoodJob::Job.find_by(active_job_id: session.running_job_id)
 

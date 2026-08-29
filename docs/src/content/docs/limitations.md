@@ -3465,6 +3465,32 @@ cgroup-scoped one — the incident is still written to
 
 ---
 
+## The phantom re-pick guard is process-local
+
+`AgentSessionJob::LIVE_EXECUTIONS` is what tells a real interruption apart from a row GoodJob
+re-picked out from under a live execution — see [a live execution is not an
+interruption](/sessions/lifecycle/#a-live-execution-is-not-an-interruption). It is an in-memory
+set, and that is deliberate: a worker that genuinely died has to take its entries with it, or the
+guard would stand down on exactly the sessions that need recovering.
+
+The cost is that it only answers for the process it lives in. A re-pick that lands in a *second*
+worker process finds an empty set, concludes nothing is running, and takes the recovery path —
+delivering the nudge this guard exists to suppress. Zimmer's `worker` role is one container on one host running one
+`bundle exec good_job start` (`config/deploy.production.yml`), so today every re-pick lands where
+the entry is; scaling that role horizontally would see the old behaviour return in proportion to
+how often the poll lands on the other process.
+
+There is no durable version of the signal available. GoodJob writes no `locked_by_id` under the
+`:advisory` strategy, so the row itself records nothing about who is executing it, and a PID check
+cannot distinguish a live execution from a [reparented
+orphan](/sessions/spawning/#one-live-agent-process-per-session) whose monitor really did die.
+
+The same set is what `CleanupOrphanedSessionsJob` and `DeploymentRecoveryJob` consult before
+calling a `running` session orphaned, and GoodJob's cron runs inside the worker, so today all
+three actors read the same set. Scaling the `worker` role past one container splits them.
+
+---
+
 ## Two narrow gaps in the InterruptError stand-down
 
 `AgentSessionJob#handle_interrupt_error` stands down when a session has already come to rest — in

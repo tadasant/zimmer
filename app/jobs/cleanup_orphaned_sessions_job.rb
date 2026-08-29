@@ -151,6 +151,17 @@ class CleanupOrphanedSessionsJob < ApplicationJob
       return true  # Orphaned! No job monitoring this running session
     end
 
+    # A job executing on a thread in this process is driving the session, whatever its
+    # row says. This has to be asked BEFORE the two row-state checks below, because a
+    # phantom re-pick makes the row lie: GoodJob stamps `error` when it re-picks a row
+    # that already has a `performed_at`, and `finished_at` when the resulting
+    # InterruptError is rescued — while the original execution runs on, untouched. Both
+    # checks would then call a perfectly healthy session orphaned, pause it out from
+    # under its own agent and start a second one against the same clone. GoodJob's cron
+    # runs inside the worker, so the set this reads is the one the live execution
+    # registered in. See AgentSessionJob::LIVE_EXECUTIONS.
+    return false if AgentSessionJob.executing?(session.running_job_id)
+
     # For sessions with a job ID, check if the job exists and is healthy
     job = GoodJob::Job.find_by(active_job_id: session.running_job_id)
     return true unless job # Job doesn't exist anymore

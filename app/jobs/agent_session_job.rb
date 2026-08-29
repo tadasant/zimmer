@@ -166,6 +166,84 @@ class AgentSessionJob < ApplicationJob
   INTERRUPTED_START_REQUEUE_JITTER = 30.seconds
   INTERRUPTED_START_REQUEUE_COUNT = "interrupted_start_requeue_count"
 
+  # ActiveJob `job_id`s whose #perform is on a thread in THIS process right now.
+  #
+  # This is the evidence that tells a real interruption apart from a phantom re-pick,
+  # and it is the only evidence that can. GoodJob's definition of "interrupted" is one
+  # column: `GoodJob::Job#perform` raises InterruptError whenever it picks a row that
+  # already has `performed_at` set (good_job-4.19.1, app/models/good_job/job.rb). It
+  # never asks whether anything is still executing that row — it cannot, because in the
+  # case it was written for (a worker that died) there is nothing left to ask.
+  #
+  # A row becomes re-pickable the moment its advisory lock goes away, and with the
+  # default `:advisory` strategy that lock is a SESSION-scoped lock on one pooled
+  # Postgres connection, held for the whole execution (AdvisoryLockable#advisory_lock
+  # wraps the perform in `connection_pool.with_connection` — "ensure a sticky
+  # connection; advisory locks are session-scoped and must outlive this query").
+  # For every other job in this app that window is milliseconds. For an agent session
+  # it is the length of an agent's turn: minutes to hours. Lose that one connection
+  # anywhere in that window — a server-side termination, a reset, Postgres saturation
+  # (zimmer#329) — and the lock is released while the agent is still working. The
+  # dequeue scope is `unfinished` (`finished_at IS NULL`) and does not exclude rows
+  # with a `performed_at`, so the poller picks the live row straight back up and
+  # InterruptError is raised against a session that was never interrupted at all.
+  #
+  # A process-local set is exactly the right shape for that question. The re-picked
+  # execution never registers here, and that is the load-bearing part: GoodJob's
+  # InterruptErrors around_perform is declared on ApplicationJob, and a superclass's
+  # around callback wraps its subclasses', so it raises before this class's callback
+  # can add anything. So a hit means a DIFFERENT thread, in this same process, is
+  # inside #perform for this same job right now — which is only true when the lock was
+  # lost out from under a live execution. And a worker that really died takes its set
+  # with it, so the genuine case never sees a false hit.
+  #
+  # `job_id` is the right key because GoodJob re-picks the SAME row: `active_job_id`
+  # is unchanged and ActiveJob's `job_id` round-trips through `serialized_params`, so
+  # the interrupted instance and the live one carry the same id.
+  #
+  # It is deliberately not durable. A re-pick landing in a second worker process would
+  # find an empty set and fall through to the recovery path, which is the safe
+  # direction and today's behaviour. Zimmer's `worker` role is a single container on a
+  # single host running one `bundle exec good_job start`
+  # (`config/deploy.production.yml`), and GoodJob's cron runs inside it too — so both
+  # the re-pick and the recovery sweeps land in the process that holds this set.
+  # docs/limitations.md records the gap that opens if the role is ever scaled out.
+  LIVE_EXECUTIONS = Concurrent::Set.new
+
+  # Is `job_id` executing on a thread in this process right now?
+  #
+  # Public because the two recovery sweeps have to ask it as well. Suppressing the
+  # handler's own nudge is not enough on its own: GoodJob stamps the re-picked row with
+  # an `error` at re-pick time and a `finished_at` when the raise is rescued, and both
+  # `CleanupOrphanedSessionsJob#orphaned_running_session?` and
+  # `DeploymentRecoveryJob#orphaned_running_session?` return true on either of those
+  # *before* they reach any liveness question. So a phantom re-pick that this handler
+  # correctly ignored would still leave a `running` session pointing at a row that reads
+  # finished — and the 5-minute cron would then run the identical cascade under a
+  # different log line. The guard has to be visible to all three actors, not just to the
+  # handler.
+  #
+  # @param job_id [String, nil]
+  # @return [Boolean]
+  def self.executing?(job_id)
+    job_id.present? && LIVE_EXECUTIONS.include?(job_id)
+  end
+
+  # Register this job's execution for as long as it is on a thread here.
+  #
+  # Declared on this class rather than on ApplicationJob because it only means
+  # anything for a job long enough to outlive its own advisory lock — and because
+  # being INSIDE ApplicationJob's callbacks is load-bearing (see LIVE_EXECUTIONS): a
+  # re-picked execution must never reach this block.
+  around_perform do |job, block|
+    LIVE_EXECUTIONS.add(job.job_id)
+    begin
+      block.call
+    ensure
+      LIVE_EXECUTIONS.delete(job.job_id)
+    end
+  end
+
   # Minimum successful run duration (seconds) before resetting SIGTERM retry counter.
   # When a process runs successfully for this duration after a SIGTERM retry,
   # the retry counter is reset to 0, allowing fresh retries for future SIGTERMs.
@@ -2153,6 +2231,39 @@ class AgentSessionJob < ApplicationJob
     session = Session.find_by(id: session_id)
     return unless session
 
+    # Stand down if this job is still executing, here, right now.
+    #
+    # Nothing was interrupted: the row lost its advisory lock while its execution kept
+    # running, and the poller picked the live row back up. See LIVE_EXECUTIONS for the
+    # mechanism and for why a hit cannot be a false positive.
+    #
+    # This is the FIRST guard because it is the only one that is decisive on its own.
+    # The two below reason from session state about a job presumed dead; this one
+    # observes the job itself, and when it fires every inference the others would draw
+    # is beside the point. It is also the cheapest — a set membership, no query.
+    #
+    # Standing down here means standing down completely: no `running_job_id` cleared,
+    # no `paused_by` written, no pause, no nudge. Each of those would be an act against
+    # a session whose agent is mid-turn. Clearing `running_job_id` alone makes the
+    # session read as orphaned to CleanupOrphanedSessionsJob; the pause flips a working
+    # session to `needs_input` behind its own back, and the auto-continue then resumes
+    # it and enqueues a SECOND job against the one live clone. That is the cascade this
+    # guard exists to stop, and it is self-feeding: production session 10360 took 16 of
+    # these in 71 minutes, each fire naming the job the previous fire's nudge had just
+    # spawned, with the agent process alive and never terminated throughout.
+    if self.class.executing?(job_id)
+      Rails.logger.info(
+        "[AgentSessionJob] Skipping InterruptError recovery for session #{session_id}: " \
+        "job #{job_id} is still executing in this process (row re-picked, not interrupted)"
+      )
+      session.logs.create!(
+        content: "Job row was re-picked while this job was still running it — nothing was " \
+                 "interrupted, so recovery left the turn alone.",
+        level: "info"
+      )
+      return
+    end
+
     # Stand down if another job now owns this session.
     #
     # An interrupted row keeps `performed_at` with no lock, which JobLiveness reads as
@@ -2223,6 +2334,12 @@ class AgentSessionJob < ApplicationJob
     # considers interrupted, which in production is a deploy less than a third of the
     # time; calling every one of them a deploy is what made this class of wake-up
     # impossible to reason about from the session's own log.
+    #
+    # The embedded "Interrupted after starting perform at '<time>'" is the useful part
+    # and is why the error message is logged verbatim: subtracting it from this line's
+    # own timestamp gives how long the execution had been running, which is what
+    # separates a row re-picked seconds after a turn ended from one re-picked minutes
+    # into a live one. It is the measurement the guards above were built from.
     session.logs.create!(
       content: "Job interrupted before it finished (worker shutdown, or its row was re-picked): #{error.message}",
       level: "warning"
@@ -2262,11 +2379,26 @@ class AgentSessionJob < ApplicationJob
     # what says "asleep on purpose, waiting on the gate". Recovering one would
     # resume it into the very window that paused it — or, for a session a human
     # parked there from "Pause Until", straight out of the queue they put it in.
+    #
+    # A session parked on an auth outage is the third dormant shape, and it arms
+    # nothing either: AuthOutageParkService writes `auth_outage_reason` and sleeps
+    # the session, and the only thing that wakes it is that service's own sweep
+    # over `metadata->>'auth_outage_reason' IS NOT NULL`. So it matches neither of
+    # the signals above and used to fall through to the recovery path, which
+    # stamps `paused_by: "recovery"` over the park. The auto-continue below then
+    # declines (the session is `waiting`, not `needs_input`) — but the marker is
+    # the part that does the damage: DeploymentRecoveryJob and
+    # CleanupOrphanedSessionsJob both match `[:needs_input, :waiting]` with
+    # `paused_by = 'recovery'`, so within a sweep or two they resume a session
+    # that is parked because every account in the pool is out of quota. Quota
+    # depletion is budget pacing, not a failure signal; a park is a wait, and
+    # this is how the wait got ended early.
     if session.waiting?
       if session.session_id.blank?
         requeue_interrupted_start(session)
         return
-      elsif session.awaiting_scheduled_wake? || SpotSessionPause.paused?(session)
+      elsif session.awaiting_scheduled_wake? || SpotSessionPause.paused?(session) ||
+            AuthOutageParkService.parked?(session)
         stand_down_for_dormant_session(session)
         return
       end
@@ -2370,13 +2502,20 @@ class AgentSessionJob < ApplicationJob
 
   # Stand down on a session that ran and then deliberately went dormant.
   #
-  # The only route from `running` to `waiting` is `execute_pending_sleep`, which
-  # fires inside the pause callback of a turn that ended normally. So a session
-  # that has run and is now `waiting` asked to stop until a wall-clock time.
-  # Nothing was interrupted; waking it would cancel the sleep it just scheduled
-  # and spend a turn telling it about a system event that did not affect it.
+  # Three things put a session that has already run into `waiting`, and all three
+  # are a decision to stop rather than a stall: a scheduled wake-up, a spot-queue
+  # park, and an auth-outage park. Nothing was interrupted in any of them, and
+  # waking one cancels the wait it just entered — a sleeper loses the wake it
+  # scheduled, a queued session jumps the queue, and a session parked because the
+  # account pool is out of quota is resumed into the outage that parked it.
   def stand_down_for_dormant_session(session)
-    waiting_on = SpotSessionPause.paused?(session) ? "its turn in the spot queue" : "a scheduled wake-up"
+    waiting_on = if SpotSessionPause.paused?(session)
+      "its turn in the spot queue"
+    elsif AuthOutageParkService.parked?(session)
+      "the account pool to recover"
+    else
+      "a scheduled wake-up"
+    end
 
     Rails.logger.info(
       "[AgentSessionJob] Skipping InterruptError recovery for session #{session.id}: " \
