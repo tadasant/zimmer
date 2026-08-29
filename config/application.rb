@@ -13,6 +13,11 @@ Bundler.require(*Rails.groups)
 # has to serve it cannot drift apart. Not autoloaded: database.yml reads it.
 require_relative "connection_budget"
 
+# The GoodJob cron table, once, for all three environments that have one. Not autoloaded:
+# config/environments/*.rb reads it, and those run before autoload paths are configured,
+# so the constant has to already exist by then.
+require_relative "cron_schedule"
+
 module Zimmer
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
