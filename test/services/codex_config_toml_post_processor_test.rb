@@ -682,6 +682,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       ELICITATION_REQUEST_URL = "#{ElicitationEndpoint.url}"
       ELICITATION_SESSION_ID = "#{@session.id}"
       ELICITATION_TTL_MS = "#{Elicitation::DEFAULT_EXPIRATION.to_i * 1000}"
+      NPM_CONFIG_CACHE = "#{File.join(@working_dir, '.npm-cache')}"
       [mcp_servers.zimmer]
       url = "http://localhost:3000/mcp?session_id=#{@session.id}"
       [mcp_servers.zimmer.http_headers]
@@ -719,10 +720,34 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
 
     assert tadas.dig("env", "NPM_CONFIG_CACHE").present?
     assert_not_equal tadas.dig("env", "NPM_CONFIG_CACHE"), pulsemcp.dig("env", "NPM_CONFIG_CACHE")
-    assert_nil servers.dig("solo", "env", "NPM_CONFIG_CACHE"),
+    assert_equal File.join(@working_dir, ".npm-cache"), servers.dig("solo", "env", "NPM_CONFIG_CACHE"),
       "a server that shares no package keeps the shared per-clone cache"
     assert_nil tadas["env_vars"],
       "the host-env forwarding rule must go once Zimmer writes the value literally"
+  end
+
+  # Codex is where the lone-server gap is total. CodexRuntimeAdapter sets no
+  # NPM_CONFIG_CACHE on the agent process at all, and Codex builds each stdio
+  # server's environment from a fixed whitelist plus the names in `env_vars` — so
+  # a Codex npx server that was never handed the variable literally resolved
+  # against the host-shared `~/.npm/_npx` (zimmer#595).
+  test "post_process! pins a lone Codex npx server to the shared per-clone npm cache" do
+    write_config(
+      "context7" => {
+        "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ],
+        "env_vars" => [ "NPM_CONFIG_CACHE" ]
+      },
+      "not-npx" => { "command" => "/usr/local/bin/thing", "args" => [ "--serve" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+
+    assert_equal File.join(@working_dir, ".npm-cache"), servers.dig("context7", "env", "NPM_CONFIG_CACHE")
+    assert_nil servers["context7"]["env_vars"],
+      "the host-env forwarding rule must go once Zimmer writes the value literally"
+    assert_nil servers.dig("not-npx", "env", "NPM_CONFIG_CACHE")
   end
 
   private

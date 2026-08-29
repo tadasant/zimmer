@@ -7,7 +7,7 @@
 #
 # Background (see GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109):
 #   Zimmer isolates the npm cache per clone via NPM_CONFIG_CACHE=<working_dir>/.npm-cache
-#   (ClaudeCliAdapter#configure_mcp_env). When concurrent or retried `npx`
+#   (RuntimeConfigPostProcessor#pin_npx_caches_to_clone!). When concurrent or retried `npx`
 #   invocations race into the same shared `_npx/<hash>` directory, the extraction
 #   itself can fail against a partially-populated tree, npm printing tar/rename
 #   errors while it tries to unpack the package into `_npx/<hash>/node_modules/...`:

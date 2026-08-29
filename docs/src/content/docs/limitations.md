@@ -1200,13 +1200,32 @@ received behaves as if the operator never set it. A catalog entry that names the
 without one — the failure that orphaned production session 4388 three times in 31 minutes
 ([#467](https://github.com/tadasant/zimmer/issues/467)). Two edges come with it.
 
-It runs from `ClaudeSpawnEnv#configure_mcp_env`, so a Codex session never calls it. Codex also never
-sets `NPM_CONFIG_CACHE`, so its npx servers install into the host-shared `~/.npm` cache, which the
-guard's clones-base safety check would refuse to touch anyway.
+It runs from `ClaudeSpawnEnv#configure_mcp_env`, so a Codex session never calls it. A Codex session's
+npx servers do install inside the clone — `RuntimeConfigPostProcessor` writes `NPM_CONFIG_CACHE` into
+each entry's own `env` table, so the guard's clones-base safety check would accept the paths — but
+nothing on the Codex spawn path invokes the guard, so a bin target that lost its execute bit there
+stays broken.
 
 And it repairs the tree it finds on the way *in*, so a package that installs broken during a launch
 is repaired on the launch after it — the retry `AgentSessionJob#schedule_mcp_retry` already schedules.
 A session recovers by itself; it does not connect on the first attempt.
+
+### A cold clone pays the npm download for every npx MCP server
+
+`RuntimeConfigPostProcessor` points each npx MCP server's `NPM_CONFIG_CACHE` at the session's clone.
+`NPM_CONFIG_CACHE` moves the *whole* npm cache, not just the `_npx` install root — `_cacache`, the
+tarball store, comes with it. So the packages `bin/preinstall-mcp-packages` warms into the image's
+`~/.npm` at build time are not read by any MCP server, and the first launch in a fresh clone fetches
+every one of them from the registry.
+
+That has been the case on Claude since the per-clone cache landed, and Claude absorbs it with
+`MCP_TIMEOUT=180000` (3 minutes). Zimmer sets no equivalent for Codex, whose own default startup
+timeout is much shorter, so a Codex session on a cold clone is the case most likely to time out on a
+large package. Tracked in [#702](https://github.com/tadasant/zimmer/issues/702).
+
+The fix is not to un-pin the cache — a host-shared cache is what
+[#595](https://github.com/tadasant/zimmer/issues/595) was — but either to warm the clone's cache at
+prepare time or to give Codex entries an explicit startup timeout.
 
 ### No extension can ship in a built image
 

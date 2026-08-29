@@ -954,7 +954,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
             "ELICITATION_POLL_URL" => ElicitationEndpoint.url,
             "ELICITATION_PREFER_HTTP_FALLBACK" => "true",
             "ELICITATION_TTL_MS" => (Elicitation::DEFAULT_EXPIRATION.to_i * 1000).to_s,
-            "ELICITATION_SESSION_ID" => @session.id.to_s
+            "ELICITATION_SESSION_ID" => @session.id.to_s,
+            "NPM_CONFIG_CACHE" => File.join(@working_dir, ".npm-cache")
           }
         }
       }
@@ -996,19 +997,80 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       "the isolated cache must stay inside the clone so CacheClearService still reclaims it"
   end
 
-  # The common case must stay byte-identical: one shared per-clone cache, so npm
-  # still downloads each tarball once.
-  test "post_process! leaves a lone npx server on the shared per-clone npm cache" do
+  # The lone-server case is the one that reached production. A server that shares
+  # its npx package with nobody was given no cache variable at all, so it depended
+  # on inheriting NPM_CONFIG_CACHE from the agent process — and when that did not
+  # happen npx fell back to the user-level `~/.npm/_npx`, shared by every session
+  # on the host and outside every clone-scoped guard Zimmer has (zimmer#595).
+  #
+  # It still shares one cache with the other non-colliding servers, so npm
+  # downloads each tarball once and the disk footprint is unchanged.
+  test "post_process! pins a lone npx server to the shared per-clone npm cache" do
     write_config(
       "context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] },
-      "playwright-custom" => { "command" => "npx", "args" => [ "-y", "@playwright/mcp@latest" ] }
+      "playwright-custom" => { "command" => "npx", "args" => [ "-y", "playwright-stealth-mcp-server@latest" ] }
     )
 
     build_processor.post_process!
 
     servers = read_config["mcpServers"]
-    assert_nil servers.dig("context7", "env", "NPM_CONFIG_CACHE")
-    assert_nil servers.dig("playwright-custom", "env", "NPM_CONFIG_CACHE")
+    shared = File.join(@working_dir, ".npm-cache")
+
+    assert_equal shared, servers.dig("context7", "env", "NPM_CONFIG_CACHE")
+    assert_equal shared, servers.dig("playwright-custom", "env", "NPM_CONFIG_CACHE"),
+      "a server that collides with nothing must still resolve inside the clone, not ~/.npm/_npx"
+  end
+
+  # The isolated roots must stay strictly *below* the shared one, or a colliding
+  # server would be handed the very cache the isolation exists to keep it off.
+  test "post_process! keeps isolated caches distinct from the shared per-clone cache" do
+    write_config(
+      "a" => { "command" => "npx", "args" => [ "-y", "shared-pkg@latest" ] },
+      "b" => { "command" => "npx", "args" => [ "-y", "shared-pkg@latest" ] },
+      "solo" => { "command" => "npx", "args" => [ "-y", "solo-pkg@latest" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcpServers"]
+    shared = File.join(@working_dir, ".npm-cache")
+
+    assert_equal shared, servers.dig("solo", "env", "NPM_CONFIG_CACHE")
+    [ "a", "b" ].each do |name|
+      cache = servers.dig(name, "env", "NPM_CONFIG_CACHE")
+      assert_not_equal shared, cache, "a colliding server must not land on the shared cache"
+      assert cache.start_with?(shared + File::SEPARATOR),
+        "the isolated cache must stay inside the clone so CacheClearService still reclaims it"
+    end
+  end
+
+  # NPM_CONFIG_CACHE means nothing to a server that is not an npx invocation, so
+  # Zimmer leaves those env tables alone.
+  test "post_process! writes no npm cache into a server that does not run npx" do
+    write_config(
+      "some-binary" => { "command" => "/usr/local/bin/thing", "args" => [ "--serve" ] },
+      "an-http-server" => { "type" => "http", "url" => "https://example.com/mcp" }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcpServers"]
+    assert_nil servers.dig("some-binary", "env", "NPM_CONFIG_CACHE")
+    assert_nil servers.dig("an-http-server", "env", "NPM_CONFIG_CACHE")
+  end
+
+  test "post_process! does not override the npm cache a lone catalog entry set explicitly" do
+    write_config(
+      "solo" => {
+        "command" => "npx",
+        "args" => [ "-y", "solo-pkg@latest" ],
+        "env" => { "NPM_CONFIG_CACHE" => "/operators/choice" }
+      }
+    )
+
+    build_processor.post_process!
+
+    assert_equal "/operators/choice", read_config.dig("mcpServers", "solo", "env", "NPM_CONFIG_CACHE")
   end
 
   test "post_process! does not override an npm cache the catalog entry set explicitly" do
