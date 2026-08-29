@@ -5,6 +5,7 @@ class SessionsController < ApplicationController
   include WebUiHumanMessageCapture
   include SessionSearchable
   include PendingMessageDelivery
+  include SessionTranscriptLookup
 
   # Pattern for validating temporary session IDs used for pre-session image uploads
   TEMP_SESSION_ID_PATTERN = /\Atemp_[a-f0-9\-]+\z/
@@ -3473,37 +3474,6 @@ class SessionsController < ApplicationController
   rescue => e
     # Log the error but don't fail the request - the database was already updated
     Rails.logger.error "Failed to run AIR prepare for session #{session.id}: #{e.message}"
-  end
-
-  def get_transcript_directory_for_session(session)
-    # Use working_directory (which includes subdirectory) instead of clone_path
-    # to match Claude Code's project directory naming
-    working_directory = session.metadata&.dig("working_directory")
-    clone_path = session.metadata&.dig("clone_path")
-
-    # Prefer working_directory, fall back to clone_path for backwards compatibility
-    path_to_use = working_directory || clone_path
-    return nil unless path_to_use
-
-    # Validate path is a string and not empty
-    return nil unless path_to_use.is_a?(String) && path_to_use.present?
-
-    # Calculate transcript directory using Claude Code's naming convention
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(path_to_use)
-
-    # Build final path
-    File.join(claude_projects_dir, sanitized_path)
-  rescue => e
-    Rails.logger.error "Failed to get transcript directory: #{e.message}"
-    nil
-  end
-
-  # Find the main transcript file for a session, avoiding nested agent transcripts
-  # Delegates to TranscriptFileLocator for the shared logic
-  def find_main_transcript_file_for_session(session, transcript_dir)
-    TranscriptFileLocator.find_main_transcript(session, transcript_dir)
   end
 
   def session_params

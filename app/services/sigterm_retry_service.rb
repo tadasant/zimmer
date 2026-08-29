@@ -311,7 +311,8 @@ class SigtermRetryService
   # @param working_directory [String] The working directory for finding the transcript
   # @return [Boolean] true if conversation exists, false otherwise
   def conversation_exists?(working_directory)
-    transcript_dir = get_transcript_directory(working_directory)
+    transcript_dir = TranscriptRuntime.source_for(session, file_system: file_system)
+      .transcript_directory(working_directory: working_directory)
     return false unless transcript_dir && file_system.directory?(transcript_dir)
 
     transcript_file = TranscriptFileLocator.find_main_transcript(session, transcript_dir, file_system: file_system)
@@ -327,21 +328,5 @@ class SigtermRetryService
     rescue JSON::ParserError
       false
     end
-  end
-
-  # Get the transcript directory for the working directory
-  # @param working_directory [String] The working directory
-  # @return [String, nil] The transcript directory path or nil
-  def get_transcript_directory(working_directory)
-    return nil unless working_directory.present?
-
-    require "path_sanitizer"
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(working_directory)
-    File.join(claude_projects_dir, sanitized_path)
-  rescue => e
-    @logger.error("Failed to get transcript directory", error: e.message)
-    nil
   end
 end
