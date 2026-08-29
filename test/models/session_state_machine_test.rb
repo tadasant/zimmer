@@ -1937,6 +1937,128 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       "make each one's marker stale to the other and suppress both"
   end
 
+  # === Which pauses announce themselves (issue #328) ===
+  #
+  # `running → needs_input` covers several unrelated situations, and only some of
+  # them mean "a person is now needed here". The announcement — the settled wake
+  # plus the debounced push — is what tells the world, and a fired one-time wake
+  # destroys its siblings, so announcing a pause that is about to undo itself costs
+  # every watcher its whole wake set.
+  #
+  # NEEDS_INPUT_SETTLE_WINDOW does not cover the recovery pause: the boundaries it
+  # suppresses leave `needs_input` inside the window, and a recovery pause sits
+  # there until a five-minute cron reaches it. Three branches, kept apart on
+  # purpose: an ordinary pause announces, a recovery pause does not, and a
+  # status-summary fork skips the whole block in favour of being harvested.
+
+  test "a recovery pause does not wake session_needs_input watchers" do
+    session = sessions(:waiting)
+    session.update!(status: :running, metadata: { "paused_by" => "recovery" })
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    assert_no_enqueued_jobs(only: AoEventTriggerJob) do
+      session.pause!
+    end
+
+    assert session.reload.needs_input?,
+      "only the announcement is suppressed — the state transition must still happen"
+    assert session.resting_in_needs_input?,
+      "and the settle window would not have saved us: the session is still sitting here"
+  end
+
+  test "a recovery pause does not enqueue the needs_input push notification" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :running,
+      push_notifications_enabled: true,
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    assert_no_enqueued_jobs(only: SendPushNotificationJob) do
+      session.pause!
+    end
+  end
+
+  # The bump is what supersedes an earlier pause's still-pending settled event. A
+  # session that recovery-pauses inside that window has churned, so leaving the
+  # counter alone would let the older event pass its own settle check and fire.
+  test "a recovery pause still bumps the transition counter" do
+    session = sessions(:waiting)
+    session.update!(status: :running, metadata: { "paused_by" => "recovery" })
+    before = session.needs_input_transition_count
+
+    session.pause!
+
+    assert_equal before + 1, session.reload.needs_input_transition_count
+  end
+
+  test "a recovery pause still does the pause's bookkeeping" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :running,
+      metadata: { "paused_by" => "recovery", "auto_generated_title" => true }
+    )
+
+    assert_enqueued_with(job: SessionTitleJob, args: [ session.id ]) do
+      session.pause!
+    end
+
+    assert session.logs.where(content: "[State Machine] Session paused, waiting for input").exists?
+    assert_nil session.reload.running_job_id
+  end
+
+  # The carve-out reads `paused_by == "recovery"` exactly, not "anything that is not
+  # a turn ending". A human hitting Pause is a real stop and a watcher wants to know
+  # about it; only the recovery sweeps promise to undo their own pause.
+  test "a user-initiated pause still announces itself" do
+    session = sessions(:waiting)
+    session.update!(status: :running, push_notifications_enabled: true, metadata: { "paused_by" => "user" })
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    marker = session.needs_input_transition_count + 1
+    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_needs_input", session.id, marker ]) do
+      assert_enqueued_jobs 1, only: SendPushNotificationJob do
+        session.pause!
+      end
+    end
+  end
+
+  test "an ordinary end-of-turn pause announces itself to watchers and to the human" do
+    session = sessions(:waiting)
+    session.update!(status: :running, push_notifications_enabled: true)
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    marker = session.needs_input_transition_count + 1
+    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_needs_input", session.id, marker ]) do
+      assert_enqueued_jobs 1, only: SendPushNotificationJob do
+        session.pause!
+      end
+    end
+  end
+
+  test "a status-summary fork pause is harvested rather than announced" do
+    source = sessions(:needs_input)
+    session = sessions(:waiting)
+    session.update!(
+      status: :running,
+      push_notifications_enabled: true,
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => source.id }
+    )
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    assert session.status_summary_fork?, "the fixture must actually be a fork"
+
+    assert_enqueued_jobs 1, only: SessionStatusSummaryHarvestJob do
+      assert_no_enqueued_jobs(only: [ AoEventTriggerJob, SendPushNotificationJob ]) do
+        session.pause!
+      end
+    end
+  end
+
   # === resting_in_needs_input? — what makes a pause a REST rather than a boundary ===
 
   test "resting_in_needs_input? asks about status, and only status" do
