@@ -158,25 +158,26 @@ class CostsMobileTest < ApplicationSystemTestCase
     # Date objects, not their iso8601 strings. Capybara sets an `<input type=date>`
     # from a Date through the value property; hand it a String and it falls back to
     # typing the characters into the field's segments, which land in whatever order
-    # the browser's locale puts them. The strings this test used to pass produced a
-    # range in the year 828 — a window the page rendered happily, and nothing here
-    # looked closely enough to notice.
+    # the browser's locale puts them. `"2026-08-26"` typed that way applies a range
+    # in the year 828 — a window the page renders happily, and one no assertion
+    # weaker than the label below can see.
     fill_in "from", with: from
     fill_in "to", with: to
     click_button "Apply"
 
-    # Apply is a full page load (the form is `turbo: false`), so wait for the new
-    # document before touching the DOM at all. `assert_current_path` reads the
-    # driver's URL rather than resolving an element, which is what makes it the one
-    # wait here that cannot observe a node from the outgoing document.
+    # Apply is a full page load (the form is `turbo: false`), so nothing below may
+    # touch the DOM until the new document has committed. `assert_current_path`
+    # reads the driver's URL rather than resolving an element, so it is the one wait
+    # here that cannot observe a node from the outgoing document.
     #
-    # The old wait was `assert_text "Showing"` — and "Showing" is on the page
-    # *before* Apply too, so it matched the outgoing document and let everything
-    # below it race the swap.
+    # A bare `assert_text "Showing"` is not that wait, twice over: the word is on
+    # the page *before* Apply, so it is satisfied by the outgoing document, and
+    # `Capybara::Node::Document#text` resolves `/html` to read it, which is the very
+    # node the swap detaches.
     assert_current_path costs_path(from: from.iso8601, to: to.iso8601)
 
-    # Now that the range that came back can be named, name it: the picker is only
-    # "usable" if the days it submits are the days it applies.
+    # The picker is only "reachable and usable" if the days it submits are the days
+    # it applies, so name the range rather than checking that some range came back.
     assert_text "Showing #{CostWindow.custom(from, to).label}"
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "custom range overflows at #{MOBILE_WIDTH}px"
 

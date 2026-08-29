@@ -626,12 +626,11 @@ class SessionsTest < ApplicationSystemTestCase
 
   # Test default goal selection
   #
-  # Both branches assert. The catalog's default root (`general-agent`) declares no
-  # `default_goal`, so guarding the whole body on one — which is what this test
-  # used to do — made it a vacuous pass that Minitest reported as "missing
-  # assertions" and that would have kept passing if the form stopped pre-selecting
-  # anything at all. A root with a default goal has to pre-select it; a root
-  # without one has to leave the field empty rather than invent a goal.
+  # Both branches assert, and that is the point: the catalog's default root
+  # (`general-agent`) declares no `default_goal`, so a body guarded on one runs no
+  # assertions at all — a vacuous pass that survives the form pre-selecting
+  # nothing. A root with a default goal has to pre-select it; a root without one
+  # has to leave the field empty rather than invent a goal.
   test "new session form selects default goal for default agent root" do
     visit new_session_url
 
