@@ -975,7 +975,7 @@ module Mcp
         transcript_dir = transcript_directory(session)
         raise ToolError, "No clone path found for this session" if transcript_dir.nil?
 
-        transcript_file = Dir.exist?(transcript_dir) ? TranscriptFileLocator.find_main_transcript(session, transcript_dir) : nil
+        transcript_file = Dir.exist?(transcript_dir) ? find_main_transcript(session, transcript_dir) : nil
         raise ToolError, "No transcript files found on filesystem" unless transcript_file
 
         # Through the runtime's TranscriptSource, not File.read: that is where
@@ -1087,7 +1087,7 @@ module Mcp
         transcript_dir = transcript_directory(session)
         return false if transcript_dir.nil? || !Dir.exist?(transcript_dir)
 
-        transcript_file = TranscriptFileLocator.find_main_transcript(session, transcript_dir)
+        transcript_file = find_main_transcript(session, transcript_dir)
         return false unless transcript_file
 
         # Through the runtime's TranscriptSource, not File.read — see #refresh.
@@ -1278,14 +1278,24 @@ module Mcp
         ActiveModel::Type::Boolean.new.cast(value) || false
       end
 
+      # The directory holding this session's transcript files, from the
+      # session's runtime TranscriptSource — the single place that knows a
+      # runtime's on-disk layout.
       def transcript_directory(session)
-        path = session.metadata&.dig("working_directory") || session.metadata&.dig("clone_path")
-        return nil unless path.is_a?(String) && path.present?
+        working_directory = session.working_directory
+        return nil unless working_directory.is_a?(String) && working_directory.present?
 
-        File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(path))
+        TranscriptRuntime.source_for(session).transcript_directory(working_directory: working_directory)
       rescue StandardError => e
         Rails.logger.error "[Mcp::Tools::ActionSession] Failed to get transcript directory: #{e.message}"
         nil
+      end
+
+      # The main transcript file inside that directory — the runtime's own
+      # answer, so a Codex directory is never searched with Claude's file-picker.
+      def find_main_transcript(session, transcript_dir)
+        TranscriptRuntime.source_for(session)
+          .find_main_transcript(transcript_directory: transcript_dir, session: session)
       end
 
       def count_transcript_messages(content)

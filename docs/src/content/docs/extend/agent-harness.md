@@ -147,6 +147,14 @@ there, like the rest of the required surface. `TranscriptPollerService` calls it
 source that skipped it used to `NoMethodError` on its first poll instead of failing at the seam
 (#56).
 
+`resume_transcript_path` is the one with a meaningful default. It answers "where do I write the
+stored transcript so `--resume` reads the whole conversation", and the base class returns `nil` —
+"this runtime cannot be restored from a single deterministic path". Every caller that restores a
+transcript to disk (`AgentSessionJob`, `UnarchiveSessionService`, `ForkSessionService`) skips the
+write on `nil` and treats that as success, so a runtime that does not override it is left alone
+rather than handed a file it will never read. See
+[Writing a transcript back to disk](/sessions/transcripts/#writing-a-transcript-back-to-disk).
+
 For Claude Code it delegates to `TranscriptFileLocator`, which prefers
 `<session_id>.jsonl`. Before the runtime has minted that id there is no id to match on, so it falls
 back to the most recently modified non-`agent-*.jsonl` file **that was written after the session

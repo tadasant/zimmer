@@ -157,14 +157,14 @@ class UnarchiveSessionService
       return Result.new(success?: false, error: "Working directory does not exist: #{working_directory}")
     end
 
-    # Write transcript file to Claude Code's project directory
+    # Re-materialize the transcript at the runtime's resume path. :skipped (a
+    # runtime with no single-file resume path, e.g. Codex) is not a failure.
     if session.transcript.present?
-      write_success = write_transcript_file(
+      write_result = write_transcript_file(
         working_directory: working_directory,
-        session_id: session.session_id,
         transcript: session.transcript
       )
-      return Result.new(success?: false, error: "Failed to write transcript file") unless write_success
+      return Result.new(success?: false, error: "Failed to write transcript file") if write_result == :failed
     end
 
     # Regenerate MCP config (includes auto-injected self-session server, plus the
@@ -193,14 +193,14 @@ class UnarchiveSessionService
     )
     return Result.new(success?: false, error: "Failed to update session metadata") unless update_result
 
-    # Write transcript file if present
+    # Re-materialize the transcript at the runtime's resume path. :skipped (a
+    # runtime with no single-file resume path, e.g. Codex) is not a failure.
     if session.transcript.present?
-      write_success = write_transcript_file(
+      write_result = write_transcript_file(
         working_directory: new_working_directory,
-        session_id: session.session_id,
         transcript: session.transcript
       )
-      return Result.new(success?: false, error: "Failed to write transcript file") unless write_success
+      return Result.new(success?: false, error: "Failed to write transcript file") if write_result == :failed
     end
 
     # Regenerate MCP config (includes auto-injected self-session server, plus the
@@ -375,18 +375,33 @@ class UnarchiveSessionService
     false
   end
 
-  def write_transcript_file(working_directory:, session_id:, transcript:)
-    # Calculate transcript directory path using Claude's naming convention
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(working_directory)
-    transcript_dir = File.join(claude_projects_dir, sanitized_path)
+  # Re-materialize the stored transcript at the path the session's runtime
+  # resumes from. Mirrors AgentSessionJob#write_transcript_to_clone.
+  #
+  # The path comes from TranscriptSource#resume_transcript_path, which returns
+  # nil for runtimes that cannot be restored by writing stored bytes to a single
+  # deterministic path (Codex: date-partitioned, UUID-named, possibly
+  # Zstandard-compressed rollouts). For those runtimes there is nothing to write,
+  # and writing a Claude-shaped file the runtime will never read is worse than
+  # writing nothing — so :skipped is a normal outcome, NOT a failure. An
+  # unarchive of a Codex session must succeed.
+  #
+  # @return [Symbol] :written when the transcript landed on disk, :skipped when
+  #   the runtime has no single-file resume path, :failed when the write was
+  #   attempted and raised
+  def write_transcript_file(working_directory:, transcript:)
+    transcript_file = TranscriptRuntime.source_for(session, file_system: file_system)
+      .resume_transcript_path(session: session, working_directory: working_directory)
 
-    # Ensure directory exists
-    file_system.mkdir_p(transcript_dir)
+    if transcript_file.nil?
+      @logger.info("Runtime has no single-file resume transcript path; skipping transcript restore",
+        agent_runtime: session.agent_runtime
+      )
+      return :skipped
+    end
 
-    # Write the transcript file
-    transcript_file = File.join(transcript_dir, "#{session_id}.jsonl")
+    file_system.mkdir_p(File.dirname(transcript_file))
+
     @logger.info("Writing transcript file",
       path: transcript_file,
       lines: transcript.lines.count
@@ -394,10 +409,10 @@ class UnarchiveSessionService
 
     file_system.write(transcript_file, transcript)
 
-    true
+    :written
   rescue => e
     @logger.error("Failed to write transcript file", error: e.message)
-    false
+    :failed
   end
 
   def regenerate_mcp_config(working_directory)

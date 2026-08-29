@@ -1073,4 +1073,85 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
   def run_cmd(*args)
     system(*args, out: File::NULL, err: File::NULL, exception: true)
   end
+
+  # --- Runtimes without a single-file resume transcript (#504) ----------------
+  #
+  # TranscriptSource#resume_transcript_path returns nil for Codex, whose rollouts
+  # are date-partitioned, UUID-named and possibly Zstandard-compressed. Both
+  # restore paths (#restore_transcript_only and #recreate_clone_and_restore) must
+  # SUCCEED for such a runtime, writing nothing, rather than mkdir_p-ing a Claude
+  # project directory, dropping a <session_id>.jsonl the runtime will never read,
+  # and gating the unarchive on that write. Mirrors
+  # AgentSessionJob#write_transcript_to_clone, which honours the same contract.
+
+  # Every path a Claude unarchive would have written under, so a Codex unarchive
+  # can be asserted to have touched none of them.
+  def claude_projects_paths(mock_fs)
+    claude_projects = File.join(File.expand_path("~"), ".claude", "projects")
+    (mock_fs.files.keys + mock_fs.directories.to_a).select { |p| p.start_with?(claude_projects) }
+  end
+
+  test "quick unarchive of a Codex session succeeds without writing under ~/.claude/projects" do
+    @session.update!(agent_runtime: "codex")
+    @mock_fs.mkdir_p(@clone_path)
+
+    result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+    assert result.success?, "Codex unarchive must succeed; got error: #{result.error.inspect}"
+    assert_nil result.error
+    @session.reload
+    assert_equal "needs_input", @session.status
+    assert_nil @session.archived_at
+
+    assert_nil TranscriptRuntime.source_for(@session, file_system: @mock_fs)
+      .resume_transcript_path(session: @session, working_directory: @working_directory),
+      "Codex has no single-file resume transcript path — the premise of this test"
+
+    assert_empty claude_projects_paths(@mock_fs),
+      "A Codex unarchive must not create or write anything under ~/.claude/projects"
+  end
+
+  test "full unarchive of a Codex session recreates the clone without writing under ~/.claude/projects" do
+    @session.update!(agent_runtime: "codex")
+    new_clone_path = "/home/test/.zimmer/clones/test-repo-main-99999-efgh"
+
+    mock_create_clone = lambda do |_git_root, **_kwargs|
+      { clone_path: new_clone_path, working_directory: new_clone_path }
+    end
+
+    GitCloneService.stub :create_clone, mock_create_clone do
+      @mock_fs.mkdir_p(new_clone_path)
+
+      result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+      assert result.success?, "Codex unarchive must succeed; got error: #{result.error.inspect}"
+      assert_equal true, result.clone_restored
+      @session.reload
+      assert_equal "needs_input", @session.status
+      assert_equal new_clone_path, @session.metadata["working_directory"]
+
+      assert_nil TranscriptRuntime.source_for(@session, file_system: @mock_fs)
+        .resume_transcript_path(session: @session, working_directory: new_clone_path),
+        "Codex has no single-file resume transcript path — the premise of this test"
+
+      assert_empty claude_projects_paths(@mock_fs),
+        "A Codex unarchive must not create or write anything under ~/.claude/projects"
+    end
+  end
+
+  test "a genuine transcript write failure still fails the unarchive" do
+    raising_fs = Class.new(MockFileSystemAdapter) do
+      def write(path, content, **options)
+        raise Errno::EACCES, "Permission denied - #{path}" if path.end_with?(".jsonl")
+        super
+      end
+    end.new
+    raising_fs.mkdir_p(@clone_path)
+
+    result = UnarchiveSessionService.call(session: @session, file_system: raising_fs)
+
+    assert_not result.success?,
+      "A write that RAISES is a real failure and must not be confused with the nil (nothing-to-do) case"
+    assert_equal "Failed to write transcript file", result.error
+  end
 end
