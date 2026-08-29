@@ -340,6 +340,21 @@ them on **both**: a normal-completion exit runs the same context-length, auth, A
 failed-resume checks before it parks, which is how a failure that arrives with Claude's exit 1 —
 `session_id_conflict?`, and the malformed tool call below — reaches them at all.
 
+**Two doors onto the same ladder.** The monitoring loop notices a dead agent process two ways.
+Normally `wait_nonblock` reaps a status and everything above follows from it. When something else
+reaped the process first — the zombie reaper, another job, `init` after a parent died — a signal-0
+liveness check catches it instead, and `ProcessLifecycleManager#handle_unreaped_exit` answers that
+one.
+
+It runs the *evidence-driven* half of the same ladder: the context-length, auth, API-error and
+failed-resume checks, the held-session-id and empty-turn restarts, and the terminal-API-error
+backstop — none of which read an exit code. What it does not do is invent a status. Nobody reaped
+this process, so `SIGTERM retry`, `handle_signal_death` and the unclassified-failure tail are
+unreachable from here by design: a synthesised 0 would assert a completion nobody saw, and a
+synthesised signal would spend a resume budget on a death that may not have happened. The absence
+of a status is not evidence of failure, so a stop with no evidence behind it parks the session in
+`needs_input`, exactly as this branch always did.
+
 The auth branch does not re-inject blindly. `AuthRecoveryCoordinator` takes a per-runtime advisory
 lock on the account pool and picks one of three answers: **adopt** the account the pool already
 rotated to while this session was running (free — it is another session's rotation), **rotate** away
