@@ -255,14 +255,28 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 - `MCP_TIMEOUT = 180000` (3 minutes) — a flat startup timeout for **every** MCP server.
   Tracked in [#113](https://github.com/tadasant/zimmer/issues/113).
-- `NPM_CONFIG_CACHE` is set to a clone-local `.npm-cache`, so `npx`-based servers in *different*
-  sessions don't fight over a shared cache.
-- Within one session they still could, because `npx` keys its install directory on the package spec
-  alone: two servers running the byte-identical `npx -y <pkg>@latest` resolve to the same
+- Every server whose `command` is `npx` gets `NPM_CONFIG_CACHE` written into **its own `env` table**
+  by `RuntimeConfigPostProcessor`, pointing at the clone's `.npm-cache`. So `npx` MCP servers in
+  *different* sessions never fight over a shared cache. The match is exact: `sh -c "npx …"`, an
+  absolute `/usr/bin/npx`, `npm exec`, `bunx` and `pnpm dlx` are out of scope and keep whatever cache
+  they inherit. Every catalog entry uses the bare form.
+- It is written per entry rather than inherited from the agent process on purpose. Codex never sets
+  the variable — `CodexRuntimeAdapter`'s spawn env has none, and Codex builds each stdio server's
+  environment from a fixed whitelist plus exactly what the entry's own `env`/`env_vars` name — so
+  before this, every npx MCP server under Codex resolved against npm's user-level `~/.npm/_npx`,
+  shared by every session on the host and outside every clone-scoped mechanism below. `ENOTEMPTY …
+  rename` on `/home/rails/.npm/_npx/<hash>/node_modules/playwright` is what two concurrent sessions
+  installing into one host-wide tree looks like
+  ([#595](https://github.com/tadasant/zimmer/issues/595)). Claude does export the variable, but a
+  config generator relying on inheritance is the wrong shape either way.
+- Within one session two servers can still collide, because `npx` keys its install directory on the
+  package spec alone: two servers running the byte-identical `npx -y <pkg>@latest` resolve to the same
   `_npx/<hash>` and, on a cold clone, race to populate it. `NpxCacheIsolator` finds those servers at
   config-write time and gives each its own `NPM_CONFIG_CACHE` under
   `.npm-cache/isolated/<server>/`, so there is nothing to race over. Servers that don't share a
-  package keep the single shared cache, so tarballs are still downloaded once.
+  package share the clone's `.npm-cache`, so tarballs are still downloaded once. Both answers live
+  under `.npm-cache`, which is what keeps the heal and clear services below able to reach them.
+- A catalog entry that sets `NPM_CONFIG_CACHE` itself keeps its value — that is the operator's call.
 - `NpxCacheHealService` exists to detect and delete a corrupted `_npx` cache — by matching npm's
   error text (`ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT`). An entire service that self-heals a
   filesystem bug by regexing stderr. It is the repair half; the isolator above is the prevention
@@ -273,8 +287,12 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   on `exec` with `EACCES` identically on every retry, so the server is left out for the life of the
   clone ([#467](https://github.com/tadasant/zimmer/issues/467)). Codex sessions are not covered — see
   [Limitations](/limitations/#the-npx-bin-permission-repair-only-reaches-claude-sessions-and-only-on-the-next-launch).
-- `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the npm and
-  python packages listed in `mcp.json`, so a cold session doesn't pay the download.
+- `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the python
+  packages listed in `mcp.json`, and `npm install -g` the npm ones. The npm half no longer helps an
+  MCP server: `NPM_CONFIG_CACHE` moves the *whole* npm cache into the clone, `_cacache` included, so
+  a cold clone pays the registry download for every npx server. That has been true on Claude since
+  the per-clone cache landed and is now true on Codex too — see
+  [Limitations](/limitations/#a-cold-clone-pays-the-npm-download-for-every-npx-mcp-server).
 
 ## The fourteen that ship
 

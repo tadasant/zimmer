@@ -84,7 +84,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # the dropped name also happened to be a SecretsLoader secret it is no longer
   # inlined from there. That is the same value either way: AgentSessionJob writes
   # SecretsLoader.all into the clone's `.env`, which #elicitation_env already
-  # prefers. (#isolate_colliding_npx_caches! calls it after that inlining instead,
+  # prefers. (#pin_npx_caches_to_clone! calls it after that inlining instead,
   # which is harmless: it skips any entry whose `env` already carries the name.)
   def drop_forwarded_env_var!(entry, name)
     forwarded = entry["env_vars"]

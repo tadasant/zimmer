@@ -109,6 +109,72 @@ class NpxCacheIsolatorTest < ActiveSupport::TestCase
       NpxCacheIsolator.cache_dir_for("/clone", "weird/name 1")
   end
 
+  # --------------------------------------------------------------------------
+  # Per-config cache decisions
+  #
+  # #cache_dirs_for is the function that closed zimmer#595: before it, only a
+  # colliding server was given a cache at all and everything else fell through to
+  # npm's host-shared `~/.npm/_npx`. Every npx entry must now get an answer.
+  # --------------------------------------------------------------------------
+
+  test "answers for every npx server, sharing the clone cache unless the server collides" do
+    servers = {
+      "solo" => npx_entry("solo-pkg@latest"),
+      "twin-a" => npx_entry("shared-pkg@latest"),
+      "twin-b" => npx_entry("shared-pkg@latest")
+    }
+
+    dirs = NpxCacheIsolator.cache_dirs_for(servers, "/clone")
+
+    assert_equal "/clone/.npm-cache", dirs["solo"]
+    assert_equal "/clone/.npm-cache/isolated/twin-a", dirs["twin-a"]
+    assert_equal "/clone/.npm-cache/isolated/twin-b", dirs["twin-b"]
+    assert_equal %w[solo twin-a twin-b], dirs.keys, "answers come back in config order"
+  end
+
+  # The gap that let a server reach `~/.npm/_npx`: #cache_key returns nil when it
+  # cannot read a package spec, so such an entry is never "colliding" — but it is
+  # still an npx invocation and still installs somewhere. It gets the shared cache.
+  test "gives an npx server whose package spec is unreadable the shared clone cache" do
+    servers = {
+      "no-args" => { "command" => "npx", "args" => [] },
+      "nil-args" => { "command" => "npx" },
+      "flags-only" => { "command" => "npx", "args" => [ "-y" ] }
+    }
+
+    dirs = NpxCacheIsolator.cache_dirs_for(servers, "/clone")
+
+    assert_equal [ "/clone/.npm-cache" ] * 3, dirs.values_at("no-args", "nil-args", "flags-only")
+  end
+
+  test "answers for no entry that is not an npx invocation" do
+    servers = {
+      "http" => { "type" => "http", "url" => "https://example.com/mcp" },
+      "other-binary" => { "command" => "/usr/local/bin/thing", "args" => [ "--serve" ] },
+      "wrapped-npx" => { "command" => "sh", "args" => [ "-c", "npx -y some-pkg@latest" ] },
+      "absolute-npx" => { "command" => "/usr/bin/npx", "args" => [ "-y", "some-pkg@latest" ] },
+      "malformed" => "not-a-hash"
+    }
+
+    assert_empty NpxCacheIsolator.cache_dirs_for(servers, "/clone")
+  end
+
+  test "recognizes an npx invocation regardless of whether its package spec parses" do
+    assert NpxCacheIsolator.npx_entry?("command" => "npx", "args" => [ "-y", "pkg" ])
+    assert NpxCacheIsolator.npx_entry?("command" => "npx")
+    assert_not NpxCacheIsolator.npx_entry?("command" => "npm", "args" => [ "exec", "pkg" ])
+    assert_not NpxCacheIsolator.npx_entry?("url" => "https://example.com/mcp")
+    assert_not NpxCacheIsolator.npx_entry?(nil)
+  end
+
+  test "names the clone cache the isolated roots nest inside" do
+    shared = NpxCacheIsolator.shared_cache_dir("/clone")
+
+    assert_equal "/clone/.npm-cache", shared
+    assert NpxCacheIsolator.cache_dir_for("/clone", "any").start_with?(shared + File::SEPARATOR),
+      "an isolated root must never resolve to the shared cache this class exists to keep it off"
+  end
+
   private
 
   def npx_entry(spec)
