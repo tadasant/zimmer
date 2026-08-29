@@ -735,27 +735,14 @@ class ApiErrorRetryService
 
   # Find the transcript file path for the session
   def find_transcript_path(working_directory)
-    transcript_dir = calculate_transcript_directory(working_directory)
+    transcript_dir = TranscriptRuntime.source_for(session, file_system: file_system)
+      .transcript_directory(working_directory: working_directory)
     return nil unless transcript_dir
     return nil unless file_system.directory?(transcript_dir)
 
     TranscriptFileLocator.find_main_transcript(session, transcript_dir, file_system: file_system)
   rescue => e
     @logger.error("Error finding transcript path", error: e.message)
-    nil
-  end
-
-  # Calculate the transcript directory path from working directory
-  def calculate_transcript_directory(working_directory)
-    return nil unless working_directory
-
-    require "path_sanitizer"
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(working_directory)
-    File.join(claude_projects_dir, sanitized_path)
-  rescue => e
-    @logger.error("Error calculating transcript directory", error: e.message)
     nil
   end
 

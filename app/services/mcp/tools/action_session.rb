@@ -1278,11 +1278,14 @@ module Mcp
         ActiveModel::Type::Boolean.new.cast(value) || false
       end
 
+      # The directory holding this session's transcript files, from the
+      # session's runtime TranscriptSource — the single place that knows a
+      # runtime's on-disk layout.
       def transcript_directory(session)
-        path = session.metadata&.dig("working_directory") || session.metadata&.dig("clone_path")
-        return nil unless path.is_a?(String) && path.present?
+        working_directory = session.working_directory
+        return nil unless working_directory.is_a?(String) && working_directory.present?
 
-        File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(path))
+        TranscriptRuntime.source_for(session).transcript_directory(working_directory: working_directory)
       rescue StandardError => e
         Rails.logger.error "[Mcp::Tools::ActionSession] Failed to get transcript directory: #{e.message}"
         nil

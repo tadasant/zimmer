@@ -165,13 +165,14 @@ class ForkSessionService
       return failure("Failed to create forked session record")
     end
 
-    # Write truncated transcript to the new location
-    write_transcript_success = write_transcript_file(
+    # Write truncated transcript to the new location. :skipped (a runtime with no
+    # single-file resume path, e.g. Codex) is not a failure — only :failed is.
+    write_transcript_result = write_transcript_file(
+      forked_session: forked_session,
       new_working_directory: new_working_directory,
-      new_session_id: new_session_id,
       truncated_transcript: truncated_transcript
     )
-    unless write_transcript_success
+    if write_transcript_result == :failed
       # Cleanup on failure
       cleanup_on_failure(forked_session, new_clone_path)
       return failure("Failed to write transcript file")
@@ -331,7 +332,8 @@ class ForkSessionService
   # Only for a fork that never reads the tree it runs in — a status-summary
   # fork answers from the conversation it was forked with and is told not to run
   # tools, so what it needs from the filesystem is a directory to be spawned in
-  # and the transcript this service writes under ~/.claude/projects. That makes
+  # and the transcript this service writes at the runtime's resume path (for a
+  # runtime that has one — see #write_transcript_file). That makes
   # a summary regenerable for a session whose clone Zimmer has already reclaimed
   # — DeferredCloneCleanupJob for one archived more than the undo window ago,
   # which is every archived session an operator actually opens later, and
@@ -663,26 +665,43 @@ class ForkSessionService
     "#{FORK_TITLE_PREFIX}#{base_title.truncate(budget, omission: TITLE_OMISSION)}"
   end
 
-  def write_transcript_file(new_working_directory:, new_session_id:, truncated_transcript:)
-    # Calculate transcript directory path using Claude's naming convention
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(new_working_directory)
-    transcript_dir = File.join(claude_projects_dir, sanitized_path)
+  # Write the truncated transcript to the path the FORKED session's runtime
+  # resumes from. Mirrors AgentSessionJob#write_transcript_to_clone.
+  #
+  # The path comes from TranscriptSource#resume_transcript_path, which returns
+  # nil for runtimes that cannot be restored by writing stored bytes to a single
+  # deterministic path (Codex: date-partitioned, UUID-named, possibly
+  # Zstandard-compressed rollouts). For those runtimes there is nothing to write,
+  # and writing a Claude-shaped file the runtime will never read is worse than
+  # writing nothing — so :skipped is a normal outcome, NOT a failure. A fork of a
+  # Codex session must succeed.
+  #
+  # @param forked_session [Session] the new session, whose runtime and session_id
+  #   decide the path (not the source session's)
+  # @return [Symbol] :written when the transcript landed on disk, :skipped when
+  #   the runtime has no single-file resume path, :failed when the write was
+  #   attempted and raised
+  def write_transcript_file(forked_session:, new_working_directory:, truncated_transcript:)
+    transcript_file = TranscriptRuntime.source_for(forked_session, file_system: file_system)
+      .resume_transcript_path(session: forked_session, working_directory: new_working_directory)
 
-    # Ensure directory exists
-    file_system.mkdir_p(transcript_dir)
+    if transcript_file.nil?
+      @logger.info("Runtime has no single-file resume transcript path; skipping transcript write",
+        agent_runtime: forked_session.agent_runtime
+      )
+      return :skipped
+    end
 
-    # Write the transcript file
-    transcript_file = File.join(transcript_dir, "#{new_session_id}.jsonl")
+    file_system.mkdir_p(File.dirname(transcript_file))
+
     @logger.info("Writing transcript file", path: transcript_file, lines: truncated_transcript.lines.count)
 
     file_system.write(transcript_file, truncated_transcript)
 
-    true
+    :written
   rescue => e
     @logger.error("Failed to write transcript file", error: e.message)
-    false
+    :failed
   end
 
   def cleanup_on_failure(forked_session, new_clone_path)
