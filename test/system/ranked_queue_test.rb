@@ -500,6 +500,28 @@ class RankedQueueTest < ApplicationSystemTestCase
     assert_equal "999", find("#precedence_input_#{typing.id}").value
   end
 
+  # …and the guard is exactly that narrow. "Someone is working in it" means a
+  # focused TEXT FIELD, not any focused element — because the row's own ⋮ menu is
+  # inside the row, so clicking its Trash entry leaves focus on a link in the very
+  # row that click archived. A broader rule refuses to remove that row, which is
+  # the staleness this whole change exists to fix, reintroduced by its own safety
+  # net. ("the menu trashes a row" above is the end-to-end version; this is the
+  # rule itself, with no menu in the way.)
+  test "a row whose button holds focus is still evicted" do
+    doomed = spot(200, title: "Focus is on my menu button")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+
+    kebab_for(doomed).click
+    assert_button "Promote to priority"
+
+    doomed.update!(status: :archived)
+    assert_no_selector "#ranked_row_#{doomed.id}", wait: 5
+    assert page_never_navigated?
+  end
+
   # The other interaction the narrow broadcast was protecting. SortableJS is driven
   # through its own pointer events rather than through Capybara's drag, so the drag
   # is genuinely in progress — `onStart` has fired — when the broadcast lands.
@@ -514,6 +536,14 @@ class RankedQueueTest < ApplicationSystemTestCase
     # A REAL press-and-move through the driver, not dispatched MouseEvents:
     # SortableJS binds `pointerdown`, and a synthetic MouseEvent never reaches it,
     # so a scripted "drag" would silently prove nothing.
+    #
+    # Scroll the row to the middle of the viewport first. The queue sits below the
+    # filters panel, and Selenium's Actions API does NOT scroll to its target the
+    # way `click` does — it dispatches at viewport coordinates and raises
+    # MoveTargetOutOfBounds for anything off-screen.
+    page.execute_script(
+      "document.getElementById(#{"ranked_row_#{top.id}".to_json}).scrollIntoView({ block: 'center' })"
+    )
     handle = find("#ranked_row_#{top.id} [data-ranked-queue-target='handle']")
     page.driver.browser.action
       .move_to(handle.native)
