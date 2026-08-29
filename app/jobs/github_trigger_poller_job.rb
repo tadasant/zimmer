@@ -168,9 +168,18 @@ class GithubTriggerPollerJob < ApplicationJob
     # condition every tick, each call failing with "please run: gh auth login", and the
     # per-condition rescue below turns every one into an alert — an every-minute storm
     # over a missing credential. One WARN per tick is enough to make the gap visible.
-    unless GithubSearchService.configured?
-      Rails.logger.warn "[GithubTriggerPollerJob] gh CLI is not authenticated " \
-                        "(no gh auth login / GH_TOKEN); skipping GitHub trigger polling this tick"
+    #
+    # The skip is the same for every way the preflight can fail — it has to be, or the
+    # storm comes back — but the LOG LINE is not, and that is the whole point. On
+    # 2026-08-17 a GitHub degradation made this branch announce "gh CLI is not
+    # authenticated" about a credential that was fine minutes either side, in text
+    # byte-identical to a revoked token's (#542). An operator cannot act on a line that
+    # names the wrong fault, so each state now says what actually happened; the states
+    # themselves are established in GithubSearchService.auth_preflight.
+    preflight = GithubSearchService.auth_preflight
+    unless preflight.authenticated?
+      Rails.logger.warn "[GithubTriggerPollerJob] #{preflight_skip_reason(preflight)}; " \
+                        "skipping GitHub trigger polling this tick"
       return
     end
 
@@ -205,6 +214,39 @@ class GithubTriggerPollerJob < ApplicationJob
   end
 
   private
+
+  # What to tell an operator about a preflight that did not authenticate.
+  #
+  # Three sentences that must never be swapped for one another, because each sends a
+  # human somewhere different: to provision a credential, to replace one, or to
+  # githubstatus.com. Only the first keeps the original wording — it is the only state
+  # that ever deserved it, and staging's every-minute line stays exactly as it was.
+  #
+  # No alert fires from any of them, deliberately. A preflight failure is by
+  # construction the TOTAL case, and this job already settled how the total case is
+  # reported: nothing sets any_polled, so no heartbeat is stamped, and
+  # GithubTriggerHealthCheckJob pages on the stale heartbeat (see #skip_incomplete_search,
+  # which reasons the same way about a broadly degraded search API — "no new machinery
+  # needed for the total case"). Paging on the first :unknown tick would page for every
+  # blip, and would put an alert back on exactly the path whose alert storm the early
+  # return was built to stop, on the strength of a classification that has to be right
+  # every time. The 15-minute floor is unchanged; what changes is that the WARNs an
+  # operator reads while it counts down now name the right fault.
+  def preflight_skip_reason(preflight)
+    case preflight.state
+    when GithubSearchService::PREFLIGHT_UNCONFIGURED
+      "gh CLI is not authenticated (no gh auth login / GH_TOKEN)"
+    when GithubSearchService::PREFLIGHT_REJECTED
+      "GitHub rejected the gh credential — it is present but no longer valid, so it likely " \
+        "needs rotating (#{preflight.detail})"
+    else
+      # :unknown. Says what we do NOT know, on purpose: asserting anything about the
+      # credential here is the bug. The credential may well be fine.
+      "could not reach GitHub to check the gh credential, so its validity is UNKNOWN — this is " \
+        "NOT a report that the credential is missing or invalid; check githubstatus.com before " \
+        "touching it (#{preflight.detail})"
+    end
+  end
 
   def record_successful_poll
     Rails.cache.write(HEARTBEAT_CACHE_KEY, Time.current.utc.iso8601, expires_in: HEARTBEAT_TTL)
