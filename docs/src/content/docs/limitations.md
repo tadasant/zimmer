@@ -2422,6 +2422,12 @@ is quiet but easy to miss. Staging shipped without this credential, which is how
 
 Check with `gh auth status` in the worker container; fix by providing a token to that environment.
 
+The tick is skipped the same way when the preflight *cannot reach GitHub* — but the WARN then says so
+rather than blaming the credential, and a `401` says "rotate this" rather than "provision one". The
+three are distinguishable from a single log line; see [Triggers](/sessions/triggers/) for the states.
+Nothing pages for any of them on the tick itself: the floor is still
+`GithubTriggerHealthCheckJob`'s stale heartbeat, which is up to 15 minutes.
+
 ### A timed-out GitHub search index skips the tick quietly, and the escalation needs Redis
 
 When GitHub's search index times out it returns `incomplete_results: true` with a partial set.

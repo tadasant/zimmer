@@ -7,10 +7,24 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   setup do
     @label_condition = trigger_conditions(:github_label_condition)
     @issue_condition = trigger_conditions(:github_issue_condition)
-    # perform preflights `gh auth status` via GithubSearchService.configured?. Default it
-    # to configured so the behavioral tests below exercise the polling path rather than the
-    # graceful-degradation early return; the unconfigured path has its own tests.
-    GithubSearchService.stubs(:configured?).returns(true)
+    # perform preflights `gh auth status` via GithubSearchService.auth_preflight. Default
+    # it to authenticated so the behavioral tests below exercise the polling path rather
+    # than the graceful-degradation early return; each failing state has its own tests.
+    stub_preflight(GithubSearchService::PREFLIGHT_AUTHENTICATED)
+  end
+
+  # Stands in for GithubSearchService.auth_preflight, which the poller reads to decide
+  # whether to poll and — the point of #542 — what to say when it does not.
+  def stub_preflight(state, detail = nil)
+    GithubSearchService.stubs(:auth_preflight)
+      .returns(GithubSearchService::PreflightResult.new(state, detail))
+  end
+
+  # The poller's WARN lines for one tick.
+  def capture_warns(&block)
+    capture_log_entries(&block).filter_map do |severity, message|
+      message if severity == "WARN" && message.start_with?("[GithubTriggerPollerJob]")
+    end
   end
 
   # An item shaped like the search-API fields the poller actually reads.
@@ -349,7 +363,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   # transient API failure on a CONFIGURED host, which still raises and alerts (above).
 
   test "skips the tick without searching or alerting when gh is not authenticated" do
-    GithubSearchService.stubs(:configured?).returns(false)
+    stub_preflight(GithubSearchService::PREFLIGHT_UNCONFIGURED, "no github.com credential is configured")
     GithubSearchService.expects(:search_issues).never
     AlertService.expects(:raise_alert).never
 
@@ -363,12 +377,93 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal before_issue, @issue_condition.reload.github_last_issue_at
   end
 
+  test "an unconfigured host keeps the original WARN verbatim" do
+    # The staging line must not change. It is the one state that was always accurate,
+    # and an operator (and any log filter built on it) should see exactly what they did.
+    stub_preflight(GithubSearchService::PREFLIGHT_UNCONFIGURED, "no github.com credential is configured")
+
+    logged = capture_warns { GithubTriggerPollerJob.perform_now }
+
+    assert_equal 1, logged.length, "one WARN per tick, as before"
+    assert_equal "[GithubTriggerPollerJob] gh CLI is not authenticated (no gh auth login / GH_TOKEN); " \
+                 "skipping GitHub trigger polling this tick", logged.first
+  end
+
+  # ── #542: a GitHub degradation must not be reported as a missing credential ──
+  #
+  # The defect this replaces: during the 2026-08-17 REST degradation the preflight
+  # failed against a credential that was valid minutes either side, and the poller
+  # announced "gh CLI is not authenticated (no gh auth login / GH_TOKEN)" — sending an
+  # operator to check a credential that was fine, in text byte-identical to a revoked
+  # token's. The skip itself is unchanged (removing it brings back staging's alert
+  # storm); what must differ is what the line SAYS.
+  test "a preflight that could not reach GitHub does not claim the credential is missing" do
+    stub_preflight(GithubSearchService::PREFLIGHT_UNKNOWN,
+                   "Get \"https://api.github.com/\": Service Unavailable")
+    GithubSearchService.expects(:search_issues).never
+    AlertService.expects(:raise_alert).never
+
+    logged = capture_warns { GithubTriggerPollerJob.perform_now }
+    line = logged.sole
+
+    assert_not_includes line, "gh CLI is not authenticated",
+                        "the whole defect: a reachability failure must not read as a missing credential"
+    assert_not_includes line, "no gh auth login / GH_TOKEN"
+    assert_includes line, "could not reach GitHub"
+    assert_includes line, "UNKNOWN"
+    assert_includes line, "Service Unavailable", "gh's own words, so the operator can see what happened"
+    assert_includes line, "githubstatus.com"
+    assert_includes line, "skipping GitHub trigger polling this tick", "the early return survives"
+  end
+
+  test "a rejected credential says so, distinctly from both of the others" do
+    stub_preflight(GithubSearchService::PREFLIGHT_REJECTED,
+                   "non-200 OK status code: 401 Unauthorized body: Bad credentials")
+
+    line = capture_warns { GithubTriggerPollerJob.perform_now }.sole
+
+    assert_includes line, "GitHub rejected the gh credential"
+    assert_includes line, "needs rotating"
+    assert_not_includes line, "could not reach GitHub"
+  end
+
+  test "the three preflight failures are distinguishable from the logs alone" do
+    # The acceptance criterion for #542 stated directly: an operator reading a single
+    # line must be able to tell which of the three happened, at the moment it happens.
+    lines = [
+      [ GithubSearchService::PREFLIGHT_UNCONFIGURED, "no github.com credential is configured" ],
+      [ GithubSearchService::PREFLIGHT_REJECTED, "non-200 OK status code: 401 Unauthorized" ],
+      [ GithubSearchService::PREFLIGHT_UNKNOWN, "Get \"https://api.github.com/\": Service Unavailable" ]
+    ].map do |state, detail|
+      stub_preflight(state, detail)
+      capture_warns { GithubTriggerPollerJob.perform_now }.sole
+    end
+
+    assert_equal 3, lines.uniq.length, "each preflight failure must produce a different line"
+  end
+
+  test "no preflight failure alerts, whatever its cause" do
+    # Deliberate: a preflight failure is the TOTAL case, and the total case is reported
+    # by the stale heartbeat (GithubTriggerHealthCheckJob), exactly as #skip_incomplete_search
+    # reasons about a broadly degraded search API. Paging here would page for every blip
+    # and would put an alert back on the path whose storm the early return exists to stop.
+    [ GithubSearchService::PREFLIGHT_UNCONFIGURED,
+      GithubSearchService::PREFLIGHT_REJECTED,
+      GithubSearchService::PREFLIGHT_UNKNOWN ].each do |state|
+      stub_preflight(state, "detail")
+      AlertService.expects(:raise_alert).never
+
+      GithubTriggerPollerJob.perform_now
+    end
+  end
+
   test "does not preflight gh auth at all when there are no GitHub conditions to poll" do
     # The common instance has no GitHub triggers; it must not spend a `gh auth status`
     # subprocess every minute for nothing.
     Trigger.with_github_conditions.destroy_all
 
-    GithubSearchService.expects(:configured?).never
+    GithubSearchService.unstub(:auth_preflight)
+    GithubSearchService.expects(:auth_preflight).never
     GithubSearchService.expects(:search_issues).never
 
     assert_nothing_raised { GithubTriggerPollerJob.perform_now }
@@ -841,7 +936,7 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
   test "a tick skipped for a missing gh credential does not record the heartbeat" do
     # An unconfigured host never polls, so it must not look alive. (The health check
     # makes the same configured? check, so this gap never pages there.)
-    GithubSearchService.stubs(:configured?).returns(false)
+    stub_preflight(GithubSearchService::PREFLIGHT_UNCONFIGURED, "no github.com credential is configured")
 
     GithubTriggerPollerJob.perform_now
 

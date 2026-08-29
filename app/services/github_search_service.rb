@@ -134,6 +134,74 @@ class GithubSearchService
   # round-trip.
   AUTH_STATUS_TIMEOUT = 10
 
+  # The only host this service searches. `gh auth status` reports every host it knows
+  # about, and the preflight is a question about the one we are about to query — so a
+  # broken entry for some other host must not read as "this worker has no credential".
+  AUTH_HOST = "github.com"
+
+  # The four answers the preflight can give. They exist because the previous two —
+  # true/false — could not tell an operator apart from a liar: a credential GitHub
+  # never saw, and a credential GitHub could not be asked about, both collapsed into
+  # `false` and produced the poller's "gh CLI is not authenticated" WARN. See
+  # .auth_preflight for how each is established.
+  #
+  #   :authenticated  `gh` reached GitHub and GitHub accepted the credential.
+  #   :unconfigured   `gh` is certain there is no AUTH_HOST credential here (or `gh`
+  #                   itself is not installed). The staging case the poller's early
+  #                   return was built for.
+  #   :rejected       A credential IS present and GitHub actively refused it — 401,
+  #                   "Bad credentials". The one case that genuinely wants a human to
+  #                   look at the token.
+  #   :unknown        We did not get an answer. GitHub was unreachable or degraded, the
+  #                   call timed out, or `gh` failed before it could report. Says nothing
+  #                   about the credential, and must not be logged as if it did.
+  PREFLIGHT_AUTHENTICATED = :authenticated
+  PREFLIGHT_UNCONFIGURED = :unconfigured
+  PREFLIGHT_REJECTED = :rejected
+  PREFLIGHT_UNKNOWN = :unknown
+
+  # GitHub refusing the credential, in the wording `gh auth status --json hosts` puts in
+  # an account's `error` field:
+  #
+  #   non-200 OK status code: 401 Unauthorized body: "{\"message\": \"Bad credentials\" …}"
+  #
+  # Deliberately narrow, and deliberately the ONLY thing that earns :rejected. Every
+  # other error — a 5xx, a DNS failure, a refused connection, a scope complaint we do
+  # not recognise — falls through to :unknown, because the cost of the two mistakes is
+  # not symmetric. Calling a transport failure a credential fault is the bug this whole
+  # change exists to remove; calling a credential fault "could not determine" merely
+  # sends the operator to read `gh`'s own words, which the log line carries verbatim.
+  #
+  # 403 is NOT here even though it is an auth-shaped status: GitHub answers a secondary
+  # rate limit with 403, and a rate-limited preflight is a degradation, not a dead token.
+  CREDENTIAL_REJECTED_PATTERN = /non-200 OK status code: 401\b|Bad credentials/
+
+  # `gh` inlines the whole response body into its 401 error — a nested, doubly-escaped
+  # JSON blob several times longer than the sentence that explains it. The leading text
+  # carries the diagnosis ("401 … Bad credentials"), so cap the tail rather than let one
+  # skipped tick print a paragraph every minute.
+  MAX_PREFLIGHT_DETAIL_LENGTH = 200
+
+  # One reading of `gh auth status`, as the poller needs to act on it: which of the four
+  # answers above, plus `gh`'s own words for the operator reading the log line.
+  PreflightResult = Struct.new(:state, :detail) do
+    def authenticated?
+      state == PREFLIGHT_AUTHENTICATED
+    end
+
+    def unconfigured?
+      state == PREFLIGHT_UNCONFIGURED
+    end
+
+    def rejected?
+      state == PREFLIGHT_REJECTED
+    end
+
+    def unknown?
+      state == PREFLIGHT_UNKNOWN
+    end
+  end
+
   class << self
     # Whether the `gh` CLI can actually authenticate to GitHub from this process —
     # via a stored `gh auth login` credential OR a GH_TOKEN/GITHUB_TOKEN in the
@@ -148,7 +216,52 @@ class GithubSearchService
     # Kept deliberately distinct from a transient API failure: an *unconfigured*
     # environment is not an incident (skip quietly), whereas a rate-limit or network
     # error on a configured host still raises out of search_issues and alerts.
+    #
+    # Answers ONLY "did GitHub accept the credential", collapsing every way of failing
+    # into a bare false — which is what GithubTriggerHealthCheckJob's no-baseline guard
+    # needs, since it must decline to seed unless the host has demonstrably polled.
+    # Callers that report to a human want .auth_preflight instead, which does the actual
+    # work: "no credential", "a credential GitHub refused" and "we could not ask" are the
+    # same decision here but three different things to tell an operator.
     def configured?
+      auth_preflight.authenticated?
+    end
+
+    # The full reading of `gh auth status`: which of the four PREFLIGHT_* states holds,
+    # and `gh`'s own words for the log line.
+    #
+    # ## Why this parses `--json hosts` rather than reading the exit code
+    #
+    # `gh auth status`'s exit code and human-readable output cannot tell a dead
+    # credential from an unreachable API, and its prose actively asserts the wrong one.
+    # Driven against a CONNECT proxy answering 503 — the shape of the 2026-08-17
+    # degradation — a *valid* credential produces exit 1 and:
+    #
+    #   github.com
+    #     X Failed to log in to github.com account tadasant (…/hosts.yml)
+    #     - The token in …/hosts.yml is invalid.
+    #
+    # which is a claim `gh` is in no position to make: it never got an answer. A
+    # genuinely revoked token prints the same three lines, and so does an empty config.
+    # Any classifier built on the exit code inherits that conflation — which is why
+    # #542's suggested "non-zero exit = unconfigured, raised = degradation" split would
+    # not have moved the observed symptom: the 503 exits non-zero and raises nothing.
+    #
+    # `--json hosts` is the same single round-trip, but structured, and it carries the
+    # transport error `gh` swallows on its way to the prose above:
+    #
+    #   no credential   exit 0  {"hosts":{}}
+    #   healthy         exit 0  hosts["github.com"][0].state == "success"
+    #   revoked token   exit 0  state "error", error "non-200 OK status code: 401 … Bad credentials"
+    #   GitHub 503      exit 0  state "error", error "Get \"https://api.github.com/\": Service Unavailable"
+    #   DNS failure     exit 0  state "error", error "… no such host"
+    #   API hangs       BoundedSubprocess::TimeoutError
+    #
+    # `--json` exits 0 for every auth problem it can describe ("unless there is a fatal
+    # error", per `gh auth status --help`), which is what makes a NON-zero exit here
+    # meaningful in its own right: `gh` fell over before it could report, and we learned
+    # nothing. That is :unknown, not :unconfigured.
+    def auth_preflight
       # Publish GH_TOKEN from the ${VAR} chain before asking `gh` anything, so the
       # preflight answers for the token the store holds NOW. The boot initializer has
       # usually done this already; re-running it here is what carries a rotation into
@@ -156,18 +269,32 @@ class GithubSearchService
       # every agent spawned after it). Idempotent, and never raises — see the class.
       GhTokenProvisioner.ensure!
 
-      _out, _err, status = BoundedSubprocess.run([ "gh", "auth", "status" ], timeout: AUTH_STATUS_TIMEOUT)
+      stdout, stderr, status = BoundedSubprocess.run(
+        [ "gh", "auth", "status", "--json", "hosts" ], timeout: AUTH_STATUS_TIMEOUT
+      )
+
       # SubprocessStatus for the same reason as `search_issues` below: a nil status (child
-      # reaped before the waiter's waitpid) means the preflight produced no result, so treat
-      # this tick as unconfigured and skip rather than raising `nil.success?`.
-      SubprocessStatus.success?(status)
+      # reaped before the waiter's waitpid) means the preflight produced no result. Unlike
+      # the old code we do not call that "unconfigured" — we never learned anything, so it
+      # is :unknown and the poller says so.
+      unless SubprocessStatus.success?(status)
+        return unknown_preflight("gh auth status failed before it could report " \
+                                 "(#{SubprocessStatus.describe_failure(status, stderr)})")
+      end
+
+      classify_auth_hosts(JSON.parse(stdout))
+    rescue JSON::ParserError => e
+      unknown_preflight("could not parse gh auth status output: #{e.message}")
+    rescue Errno::ENOENT => e
+      # No `gh` binary at all. Local, permanent, and nothing to do with GitHub's health,
+      # so it belongs with the staging case: skip quietly rather than page every minute
+      # for a degradation that is not happening.
+      PreflightResult.new(PREFLIGHT_UNCONFIGURED, "the gh CLI is not installed (#{e.message})")
     rescue => e
-      # A timeout (BoundedSubprocess::TimeoutError) lands here too: a preflight that
-      # hangs against a degraded API is treated as "not configured this tick" — the
-      # poller skips rather than wedging, and the liveness check catches the resulting
-      # gap in successful polls.
-      Rails.logger.warn "[GithubSearchService] gh auth preflight failed: #{e.class}: #{e.message}"
-      false
+      # BoundedSubprocess::TimeoutError lands here: a preflight that hangs against a
+      # degraded API. The tick still skips — a hang must not wedge the singleton — but it
+      # skips as :unknown, so nothing downstream claims the credential is missing.
+      unknown_preflight("#{e.class}: #{e.message}")
     end
 
     # Runs a search query and returns every matching item.
@@ -315,6 +442,43 @@ class GithubSearchService
     end
 
     private
+
+    # `{"hosts": {"github.com": [{state:, error:, …}, …]}}` -> a PreflightResult.
+    def classify_auth_hosts(payload)
+      accounts = Array(payload.dig("hosts", AUTH_HOST))
+
+      # No entry for the host we search. `gh` reached its own config, found nothing to
+      # offer for GitHub, and said so — the one negative answer it is actually able to
+      # give without the network. This is the staging case the early return exists for.
+      if accounts.empty?
+        return PreflightResult.new(PREFLIGHT_UNCONFIGURED, "no #{AUTH_HOST} credential is configured")
+      end
+
+      # One working account is enough; `gh` lists every account it knows for a host and
+      # a stale second entry does not stop the active one from authenticating.
+      return PreflightResult.new(PREFLIGHT_AUTHENTICATED) if accounts.any? { |account| account["state"] == "success" }
+
+      errors = accounts.filter_map { |account| account["error"].presence }.uniq
+      detail = preflight_detail(errors.join("; ")).presence ||
+        "gh reported no working #{AUTH_HOST} account and gave no reason"
+
+      # ALL of them, not any: with a mix of a refused token and an unreachable API we do
+      # not know whether the credential we would actually use is dead, and the honest
+      # answer to a question we cannot settle is that we could not settle it.
+      return PreflightResult.new(PREFLIGHT_REJECTED, detail) if errors.any? && errors.all? { |error| error.match?(CREDENTIAL_REJECTED_PATTERN) }
+
+      unknown_preflight(detail)
+    end
+
+    def unknown_preflight(detail)
+      PreflightResult.new(PREFLIGHT_UNKNOWN, preflight_detail(detail))
+    end
+
+    # `gh`'s words, made fit for a log line that may repeat every minute: onto one line,
+    # and capped — `gh` inlines whole response bodies into its errors.
+    def preflight_detail(text)
+      text.to_s.squish.truncate(MAX_PREFLIGHT_DETAIL_LENGTH)
+    end
 
     def or_group(terms)
       "(#{terms.join(' OR ')})"
