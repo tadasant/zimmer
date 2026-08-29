@@ -46,6 +46,11 @@
                 Skips while pending
               </span>
             <% end %>
+            <% if @trigger.missing_fires? %>
+              <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                <%= pluralize(@trigger.missed_fire_count, "missed fire") %>
+              </span>
+            <% end %>
           </div>
           <p class="mt-2 text-sm text-gray-600">
             <%= @trigger.trigger_conditions.size %> condition<%= @trigger.trigger_conditions.size == 1 ? "" : "s" %>:
@@ -275,7 +280,14 @@
               <span class="text-sm text-gray-900" id="trigger-skip-if-pending-session">
                 <%= @trigger.skip_if_pending_session ? "Enabled" : "Disabled" %>
               </span>
-              <% if @trigger.skip_if_pending_session %>
+              <% if @trigger.skip_if_pending_session_inert? %>
+                <%# The setting is only consulted on the spawn path, which a re-use
+                    trigger never reaches. Saying what "the next fire" would spawn
+                    here would describe a branch that cannot run. %>
+                <span class="inline-flex flex-wrap items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                  Inert — this trigger re-uses a session, so it never reaches the spawn path this setting guards
+                </span>
+              <% elsif @trigger.skip_if_pending_session %>
                 <% pending = @trigger.pending_intent_session %>
                 <% if pending %>
                   <%# gap-1, not spaces: an inline-flex container drops the whitespace-only text
@@ -289,6 +301,20 @@
               <% end %>
             </dd>
           </div>
+          <% if @trigger.missing_fires? %>
+            <div>
+              <dt class="text-sm font-medium text-gray-500">Missed Fires</dt>
+              <dd class="mt-1 flex flex-wrap items-center gap-2">
+                <span class="inline-flex flex-wrap items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+                  <%= pluralize(@trigger.missed_fire_count, "consecutive fire") %> coalesced<%= " since #{l(@trigger.first_missed_fire_at, format: :long)}" if @trigger.first_missed_fire_at %>
+                </span>
+                <span class="text-xs text-gray-500">
+                  The re-used session is still holding an undelivered prompt, so the scheduled work has not
+                  run. It resumes on its own once that session takes a turn.
+                </span>
+              </dd>
+            </div>
+          <% end %>
           <div>
             <dt class="text-sm font-medium text-gray-500">Max Sessions / Minute</dt>
             <dd class="mt-1 flex items-center space-x-2">

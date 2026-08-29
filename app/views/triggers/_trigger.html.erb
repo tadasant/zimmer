@@ -50,6 +50,15 @@
                   Skips while pending
                 </span>
               <% end %>
+              <%# A trigger whose fires are being coalesced looks healthy on every
+                  other signal in this row — last_triggered_at advances either way
+                  — so the missed-fire count is the only thing that distinguishes
+                  "ran last night" from "has not run for six nights". %>
+              <% if trigger.missing_fires? %>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+                  <%= pluralize(trigger.missed_fire_count, "missed fire") %>
+                </span>
+              <% end %>
               <%# Only shown when the operator chose one. Every trigger has an
                   effective class, but badging all of them would say nothing about
                   most of them. %>

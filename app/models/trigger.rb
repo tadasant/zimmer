@@ -86,6 +86,32 @@ class Trigger < ApplicationRecord
   # How much of the event that tipped the cap to quote in the notice prompt.
   BURST_NOTICE_PROMPT_EXCERPT = 500
 
+  # --- Missed fires ---------------------------------------------------------
+  #
+  # A recurring trigger that reuses a session coalesces its fire when that
+  # session is still holding the previous one (see #coalesce_recurring_fire?).
+  # Coalescing is right, but a coalesced fire is a scheduled run that did not
+  # happen, so a RUN of them is the signal that the schedule has quietly stopped
+  # doing its job.
+  #
+  # Two conditions have to hold before this pages, because either alone is noisy
+  # in the ordinary case:
+  #
+  #   * At least this many consecutive fires coalesced. One skip is unremarkable
+  #     — a session mid-turn drains its queue at the next turn boundary and the
+  #     following fire lands. Two in a row means nothing drained in between.
+  #   * The undelivered prompt has been sitting for at least this long. A
+  #     fast-firing trigger can rack up consecutive skips inside a single long
+  #     turn without anything being wrong; a queue that has not moved in an hour
+  #     is a different animal.
+  #
+  # Together they say: "two scheduled runs in a row did not happen, and the
+  # session genuinely is not consuming." That is the second miss, not the sixth
+  # — the 2026-08-29 incident ran for six nights before an unrelated archive
+  # stranded the backlog and raised the only alert anyone saw.
+  MISSED_FIRE_ALERT_THRESHOLD = 2
+  MISSED_FIRE_MIN_QUEUE_AGE = 1.hour
+
   belongs_to :last_session, class_name: "Session", optional: true
   has_many :trigger_conditions, dependent: :destroy
   accepts_nested_attributes_for :trigger_conditions, allow_destroy: true, reject_if: :all_blank
@@ -416,7 +442,12 @@ class Trigger < ApplicationRecord
       end
     end
 
-    spawn_unless_pending_session!(prompt: prompt)
+    spawned = spawn_unless_pending_session!(prompt: prompt)
+    # A trigger that spawns has a session to talk to again — and #create_new_session!
+    # has already repointed `last_session_id` at it, so the queue that was holding
+    # the old one's prompts is no longer this trigger's concern.
+    clear_missed_fires! if spawned
+    spawned
   end
 
   # True when this trigger is currently inside a burst it has already noticed:
@@ -435,6 +466,36 @@ class Trigger < ApplicationRecord
   # was gone."
   def last_fire_burst_suppressed?
     @last_fire_burst_suppressed == true
+  end
+
+  # Whether this trigger currently has scheduled runs that did not happen — its
+  # fires are being coalesced into a prompt the reused session has not consumed.
+  #
+  # Read by the trigger page, the trigger list and the MCP `search_triggers`
+  # detail view, so the state is legible from any surface an operator can reach
+  # without a shell on the box. Before this, a trigger in this condition was
+  # indistinguishable from a healthy one on every one of them.
+  def missing_fires?
+    missed_fire_count.to_i.positive?
+  end
+
+  # Whether `skip_if_pending_session` can actually do anything on this trigger.
+  #
+  # It cannot when the trigger reuses a session: `skip_if_pending_session` is
+  # consulted only by #spawn_unless_pending_session!, and a reuse trigger with a
+  # live `last_session_id` returns out of #create_session! through
+  # #follow_up_session! well before that. So the checkbox is inert, and every
+  # surface that renders it used to claim it was in force — the trigger page and
+  # `search_triggers` both said "Yes (nothing pending — the next fire spawns)"
+  # about a setting that could never fire.
+  #
+  # Surfaced rather than validated away: existing triggers carry the combination
+  # (trigger 4730, the Daily Backlog Groomer, is one), and a create/update
+  # validation would start rejecting saves of rows that are already stored.
+  # #coalesce_recurring_fire? is the reuse-path control that actually bounds the
+  # backlog, and it needs no opt-in.
+  def skip_if_pending_session_inert?
+    skip_if_pending_session? && reuse_session?
   end
 
   # The still-pending session that made the most recent #create_session! call on
@@ -847,7 +908,32 @@ class Trigger < ApplicationRecord
     ActiveRecord::Base.transaction do
       session.lock!
 
-      if session.needs_input? || session.waiting?
+      if coalesce_recurring_fire?(session)
+        # The previous beat is still sitting in the queue undelivered, so this
+        # one would stack a second copy of the same drumbeat behind it. Skip.
+        #
+        # This case used to be reachable ONLY through the `running?` branch
+        # below, which is why it went unnoticed for so long: an IDLE session
+        # (`waiting` / `needs_input`) took the delivery branch instead, and that
+        # branch had no duplicate guard at all. That is not a theoretical gap —
+        # a spot session held at the quota gate sits in `waiting`, and
+        # `deliver_follow_up!` on it resumes it into a job that SpotSessionHold
+        # promptly defers, converting the "delivery" into one more queued row
+        # via #queue_behind_scheduled_turn. Five nightly fires against one
+        # quota-held session produced five byte-identical copies, none of them
+        # ever delivered, and the schedule reported success every time.
+        #
+        # Skipping is a coalesce, not a drop: the copy already queued carries
+        # exactly this intent and runs when the session next takes a turn. What
+        # must NOT happen is the fire passing silently — #record_missed_fire!
+        # counts it, and a run of them alerts.
+        Rails.logger.info(
+          "[Trigger#follow_up_session!] Coalescing fire for recurring trigger #{id} — session " \
+          "#{session.id} (#{session.status}) still holds #{session.enqueued_messages.pending.count} " \
+          "undelivered prompt(s); not stacking another copy"
+        )
+        @last_follow_up_status = :skipped_pending_exists
+      elsif session.needs_input? || session.waiting?
         session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
         @last_follow_up_status = :delivered
       elsif session.running?
@@ -896,7 +982,118 @@ class Trigger < ApplicationRecord
       update_columns(last_triggered_at: Time.current)
     end
 
+    # Outside the transaction that locked the session: this only writes the
+    # trigger's own bookkeeping and may raise an alert, and neither belongs
+    # inside a lock held on somebody else's row.
+    record_fire_outcome!(session)
+
     session
+  end
+
+  # Whether this fire should be coalesced into a prompt the target session is
+  # already holding rather than adding another copy.
+  #
+  # Scoped to RECURRING triggers on purpose. A recurring trigger is a drumbeat:
+  # if the session has not consumed the last beat, a second one is duplication,
+  # and the queue is the wrong place to accumulate a backlog of them. A one-time
+  # wake is the opposite — a one-shot signal that must deliver durably across
+  # the race window #follow_up_session! documents — so it is exempt here and
+  # keeps the narrower guard on the `running?` branch, which treats an existing
+  # pending message as already representing the watched event.
+  #
+  # Deliberately NOT gated behind `skip_if_pending_session`. That setting is a
+  # SPAWN-path control (see #spawn_unless_pending_session!) and is unreachable
+  # from here — a reuse trigger returns from #follow_up_session! long before
+  # #create_session! would consult it. Gating this on an opt-in that defaults
+  # off would reproduce exactly the silence being fixed.
+  #
+  # The predicate is ANY pending message, not just one this trigger queued, and
+  # that is a deliberate over-reach with a known cost: a message a human queued
+  # onto the reused session also coalesces tonight's fire. Two reasons to accept
+  # it. It is the predicate the `running?` branch below has always used, so this
+  # makes the two branches agree rather than inventing a third rule. And
+  # per-trigger provenance would not actually catch the incident this fixes:
+  # those rows were written by SpotSessionHold#queue_behind_scheduled_turn, which
+  # holds only a session and a prompt and has no idea which trigger sent it — so
+  # a `trigger_id` column would have missed all five. The cost is bounded at one
+  # occurrence (the session consumes the queue, and the next fire lands) and it
+  # is now counted rather than silent.
+  def coalesce_recurring_fire?(session)
+    return false if one_time_reuse_trigger?
+
+    session.enqueued_messages.pending.exists?
+  end
+
+  # Record whether this fire actually reached the session, and page when a run
+  # of them has not.
+  #
+  # The invariant: a scheduled fire either runs, or somebody learns it did not.
+  # A coalesced fire is a scheduled run that did NOT happen, and before this it
+  # was indistinguishable from a successful one — `last_triggered_at` advanced
+  # either way, so the trigger page, the MCP surface and the operator all read
+  # "fired daily, last night included" while six nights in a row had gone
+  # nowhere. The counter is what makes the miss countable; the alert is what
+  # makes it reach a human without waiting for an unrelated archive to notice.
+  def record_fire_outcome!(session)
+    case @last_follow_up_status
+    when :skipped_pending_exists
+      record_missed_fire!(session)
+    when :delivered, :queued
+      # The trigger is reaching its session again; whatever run it was carrying
+      # is over.
+      clear_missed_fires!
+    end
+    # `:dropped` is deliberately neither. It is the pre-existing "don't barge a
+    # busy session" behaviour of a recurring trigger with `enqueue_messages`
+    # off, and it is common and benign — but it is not progress either, so
+    # clearing a run of real misses on one would hide them.
+  rescue StandardError => e
+    # Never let bookkeeping fail a fire that otherwise landed.
+    Rails.logger.error("[Trigger#record_fire_outcome!] Trigger #{id}: #{e.class}: #{e.message}")
+  end
+
+  def record_missed_fire!(session)
+    count = missed_fire_count.to_i + 1
+    first_at = first_missed_fire_at || Time.current
+    update_columns(missed_fire_count: count, first_missed_fire_at: first_at)
+
+    return unless count >= MISSED_FIRE_ALERT_THRESHOLD
+
+    oldest = session.enqueued_messages.pending.ordered.first
+    stalled_since = oldest&.created_at
+    return if stalled_since.blank? || stalled_since > MISSED_FIRE_MIN_QUEUE_AGE.ago
+
+    AlertService.raise_alert(
+      "Recurring trigger is not reaching its session",
+      details: "Trigger '#{name}' (ID: #{id}) has had #{count} consecutive fires coalesced away since " \
+               "#{first_at.iso8601}. It reuses session #{session.id}, which has been holding an " \
+               "undelivered prompt since #{stalled_since.iso8601} and has taken no turn in the meantime.\n\n" \
+               "The scheduled work has not run for #{count} occurrence(s). Nothing is queued up behind " \
+               "this — the duplicate copies are deliberately not stacked — so the schedule resumes on its " \
+               "own as soon as session #{session.id} takes a turn.\n\n" \
+               "If that session is a spot session held for quota headroom, this is budget pacing rather " \
+               "than a failure: either let it drain, or make it priority to start it now. If it is stuck " \
+               "for any other reason, that is the thing to fix.\n\n" \
+               "Trigger: #{trigger_url(id)}",
+      source: "Trigger#record_missed_fire!",
+      dedup_key: "trigger_missed_fires_#{id}"
+    )
+  end
+
+  def clear_missed_fires!
+    return if missed_fire_count.to_i.zero? && first_missed_fire_at.nil?
+
+    update_columns(missed_fire_count: 0, first_missed_fire_at: nil)
+  end
+
+  # A `/triggers/:id` link for the alert above. Mirrors ApplicationJob#trigger_url,
+  # including its fallback: AppUrl.base_url reads configuration, and a deployment
+  # that has it wrong must lose the link rather than the alert.
+  def trigger_url(trigger_id)
+    "#{AppUrl.base_url}/triggers/#{trigger_id}"
+  rescue StandardError => e
+    Rails.logger.warn("[Trigger] Could not build a trigger URL: #{e.class}: #{e.message}")
+    "/triggers/#{trigger_id}"
   end
 
   # Update the session's MCP servers to match the trigger's current configuration.
