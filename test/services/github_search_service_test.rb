@@ -190,6 +190,25 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert GithubSearchService.configured?
   end
 
+  test "configured? leaves a breadcrumb when the preflight could not reach GitHub" do
+    # GithubTriggerHealthCheckJob's no-baseline path asks this and then simply returns, so
+    # without this line a GitHub outage during exactly that window would leave no record —
+    # the silence the four states exist to break.
+    stub_auth_status(unreachable_json)
+    Rails.logger.expects(:warn).with { |line| line.include?("Could not determine") && line.include?("Service Unavailable") }
+
+    assert_not GithubSearchService.configured?
+  end
+
+  test "configured? stays quiet on a host that is merely unconfigured" do
+    # Staging legitimately has no credential and the health check runs on a schedule; a
+    # WARN every time would be the noise the poller's early return exists to avoid.
+    stub_auth_status(auth_status_json(nil))
+    Rails.logger.expects(:warn).never
+
+    assert_not GithubSearchService.configured?
+  end
+
   test "search_issues surfaces a hung request as a SearchError" do
     # The heart of the incident: `gh` stalls against a degraded API. BoundedSubprocess
     # kills it and raises TimeoutError; search_issues must convert that into the same

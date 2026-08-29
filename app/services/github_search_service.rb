@@ -224,7 +224,20 @@ class GithubSearchService
     # work: "no credential", "a credential GitHub refused" and "we could not ask" are the
     # same decision here but three different things to tell an operator.
     def configured?
-      auth_preflight.authenticated?
+      preflight = auth_preflight
+
+      # The one breadcrumb this lossy shape owes its caller. GithubTriggerHealthCheckJob
+      # asks this on its no-baseline path and then simply returns, so without a line here
+      # a preflight that could not reach GitHub during exactly that window would leave no
+      # record at all — the same silence this file's four states exist to break. Only
+      # :unknown logs: an unconfigured staging host and a refused token are both answers,
+      # and neither is worth a WARN every time the check runs.
+      if preflight.unknown?
+        Rails.logger.warn "[GithubSearchService] Could not determine whether the gh credential is " \
+                          "valid: #{preflight.detail}"
+      end
+
+      preflight.authenticated?
     end
 
     # The full reading of `gh auth status`: which of the four PREFLIGHT_* states holds,
@@ -458,14 +471,19 @@ class GithubSearchService
       # a stale second entry does not stop the active one from authenticating.
       return PreflightResult.new(PREFLIGHT_AUTHENTICATED) if accounts.any? { |account| account["state"] == "success" }
 
+      # Matched against the raw errors, never the shortened `detail` below: truncation is
+      # a log-line concern, and letting it reach the classifier would make a long enough
+      # error silently change state.
       errors = accounts.filter_map { |account| account["error"].presence }.uniq
-      detail = preflight_detail(errors.join("; ")).presence ||
+      detail = errors.join("; ").presence ||
         "gh reported no working #{AUTH_HOST} account and gave no reason"
 
       # ALL of them, not any: with a mix of a refused token and an unreachable API we do
       # not know whether the credential we would actually use is dead, and the honest
       # answer to a question we cannot settle is that we could not settle it.
-      return PreflightResult.new(PREFLIGHT_REJECTED, detail) if errors.any? && errors.all? { |error| error.match?(CREDENTIAL_REJECTED_PATTERN) }
+      if errors.any? && errors.all? { |error| error.match?(CREDENTIAL_REJECTED_PATTERN) }
+        return PreflightResult.new(PREFLIGHT_REJECTED, preflight_detail(detail))
+      end
 
       unknown_preflight(detail)
     end
