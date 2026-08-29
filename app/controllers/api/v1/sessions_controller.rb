@@ -1044,20 +1044,25 @@ class Api::V1::SessionsController < Api::BaseController
 
     force = ActiveModel::Type::Boolean.new.cast(params[:force])
 
-    sessions.each do |session|
-      queued = force ? [] : Sessions::ArchiveGuard.pending_messages(session)
+    # One request is one caller action, so it owes the caller one page rather
+    # than one per session — see the MCP twin, including why this is defensive
+    # here and load-bearing on HealthMonitorService's sweep.
+    AlertBatcher.with_batch do
+      sessions.each do |session|
+        queued = force ? [] : Sessions::ArchiveGuard.pending_messages(session)
 
-      if queued.any?
-        # Reported and skipped rather than aborting the batch, matching the MCP
-        # twin. `force` applies to the whole batch, not one member of it.
-        errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued, batch: true) }
-      elsif session.may_archive?
-        session.archive_actor = "the REST API (bulk)"
-        session.archive_forced = force
-        session.archive!
-        archived_count += 1
-      else
-        errors << { id: session.id, message: "Cannot archive from status: #{session.status}" }
+        if queued.any?
+          # Reported and skipped rather than aborting the batch, matching the MCP
+          # twin. `force` applies to the whole batch, not one member of it.
+          errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued, batch: true) }
+        elsif session.may_archive?
+          session.archive_actor = "the REST API (bulk)"
+          session.archive_forced = force
+          session.archive!
+          archived_count += 1
+        else
+          errors << { id: session.id, message: "Cannot archive from status: #{session.status}" }
+        end
       end
     end
 

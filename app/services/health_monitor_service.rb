@@ -533,15 +533,23 @@ class HealthMonitorService
 
     results = { archived: [], failed: [] }
 
-    sessions.find_each do |session|
-      begin
-        with_db_retry do
-          session.archive_actor = "Zimmer's stale-session sweep (untouched for #{older_than.inspect})"
-          session.archive! if session.may_archive?
+    # The sweep archives without consulting Sessions::ArchiveGuard, so every
+    # queue it strands pages — correctly, since nobody read those messages. What
+    # is not correct is one page per session: the stranded-queue alert dedups per
+    # session by design, so a sweep that catches N sessions with queues posts N
+    # alerts in one tick, and each of those spawns its own triage session. The
+    # batch keeps the count honest inside a single consolidated message.
+    AlertBatcher.with_batch do
+      sessions.find_each do |session|
+        begin
+          with_db_retry do
+            session.archive_actor = "Zimmer's stale-session sweep (untouched for #{older_than.inspect})"
+            session.archive! if session.may_archive?
+          end
+          results[:archived] << session.id
+        rescue => e
+          results[:failed] << { session_id: session.id, reason: e.message }
         end
-        results[:archived] << session.id
-      rescue => e
-        results[:failed] << { session_id: session.id, reason: e.message }
       end
     end
 

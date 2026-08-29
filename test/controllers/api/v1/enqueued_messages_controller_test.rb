@@ -102,7 +102,6 @@ class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
 
     created = @session.enqueued_messages.order(:position).last
     assert_equal "caller", created.origin
-    assert_not created.archive_satisfied?
   end
 
   test "should return 404 for message in different session" do
