@@ -11,6 +11,7 @@ class Api::V1::SessionsController < Api::BaseController
   require "automated_prompts"
   include SessionSearchable
   include ApiSessionSerialization
+  include SessionTranscriptLookup
 
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_heartbeat, :set_category ]
 
@@ -1349,27 +1350,6 @@ class Api::V1::SessionsController < Api::BaseController
     )
 
     true
-  end
-
-  # Transcript directory helpers (shared with web SessionsController)
-
-  def get_transcript_directory_for_session(session)
-    working_directory = session.metadata&.dig("working_directory")
-    clone_path = session.metadata&.dig("clone_path")
-    path_to_use = working_directory || clone_path
-    return nil unless path_to_use.is_a?(String) && path_to_use.present?
-
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(path_to_use)
-    File.join(claude_projects_dir, sanitized_path)
-  rescue => e
-    Rails.logger.error "Failed to get transcript directory: #{e.message}"
-    nil
-  end
-
-  def find_main_transcript_file_for_session(session, transcript_dir)
-    TranscriptFileLocator.find_main_transcript(session, transcript_dir)
   end
 
   def count_transcript_messages(transcript_content)

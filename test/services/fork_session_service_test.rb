@@ -1192,4 +1192,73 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_nil fork.metadata["clone_scaffolded"]
     assert @mock_fs.exists?(File.join(fork.metadata["clone_path"], "README.md"))
   end
+
+  # --- Runtimes without a single-file resume transcript (#504) ----------------
+  #
+  # TranscriptSource#resume_transcript_path returns nil for Codex, whose rollouts
+  # are date-partitioned, UUID-named and possibly Zstandard-compressed. The fork
+  # must SUCCEED for such a runtime, writing nothing, rather than mkdir_p-ing a
+  # Claude project directory and dropping a <session_id>.jsonl the runtime will
+  # never read. Mirrors AgentSessionJob#write_transcript_to_clone, which has
+  # honoured this contract since the method was introduced.
+
+  # Every path a Claude fork would have written under, so a Codex fork can be
+  # asserted to have touched none of them.
+  def claude_projects_paths(mock_fs)
+    claude_projects = File.join(File.expand_path("~"), ".claude", "projects")
+    (mock_fs.files.keys + mock_fs.directories.to_a).select { |p| p.start_with?(claude_projects) }
+  end
+
+  test "forking a Codex session succeeds without writing anything under ~/.claude/projects" do
+    @source_session.update!(agent_runtime: "codex")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?, "Codex fork must succeed; got error: #{result.error.inspect}"
+    forked = result.forked_session
+    assert_not_nil forked
+    assert_equal "codex", forked.agent_runtime
+    assert_equal :needs_input, forked.status.to_sym
+
+    assert_nil TranscriptRuntime.source_for(forked, file_system: @mock_fs)
+      .resume_transcript_path(session: forked, working_directory: forked.metadata["working_directory"]),
+      "Codex has no single-file resume transcript path — the premise of this test"
+
+    assert_empty claude_projects_paths(@mock_fs),
+      "A Codex fork must not create or write anything under ~/.claude/projects"
+
+    # The stored transcript is still the durable record — only the on-disk copy is skipped.
+    expected_transcript = @transcript_lines[0..1].map { |line| JSON.generate(line) }.join("\n") + "\n"
+    assert_equal expected_transcript, forked.transcript
+  end
+
+  test "a genuine transcript write failure still fails the fork and cleans up" do
+    raising_fs = Class.new(MockFileSystemAdapter) do
+      def write(path, content, **options)
+        raise Errno::EACCES, "Permission denied - #{path}" if path.end_with?(".jsonl")
+        super
+      end
+    end.new
+    raising_fs.mkdir_p(@clone_path)
+    raising_fs.write(File.join(@clone_path, ".mcp.json"), JSON.pretty_generate({
+      "mcpServers" => { "playwright-custom" => { "command" => "npx", "args" => [ "-y", "playwright-mcp" ] } }
+    }))
+
+    session_count_before = Session.count
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: raising_fs
+    )
+
+    assert_not result.success?,
+      "A write that RAISES is a real failure and must not be confused with the nil (nothing-to-do) case"
+    assert_equal "Failed to write transcript file", result.error
+    assert_equal session_count_before, Session.count, "the half-made fork must be cleaned up"
+  end
 end

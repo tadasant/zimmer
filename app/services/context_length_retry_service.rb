@@ -288,37 +288,21 @@ class ContextLengthRetryService
 
   # Find the transcript file path for the session
   #
-  # Uses TranscriptFileLocator to find the main transcript file in the
-  # Claude projects directory.
+  # Both halves — the directory and the file inside it — come from the session's
+  # runtime TranscriptSource, which is the single place that knows a runtime's
+  # on-disk layout.
   #
   # @param working_directory [String] Working directory for the session
   # @return [String, nil] Path to transcript file, or nil if not found
   def find_transcript_path(working_directory)
-    transcript_dir = calculate_transcript_directory(working_directory)
+    source = TranscriptRuntime.source_for(session, file_system: file_system)
+    transcript_dir = source.transcript_directory(working_directory: working_directory)
     return nil unless transcript_dir
     return nil unless file_system.directory?(transcript_dir)
 
-    TranscriptFileLocator.find_main_transcript(session, transcript_dir, file_system: file_system)
+    source.find_main_transcript(transcript_directory: transcript_dir, session: session)
   rescue => e
     @logger.error("Error finding transcript path", error: e.message)
-    nil
-  end
-
-  # Calculate the transcript directory path from working directory
-  #
-  # Claude Code stores transcripts in ~/.claude/projects/<sanitized-path>/
-  #
-  # @param working_directory [String] The working directory
-  # @return [String, nil] The transcript directory path
-  def calculate_transcript_directory(working_directory)
-    return nil unless working_directory
-
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(working_directory)
-    File.join(claude_projects_dir, sanitized_path)
-  rescue => e
-    @logger.error("Error calculating transcript directory", error: e.message)
     nil
   end
 

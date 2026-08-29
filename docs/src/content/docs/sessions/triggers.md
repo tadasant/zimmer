@@ -793,7 +793,10 @@ restores its clone and its transcript, and the follow-up lands in the resumed co
 
 Resuscitation only works when there is something to bring back. `UnarchiveSessionService` restores a
 transcript so the agent can resume, and refuses a session with no `session_id` — that is the name it
-would write the transcript under. A session with neither is refused on every fire, forever.
+would write the transcript under (for a runtime with a single-file resume path; a Codex unarchive
+writes nothing and is not failed for it — see
+[Writing a transcript back to disk](/sessions/transcripts/#writing-a-transcript-back-to-disk)).
+A session with neither is refused on every fire, forever.
 
 That pair is what the [spot gate](/sessions/spot-and-priority/#the-gate) produces at scale: a `spot`
 session can sit at the starting line for a whole quota window without ever starting, and then be

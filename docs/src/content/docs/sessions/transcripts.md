@@ -184,6 +184,45 @@ hold whatever was captured; `bin/rails open_transcripts:redact_stored` rewrites 
 by default — pass `DRY_RUN=0` to apply).
 :::
 
+## Writing a transcript back to disk
+
+The stored transcript in `sessions.transcript` is the durable record; the file on disk is what the
+runtime actually resumes from. Three paths re-materialize the former as the latter — resuming a
+session whose clone was recreated (`AgentSessionJob#write_transcript_to_clone`), unarchiving
+(`UnarchiveSessionService`), and forking (`ForkSessionService`).
+
+None of them compute a path. They all ask the session's `TranscriptSource`:
+
+```ruby
+TranscriptRuntime.source_for(session, file_system: file_system)
+  .resume_transcript_path(session: session, working_directory: working_directory)
+```
+
+For Claude Code that is `~/.claude/projects/<sanitized-cwd>/<session_id>.jsonl` — the same file
+`locate` prefers, so the runtime resumes from exactly what the poller reads.
+
+The same rule holds for *reading*: the manual-refresh paths (both controllers, the `action_session`
+MCP tool) and the four process-recovery services take the directory **and** the file inside it from
+the source — `transcript_directory` then `find_main_transcript`. Pairing one runtime's directory
+with another's file-picker is how a Codex session ends up searched with Claude's flat
+`<session_id>.jsonl` rule: it finds nothing at best, and at worst adopts an unrelated rollout that
+happens to sit at the top of `~/.codex/sessions`.
+
+**`nil` means "this runtime has no single-file restore", and it is not an error.** Codex rollouts are
+date-partitioned, UUID-named and possibly Zstandard-compressed, so there is no one deterministic path
+to write stored bytes to. Every caller skips the write on `nil` and carries on; a Codex fork and a
+Codex unarchive both succeed, having written nothing. Writing a Claude-shaped file the runtime will
+never read would not have helped, and gating the operation on that write turned a no-op into a
+failure.
+
+A write that *raises* is still a failure, and fork and unarchive still abort on it — they distinguish
+"nothing to do" from "the write did not land".
+
+:::note
+A restored Codex session resumes from whatever rollout is on disk. That is the wider Codex gap
+tracked in #54, not something the restore path can fix on its own.
+:::
+
 ## The regression guard
 
 If the clone is recreated, the agent starts a *fresh* transcript file. Naively overwriting
