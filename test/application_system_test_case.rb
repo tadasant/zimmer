@@ -33,6 +33,14 @@ Capybara.reuse_server = true
 # The full diagnosis is in docs/src/content/docs/operate/testing.md.
 Capybara.disable_animation = true
 
+# Chrome reports a node detached by a page swap as a generic `UnknownError`, not
+# as the `StaleElementReferenceError` Capybara's retry loop knows to swallow — so
+# a query that races a re-render errors the test instead of being retried. The
+# full diagnosis is in test/support/detached_node_error_translation.rb and in
+# docs/src/content/docs/operate/testing.md.
+require_relative "support/detached_node_error_translation"
+DetachedNodeErrorTranslation.install!
+
 # Generate a unique user data directory for each parallel test worker
 # This allows Chrome to reuse profile data between tests, significantly
 # reducing browser startup time while maintaining isolation between workers.
@@ -208,6 +216,31 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
         }
       })
     JS
+  end
+
+  # Block until Stimulus has connected the named controller.
+  #
+  # A controller that fills a field on connect leaves the field server-rendered
+  # empty until it runs, and `assert_equal` on a field's value does not retry the
+  # way Capybara's matchers do — so a bare read after `visit` measures the pre-JS
+  # DOM and can agree with the expected answer by accident.
+  def wait_for_stimulus_controller(identifier, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      connected = page.evaluate_script(<<~JS, identifier)
+        (function (identifier) {
+          const el = document.querySelector(`[data-controller~="${identifier}"]`)
+          if (!el || !window.Stimulus) return false
+          return Boolean(window.Stimulus.getControllerForElementAndIdentifier(el, identifier))
+        })(arguments[0])
+      JS
+      return if connected
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        raise Capybara::ExpectationNotMet,
+          "the #{identifier} Stimulus controller did not connect within #{timeout}s"
+      end
+      sleep 0.05
+    end
   end
 
   # Select an agent root via the agent-root-select Stimulus controller.
