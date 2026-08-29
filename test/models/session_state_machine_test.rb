@@ -298,10 +298,53 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.archive!
   end
 
-  # The other half of the condition, and the one that keeps the exemption from
-  # silencing its own smoke detector. HealthMonitorService's sweep, the harvest
-  # job and the fork cleanup all archive without consulting Sessions::ArchiveGuard,
-  # so nobody has read the notice — which is exactly how the mis-credited-PR bug
+  # 2026-08-29, sessions 5933/6422/6447/6920/8357/8441/9438: a spot-queue cleanup
+  # Tadas had asked for read each session's queue, forced past the guard as the
+  # refusal instructs, and Zimmer paged seven times in three seconds — spawning
+  # seven router sessions over an archive it had itself authorized. The messages
+  # were stale recovery nudges and a router's own backstop wake, so the origin
+  # vocabulary could not tell them apart from a message somebody was waiting on.
+  # `force` can: the caller was shown them and accepted the loss.
+  test "a forced archive does not page over a caller's message" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(content: "Backstop wake. Re-poll child #10493", position: 1, status: "pending")
+
+    AlertService.expects(:raise_alert).never
+
+    session.archive_forced = true
+    session.archive!
+  end
+
+  # Not paging is not the same as not recording. The page is replaced by a
+  # queryable line, because "what has been force-discarded, and by whom?" is a
+  # fleet-wide question that no single session's timeline answers.
+  test "a forced archive records the strand on the log plane instead" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    message = session.enqueued_messages.create!(content: "stale nudge", position: 1, status: "pending")
+    AlertService.stubs(:raise_alert)
+
+    entries = capture_log_entries do
+      session.archive_actor = "session #10502 via the MCP API (bulk)"
+      session.archive_forced = true
+      session.archive!
+    end
+
+    severity, line = entries.find { |_severity, content| content.include?("[StrandedQueue]") }
+    assert line, "a forced strand leaves a ledger entry"
+    assert_equal "WARN", severity,
+      "an authorized discard is not a fault, and ERROR would page through the log-error alert instead"
+    assert_includes line, "session=#{session.id}"
+    assert_includes line, "forced=true"
+    assert_includes line, "session #10502 via the MCP API (bulk)"
+    assert_includes line, "##{message.id}(caller)"
+  end
+
+  # The unforced path is the failure the alert was built for and stays loud
+  # whatever the message was. HealthMonitorService's sweep, the harvest job and
+  # the fork cleanup all archive without consulting Sessions::ArchiveGuard, so
+  # nobody has read anything — which is exactly how the mis-credited-PR bug
   # behind #555 surfaced, on a status-summary fork the harvest job archived.
   test "archive still pages when a system sweep strands a PR-merged notice unread" do
     session = sessions(:waiting)
@@ -364,9 +407,39 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.archive!
   end
 
-  # A queue holding both must still page, and the page must be about the message
-  # somebody is actually waiting on.
-  test "archive pages for the caller's message and leaves the PR-merged notice out of it" do
+  # A mixed queue is one archive, and `force` covers all of it: the refusal lists
+  # every pending row, so the caller read both before it forced.
+  test "a forced archive records a mixed queue in one entry and pages for none of it" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/560"),
+      position: 1,
+      status: "pending",
+      origin: "automated_pr_merged"
+    )
+    session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
+
+    AlertService.expects(:raise_alert).never
+
+    entries = capture_log_entries do
+      session.archive_forced = true
+      session.archive!
+    end
+
+    line = entries.map(&:last).find { |content| content.include?("[StrandedQueue]") }
+    assert_includes line, "retired=2"
+    assert_includes line, "(automated_pr_merged)"
+    assert_includes line, "(caller)"
+
+    archive_line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes archive_line, "2 queued messages were never delivered",
+      "the archive line still records both"
+  end
+
+  # The same mixed queue on an unforced path is the case the exemption used to
+  # narrow. Nobody read either message, so both are on the page.
+  test "an unforced archive pages for every message in a mixed queue" do
     session = sessions(:waiting)
     session.update!(status: :running)
     session.enqueued_messages.create!(
@@ -380,17 +453,12 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     AlertService.expects(:raise_alert).with do |title, options|
       title == "Queued messages stranded by an archive" &&
         options[:details].include?("add the onion back") &&
-        options[:details].include?("1 message(s) still queued") &&
-        !options[:details].include?("has been merged") &&
-        options[:details].include?("1 automated PR-merged notice was also retired")
+        options[:details].include?("has been merged") &&
+        options[:details].include?("2 message(s) still queued")
     end
 
-    session.archive_forced = true
+    session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
     session.archive!
-
-    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
-    assert_includes line, "2 queued messages were never delivered",
-      "the archive line records both; only the page is narrowed"
   end
 
   # Deliberately an application-level failure rather than a StatementInvalid: a

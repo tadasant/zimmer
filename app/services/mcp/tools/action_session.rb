@@ -1173,25 +1173,38 @@ module Mcp
         archived_count = 0
         errors = []
 
-        Session.where(id: session_ids).where.not(status: :archived).each do |session|
-          if session.may_archive?
-            begin
-              # Same refusal as the single-session action: a queue about to be
-              # discarded is no less discarded for being archived in a batch.
-              # Reported per session rather than aborting the batch, and `force`
-              # applies to the whole batch because the argument is one flag.
-              refuse_archive_over_queued_messages(session, args, batch: true)
-            rescue ToolError => e
-              errors << { id: session.id, error: e.message }
-              next
-            end
+        # One bulk call is one caller action, so it owes the caller one page
+        # rather than one per session, and every page in `#alerts` spawns a
+        # triage session downstream — which is what makes N of them expensive.
+        #
+        # Defensive here rather than load-bearing, and worth being honest about
+        # which: the only alert this loop can currently burst is the
+        # stranded-queue one, which a forced archive no longer raises and an
+        # unforced one never reaches (the refusal above stops it). The batch is
+        # what keeps that true of the next per-session alert somebody adds.
+        # HealthMonitorService's sweep is where it does real work today.
+        AlertBatcher.with_batch do
+          Session.where(id: session_ids).where.not(status: :archived).each do |session|
+            if session.may_archive?
+              begin
+                # Same refusal as the single-session action: a queue about to be
+                # discarded is no less discarded for being archived in a batch.
+                # Reported per session rather than aborting the batch, and
+                # `force` applies to the whole batch because the argument is one
+                # flag.
+                refuse_archive_over_queued_messages(session, args, batch: true)
+              rescue ToolError => e
+                errors << { id: session.id, error: e.message }
+                next
+              end
 
-            session.archive_actor = "#{archive_actor_phrase(args)} (bulk)"
-            session.archive_forced = boolean(args["force"])
-            session.archive!
-            archived_count += 1
-          else
-            errors << { id: session.id, error: "Cannot archive from status: #{session.status}" }
+              session.archive_actor = "#{archive_actor_phrase(args)} (bulk)"
+              session.archive_forced = boolean(args["force"])
+              session.archive!
+              archived_count += 1
+            else
+              errors << { id: session.id, error: "Cannot archive from status: #{session.status}" }
+            end
           end
         end
 
