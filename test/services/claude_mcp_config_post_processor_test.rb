@@ -954,7 +954,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
             "ELICITATION_POLL_URL" => ElicitationEndpoint.url,
             "ELICITATION_PREFER_HTTP_FALLBACK" => "true",
             "ELICITATION_TTL_MS" => (Elicitation::DEFAULT_EXPIRATION.to_i * 1000).to_s,
-            "ELICITATION_SESSION_ID" => @session.id.to_s
+            "ELICITATION_SESSION_ID" => @session.id.to_s,
+            "NPM_CONFIG_CACHE" => File.join(@working_dir, ".npm-cache")
           }
         }
       }

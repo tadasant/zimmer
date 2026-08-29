@@ -682,6 +682,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       ELICITATION_REQUEST_URL = "#{ElicitationEndpoint.url}"
       ELICITATION_SESSION_ID = "#{@session.id}"
       ELICITATION_TTL_MS = "#{Elicitation::DEFAULT_EXPIRATION.to_i * 1000}"
+      NPM_CONFIG_CACHE = "#{File.join(@working_dir, '.npm-cache')}"
       [mcp_servers.zimmer]
       url = "http://localhost:3000/mcp?session_id=#{@session.id}"
       [mcp_servers.zimmer.http_headers]
