@@ -831,9 +831,19 @@ is still holding the **previous** prompt undelivered, the next fire is coalesced
 stacking a second copy — `Trigger#coalesce_recurring_fire?`. The queued prompt already carries
 exactly this intent and runs when the session next takes a turn.
 
-One-time wakes are exempt. A wake is a one-shot signal that has to survive the race between "the
-watched session transitioned" and "the requester's turn ended", so it keeps the narrower guard on the
+**Only a purely recurring trigger is coalesced** — one where no condition is a one-time schedule or a
+session-scoped ao_event. A wake is a one-shot signal that has to survive the race between "the watched
+session transitioned" and "the requester's turn ended", so it keeps the narrower guard on the
 `running?` branch, which treats an existing pending message as already representing the event.
+
+The test is `Trigger#purely_recurring?` rather than the negation of `#one_time_reuse_trigger?`, and
+the difference matters for a trigger that *mixes* the two. `#one_time_reuse_trigger?` demands that
+**every** condition be one-shot, so a trigger carrying a recurring schedule alongside a one-time one
+fails it — while `ScheduleTriggerJob` keys its auto-delete on `condition.one_time_schedule?` and
+checks only `#last_follow_up_dropped?` before destroying the trigger. A coalesced fire is not
+`:dropped`, so coalescing that shape would consume the one-shot schedule and delete the trigger having
+delivered nothing. Refusing to coalesce any trigger that carries a one-shot condition at all keeps the
+previous behaviour intact for those shapes.
 
 ### Why a queue can grow when nothing looks wrong
 
@@ -863,8 +873,12 @@ coalesced, *and* the undelivered prompt has been sitting for at least `MISSED_FI
 can rack up skips inside a single long turn without anything being wrong. Together they mean two
 scheduled runs did not happen and the session genuinely is not consuming.
 
-A session held for quota headroom is **budget pacing, not a failure** — the alert says so, and the
-schedule resumes on its own once that session takes a turn.
+A session held for quota headroom is **budget pacing, not a failure** — the alert says so, and such a
+session re-checks on its own, so the schedule resumes once it gets through.
+
+The alert also asks the operator to confirm that something *will* make the session take a turn,
+because for a `waiting` session that is not spot-held, nothing necessarily will —
+see [the limitation](/limitations/#a-waiting-sessions-queue-has-no-sweep-so-coalescing-can-wait-on-a-turn-that-never-comes).
 
 ## Firing a trigger by hand
 
@@ -949,15 +963,20 @@ The gate sits at `Trigger#create_session!`, in front of burst control, so it cov
 type at once, and the check and the spawn share one row lock — two jobs firing the same trigger at
 once cannot both read "nothing pending" and both spawn.
 
-:::caution[This setting is inert on a `reuse_session` trigger]
-It guards the **spawn** path only. A trigger that reuses a session returns out of
-`Trigger#create_session!` through `#follow_up_session!` long before the gate is consulted, so the
-checkbox is stored and never read. Turning it on for such a trigger changes nothing.
+:::caution[This setting does nothing on a fire into a reused session]
+It guards the **spawn** path only. A trigger holding a live, reusable `last_session_id` returns out of
+`Trigger#create_session!` through `#follow_up_session!` long before the gate is consulted, so on those
+fires the checkbox is stored and never read.
+
+It is **not** dead on such a trigger, though: the same trigger reaches the spawn path on a fire where
+it has no reusable target — it has never fired, or the target was archived or failed and a recurring
+trigger spawns a replacement — and the setting applies in full there. The trigger page, the REST API
+and `search_triggers` all say exactly that where the setting is rendered, rather than implying it is
+either in force or dead.
 
 A reused session does still accumulate duplicates — not as sibling sessions, but as queued prompts.
 [Coalescing a repeated fire](#coalescing-a-repeated-fire) is the control that bounds *that* backlog,
-and it needs no opt-in. The trigger page, the REST API and `search_triggers` all say so where the
-setting is rendered, rather than implying it is in force.
+and it needs no opt-in.
 :::
 
 A skipped fire consumes no burst budget, does not advance `last_triggered_at`, and does not increment

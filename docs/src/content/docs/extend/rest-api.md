@@ -434,19 +434,20 @@ it already created is still pending](/sessions/triggers/#skip-while-a-session-is
 `max_sessions_per_minute` bounds the rate. `needs_input`, `archived` and `failed` predecessors never
 block a fire.
 
-It guards the **spawn** path only, so it is inert on a `reuse_session` trigger — the payload reports
-`skip_if_pending_session_inert` (boolean) rather than leaving a caller to infer that the flag it just
-set will never be read.
+`max_sessions_per_minute` (integer, nullable) sets the trigger's [burst
+cap](/sessions/triggers/#burst-control); `null` — the default — means unbounded. The trigger payload
+also reports `bursting`, true while the trigger is inside a burst and spawning nothing.
+
+It guards the **spawn** path only, so it does nothing on a fire into a reused session. The payload
+reports `skip_if_pending_session_inert` (boolean), true while the trigger has a live session to reuse,
+rather than leaving a caller to infer that the flag it just set will not be read on those fires — it
+applies again on a fire that has to spawn.
 
 `missed_fire_count` (integer) and `first_missed_fire_at` (ISO 8601, nullable) report consecutive
 scheduled runs that did **not** happen because the reused session had not consumed the previous
 prompt — see [coalescing a repeated fire](/sessions/triggers/#coalescing-a-repeated-fire).
 `last_triggered_at` advances on a coalesced fire exactly as on a delivered one, so it cannot be used
 to tell the two apart; this pair can. Both reset when a fire lands.
-
-`max_sessions_per_minute` (integer, nullable) sets the trigger's [burst
-cap](/sessions/triggers/#burst-control); `null` — the default — means unbounded. The trigger payload
-also reports `bursting`, true while the trigger is inside a burst and spawning nothing.
 
 `scheduling_class` (`spot` / `priority` / `null`) sets the [spot or
 priority](/sessions/spot-and-priority/) class of the sessions this trigger spawns; `null` — the

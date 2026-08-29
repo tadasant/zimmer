@@ -228,9 +228,10 @@ module Mcp
         # saying anything about what "the next fire" will do would be a lie. Say
         # it is inert and name the control that actually applies instead.
         if trigger.skip_if_pending_session_inert?
-          return "Yes — but INERT on this trigger: it re-uses a session, so it never reaches the spawn " \
-                 "path this setting guards. Duplicate prompts into the re-used session are bounded by " \
-                 "fire coalescing, which needs no opt-in."
+          return "Yes — but INERT while this trigger has a live session to re-use: a re-use fire never " \
+                 "reaches the spawn path this setting guards. It applies again on a fire that has to " \
+                 "spawn (no target yet, or the target died). Duplicate prompts into the re-used session " \
+                 "are bounded by fire coalescing, which needs no opt-in."
         end
 
         pending = trigger.pending_intent_session

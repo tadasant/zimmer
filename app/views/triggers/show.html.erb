@@ -281,11 +281,12 @@
                 <%= @trigger.skip_if_pending_session ? "Enabled" : "Disabled" %>
               </span>
               <% if @trigger.skip_if_pending_session_inert? %>
-                <%# The setting is only consulted on the spawn path, which a re-use
-                    trigger never reaches. Saying what "the next fire" would spawn
-                    here would describe a branch that cannot run. %>
+                <%# The setting is only consulted on the spawn path, which a fire
+                    into a re-used session never reaches. Saying what "the next
+                    fire" would spawn would describe a branch that cannot run on
+                    those fires — but it does run on a fire that has to spawn. %>
                 <span class="inline-flex flex-wrap items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
-                  Inert — this trigger re-uses a session, so it never reaches the spawn path this setting guards
+                  Inert while this trigger has a live session to re-use — those fires never reach the spawn path this setting guards. It applies again on a fire that has to spawn.
                 </span>
               <% elsif @trigger.skip_if_pending_session %>
                 <% pending = @trigger.pending_intent_session %>
