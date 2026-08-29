@@ -1130,6 +1130,10 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       assert_equal "needs_input", @session.status
       assert_equal new_clone_path, @session.metadata["working_directory"]
 
+      assert_nil TranscriptRuntime.source_for(@session, file_system: @mock_fs)
+        .resume_transcript_path(session: @session, working_directory: new_clone_path),
+        "Codex has no single-file resume transcript path — the premise of this test"
+
       assert_empty claude_projects_paths(@mock_fs),
         "A Codex unarchive must not create or write anything under ~/.claude/projects"
     end

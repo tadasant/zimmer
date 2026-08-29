@@ -33,9 +33,15 @@ module SessionTranscriptLookup
     nil
   end
 
-  # Find the main transcript file for a session, avoiding nested agent transcripts.
-  # Delegates to TranscriptFileLocator for the shared logic.
+  # Find the main transcript file for a session inside that directory.
+  #
+  # Also the runtime's own answer, for the same reason the directory is: Claude
+  # picks <session_id>.jsonl out of a flat directory (TranscriptFileLocator),
+  # Codex globs a date-partitioned tree for the rollout carrying the session's
+  # UUID. Pairing a runtime's directory with another runtime's file-picker finds
+  # nothing at best and someone else's conversation at worst.
   def find_main_transcript_file_for_session(session, transcript_dir)
-    TranscriptFileLocator.find_main_transcript(session, transcript_dir)
+    TranscriptRuntime.source_for(session)
+      .find_main_transcript(transcript_directory: transcript_dir, session: session)
   end
 end

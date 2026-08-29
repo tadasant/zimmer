@@ -201,6 +201,13 @@ TranscriptRuntime.source_for(session, file_system: file_system)
 For Claude Code that is `~/.claude/projects/<sanitized-cwd>/<session_id>.jsonl` — the same file
 `locate` prefers, so the runtime resumes from exactly what the poller reads.
 
+The same rule holds for *reading*: the manual-refresh paths (both controllers, the `action_session`
+MCP tool) and the four process-recovery services take the directory **and** the file inside it from
+the source — `transcript_directory` then `find_main_transcript`. Pairing one runtime's directory
+with another's file-picker is how a Codex session ends up searched with Claude's flat
+`<session_id>.jsonl` rule: it finds nothing at best, and at worst adopts an unrelated rollout that
+happens to sit at the top of `~/.codex/sessions`.
+
 **`nil` means "this runtime has no single-file restore", and it is not an error.** Codex rollouts are
 date-partitioned, UUID-named and possibly Zstandard-compressed, so there is no one deterministic path
 to write stored bytes to. Every caller skips the write on `nil` and carries on; a Codex fork and a

@@ -311,11 +311,11 @@ class SigtermRetryService
   # @param working_directory [String] The working directory for finding the transcript
   # @return [Boolean] true if conversation exists, false otherwise
   def conversation_exists?(working_directory)
-    transcript_dir = TranscriptRuntime.source_for(session, file_system: file_system)
-      .transcript_directory(working_directory: working_directory)
+    source = TranscriptRuntime.source_for(session, file_system: file_system)
+    transcript_dir = source.transcript_directory(working_directory: working_directory)
     return false unless transcript_dir && file_system.directory?(transcript_dir)
 
-    transcript_file = TranscriptFileLocator.find_main_transcript(session, transcript_dir, file_system: file_system)
+    transcript_file = source.find_main_transcript(transcript_directory: transcript_dir, session: session)
     return false unless transcript_file && file_system.exists?(transcript_file)
 
     transcript_content = file_system.read(transcript_file)

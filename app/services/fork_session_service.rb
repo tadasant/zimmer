@@ -578,6 +578,13 @@ class ForkSessionService
         # to use --resume vs --session-id. Since the transcript file already exists,
         # Claude CLI MUST use --resume mode, otherwise it will fail with
         # "Session ID already in use" error.
+        #
+        # A runtime with no single-file resume path (Codex) gets the flag anyway,
+        # and no transcript file — see #write_transcript_file. Its first follow-up
+        # therefore resumes a conversation id the runtime never minted, and falls
+        # through to the failed-resume recovery the poller already handles. That
+        # is unchanged by routing the write through the seam: the file this used
+        # to write was one `codex` never read either. #54 tracks the real fix.
         new_metadata = {
           "clone_path" => new_clone_path,
           "working_directory" => new_working_directory,
