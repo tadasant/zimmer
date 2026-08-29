@@ -8150,29 +8150,38 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   test "check_and_handle_mcp_failure keeps the credential-rejection match scoped to the server's own stderr" do
-    # Same words, but spoken by the transport rather than by the child process. The
-    # captured-stderr marker is half of the predicate precisely so a phrase that turns
-    # up in connection noise cannot silently stop the retries.
-    @session.update!(
-      status: :running,
-      custom_metadata: {
-        "should_fail_session" => true,
-        "mcp_failed_servers" => [
-          { "name" => "slack-workspace", "status" => "failed",
-            "error" => "Connection failed after 1200ms: authentication failed" }
-        ],
-        "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace"
-      }
-    )
+    # Same words, but spoken by the transport rather than by the child process — and in
+    # the second case with a stderr entry sitting right beside it in the same blob,
+    # which is how McpLogPollerService joins a server's entries. Requiring the marker
+    # and the phrase in the SAME segment is what keeps connection noise from silently
+    # stopping the retries.
+    [
+      "Connection failed after 1200ms: authentication failed",
+      "Server stderr: listening on stdio | Connection failed after 1200ms: authentication failed"
+    ].each do |transport_error|
+      @session.update!(
+        status: :running,
+        metadata: (@session.metadata || {}).except("mcp_retry_count", "paused_by"),
+        custom_metadata: {
+          "should_fail_session" => true,
+          "mcp_failed_servers" => [
+            { "name" => "slack-workspace", "status" => "failed", "error" => transport_error }
+          ],
+          "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace"
+        }
+      )
 
-    job = AgentSessionJob.new
-    job.process_manager = MockProcessManager.new
-    job.broadcast_service = BroadcastService.new
-    log_buffer = LogBuffer.new(@session)
+      job = AgentSessionJob.new
+      job.process_manager = MockProcessManager.new
+      job.broadcast_service = BroadcastService.new
+      log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
 
-    assert_equal 1, @session.reload.metadata["mcp_retry_count"]
+      assert_equal 1, @session.reload.metadata["mcp_retry_count"],
+        "#{transport_error.inspect} must stay on the retry ladder"
+      assert_nil @session.metadata["mcp_degraded_servers"]
+    end
   end
 
   test "check_and_handle_mcp_failure never routes a stderr credential rejection to the session-killing oauth_required branch" do
@@ -8209,13 +8218,20 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert job.send(:server_rejected_credentials?, STDIO_HEALTH_CHECK_CREDENTIAL_ERROR)
     assert job.send(:server_rejected_credentials?, "Server stderr: error: invalid_api_key")
-    assert job.send(:server_rejected_credentials?, "Server stderr: 401 Bad credentials")
+    assert job.send(:server_rejected_credentials?, "Server stderr: FATAL: invalid API token")
 
     # Phrase without the marker, marker without the phrase, and neither.
     assert_not job.send(:server_rejected_credentials?, "authentication failed")
     assert_not job.send(:server_rejected_credentials?, "Server stderr: listening on 401 sockets")
     assert_not job.send(:server_rejected_credentials?, "Connection closed")
     assert_not job.send(:server_rejected_credentials?, nil)
+
+    # Both present, but in different joined segments: the phrase is the transport's,
+    # not the server's, so it does not count.
+    assert_not job.send(
+      :server_rejected_credentials?,
+      "Server stderr: listening on stdio | Connection failed after 1200ms: authentication failed"
+    )
   end
 
   test "credential_rejection_detail picks the rejection line out of a captured stderr blob" do

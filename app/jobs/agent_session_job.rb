@@ -2915,19 +2915,22 @@ class AgentSessionJob < ApplicationJob
       # whole transcript. The server is left out and the session runs on the ones that
       # did connect.
       static_credential_failures.each do |server|
-        # required_variables, not required_headers: a stdio server carries its
-        # credential in an env var (`SLACK_BOT_TOKEN`), and naming the variable the
-        # operator has to fix is the whole point of this message. For a remote server
-        # this is a superset of the headers it used to report.
-        credential_vars = ServersConfig.find(server["name"])&.required_variables || []
-        hint = credential_vars.any? ? " Check the credential(s): #{credential_vars.join(', ')}." : ""
+        # Env vars as well as headers: a stdio server carries its credential in an env
+        # var (`SLACK_BOT_TOKEN`) and configures no headers at all, so naming only the
+        # headers named nothing for exactly the class of server this branch now catches.
+        # These two slots are where a credential lives; `required_variables` would also
+        # sweep in `${VAR}`s from `args` and `url`, which are not credentials to check.
+        server_config = ServersConfig.find(server["name"])
+        credential_vars = server_config ? server_config.required_env_vars + server_config.required_headers : []
+        hint = credential_vars.any? ? " Check the credential(s): #{credential_vars.uniq.join(', ')}." : ""
 
-        # The blob a stdio failure carries is the whole captured stderr; the line that
-        # actually says the credential was rejected is what the operator needs to read.
-        detail = credential_rejection_detail(server["error"]) || server["error"]
+        # A stdio failure carries the whole captured stderr, so report the line that
+        # actually says the credential was rejected. Only for those: a transport-level
+        # rejection keeps reporting its full error, which is where its detail lives.
+        detail = server_rejected_credentials?(server["error"]) ? credential_rejection_detail(server["error"]) : nil
 
         log_buffer.add(
-          "MCP server '#{server['name']}' rejected its credentials (#{detail}). " \
+          "MCP server '#{server['name']}' rejected its credentials (#{detail || server['error']}). " \
           "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}",
           level: "error"
         )
@@ -3032,12 +3035,20 @@ class AgentSessionJob < ApplicationJob
     error.to_s.match?(AUTH_ERROR_PATTERN)
   end
 
-  # The marker Claude Code puts in front of every line it captured from an MCP
-  # server's own stdio stderr ("Server stderr: <line>"). McpLogPollerService joins
-  # those entries into the failed server's `error`, so its presence is what tells us
-  # a phrase in the blob was spoken by the child process rather than by the runtime's
-  # transport layer.
+  # The marker Claude Code puts in front of each block of output it captured from an
+  # MCP server's own stdio stderr ("Server stderr: <block>"). The block is one log
+  # entry and carries the marker once, however many lines it runs to. Its presence is
+  # what tells us the text was spoken by the child process rather than by the
+  # runtime's transport layer.
   SERVER_STDERR_MARKER = /Server stderr:/i
+
+  # How McpLogPollerService joins the entries it saw for one server into that
+  # server's `error` (`error_messages.uniq.join(" | ")`). One blob therefore mixes
+  # what the child printed with what the transport concluded, and splitting on this
+  # is what keeps the two apart — the marker has to sit in the SAME segment as the
+  # phrase, or "Server stderr: booting fine | Connection failed: authentication
+  # failed" would read as a credential rejection the server never reported.
+  MCP_ERROR_JOIN_SEPARATOR = /\s+\|\s+/
 
   # Phrases that mean "a provider rejected the credential we were configured with",
   # deliberately much narrower than AUTH_ERROR_PATTERN.
@@ -3050,7 +3061,7 @@ class AgentSessionJob < ApplicationJob
   # have connected. So this matches only wordings whose whole meaning is "the
   # credential was refused", and nothing that merely smells of authentication.
   CREDENTIAL_REJECTED_PATTERN = Regexp.union(
-    /invalid[\s_-]*api[\s_-]*key/i,
+    /invalid[\s_-]*api[\s_-]*(?:key|token)/i,
     /(?:authentication|authorization)\s+failed/i,
     /(?:invalid|bad|incorrect)\s+credentials/i
   )
@@ -3059,17 +3070,18 @@ class AgentSessionJob < ApplicationJob
   # that its credential was rejected — the signature of a stdio server that runs an
   # auth health check at startup and exits (GitHub issue #645).
   #
-  # BOTH conditions are required, the same belt-and-braces shape
-  # NpxCacheHealService#npx_cache_corruption? uses (a marker plus a `_npx`
-  # reference): the text has to name a credential rejection AND have come from the
-  # server's own stderr. A server's persisted error only ever carries stderr from
-  # its own process, so co-location is enough to attribute the line to it.
+  # BOTH conditions are required, and required of the same segment: the text has to
+  # name a credential rejection AND be text the server itself printed. Attribution to
+  # the right *server* is free — a persisted error only ever carries entries from that
+  # server's own log directory — but attribution to the right *speaker* within one
+  # blob is not, which is what MCP_ERROR_JOIN_SEPARATOR is for.
   #
   # @param error [String, nil] the raw error text reported for a failed MCP server
   # @return [Boolean]
   def server_rejected_credentials?(error)
-    text = error.to_s
-    text.match?(SERVER_STDERR_MARKER) && text.match?(CREDENTIAL_REJECTED_PATTERN)
+    error.to_s.split(MCP_ERROR_JOIN_SEPARATOR).any? do |segment|
+      segment.match?(SERVER_STDERR_MARKER) && segment.match?(CREDENTIAL_REJECTED_PATTERN)
+    end
   end
 
   # The single line of a captured-stderr blob that says the credential was rejected,
@@ -3080,7 +3092,8 @@ class AgentSessionJob < ApplicationJob
   # @return [String, nil] the matching line, or nil when nothing in the text matches
   def credential_rejection_detail(error)
     error.to_s
-         .split(/\r?\n|\s+\|\s+/)
+         .split(MCP_ERROR_JOIN_SEPARATOR)
+         .flat_map { |segment| segment.split(/\r?\n/) }
          .map(&:strip)
          .find { |line| line.match?(CREDENTIAL_REJECTED_PATTERN) }
          &.truncate(300)
