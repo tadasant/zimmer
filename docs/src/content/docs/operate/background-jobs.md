@@ -671,7 +671,11 @@ Two placement details are load-bearing, and both are easy to get backwards:
   silence exactly: the poller stalls, the preflight fails, and nobody is paged. Once a heartbeat
   exists the host has demonstrably polled GitHub, so a stale one is an incident whatever the
   preflight now says — including when polling stopped *because* the credential was revoked. The
-  credential only decides whether a host with no baseline (staging) gets seeded.
+  credential only decides whether a host with no baseline (staging) gets seeded. `configured?` stays
+  a bare yes/no for exactly this reason: it must decline to seed for *every* way of not
+  authenticating. The poller reads the richer `auth_preflight` instead, because "no credential", "a
+  credential GitHub refused" and "we could not ask" are the same decision but three different things
+  to tell a human — see [Triggers](/sessions/triggers/).
 - **A tick that finds no GitHub triggers still heartbeats.** Otherwise the key rots while there is
   legitimately nothing to poll, and enabling a trigger flips the health check on against that stale
   value — paging for a healthy poller. A tick skipped for a *missing credential* must not stamp,

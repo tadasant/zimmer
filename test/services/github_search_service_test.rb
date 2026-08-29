@@ -9,35 +9,185 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
   # formats those, and a real Process::Status always has them.
   def status(success) = fake_process_status(exitstatus: success ? 0 : 1)
 
-  test "configured? is true when gh auth status exits 0" do
-    BoundedSubprocess.expects(:run)
-      .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
-      .returns([ "", "Logged in", status(true) ])
-    assert GithubSearchService.configured?
+  # ── the auth preflight ─────────────────────────────────────────────────────
+  #
+  # Every fixture below is `gh auth status --json hosts` output captured from a real
+  # `gh` 2.97.0 driven into that state — an empty config dir, a bogus token, a CONNECT
+  # proxy answering 503 — rather than invented. See the PR for #542 for the capture.
+  AUTH_CMD = [ "gh", "auth", "status", "--json", "hosts" ].freeze
+
+  def auth_status_json(accounts)
+    JSON.generate(accounts.nil? ? { "hosts" => {} } : { "hosts" => { "github.com" => accounts } })
   end
 
-  test "configured? is false when gh auth status exits non-zero" do
-    # This is the staging failure mode: gh present but no credential.
+  def stub_auth_status(stdout, stderr = "", exit_ok: true)
     BoundedSubprocess.expects(:run)
-      .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
-      .returns([ "", "You are not logged into any GitHub hosts. To get started with GitHub CLI, please run: gh auth login", status(false) ])
-    assert_not GithubSearchService.configured?
+      .with(AUTH_CMD, timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
+      .returns([ stdout, stderr, status(exit_ok) ])
   end
 
-  test "configured? is false (not raising) when gh is not even installed" do
+  # `gh` reports a live token as state "success".
+  def healthy_json
+    auth_status_json([ { "state" => "success", "active" => true, "host" => "github.com", "login" => "tadasant" } ])
+  end
+
+  # `gh` inlines the 401 body, escapes and all, exactly as reproduced here.
+  def rejected_json
+    auth_status_json([ { "state" => "error", "active" => true, "host" => "github.com",
+                         "error" => "non-200 OK status code: 401 Unauthorized body: " \
+                                    "\"{\\r\\n  \\\"message\\\": \\\"Bad credentials\\\",\\r\\n  " \
+                                    "\\\"status\\\": \\\"401\\\"\\r\\n}\"" } ])
+  end
+
+  def unreachable_json(error = "Get \"https://api.github.com/\": Service Unavailable")
+    auth_status_json([ { "state" => "error", "active" => true, "host" => "github.com", "error" => error } ])
+  end
+
+  test "auth_preflight is :authenticated when GitHub accepts the credential" do
+    stub_auth_status(healthy_json)
+
+    preflight = GithubSearchService.auth_preflight
+    assert preflight.authenticated?
+    assert_equal GithubSearchService::PREFLIGHT_AUTHENTICATED, preflight.state
+  end
+
+  test "auth_preflight is :unconfigured when gh knows of no github.com credential" do
+    # The staging failure mode, and the ONLY state that keeps the poller's original
+    # "gh CLI is not authenticated" wording. `--json` exits 0 here and reports an empty
+    # hosts map; the "please run gh auth login" prose goes to stderr.
+    stub_auth_status(auth_status_json(nil), "You are not logged into any GitHub hosts. To log in, run: gh auth login")
+
+    assert GithubSearchService.auth_preflight.unconfigured?
+  end
+
+  test "auth_preflight is :unconfigured when gh is not even installed" do
+    # Local and permanent, and says nothing about GitHub's health — so it belongs with
+    # the staging case (skip quietly) rather than the degradation case.
     BoundedSubprocess.expects(:run)
-      .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
+      .with(AUTH_CMD, timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
       .raises(Errno::ENOENT, "No such file or directory - gh")
-    assert_not GithubSearchService.configured?
+
+    assert GithubSearchService.auth_preflight.unconfigured?
   end
 
-  test "configured? is false (not raising) when the auth preflight hangs and is killed" do
-    # A degraded GitHub API can hang `gh auth status`; the watchdog kills it and we
-    # treat the tick as unconfigured rather than letting the hang wedge the poller.
+  test "auth_preflight is :rejected when GitHub actively refuses the credential" do
+    stub_auth_status(rejected_json)
+
+    preflight = GithubSearchService.auth_preflight
+    assert preflight.rejected?
+    assert_includes preflight.detail, "401"
+  end
+
+  test "auth_preflight caps gh's inlined 401 body rather than logging a paragraph" do
+    stub_auth_status(rejected_json)
+
+    detail = GithubSearchService.auth_preflight.detail
+    assert_operator detail.length, :<=, GithubSearchService::MAX_PREFLIGHT_DETAIL_LENGTH
+    assert_includes detail, "non-200 OK status code: 401"
+  end
+
+  # The regression this change exists for (#542). A 503 from GitHub against a VALID
+  # credential exits non-zero and raises nothing — so the exit-code-and-exception split
+  # the issue proposed would still have called this "unconfigured". Only the structured
+  # error distinguishes it, and it must never read as a credential fault.
+  test "auth_preflight is :unknown — not :unconfigured — when GitHub answers 503" do
+    stub_auth_status(unreachable_json)
+
+    preflight = GithubSearchService.auth_preflight
+    assert preflight.unknown?
+    assert_not preflight.unconfigured?, "a reachability failure must never be reported as a missing credential"
+    assert_includes preflight.detail, "Service Unavailable"
+  end
+
+  test "auth_preflight is :unknown when GitHub cannot be resolved" do
+    stub_auth_status(unreachable_json("Get \"https://api.github.com/\": dial tcp: lookup api.github.com: no such host"))
+
+    assert GithubSearchService.auth_preflight.unknown?
+  end
+
+  test "auth_preflight is :unknown, not :rejected, on a 403 that may be a secondary rate limit" do
+    # Auth-shaped but ambiguous: GitHub answers a secondary rate limit 403 too, and a
+    # rate-limited preflight is a degradation rather than a dead token.
+    stub_auth_status(unreachable_json("non-200 OK status code: 403 Forbidden body: \"rate limit\""))
+
+    assert GithubSearchService.auth_preflight.unknown?
+  end
+
+  test "auth_preflight is :unknown when the preflight hangs and is killed" do
+    # A degraded GitHub API can hang `gh auth status`. The watchdog kills it so the hang
+    # cannot wedge the singleton — but the tick skips as "we could not ask", not as
+    # "there is no credential".
     BoundedSubprocess.expects(:run)
-      .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
+      .with(AUTH_CMD, timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
       .raises(BoundedSubprocess::TimeoutError, "command timed out after 10s (process group killed): gh auth status")
+
+    preflight = GithubSearchService.auth_preflight
+    assert preflight.unknown?
+    assert_includes preflight.detail, "TimeoutError"
+  end
+
+  test "auth_preflight is :unknown when gh fails before it can report" do
+    # `--json` exits 0 for every auth problem it can describe, so a non-zero exit means
+    # `gh` fell over first (an unknown flag on an older binary, an unreadable config).
+    # We learned nothing about the credential, and must not pretend otherwise.
+    stub_auth_status("", "unknown flag: --json", exit_ok: false)
+
+    preflight = GithubSearchService.auth_preflight
+    assert preflight.unknown?
+    assert_includes preflight.detail, "unknown flag"
+  end
+
+  test "auth_preflight is :unknown when gh's output cannot be parsed" do
+    stub_auth_status("not json at all")
+
+    assert GithubSearchService.auth_preflight.unknown?
+  end
+
+  test "auth_preflight ignores a broken entry for a host this service never searches" do
+    # `gh auth status` reports every host it knows, and its exit code goes non-zero if
+    # ANY of them has a problem — so a stale enterprise entry used to read as "this
+    # worker has no credential". The question is only ever about github.com.
+    stdout = JSON.generate("hosts" => {
+      "github.com" => [ { "state" => "success", "active" => true, "login" => "tadasant" } ],
+      "ghe.example.com" => [ { "state" => "error", "error" => "non-200 OK status code: 401 Unauthorized" } ]
+    })
+    stub_auth_status(stdout, "", exit_ok: true)
+
+    assert GithubSearchService.auth_preflight.authenticated?
+  end
+
+  test "auth_preflight is :authenticated when one of several github.com accounts works" do
+    stdout = auth_status_json([
+      { "state" => "error", "error" => "non-200 OK status code: 401 Unauthorized" },
+      { "state" => "success", "active" => true, "login" => "tadasant" }
+    ])
+    stub_auth_status(stdout)
+
+    assert GithubSearchService.auth_preflight.authenticated?
+  end
+
+  test "auth_preflight is :unknown when a refused account sits beside an unreachable one" do
+    # Mixed evidence. We cannot say which credential we would have used is dead, so the
+    # honest answer to a question we cannot settle is that we could not settle it.
+    stdout = auth_status_json([
+      { "state" => "error", "error" => "non-200 OK status code: 401 Unauthorized" },
+      { "state" => "error", "error" => "Get \"https://api.github.com/\": Service Unavailable" }
+    ])
+    stub_auth_status(stdout)
+
+    assert GithubSearchService.auth_preflight.unknown?
+  end
+
+  test "configured? stays a bare yes/no over auth_preflight" do
+    # GithubTriggerHealthCheckJob's no-baseline guard reads this, and must keep declining
+    # to seed for every non-authenticated state — including the new ones.
+    GithubSearchService.stubs(:auth_preflight)
+      .returns(GithubSearchService::PreflightResult.new(GithubSearchService::PREFLIGHT_UNKNOWN, "503"))
     assert_not GithubSearchService.configured?
+
+    GithubSearchService.unstub(:auth_preflight)
+    stub_auth_status(healthy_json)
+    assert GithubSearchService.configured?
   end
 
   test "search_issues surfaces a hung request as a SearchError" do
@@ -90,22 +240,22 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert_includes error.message, SubprocessStatus::REAPED_DESCRIPTION
   end
 
-  test "configured? is false on a nil gh auth status, without traversing the rescue" do
-    # The same reaped-child race on the auth preflight. configured?'s broad `rescue => e`
-    # already downgraded the old `nil.success?` NoMethodError to false, so a bare
-    # `assert_not configured?` would pass against the unfixed code too. The observable delta
-    # the fix introduces is that a nil status is now handled inline (SubprocessStatus.success?)
-    # instead of raising into the rescue and logging a misleading
-    # "gh auth preflight failed: NoMethodError" WARN — so pin that: no WARN is emitted.
+  test "auth_preflight is :unknown, and silent, on a nil gh auth status" do
+    # The same reaped-child race on the auth preflight. A nil status is handled inline
+    # (SubprocessStatus.success?) rather than raising `nil.success?` into the rescue, so
+    # no WARN is emitted here — the caller owns the reporting. And it is :unknown, not
+    # :unconfigured: a lost exit code tells us nothing about the credential.
     BoundedSubprocess.expects(:run)
-      .with([ "gh", "auth", "status" ], timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
+      .with(AUTH_CMD, timeout: GithubSearchService::AUTH_STATUS_TIMEOUT)
       .returns([ "", "", nil ])
-    # configured? provisions GH_TOKEN first. Stubbed so this assertion stays about the
+    # auth_preflight provisions GH_TOKEN first. Stubbed so this assertion stays about the
     # preflight: an unreachable secret store would otherwise emit a WARN of its own.
     GhTokenProvisioner.stubs(:ensure!)
     Rails.logger.expects(:warn).never
 
-    assert_not GithubSearchService.configured?
+    preflight = GithubSearchService.auth_preflight
+    assert preflight.unknown?
+    assert_includes preflight.detail, SubprocessStatus::REAPED_DESCRIPTION
   end
 
   # ── incomplete_results: refuse the read, but don't page for it ─────────────

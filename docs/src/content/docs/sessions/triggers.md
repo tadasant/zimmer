@@ -702,11 +702,31 @@ The poller shells out to the `gh` CLI, which authenticates from a `gh auth login
 would otherwise fail one API call per condition and alert on each — an every-minute error storm over
 a missing credential.
 
-So each tick preflights `GithubSearchService.configured?` (a quiet `gh auth status`) and returns early
-when it is false, logging a single WARN — the same shape as `SlackTriggerPollerJob`'s
+So each tick preflights `GithubSearchService.auth_preflight` (a quiet `gh auth status`) and returns early
+unless it authenticated, logging a single WARN — the same shape as `SlackTriggerPollerJob`'s
 `return unless SlackService.configured?`. This is deliberately distinct from a transient API failure on
 a *configured* host (a rate-limit or network blip), which still raises and alerts, because that is a
 real incident rather than an unconfigured environment.
+
+**The skip is the same three ways it can fail; the WARN is not.** `gh auth status` is a live API call,
+so it fails during a GitHub outage too — and its human-readable output then asserts "The token … is
+invalid" about a credential it never managed to check. Taking that at face value is how a GitHub
+degradation once got reported as a missing credential, in text byte-identical to a revoked token's.
+So the preflight reads `gh auth status --json hosts` instead, which carries the transport error `gh`
+swallows on its way to that prose, and reports one of four states:
+
+| State | What `gh` reported | The poller's WARN says |
+| --- | --- | --- |
+| `:authenticated` | a host entry with `state: "success"` | — (it polls) |
+| `:unconfigured` | an empty `hosts` map, or no `gh` binary | `gh CLI is not authenticated (no gh auth login / GH_TOKEN)` |
+| `:rejected` | `401` / `Bad credentials` | GitHub rejected the credential; it likely needs rotating |
+| `:unknown` | a 5xx, a DNS failure, a timeout, anything else | it could not reach GitHub, so the credential's validity is **unknown** |
+
+Only `:unconfigured` keeps the original wording, because it is the only state that ever deserved it.
+None of them alerts: a preflight failure is by construction the *total* case, and the total case is
+already reported by the stale heartbeat that `GithubTriggerHealthCheckJob` pages on within 15
+minutes. What changed is that the WARNs an operator reads while that counts down now name the right
+fault — a credential to provision, a credential to rotate, or githubstatus.com.
 :::
 
 :::note[A timed-out search index is refused, retried, and then skipped — not paged]
