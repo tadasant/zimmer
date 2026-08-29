@@ -1578,10 +1578,10 @@ class AgentSessionJob < ApplicationJob
           poll_and_broadcast_transcript(session)
 
           # Classify the exit before deciding anything, exactly as section 2 does.
-          # This door used to skip classification entirely and fall straight to the
-          # pause below, so a process that died before writing a line parked the
-          # session with a blank transcript for a human to restart — the same shape
-          # the empty-turn backstop closes on the other door (issue #476).
+          # An unclassified fall-through to the pause below is how a process that
+          # died before writing a line parks the session with a blank transcript
+          # for a human to restart — the shape the empty-turn backstop closes on
+          # the other door (issue #476).
           #
           # #handle_unreaped_exit runs the evidence-driven half of the recovery
           # ladder: the rungs that read stderr, the transcript and session metadata,
@@ -1650,6 +1650,18 @@ class AgentSessionJob < ApplicationJob
                 "Session paused: #{exit_decision&.error_message || parked_reason}",
                 level: "warning"
               )
+              if exit_decision&.error_message.present?
+                session.update!(
+                  metadata: (session.metadata || {}).merge(
+                    "exit_status" => exit_decision.error_message
+                  )
+                )
+              end
+            else
+              log_buffer.add(
+                "#{runtime_label} CLI completed turn successfully",
+                level: "info"
+              )
             end
             # Try to hand off to a queued message BEFORE pausing to avoid a
             # running → needs_input → running flap that fires ao_event watchers
@@ -1664,6 +1676,16 @@ class AgentSessionJob < ApplicationJob
               log_buffer.flush
               return
             end
+            # Retire the recovery markers a restart from this door may have written.
+            # They tell the next turn's poller to splice a stored transcript base in
+            # front of the live one, so a marker left behind after the restart budget
+            # is spent mis-splices a conversation that has already moved on.
+            # active_follow_up_prompt is deliberately NOT cleared: park_undelivered_turn!
+            # below reads it as the evidence that the turn never landed.
+            session.remove_metadata!(%w[
+              transcript_recovery_expected
+              transcript_recovery_base_line_count
+            ])
             # A stop with the turn still undelivered and the pool still empty is the outage,
             # not a completed turn. Parking marks the session pending_sleep, so the pause
             # below carries it through to `waiting` instead of the human's action queue.

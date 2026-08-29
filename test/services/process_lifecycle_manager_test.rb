@@ -997,9 +997,9 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   #
   # AgentSessionJob notices a dead agent process two ways. `wait_nonblock` is the
   # normal one and hands a real status to #handle_exit. The other is a signal-0
-  # liveness check that catches a process reaped somewhere else — and it used to
-  # park the session without classifying anything at all, so every recovery below
-  # was unreachable through it.
+  # liveness check that catches a process reaped somewhere else — and it has no
+  # status to hand anyone, which is what makes it the door every recovery below is
+  # easiest to lose.
   #
   # These pin what #handle_unreaped_exit does and does not do: every rung that
   # reads evidence applies, and nothing that would require a status it does not
