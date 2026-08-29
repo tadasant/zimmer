@@ -563,6 +563,25 @@ cache flush into a false page, and a liveness alarm nobody trusts is worse than 
 hole. It fails quiet, not loud. The same Redis dependency already underlies `AlertService`'s dedup
 and `SystemHealthMonitorJob`'s streak, so a Redis outage degrades that whole family together.
 
+### The docs guardrail does not look in the image's `tmp/`
+
+🟡 `scripts/assert-docs-excluded.sh` — the check that keeps the documentation site out of the
+published image, described in [The docs never ship in the image](/operate/deploying/#the-docs-never-ship-in-the-image) —
+skips the top-level `tmp/` and `log/` of whatever tree it is pointed at. It has to: those are the
+directories a running test suite scribbles scratch directories into, and one vanishing mid-walk
+makes `find` exit non-zero and reddens the guardrail over an unrelated race.
+
+For the build-context audit that is free, because `.dockerignore` excludes `/tmp/*` and `/log/*`
+from the context anyway. For the `Dockerfile` assertion, which runs against `/rails` in the built
+image, it is a real if narrow blind spot: `/rails/tmp` there holds whatever the build's own `RUN`
+steps left behind (`assets:precompile` writes `tmp/cache`), so a `RUN` step that wrote a copy of the
+docs into `/rails/tmp` would ship uncaught.
+
+Nothing walks through that hole today, and it is the same class of gap as the `ADD`-from-a-URL and
+`COPY --from`-an-outside-image routes the deploying page already names: all three need a deliberate
+`Dockerfile` edit, which is a reviewed change, rather than the silent `.dockerignore` drift the
+guardrail exists to catch.
+
 ---
 
 ## Security
