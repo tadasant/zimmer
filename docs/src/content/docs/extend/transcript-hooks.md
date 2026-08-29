@@ -113,9 +113,9 @@ evidence — the strongest kind, which no repo guard bounds. Crediting the fork 
 session into all three pollers' scope, and the PR poller would answer a merge by queueing "your PR
 merged, you may archive" onto it; the harvest job then archives the fork, which retires that message
 `undelivered` and [pages](/sessions/lifecycle/). That page still fires: the harvest job archives
-without consulting the archive guard, and the PR-merged notice is exempt from the strand alert only
-when a caller *forced* past that guard having been shown the message. A sweep discarding a notice
-nobody read is exactly the case the alert is for. The hook records nothing for such a fork.
+without consulting the archive guard, and the strand alert is skipped only when a caller *forced*
+past that guard having been shown the message. A sweep discarding a notice nobody read is exactly the
+case the alert is for. The hook records nothing for such a fork.
 
 Both runtimes are handled. Claude Code and Codex write different transcript shapes, so finding shell
 invocations, their results, whether a result failed, and the agent's own prose is dispatched on
