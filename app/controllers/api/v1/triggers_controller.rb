@@ -240,7 +240,17 @@ class Api::V1::TriggersController < Api::BaseController
       resuscitate_archived: trigger.resuscitate_archived,
       max_sessions_per_minute: trigger.max_sessions_per_minute,
       skip_if_pending_session: trigger.skip_if_pending_session,
+      # True while this trigger has a live session to re-use: those fires never
+      # reach the spawn path `skip_if_pending_session` guards, so the flag above
+      # is stored but does nothing. It applies again on a fire that has to spawn.
+      # Reported rather than silently ignored.
+      skip_if_pending_session_inert: trigger.skip_if_pending_session_inert?,
       bursting: trigger.bursting?,
+      # Scheduled runs that did not happen because the re-used session had not
+      # consumed the previous prompt. `last_triggered_at` advances on those
+      # fires too, so it cannot be used to tell them apart.
+      missed_fire_count: trigger.missed_fire_count,
+      first_missed_fire_at: trigger.first_missed_fire_at&.iso8601,
       # The chosen class (null when none was chosen) and the one its sessions
       # actually get, which falls back to the default for the genesis its
       # conditions derive.

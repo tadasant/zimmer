@@ -769,6 +769,63 @@ builds it from the PR's own branch rather than from anything the commenter typed
 code Zimmer's own agent usually wrote — but it is untrusted-adjacent on a PR from a fork, and
 nothing labels it.
 
+### A message queued by anyone coalesces a recurring trigger's next fire
+
+[Coalescing](/sessions/triggers/#coalescing-a-repeated-fire) asks whether the reused session has
+**any** pending message, not whether it has one this trigger queued. So a message a human (or another
+session) queues onto a reused session also folds away that trigger's next scheduled fire.
+
+Per-trigger provenance would not fix it. The rows that caused the 2026-08-29 incident were written by
+`SpotSessionHold#queue_behind_scheduled_turn`, which holds a session and a prompt and has no idea
+which trigger sent it — a `trigger_id` column on `enqueued_messages` would have matched none of them,
+and the accumulation would have continued. The broad predicate is the one that actually catches the
+bug, and it is the same one the `running?` branch has always used.
+
+The cost is normally bounded at one occurrence: the session consumes its queue, and the next fire
+lands. It is also no longer silent — the fold increments `missed_fire_count`. But "normally" is doing
+real work in that sentence; see the next entry.
+
+### A `waiting` session's queue has no sweep, so coalescing can wait on a turn that never comes
+
+[Coalescing](/sessions/triggers/#coalescing-a-repeated-fire) skips the fire, and skipping the fire also
+skips the **resume**. `Session#deliver_follow_up!` does two things to an idle session — it delivers the
+prompt *and* it transitions the session to `running`, which is what eventually drains the queue. A
+coalesced fire does neither.
+
+For the case this was built for that is fine: a spot session held at the quota gate always has a
+re-check job scheduled, so it takes a turn on its own. It is not fine in general, because **nothing
+sweeps a `waiting` session's pending queue.** `EnqueuedMessage#deliver_if_session_already_idle` only
+schedules a drain for a `needs_input` session; `HeartbeatSweepJob` does nothing for `waiting` and
+explicitly skips a session that has pending messages. So a `waiting` reuse target holding a message
+queued through the web form, the REST endpoint or MCP — none of which checks session state — can sit
+there, with the trigger coalescing every fire against it.
+
+Before this change the trigger's own fire resumed the session and incidentally un-stuck it. That was
+accidental rather than designed, and it is the same resume that filed a duplicate prompt every time,
+which is the bug being fixed. The honest position is that coalescing stopped masking a pre-existing
+gap: the queue drain, not the trigger, is what should wake a `waiting` session. Tracked in
+[zimmer#690](https://github.com/tadasant/zimmer/issues/690).
+
+The mitigation is that it is loud rather than silent — `missed_fire_count` climbs and the alert fires
+on the second miss, and the alert text tells the operator to check that something will actually make
+the session take a turn.
+
+### A coalesced fire runs the earlier prompt, so `{{date}}` in a reused template goes stale
+
+When a recurring trigger's fire is [coalesced](/sessions/triggers/#coalescing-a-repeated-fire) into a
+prompt the reused session is still holding, the prompt that eventually runs is the **first** one
+queued, not the latest. For a template that interpolates `{{date}}` or `{{time}}`, the run therefore
+carries the date of the night it was first queued rather than the night it actually executes.
+
+Coalescing by refreshing the queued row's content instead would keep the interpolation current, but
+Zimmer cannot tell which pending row belongs to which trigger — `enqueued_messages` records no
+provenance beyond `origin`, and rewriting an arbitrary pending row would corrupt a message a human or
+another session queued. Skipping is the safe direction to be wrong in: the work runs once with a
+stale timestamp rather than twice, or not at all.
+
+The mitigation is that the miss is no longer silent — `missed_fire_count` says how many occurrences
+were folded together, so a stale date in a groomer's output has a visible explanation.
+
 ### A trigger cannot spawn a session with zero MCP servers
 
 The three surfaces that create a session against a root directly — MCP `start_session`, `POST
