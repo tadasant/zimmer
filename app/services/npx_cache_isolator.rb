@@ -1,18 +1,35 @@
 # frozen_string_literal: true
 
-# Keeps two MCP servers that run the SAME `npx` package out of each other's npm
-# cache, so they cannot race to populate it.
+# Decides which npm cache each `npx`-launched MCP server in a config is pointed at:
+# the clone's own cache always, and a per-server root within it for two servers
+# that run the SAME package and would otherwise race to populate one tree.
 #
-# Zimmer isolates the npm cache per clone (NPM_CONFIG_CACHE=<working_dir>/.npm-cache,
-# see ClaudeSpawnEnv#configure_mcp_env). That stops one session corrupting another's
-# cache — but it does nothing for two servers inside ONE session. npx keys its
-# install directory purely on the package spec:
+# There are two failures here, at two scales.
+#
+# **Off the clone entirely.** `NPM_CONFIG_CACHE=<working_dir>/.npm-cache` used to be
+# set only on the agent process (ClaudeSpawnEnv#configure_mcp_env) and inherited from
+# there. That inheritance is not something a config generator can rely on: Codex sets
+# no such variable at all and builds each stdio server's environment from a fixed
+# whitelist plus the names the entry lists in `env_vars`, and the Claude path skips
+# #configure_mcp_env whenever the session's `mcp_servers` column is empty even though
+# `.mcp.json` on disk still carries the root's `default_in_roots` servers. A server
+# that inherits nothing falls back to npm's user-level `~/.npm/_npx`, which is shared
+# by every session on the host and sits outside every clone-scoped mechanism Zimmer
+# has — NpxBinExecutableGuard, NpxCacheHealService and CacheClearService all walk the
+# clone. That is what failed production session 7335: `ENOTEMPTY … rename` on
+# `/home/rails/.npm/_npx/a4bcc792b5155234/node_modules/playwright`, two concurrent
+# sessions installing the same package into one host-wide tree (zimmer#595). So the
+# cache location is written into every npx entry's own `env` table, where no
+# inheritance rule can drop it.
+#
+# **Colliding inside one clone.** npx keys its install directory purely on the
+# package spec:
 #
 #   _npx/<sha512(specs.sort.join("\n"))[0,16]>
 #
 # so two entries whose command is the byte-identical `npx -y <pkg>@latest` resolve
-# to the same `_npx/<hash>` directory and, on a cold cache, both try to install
-# into it at once. The loser dies mid-extraction:
+# to the same `_npx/<hash>` directory inside that one clone cache and, on a cold
+# cache, both try to install into it at once. The loser dies mid-extraction:
 #
 #   npm error code ENOTEMPTY
 #   npm error syscall rename
@@ -32,12 +49,16 @@
 # corruption that happens anyway (a killed install, a full disk); this stops the
 # one cause Zimmer can see coming.
 #
-# Only *colliding* servers are isolated. The common case — every npx server
-# running a different package — keeps the single shared per-clone cache, so
+# Only *colliding* servers get a root of their own. The common case — every npx
+# server running a different package — shares the single per-clone cache, so
 # tarballs are still downloaded once and the disk footprint is unchanged. The
 # cost of isolation is one duplicated download of the shared package, paid
 # concurrently, which is strictly cheaper than the failed connect + 30s retry it
 # replaces.
+#
+# Both answers live under `<clone>/.npm-cache`, which is what keeps
+# NpxCacheHealService's `_npx` globs and CacheClearService's `**/.npm-cache` sweep
+# able to reach them.
 #
 # Runtime-agnostic: operates on the `{ "command" => ..., "args" => [...] }` shape
 # shared by Claude's `.mcp.json` entries and Codex's `.codex/config.toml`
@@ -67,6 +88,42 @@ module NpxCacheIsolator
   PACKAGE_FLAGS = %w[-p --package].freeze
 
   module_function
+
+  # Whether an entry launches its server through `npx`, and so has an npm cache
+  # worth pointing anywhere. Matched exactly, and by the same predicate #cache_key
+  # uses, so the pinning and the collision detection can never disagree about
+  # which entries are in scope.
+  def npx_entry?(entry)
+    entry.is_a?(Hash) && entry["command"] == "npx"
+  end
+
+  # The npm cache the whole clone shares — the one ClaudeSpawnEnv#configure_mcp_env
+  # also names, and the parent of every isolated root below.
+  #
+  # @param working_directory [String] the session's clone working directory
+  # @return [String] absolute path
+  def shared_cache_dir(working_directory)
+    File.join(working_directory, ".npm-cache")
+  end
+
+  # Where each npx server in a config should keep its npm cache: its own isolated
+  # root when it shares a package with another server here, the clone's shared
+  # cache otherwise. Every npx entry gets an answer — a server that collides with
+  # nothing still must not be left to npm's host-wide default.
+  #
+  # @param servers [Hash] server name => entry
+  # @param working_directory [String] the session's clone working directory
+  # @return [Hash{String => String}] server name => absolute cache path, in config order
+  def cache_dirs_for(servers, working_directory)
+    colliding = colliding_server_names(servers)
+    shared = shared_cache_dir(working_directory)
+
+    servers.each_with_object({}) do |(name, entry), dirs|
+      next unless npx_entry?(entry)
+
+      dirs[name] = colliding.include?(name) ? cache_dir_for(working_directory, name) : shared
+    end
+  end
 
   # The names of servers that share an npx install directory with at least one
   # other server in the same config.
@@ -105,8 +162,7 @@ module NpxCacheIsolator
   # entry is not an npx invocation (an HTTP server, a different command, or an
   # npx call we could not read a package spec out of).
   def cache_key(entry)
-    return nil unless entry.is_a?(Hash)
-    return nil unless entry["command"] == "npx"
+    return nil unless npx_entry?(entry)
 
     specs = package_specs(entry["args"])
     return nil if specs.empty?

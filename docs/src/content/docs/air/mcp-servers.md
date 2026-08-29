@@ -255,14 +255,26 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 - `MCP_TIMEOUT = 180000` (3 minutes) — a flat startup timeout for **every** MCP server.
   Tracked in [#113](https://github.com/tadasant/zimmer/issues/113).
-- `NPM_CONFIG_CACHE` is set to a clone-local `.npm-cache`, so `npx`-based servers in *different*
-  sessions don't fight over a shared cache.
-- Within one session they still could, because `npx` keys its install directory on the package spec
-  alone: two servers running the byte-identical `npx -y <pkg>@latest` resolve to the same
+- Every `npx`-launched server gets `NPM_CONFIG_CACHE` written into **its own `env` table** by
+  `RuntimeConfigPostProcessor`, pointing at the clone's `.npm-cache`. So `npx` servers in *different*
+  sessions never fight over a shared cache.
+- It is written per entry rather than inherited from the agent process on purpose. Inheritance is not
+  something a config generator can rely on: Codex sets no such variable at all and builds each stdio
+  server's environment from a fixed whitelist plus the names the entry lists in `env_vars`, and the
+  Claude path skips `configure_mcp_env` whenever the session's `mcp_servers` column is empty even
+  though `.mcp.json` on disk still carries the root's `default_in_roots` servers. A server that
+  inherits nothing falls back to npm's user-level `~/.npm/_npx` — shared by every session on the host,
+  and outside every clone-scoped mechanism below. That is what killed production session 7335:
+  `ENOTEMPTY … rename` on `/home/rails/.npm/_npx/<hash>/node_modules/playwright`, two concurrent
+  sessions installing into one host-wide tree ([#595](https://github.com/tadasant/zimmer/issues/595)).
+- Within one session two servers can still collide, because `npx` keys its install directory on the
+  package spec alone: two servers running the byte-identical `npx -y <pkg>@latest` resolve to the same
   `_npx/<hash>` and, on a cold clone, race to populate it. `NpxCacheIsolator` finds those servers at
   config-write time and gives each its own `NPM_CONFIG_CACHE` under
   `.npm-cache/isolated/<server>/`, so there is nothing to race over. Servers that don't share a
-  package keep the single shared cache, so tarballs are still downloaded once.
+  package share the clone's `.npm-cache`, so tarballs are still downloaded once. Both answers live
+  under `.npm-cache`, which is what keeps the heal and clear services below able to reach them.
+- A catalog entry that sets `NPM_CONFIG_CACHE` itself keeps its value — that is the operator's call.
 - `NpxCacheHealService` exists to detect and delete a corrupted `_npx` cache — by matching npm's
   error text (`ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT`). An entire service that self-heals a
   filesystem bug by regexing stderr. It is the repair half; the isolator above is the prevention
