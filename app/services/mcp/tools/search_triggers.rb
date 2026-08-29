@@ -107,6 +107,8 @@ module Mcp
           lines << "- **Last Error:** #{trigger.last_error.presence || '(not recorded)'}"
           lines << "- **Re-arm:** call action_trigger with action=toggle to clear the failure and put it back in service"
         end
+        missed = missed_fires_summary(trigger)
+        lines << missed if missed
         lines << "- **Sessions Created:** #{trigger.sessions_created_count}"
         lines << "- **Last Triggered:** #{trigger.last_triggered_at.iso8601}" if trigger.last_triggered_at
         lines.push("", "### Prompt Template", "```", trigger.prompt_template, "```")
@@ -168,6 +170,10 @@ module Mcp
                      "**Sessions:** #{trigger.sessions_created_count} | " \
                      "**Max Sessions/Minute:** #{burst_limit_summary(trigger)} | " \
                      "**Scheduling Class:** #{scheduling_class_summary(trigger)}"
+            if trigger.missing_fires?
+              lines << "- ⚠️ **#{trigger.missed_fire_count} missed fire(s)** — coalesced into an undelivered " \
+                       "prompt the re-used session has not consumed."
+            end
             trigger.trigger_conditions.each { |condition| lines << "  - #{condition.description}" }
             lines << ""
           end
@@ -218,10 +224,33 @@ module Mcp
       def skip_if_pending_summary(trigger)
         return "No" if !trigger.skip_if_pending_session
 
+        # A reuse trigger never reaches the spawn path this setting guards, so
+        # saying anything about what "the next fire" will do would be a lie. Say
+        # it is inert and name the control that actually applies instead.
+        if trigger.skip_if_pending_session_inert?
+          return "Yes — but INERT while this trigger has a live session to re-use: a re-use fire never " \
+                 "reaches the spawn path this setting guards. It applies again on a fire that has to " \
+                 "spawn (no target yet, or the target died). Duplicate prompts into the re-used session " \
+                 "are bounded by fire coalescing, which needs no opt-in."
+        end
+
         pending = trigger.pending_intent_session
         return "Yes (nothing pending — the next fire spawns)" if pending.nil?
 
         "Yes ⚠️ SKIPPING — session #{pending.id} (#{pending.status}) is still pending"
+      end
+
+      # Scheduled runs that did not happen. A trigger whose fires are being
+      # coalesced looks completely healthy otherwise — `last_triggered_at`
+      # advances on a coalesced fire exactly as on a delivered one — so without
+      # this line an agent reading the trigger has no way to tell the two apart.
+      def missed_fires_summary(trigger)
+        return nil unless trigger.missing_fires?
+
+        since = trigger.first_missed_fire_at&.iso8601 || "unknown"
+        "- **Missed Fires:** ⚠️ #{trigger.missed_fire_count} consecutive fire(s) coalesced since #{since} — " \
+        "the re-used session is still holding an undelivered prompt, so the scheduled work has not run. " \
+        "It resumes on its own once that session takes a turn."
       end
 
       # The burst cap, plus a loud marker when the trigger is currently inside a

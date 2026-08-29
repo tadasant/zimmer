@@ -824,6 +824,62 @@ recovery, so a long-running session can be archived holding a full transcript an
 be restored either, but it *has* state, so abandoning it quietly and spawning a duplicate alongside
 it would be the wrong answer.
 
+## Coalescing a repeated fire
+
+A recurring trigger that reuses a session is a drumbeat: one fire, one run. If the session it reuses
+is still holding the **previous** prompt undelivered, the next fire is coalesced into it rather than
+stacking a second copy — `Trigger#coalesce_recurring_fire?`. The queued prompt already carries
+exactly this intent and runs when the session next takes a turn.
+
+**Only a purely recurring trigger is coalesced** — one where no condition is a one-time schedule or a
+session-scoped ao_event. A wake is a one-shot signal that has to survive the race between "the watched
+session transitioned" and "the requester's turn ended", so it keeps the narrower guard on the
+`running?` branch, which treats an existing pending message as already representing the event.
+
+The test is `Trigger#purely_recurring?` rather than the negation of `#one_time_reuse_trigger?`, and
+the difference matters for a trigger that *mixes* the two. `#one_time_reuse_trigger?` demands that
+**every** condition be one-shot, so a trigger carrying a recurring schedule alongside a one-time one
+fails it — while `ScheduleTriggerJob` keys its auto-delete on `condition.one_time_schedule?` and
+checks only `#last_follow_up_dropped?` before destroying the trigger. A coalesced fire is not
+`:dropped`, so coalescing that shape would consume the one-shot schedule and delete the trigger having
+delivered nothing. Refusing to coalesce any trigger that carries a one-shot condition at all keeps the
+previous behaviour intact for those shapes.
+
+### Why a queue can grow when nothing looks wrong
+
+The obvious reading — "an idle session gets the prompt delivered, so nothing queues" — is wrong for a
+`spot` session held at the [quota gate](/sessions/spot-and-priority/#the-gate). Such a session sits in
+`waiting`, which reads as idle, so the follow-up takes the delivery branch: it resumes the session
+into a job, and `SpotSessionHold` then defers that job and files the prompt in `enqueued_messages`
+behind the turn already scheduled. The delivery becomes a queued row on the way through.
+
+Repeat that nightly and the queue grows by one a night while every other signal says the trigger is
+healthy — `last_triggered_at` advances on a coalesced fire exactly as on a delivered one. On
+2026-08-29 the nightly backlog groomer had not run for six days for precisely this reason, and the
+first anyone heard of it was an unrelated self-archive
+[stranding the backlog](/sessions/lifecycle/) on the way out.
+
+### A coalesced fire is a miss, and says so
+
+Coalescing stops the pile-up but does not make the work happen, so the trigger counts consecutive
+coalesced fires in `missed_fire_count` (stamped from `first_missed_fire_at`). The count resets the
+moment a fire genuinely lands.
+
+It is shown wherever a trigger is: a badge in the trigger list and on the trigger page, a
+`missed_fire_count` field on the REST API, and a warning line in `search_triggers`. **Zimmer alerts**
+once two conditions hold together — at least `MISSED_FIRE_ALERT_THRESHOLD` (2) consecutive fires
+coalesced, *and* the undelivered prompt has been sitting for at least `MISSED_FIRE_MIN_QUEUE_AGE`
+(1 hour). Either alone is noisy: one skip is an ordinary mid-turn session, and a fast-firing trigger
+can rack up skips inside a single long turn without anything being wrong. Together they mean two
+scheduled runs did not happen and the session genuinely is not consuming.
+
+A session held for quota headroom is **budget pacing, not a failure** — the alert says so, and such a
+session re-checks on its own, so the schedule resumes once it gets through.
+
+The alert also asks the operator to confirm that something *will* make the session take a turn,
+because for a `waiting` session that is not spot-held, nothing necessarily will —
+see [the limitation](/limitations/#a-waiting-sessions-queue-has-no-sweep-so-coalescing-can-wait-on-a-turn-that-never-comes).
+
 ## Firing a trigger by hand
 
 A trigger does not have to wait for a condition. All three surfaces can fire one now:
@@ -905,8 +961,23 @@ trigger's own intent.
 
 The gate sits at `Trigger#create_session!`, in front of burst control, so it covers every condition
 type at once, and the check and the spawn share one row lock — two jobs firing the same trigger at
-once cannot both read "nothing pending" and both spawn. Follow-ups into a **reused** session are
-unaffected: they spawn nothing, so there is nothing to deduplicate.
+once cannot both read "nothing pending" and both spawn.
+
+:::caution[This setting does nothing on a fire into a reused session]
+It guards the **spawn** path only. A trigger holding a live, reusable `last_session_id` returns out of
+`Trigger#create_session!` through `#follow_up_session!` long before the gate is consulted, so on those
+fires the checkbox is stored and never read.
+
+It is **not** dead on such a trigger, though: the same trigger reaches the spawn path on a fire where
+it has no reusable target — it has never fired, or the target was archived or failed and a recurring
+trigger spawns a replacement — and the setting applies in full there. The trigger page, the REST API
+and `search_triggers` all say exactly that where the setting is rendered, rather than implying it is
+either in force or dead.
+
+A reused session does still accumulate duplicates — not as sibling sessions, but as queued prompts.
+[Coalescing a repeated fire](#coalescing-a-repeated-fire) is the control that bounds *that* backlog,
+and it needs no opt-in.
+:::
 
 A skipped fire consumes no burst budget, does not advance `last_triggered_at`, and does not increment
 the trigger's session counter — nothing happened. What it *does* mean varies by caller, because a
