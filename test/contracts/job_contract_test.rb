@@ -74,9 +74,10 @@ class JobContractTest < ActiveSupport::TestCase
     params = method.parameters
 
     # Expected: session_id, follow_up_prompt = nil, options = nil (for deserialized kwargs),
-    #           resume_monitoring: false, clone_only: false, images: nil, files: nil
-    # Note: 7 params because ActiveJob serializes kwargs as a positional hash
-    assert_equal 7, params.size, "Expected 7 parameters in perform method"
+    #           resume_monitoring: false, clone_only: false, images: nil, files: nil,
+    #           monitor_pid: nil
+    # Note: 8 params because ActiveJob serializes kwargs as a positional hash
+    assert_equal 8, params.size, "Expected 8 parameters in perform method"
 
     # Check parameter types
     param_types = params.map { |type, _| type }

@@ -2636,8 +2636,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     File.expects(:read).returns(transcript_content).at_least_once
 
     # Enqueue the restore job
-    # Note: nil is required for follow_up_prompt to ensure resume_monitoring is passed as keyword arg
-    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, nil, { resume_monitoring: true } ]) do
+    # Note: nil is required for follow_up_prompt to ensure resume_monitoring is passed as keyword arg.
+    # monitor_pid pins the job to the process this restore was decided about (zimmer#489).
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, nil, { resume_monitoring: true, monitor_pid: fake_pid } ]) do
       post refresh_session_url(session)
     end
 
@@ -3038,8 +3039,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     )
 
     # Should enqueue resume_monitoring job since process is running
-    # Note: nil is required for follow_up_prompt to ensure resume_monitoring is passed as keyword arg
-    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, nil, { resume_monitoring: true } ]) do
+    # Note: nil is required for follow_up_prompt to ensure resume_monitoring is passed as keyword arg.
+    # monitor_pid pins the job to the process this reconnect was decided about (zimmer#489).
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, nil, { resume_monitoring: true, monitor_pid: Process.pid } ]) do
       post restart_session_url(session)
     end
 

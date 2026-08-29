@@ -6323,6 +6323,279 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_not_nil supersede_log, "Expected a log documenting the ownership-backstop termination"
   end
 
+  # === The backstop's premise, and the owner it does not hold for (zimmer#489) ==
+  #
+  # The branch above assumes the new owner REPLACED this turn. A job enqueued with
+  # `resume_monitoring: true` spawns nothing — it exists to re-attach to a process
+  # someone else started — so killing for it destroys the only live turn on the
+  # session and leaves that job to "reconnect" to a corpse. Hand the process over
+  # instead.
+  test "monitoring loop hands its process to a monitor-only owner instead of terminating it" do
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+
+    spawn_pid = 12_345
+    # A real monitoring job, so the intent lookup reads real serialized arguments.
+    # Deliberately enqueued through the pre-existing signature: what this test is about
+    # is the backstop's reaction to the OWNER, not the pid pinning.
+    monitoring_job = AgentSessionJob.enqueue_for_monitoring(@session.id)
+    poll_count = 0
+
+    mock_process_manager.wait_hook = ->(_pid, _flags) do
+      poll_count += 1
+      Session.find(@session.id).update_columns(running_job_id: monitoring_job.job_id) if poll_count >= 1
+      nil
+    end
+    mock_process_manager.running_hook = ->(_pid) { true }
+    mock_cli_adapter.execute_hook = ->(_opts) do
+      { pid: spawn_pid, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+
+    terminate_calls = []
+    job.stub(:terminate_process, ->(_session, process_pid, _clone_path, _log_buffer) { terminate_calls << process_pid }) do
+      GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+        TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+          mock_poller = Object.new
+          def mock_poller.poll_and_broadcast; true; end
+          mock_poller
+        }) do
+          Thread.stub(:new, ->(&block) {
+            mock_thread = Object.new
+            def mock_thread.alive?; false; end
+            def mock_thread.kill; end
+            def mock_thread.join(*); end
+            mock_thread
+          }) do
+            job.stub(:sleep, ->(_) { }) do
+              job.perform(@session.id)
+            end
+          end
+        end
+      end
+    end
+
+    assert poll_count < 10, "Expected loop to exit quickly after the handoff, but had #{poll_count} iterations"
+    assert_empty terminate_calls,
+      "A monitor-only owner spawns nothing — terminating here would kill the session's only live turn"
+
+    @session.reload
+    assert_equal monitoring_job.job_id, @session.running_job_id,
+      "The adopting monitoring job must keep ownership"
+    handoff_log = @session.logs.find { |l| l.content.include?("is left running for it to adopt") }
+    assert_not_nil handoff_log, "Expected a log documenting the handoff to the monitoring job"
+    assert_nil @session.logs.find { |l| l.content.include?("terminating superseded turn") },
+      "The superseded-turn kill must not fire for an owner that spawns nothing"
+  end
+
+  # === A monitoring job adopts the pid it was sent for, or nothing (zimmer#489) ==
+  #
+  # `metadata["process_pid"]` is a single slot the next spawn overwrites. Re-reading it
+  # at run time is how a recovery decided about pid 5845 came to adopt the pid 966 that
+  # another job had spawned in the meantime — and claiming ownership on the way is what
+  # made THAT job's ownership backstop kill its own fresh process.
+  test "monitoring job stands down when the session's process changed since it was enqueued" do
+    live_owner = "job-driving-the-new-turn"
+    @session.update!(
+      status: :running,
+      running_job_id: live_owner,
+      session_id: "550e8400-e29b-41d4-a716-446655440000",
+      metadata: { "process_pid" => 966, "clone_path" => "/tmp/test-clone" }
+    )
+
+    job = AgentSessionJob.new
+    mock_pm = MockProcessManager.new
+    mock_pm.running_hook = ->(_pid) { flunk("a stood-down monitoring job must not touch any process") }
+    job.process_manager = mock_pm
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    job.perform(@session.id, nil, resume_monitoring: true, monitor_pid: 5845)
+
+    @session.reload
+    assert_equal live_owner, @session.running_job_id,
+      "Standing down must leave ownership with the job that is actually driving the session"
+    assert_equal "running", @session.status,
+      "A session someone else is driving must not be paused by a monitoring job that found nothing to adopt"
+    assert_equal 966, @session.metadata["process_pid"],
+      "The live turn's pid must be left alone"
+    assert @session.logs.any? { |l| l.content.include?("Standing down: this monitoring job was enqueued to adopt PID 5845") },
+      "Expected a log naming both the pid it was sent for and the pid it found"
+  end
+
+  # The entry check runs BEFORE `running_job_id` is claimed; claiming it opens a second,
+  # narrower window in which a spawn can still land. Adopting the pid it wrote would be
+  # zimmer#489 again with a millisecond instead of five seconds, so the question is asked
+  # a second time immediately before adoption.
+  test "monitoring job stands down when the session's process changes after ownership is claimed" do
+    @session.update!(
+      status: :running,
+      session_id: "550e8400-e29b-41d4-a716-446655440000",
+      metadata: { "process_pid" => 5845, "clone_path" => "/tmp/test-clone" }
+    )
+
+    job = AgentSessionJob.new
+    mock_pm = MockProcessManager.new
+    mock_pm.running_hook = ->(_pid) { flunk("a stood-down monitoring job must not touch any process") }
+    mock_fs = MockFileSystemAdapter.new
+    mock_fs.mkdir_p("/tmp/test-clone")
+
+    # Simulate another job spawning a fresh turn in the window between the entry check and
+    # the adoption: `validate_session_for_resume` is the last thing to touch the filesystem
+    # before `resume_monitoring`, so overwriting process_pid from there lands in that window.
+    session_id = @session.id
+    mock_fs.define_singleton_method(:exists?) do |path|
+      Session.find(session_id).update!(metadata: { "process_pid" => 966, "clone_path" => "/tmp/test-clone" })
+      super(path)
+    end
+
+    job.process_manager = mock_pm
+    job.file_system = mock_fs
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    job.perform(@session.id, nil, resume_monitoring: true, monitor_pid: 5845)
+
+    @session.reload
+    assert @session.logs.any? { |l| l.content.include?("Standing down: this monitoring job was enqueued to adopt PID 5845") },
+      "Expected the pre-adoption check to catch the pid that changed after ownership was claimed"
+    assert_nil @session.logs.find { |l| l.content.include?("recovery confirmed") },
+      "A job that stood down must not report a reconnection"
+    assert_equal "running", @session.status,
+      "Standing down must not pause a session another job is driving"
+    assert_nil @session.running_job_id,
+      "Standing down must release the ownership claim it made, so the orphan sweep re-decides"
+  end
+
+  # The handoff leaves the process running on purpose. `#perform`'s ensure block reloads the
+  # session and kills the process for any terminal status it finds — so if the adopting job
+  # (or a user) parks the session inside that window, the turn we just handed over would be
+  # killed anyway, which is the outcome the handoff exists to prevent.
+  test "the ensure block leaves a handed-off process alone even if the session parks in that window" do
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+
+    spawn_pid = 12_345
+    monitoring_job = AgentSessionJob.enqueue_for_monitoring(@session.id)
+    session_id = @session.id
+    poll_count = 0
+
+    mock_process_manager.wait_hook = ->(_pid, _flags) do
+      poll_count += 1
+      Session.find(session_id).update_columns(running_job_id: monitoring_job.job_id) if poll_count >= 1
+      nil
+    end
+    mock_process_manager.running_hook = ->(_pid) { true }
+    mock_cli_adapter.execute_hook = ->(_opts) do
+      { pid: spawn_pid, stderr_log_path: "/tmp/test-clone/claude_stderr.log" }
+    end
+
+    # The handoff's final transcript poll is the last thing to run before the return, so
+    # parking the session from there lands squarely in the window under test. Gated on
+    # ownership having already moved, so the polls of earlier iterations leave it running.
+    parking_poll = ->(_session) do
+      handed_off = Log.where(session_id: session_id)
+                      .where("content LIKE ?", "%is left running for it to adopt%").exists?
+      Session.where(id: session_id).update_all(status: Session.statuses[:needs_input]) if handed_off
+      nil
+    end
+
+    terminate_calls = []
+    job.stub(:terminate_process, ->(_session, process_pid, _clone_path, _log_buffer) { terminate_calls << process_pid }) do
+      job.stub(:poll_and_broadcast_transcript, parking_poll) do
+        GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+          Thread.stub(:new, ->(&block) {
+            mock_thread = Object.new
+            def mock_thread.alive?; false; end
+            def mock_thread.kill; end
+            def mock_thread.join(*); end
+            mock_thread
+          }) do
+            job.stub(:sleep, ->(_) { }) do
+              job.perform(@session.id)
+            end
+          end
+        end
+      end
+    end
+
+    assert_equal "needs_input", @session.reload.status,
+      "The test must actually reach the window it is about — the session should have parked"
+    assert_empty terminate_calls,
+      "The ensure block must not kill a process this job deliberately handed to another job"
+  end
+
+  test "monitoring job proceeds normally when the session's process is the one it was sent for" do
+    @session.update!(
+      status: :running,
+      session_id: "550e8400-e29b-41d4-a716-446655440000",
+      metadata: { "process_pid" => 12_345, "clone_path" => "/tmp/test-clone" }
+    )
+
+    job = AgentSessionJob.new
+    mock_pm = MockProcessManager.new
+    mock_pm.running_hook = ->(_pid) { false } # dead, so the job exits after the adoption attempt
+    mock_fs = MockFileSystemAdapter.new
+    mock_fs.mkdir_p("/tmp/test-clone")
+    job.process_manager = mock_pm
+    job.file_system = mock_fs
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    job.perform(@session.id, nil, resume_monitoring: true, monitor_pid: 12_345)
+
+    @session.reload
+    assert_not @session.logs.any? { |l| l.content.include?("Standing down") },
+      "A matching pid must not stand the job down"
+    assert @session.logs.any? { |l| l.content.include?("is no longer running") },
+      "Expected the job to reach the adoption attempt"
+  end
+
+  # "Recovery confirmed" is a claim about a live process. Asserting it for a pid that
+  # is gone is how a session whose turn was never delivered looked, from the outside,
+  # like one that finished (zimmer#489).
+  test "monitoring job does not report recovery confirmed for a pid that is not alive" do
+    @session.update!(
+      status: :running,
+      session_id: "550e8400-e29b-41d4-a716-446655440000",
+      metadata: { "process_pid" => 966, "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
+    )
+
+    job = AgentSessionJob.new
+    mock_pm = MockProcessManager.new
+    mock_pm.running_hook = ->(_pid) { false }
+    mock_fs = MockFileSystemAdapter.new
+    mock_fs.mkdir_p("/tmp/test-clone")
+    job.process_manager = mock_pm
+    job.file_system = mock_fs
+    job.cli_adapter = MockClaudeCliAdapter.new
+
+    job.perform(@session.id, nil, resume_monitoring: true, monitor_pid: 966)
+
+    @session.reload
+    assert_nil @session.logs.find { |l| l.content.include?("recovery confirmed") },
+      "A dead pid must never be reported as reconnected"
+    assert @session.logs.any? { |l| l.content.include?("Process 966 is no longer running") },
+      "Expected the job to report the process as gone"
+    assert_equal "needs_input", @session.status
+    assert_equal "recovery", @session.metadata["paused_by"]
+  end
+
   # Note: wait_and_confirm_still_running has been moved to ProcessLifecycleManager
   # Tests for this method are in test/services/process_lifecycle_manager_test.rb
 
