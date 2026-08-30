@@ -3,9 +3,15 @@
 module Mcp
   module Tools
     # Mirrors GET /api/v1/sessions, GET /api/v1/sessions/search and
-    # GET /api/v1/sessions/:id: the title-oriented session finder. An `id`
-    # short-circuits to a single session; a `query` runs the same ILIKE search the
-    # REST search action runs (SessionSearchable); otherwise it lists.
+    # GET /api/v1/sessions/:id. An `id` short-circuits to a single session; a `query`
+    # runs the same search the REST search action runs (SessionSearchable), including
+    # `search_contents` for transcript text; otherwise it lists.
+    #
+    # That last clause is the one to keep true. This comment used to claim parity with
+    # the REST search action while the call below passed one fewer argument than REST
+    # did, so MCP silently had no content search at all — the one surface agents drive
+    # was the one that could not search what a session actually said, and a reader who
+    # trusted the comment concluded otherwise (#714).
     class QuickSearchSessions < Tool
       include SessionSearchable
 
@@ -16,13 +22,16 @@ module Mcp
       tool_name "quick_search_sessions"
 
       description <<~DESC
-        Quick title-based search for agent sessions in the Zimmer.
+        Search for agent sessions in Zimmer, by identity or by what was said in them.
 
-        **Important:** This tool only searches session titles. It is NOT a full-text or semantic search across session contents/transcripts. Use this when you roughly know the session title you're looking for.
+        **Two searches, one tool.** By default `query` matches session titles plus the `metadata` and `custom_metadata` JSON — fast, and the whole corpus every time. Set `search_contents: true` to also match the session **transcript**, which is how you find a session by something said mid-conversation.
+
+        **What `search_contents` costs, and what it promises.** Transcripts have no index a substring search can use, so the scan is bounded: it walks candidates newest-first, stops as soon as it has `per_page` matches or its time budget runs out, and always returns rather than timing out. It reports how far it got, and when it stopped early it returns a `scan_cursor` — pass that back to continue from exactly where it left off. Results are ordered newest-first regardless of `order`, and no total count is reported (counting matches would cost the full scan the bound exists to avoid). Narrow with `status`, `genesis` or `agent_runtime` to make it reach further back per call.
 
         **Use cases:**
         - Find a specific session by ID (set id parameter)
         - Search sessions by title keyword (set query parameter)
+        - Find the session that discussed something, by a phrase from the conversation (query + search_contents: true)
         - List all sessions with an optional status filter (one status, or an array to match any)
         - Monitor sessions that need human attention (status: "needs_input")
         - Read the spot queue in the order it will be worked: `status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`
@@ -51,7 +60,15 @@ module Mcp
           query: {
             type: "string",
             maxLength: MAX_QUERY_LENGTH,
-            description: "Search query to find sessions. Matches against session title only — this is a simple title search, not a full-text or semantic search. Leave empty to list all sessions."
+            description: "Search query to find sessions. Substring match (case-insensitive) against the session title and the metadata/custom_metadata JSON; add search_contents: true to match transcript text too. Leave empty to list all sessions."
+          },
+          search_contents: {
+            type: "boolean",
+            description: "Also search transcript contents, not just title/metadata. Bounded and resumable: the scan walks sessions newest-first, stops at per_page matches or its time budget, forces newest-first ordering, reports no total count, and returns scan_cursor when there is more corpus left to scan. Default: false."
+          },
+          scan_cursor: {
+            type: "string",
+            description: "Resume a content search where the previous call stopped. Pass the scan_cursor from that call's output verbatim, with the same query and filters. Only meaningful with search_contents: true."
           },
           status: {
             oneOf: [
@@ -106,6 +123,14 @@ module Mcp
 
         scope = filtered_scope(args)
         page, per_page = pagination_params(args)
+        query = validated_query(args)
+
+        if query.present? && SessionSearchable.search_contents?(args["search_contents"])
+          return content_search(scope, query, per_page, args["scan_cursor"])
+        end
+
+        scope = filter_sessions_by_search(scope, query) if query.present?
+
         total_count = scope.count
         total_pages = (total_count.to_f / per_page).ceil
         sessions = scope.limit(per_page).offset((page - 1) * per_page)
@@ -138,6 +163,69 @@ module Mcp
       end
 
       private
+
+      # The transcript-searching half. Ordered newest-first and reported with its own
+      # scan footer rather than a page count, because a bounded scan cannot honestly
+      # produce either a total or a stable page number — see SessionContentSearch.
+      def content_search(scope, query, per_page, cursor)
+        matches, scan = search_sessions_by_content(scope, query, limit: per_page, cursor: cursor)
+        sessions = matches.reorder(created_at: :desc, id: :desc).to_a
+
+        header = [ "## Agent Sessions (transcript search)", "" ]
+
+        if sessions.empty?
+          header << (scan.complete? ?
+            "No sessions matched #{query.inspect} in title, metadata or transcript." :
+            "No matches yet in the #{scan.scanned} most recent of #{scan.candidate_count} candidate session(s).")
+          header << ""
+          header << scan_footer(scan)
+          return header.join("\n").strip
+        end
+
+        header << "Found #{sessions.size} match(es), newest first:"
+        header << ""
+
+        sleeping = Session.ids_paused_until_scheduled_time(sessions.map(&:id))
+        sessions.each do |session|
+          header << format_session(session, paused: sleeping.include?(session.id))
+          header << ""
+        end
+
+        header << scan_footer(scan)
+        header.join("\n").strip
+      end
+
+      def scan_footer(scan)
+        lines = [ "---" ]
+        if scan.complete?
+          lines << "*Scan complete: all #{scan.candidate_count} session(s) matching the filters were searched. " \
+                   "These are every match.*"
+        else
+          reason = scan.timed_out? ? "the search hit its time budget" : "the search filled its result page"
+          # `scanned.positive?` matters as much as the cursor's presence: a resumed call
+          # that covered nothing hands the caller's own cursor straight back, and
+          # advising them to retry with it is an instruction to loop forever.
+          resume = if scan.next_cursor.present? && scan.scanned.positive?
+            "Continue with scan_cursor=\"#{scan.next_cursor}\" (same query and filters), or narrow the " \
+            "filters so each call reaches further back."
+          else
+            "Nothing new was searched before the budget ran out, so there is no point to resume " \
+            "from — narrow the filters (status, genesis, agent_runtime) so the scan has less to " \
+            "read, then try again."
+          end
+          lines << "*Scan incomplete: #{scan.scanned} of #{scan.candidate_count} candidate session(s) searched, " \
+                   "newest first, because #{reason}. Older sessions have NOT been ruled out. #{resume}*"
+        end
+        lines.join("\n")
+      end
+
+      def validated_query(args)
+        query = args["query"].to_s.strip
+        return "" if query.blank?
+        raise ToolError, "Query too long: maximum query length is #{MAX_QUERY_LENGTH} characters" if query.length > MAX_QUERY_LENGTH
+
+        query
+      end
 
       def filtered_scope(args)
         # Status-summary forks are Zimmer's own bookkeeping, not sessions anyone
@@ -179,12 +267,6 @@ module Mcp
         # spelled out, which reads as a missing session rather than a missing flag.
         unless truthy?(args["show_archived"]) || statuses.include?("archived")
           scope = scope.where.not(status: :archived)
-        end
-
-        query = args["query"].to_s.strip
-        if query.present?
-          raise ToolError, "Query too long: maximum query length is #{MAX_QUERY_LENGTH} characters" if query.length > MAX_QUERY_LENGTH
-          scope = filter_sessions_by_search(scope, query)
         end
 
         scope

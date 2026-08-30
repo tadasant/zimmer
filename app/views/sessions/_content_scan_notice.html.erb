@@ -1,0 +1,22 @@
+<%# Says how far a "Search transcript contents" search actually got.
+
+    Transcript search is bounded (SessionContentSearch): it walks sessions newest-first
+    and stops at its result cap or its time budget, so an empty result is not the same
+    claim as "there is no such session". Saying which one happened is the whole point —
+    the unbounded version of this query returned a gateway timeout instead. %>
+<% if scan %>
+  <div class="mb-4 rounded-md border px-3 py-2 text-xs <%= scan.complete? ? "border-gray-200 bg-gray-50 text-gray-600" : "border-amber-200 bg-amber-50 text-amber-800" %>">
+    <% if scan.complete? %>
+      Transcript scan complete — <%= scan.candidate_count == 1 ? "the one session" : "all #{number_with_delimiter(scan.candidate_count)} sessions" %>
+      matching these filters <%= scan.candidate_count == 1 ? "was" : "were" %> searched.
+    <% else %>
+      Transcript scan stopped early: the newest
+      <%= number_with_delimiter(scan.scanned) %> of
+      <%= number_with_delimiter(scan.candidate_count) %> matching
+      <%= "session".pluralize(scan.candidate_count) %> <%= scan.scanned == 1 ? "was" : "were" %> searched
+      <%= scan.timed_out? ? "before the time budget ran out" : "before the result limit was reached" %>.
+      Older sessions have not been ruled out — narrow the status, genesis or agent-root
+      filters to reach further back.
+    <% end %>
+  </div>
+<% end %>

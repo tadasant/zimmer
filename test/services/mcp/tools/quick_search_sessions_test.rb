@@ -8,6 +8,14 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     @tool = Mcp::Tools::QuickSearchSessions.new(context: Mcp::Context.new(tool_groups: "sessions"))
   end
 
+  def create_transcript_session(title:, said:, created_at: Time.current)
+    Session.create!(
+      title: title, prompt: "prompt", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :needs_input, created_at: created_at,
+      transcript: [ { "type" => "assistant", "message" => { "role" => "assistant", "content" => said } } ]
+    )
+  end
+
   test "id returns the single matching session" do
     session = sessions(:router_child_running)
 
@@ -76,6 +84,79 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
   test "invalid status raises a tool error" do
     error = assert_raises(Mcp::ToolError) { @tool.call("status" => "bogus") }
     assert_match(/Invalid status/, error.message)
+  end
+
+  # --- transcript content search (#714 gap 2) ---
+
+  test "search_contents finds a session by a phrase only its transcript carries" do
+    target = create_transcript_session(title: "Nondescript title", said: "the kestrel manoeuvre worked")
+
+    without = @tool.call("query" => "kestrel manoeuvre")
+    assert_equal "No sessions found matching the specified criteria.", without,
+      "title/metadata search must not see transcript text"
+
+    output = @tool.call("query" => "kestrel manoeuvre", "search_contents" => true)
+
+    assert_includes output, "## Agent Sessions (transcript search)"
+    assert_includes output, "### Nondescript title (ID: #{target.id})"
+    assert_includes output, "Scan complete"
+  end
+
+  test "search_contents remains a superset of the title search" do
+    output = @tool.call("query" => "Configure Hatchbox deployment", "search_contents" => true)
+
+    assert_includes output, "### Configure Hatchbox deployment (ID: #{sessions(:router_child_running).id})"
+  end
+
+  test "a content search that stops early says so and hands back a cursor" do
+    newer = create_transcript_session(title: "Newer", said: "shared phrase here", created_at: 1.hour.ago)
+    older = create_transcript_session(title: "Older", said: "shared phrase here", created_at: 2.hours.ago)
+
+    output = @tool.call("query" => "shared phrase here", "search_contents" => true, "per_page" => 1)
+
+    assert_includes output, "(ID: #{newer.id})"
+    assert_not_includes output, "(ID: #{older.id})"
+    assert_includes output, "Scan incomplete"
+    assert_match(/scan_cursor="[^"]+"/, output)
+
+    cursor = output[/scan_cursor="([^"]+)"/, 1]
+    resumed = @tool.call(
+      "query" => "shared phrase here", "search_contents" => true, "per_page" => 25, "scan_cursor" => cursor
+    )
+
+    assert_includes resumed, "(ID: #{older.id})"
+    assert_not_includes resumed, "(ID: #{newer.id})"
+  end
+
+  test "a content search with no matches says the scan was complete rather than just empty" do
+    output = @tool.call("query" => "no session ever said this", "search_contents" => true)
+
+    assert_includes output, "No sessions matched"
+    assert_includes output, "Scan complete"
+  end
+
+  test "search_contents is ignored without a query, and pagination still applies" do
+    output = @tool.call("search_contents" => true, "status" => "running", "per_page" => 1)
+
+    assert_includes output, "## Agent Sessions"
+    assert_not_includes output, "(transcript search)"
+  end
+
+  test "an over-long query is rejected on the content path too" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("query" => "x" * 1001, "search_contents" => true)
+    end
+    assert_match(/Query too long/, error.message)
+  end
+
+  test "the tool description no longer claims to search titles only" do
+    description = Mcp::Tools::QuickSearchSessions.rendered_description
+
+    assert_not_includes description, "This tool only searches session titles"
+    assert_includes description, "search_contents"
+    # #683: the description also has to stop implying `query` is title-only, since it
+    # has always reached metadata and custom_metadata as well.
+    assert_includes description, "custom_metadata"
   end
 
   test "prompt preview is truncated" do

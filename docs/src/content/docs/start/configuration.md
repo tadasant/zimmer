@@ -66,12 +66,15 @@ not in Terraform — Terraform only provisions the host.
 | `AIR_CATALOG_REF` | Staging-only catalog pinning |
 | `ELICITATION_EXPIRATION_MINUTES` | How long a new [elicitation](/sessions/elicitation/#expiry) (an MCP server's approval request) stays answerable, in minutes. Default 60. An MCP server that sends its own `_meta["com.pulsemcp/expires-at"]` keeps it; this sets the default for everything else. Blank is treated as unset; a non-numeric or zero/negative value is logged and ignored; anything above the 7-day ceiling is clamped |
 | `X_OAUTH_REDIRECT_URI` | The callback `XOauthBootstrap` sends on both the consent request and the token exchange. Default `http://localhost:8080/callback`. Whatever you set must already be registered on the X app — that registration is a manual step on X's developer portal |
+| `ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS` | Wall-clock ceiling for one transcript content search (`search_contents`), in seconds. Default 20, chosen to sit under kamal-proxy's 30-second target timeout — raising it past that trades a structured "scan incomplete" answer for a 504. Zero means "stop before the first chunk"; a negative value is ignored. See [Searching transcript contents](/extend/rest-api/#searching-transcript-contents) |
+| `ZIMMER_CONTENT_SEARCH_CHUNK_SIZE` | How many sessions one content-search statement reads at a time. Default 100. Smaller chunks make the budget finer-grained at the cost of more round trips |
 
 ### Paths
 
 | Var | Default |
 | --- | --- |
 | `AGENT_CLONES_DIR` | `~/.zimmer/clones` |
+| `AGENT_TRANSCRIPT_ARCHIVE_DIR` | `~/.zimmer/transcript_archives` — where `TranscriptArchiveJob` writes `latest.zip`. A sibling of the clones dir, and on the same `zimmer_data` volume, because the job runs in the `worker` container and every reader of the archive is an HTTP route in `web`. Point it somewhere both roles mount, or the reader stops seeing the writer |
 | `AGENT_SCRATCH_DIR` | per-session durable scratch |
 | `REPO_BASE_PATH` | `tmp/repos` (bare repos) |
 | `EXECUTION_REPOS_DIR` | — |

@@ -3412,6 +3412,27 @@ directly; nothing measures it today.
 
 ---
 
+## Transcript content search is bounded, so an empty answer can mean "not yet"
+
+`sessions.transcript` is a `json` column and no index helps a leading-wildcard `ILIKE`, so searching
+it is a sequential scan that detoasts every transcript it passes — thousands of sessions and
+gigabytes of TOAST on production. Run as one statement it raced kamal-proxy's 30-second timeout and
+returned a 504 about as often as results ([#405](https://github.com/tadasant/zimmer/issues/405)).
+
+`SessionContentSearch` bounds it instead: candidates newest-first, in chunks, stopping at the result
+limit or a wall-clock budget (20s by default, `ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS`), always
+returning. The cost is that a search over a large corpus may not reach the end in one call. That is
+reported rather than hidden — `complete: false` plus a `next_cursor` to resume with — but a caller
+that ignores the flag will read an empty page as "no such session".
+
+The proper fix is an index the search can use, and both candidates have a real obstacle: a `pg_trgm`
+GIN index would be built over gigabytes of TOASTed text, and `to_tsvector` refuses documents over
+1 MB, which most transcripts exceed. Neither can be sized or measured from this repository — the
+managed Postgres is not reachable from an agent session — so the bounded scan is what ships until
+someone can measure them on the real corpus.
+
+---
+
 ## A runaway job on staging presents as a dead droplet, not as a dead job
 
 Staging is a 4 GB droplet with no swap, and the worker is the one role running work whose peak
@@ -3420,6 +3441,14 @@ staging it allocates around 2.8 GB every ten minutes
 ([#495](https://github.com/tadasant/zimmer/issues/495)): with no archive on disk it treats every
 session as changed and loads all of their transcripts at once, then dies before writing the archive
 that would have made the next run cheap. It cannot bootstrap, so it retries forever.
+
+One of the two reasons there was never an archive on disk has since been removed: the job used to
+write under `Rails.root/storage`, a container overlay layer that every deploy destroys, so even a
+run that *did* finish left nothing for the next one to build on. It now writes under
+`~/.zimmer/transcript_archives`, on the `zimmer_data` volume, which survives deploys
+([#714](https://github.com/tadasant/zimmer/issues/714)). That makes the incremental path reachable
+after a first successful build, but it does **not** fix #495: the first build is still the one that
+has to fit in memory, and nothing here changes what that first build costs.
 
 The failure that follows is worth knowing by shape, because it misdirects. The allocation exhausts
 the host, so the kernel declares a *global* out-of-memory condition and takes victims across every

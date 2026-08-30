@@ -2,61 +2,77 @@
 
 # API controller for downloading pre-built transcript archive zip files.
 #
-# The archive is built incrementally by TranscriptArchiveJob (runs every 10 minutes).
-# This controller serves the pre-built file and provides status metadata.
+# The archive is built incrementally by TranscriptArchiveJob (runs every 10 minutes)
+# in the `worker` container, and read here in the `web` one — see the job's
+# ARCHIVE_SUBDIR comment for why that dictates where it lives.
 #
 # Endpoints:
 #   GET /api/v1/transcript_archive/download - Download the zip file
 #   GET /api/v1/transcript_archive/status   - Get archive metadata (JSON)
 #
+# When there is no archive, both endpoints report what was observed on disk rather
+# than a build cadence the caller cannot check — see TranscriptArchiveStatus.
+#
 class Api::V1::TranscriptArchivesController < Api::BaseController
   def download
-    unless File.exist?(archive_path)
-      render_api_error("Not Found", "No transcript archive exists yet. The archive is built every 10 minutes.", status: :not_found)
+    archive = archive_status
+    unless archive.present?
+      render_unavailable(archive)
       return
     end
 
-    metadata = load_metadata
+    response.headers["X-Archive-Generated-At"] = archive.generated_at&.iso8601.to_s
+    response.headers["X-Archive-Session-Count"] = archive.session_count.to_s
+    response.headers["X-Archive-Stale"] = archive.stale?.to_s
 
-    response.headers["X-Archive-Generated-At"] = metadata["generated_at"] || ""
-    response.headers["X-Archive-Session-Count"] = (metadata["session_count"] || 0).to_s
-
-    send_file archive_path,
+    send_file archive.archive_path,
       type: "application/zip",
       filename: "transcript_archive_#{Time.current.strftime('%Y%m%d_%H%M%S')}.zip",
       disposition: "attachment"
   end
 
   def status
-    unless File.exist?(archive_path)
-      render_api_error("Not Found", "No transcript archive exists yet. The archive is built every 10 minutes.", status: :not_found)
+    archive = archive_status
+    unless archive.present?
+      render_unavailable(archive)
       return
     end
 
-    metadata = load_metadata
-
     render json: {
-      generated_at: metadata["generated_at"],
-      session_count: metadata["session_count"] || 0,
-      file_size_bytes: metadata["file_size_bytes"] || (File.exist?(archive_path) ? File.size(archive_path) : 0)
+      state: archive.state,
+      generated_at: archive.generated_at&.iso8601,
+      session_count: archive.session_count,
+      file_size_bytes: archive.file_size_bytes,
+      stale: archive.stale?,
+      stale_reason: archive.staleness_note
     }
   end
 
   private
 
+  # The 404 both actions share. Keeps the API's standard error envelope and adds
+  # the two facts that make the failure diagnosable without a shell on the box:
+  # which state was observed, and at which path.
+  def render_unavailable(archive)
+    render_api_error(
+      "Not Found",
+      archive.unavailable_message,
+      status: :not_found,
+      state: archive.state,
+      archive_path: archive.archive_path.to_s
+    )
+  end
+
+  # Overridable in tests, and the single seam both actions read through.
   def archive_path
-    TranscriptArchiveJob::ARCHIVE_PATH
+    TranscriptArchiveJob.archive_path
   end
 
   def metadata_path
-    TranscriptArchiveJob::METADATA_PATH
+    TranscriptArchiveJob.metadata_path
   end
 
-  def load_metadata
-    return {} unless File.exist?(metadata_path)
-
-    JSON.parse(File.read(metadata_path))
-  rescue JSON::ParserError
-    {}
+  def archive_status
+    @archive_status ||= TranscriptArchiveStatus.new(archive_path: archive_path, metadata_path: metadata_path)
   end
 end

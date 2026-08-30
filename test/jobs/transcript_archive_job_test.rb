@@ -19,10 +19,36 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
   end
 
   teardown do
+    ENV.delete("AGENT_TRANSCRIPT_ARCHIVE_DIR")
     FileUtils.rm_rf(@test_dir) if @test_dir && File.directory?(@test_dir)
     TranscriptArchiveJob.any_instance.unstub(:archive_dir)
     TranscriptArchiveJob.any_instance.unstub(:archive_path)
     TranscriptArchiveJob.any_instance.unstub(:metadata_path)
+  end
+
+  # Where the archive lives is the whole of #714: the writer runs in the `worker`
+  # container and every reader is an HTTP route in `web`, so a path on the container
+  # layer means the reader can never see what the writer wrote.
+  test "resolves under the shared ~/.zimmer volume, not the container-local storage dir" do
+    TranscriptArchiveJob.any_instance.unstub(:archive_dir)
+    ENV.delete("AGENT_TRANSCRIPT_ARCHIVE_DIR")
+
+    resolved = TranscriptArchiveJob.archive_dir.to_s
+
+    assert_equal File.join(File.dirname(ClonesDirectory.base), "transcript_archives"), resolved,
+      "the archive has to sit on the volume both roles mount, beside the clones"
+    assert_not_includes resolved, Rails.root.join("storage").to_s,
+      "Rails.root/storage is a per-container overlay layer that no deploy config mounts"
+  end
+
+  test "an explicit override wins over the default resolution" do
+    TranscriptArchiveJob.any_instance.unstub(:archive_path)
+    ENV["AGENT_TRANSCRIPT_ARCHIVE_DIR"] = "/tmp/somewhere-else"
+
+    assert_equal "/tmp/somewhere-else/latest.zip", TranscriptArchiveJob.archive_path.to_s
+    assert_equal "/tmp/somewhere-else/latest_metadata.json", TranscriptArchiveJob.metadata_path.to_s
+  ensure
+    ENV.delete("AGENT_TRANSCRIPT_ARCHIVE_DIR")
   end
 
   test "creates archive directory if it does not exist" do

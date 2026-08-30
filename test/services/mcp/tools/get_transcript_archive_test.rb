@@ -25,9 +25,35 @@ class Mcp::Tools::GetTranscriptArchiveTest < ActiveSupport::TestCase
     FileUtils.rm_rf(@test_dir) if @test_dir && File.directory?(@test_dir)
   end
 
-  test "raises when no archive has been built yet" do
+  test "raises with the observed state, and the path it observed, when nothing was ever built" do
     error = assert_raises(Mcp::ToolError) { @tool.call({}) }
-    assert_match(/No transcript archive exists yet/, error.message)
+
+    assert_match(/No transcript archive has ever been built at #{Regexp.escape(@archive_path.to_s)}/, error.message)
+    assert_match(/Waiting will not help on its own/, error.message)
+    # The old message told every caller the failure was transient and cost them ten
+    # minutes before they found out otherwise (#714).
+    refute_match(/is built every 10 minutes/, error.message)
+  end
+
+  test "distinguishes a vanished archive from one that was never built" do
+    File.write(@metadata_path, { generated_at: "2026-08-30T09:00:00Z", session_count: 12 }.to_json)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call({}) }
+
+    assert_match(/missing at #{Regexp.escape(@archive_path.to_s)}/, error.message)
+    assert_match(/12 session\(s\)/, error.message)
+  end
+
+  test "reports a stale archive as stale rather than withholding it" do
+    File.binwrite(@archive_path, "zip-bytes")
+    File.write(@metadata_path, {
+      generated_at: 5.hours.ago.iso8601, session_count: 3, file_size_bytes: 1024
+    }.to_json)
+
+    output = @tool.call({})
+
+    assert_match(/- \*\*Stale:\*\* yes — This archive was built 5\.0 hours ago/, output)
+    assert_includes output, "**URL:** `https://zimmer.test/api/v1/transcript_archive/download`"
   end
 
   test "returns metadata and an absolute download URL" do
@@ -43,6 +69,7 @@ class Mcp::Tools::GetTranscriptArchiveTest < ActiveSupport::TestCase
     assert_includes output, "## Transcript Archive"
     assert_includes output, "- **Generated At:** 2026-07-12T00:00:00Z"
     assert_includes output, "- **Session Count:** 42"
+    assert_includes output, "- **Stale:** yes"
     assert_includes output, "- **File Size:** 2.0 MB"
     assert_includes output, "**URL:** `https://zimmer.test/api/v1/transcript_archive/download`"
     assert_includes output, 'curl -o /path/to/transcript-archive.zip -H "X-API-Key:'
@@ -56,5 +83,13 @@ class Mcp::Tools::GetTranscriptArchiveTest < ActiveSupport::TestCase
 
     assert_includes output, "- **Session Count:** 0"
     assert_includes output, "- **File Size:** 2.0 KB"
+    assert_includes output, "- **Stale:** no"
+  end
+
+  test "points content search at quick_search_sessions rather than at this download" do
+    description = Mcp::Tools::GetTranscriptArchive.rendered_description
+
+    assert_includes description, "quick_search_sessions"
+    assert_includes description, "search_contents"
   end
 end
