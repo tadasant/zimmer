@@ -138,8 +138,8 @@ class GoalsConfigTest < ActiveSupport::TestCase
   # The goal text is what actually steers a session's lifecycle -- it is far more
   # proximate than the general principle in OrchestratorSystemPromptBuilder, so a
   # goal that contradicts the prompt wins. These pin the resolution: a PR session
-  # stays in needs_input while its PR's disposition is unsettled, and the merge
-  # message -- not a human -- is what tells it to archive.
+  # holds the work while its PR's disposition is unsettled, and the merge message --
+  # not a human -- is what tells it to archive.
   PR_GOAL_IDS = %w[
     open-reviewed-green-pr
     open-reviewed-green-pr-with-version-bump
@@ -150,7 +150,7 @@ class GoalsConfigTest < ActiveSupport::TestCase
     PR_GOAL_IDS.each do |id|
       description = GoalsConfig.find(id).description
 
-      assert_includes description, "and stop in needs_input. Do NOT archive yourself yet",
+      assert_includes description, "do NOT archive yourself yet, and do NOT merge the PR",
         "Goal '#{id}' must hold the session while the PR's merge disposition is unsettled"
       assert_includes description, "Zimmer never recorded a PR URL for this session",
         "Goal '#{id}' must give the session an exit when no merge message can ever reach it"
@@ -161,6 +161,42 @@ class GoalsConfigTest < ActiveSupport::TestCase
       assert_includes description, "a merge gate holds the PR for human review",
         "Goal '#{id}' must say that a held PR is the sanctioned reason to stay put"
     end
+  end
+
+  # The `open-pr` skill's terminal step sleeps the session on an unrated PR instead of
+  # parking it in the action queue -- a PR waiting to be rated is a machine wait, a PR
+  # the gate held is a human handoff. Both texts are injected into the same prompt, so
+  # a goal that flatly ordered "stop in needs_input" would read as a contradiction and
+  # the session would park anyway. These pin the deferral and its fallback.
+  test "PR goals defer the resting decision to the open-pr skill's terminal steps" do
+    PR_GOAL_IDS.each do |id|
+      description = GoalsConfig.find(id).description
+
+      refute_includes description, "stop in needs_input",
+        "Goal '#{id}' orders an unconditional park, contradicting the open-pr skill's self-wake"
+      assert_includes description, "follow the `open-pr` skill's terminal steps",
+        "Goal '#{id}' must send the session to the skill for how to come to rest"
+      assert_includes description, "bounded self-wake",
+        "Goal '#{id}' must name the self-wake so a session without the skill loaded still knows the shape"
+      assert_includes description, "If the `open-pr` skill is not available to you",
+        "Goal '#{id}' must leave a runtime or repo without the skill an instruction of its own"
+    end
+  end
+
+  # The three variants differ in their preamble and share their ending. Editing the
+  # terminal paragraph in one and not the others is the drift this pins: a session's
+  # resting behaviour must not depend on which PR-shaped goal it was given.
+  test "the three PR goals share one terminal paragraph, byte for byte" do
+    tails = PR_GOAL_IDS.map do |id|
+      description = GoalsConfig.find(id).description
+      index = description.index("Then report the PR URL")
+
+      assert index, "Goal '#{id}' is missing the shared terminal paragraph"
+      description[index..]
+    end
+
+    assert_equal 1, tails.uniq.size,
+      "The PR goals' terminal paragraphs have diverged: #{PR_GOAL_IDS.zip(tails.map(&:length)).to_h}"
   end
 
   # The stop is conditional, and the condition has to be the merge message rather than

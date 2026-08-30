@@ -2268,11 +2268,12 @@ process that dies in between re-sends on the next poll rather than dropping the 
 last touched that session. Past 24 hours of no user activity the floor is 24 hours between polls,
 so the merged-PR message rides that same curve.
 
-The session most likely to be parked waiting on a merge is exactly the one with stale user activity:
-it did its work, said so, and has been sitting in `needs_input` ever since. It can therefore wait a
-long time to learn that the PR it was blocked on landed. The backoff exists because polling every
-active session's PRs on every tick exhausts GitHub's 5000/hr authenticated rate limit at around 50
-sessions, and that is the trade being made. Touching the session resets the curve to the 30-second
+The session most likely to be waiting on a merge is exactly the one with stale user activity: it did
+its work, said so, and has been sitting in `needs_input` — or asleep in `waiting` on the `open-pr`
+skill's self-wake — ever since. It can therefore wait a long time to learn that the PR it was
+blocked on landed. The backoff exists because polling every active session's PRs on every tick
+exhausts GitHub's 5000/hr authenticated rate limit at around 50 sessions, and that is the trade
+being made. Touching the session resets the curve to the 30-second
 cadence.
 
 ---
