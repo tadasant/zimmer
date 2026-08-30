@@ -683,6 +683,7 @@
             drag-and-drop are intentionally hidden while searching. %>
         <% if @any_sessions %>
           <section class="mb-8" id="search_results">
+            <%= render "sessions/content_scan_notice", scan: @content_scan %>
             <div class="flex items-center gap-2 min-w-0 mb-3">
               <h2 class="text-lg font-semibold text-gray-800 truncate">Search results</h2>
               <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 min-w-[1.5rem]"
@@ -847,6 +848,11 @@
               Get started by creating a new agent session.
             <% end %>
           </p>
+          <%# "No matches" and "I stopped looking" are different answers, and this is
+              the screen where confusing them is most costly. %>
+          <div class="mx-auto mt-4 max-w-xl text-left">
+            <%= render "sessions/content_scan_notice", scan: @content_scan %>
+          </div>
           <div class="mt-6">
             <% if @search_active %>
               <%# Drops the search terms but keeps the filter selection — the user is

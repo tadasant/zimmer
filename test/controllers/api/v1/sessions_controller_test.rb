@@ -1841,6 +1841,73 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes session_ids, session.id
   end
 
+  test "search accepts the dashboard's search_contents=1 spelling too" do
+    session = sessions(:with_transcript)
+
+    get search_api_v1_sessions_path, params: { q: "I'd be happy to help", search_contents: "1" }, headers: @headers
+    assert_response :success
+
+    json = JSON.parse(response.body)
+    assert_equal true, json["search_contents"],
+      "a caller who copied the dashboard's query string must not get a silent title-only search"
+    assert_includes json["sessions"].map { |s| s["id"] }, session.id
+  end
+
+  test "search accepts query as an alias for q" do
+    get search_api_v1_sessions_path, params: { query: "UniqueSearchableTitle" }, headers: @headers
+    assert_response :success
+
+    assert_equal "UniqueSearchableTitle", JSON.parse(response.body)["query"]
+  end
+
+  test "content search reports how far it scanned instead of a total count" do
+    get search_api_v1_sessions_path,
+      params: { q: "I'd be happy to help", search_contents: "true" }, headers: @headers
+    assert_response :success
+
+    json = JSON.parse(response.body)
+    scan = json["content_scan"]
+    assert scan["complete"]
+    assert_not scan["timed_out"]
+    assert scan["candidate_sessions"].positive?
+    assert_nil scan["next_cursor"]
+    # Counting matches over the transcript corpus costs exactly the full scan the
+    # bounded search exists to avoid, so no count is offered rather than a wrong one.
+    assert_nil json["pagination"]["total_count"]
+  end
+
+  test "content search hands back a cursor that resumes where it stopped" do
+    older = Session.create!(
+      title: "Older content match", prompt: "p", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :needs_input, created_at: 3.days.ago,
+      transcript: [ { "type" => "assistant", "message" => { "content" => "peregrine falcon" } } ]
+    )
+    newer = Session.create!(
+      title: "Newer content match", prompt: "p", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :needs_input, created_at: 1.day.ago,
+      transcript: [ { "type" => "assistant", "message" => { "content" => "peregrine falcon" } } ]
+    )
+
+    get search_api_v1_sessions_path,
+      params: { q: "peregrine falcon", search_contents: "true", per_page: 1 }, headers: @headers
+    assert_response :success
+
+    first = JSON.parse(response.body)
+    assert_equal [ newer.id ], first["sessions"].map { |s| s["id"] }
+    assert_not first["content_scan"]["complete"]
+    cursor = first["content_scan"]["next_cursor"]
+    assert cursor.present?
+
+    get search_api_v1_sessions_path,
+      params: { q: "peregrine falcon", search_contents: "true", per_page: 25, scan_cursor: cursor },
+      headers: @headers
+    assert_response :success
+
+    second = JSON.parse(response.body)
+    assert_equal [ older.id ], second["sessions"].map { |s| s["id"] }
+    assert second["content_scan"]["complete"]
+  end
+
   test "search should exclude archived sessions by default" do
     archived_session = sessions(:archived)
     # Set a searchable title on the archived session

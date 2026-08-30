@@ -360,10 +360,36 @@ posted so the comment poller never reads one back as if a human wrote it.
 
 → [Transcript hooks](/extend/transcript-hooks/) for the contract and how to write one.
 
+## Searching what was said
+
+`GET /api/v1/sessions/search?search_contents=true` and the `quick_search_sessions` MCP tool
+(`search_contents: true`) both match `sessions.transcript`, so a session can be found by a phrase
+from its conversation rather than by its title.
+
+The column is `json` with no index a substring match can use, so the scan is **bounded rather than
+best-effort**: `SessionContentSearch` walks candidates newest-first in chunks, stops at the result
+limit or a wall-clock budget under the proxy's timeout, and always returns. What it hands back with
+the results is how far it got — `complete`, `scanned_sessions`, `candidate_sessions` and a
+`next_cursor` to resume from. An empty result with `complete: false` means "not found yet", which is
+a different claim from "not there", and both surfaces say which one it is. See
+[Searching transcript contents](/extend/rest-api/#searching-transcript-contents).
+
 ## Archive and download
 
 `TranscriptArchiveJob` rebuilds a `latest.zip` of all transcripts every 10 minutes (temp file +
 atomic rename). It's served by `GET /api/v1/transcript_archive/download`.
+
+It writes under `~/.zimmer/transcript_archives` — the `zimmer_data` named volume, mounted at the
+same path in both the `web` and `worker` containers. That matters because the writer and the readers
+are in different containers: cron runs only in `worker` (GoodJob starts a cron capsule only in an
+`:async` webserver process, and production is `:external`), while `/api/v1/transcript_archive/*` and
+the `get_transcript_archive` MCP tool are served by Puma in `web`. While the archive lived under
+`Rails.root/storage` — a container overlay layer no deploy config mounts — the reader looked in its
+own empty copy and could never succeed, and every deploy destroyed the writer's copy too
+([#714](https://github.com/tadasant/zimmer/issues/714)).
+
+The archive is a bulk export, not a search index: it is hundreds of megabytes and up to ten minutes
+stale. To find a session by something said in it, use the content search above.
 
 ## Rendering to plain text
 

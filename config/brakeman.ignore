@@ -192,6 +192,26 @@
     {
       "fingerprint": "532be9c8083c2f1fea4eabd55330c7eb1e14282d2a97d77bf8bded9631d61e62",
       "note": "False positive. The interpolated fragment is built entirely from constants: the table name is the model's own `table_name`, checked against TokenPricing::PRICEABLE_TABLES before use, and the rest is model-family keys and float rates from TokenPricing::RATES. No request parameter reaches it. The SQL exists so the Costs rollups sum priced spend in the database rather than loading millions of rows into Ruby to add them up, and TokenPricingTest pins it against the Ruby implementation so the two cannot drift."
+    },
+    {
+      "check_name": "SQL",
+      "code": "Session.connection.execute(\"SET statement_timeout = #{Integer(((budget_seconds or self.class.budget_seconds).to_f * 1000).ceil).clamp(1, 120000)}\")",
+      "confidence": "Medium",
+      "cwe_id": [
+        89
+      ],
+      "file": "app/services/session_content_search.rb",
+      "fingerprint": "9cc1ccd527ba71ddc88cdd81c73811592b801dbaabba614b5e929e4b52efdab0",
+      "line": 249,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "location": {
+        "class": "SessionContentSearch",
+        "method": "with_statement_timeout",
+        "type": "method"
+      },
+      "message": "Possible SQL injection",
+      "note": "False positive: `SET` accepts no bind parameters, so the timeout has to be interpolated. The value is never request-derived -- it comes from ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS (an operator-set env var) or the DEFAULT_TIME_BUDGET_SECONDS literal -- and it is forced through Integer() and clamped to 1..120000 before it reaches the string, so the interpolated text is always a bare integer. Everything a caller supplies (the query, the cursor, the id list) reaches Postgres as a bind parameter.",
+      "user_input": "Integer(((budget_seconds or self.class.budget_seconds).to_f * 1000).ceil).clamp(1, 120000)"
     }
   ],
   "updated": "2026-06-12 00:00:00 +0000"

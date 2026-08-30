@@ -16,6 +16,11 @@ class SessionsController < ApplicationController
   # Dashboard: number of session cards shown per category section page.
   SESSIONS_PER_PAGE = 50
 
+  # How many transcript matches one content search collects before it stops. Two
+  # pages' worth: enough that the dashboard's own pagination has somewhere to go,
+  # bounded because every additional match costs another transcript detoasted.
+  CONTENT_SEARCH_LIMIT = SESSIONS_PER_PAGE * 2
+
   # Sentinel page key for the "Uncategorized" bucket (sessions with NULL category_id),
   # which has no Category record to key on. Namespaced page params look like
   # page[uncategorized]=2 alongside page[<category_id>]=2.
@@ -143,7 +148,9 @@ class SessionsController < ApplicationController
     # the category grid with a flat list on every later visit, with nothing in the URL
     # to explain it.
     @search_query = params[:q].to_s.strip
-    @search_contents = params[:search_contents] == "1"
+    # "1" from this page's own checkbox, "true" from anyone who copied the REST
+    # API's documented spelling — SessionSearchable.search_contents? accepts both.
+    @search_contents = SessionSearchable.search_contents?(params[:search_contents])
     @agent_root_filter = params[:agent_root].to_s.strip
     @genesis_filter = params[:genesis].to_s.strip
     @genesis_filter = "" unless SessionGenesis.valid?(@genesis_filter)
@@ -177,7 +184,14 @@ class SessionsController < ApplicationController
     @agent_roots_for_filter = AgentRootsConfig.all.sort_by(&:name)
 
     if @search_query.present?
-      sessions = filter_sessions_by_search(sessions, @search_query, include_contents: @search_contents)
+      if @search_contents
+        # Bounded and newest-first — see SessionContentSearch. @content_scan is what
+        # the results header reads to say whether the whole corpus was covered.
+        sessions, @content_scan =
+          search_sessions_by_content(sessions, @search_query, limit: CONTENT_SEARCH_LIMIT)
+      else
+        sessions = filter_sessions_by_search(sessions, @search_query)
+      end
     end
 
     if @agent_root_filter.present?

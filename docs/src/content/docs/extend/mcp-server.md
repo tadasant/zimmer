@@ -173,6 +173,17 @@ production.
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |
 
+`quick_search_sessions` matches session titles plus the `metadata` and `custom_metadata` JSON by
+default, and `search_contents: true` widens it to the **transcript** — this is the MCP route to
+finding a session by something said mid-conversation, and it exists so nobody has to `curl` the REST
+API for it. That scan is bounded rather than best-effort (the `transcript` column has no index a
+substring match can use), so it walks candidates newest-first, stops at `per_page` matches or a
+wall-clock budget, orders results newest-first regardless of `order`, and reports **no total count**.
+When it stops early it says so and returns a `scan_cursor`; pass that back with the same query and
+filters to continue from exactly where it stopped. An empty result that says "scan incomplete" means
+"not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
+hundreds of megabytes and up to ten minutes stale.
+
 `get_session` always includes a `### Session Hierarchy` section (the spawn tree this session belongs
 to — an edge means "spawned", not "most recently talked to") and a `### Human Messages` section (the
 messages Zimmer knows a named human authored anywhere in that tree, with author, channel, timestamp,
