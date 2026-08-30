@@ -165,12 +165,15 @@ class Session < ApplicationRecord
   # be used here: reading it CLEARS the flag `broadcast_status_change` is about to
   # read, and this callback is declared first, so it runs first — it would silence
   # every status broadcast in the app.)
+  #
+  # Status-summary forks are kept off the stream by the two broadcast methods
+  # themselves, not here. A guard on this registration covers only the create and
+  # scheduling-class paths it fires on; the status changes arrive through
+  # `broadcast_status_change`, which calls both methods directly and never reads
+  # this condition.
   after_commit :broadcast_ranked_membership,
     on: [ :create, :update ],
-    if: -> {
-      !status_summary_fork? &&
-        (previously_new_record? || (saved_change_to_scheduling_class? && !saved_change_to_status?))
-    }
+    if: -> { previously_new_record? || (saved_change_to_scheduling_class? && !saved_change_to_status?) }
   after_destroy_commit :broadcast_remove_from_sessions_index
 
   # Deleting the row deletes the bytes it owns. `dependent: :destroy` above covers
@@ -1929,7 +1932,14 @@ class Session < ApplicationRecord
   # "Archived" watches the pill turn into "Trashed" rather than watching the row
   # vanish. Whether that row *stays* is the membership delivery's decision, not
   # this one's — see #broadcast_ranked_membership.
+  #
+  # Never for a status-summary fork, for the reason spelled out on
+  # #broadcast_ranked_membership: the fork has no row on any Ranked page to keep
+  # honest, so the pill would only ever land on the row the membership delivery
+  # is no longer allowed to insert.
   def broadcast_ranked_row
+    return if status_summary_fork?
+
     broadcast_replace_to(
       RANKED_STREAM,
       target: "ranked_row_status_#{id}",
@@ -1959,7 +1969,18 @@ class Session < ApplicationRecord
   #
   # Rendered through SessionsController rather than the partial: form is that the
   # row is full of route helpers and this callback fires from background jobs.
+  #
+  # A status-summary fork is never offered. Every server-rendered session list
+  # applies `excluding_status_summary_forks`, so a fork the operator has never
+  # been shown would arrive over the stream and be inserted — and it runs the
+  # chain `needs_input` (as created) → `running` → `needs_input` → `archived`, so
+  # the queue collected a "Status summary for session #N" row per live fork and
+  # only shed it on archive. The guard lives here rather than on the callback
+  # registration because all three of those transitions reach this method through
+  # `broadcast_status_change`, which calls it directly.
   def broadcast_ranked_membership
+    return if status_summary_fork?
+
     html = SessionsController.render(
       partial: "sessions/ranked_delivery",
       locals: { agent_session: self }

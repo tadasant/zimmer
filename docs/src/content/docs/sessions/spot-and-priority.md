@@ -803,6 +803,15 @@ The row travels in a `<template>` so its ids are never in the document until the
 an envelope for a session you filter out cannot leave a stray `ranked_row_<id>` behind, and one for a
 row already on screen cannot duplicate it. The envelope is consumed and removed either way.
 
+**Neither kind is sent for a status-summary fork.** Those are Zimmer's own bookkeeping sessions (see
+[the Status summary](/sessions/status-summary/)), and every server-rendered session list already
+drops them with `Session.excluding_status_summary_forks` — so a stream that carried them would put
+rows on the queue that a reload then took away. The exclusion lives inside
+`Session#broadcast_ranked_membership` and `#broadcast_ranked_row` rather than on the callbacks that
+call them: a fork's status changes reach both methods through `broadcast_status_change`, which calls
+them directly, so a guard on the callback registration covered only the create and scheduling-class
+paths.
+
 Three rules keep that safe, and each costs a little freshness:
 
 - **Deliveries are held during a drag** and flushed on drop, so nothing is inserted or removed under
