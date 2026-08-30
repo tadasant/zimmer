@@ -9,16 +9,22 @@ require "timeout"
 # an unrelated thread with `undefined method 'key?' for nil` (zimmer#706).
 # See AgentSessionJob::LogStream for the full mechanism.
 class AgentSessionJobLogStreamingTest < ActiveSupport::TestCase
-  # Reports the process as running forever, and announces each poll so a test can
-  # block until the streaming loop has actually gone round.
+  # Reports the process as running forever, announces each poll so a test can block
+  # until the streaming loop has gone round, and counts them so a test can prove
+  # which flush wrote a row.
   class TickingProcessManager
     def initialize(ticks)
       @ticks = ticks
+      @calls = Concurrent::AtomicFixnum.new(0)
     end
 
     def running?(_pid)
-      @ticks << true
+      @ticks << @calls.increment
       true
+    end
+
+    def calls
+      @calls.value
     end
   end
 
@@ -45,7 +51,7 @@ class AgentSessionJobLogStreamingTest < ActiveSupport::TestCase
     flag = Concurrent::AtomicBoolean.new(false)
     # Stands in for a thread wedged inside ActiveRecord: it ignores the flag.
     thread = Thread.new { release.pop }
-    stream = AgentSessionJob::LogStream.new(thread, flag)
+    stream = AgentSessionJob::LogStream.new(thread, flag, @session.id)
 
     assert_nil stream.stop!(timeout: 0.1),
       "stop! should give up waiting rather than escalate to Thread#kill"
@@ -61,16 +67,14 @@ class AgentSessionJobLogStreamingTest < ActiveSupport::TestCase
     File.write(@stderr_log_path, "first streamed line\n")
 
     ticks = Queue.new
+    process_manager = TickingProcessManager.new(ticks)
     job = AgentSessionJob.new(@session.id)
-    job.process_manager = TickingProcessManager.new(ticks)
+    job.process_manager = process_manager
     job.file_system = RealFileSystemAdapter.new
 
     stream = job.send(:start_log_streaming, @session, 4242, @stderr_log_path, @tmpdir)
     begin
-      # Two polls means the first iteration has read the file and buffered the
-      # line. LogBuffer only flushes every fifth iteration, so at this point the
-      # line exists ONLY in memory — it reaches the database solely via the
-      # post-loop flush that a killed thread would never run.
+      # Two polls means the first iteration has read the file and buffered the line.
       Timeout.timeout(10) { 2.times { ticks.pop } }
       assert_not_nil stream.stop!, "the streaming thread should stop when asked"
     ensure
@@ -78,8 +82,45 @@ class AgentSessionJobLogStreamingTest < ActiveSupport::TestCase
     end
 
     assert_not stream.alive?
+
+    # The line reached the database ONLY via the post-loop flush that a killed
+    # thread would never have run — LogBuffer's periodic flush fires every
+    # LOG_FLUSH_EVERY_ITERATIONS iterations and the loop never got that far. If a
+    # slow machine let it, this fails loudly rather than passing for the wrong
+    # reason.
+    assert_operator process_manager.calls, :<, AgentSessionJob::LOG_FLUSH_EVERY_ITERATIONS,
+      "the loop reached its periodic flush, so the assertion below no longer proves " \
+      "the final flush is what wrote the row"
     assert @session.logs.where(level: "verbose", content: "first streamed line").exists?,
       "the buffered line should have been flushed by the thread's own final flush"
+  end
+
+  test "the thread stops reading a stderr file a replacement process has truncated" do
+    File.write(@stderr_log_path, "a long first line from the first process\n")
+
+    ticks = Queue.new
+    job = AgentSessionJob.new(@session.id)
+    job.process_manager = TickingProcessManager.new(ticks)
+    job.file_system = RealFileSystemAdapter.new
+
+    stream = job.send(:start_log_streaming, @session, 4242, @stderr_log_path, @tmpdir)
+    begin
+      # Two polls means the first iteration has read the file, so the thread now
+      # holds a byte offset into it.
+      Timeout.timeout(10) { 2.times { ticks.pop } }
+      # A recovery respawn reopens the SAME deterministic path with mode "w". The
+      # thread's offset now points past the end of a different process's output —
+      # deliberately shorter here, which is what makes the check observable.
+      File.write(@stderr_log_path, "second\n")
+    ensure
+      stream.stop!
+    end
+
+    contents = @session.logs.where(level: "verbose").pluck(:content)
+    assert_includes contents, "a long first line from the first process"
+    assert_empty contents.grep(/second/),
+      "the thread must stop reading a file the replacement process has taken over " \
+      "rather than emit a fragment of its output"
   end
 
   test "start_log_streaming hands back a stoppable handle rather than a raw thread" do
@@ -89,12 +130,13 @@ class AgentSessionJobLogStreamingTest < ActiveSupport::TestCase
     job.file_system = RealFileSystemAdapter.new
 
     stream = job.send(:start_log_streaming, @session, 4242, @stderr_log_path, @tmpdir)
-    begin
-      assert_kind_of AgentSessionJob::LogStream, stream
-      Timeout.timeout(10) { ticks.pop }
-      assert stream.alive?
-    ensure
-      stream.stop!
-    end
+    assert_kind_of AgentSessionJob::LogStream, stream
+    Timeout.timeout(10) { ticks.pop }
+    assert stream.alive?
+    # Asserted rather than discarded: a thread left running past the end of a
+    # transactional test would be querying a connection about to be unpinned.
+    assert_not_nil stream.stop!, "the streaming thread should stop when asked"
+  ensure
+    stream&.stop!
   end
 end

@@ -244,12 +244,21 @@ class AgentSessionJob < ApplicationJob
     end
   end
 
+  # How many streaming iterations between LogBuffer flushes. Named rather than
+  # inlined because a test has to know when the periodic flush would fire in order
+  # to prove that the FINAL flush is what wrote a row.
+  LOG_FLUSH_EVERY_ITERATIONS = 5
+
   # How long #stop! waits for the log-streaming thread to notice the stop flag and
-  # finish. One iteration of that loop is a couple of file reads, at most one
-  # `insert_all!`, and a 0.5s sleep; the post-loop drain is one more of each. Three
-  # seconds is several times the honest worst case, and the timeout is a bound on
-  # OUR wait, not a deadline for the thread — see LogStream#stop!.
-  LOG_STREAM_STOP_TIMEOUT = 3
+  # finish.
+  #
+  # Not a bound on the thread — it is a bound on OUR wait, and #stop! does nothing
+  # to a thread that overruns it (see LogStream#stop!). Sized for the common case
+  # rather than the worst one: a typical stop lands in the 0.5s sleep and returns in
+  # well under a second, while a stop that lands inside a retrying LogBuffer#flush
+  # pays DatabaseRetry's 0.5s + 1.0s backoff first and can legitimately exceed this.
+  # That overrun is logged, not escalated.
+  LOG_STREAM_STOP_TIMEOUT = 5
 
   # A running log-streaming thread and the flag that stops it.
   #
@@ -260,11 +269,12 @@ class AgentSessionJob < ApplicationJob
   # `AbstractAdapter#reconnect!`, which sets `@raw_connection`, `@verified = true`
   # and `@last_activity = now` and only THEN calls `configure_connection` — the call
   # that builds the adapter's Postgres type map. Rails guards that window with
-  # `attempt_configure_connection`'s `rescue Exception => disconnect!`, added
-  # upstream (rails/rails#56227) for exactly this hazard.
+  # `attempt_configure_connection`'s `rescue Exception => disconnect!`
+  # (rails/rails#56227) — but its own comment says it is there for "things such as
+  # Timeout::ExitException", i.e. asynchronous *exceptions*.
   #
-  # `Thread#kill` walks straight through that guard: it runs `ensure` blocks but is
-  # not an exception, so no `rescue` sees it. The guard is skipped while
+  # `Thread#kill` is the case that guard cannot cover: it runs `ensure` blocks but
+  # is not an exception, so no `rescue` sees it. The guard is skipped while
   # `ConnectionPool#with_connection`'s own `ensure` still hands the half-configured
   # adapter back to the pool, `@verified` and `@last_activity` intact. The next
   # thread to check it out within `verify_timeout` (2s) takes the "used very
@@ -282,9 +292,10 @@ class AgentSessionJob < ApplicationJob
   # the thread that owns it. Not killing our own database threads is the half of
   # that we control.
   class LogStream
-    def initialize(thread, stop_flag)
+    def initialize(thread, stop_flag, session_id)
       @thread = thread
       @stop_flag = stop_flag
+      @session_id = session_id
     end
 
     def alive?
@@ -293,17 +304,29 @@ class AgentSessionJob < ApplicationJob
 
     # Ask the loop to finish, and wait up to `timeout` for it.
     #
-    # Deliberately never escalates to `Thread#kill`. A thread that overruns the
-    # timeout drains its last logs and exits on its own next iteration — its loop
-    # body is bounded, and `process_running?` is already false by every path that
-    # calls this. Waiting a little longer than we'd like, or letting one abandoned
-    # thread finish unobserved, is strictly cheaper than poisoning the connection
-    # pool for every other thread in the process.
+    # Deliberately never escalates to `Thread#kill`. A thread that overruns is left
+    # to finish and exit on its own: its loop body is bounded, and the flag alone
+    # caps it at one more iteration. Letting one abandoned thread finish unobserved
+    # is strictly cheaper than poisoning a connection for every other thread in the
+    # process.
+    #
+    # An overrun is logged rather than swallowed, because "abandoned, not killed" is
+    # the one failure mode this design accepts and an operator has no other way to
+    # learn it happened — there is no shell on the box to go looking with.
     #
     # @return [Thread, nil] the thread if it finished within the timeout, else nil
     def stop!(timeout: LOG_STREAM_STOP_TIMEOUT)
       @stop_flag.make_true
-      @thread.join(timeout)
+      joined = @thread.join(timeout)
+
+      unless joined
+        Rails.logger.warn(
+          "[AgentSessionJob] Log-streaming thread for session #{@session_id} did not stop " \
+          "within #{timeout}s; leaving it to finish rather than killing it (zimmer#706)"
+        )
+      end
+
+      joined
     end
   end
 
@@ -4022,64 +4045,91 @@ class AgentSessionJob < ApplicationJob
       stderr_position = 0
       mcp_log_positions = {}
       iteration = 0
+      stopped = false
 
       loop do
         iteration += 1
         # Stop when asked to, or once the process we are tailing has gone. Checked
-        # before any work so a stop is honoured within one sleep interval.
-        break if stop_flag.true?
+        # before any work so a stop is honoured within one sleep interval, and
+        # before `process_running?` so a handed-off (still live) process is no
+        # exception to that.
+        if stop_flag.true?
+          stopped = true
+          break
+        end
         break unless process_running?(process_pid)
 
-        # Stream stderr
-        if stderr_log_path && @file_system.exists?(stderr_log_path)
-          File.open(stderr_log_path, "r") do |file|
-            file.seek(stderr_position)
-            while (line = file.gets)
-              next if line.strip.empty?
-              thread_log_buffer.add(line.chomp, level: "verbose")
-            end
-            stderr_position = file.pos
-          end
-        end
+        # One executor run per iteration, the way PeriodicCatalogRefresher wraps
+        # each tick. This thread is app-spawned, so nothing else checks its
+        # ActiveRecord connection back in or lets it participate in the load
+        # interlock — and wrapping per iteration rather than around the whole loop
+        # keeps both scoped to the work instead of to the length of the turn.
+        Rails.application.executor.wrap do
+          stderr_position = stream_stderr_lines(stderr_log_path, stderr_position, thread_log_buffer)
 
-        # Stream MCP cache logs
-        stream_mcp_cache_logs(session, working_directory, mcp_log_positions, thread_log_buffer)
+          # Stream MCP cache logs
+          stream_mcp_cache_logs(session, working_directory, mcp_log_positions, thread_log_buffer)
 
-        # Flush every 5 iterations (2.5 seconds)
-        if (iteration % 5).zero?
-          thread_log_buffer.flush
+          thread_log_buffer.flush if (iteration % LOG_FLUSH_EVERY_ITERATIONS).zero?
         end
 
         # Sleep briefly before next check
         sleep 0.5
       end
 
-      # Read any remaining logs after process exits
-      if stderr_log_path && @file_system.exists?(stderr_log_path)
-        File.open(stderr_log_path, "r") do |file|
-          file.seek(stderr_position)
-          while (line = file.gets)
-            next if line.strip.empty?
-            thread_log_buffer.add(line.chomp, level: "verbose")
-          end
+      Rails.application.executor.wrap do
+        # Drain what the process wrote after our last read — but only when the loop
+        # ended because the process itself went away. A stop means someone else is
+        # taking this file over, and the replacement has its own streaming thread
+        # reading it from byte 0.
+        unless stopped
+          stream_stderr_lines(stderr_log_path, stderr_position, thread_log_buffer)
+          stream_mcp_cache_logs(session, working_directory, mcp_log_positions, thread_log_buffer)
         end
+
+        # Final flush. Runs on BOTH paths: LogBuffer only writes every
+        # LOG_FLUSH_EVERY_ITERATIONS iterations, so without this the last few
+        # seconds of a turn's logs exist only in this thread's memory. Thread#kill
+        # used to discard them.
+        thread_log_buffer.flush
       end
-
-      # Read any remaining MCP logs
-      stream_mcp_cache_logs(session, working_directory, mcp_log_positions, thread_log_buffer)
-
-      # Final flush
-      thread_log_buffer.flush
-
     rescue => e
-      thread_log_buffer&.add(
-        "Error in log streaming thread: #{e.message}",
-        level: "error"
-      )
-      thread_log_buffer&.flush
+      Rails.application.executor.wrap do
+        thread_log_buffer&.add(
+          "Error in log streaming thread: #{e.message}",
+          level: "error"
+        )
+        thread_log_buffer&.flush
+      end
     end
 
-    LogStream.new(thread, stop_flag)
+    LogStream.new(thread, stop_flag, session&.id)
+  end
+
+  # Append the stderr written since our last read, and return the new byte offset.
+  #
+  # Returns the offset UNCHANGED when the file is shorter than it. That is the
+  # observable form of "a recovery respawn reopened this exact path with mode `w`":
+  # every runtime adapter derives the stderr path deterministically from the working
+  # directory and truncates it at spawn, so a replacement process can refill the file
+  # underneath a thread still holding an offset into the old one. There is no way to
+  # recover the boundary once that has happened, and the replacement has its own
+  # streaming thread reading from byte 0, so the honest move is to stop reading
+  # rather than emit a fragment of somebody else's output.
+  #
+  # @return [Integer] the offset to resume from next time
+  def stream_stderr_lines(stderr_log_path, stderr_position, log_buffer)
+    return stderr_position unless stderr_log_path && @file_system.exists?(stderr_log_path)
+    return stderr_position if File.size(stderr_log_path) < stderr_position
+
+    File.open(stderr_log_path, "r") do |file|
+      file.seek(stderr_position)
+      while (line = file.gets)
+        next if line.strip.empty?
+        log_buffer.add(line.chomp, level: "verbose")
+      end
+      file.pos
+    end
   end
 
   # Stream MCP cache logs to database

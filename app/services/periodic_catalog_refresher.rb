@@ -28,6 +28,10 @@ class PeriodicCatalogRefresher
   # while an `air update` (a git fetch of a few small repos) stays cheap.
   DEFAULT_INTERVAL_SECONDS = Integer(ENV.fetch("WEB_CATALOG_REFRESH_INTERVAL_SECONDS", 300))
 
+  # How long `stop!` waits for an in-flight refresh to finish. A bound on the
+  # caller's wait, not on the thread — see `stop!`.
+  STOP_TIMEOUT = 5
+
   class << self
     # Start the background refresh thread. Idempotent: a second call while a thread
     # is already alive is a no-op and returns the existing thread.
@@ -60,11 +64,30 @@ class PeriodicCatalogRefresher
     # (AirCatalogService persists a catalog snapshot), and an asynchronous kill
     # inside ActiveRecord's connection setup can return a half-configured adapter
     # to the pool — see AgentSessionJob::LogStream and zimmer#706.
-    def stop!
+    #
+    # A refresh already in flight is `air update`, a git fetch of several repos, so
+    # it can outlast the join. When it does we keep the ivars: dropping them would
+    # make `running?` report false while a thread is still alive, defeat `start!`'s
+    # idempotency guard (spawning a SECOND refresher alongside the first), and throw
+    # away the only handle that could ever stop it. The event stays set, so the
+    # thread still exits as soon as its refresh returns, and a later `stop!` — or the
+    # `start!` that would otherwise have doubled up — sees it gone.
+    #
+    # @return [Boolean] true if the thread finished within the timeout
+    def stop!(timeout: STOP_TIMEOUT)
       @stop_event&.set
-      @thread&.join(5)
+
+      if @thread && !@thread.join(timeout)
+        Rails.logger.warn(
+          "[PeriodicCatalogRefresher] Refresh still running #{timeout}s after stop!; " \
+          "leaving the thread to finish rather than killing it (zimmer#706)"
+        )
+        return false
+      end
+
       @thread = nil
       @stop_event = nil
+      true
     end
 
     # One refresh tick: pull the latest provider caches into THIS process's on-disk
