@@ -42,6 +42,30 @@ class PeriodicCatalogRefresherTest < ActiveSupport::TestCase
     end
   end
 
+  test "stop! lets an in-flight refresh finish instead of killing the thread" do
+    # refresh_once talks to the database (AirCatalogService persists a catalog
+    # snapshot). Thread#kill lands at an arbitrary point inside ActiveRecord and can
+    # return a half-configured connection to the pool — zimmer#706. Stopping has to
+    # be cooperative, which means an in-flight refresh runs to completion.
+    started = Queue.new
+    finished = Concurrent::AtomicBoolean.new(false)
+
+    AirCatalogService.stub(:refresh!, lambda {
+      started << true
+      sleep 0.3
+      finished.make_true
+      true
+    }) do
+      PeriodicCatalogRefresher.start!(interval: 0.01)
+      Timeout.timeout(10) { started.pop }
+      # We are now inside refresh!, which a kill would abort.
+      PeriodicCatalogRefresher.stop!
+    end
+
+    assert finished.true?, "stop! must not abort a refresh that is already running"
+    assert_not PeriodicCatalogRefresher.running?
+  end
+
   test "stop! terminates the background thread" do
     AirCatalogService.stub(:refresh!, -> { true }) do
       PeriodicCatalogRefresher.start!(interval: 60)
