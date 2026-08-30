@@ -39,6 +39,13 @@ class SessionRankedBroadcastTest < ActiveSupport::TestCase
     payloads.select { |html| html.include?("target=\"ranked_row_status_") }
   end
 
+  # A ranked payload is a whole rendered row, so asserting on the raw strings
+  # prints kilobytes of markup on failure. The turbo-stream action and target are
+  # what the assertions below are actually about.
+  def stream_targets(payloads)
+    payloads.map { |html| html[/\A<turbo-stream [^>]*>/].to_s.strip }
+  end
+
   test "a new session is offered to every open queue as a delivery envelope" do
     session = nil
     payloads = ranked_broadcasts { session = create_session(scheduling_class: SessionGenesis::SPOT, precedence: 700) }
@@ -132,15 +139,50 @@ class SessionRankedBroadcastTest < ActiveSupport::TestCase
   # dashboard, trash view included.
   test "a status summary fork is never offered to the queue" do
     parent = create_session
-    payloads = ranked_broadcasts do
-      Session.create!(
-        git_root: parent.git_root,
-        prompt: "summarize",
-        title: "Status summary",
-        metadata: { SessionStatusSummaryGenerator::FORK_MARKER => parent.id }
-      )
-    end
+    payloads = ranked_broadcasts { create_summary_fork(parent) }
 
     assert_empty deliveries(payloads)
+  end
+
+  # The bug this pins: the exclusion used to sit on the `after_commit`
+  # registration alone, which covers creation and nothing else. `pause` and
+  # `fail` reach these broadcasts through `broadcast_status_change`, which calls
+  # them directly — so every transition a fork makes put an envelope on the
+  # stream, and the Ranked view inserted a "Status summary for session #N" row
+  # for each fork alive at the time. One long-lived source session had sixteen of
+  # them stacked in the spot queue.
+  test "a status summary fork's status changes are not offered to the queue either" do
+    parent = create_session
+    fork = create_summary_fork(parent)
+
+    Session.statuses.each_key do |status|
+      next if fork.status == status
+
+      payloads = ranked_broadcasts { fork.update!(status: status) }
+
+      assert_empty stream_targets(payloads),
+        "a status-summary fork going #{status} reached the queue's stream"
+    end
+  end
+
+  # The same fork, on the OTHER path into these broadcasts. A summary fork
+  # inherits the source's scheduling class, so it can change class the way any
+  # session can — and that is the registration whose guard this change moved.
+  test "a status summary fork's scheduling class change is not offered to the queue" do
+    parent = create_session
+    fork = create_summary_fork(parent)
+
+    payloads = ranked_broadcasts { fork.update!(scheduling_class: SessionGenesis::SPOT) }
+
+    assert_empty stream_targets(payloads)
+  end
+
+  def create_summary_fork(parent)
+    Session.create!(
+      git_root: parent.git_root,
+      prompt: "summarize",
+      title: "Status summary for session ##{parent.id}",
+      metadata: { SessionStatusSummaryGenerator::FORK_MARKER => parent.id }
+    )
   end
 end
