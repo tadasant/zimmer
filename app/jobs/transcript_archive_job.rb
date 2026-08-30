@@ -11,17 +11,60 @@ require "fileutils"
 # 3. Updates only the changed entries in the zip file
 # 4. Writes atomically via temp file + rename
 #
-# The resulting zip is served by Api::V1::TranscriptArchivesController.
+# The resulting zip is served by Api::V1::TranscriptArchivesController and located
+# for callers by the get_transcript_archive MCP tool. Both of those readers run in a
+# different container from this writer, which is why ARCHIVE_SUBDIR below resolves
+# under the shared ~/.zimmer volume rather than under Rails.root. TranscriptArchiveStatus
+# is the one place that answers "is there an archive, and how old is it".
 #
 class TranscriptArchiveJob < ApplicationJob
   include DatabaseRetry
   queue_as :default
   include SingletonSweep
 
-  ARCHIVE_DIR = Rails.root.join("storage", "transcript_archives")
-  ARCHIVE_PATH = ARCHIVE_DIR.join("latest.zip")
-  METADATA_PATH = ARCHIVE_DIR.join("latest_metadata.json")
+  # Subdirectory, under the durable ~/.zimmer root, that holds the archive.
+  #
+  # NOT Rails.root/storage. The writer is this job, which runs in the `worker`
+  # container (production sets GoodJob execution_mode = :external, and GoodJob only
+  # starts a cron capsule in a webserver process running :async/:async_server — so
+  # cron fires in `worker` alone). Every reader is an HTTP route served by Puma in
+  # the `web` container: Api::V1::TranscriptArchivesController and the
+  # get_transcript_archive MCP tool. `Rails.root/storage` is a per-container overlay
+  # layer that no deploy config mounts, so for as long as the archive lived there the
+  # worker wrote into its own layer and the web container read its own, empty one —
+  # get_transcript_archive could not succeed in production however well the job ran
+  # (#714). The same fact destroyed the worker's own copy on every deploy, which made
+  # the incremental job re-treat the whole corpus as changed on its next run (#495).
+  #
+  # ~/.zimmer is the `zimmer_data` named volume, mounted at the same path in BOTH
+  # roles, so it is both shared and deploy-durable. This is the same resolution
+  # SessionAttachmentStorage uses, for the same reason and with the same caveat:
+  # override it with AGENT_TRANSCRIPT_ARCHIVE_DIR only onto a path that both roles
+  # share, or the reader stops seeing the writer again.
+  ARCHIVE_SUBDIR = "transcript_archives"
+  ARCHIVE_DIR_ENV = "AGENT_TRANSCRIPT_ARCHIVE_DIR"
   BATCH_SIZE = 50
+
+  # An archive older than this is still served, but is reported as stale rather
+  # than presented as current. Six cron ticks — long enough that a single slow or
+  # skipped run is not called a fault, short enough that a job which has stopped
+  # succeeding is visible before anyone acts on the data.
+  STALE_AFTER = 1.hour
+
+  class << self
+    # Resolved at call time (never memoized) so tests that stub HOME and ops that
+    # set the override are both honored without a process restart.
+    def archive_dir
+      configured = ENV[ARCHIVE_DIR_ENV].presence
+      return Pathname.new(File.expand_path(configured)) if configured
+
+      Pathname.new(File.join(File.dirname(ClonesDirectory.base), ARCHIVE_SUBDIR))
+    end
+
+    def archive_path = archive_dir.join("latest.zip")
+
+    def metadata_path = archive_dir.join("latest_metadata.json")
+  end
 
   def perform
     FileUtils.mkdir_p(archive_dir)
@@ -79,17 +122,11 @@ class TranscriptArchiveJob < ApplicationJob
   end
 
   # Path accessors — instance methods so tests can stub them for isolation
-  def archive_dir
-    ARCHIVE_DIR
-  end
+  def archive_dir = self.class.archive_dir
 
-  def archive_path
-    ARCHIVE_PATH
-  end
+  def archive_path = self.class.archive_path
 
-  def metadata_path
-    METADATA_PATH
-  end
+  def metadata_path = self.class.metadata_path
 
   private
 

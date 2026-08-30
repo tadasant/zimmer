@@ -127,7 +127,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `priority_class`, `genesis`, `show_archived`, `page`, `per_page`. Zimmer's own status-summary forks are never listed |
-| `GET` | `/sessions/search` | `q` required (≤1000 chars), `search_contents=true`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` filters as `/sessions`. Missing/oversized `q` → 400 (the only 400 in the API). Status-summary forks are never listed |
+| `GET` | `/sessions/search` | `q` (or `query`) required (≤1000 chars), `search_contents` (`true` or `1`), `scan_cursor`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` filters as `/sessions`. Missing/oversized query → 400 (the only 400 in the API). Status-summary forks are never listed. See [Searching transcript contents](#searching-transcript-contents) for what `search_contents` changes about the response |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201, or **200 with `idempotent_replay: true`** when `idempotency_key` matches an earlier create. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `custom_metadata`. Promoting a **waiting** session to `priority` also [starts it now](/sessions/spot-and-priority/#starting-a-queued-session-now), which is what makes "moved to priority and started" true rather than aspirational — the deferred re-check it was carrying can be an hour out. Only the transition into `priority` does it, so a PATCH that touches the title cannot restart a session. When it acts, the response carries a `start` object (`outcome`: `started` / `refused`, plus a `message`); it is absent when the promotion started nothing |
@@ -159,6 +159,57 @@ left half-queued, and the call answers 404, 409, 422, or 500.
 
 `goal` on `follow_up` lands on every path — see
 [Following up, and the `goal` that rides along](#following-up-and-the-goal-that-rides-along) below.
+
+### Searching transcript contents
+
+`GET /sessions/search` matches session titles plus the `metadata` and `custom_metadata` JSON by
+default. `search_contents` widens it to `sessions.transcript` — the whole conversation.
+
+Two things about the query string, both of which used to bite callers who guessed:
+
+- The search term is `q`, and `query` is accepted as an alias. The MCP tool and the dashboard both
+  call it `query`, and a caller who copied that name used to get `400 Missing parameter`.
+- `search_contents` accepts `true` **and** `1`. The dashboard's checkbox posts `1`; the API used to
+  compare against `"true"` only, so a URL copied out of the browser silently ran a title-only search
+  and answered 200.
+
+**The content search is bounded, and says so.** `transcript` is a `json` column with no index a
+substring match can use, so a single unbounded `ILIKE` over the corpus raced the proxy's 30-second
+timeout and returned a 504 as often as results. Instead the search walks candidate sessions
+newest-first in chunks, stops at `per_page` matches or a wall-clock budget, and always returns.
+
+That changes the response in three ways, only on this path:
+
+```jsonc
+{
+  "query": "the kestrel manoeuvre",
+  "search_contents": true,
+  "sessions": [ /* newest first */ ],
+  "pagination": { "page": 1, "per_page": 25, "total_count": null, "total_pages": null },
+  "content_scan": {
+    "complete": false,          // false ⇒ older sessions were NOT ruled out
+    "timed_out": false,         // true when the wall-clock budget ran out
+    "scanned_sessions": 25,
+    "candidate_sessions": 3677,
+    "next_cursor": "2026-08-30T11:02:19.482913Z|10884"
+  }
+}
+```
+
+1. **`total_count` is `null`.** Counting matches across the transcript corpus costs exactly the full
+   scan the bound exists to avoid, so no number is offered rather than a wrong or expensive one.
+2. **`page` does not page it.** Pass `content_scan.next_cursor` back as `scan_cursor`, with the same
+   query and filters, to continue from where the scan stopped. The cursor is a keyset position on
+   `(created_at, id)`, so sessions created between calls never shift it.
+3. **`complete: false` is a real answer.** An empty result with `complete: false` means "not found
+   *yet*", not "not there". Narrowing with `status`, `genesis` or `agent_runtime` makes each call
+   reach further back.
+
+The budget defaults to 20 seconds and the chunk to 100 sessions; both are overridable per
+deployment with `ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS` and `ZIMMER_CONTENT_SEARCH_CHUNK_SIZE`.
+
+The MCP tool `quick_search_sessions` takes the same `search_contents` and `scan_cursor` arguments
+and runs the same scan — see [the MCP server](/extend/mcp-server/).
 
 ### Creating a session
 
@@ -628,7 +679,7 @@ curl -X POST "$BASE_URL/outcome_analyses" \
 | **Subagent transcripts** | Full CRUD at `/sessions/:session_id/subagent_transcripts[/:id]`. `agent_id` required on create; `PATCH` takes every field but `id` and `session_id`; index filters on `status` and `subagent_type`; `include_transcript=true` on show returns the full JSONL |
 | **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered`; the read payload also carries `origin` ∈ `caller · automated_pr_merged · automated_merge_conflict`, which records who wrote the row and is settable by no request. Archiving a session is **refused** (422) while any row is `pending`, since the archive would discard it; `force: true` on the archive overrides that and retires the rows to `undelivered` — see [lifecycle](/sessions/lifecycle/). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
-| **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status` |
+| **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status`. `status` returns `{state, generated_at, session_count, file_size_bytes, stale, stale_reason}` where `state` is `present`; a 404 carries `state` `never_built` or `missing` plus the `archive_path` it looked at, so "no archive" is a fact you can check rather than a promise to wait. The download's `X-Archive-*` headers carry the same generated-at, session count and staleness. **Not the way to search conversations** — use `/sessions/search?search_contents=true`; the zip is hundreds of megabytes and up to ten minutes stale |
 | **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
 
 One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{name, description}]}`,

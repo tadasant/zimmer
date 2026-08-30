@@ -213,6 +213,49 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get root_url(every_status_params(q: "unique content", search_contents: "1"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
+    # A bounded scan owes the reader the difference between "no matches" and
+    # "I stopped looking" — see SessionContentSearch.
+    assert_match(/Transcript scan complete/, response.body)
+
+    # The REST API's spelling works here too, so a URL copied either way behaves the same.
+    get root_url(every_status_params(q: "unique content", search_contents: "true"))
+    assert_response :success
+    assert_select "#sessions_grid turbo-frame", count: 1
+  end
+
+  test "the content scan runs after the agent-root and genesis filters, not before" do
+    McpOauthPendingFlow.delete_all
+    Notification.delete_all
+    Log.delete_all
+    Session.delete_all
+
+    match = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "In scope",
+      genesis: "web_ui")
+    match.update!(transcript: '{"role":"user","content":"find this unique content"}')
+    # Same phrase, different genesis: it must not be a candidate at all, so the scan
+    # never spends its budget reading it and the notice's count never counts it.
+    other = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Out of scope",
+      genesis: "api")
+    other.update!(transcript: '{"role":"user","content":"find this unique content"}')
+
+    get root_url(every_status_params(q: "unique content", search_contents: "1", genesis: "web_ui"))
+    assert_response :success
+
+    assert_select "#sessions_grid turbo-frame", count: 1
+    assert_match(/the one session\s+matching these filters was searched/, response.body)
+  end
+
+  test "a title-only search shows no transcript-scan notice" do
+    McpOauthPendingFlow.delete_all
+    Notification.delete_all
+    Log.delete_all
+    Session.delete_all
+
+    Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Session one", title: "Findable")
+
+    get root_url(every_status_params(q: "Findable"))
+    assert_response :success
+    assert_no_match(/Transcript scan/, response.body)
   end
 
   test "should combine search with the status filter" do

@@ -122,6 +122,47 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("sessions index with a multi-status filter applied")
   end
 
+  # The transcript-scan notice is new markup on the busiest page, and it is the one
+  # element on it whose text is a full sentence rather than a label — so it is the
+  # shape most likely to widen the results header on a phone.
+  test "the transcript-scan notice does not overflow horizontally on a phone" do
+    create_session(title: "Kestrel session", status: :needs_input,
+      transcript: [ { "type" => "assistant", "message" => { "content" => "the kestrel manoeuvre worked" } } ])
+
+    visit root_path(q: "kestrel manoeuvre", search_contents: "1", status: Session.statuses.keys)
+    assert_text "Transcript scan complete"
+
+    assert_no_horizontal_overflow("sessions index with a completed transcript scan")
+    scroll_to_scan_notice
+    page.save_screenshot(Rails.root.join("tmp/screenshots/content-scan-complete-375.png").to_s)
+
+    # A budget of zero forces the "stopped early" branch, which is the amber notice
+    # and the one a phone reader most needs to be able to read in full.
+    previous = ENV["ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS"]
+    ENV["ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS"] = "0"
+    begin
+      visit root_path(q: "kestrel manoeuvre", search_contents: "1", status: Session.statuses.keys)
+      assert_text "Transcript scan stopped early"
+
+      assert_no_horizontal_overflow("sessions index with an incomplete transcript scan")
+      scroll_to_scan_notice
+      page.save_screenshot(Rails.root.join("tmp/screenshots/content-scan-incomplete-375.png").to_s)
+    ensure
+      ENV["ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS"] = previous
+      ENV.delete("ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS") if previous.nil?
+    end
+  end
+
+  # save_screenshot captures the viewport, and the notice sits below the phone-width
+  # filter sidebar — so the evidence has to be scrolled to before it is taken.
+  def scroll_to_scan_notice
+    page.execute_script(<<~JS)
+      const el = Array.from(document.querySelectorAll("div"))
+        .find((d) => /Transcript scan/.test(d.textContent) && d.children.length === 0);
+      if (el) el.scrollIntoView({ block: "center" });
+    JS
+  end
+
   test "session detail does not overflow horizontally on a phone" do
     session = create_session
 

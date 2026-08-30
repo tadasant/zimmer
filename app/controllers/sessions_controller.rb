@@ -16,6 +16,11 @@ class SessionsController < ApplicationController
   # Dashboard: number of session cards shown per category section page.
   SESSIONS_PER_PAGE = 50
 
+  # How many transcript matches one content search collects before it stops. Two
+  # pages' worth: enough that the dashboard's own pagination has somewhere to go,
+  # bounded because every additional match costs another transcript detoasted.
+  CONTENT_SEARCH_LIMIT = SESSIONS_PER_PAGE * 2
+
   # Sentinel page key for the "Uncategorized" bucket (sessions with NULL category_id),
   # which has no Category record to key on. Namespaced page params look like
   # page[uncategorized]=2 alongside page[<category_id>]=2.
@@ -143,7 +148,9 @@ class SessionsController < ApplicationController
     # the category grid with a flat list on every later visit, with nothing in the URL
     # to explain it.
     @search_query = params[:q].to_s.strip
-    @search_contents = params[:search_contents] == "1"
+    # "1" from this page's own checkbox, "true" from anyone who copied the REST
+    # API's documented spelling — SessionSearchable.search_contents? accepts both.
+    @search_contents = SessionSearchable.search_contents?(params[:search_contents])
     @agent_root_filter = params[:agent_root].to_s.strip
     @genesis_filter = params[:genesis].to_s.strip
     @genesis_filter = "" unless SessionGenesis.valid?(@genesis_filter)
@@ -176,10 +183,6 @@ class SessionsController < ApplicationController
     # filtered, sorted by name for a stable list.
     @agent_roots_for_filter = AgentRootsConfig.all.sort_by(&:name)
 
-    if @search_query.present?
-      sessions = filter_sessions_by_search(sessions, @search_query, include_contents: @search_contents)
-    end
-
     if @agent_root_filter.present?
       sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
     end
@@ -190,6 +193,22 @@ class SessionsController < ApplicationController
 
     if @genesis_filter.present?
       sessions = sessions.with_genesis(@genesis_filter)
+    end
+
+    # Deliberately last of the narrowing steps. A content scan spends a wall-clock
+    # budget reading transcripts, so anything it reads that a later filter would have
+    # discarded is budget the caller does not get back — and the notice it produces
+    # says "all N sessions matching these filters", which is only true if every filter
+    # is already applied. The REST and MCP surfaces order it the same way.
+    if @search_query.present?
+      if @search_contents
+        # Bounded and newest-first — see SessionContentSearch. @content_scan is what
+        # the results header reads to say whether the whole corpus was covered.
+        sessions, @content_scan =
+          search_sessions_by_content(sessions, @search_query, limit: CONTENT_SEARCH_LIMIT)
+      else
+        sessions = filter_sessions_by_search(sessions, @search_query)
+      end
     end
 
     # The Ranked view: the spot queue in the order it will actually be worked,
