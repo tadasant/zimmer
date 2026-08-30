@@ -65,6 +65,10 @@ class SessionContentSearch
   # range before it ever reaches the string.
   MAX_TIMEOUT_MS = 120_000
 
+  # Postgres bigint ceiling. A cursor is caller-supplied text, so its id is checked
+  # against this before it reaches a query — see .decode_cursor.
+  MAX_SESSION_ID = 9_223_372_036_854_775_807
+
   # Upper bound on the candidate id list itself. The pluck is cheap per row, but an
   # unfiltered search should not materialise an unbounded array either.
   MAX_CANDIDATES = 50_000
@@ -82,10 +86,22 @@ class SessionContentSearch
   end
 
   class << self
+    # Zero is legal and means "stop before the first chunk" — the setting the mobile QA
+    # system test uses to render the stopped-early notice deterministically. A negative
+    # is a misconfiguration with no reading at all, so it falls back to the default
+    # rather than silently disabling content search.
     def budget_seconds
-      Integer(ENV.fetch(BUDGET_ENV, DEFAULT_TIME_BUDGET_SECONDS))
+      seconds = Integer(ENV.fetch(BUDGET_ENV, DEFAULT_TIME_BUDGET_SECONDS))
+      seconds.negative? ? DEFAULT_TIME_BUDGET_SECONDS : seconds
     rescue ArgumentError, TypeError
       DEFAULT_TIME_BUDGET_SECONDS
+    end
+
+    # A method rather than a bare constant read, so the cap is one seam the tests can
+    # move — a capped candidate list changes what `complete?` may claim, and that is
+    # not something to leave unpinned.
+    def max_candidates
+      MAX_CANDIDATES
     end
 
     def chunk_size
@@ -110,7 +126,13 @@ class SessionContentSearch
       parsed = Time.zone.parse(timestamp.to_s)
       return nil if parsed.nil? || id.blank?
 
-      [ parsed, Integer(id) ]
+      # Range-checked, not merely Integer()-parsed. A cursor is caller-supplied, and a
+      # bignum id parses fine here only to blow up later in the adapter's quoting with
+      # IntegerOutOf64BitRange — a 500 for what is just a malformed cursor.
+      parsed_id = Integer(id)
+      return nil unless parsed_id.between?(1, MAX_SESSION_ID)
+
+      [ parsed, parsed_id ]
     rescue ArgumentError, TypeError
       nil
     end
@@ -131,6 +153,12 @@ class SessionContentSearch
   end
 
   def call
+    # Started before the candidate query, not after: that query is part of what the
+    # caller is waiting for, so charging the budget only from the first chunk would
+    # make "bounded by 20 seconds" mean 20 seconds plus however long it took to
+    # resolve 50,000 ids.
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @budget_seconds
+
     candidates = candidate_rows
     return empty_result if candidates.empty?
 
@@ -142,7 +170,6 @@ class SessionContentSearch
     matched = []
     scanned = 0
     timed_out = false
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @budget_seconds
 
     with_statement_timeout do
       candidates.each_slice(@chunk_size) do |chunk|
@@ -174,12 +201,18 @@ class SessionContentSearch
       end
     end
 
+    # Three separate reasons this scan may not have covered everything, and all three
+    # have to reach `complete`. The third is the easiest to miss: `candidate_rows`
+    # caps its own list at MAX_CANDIDATES, so `scanned >= candidates.size` can be true
+    # of a list that was itself cut short — which would report "these are every match"
+    # about a corpus the scan never reached the end of, with no cursor to resume from.
+    capped = candidates.size >= self.class.max_candidates
     truncated = matched.size > @limit
     matched = matched.first(@limit)
     # How far the caller has actually been shown. When the page filled mid-chunk it
     # is the position of the last match on it; otherwise it is everything read.
     covered = truncated ? matched.last.last + 1 : scanned
-    complete = !truncated && !timed_out && scanned >= candidates.size
+    complete = !truncated && !timed_out && !capped && scanned >= candidates.size
     last_covered = candidates[covered - 1] if covered.positive?
 
     Result.new(
@@ -213,7 +246,7 @@ class SessionContentSearch
   def candidate_rows
     relation = scope.except(:includes, :eager_load, :preload, :order, :limit, :offset)
       .reorder(created_at: :desc, id: :desc)
-      .limit(MAX_CANDIDATES)
+      .limit(self.class.max_candidates)
 
     if (position = self.class.decode_cursor(@cursor))
       relation = relation.where(
@@ -252,7 +285,19 @@ class SessionContentSearch
     begin
       connection&.execute("SET statement_timeout = DEFAULT")
     rescue ActiveRecord::ActiveRecordError => e
-      Rails.logger.warn("[SessionContentSearch] could not reset statement_timeout: #{e.class}")
+      # `SET` is session-scoped and Rails does not reset GUCs on checkin, so a
+      # connection we could not restore would carry this search's timeout into every
+      # later request that leases it. Drop it from the pool instead — a reconnect is
+      # cheap next to silently capping unrelated queries.
+      Rails.logger.error(
+        "[SessionContentSearch] could not reset statement_timeout (#{milliseconds}ms); " \
+        "discarding connection: #{e.class}"
+      )
+      begin
+        Session.connection_pool.remove(connection)
+      rescue StandardError => remove_error
+        Rails.logger.error("[SessionContentSearch] could not discard connection: #{remove_error.class}")
+      end
     end
   end
 end

@@ -125,7 +125,7 @@ module Mcp
         page, per_page = pagination_params(args)
         query = validated_query(args)
 
-        if query.present? && truthy?(args["search_contents"])
+        if query.present? && SessionSearchable.search_contents?(args["search_contents"])
           return content_search(scope, query, per_page, args["scan_cursor"])
         end
 
@@ -202,12 +202,16 @@ module Mcp
                    "These are every match.*"
         else
           reason = scan.timed_out? ? "the search hit its time budget" : "the search filled its result page"
-          resume = if scan.next_cursor.present?
+          # `scanned.positive?` matters as much as the cursor's presence: a resumed call
+          # that covered nothing hands the caller's own cursor straight back, and
+          # advising them to retry with it is an instruction to loop forever.
+          resume = if scan.next_cursor.present? && scan.scanned.positive?
             "Continue with scan_cursor=\"#{scan.next_cursor}\" (same query and filters), or narrow the " \
             "filters so each call reaches further back."
           else
-            "Nothing was searched before the budget ran out — narrow the filters (status, genesis, " \
-            "agent_runtime) so the scan has less to read, then try again."
+            "Nothing new was searched before the budget ran out, so there is no point to resume " \
+            "from — narrow the filters (status, genesis, agent_runtime) so the scan has less to " \
+            "read, then try again."
           end
           lines << "*Scan incomplete: #{scan.scanned} of #{scan.candidate_count} candidate session(s) searched, " \
                    "newest first, because #{reason}. Older sessions have NOT been ruled out. #{resume}*"

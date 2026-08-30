@@ -78,6 +78,29 @@ class SessionContentSearchTest < ActiveSupport::TestCase
     assert_equal [ @new.id, @old.id ], result.matched_ids
   end
 
+  test "a cursor whose id is outside bigint range is ignored, not handed to Postgres" do
+    # Integer() parses a bignum happily; the adapter's quoting then raises
+    # IntegerOutOf64BitRange deep in the query, which is a 500 for a malformed cursor.
+    assert_nil SessionContentSearch.decode_cursor("2026-01-01T00:00:00Z|99999999999999999999")
+
+    result = search("mitochondrion", cursor: "2026-01-01T00:00:00Z|99999999999999999999")
+
+    assert_equal [ @new.id, @old.id ], result.matched_ids
+  end
+
+  test "a candidate list cut off by MAX_CANDIDATES is not reported as a complete scan" do
+    # Without this, `scanned >= candidates.size` is true of a list that was itself
+    # truncated, so the caller is told "these are every match" about a corpus the scan
+    # never reached the end of — with no cursor to resume from.
+    SessionContentSearch.stubs(:max_candidates).returns(2)
+
+    result = search("mitochondrion", limit: 25)
+
+    assert_equal 2, result.candidate_count
+    assert_not result.complete?, "a capped candidate list leaves older sessions unexamined"
+    assert result.next_cursor.present?, "and the caller needs a way to reach them"
+  end
+
   test "a spent time budget returns the matches found so far, never an exception" do
     # A budget already gone by the time the first chunk is considered.
     result = SessionContentSearch.new(

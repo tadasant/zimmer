@@ -27,9 +27,11 @@
 #                stated, rather than withheld.
 #
 class TranscriptArchiveStatus
-  # Read the archive directory once and hold the answer. Instances are cheap and
-  # short-lived (one per request); nothing here is memoized across requests, so a
-  # freshly written archive is visible to the very next reader.
+  # Reads the archive directory once and holds the answer for this instance's
+  # lifetime. Instances are cheap and short-lived (one per request), so a freshly
+  # written archive is visible to the very next reader — but within one request the
+  # answer must not change, or a 200 could be decided on a file that a later line
+  # then fails to stat.
   def initialize(archive_path: nil, metadata_path: nil, stale_after: TranscriptArchiveJob::STALE_AFTER)
     @archive_path = archive_path || TranscriptArchiveJob.archive_path
     @metadata_path = metadata_path || TranscriptArchiveJob.metadata_path
@@ -39,7 +41,9 @@ class TranscriptArchiveStatus
   attr_reader :archive_path, :metadata_path
 
   def present?
-    File.exist?(archive_path)
+    return @present unless @present.nil?
+
+    @present = File.exist?(archive_path)
   end
 
   # A previous run left its bookkeeping behind, so the job has completed at least
@@ -70,7 +74,7 @@ class TranscriptArchiveStatus
     recorded = metadata["generated_at"]
     parsed = recorded.present? ? (Time.zone.parse(recorded) rescue nil) : nil
     return parsed if parsed
-    return File.mtime(archive_path).in_time_zone if present?
+    return file_mtime if present?
 
     nil
   end
@@ -82,7 +86,7 @@ class TranscriptArchiveStatus
   def file_size_bytes
     recorded = metadata["file_size_bytes"]
     return recorded.to_i if recorded.present?
-    return File.size(archive_path) if present?
+    return file_size.to_i if present?
 
     0
   end
@@ -125,7 +129,7 @@ class TranscriptArchiveStatus
         "#{JOB_HEALTH_HINT}"
     else
       "No transcript archive has ever been built at #{archive_path} — neither the zip nor its " \
-        "metadata sidecar (#{metadata_path.basename}) is present, so TranscriptArchiveJob has not " \
+        "metadata sidecar (#{File.basename(metadata_path)}) is present, so TranscriptArchiveJob has not " \
         "completed a run against this directory. Waiting will not help on its own. #{JOB_HEALTH_HINT}"
     end
   end
@@ -135,6 +139,21 @@ class TranscriptArchiveStatus
                     "worker's `[TranscriptArchiveJob]` log lines."
 
   private
+
+  # The disk is the thing this class exists to be sceptical about, so neither stat is
+  # allowed to turn a missing file into a 500 — the archive can be replaced (the job
+  # writes by atomic rename) between the `exist?` above and the read here.
+  def file_mtime
+    File.mtime(archive_path).in_time_zone
+  rescue SystemCallError
+    nil
+  end
+
+  def file_size
+    File.size(archive_path)
+  rescue SystemCallError
+    0
+  end
 
   def recorded_at_clause
     at = metadata["generated_at"]
