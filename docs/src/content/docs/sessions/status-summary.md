@@ -208,8 +208,9 @@ refresh that happened to be queued for the same session — the operator presses
 panel and nothing happens. The exclusion belongs where the expensive work is.
 
 Summary forks are Zimmer's own bookkeeping, not the operator's work, so they stay out of every list
-an operator reads: the dashboard (both the server-rendered grid *and* the Turbo Stream that pushes
-new cards into it — the marker is stamped at create time, before that broadcast fires),
+an operator reads: the dashboard (the server-rendered grid, the Turbo Stream that pushes new cards
+into it — the marker is stamped at create time, before that broadcast fires — and the
+[Ranked view](/sessions/spot-and-priority/#the-queue-stays-live) and its `sessions_ranked` stream),
 `GET /api/v1/sessions`, `GET /api/v1/sessions/search`, and `quick_search_sessions`. They are also
 excluded from every bulk refresh (`refresh_all` in the UI, REST, and MCP), which would otherwise
 resume a fork sitting between its pause and its harvest and spend a second agent turn on it.

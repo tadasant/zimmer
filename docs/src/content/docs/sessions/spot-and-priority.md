@@ -773,6 +773,14 @@ Rows subscribe to the `sessions_ranked` Turbo Stream. It is a separate stream fr
 `sessions_index_individual` because a ranked row is not a card and is not keyed on `dom_id` — which
 is exactly why the queue's statuses used to go stale until the page was reloaded.
 
+Neither kind of message is sent for a **status-summary fork**. Those are Zimmer's own bookkeeping
+sessions (see [the Status summary](/sessions/status-summary/)), and every server-rendered session list
+already drops them with `Session.excluding_status_summary_forks` — so a stream that carried them
+would put rows on the queue that a reload then took away. The exclusion lives in
+`Session#broadcast_ranked_membership` and `#broadcast_ranked_row` themselves rather than on the
+callbacks that call them, because a status change reaches both through `broadcast_status_change` and
+a guard on the callback registration alone only ever covered creation.
+
 Two kinds of message travel on it.
 
 **A status change replaces one element per row: the status pill** (`_ranked_row_status`, written by
