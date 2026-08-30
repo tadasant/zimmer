@@ -78,16 +78,32 @@ class TranscriptArchiveStatusTest < ActiveSupport::TestCase
     assert_in_delta File.mtime(@archive_path).to_f, status.generated_at.to_f, 2.0
   end
 
-  test "an unparseable generated_at leaves the age unknown rather than fabricated" do
+  test "an unparseable generated_at falls back to the file's mtime" do
     File.binwrite(@archive_path, "zip")
     write_metadata(generated_at: "whenever", session_count: 1)
 
     status = build_status
 
-    # No usable timestamp in the sidecar, so it falls through to the mtime — which is
-    # now, so the archive is fresh. The point is that it never invents an age.
-    assert_not_nil status.generated_at
+    # No usable timestamp in the sidecar, so it falls through to the zip's mtime —
+    # which is now, so the archive reads as fresh. The age is observed either way;
+    # nothing is invented from the recorded string.
+    assert_in_delta File.mtime(@archive_path).to_f, status.generated_at.to_f, 2.0
     assert_not status.stale?
+  end
+
+  test "a zip that vanishes mid-request does not turn a 404 into a 500" do
+    File.binwrite(@archive_path, "zip")
+    status = build_status
+    assert status.present?, "the stat is taken once, up front"
+
+    FileUtils.rm_f(@archive_path)
+
+    # present? is memoized, so the rest of the request still believes there is a file.
+    # Both stats have to survive that rather than raising Errno::ENOENT out of a
+    # response body.
+    assert_nil status.generated_at
+    assert_equal 0, status.file_size_bytes
+    assert status.stale?, "an archive whose age cannot be read is not current"
   end
 
   private

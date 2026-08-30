@@ -3431,6 +3431,8 @@ GIN index would be built over gigabytes of TOASTed text, and `to_tsvector` refus
 managed Postgres is not reachable from an agent session — so the bounded scan is what ships until
 someone can measure them on the real corpus.
 
+---
+
 ## A runaway job on staging presents as a dead droplet, not as a dead job
 
 Staging is a 4 GB droplet with no swap, and the worker is the one role running work whose peak

@@ -183,17 +183,6 @@ class SessionsController < ApplicationController
     # filtered, sorted by name for a stable list.
     @agent_roots_for_filter = AgentRootsConfig.all.sort_by(&:name)
 
-    if @search_query.present?
-      if @search_contents
-        # Bounded and newest-first — see SessionContentSearch. @content_scan is what
-        # the results header reads to say whether the whole corpus was covered.
-        sessions, @content_scan =
-          search_sessions_by_content(sessions, @search_query, limit: CONTENT_SEARCH_LIMIT)
-      else
-        sessions = filter_sessions_by_search(sessions, @search_query)
-      end
-    end
-
     if @agent_root_filter.present?
       sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
     end
@@ -204,6 +193,22 @@ class SessionsController < ApplicationController
 
     if @genesis_filter.present?
       sessions = sessions.with_genesis(@genesis_filter)
+    end
+
+    # Deliberately last of the narrowing steps. A content scan spends a wall-clock
+    # budget reading transcripts, so anything it reads that a later filter would have
+    # discarded is budget the caller does not get back — and the notice it produces
+    # says "all N sessions matching these filters", which is only true if every filter
+    # is already applied. The REST and MCP surfaces order it the same way.
+    if @search_query.present?
+      if @search_contents
+        # Bounded and newest-first — see SessionContentSearch. @content_scan is what
+        # the results header reads to say whether the whole corpus was covered.
+        sessions, @content_scan =
+          search_sessions_by_content(sessions, @search_query, limit: CONTENT_SEARCH_LIMIT)
+      else
+        sessions = filter_sessions_by_search(sessions, @search_query)
+      end
     end
 
     # The Ranked view: the spot queue in the order it will actually be worked,

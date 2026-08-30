@@ -850,9 +850,11 @@
           </p>
           <%# "No matches" and "I stopped looking" are different answers, and this is
               the screen where confusing them is most costly. %>
-          <div class="mx-auto mt-4 max-w-xl text-left">
-            <%= render "sessions/content_scan_notice", scan: @content_scan %>
-          </div>
+          <% if @content_scan %>
+            <div class="mx-auto mt-4 max-w-xl text-left">
+              <%= render "sessions/content_scan_notice", scan: @content_scan %>
+            </div>
+          <% end %>
           <div class="mt-6">
             <% if @search_active %>
               <%# Drops the search terms but keeps the filter selection — the user is
