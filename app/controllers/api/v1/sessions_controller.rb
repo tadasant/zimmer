@@ -1073,15 +1073,24 @@ class Api::V1::SessionsController < Api::BaseController
   # Search sessions by query string.
   #
   # Query parameters:
-  #   - q: Search query (required) - searches title, metadata, and custom_metadata
-  #   - search_contents: Set to "true" to also search transcript contents
+  #   - q (or query): Search query (required) - searches title, metadata, and custom_metadata
+  #   - search_contents: "true" or "1" to also search transcript contents
+  #   - scan_cursor: resume token from a previous content search's content_scan.next_cursor
   #   - status: Filter by status (waiting, running, needs_input, failed, archived)
   #   - agent_runtime: Filter by agent runtime
   #   - show_archived: Include archived sessions (default: false)
-  #   - page: Page number (default: 1)
+  #   - page: Page number (default: 1) - ignored when search_contents is set
   #   - per_page: Results per page (default: 25, max: 100)
+  #
+  # `search_contents` runs a bounded, resumable scan (SessionContentSearch) instead of
+  # the single unbounded ILIKE that used to 504 here (#405). It reports `content_scan`
+  # alongside the results and does NOT report a total count — counting matches over the
+  # transcript corpus costs exactly the full scan being avoided.
   def search
-    query = params[:q].to_s.strip
+    # `q` is this endpoint's name for it; `query` is what every other surface calls it
+    # (the MCP tool's parameter, the dashboard's field). Accepting both stops a caller
+    # who guessed the other name from getting a 400 that names no alternative.
+    query = params[:q].presence&.to_s&.strip || params[:query].to_s.strip
 
     if query.blank?
       render_api_error("Missing parameter", "q (search query) is required", status: :bad_request)
@@ -1114,16 +1123,43 @@ class Api::V1::SessionsController < Api::BaseController
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
 
     # Apply search filter
-    include_contents = params[:search_contents] == "true"
-    scope = filter_sessions_by_search(scope, query, include_contents: include_contents)
+    include_contents = SessionSearchable.search_contents?(params[:search_contents])
 
-    result = paginate(scope)
+    unless include_contents
+      result = paginate(filter_sessions_by_search(scope, query))
+
+      render json: {
+        query: query,
+        search_contents: false,
+        sessions: result[:records].map { |s| session_json(s) },
+        pagination: result[:pagination]
+      }
+      return
+    end
+
+    per_page = pagination_params[:per_page]
+    matches, scan = search_sessions_by_content(scope, query, limit: per_page, cursor: params[:scan_cursor])
+    sessions = matches.reorder(created_at: :desc, id: :desc).to_a
 
     render json: {
       query: query,
-      search_contents: include_contents,
-      sessions: result[:records].map { |s| session_json(s) },
-      pagination: result[:pagination]
+      search_contents: true,
+      sessions: sessions.map { |s| session_json(s) },
+      pagination: {
+        page: 1,
+        per_page: per_page,
+        # Deliberately null: see the comment above #search. Callers page a content
+        # search with content_scan.next_cursor, not with `page`.
+        total_count: nil,
+        total_pages: nil
+      },
+      content_scan: {
+        complete: scan.complete?,
+        timed_out: scan.timed_out?,
+        scanned_sessions: scan.scanned,
+        candidate_sessions: scan.candidate_count,
+        next_cursor: scan.next_cursor
+      }
     }
   end
 

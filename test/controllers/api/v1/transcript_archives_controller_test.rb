@@ -14,16 +14,17 @@ class Api::V1::TranscriptArchivesControllerTest < ActionDispatch::IntegrationTes
     @archive_path = File.join(@test_dir, "latest.zip")
     @metadata_path = File.join(@test_dir, "latest_metadata.json")
 
-    # Stub the controller's path methods to use our isolated temp directory
-    Api::V1::TranscriptArchivesController.any_instance.stubs(:archive_path).returns(Pathname.new(@archive_path))
-    Api::V1::TranscriptArchivesController.any_instance.stubs(:metadata_path).returns(Pathname.new(@metadata_path))
+    # Point the real resolver at the isolated directory, rather than stubbing the
+    # controller: this exercises the same path the job and every other reader take.
+    @previous_archive_dir = ENV["AGENT_TRANSCRIPT_ARCHIVE_DIR"]
+    ENV["AGENT_TRANSCRIPT_ARCHIVE_DIR"] = @test_dir
   end
 
   teardown do
     ENV.delete("API_KEYS")
+    ENV["AGENT_TRANSCRIPT_ARCHIVE_DIR"] = @previous_archive_dir
+    ENV.delete("AGENT_TRANSCRIPT_ARCHIVE_DIR") if @previous_archive_dir.nil?
     FileUtils.rm_rf(@test_dir) if @test_dir && File.directory?(@test_dir)
-    Api::V1::TranscriptArchivesController.any_instance.unstub(:archive_path)
-    Api::V1::TranscriptArchivesController.any_instance.unstub(:metadata_path)
   end
 
   # Authentication tests
@@ -40,13 +41,17 @@ class Api::V1::TranscriptArchivesControllerTest < ActionDispatch::IntegrationTes
 
   # Download endpoint tests
 
-  test "download returns 404 when no archive exists" do
+  test "download returns 404 naming the state and the path it looked at" do
     get api_v1_transcript_archive_download_path, headers: @headers
     assert_response :not_found
 
     json = JSON.parse(response.body)
     assert_equal "Not Found", json["error"]
-    assert_includes json["message"], "No transcript archive exists yet"
+    assert_equal "never_built", json["state"]
+    assert_equal @archive_path, json["archive_path"]
+    assert_includes json["message"], "No transcript archive has ever been built at #{@archive_path}"
+    # The claim it replaced asserted a recovery the caller could not verify (#714).
+    assert_not_includes json["message"], "is built every 10 minutes"
   end
 
   test "download serves zip file when archive exists" do
@@ -64,8 +69,9 @@ class Api::V1::TranscriptArchivesControllerTest < ActionDispatch::IntegrationTes
     get api_v1_transcript_archive_download_path, headers: @headers
     assert_response :success
 
-    assert_equal "2026-01-15T10:30:00Z", response.headers["X-Archive-Generated-At"]
+    assert_equal Time.zone.parse("2026-01-15T10:30:00Z").iso8601, response.headers["X-Archive-Generated-At"]
     assert_equal "42", response.headers["X-Archive-Session-Count"]
+    assert_equal "true", response.headers["X-Archive-Stale"], "a 2026-01 archive is long past its rebuild window"
   end
 
   test "download sets attachment disposition" do
@@ -86,6 +92,18 @@ class Api::V1::TranscriptArchivesControllerTest < ActionDispatch::IntegrationTes
 
     json = JSON.parse(response.body)
     assert_equal "Not Found", json["error"]
+    assert_equal "never_built", json["state"]
+  end
+
+  test "status tells a vanished archive apart from one that was never built" do
+    create_test_metadata_without_archive(generated_at: "2026-01-15T10:30:00Z", session_count: 12)
+
+    get api_v1_transcript_archive_status_path, headers: @headers
+    assert_response :not_found
+
+    json = JSON.parse(response.body)
+    assert_equal "missing", json["state"]
+    assert_includes json["message"], "12 session(s)"
   end
 
   test "status returns metadata when archive exists" do
@@ -96,9 +114,24 @@ class Api::V1::TranscriptArchivesControllerTest < ActionDispatch::IntegrationTes
     assert_response :success
 
     json = JSON.parse(response.body)
-    assert_equal "2026-01-15T10:30:00Z", json["generated_at"]
+    assert_equal Time.zone.parse("2026-01-15T10:30:00Z").iso8601, json["generated_at"]
     assert_equal 5, json["session_count"]
     assert_equal 12345, json["file_size_bytes"]
+    assert_equal "present", json["state"]
+    assert json["stale"], "an archive from January is stale in August"
+    assert_includes json["stale_reason"], "transcript_archive"
+  end
+
+  test "status reports a fresh archive as not stale" do
+    create_test_archive
+    create_test_metadata(generated_at: 2.minutes.ago.iso8601, session_count: 5)
+
+    get api_v1_transcript_archive_status_path, headers: @headers
+    assert_response :success
+
+    json = JSON.parse(response.body)
+    assert_not json["stale"]
+    assert_nil json["stale_reason"]
   end
 
   test "status returns file size from disk when metadata is missing size" do
@@ -130,6 +163,12 @@ class Api::V1::TranscriptArchivesControllerTest < ActionDispatch::IntegrationTes
       zip.put_next_entry("manifest.json")
       zip.write(JSON.generate({ session_count: 1, generated_at: Time.current.iso8601, session_ids: [] }))
     end
+  end
+
+  def create_test_metadata_without_archive(generated_at:, session_count:)
+    File.write(@metadata_path, JSON.generate({
+      "generated_at" => generated_at, "session_count" => session_count, "sessions" => {}
+    }))
   end
 
   def create_test_metadata(generated_at: Time.current.iso8601, session_count: 0, file_size_bytes: nil)

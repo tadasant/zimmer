@@ -1,42 +1,71 @@
 # Shared concern for session search functionality.
 #
-# Provides PostgreSQL-based search across session title, metadata, custom_metadata,
-# and optionally transcript content.
+# One search, three surfaces: the dashboard (SessionsController), the REST API
+# (Api::V1::SessionsController#search) and MCP (Mcp::Tools::QuickSearchSessions).
+# They must agree about what a query matches, so the predicates live here as
+# constants and nobody re-spells them.
+#
+# Two searches, though, not one shape:
+#
+#   filter_sessions_by_search  the cheap one. Title + metadata + custom_metadata,
+#                              all small columns. Composes as a relation, so callers
+#                              paginate and order it however they like.
+#
+#   search_sessions_by_content the expensive one. Also matches `transcript`, a `json`
+#                              column with no usable index — see SessionContentSearch
+#                              for why that has to be bounded and how. It returns a
+#                              relation *plus* a scan report, because a bounded search
+#                              owes the caller an answer to "did you look everywhere?".
+#
+# `filter_sessions_by_search` deliberately has no `include_contents:` switch any more.
+# The unbounded transcript scan it used to hide behind that keyword is the query that
+# 504s (#405), and the way to make sure no surface takes it by accident is for it not
+# to exist.
 #
 # Usage:
 #   include SessionSearchable
-#   sessions = filter_sessions_by_search(Session.all, "query", include_contents: true)
+#   sessions = filter_sessions_by_search(Session.all, "query")
+#   sessions, scan = search_sessions_by_content(Session.all, "query", limit: 25)
 module SessionSearchable
   extend ActiveSupport::Concern
 
+  # PostgreSQL: `::text` casting for the JSON/JSONB columns, ILIKE for
+  # case-insensitivity. Bound as `:q` by every caller.
+  METADATA_PREDICATE = "title ILIKE :q OR metadata::text ILIKE :q OR custom_metadata::text ILIKE :q"
+  CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR transcript::text ILIKE :q"
+
+  # Does this parameter value mean "yes, search transcript contents"?
+  #
+  # The dashboard's checkbox posts "1" and the REST API documented "true", and the two
+  # readers used to compare against their own literal — so a caller who copied the URL
+  # out of the browser got a silent title-only search from the API, with a 200 and no
+  # hint that the flag had been ignored. One reader, both spellings, everywhere.
+  def self.search_contents?(value)
+    ActiveModel::Type::Boolean.new.cast(value) == true
+  end
+
   private
 
-  # Filter sessions by search query.
-  #
-  # Searches title and metadata by default, optionally includes transcript content.
-  # Uses PostgreSQL ILIKE for case-insensitive search and ::text casting for JSON columns.
+  # Filter sessions by search query across title, metadata and custom_metadata.
   #
   # @param sessions [ActiveRecord::Relation] The scope to filter
   # @param query [String] The search query
-  # @param include_contents [Boolean] Whether to search transcript content (default: false)
   # @return [ActiveRecord::Relation] Filtered sessions
-  def filter_sessions_by_search(sessions, query, include_contents: false)
-    # Sanitize LIKE wildcards and create search term
-    sanitized_query = ActiveRecord::Base.sanitize_sql_like(query)
-    search_term = "%#{sanitized_query}%"
+  def filter_sessions_by_search(sessions, query)
+    sessions.where(METADATA_PREDICATE, q: "%#{ActiveRecord::Base.sanitize_sql_like(query)}%")
+  end
 
-    # PostgreSQL: Use ::text casting for JSON/JSONB columns and ILIKE for case-insensitive
-    if include_contents
-      sessions.where(
-        "title ILIKE :q OR metadata::text ILIKE :q OR custom_metadata::text ILIKE :q OR transcript::text ILIKE :q",
-        q: search_term
-      )
-    else
-      sessions.where(
-        "title ILIKE :q OR metadata::text ILIKE :q OR custom_metadata::text ILIKE :q",
-        q: search_term
-      )
-    end
+  # Filter sessions by search query, transcript contents included.
+  #
+  # Bounded by wall clock and resumable by cursor — see SessionContentSearch. The
+  # returned relation carries only the ids the scan matched, so the caller can order
+  # and render it like any other scope; the returned Result says how far the scan got
+  # and where to resume.
+  #
+  # @return [Array(ActiveRecord::Relation, SessionContentSearch::Result)]
+  def search_sessions_by_content(sessions, query, limit: SessionContentSearch::DEFAULT_LIMIT, cursor: nil)
+    result = SessionContentSearch.new(scope: sessions, query: query, limit: limit, cursor: cursor).call
+    [ sessions.where(id: result.matched_ids), result ]
   end
 
   # Filter sessions down to those belonging to a single agent root.
