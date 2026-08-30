@@ -244,6 +244,69 @@ class AgentSessionJob < ApplicationJob
     end
   end
 
+  # How long #stop! waits for the log-streaming thread to notice the stop flag and
+  # finish. One iteration of that loop is a couple of file reads, at most one
+  # `insert_all!`, and a 0.5s sleep; the post-loop drain is one more of each. Three
+  # seconds is several times the honest worst case, and the timeout is a bound on
+  # OUR wait, not a deadline for the thread — see LogStream#stop!.
+  LOG_STREAM_STOP_TIMEOUT = 3
+
+  # A running log-streaming thread and the flag that stops it.
+  #
+  # WHY A FLAG AND NOT `Thread#kill`
+  # --------------------------------
+  # The streaming loop writes to the database (LogBuffer#flush), and `Thread#kill`
+  # lands at an arbitrary point inside ActiveRecord. The point that matters is
+  # `AbstractAdapter#reconnect!`, which sets `@raw_connection`, `@verified = true`
+  # and `@last_activity = now` and only THEN calls `configure_connection` — the call
+  # that builds the adapter's Postgres type map. Rails guards that window with
+  # `attempt_configure_connection`'s `rescue Exception => disconnect!`, added
+  # upstream (rails/rails#56227) for exactly this hazard.
+  #
+  # `Thread#kill` walks straight through that guard: it runs `ensure` blocks but is
+  # not an exception, so no `rescue` sees it. The guard is skipped while
+  # `ConnectionPool#with_connection`'s own `ensure` still hands the half-configured
+  # adapter back to the pool, `@verified` and `@last_activity` intact. The next
+  # thread to check it out within `verify_timeout` (2s) takes the "used very
+  # recently, assume it's fine" branch of `with_raw_connection`, skips verification,
+  # runs its query, and dies casting the result:
+  #
+  #   NoMethodError: undefined method 'key?' for nil
+  #     .../postgresql_adapter.rb:876 in 'PostgreSQLAdapter#get_oid_type'
+  #
+  # That is zimmer#706 — the crash landed on a GoodJob scheduler thread, in the
+  # job-claim query, because the poisoned connection went back into the shared pool
+  # and the claim path was simply the next taker. The underlying Rails race is
+  # rails/rails#51780, still open: the adapter's `@lock` is a `NullLock` by default,
+  # so an adapter mid-`reconnect!` is only safe as long as nothing interferes with
+  # the thread that owns it. Not killing our own database threads is the half of
+  # that we control.
+  class LogStream
+    def initialize(thread, stop_flag)
+      @thread = thread
+      @stop_flag = stop_flag
+    end
+
+    def alive?
+      @thread.alive?
+    end
+
+    # Ask the loop to finish, and wait up to `timeout` for it.
+    #
+    # Deliberately never escalates to `Thread#kill`. A thread that overruns the
+    # timeout drains its last logs and exits on its own next iteration — its loop
+    # body is bounded, and `process_running?` is already false by every path that
+    # calls this. Waiting a little longer than we'd like, or letting one abandoned
+    # thread finish unobserved, is strictly cheaper than poisoning the connection
+    # pool for every other thread in the process.
+    #
+    # @return [Thread, nil] the thread if it finished within the timeout, else nil
+    def stop!(timeout: LOG_STREAM_STOP_TIMEOUT)
+      @stop_flag.make_true
+      @thread.join(timeout)
+    end
+  end
+
   # Minimum successful run duration (seconds) before resetting SIGTERM retry counter.
   # When a process runs successfully for this duration after a SIGTERM retry,
   # the retry counter is reset to 0, allowing fresh retries for future SIGTERMs.
@@ -1672,7 +1735,7 @@ class AgentSessionJob < ApplicationJob
               last_api_error_retry_at = Time.current
               last_signal_death_at = Time.current
               # Restart log streaming thread for new process
-              log_streaming_thread&.kill if log_streaming_thread&.alive?
+              log_streaming_thread&.stop!
               log_streaming_thread = start_log_streaming(session, process_pid, stderr_log_path, working_directory)
               # Continue the loop with the new process
               next
@@ -1796,7 +1859,7 @@ class AgentSessionJob < ApplicationJob
             last_sigterm_retry_at = Time.current
             last_api_error_retry_at = Time.current
             last_signal_death_at = Time.current
-            log_streaming_thread&.kill if log_streaming_thread&.alive?
+            log_streaming_thread&.stop!
             log_streaming_thread = start_log_streaming(session, process_pid, stderr_log_path, working_directory)
             next
           end
@@ -2025,10 +2088,7 @@ class AgentSessionJob < ApplicationJob
       # Flush any remaining logs first
       log_buffer.flush if log_buffer&.any?
       # Stop log streaming thread
-      if log_streaming_thread
-        log_streaming_thread.kill if log_streaming_thread.alive?
-        log_streaming_thread.join(1)
-      end
+      log_streaming_thread&.stop!
 
       # The pid this job is actually responsible for. `process_pid` is the local
       # copy, refreshed by the monitoring loop's :continue branch — but a recovery
@@ -3949,9 +4009,14 @@ class AgentSessionJob < ApplicationJob
     Rails.logger.warn "[AgentSessionJob] Failed to clear interrupt_terminate_pid for session #{session&.id}: #{e.message}"
   end
 
-  # Start log streaming in a background thread
+  # Start log streaming in a background thread.
+  #
+  # @return [LogStream] a handle whose #stop! ends the loop cooperatively. The
+  #   thread writes to the database, so it must never be killed — see LogStream.
   def start_log_streaming(session, process_pid, stderr_log_path, working_directory)
-    Thread.new do
+    stop_flag = Concurrent::AtomicBoolean.new(false)
+
+    thread = Thread.new do
       # Thread-local log buffer for streaming logs
       thread_log_buffer = LogBuffer.new(session)
       stderr_position = 0
@@ -3960,7 +4025,9 @@ class AgentSessionJob < ApplicationJob
 
       loop do
         iteration += 1
-        # Check if process is still running
+        # Stop when asked to, or once the process we are tailing has gone. Checked
+        # before any work so a stop is honoured within one sleep interval.
+        break if stop_flag.true?
         break unless process_running?(process_pid)
 
         # Stream stderr
@@ -4011,6 +4078,8 @@ class AgentSessionJob < ApplicationJob
       )
       thread_log_buffer&.flush
     end
+
+    LogStream.new(thread, stop_flag)
   end
 
   # Stream MCP cache logs to database

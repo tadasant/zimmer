@@ -37,12 +37,14 @@ class PeriodicCatalogRefresher
     def start!(interval: DEFAULT_INTERVAL_SECONDS)
       return @thread if @thread&.alive?
 
+      stop_event = @stop_event = Concurrent::Event.new
+
       @thread = Thread.new do
         Thread.current.name = "web-catalog-refresher"
-        loop do
-          sleep(interval)
-          refresh_once
-        end
+        # Event#wait returns true the moment the event is set and false on
+        # timeout, so this is "sleep for `interval`, but wake immediately on
+        # stop!" — the refresh interval never becomes the shutdown latency.
+        refresh_once until stop_event.wait(interval)
       end
     end
 
@@ -53,10 +55,16 @@ class PeriodicCatalogRefresher
 
     # Stop the background thread. Primarily a test hook; in production the thread
     # lives for the life of the process and dies with it on SIGTERM.
+    #
+    # Cooperative rather than `Thread#kill`: refresh_once talks to the database
+    # (AirCatalogService persists a catalog snapshot), and an asynchronous kill
+    # inside ActiveRecord's connection setup can return a half-configured adapter
+    # to the pool — see AgentSessionJob::LogStream and zimmer#706.
     def stop!
-      @thread&.kill
+      @stop_event&.set
       @thread&.join(5)
       @thread = nil
+      @stop_event = nil
     end
 
     # One refresh tick: pull the latest provider caches into THIS process's on-disk
