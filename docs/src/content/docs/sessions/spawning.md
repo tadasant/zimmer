@@ -303,12 +303,34 @@ relationship (#108). It remains a real throughput cost on a bursty transcript.
 Two independent output channels:
 
 - **stderr → session logs.** A thread tails the stderr file by byte offset every 0.5 s into a
-  `LogBuffer`, flushed every 5 iterations.
+  `LogBuffer`, flushed every `LOG_FLUSH_EVERY_ITERATIONS` (5) iterations and once more on the way out.
 - **transcript → UI.** `TranscriptPollerService` reads the JSONL, normalizes it, and pushes Turbo
   Streams. See [Transcripts](/sessions/transcripts/).
 
 stdout is discarded for both runtimes, even though both CLIs are launched with a JSON
 streaming flag. The transcript file on disk is the only source of truth.
+
+### The streaming thread is asked to stop, never killed
+
+`start_log_streaming` hands back an `AgentSessionJob::LogStream`, not a bare `Thread`.
+Every place that used to end the thread — a recovery spawn replacing the process, and the
+job's own `ensure` — calls `LogStream#stop!`, which raises a `Concurrent::AtomicBoolean`
+the loop checks at the top of each iteration and then waits up to `LOG_STREAM_STOP_TIMEOUT`
+(5 s) for the thread to finish on its own. It never escalates to `Thread#kill`.
+
+**The rule this encodes: never end a thread that touches the database asynchronously.** `Thread#kill`
+lands at an arbitrary point inside Active Record, and one of those points leaves an adapter connected
+and marked verified but with no type map — which the next thread to take that pooled connection dies
+on, casting its result. In production the victim was a GoodJob scheduler thread in the job-claim query
+([#706](https://github.com/tadasant/zimmer/issues/706)). The mechanism is written out in full, against
+line numbers in the vendored gem, in the comment on `AgentSessionJob::LogStream`; the underlying Active
+Record race is [rails/rails#51780](https://github.com/rails/rails/issues/51780), still open. The same
+rule governs `PeriodicCatalogRefresher#stop!` in the web container.
+
+Two consequences worth knowing. A thread that overruns its stop timeout is **abandoned rather than
+killed** — logged at `warn`, and left to finish on its own. And a stopped thread does not drain its
+stderr file: a recovery respawn truncates that exact path, so the offset it holds is no longer
+meaningful. Both are recorded on the [Limitations](/limitations/) page.
 
 ## When the process exits
 

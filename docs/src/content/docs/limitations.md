@@ -1541,7 +1541,11 @@ Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 
 `~/.air/cache` is per-container, and the `*/15` refresh cron runs only in the worker — so the web
 container's catalog would drift stale for a full deploy cycle. `PeriodicCatalogRefresher` runs a bespoke
-background thread *inside Puma* every 300s to compensate.
+background thread *inside Puma* every 300s to compensate. It waits on a `Concurrent::Event` rather than
+sleeping, so `stop!` wakes it immediately and an in-flight `air update` runs to completion instead of
+being killed mid-write — see
+[The streaming thread is asked to stop, never killed](/sessions/spawning/#the-streaming-thread-is-asked-to-stop-never-killed)
+for why an asynchronous kill on a thread that touches the database is not an option.
 
 Tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
 
@@ -1863,6 +1867,36 @@ by the same user is indistinguishable from the agent that used to hold it.
 Routing termination to the container that owns the pid is the fix, and it is not written.
 
 Tracked in [#365](https://github.com/tadasant/zimmer/issues/365).
+
+### A log-streaming thread that will not stop is abandoned, not killed
+
+`AgentSessionJob::LogStream#stop!` asks the log-streaming thread to finish and waits
+`LOG_STREAM_STOP_TIMEOUT` (5s) for it. If the thread has not finished by then, nothing else happens:
+it is left running, and the job moves on. That is deliberate — the thread writes to Postgres, and
+`Thread#kill` inside Active Record's connection setup is what poisoned a pooled connection and took
+out an unrelated GoodJob thread in [#706](https://github.com/tadasant/zimmer/issues/706). See
+[The streaming thread is asked to stop, never killed](/sessions/spawning/#the-streaming-thread-is-asked-to-stop-never-killed).
+
+What that leaves is bounded but real. The stop flag caps the thread at one more iteration, so it
+finishes and exits on its own — but in the meantime it is a thread nobody is waiting for, and on the
+recovery-restart paths a second streaming thread is already running for the replacement process. The
+overrun is logged at `warn` (`"Log-streaming thread for session N did not stop within 5s"`), which is
+the only signal an operator gets; nothing counts it, and no alert fires on it. The same applies to
+`PeriodicCatalogRefresher#stop!` in the web container, which returns `false` and keeps its handle
+rather than clearing state it cannot vouch for.
+
+### A stopped streaming thread stops reading its stderr file, and a truncated one goes unread
+
+Every runtime adapter derives the stderr log path deterministically from the working directory and
+reopens it with mode `"w"` at spawn, so a recovery respawn truncates the file underneath a streaming
+thread still holding a byte offset into the old process's output. `stream_stderr_lines` detects the
+case it can — a file now *shorter* than the offset — and stops reading rather than emit a fragment of
+the replacement's output.
+
+It cannot detect the other case. If the replacement has already written *past* the old offset by the
+time the old thread reads, the size check passes and a mid-line fragment is logged, and the
+replacement's own thread then re-emits the same bytes from byte 0. The window is one iteration wide
+(≤0.5s) and the damage is duplicated `verbose` log lines, not lost data.
 
 ### Not every session `metadata` writer is atomic, and the whole-column writers are the majority
 
