@@ -167,9 +167,10 @@ class Session < ApplicationRecord
   # every status broadcast in the app.)
   #
   # Status-summary forks are kept off the stream by the two broadcast methods
-  # themselves, not here. This registration is only one way into them —
-  # `broadcast_status_change` calls both directly, from a callback that fires on
-  # every status change — so a guard here alone only ever covered the creates.
+  # themselves, not here. A guard on this registration covers only the create and
+  # scheduling-class paths it fires on; the status changes arrive through
+  # `broadcast_status_change`, which calls both methods directly and never reads
+  # this condition.
   after_commit :broadcast_ranked_membership,
     on: [ :create, :update ],
     if: -> { previously_new_record? || (saved_change_to_scheduling_class? && !saved_change_to_status?) }
@@ -1971,12 +1972,12 @@ class Session < ApplicationRecord
   #
   # A status-summary fork is never offered. Every server-rendered session list
   # applies `excluding_status_summary_forks`, so a fork the operator has never
-  # been shown would arrive over the stream and be inserted — and a fork changes
-  # status four times (needs_input → waiting → running → needs_input → archived),
-  # so the queue collected a "Status summary for session #N" row per live fork
-  # and only shed it on archive. The guard lives here rather than on the callback
-  # registration because `broadcast_status_change` calls this method directly,
-  # which is the path every one of those transitions took.
+  # been shown would arrive over the stream and be inserted — and it runs the
+  # chain `needs_input` (as created) → `running` → `needs_input` → `archived`, so
+  # the queue collected a "Status summary for session #N" row per live fork and
+  # only shed it on archive. The guard lives here rather than on the callback
+  # registration because all three of those transitions reach this method through
+  # `broadcast_status_change`, which calls it directly.
   def broadcast_ranked_membership
     return if status_summary_fork?
 
