@@ -303,7 +303,7 @@ relationship (#108). It remains a real throughput cost on a bursty transcript.
 Two independent output channels:
 
 - **stderr → session logs.** A thread tails the stderr file by byte offset every 0.5 s into a
-  `LogBuffer`, flushed every 5 iterations.
+  `LogBuffer`, flushed every `LOG_FLUSH_EVERY_ITERATIONS` (5) iterations and once more on the way out.
 - **transcript → UI.** `TranscriptPollerService` reads the JSONL, normalizes it, and pushes Turbo
   Streams. See [Transcripts](/sessions/transcripts/).
 
@@ -316,32 +316,21 @@ streaming flag. The transcript file on disk is the only source of truth.
 Every place that used to end the thread — a recovery spawn replacing the process, and the
 job's own `ensure` — calls `LogStream#stop!`, which raises a `Concurrent::AtomicBoolean`
 the loop checks at the top of each iteration and then waits up to `LOG_STREAM_STOP_TIMEOUT`
-(3 s) for the thread to finish on its own. It never escalates to `Thread#kill`.
+(5 s) for the thread to finish on its own. It never escalates to `Thread#kill`.
 
-That is not tidiness. The thread writes to Postgres, and `Thread#kill` lands at an arbitrary
-point inside Active Record. The point that matters is `AbstractAdapter#reconnect!`, which
-opens the socket and sets `@verified = true` and `@last_activity` *before* calling
-`configure_connection` — the call that builds the adapter's type map. Rails guards that
-window with `attempt_configure_connection`'s `rescue Exception => disconnect!`. `Thread#kill`
-walks straight through it: it runs `ensure` blocks but is not an exception, so no `rescue`
-sees it, while `ConnectionPool#with_connection`'s own `ensure` still hands the
-half-configured adapter back to the pool. The next thread to check that adapter out within
-`verify_timeout` (2 s) takes the "used very recently, assume it's fine" branch of
-`with_raw_connection`, skips verification, runs its query, and dies casting the result with
-`undefined method 'key?' for nil` in `PostgreSQLAdapter#get_oid_type`. In production that
-victim was a GoodJob scheduler thread in the job-claim query — it had simply been the next
-taker of a connection this job poisoned (#706). The underlying Active Record race is
-[rails/rails#51780](https://github.com/rails/rails/issues/51780), still open: the adapter's
-`@lock` is a `NullLock` by default, so an adapter mid-`reconnect!` is only safe for as long
-as nothing disturbs the thread that owns it.
+**The rule this encodes: never end a thread that touches the database asynchronously.** `Thread#kill`
+lands at an arbitrary point inside Active Record, and one of those points leaves an adapter connected
+and marked verified but with no type map — which the next thread to take that pooled connection dies
+on, casting its result. In production the victim was a GoodJob scheduler thread in the job-claim query
+([#706](https://github.com/tadasant/zimmer/issues/706)). The mechanism is written out in full, against
+line numbers in the vendored gem, in the comment on `AgentSessionJob::LogStream`; the underlying Active
+Record race is [rails/rails#51780](https://github.com/rails/rails/issues/51780), still open. The same
+rule governs `PeriodicCatalogRefresher#stop!` in the web container.
 
-The trade-off is deliberate. A thread that overruns the 3 s is left to finish rather than
-killed: its loop body is bounded, and `process_running?` is already false on every path that
-stops it, so it drains its last logs and exits by itself. Waiting on one abandoned thread is
-cheaper than poisoning a connection for every other thread in the process. The same rule
-applies to `PeriodicCatalogRefresher#stop!` in the web container, which waits on a
-`Concurrent::Event` so an in-flight `AirCatalogService.refresh!` completes instead of being
-cut in half.
+Two consequences worth knowing. A thread that overruns its stop timeout is **abandoned rather than
+killed** — logged at `warn`, and left to finish on its own. And a stopped thread does not drain its
+stderr file: a recovery respawn truncates that exact path, so the offset it holds is no longer
+meaningful. Both are recorded on the [Limitations](/limitations/) page.
 
 ## When the process exits
 
