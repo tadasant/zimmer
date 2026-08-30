@@ -15,7 +15,7 @@ From `config/goals.json`:
 | ID | What it demands |
 | --- | --- |
 | `codebase-question` | Research and answer inline. Do not create files, PRs, or branches. Stop in `needs_input` if a human asked; report back to the parent and archive if a session did. |
-| `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then stop, and archive when the PR merges. The default for most roots. |
+| `open-reviewed-green-pr` | Open the PR through the `open-pr` skill, block until CI is green, run an independent fresh-eyes review, address all its feedback, re-check CI, write a `## Verification` section with checked boxes and proof, then apply the `ready to merge` label. Then hold the PR the way that skill's terminal steps say to, and archive when the PR merges. The default for most roots. |
 | `open-reviewed-green-pr-with-version-bump` | Same, plus a mandatory version bump when server source changed. |
 | `e2e-verified-green-pr` | Same, plus: state the critical path up front, spin up a real dev server, drive it with browser automation, record video and screenshots, embed them in the PR. |
 
@@ -30,9 +30,22 @@ PR and does **not** claim a human has reviewed it — it is the agent's own clai
 fresh-eyes review, and green CI are complete. It is fully compatible with leaving the PR
 unmerged; "do not merge" is not a reason to skip the label.
 
-The three PR goals then end by telling the agent to **stop in `needs_input`, and to archive when
-the PR merges**. The session that opened a PR is the session holding the work's context, so it is
-the one a human comes back to while the PR's disposition is unsettled.
+The three PR goals then end by telling the agent to **hold the PR and archive when it merges**.
+The session that opened a PR is the session holding the work's context, so it is the one a human
+comes back to while the PR's disposition is unsettled.
+
+*How* it holds is delegated to the `open-pr` skill rather than spelled out as "stop in
+`needs_input`", because the skill's terminal step draws a finer line: a PR merely waiting for the
+merge gate to rate it is a machine wait, while a PR the gate has *held* is a human handoff, and
+only the second belongs in the action queue. So the skill has the session schedule a bounded
+self-wake — three wakes, 30 minutes apart — and sleep in `waiting`, checking the PR's state on
+each wake: merged or closed unmerged means archive, a fresh gate `HELD` verdict or a spent wake
+budget means come to rest in `needs_input`, and a PR still open and unrated means sleep again. A
+sleeping session holds the PR exactly as a parked one does — `Session.with_github_prs` excludes
+only `archived` and `failed`, so the poller still sees it — with one difference in delivery: a
+`needs_input` session takes the merge message immediately, while a `waiting` one has it enqueued
+and picks it up at its next wake. The goal text keeps a fallback for runtimes and repos that do
+not ship the skill: come to rest in `needs_input` holding the PR.
 
 Nothing has to watch for the merge. `GitHubPullRequestPollerJob` sweeps unarchived sessions with
 recorded PR URLs, and on the open → merged transition it delivers `AutomatedPrompts.pr_merged_message`
@@ -40,15 +53,15 @@ to the session. That message is the archive signal, and it makes the queue self-
 
 ```mermaid
 flowchart TD
-    A["Session opens PR,<br/>applies 'ready to merge'"] --> B["Stops in needs_input"]
+    A["Session opens PR,<br/>applies 'ready to merge'"] --> B["Sleeps in waiting<br/>on a bounded self-wake"]
     B --> C{"Merge gate"}
     C -->|auto-merges| D["Poller delivers<br/>pr_merged_message"]
     D --> E["Session archives"]
     C -->|holds for review| F["No message until<br/>a human merges it"]
-    F --> G["Session stays in needs_input<br/>— sanctioned case 2"]
+    F --> G["Next wake finds the HELD verdict<br/>— session comes to rest in needs_input,<br/>sanctioned case 2"]
 ```
 
-Both outcomes are correct by construction, and neither needs a human to tidy up. A held PR keeps
+Both outcomes are correct by construction, and neither needs a human to tidy up. A held PR puts
 its session in the queue, which is the point — and when that human merges it, the same signal
 releases the session. A merged PR drains its own session out. A PR closed without merging ends the
 work, and the session archives on that too.
