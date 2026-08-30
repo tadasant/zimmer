@@ -1,0 +1,32 @@
+<%# One membership delivery for the Ranked view.
+    (See Session#broadcast_ranked_membership and ranked_queue_controller.js.)
+
+    The Ranked view broadcasts on ONE stream, `sessions_ranked`, but every open
+    page has its own filters. The server therefore cannot decide whether a row
+    belongs on your screen — so it does not try. It ships this envelope: the
+    session's filterable facts, plus the row already rendered for the section it
+    would land in, and the page decides.
+
+    The row travels inside a <template>. Its contents are inert and its ids are
+    not in the document, so an envelope for a session the page filters out never
+    puts a second `ranked_row_<id>` on the page, and one for a row already on
+    screen never duplicates it. `ranked-queue#deliveryTargetConnected` reads the
+    envelope, acts on it, and removes it.
+
+    `draggable_row` follows the scheduling class, which is also the section the
+    row is destined for — the client places it and the two agree.
+
+    Locals:
+      agent_session - the session %>
+<div data-ranked-queue-target="delivery"
+     hidden
+     data-session-id="<%= agent_session.id %>"
+     data-status="<%= agent_session.status %>"
+     data-scheduling-class="<%= agent_session.priority_class %>"
+     data-precedence="<%= agent_session.precedence %>">
+  <template>
+    <%= render "sessions/ranked_row",
+          agent_session: agent_session,
+          draggable_row: agent_session.priority_class == SessionGenesis::SPOT %>
+  </template>
+</div>

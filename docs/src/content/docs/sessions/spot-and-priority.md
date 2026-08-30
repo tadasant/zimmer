@@ -769,38 +769,70 @@ nothing queued keeps the banner explaining why it is dormant.
 
 #### The queue stays live
 
-Rows subscribe to the `sessions_ranked` Turbo Stream, which `Session#broadcast_ranked_row` writes to
-on every status change. It is a separate stream from the card grid's `sessions_index_individual`
-because a ranked row is not a card and is not keyed on `dom_id` — which is exactly why the queue's
-statuses used to go stale until the page was reloaded.
+Rows subscribe to the `sessions_ranked` Turbo Stream. It is a separate stream from the card grid's
+`sessions_index_individual` because a ranked row is not a card and is not keyed on `dom_id` — which
+is exactly why the queue's statuses used to go stale until the page was reloaded.
 
-The broadcast replaces **one element per row: the status pill**. That bound is the design, not a
-shortcut. The row around the pill holds two pieces of state the server does not own — a precedence
-the user may be halfway through typing, and the row's position while SortableJS is dragging it — so
-replacing the whole row would let a background status change destroy an interaction in progress.
+Two kinds of message travel on it.
 
-What it deliberately does not do:
+**A status change replaces one element per row: the status pill** (`_ranked_row_status`, written by
+`Session#broadcast_ranked_row`). That bound is the design, not a shortcut. The row around the pill
+holds two pieces of state the server does not own — a precedence the user may be halfway through
+typing, and the row's position while SortableJS is dragging it — so replacing the whole row would let
+a background status change destroy an interaction in progress. A `running` session's pill carries a
+spinner, so the queue reads at a glance as "these are the ones actually moving"; it arrives and
+leaves with the pill, because the pill is the thing being replaced.
 
-- **No re-sorting.** Precedence, not status, decides the order, and a status change does not move a
-  row.
-- **No re-grouping.** A session whose scheduling class changes in another tab or over MCP stays in
-  the section the page rendered it in until a reload. Moving a row between sections under a pointer
-  that is on it is worse than the staleness.
-- **No inserting.** A session that newly matches the filters appears on the next reload.
+**A membership change sends an envelope** (`_ranked_delivery`, written by
+`Session#broadcast_ranked_membership` on create, on a status change and on a scheduling-class
+change). The server cannot decide whether a row belongs on your screen, because one stream serves
+every open page and each has its own filters — the operator watching live work and the one who ticked
+"Archived" to go through the trash are on the same channel, and a session going archived means
+"leave" to the first and "stay, relabelled" to the second. So the envelope carries the session's
+filterable facts plus the row already rendered inside an inert `<template>`, and
+`ranked-queue#deliveryTargetConnected` decides:
 
-The one structural change it makes is **removing a row whose session has been trashed**, mirroring
-what the card grid does on archive — including the card grid's blind spot: the server cannot know
-which statuses a given browser has ticked, so an operator who selected "Archived" to see the trash
-watches the row vanish anyway, and a reload puts it back reading "Trashed". The section header counts
-and the "nothing here" placeholders are recounted by a `MutationObserver` in
-`ranked_queue_controller.js`, so they stay true whether the row left via a broadcast, a promote or a
-demote.
+| The page's filters say | What happens |
+| --- | --- |
+| the status is excluded now | the row leaves |
+| the scheduling class no longer matches its section | the row moves sections |
+| it is admitted and not on the page | the row is inserted, in precedence order |
+| anything else | the envelope is discarded |
 
-None of that staleness is permanent. Both lists are `data-live-region="sync"`, so a page whose socket
-died — every reopen of the installed iOS PWA — is reconciled against a fresh render on reconnect,
-which recovers the order, the grouping and any row the stream never delivered. The reconciler skips
-a row holding focus or a dirty field, so it cannot eat a precedence someone is halfway through typing
-either. See [the reopen backfill](/sessions/lifecycle/#the-reopen-backfill).
+The row travels in a `<template>` so its ids are never in the document until the page accepts it —
+an envelope for a session you filter out cannot leave a stray `ranked_row_<id>` behind, and one for a
+row already on screen cannot duplicate it. The envelope is consumed and removed either way.
+
+Three rules keep that safe, and each costs a little freshness:
+
+- **Deliveries are held during a drag** and flushed on drop, so nothing is inserted or removed under
+  a moving pointer.
+- **A row holding focus or a half-typed value is never moved or removed** — the same rule the
+  reconnect backfill applies. A delivery never writes a precedence input belonging to a row it is not
+  moving, so an uncommitted number cannot be clobbered at all.
+- **A section already at its 200-row cap takes no insert**, because the server truncates at the same
+  number and says on the page that it has.
+
+What it still deliberately does not do:
+
+- **No re-sorting.** Precedence, not status, decides the order. A precedence someone changes in
+  another tab does not move rows here — that would move a row out from under a pointer for a number
+  nobody on this page typed.
+- **No inserting into a narrowed page.** A search query, an agent-root filter or a genesis filter
+  cannot be evaluated client-side for a session the page has never rendered, so `live_insert` is off
+  whenever one is in force and the page declines rather than guessing. *Removal* stays sound under
+  all three: a row on screen already matched them, and neither a status nor a class change alters
+  that.
+
+The section header counts and the "nothing here" placeholders are recounted by a `MutationObserver`
+in `ranked_queue_controller.js`, so they stay true whether the row arrived or left via a broadcast, a
+promote or a demote.
+
+None of the remaining staleness is permanent. Both lists are `data-live-region="sync"`, so a page
+whose socket died — every reopen of the installed iOS PWA — is reconciled against a fresh render on
+reconnect, which recovers the order, the grouping and any row the stream never delivered. The
+reconciler skips a row holding focus or a dirty field, so it cannot eat a precedence someone is
+halfway through typing either. See [the reopen backfill](/sessions/lifecycle/#the-reopen-backfill).
 
 ### Precedence decides who gets the headroom back
 

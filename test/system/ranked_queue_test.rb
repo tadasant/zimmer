@@ -28,6 +28,46 @@ class RankedQueueTest < ApplicationSystemTestCase
     visit root_path(view: SessionsController::VIEW_MODE_RANKED, q: TAG)
   end
 
+  # The queue WITHOUT a search query, which is the only way a live insert is on:
+  # the client cannot evaluate a search for a session it has never rendered, so a
+  # searched page declines to insert. Tests that assert an arrival use this and
+  # name their own rows rather than counting the whole list.
+  def visit_open_queue(params = {})
+    visit root_path({ view: SessionsController::VIEW_MODE_RANKED }.merge(params))
+  end
+
+  # The same, with an explicit Filters submission — this is how an operator ticks
+  # "Archived" to go through the trash.
+  def visit_queue_showing(*statuses)
+    visit_open_queue(SessionsController::FILTERS_SUBMITTED_PARAM => "1", "status" => statuses)
+  end
+
+  def ranked_queue_controller_script(expression)
+    "window.Stimulus.getControllerForElementAndIdentifier(" \
+      "document.getElementById('ranked_sessions'), 'ranked-queue').#{expression}"
+  end
+
+  # How many deliveries the controller is holding until the drag ends. Polled,
+  # because it is a broadcast arriving over a websocket.
+  def held_delivery_count(wait: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + wait
+    loop do
+      count = page.evaluate_script(ranked_queue_controller_script("heldDeliveries.length"))
+      return count if count.positive? || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      sleep 0.1
+    end
+  end
+
+  # A token that survives Turbo Stream updates and dies on any navigation, so
+  # "without a reload" is an assertion rather than a hope.
+  def stamp_page
+    page.execute_script("window.__rankedProof = 'no-navigation';")
+  end
+
+  def page_never_navigated?
+    page.evaluate_script("window.__rankedProof === 'no-navigation'")
+  end
+
   def kebab_for(session)
     find("#ranked_row_#{session.id} button[aria-label='More actions for session #{session.id}']")
   end
@@ -276,6 +316,260 @@ class RankedQueueTest < ApplicationSystemTestCase
     # above), so the panel still being dismissed is the guard having returned.
     assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
     assert_current_path root_path, ignore_query: true
+  end
+
+  # ---- Rows entering and leaving live -----------------------------------------
+
+  # The first half of what the operator reported: a session created anywhere else
+  # did not show up until the page was reloaded.
+  test "a session created elsewhere arrives in the right section at the right rank" do
+    middle = spot(500, title: "Already in the queue")
+    bottom = spot(100, title: "Bottom of the queue")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+    assert_selector "#ranked_row_#{middle.id}"
+
+    # Created from outside the page entirely — no form, no click, no navigation.
+    arrival = spot(300, title: "Arrived while you were watching")
+    assert_selector "[data-ranked-queue-target='spotList'] #ranked_row_#{arrival.id}", wait: 5
+
+    # And in ITS PLACE, not merely appended: 500 > 300 > 100.
+    ids = spot_row_ids
+    assert_operator ids.index("ranked_row_#{middle.id}"), :<, ids.index("ranked_row_#{arrival.id}")
+    assert_operator ids.index("ranked_row_#{arrival.id}"), :<, ids.index("ranked_row_#{bottom.id}")
+
+    # A spot row arrives able to be dragged and edited, like one the server rendered.
+    assert_not_equal "none", handle_display(arrival)
+    assert_equal "300", find("#precedence_input_#{arrival.id}").value
+
+    assert page_never_navigated?, "the row must arrive over the stream, not via a reload"
+  end
+
+  test "a priority session created elsewhere arrives in the Priority section" do
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+
+    arrival = priority(title: "Ship the hotfix")
+    assert_selector "[data-ranked-queue-target='priorityList'] #ranked_row_#{arrival.id}", wait: 5
+
+    # A priority row has no rank to order by, so it arrives without a handle.
+    assert_equal "none", handle_display(arrival)
+    assert page_never_navigated?
+  end
+
+  # The second half of the report — and the half the old broadcast got wrong in
+  # BOTH directions. It removed unconditionally, so a page filtered to live work
+  # was right by accident and a page filtered to the trash was wrong.
+  test "a trashed row leaves a queue showing live work" do
+    doomed = spot(200, title: "Trash me")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+    assert_selector "#ranked_row_#{doomed.id}"
+
+    doomed.update!(status: :archived)
+    assert_no_selector "#ranked_row_#{doomed.id}", wait: 5
+    assert page_never_navigated?
+  end
+
+  test "a trashed row stays, relabelled, on a queue whose operator ticked Archived" do
+    doomed = spot(200, title: "Trash me but let me be seen")
+
+    visit_queue_showing("waiting", "running", "needs_input", "archived")
+    wait_for_turbo_streams_connected
+    stamp_page
+    assert_selector "#ranked_row_status_#{doomed.id}", text: "Waiting"
+
+    doomed.update!(status: :archived)
+
+    # It must NOT vanish — this operator ticked "Archived" precisely to see it.
+    assert_selector "#ranked_row_status_#{doomed.id}", text: "Trashed", wait: 5
+    assert_selector "#ranked_row_#{doomed.id}"
+    assert page_never_navigated?
+  end
+
+  # A promote or demote in another tab regroups the row here, without a reload.
+  test "a scheduling class changed elsewhere moves the row between sections" do
+    queued = spot(400, title: "Promote me from another tab")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+    assert_selector "[data-ranked-queue-target='spotList'] #ranked_row_#{queued.id}"
+
+    queued.update!(scheduling_class: SessionGenesis::PRIORITY)
+    assert_selector "[data-ranked-queue-target='priorityList'] #ranked_row_#{queued.id}", wait: 5
+    # The controls follow it: a priority row drags nothing.
+    assert_equal "none", handle_display(queued)
+    assert page_never_navigated?
+  end
+
+  # A page narrowed by a search cannot judge whether an unseen session matches it,
+  # so it declines to insert rather than guessing. Removal is a different question
+  # and stays live — a row on screen already matched the search.
+  test "a searched queue declines an arrival but still lets a trashed row leave" do
+    doomed = spot(200, title: "Trash me")
+
+    visit_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+    assert_selector "#ranked_row_#{doomed.id}"
+
+    # Matches the search, but the client has no way to know that.
+    stranger = spot(300, title: "Arrived while you were watching")
+    doomed.update!(status: :archived)
+
+    assert_no_selector "#ranked_row_#{doomed.id}", wait: 5
+    assert_no_selector "#ranked_row_#{stranger.id}"
+    assert page_never_navigated?
+  end
+
+  # ---- The spinner --------------------------------------------------------------
+
+  # The queue is read to answer "what is actually moving right now", and it has to
+  # answer that live — the spinner rides the same pill replacement the status text
+  # does.
+  test "a running row spins, and stops when it stops running" do
+    queued = spot(600, title: "Watch me start and stop")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    assert_no_selector "#ranked_row_status_#{queued.id} svg"
+
+    queued.update!(status: :running)
+    assert_selector "#ranked_row_status_#{queued.id}", text: "Running", wait: 5
+    assert_includes find("#ranked_row_status_#{queued.id} svg")[:class], "motion-safe:animate-spin",
+      "the spinner must not animate for a reader who asked their OS for reduced motion"
+    scroll_queue_into_view
+    capture("ranked-running-spinner")
+
+    queued.update!(status: :needs_input)
+    assert_selector "#ranked_row_status_#{queued.id}", text: "Needs input", wait: 5
+    assert_no_selector "#ranked_row_status_#{queued.id} svg"
+  end
+
+  # ---- The interactions the narrowness was protecting ---------------------------
+
+  # The bar the prior work set and this one has to hold: a number typed but not
+  # committed survives everything arriving over the stream — including an insert
+  # and a removal, which the old broadcast never did.
+  test "an uncommitted precedence survives arrivals, removals and regroupings" do
+    typing = spot(700, title: "I am being edited")
+    doomed = spot(200, title: "Trash me")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+
+    input = find("#precedence_input_#{typing.id}")
+    input.fill_in with: "12345"
+
+    # Everything the stream can now do, while that field holds an uncommitted value.
+    arrival = spot(400, title: "Arrived mid-edit")
+    doomed.update!(status: :archived)
+    typing.update!(status: :running)
+
+    assert_selector "#ranked_row_#{arrival.id}", wait: 5
+    assert_no_selector "#ranked_row_#{doomed.id}", wait: 5
+    assert_selector "#ranked_row_status_#{typing.id}", text: "Running", wait: 5
+
+    assert_equal "12345", find("#precedence_input_#{typing.id}").value,
+      "a broadcast must never clobber a precedence the user is halfway through typing"
+    assert page_never_navigated?
+  end
+
+  # A row the operator is editing is never taken away or moved, even when the
+  # filters say it should go — the same rule the reconnect backfill applies. The
+  # staleness is recovered by a reload; the half-typed number would not be.
+  test "a row holding an uncommitted value is not evicted out from under it" do
+    typing = spot(700, title: "I am being edited")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+
+    find("#precedence_input_#{typing.id}").fill_in with: "999"
+    typing.update!(status: :archived)
+
+    # The pill tells the truth; the row stays because someone is working in it.
+    assert_selector "#ranked_row_status_#{typing.id}", text: "Trashed", wait: 5
+    assert_selector "#ranked_row_#{typing.id}"
+    assert_equal "999", find("#precedence_input_#{typing.id}").value
+  end
+
+  # …and the guard is exactly that narrow. "Someone is working in it" means a
+  # focused TEXT FIELD, not any focused element — because the row's own ⋮ menu is
+  # inside the row, so clicking its Trash entry leaves focus on a link in the very
+  # row that click archived. A broader rule refuses to remove that row, which is
+  # the staleness this whole change exists to fix, reintroduced by its own safety
+  # net. ("the menu trashes a row" above is the end-to-end version; this is the
+  # rule itself, with no menu in the way.)
+  test "a row whose button holds focus is still evicted" do
+    doomed = spot(200, title: "Focus is on my menu button")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+
+    kebab_for(doomed).click
+    assert_button "Promote to priority"
+
+    doomed.update!(status: :archived)
+    assert_no_selector "#ranked_row_#{doomed.id}", wait: 5
+    assert page_never_navigated?
+  end
+
+  # The other interaction the narrow broadcast was protecting. SortableJS is driven
+  # through its own pointer events rather than through Capybara's drag, so the drag
+  # is genuinely in progress — `onStart` has fired — when the broadcast lands.
+  test "a delivery arriving mid-drag waits for the drop" do
+    top = spot(900, title: "Dragging me")
+    spot(100, title: "Bottom of the queue")
+
+    visit_open_queue
+    wait_for_turbo_streams_connected
+    stamp_page
+
+    # A REAL press-and-move through the driver, not dispatched MouseEvents:
+    # SortableJS binds `pointerdown`, and a synthetic MouseEvent never reaches it,
+    # so a scripted "drag" would silently prove nothing.
+    #
+    # Scroll the row to the middle of the viewport first. The queue sits below the
+    # filters panel, and Selenium's Actions API does NOT scroll to its target the
+    # way `click` does — it dispatches at viewport coordinates and raises
+    # MoveTargetOutOfBounds for anything off-screen.
+    page.execute_script(
+      "document.getElementById(#{"ranked_row_#{top.id}".to_json}).scrollIntoView({ block: 'center' })"
+    )
+    handle = find("#ranked_row_#{top.id} [data-ranked-queue-target='handle']")
+    page.driver.browser.action
+      .move_to(handle.native)
+      .click_and_hold
+      .move_by(0, 35)
+      .move_by(0, 35)
+      .perform
+
+    assert_equal true, page.evaluate_script(ranked_queue_controller_script("dragging")),
+      "the drag must actually be in progress for this test to mean anything"
+
+    arrival = spot(400, title: "Arrived mid-drag")
+
+    # Wait for the envelope to actually ARRIVE and be parked, so the absence
+    # asserted below is the hold doing its job rather than the broadcast being
+    # slower than the assertion.
+    assert_equal 1, held_delivery_count(wait: 5)
+    assert_no_selector "#ranked_row_#{arrival.id}"
+    assert_equal 0, page.evaluate_script("document.getElementById('ranked_deliveries').children.length"),
+      "the envelope is consumed on arrival and held in the controller, not left in the DOM"
+
+    page.driver.browser.action.release.perform
+
+    # Dropped — and the row the stream was holding lands, in its place.
+    assert_selector "#ranked_row_#{arrival.id}", wait: 5
+    assert page_never_navigated?
   end
 
   # The inline rank entry is the other half of this screen, and the row rewrite
