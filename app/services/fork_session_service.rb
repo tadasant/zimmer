@@ -566,20 +566,18 @@ class ForkSessionService
 
   # Is there a conversation in this transcript for the fork to resume into?
   #
-  # Two decisions hang on the answer and must agree: whether to write the
-  # transcript at the fork's resume path, and whether to claim `runtime_started`.
-  # Both are yes for the ordinary fork — a real conversation, truncated at a
-  # message the user picked. Both are no when the source's transcript holds only
-  # bookkeeping (Claude Code's `ai-title` record and nothing else), because the
-  # copy would poison the fork's freshly minted session id rather than give it
-  # anything to resume. Memoized: it is asked once per decision, on the same
-  # bytes.
+  # A "no" settles two decisions at once: nothing is written at the fork's resume
+  # path, and `runtime_started` stays off — because the copy would poison the
+  # fork's freshly minted session id rather than give it anything to resume. A
+  # "yes" only clears the way for them; the write can still be skipped for a
+  # runtime with no single-file resume path (Codex), which is why that runtime
+  # gets `runtime_started` and no file.
+  #
+  # Not memoized. The scan stops at the first conversation record, so asking
+  # twice on a fork costs almost nothing — and a memo keyed on nothing would
+  # answer a later, different transcript with this one's answer.
   def resumable_transcript?(truncated_transcript)
-    return @resumable_transcript unless @resumable_transcript.nil?
-
-    @resumable_transcript = RuntimeConversationPresence.conversation?(
-      truncated_transcript, session: source_session
-    )
+    RuntimeConversationPresence.conversation?(truncated_transcript, session: source_session)
   end
 
   def calculate_working_directory(new_clone_path)

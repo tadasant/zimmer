@@ -119,8 +119,14 @@ class SessionStatusSummaryGenerator
   def unavailable_reason
     if session.status_summary_fork?
       Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
-    elsif session.transcript_line_count.zero?
-      Result.new(outcome: :skipped, message: "Session has no transcript yet.")
+    elsif !RuntimeConversationPresence.conversation?(session.transcript, session: session)
+      # Line count is the wrong question here for the same reason it was the wrong
+      # question in RuntimeConversationPresence (#519): a session wedged in its
+      # opening seconds has a one-line transcript holding a title record and no
+      # conversation. Forking on that spends an agent turn asking for a summary of
+      # nothing, with neither a resume file nor an inline excerpt to answer from —
+      # an invitation to invent one.
+      Result.new(outcome: :skipped, message: "Session has no conversation to summarize yet.")
     elsif !force && !headless && !source_clone_available?
       Result.new(outcome: :unavailable, message: clone_unavailable_message)
     end
