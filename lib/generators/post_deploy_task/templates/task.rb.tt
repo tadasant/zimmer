@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+# TODO: say what one-time step this is, and why it could not be a migration.
+#
+# Runs once per environment, started by PostDeployTaskJob within a couple of
+# minutes of the deploy. Write it so that running it twice is harmless: the
+# mechanism guarantees it is never run concurrently and never re-run after it
+# succeeds, but a task that died halfway may have half-applied.
+#
+# For work too slow for one slice, walk the rows with `sweep` and return what it
+# returns — the run is resumed on the next tick from the cursor it saved:
+#
+#   def up
+#     sweep(Widget.where(owner_id: nil)) do |batch|
+#       Widget.where(id: batch.map(&:id)).delete_all
+#       checkpoint!(deleted: stats.fetch("deleted", 0) + batch.size)
+#     end
+#   end
+class <%= task_class_name %> < PostDeployTask
+  def up
+    raise NotImplementedError, "write the one-time step here"
+  end
+end

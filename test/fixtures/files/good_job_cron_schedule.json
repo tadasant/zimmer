@@ -50,6 +50,11 @@
       "class": "TokenUsageBackfillJob",
       "description": "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box"
     },
+    "post_deploy_tasks": {
+      "cron": "*/2 * * * *",
+      "class": "PostDeployTaskJob",
+      "description": "Run the one-time post-deploy tasks in db/post_deploy, so an ops step ships with the deploy instead of needing a shell"
+    },
     "experimental_flag_backfill": {
       "cron": "*/15 * * * *",
       "class": "ExperimentalFlagBackfillJob",
@@ -262,6 +267,11 @@
       "class": "TokenUsageBackfillJob",
       "description": "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box"
     },
+    "post_deploy_tasks": {
+      "cron": "*/2 * * * *",
+      "class": "PostDeployTaskJob",
+      "description": "Run the one-time post-deploy tasks in db/post_deploy, so an ops step ships with the deploy instead of needing a shell"
+    },
     "experimental_flag_backfill": {
       "cron": "*/15 * * * *",
       "class": "ExperimentalFlagBackfillJob",
@@ -453,6 +463,11 @@
       "cron": "*/15 * * * *",
       "class": "ExperimentalFlagBackfillJob",
       "description": "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
+    },
+    "post_deploy_tasks": {
+      "cron": "*/2 * * * *",
+      "class": "PostDeployTaskJob",
+      "description": "Run the one-time post-deploy tasks in db/post_deploy, so an ops step ships with the deploy instead of needing a shell"
     },
     "cli_status_refresh": {
       "cron": "*/2 * * * *",

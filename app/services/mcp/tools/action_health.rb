@@ -9,6 +9,7 @@ module Mcp
       ACTIONS = %w[
         cleanup_processes retry_sessions archive_old cli_refresh cli_clear_cache
         enter_queue_recovery_mode exit_queue_recovery_mode backfill_token_usage
+        run_post_deploy_tasks
       ].freeze
 
       # The three HealthMonitorService actions terminate processes and rewrite rows
@@ -46,6 +47,11 @@ module Mcp
           re-scan, or to restart one that stopped. Idempotent — it returns the run already in
           flight rather than starting a second, and ingestion upserts on the API request id, so a
           re-read directory writes no duplicate rows.
+        - **run_post_deploy_tasks**: Re-arm any failed one-time post-deploy task (`db/post_deploy/`)
+          and queue a run. These normally run themselves within a couple of minutes of a deploy and
+          need nobody; use this when one has failed for a reason that has since been fixed, or when
+          its retries are spent. Idempotent. Their current state is in `get_system_health` under
+          `post_deploy_task_health`.
 
         Note: "queue recovery mode" is about the JOB QUEUES. It is unrelated to session
         recovery after a deploy or crash, and it never touches session state.
@@ -102,6 +108,7 @@ module Mcp
         when "enter_queue_recovery_mode" then enter_queue_recovery_mode(args)
         when "exit_queue_recovery_mode" then exit_queue_recovery_mode
         when "backfill_token_usage" then backfill_token_usage
+        when "run_post_deploy_tasks" then run_post_deploy_tasks
         end
 
         record_action(action)
@@ -187,6 +194,22 @@ module Mcp
         "#{run.rows_written} rows written so far\n\n" \
         "It runs in slices on a five-minute cron and stops when the corpus is covered. " \
         "`get_costs` reports coverage as it advances.\n\n#{json_block(TokenUsageBackfill.coverage)}"
+      end
+
+      # The MCP half of the same ops action the health page button and
+      # POST /api/v1/health/run_post_deploy_tasks take. One implementation
+      # underneath, so the three surfaces cannot mean different things.
+      def run_post_deploy_tasks
+        result = PostDeployTask::Runner.request!
+        outstanding = result[:total] - result[:succeeded]
+
+        "## Post-Deploy Tasks Queued\n\n" \
+        "- **Re-armed:** #{result[:rearmed]} failed task#{'s' unless result[:rearmed] == 1}\n" \
+        "- **Outstanding:** #{outstanding} of #{result[:total]} recorded task#{'s' unless result[:total] == 1}" \
+        "#{" (+#{result[:awaiting_first_tick]} never ticked)" if result[:awaiting_first_tick].positive?}\n" \
+        "- **Blocked:** #{result[:blocked]} (failed and out of retries)\n\n" \
+        "A pass runs every two minutes and works each task inside a 90-second budget; a task too " \
+        "slow for one slice resumes on the next tick.\n\n#{json_block(result)}"
       end
 
       def json_block(payload)

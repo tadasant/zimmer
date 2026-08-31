@@ -157,12 +157,15 @@ a shell is a step no agent can take and a human has to be interrupted for.
 
 Three delivery mechanisms, in order of preference:
 
-1. **A deploy.** A migration, a seed, a one-shot job enqueued from a cron entry that goes idle once
-   its work is done. `TokenUsageBackfillJob` is the worked example: it starts a sweep on the first
-   tick after the deploy, records its progress in a table, and costs an indexed lookup per tick
-   forever after. See [Token spend](/operate/costs/#why-a-job-and-not-a-rake-task).
+1. **A deploy.** A migration, or — for a **one-time** step that needs application code — a
+   post-deploy task in `db/post_deploy/`. That is the default answer, and it has its own section
+   below. `TokenUsageBackfillJob` predates it and is the bespoke worked example of the same shape:
+   it starts a sweep on the first tick after the deploy, records its progress in a table, and costs
+   an indexed lookup per tick forever after. See
+   [Token spend](/operate/costs/#why-a-job-and-not-a-rake-task).
 2. **A scheduled idempotent job.** Anything that has to keep converging — refreshes, reconciliation
-   sweeps, cleanups. Idempotence is what makes an unattended cron safe to leave running.
+   sweeps, cleanups. Idempotence is what makes an unattended cron safe to leave running. A
+   *recurring* need is a cron entry, not a post-deploy task.
 3. **The app's own surfaces** — a button in the web UI, a REST endpoint, an MCP action. This is
    where operator-*triggered* actions belong. The Costs page's re-scan button,
    `POST /api/v1/costs/backfill` and `action_health`'s `backfill_token_usage` are the same request
@@ -282,6 +285,86 @@ in exactly the same way, and the guard says nothing about them. Their phase 1 is
 `ignored_columns` entry but an add-and-backfill, which is a longer recipe this repo has not written
 down — see [zimmer#722](https://github.com/tadasant/zimmer/issues/722). Treat them with the same
 suspicion by hand.
+
+## One-time post-deploy tasks
+
+**If the step runs once and then never again, write a post-deploy task.** This is Zimmer's
+equivalent of the `after_party` gem, and it is the mechanism the rule above points at: you should
+not have to invent the apparatus each time, and you should not have to reach for a shell.
+
+A task is one file in `db/post_deploy/`, named like a migration:
+
+```sh
+bin/rails generate post_deploy_task prune_orphaned_widgets
+# => db/post_deploy/20260830100500_prune_orphaned_widgets.rb
+```
+
+```ruby
+class PruneOrphanedWidgets < PostDeployTask
+  def up
+    Widget.where(owner_id: nil).delete_all
+  end
+end
+```
+
+That is the whole authoring surface. Nothing registers it, nothing else has to be edited, and
+`PostDeployTaskJob` — a two-minute cron entry on the `default` queue — picks it up within a couple
+of minutes of the deploy.
+
+### What it guarantees, and what it does not
+
+| | |
+| --- | --- |
+| **Runs once** | `succeeded` is terminal in `post_deploy_task_runs`, keyed on the file's timestamp. Renaming the class does not re-run it. |
+| **Never runs twice at once** | The ledger row is claimed with a conditional `UPDATE`, so two containers coming up together produce one winner and one no-op. |
+| **Never wedges the deploy** | Nothing in the deploy waits on it. It is a cron job in the worker, not an entrypoint step or a Kamal hook, precisely so that a task which is slow or raises cannot hold the cutover. |
+| **Never wedges the next task** | Each task is worked inside its own rescue. A failure is recorded and the task behind it still runs. |
+| **Does *not* guarantee idempotency** | The mechanism cannot know whether a task that died halfway half-applied. Write `up` so that running it twice is harmless — an upsert, a `delete_all` of a shrinking set, a `WHERE … IS NULL` guard — exactly as you would a data migration. |
+
+### Long-running work
+
+**This is for the hour-long case as well as the ten-millisecond one.** Each task is handed a
+90-second budget (`PostDeployTaskJob::SLICE_BUDGET`). A task that cannot finish inside it returns
+`PostDeployTask::CONTINUE` and is resumed on the next tick from the `cursor` it saved. `sweep` is
+that loop packaged — it walks a relation in key order, checkpoints after each batch, and yields the
+worker when the budget runs out:
+
+```ruby
+class PruneOrphanedWidgets < PostDeployTask
+  def up
+    sweep(Widget.where(owner_id: nil), batch_size: 500) do |batch|
+      Widget.where(id: batch.map(&:id)).delete_all
+      checkpoint!(deleted: stats.fetch("deleted", 0) + batch.size)
+    end
+  end
+end
+```
+
+The token-usage backfill's hour of wall clock is exactly this shape; it predates the mechanism and
+keeps its own apparatus, but a new task of that size does not need one.
+
+### When it fails
+
+A task that raises is recorded on its row and retried with backoff — 1m, 5m, 15m, 30m, 1h — and
+then **stops**, so a durably broken task is not burning a worker slice every two minutes. At that
+point it reads as `blocked`, and the health page turns critical. A worker killed mid-task (a deploy,
+an OOM) leaves its claim behind; the lease expires after 20 minutes and the abandoned claim is
+converted into an ordinary failure, so it retries down the same path.
+
+### Seeing it without a shell
+
+One object, `PostDeployTaskRun.summary`, rendered four ways so they cannot disagree:
+
+| Surface | Where |
+| --- | --- |
+| **Health page panel** | `/health` → **Post-Deploy Tasks** — status per task, counters, the error text, and a **Re-arm and run now** button |
+| **REST** | `GET /api/v1/health` → `health_report.post_deploy_task_health`; `POST /api/v1/health/run_post_deploy_tasks` to re-arm |
+| **MCP** | `get_system_health` reports it; `action_health` with `action: "run_post_deploy_tasks"` re-arms |
+| **Supervisor** | `/supervisor/post_deploy_task_runs` — read-only, row-level: cursor, stats, lease holder, backtrace |
+
+Re-arming is the answer to "the task failed for a reason I have now fixed". It clears the failure
+count and queues a pass; it will not re-open a task that already succeeded, because re-running one
+of those is what writing a new task file is for.
 
 ## The database connection budget
 
