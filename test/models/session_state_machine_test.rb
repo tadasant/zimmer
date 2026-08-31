@@ -2008,6 +2008,34 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_nil session.reload.running_job_id
   end
 
+  # The suppression is a DEFERRAL to a recovery sweep, and a session in a frozen
+  # category has no sweep coming: both CleanupOrphanedSessionsJob and
+  # DeploymentRecoveryJob scope every query through Session.not_in_frozen_category.
+  # AgentSessionJob's recovery-pause writers do not check the category — they run
+  # inside the session's own job, not a bulk recovery flow — so this pause really can
+  # happen. Suppressing it would delete the announcement rather than defer it: no
+  # sweep continues the session, so SessionContinuation's give-up branch never runs
+  # to make it later either.
+  test "a recovery pause in a frozen category announces itself, because no sweep is coming" do
+    frozen = Category.create!(name: "Parked", is_frozen: true)
+    session = sessions(:waiting)
+    session.update!(
+      status: :running,
+      push_notifications_enabled: true,
+      category: frozen,
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    marker = session.needs_input_transition_count + 1
+    assert_enqueued_with(job: AoEventTriggerJob, args: [ "session_needs_input", session.id, marker ]) do
+      assert_enqueued_jobs 1, only: SendPushNotificationJob do
+        session.pause!
+      end
+    end
+  end
+
   # The carve-out reads `paused_by == "recovery"` exactly, not "anything that is not
   # a turn ending". A human hitting Pause is a real stop and a watcher wants to know
   # about it; only the recovery sweeps promise to undo their own pause.

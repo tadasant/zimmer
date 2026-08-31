@@ -153,7 +153,7 @@ module SessionStateMachine
             # one that has churned — leaving the counter alone would let the older
             # event survive its own settle check and fire.
             marker = bump_needs_input_transition_counter
-            announce_needs_input(marker) unless recovery_pause?
+            announce_needs_input(marker) unless announcement_deferred_to_recovery_sweep?
             enqueue_session_inference_if_needed
             enqueue_status_summary_refresh
           end
@@ -783,6 +783,25 @@ module SessionStateMachine
   end
 
   private
+
+  # Whether this pause's announcement is being DEFERRED to a recovery sweep, rather
+  # than skipped outright. That distinction is the whole safety argument, so it is
+  # the question the callback asks.
+  #
+  # A recovery pause qualifies only when a sweep will actually reach the session.
+  # Both CleanupOrphanedSessionsJob and DeploymentRecoveryJob scope every query
+  # through Session.not_in_frozen_category, so a session parked in a frozen category
+  # is one neither will ever select. AgentSessionJob's two recovery-pause writers do
+  # not check the category — they run inside the session's own job rather than in a
+  # bulk recovery flow, unlike SessionRecoveryService, which bails on a frozen
+  # category before it ever pauses — so this pause really can happen there.
+  # Suppressing it would not defer the announcement, it would delete it: no sweep
+  # continues the session, so SessionContinuation never runs and the give-up branch
+  # that makes the deferred announcement is never reached either. That session is
+  # stuck, and stuck is exactly what a watcher has to hear about.
+  def announcement_deferred_to_recovery_sweep?
+    recovery_pause? && !category&.is_frozen?
+  end
 
   # The pause's announcement: the settled `session_needs_input` wake fan-out, and
   # the human's debounced push. Both gate on the same marker — see the "one bump,
