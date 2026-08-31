@@ -1320,6 +1320,63 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "a resume is meant to land on an existing transcript; the failed-resume path handles it when it cannot"
   end
 
+  # The direction that matters most, and the one a wrong presence answer would
+  # break: a real conversation must never be abandoned. Zimmer's stored copy is
+  # authoritative when the file on disk has been lost — a recreated clone — so
+  # the id stays, and the conflict handler's resume branch is what recovers it.
+  test "spawn keeps its session id when only Zimmer's copy holds the conversation" do
+    original_session_id = @session.session_id
+    @session.update!(transcript: "#{{ "type" => "assistant", "message" => { "content" => "real history" } }.to_json}\n")
+    write_runtime_transcript("/tmp/test-clone", original_session_id, content: ai_title_stub(original_session_id))
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    assert_equal original_session_id, @session.reload.session_id,
+      "a stub on disk over a stored conversation is a lost file, not an empty session"
+  end
+
+  # The empty-turn backstop renews too — same reasoning, different door in.
+  test "handle_exit restarts an empty turn under a new session id" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_not_equal original_session_id, @session.reload.session_id,
+      "nothing was written under the old id, and it may already be held by a stub"
+    assert_equal @session.session_id, @mock_cli_adapter.executed_commands.last[:session_id]
+  end
+
+  # Codex mints its own id, so the pre-spawn check has nothing to renew and must
+  # not try — the stored id is a record of what the runtime chose, not an
+  # instruction to it.
+  test "spawn does not renew the session id for a runtime that mints its own" do
+    session = create_codex_session
+    original_session_id = session.session_id
+    session.update!(transcript: nil)
+    codex_adapter = MockCodexRuntimeAdapter.new
+    codex_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/codex-clone/codex_stderr.log" } }
+    @mock_file_system.mkdir_p("/tmp/codex-clone")
+
+    ProcessLifecycleManager.new(
+      session: session,
+      cli_adapter: codex_adapter,
+      process_manager: @mock_process_manager,
+      log_buffer: LogBuffer.new(session),
+      file_system: @mock_file_system
+    ).spawn(prompt: "Hello", working_dir: "/tmp/codex-clone")
+
+    assert_equal original_session_id, session.reload.session_id
+  end
+
   # The 126-byte file the bug is made of: one record, written before any message.
   def ai_title_stub(session_uuid)
     "#{{ "type" => "ai-title", "aiTitle" => "Fix the thing", "sessionId" => session_uuid }.to_json}\n"

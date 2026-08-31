@@ -171,11 +171,21 @@ extract_session_id(raw_event)
 mints_own_session_id?                               # Codex: true. Claude: false.
 extract_subagent_links(raw_event)
 extract_subagent_spawns(raw_event)
+conversation_record?(raw_event)                     # conversation, or bookkeeping?
 ```
 
 `mints_own_session_id?` is a correctness landmine. If you return `true` for a runtime whose
 session id Zimmer generates, forked sessions collide on the unique `session_id` index.
 Tracked in [#96](https://github.com/tadasant/zimmer/issues/96).
+
+`conversation_record?` is the second one. Every recovery path asks
+`RuntimeConversationPresence` whether the runtime has written a conversation before it abandons
+one, and this method is what that question resolves to. Answer it with a **deny-list** of the
+bookkeeping your runtime writes into the same file — Claude Code's `ai-title`, Codex's
+`session_meta` — so a record type you have not met counts as conversation. Get the polarity
+backwards and a session's real history is thrown away; leave it unimplemented and it raises
+`NotImplementedError` out of a recovery path. See
+[A transcript with no conversation in it](/sessions/spawning/#a-transcript-with-no-conversation-in-it-wedges-a-session-id).
 
 ### The rest
 
@@ -203,7 +213,8 @@ Tracked in [#96](https://github.com/tadasant/zimmer/issues/96).
    Declare `self.stderr_log_filename` (`<runtime>_stderr.log`) and guard `execute`/`resume`
    with `validate_working_dir!`. `pgroup: true`, NULL stdin/stdout.
 4. Retry strategy — all five predicates.
-5. Transcript source + normalizer — including `find_main_transcript` and `mints_own_session_id?`.
+5. Transcript source + normalizer — including `find_main_transcript`, `mints_own_session_id?`
+   and `conversation_record?`.
 6. Prompt contribution → register in `RuntimePromptContribution.for`.
 7. Config post-processor.
 8. MCP credential writer.

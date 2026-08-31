@@ -525,7 +525,8 @@ re-asserts it cannot succeed no matter how many times it runs. That is why "has 
 a conversation" means *at least one message record* rather than *any bytes*: each runtime's
 normalizer answers `conversation_record?` with a deny-list of the bookkeeping it writes around a
 conversation (Claude Code's `ai-title`, `queue-operation`, `attachment`, `last-prompt`, `mode`,
-`atis-latch`, `pr-link`, `summary`; Codex's `session_meta` and `turn_context`), so a record type the
+`atis-latch`, `pr-link`, `summary`, `file-history-snapshot`; Codex's `session_meta` and
+`turn_context`), so a record type the
 list has not met counts as conversation — over-reporting costs one wasted resume, under-reporting
 abandons real history.
 

@@ -1626,6 +1626,47 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "Codex sessions are safe to resume — the restore simply does not apply"
   end
 
+  # #519: the restore is what would otherwise undo the fix everywhere else. A
+  # session wedged in its opening seconds has a stored transcript holding one
+  # `ai-title` record, and materializing that at the resume path recreates the
+  # file that makes the id unusable by BOTH flags — on the fork's brand-new id,
+  # moments after ForkSessionService deliberately declined to write it.
+  test "restore_regressed_transcript_if_needed refuses to materialize a transcript with no conversation" do
+    session_id = SecureRandom.uuid
+    @session.update!(
+      session_id: session_id,
+      transcript: %({"type":"ai-title","aiTitle":"Fix the thing","sessionId":"#{session_id}"}\n),
+      metadata: { "working_directory" => "/tmp/clone-stub" }
+    )
+
+    job = AgentSessionJob.new
+    mock_fs = MockFileSystemAdapter.new
+    job.file_system = mock_fs
+    path = job.send(:transcript_file_path, @session, "/tmp/clone-stub")
+
+    assert_equal true, job.send(:restore_regressed_transcript_if_needed, @session, "/tmp/clone-stub", nil),
+      "there is nothing to repair, so the spawn is safe to proceed"
+    refute mock_fs.exists?(path),
+      "writing the stub back would poison the very id the session is about to spawn under"
+  end
+
+  test "write_transcript_to_clone skips a transcript with no conversation in it" do
+    session_id = SecureRandom.uuid
+    @session.update!(
+      session_id: session_id,
+      transcript: %({"type":"queue-operation"}\n{"type":"ai-title","aiTitle":"x"}\n),
+      metadata: { "working_directory" => "/tmp/clone-stub-write" }
+    )
+
+    job = AgentSessionJob.new
+    mock_fs = MockFileSystemAdapter.new
+    job.file_system = mock_fs
+
+    job.send(:write_transcript_to_clone, @session, "/tmp/clone-stub-write", nil)
+
+    refute mock_fs.exists?(job.send(:transcript_file_path, @session, "/tmp/clone-stub-write"))
+  end
+
   test "should fail session gracefully when clone recreation fails during follow-up" do
     session_id = SecureRandom.uuid
     @session.update!(

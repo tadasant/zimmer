@@ -48,9 +48,24 @@ module RuntimeConversationPresence
   # @return [Boolean] true when either store holds a conversation
   def persisted?(session:, working_directory: nil, file_system: nil)
     return false if session.nil?
-    return true if conversation?(session.transcript, session: session)
+    return true if stored_conversation?(session)
 
     runtime_transcript_present?(session, working_directory, file_system)
+  end
+
+  # Zimmer's own copy, asked the same way and rescued the same way as the on-disk
+  # half below. The rescue is not decoration: #handle_session_id_conflict turns any
+  # raise out of this question into a terminal `failed`, which is the outcome the
+  # whole of #519 is about — so a question that cannot be answered is answered
+  # "present" rather than allowed to escape.
+  def stored_conversation?(session)
+    conversation?(session.transcript, session: session)
+  rescue => e
+    Rails.logger.warn(
+      "[RuntimeConversationPresence] Could not inspect the stored transcript for " \
+      "session #{session&.id}: #{e.message} — assuming a conversation exists"
+    )
+    true
   end
 
   # Errors are answered as "present" — the conservative direction. A lookup that

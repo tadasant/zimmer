@@ -1328,7 +1328,16 @@ class ProcessLifecycleManager
     source = TranscriptRuntime.source_for(session, file_system: @file_system)
     path = source.resume_transcript_path(session: session, working_directory: working_dir)
     return if path.blank? || !@file_system.exists?(path)
-    return if RuntimeConversationPresence.conversation?(source.read_raw(path), session: session, source: source)
+    # BOTH stores, not just the file that would collide — the rule
+    # RuntimeConversationPresence exists to enforce. A clone recreated under a
+    # session leaves a stub (or nothing) on disk over a stored conversation that
+    # is real, and renewing there would spawn a turn with no history behind it.
+    # The job re-materializes the stored transcript before this point, so in
+    # practice the two stores agree by the time we ask; asking both anyway is
+    # what keeps that an optimization rather than the thing correctness rests on.
+    return if RuntimeConversationPresence.persisted?(
+      session: session, working_directory: working_dir, file_system: @file_system
+    )
 
     add_log(
       "A transcript already exists for session id #{session.session_id} but holds no conversation — " \
