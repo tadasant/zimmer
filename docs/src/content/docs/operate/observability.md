@@ -142,7 +142,7 @@ re-read the upstream source on the upgrade PR itself.
 
 ### A lifecycle state the session has not reached yet is logged at INFO, not ERROR
 
-The third variant of the same rule, and the one that catches application code rather than a
+The fourth variant of the same rule, and the one that catches application code rather than a
 framework. A piece of session metadata that a later step writes is *absent* before that step
 runs, so reporting the absence at ERROR turns a normal point in the lifecycle into a page.
 
@@ -159,11 +159,19 @@ left for a human to do ([#473](https://github.com/tadasant/zimmer/issues/473)).
 | The session is… | Level | Because |
 | --- | --- | --- |
 | `waiting` — held for quota, queued behind the fleet cap, waiting on a clone | INFO | it has not been spawned, so there is nothing to have written the key |
-| anything else — `running`, `needs_input`, `failed` | ERROR | it got past the spawn, so the key should be there and its absence is a real defect |
+| any other state — `running`, `needs_input`, `failed`, `archived` | ERROR | the spawn should have written the key, so its absence is a real defect |
 
 The exemption is drawn no wider than `waiting` deliberately. Widening it to "any session
 without the key" would swallow the case the line exists to catch, which is the worse of the
-two failures: an alert nobody needs is noise, a defect nobody sees is not.
+two failures: an alert nobody needs is noise, a defect nobody sees is not. One benign ERROR
+survives that choice on purpose — `restart_from_scratch` strips `working_directory` and
+resumes the session to `running` before the re-clone writes a new one, and a poll inside that
+window is indistinguishable by state from a genuine defect. See
+[limitations](/limitations/#a-restart-from-scratch-can-still-page-before-its-re-clone-finishes).
+
+Only the ERROR moves. The caller, `TranscriptPollerService#poll_and_broadcast`, still logs its
+own WARN for the same poll and still returns `false` — a pre-spawn poll leaves a record in
+VictoriaLogs either way. WARN does not page, which is the whole difference.
 
 ## How environments are told apart
 

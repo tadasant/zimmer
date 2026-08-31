@@ -3647,6 +3647,25 @@ Whether the outcome cost exceeds the token saving is not something the current i
 answer: the Costs page shows `session_hierarchy` and `human_messages` trending to zero and
 `provenance_tool` picking up, which measures the bytes, not the decisions.
 
+## A restart from scratch can still page before its re-clone finishes
+
+`TranscriptPollerService` decides how loudly to report a missing `working_directory` from the
+session's lifecycle state: `waiting` means it was never spawned and logs at INFO, and every
+other state logs at ERROR because the spawn should have written the key
+([#473](https://github.com/tadasant/zimmer/issues/473), and
+[Observability](/operate/observability/#a-lifecycle-state-the-session-has-not-reached-yet-is-logged-at-info-not-error)).
+
+One state disagrees with that reading. `restart_from_scratch` strips `working_directory` along
+with the rest of `Session::SETUP_ARTIFACT_KEYS`, resumes the session to `running`, and only
+then enqueues the job that re-clones. A poll landing in that window sees a `running` session
+with no `working_directory` and pages, on a session a human just deliberately restarted.
+
+The state cannot tell that apart, which is why the split does not try to: a session mid-restart
+and a session whose spawn silently failed to record its directory are the same two fields. It
+predates the INFO/ERROR split and the split neither causes it nor fixes it. Closing it means a
+positive marker for "a re-clone is in flight" rather than a wider exemption — widening the
+exemption to "any session without the key" would swallow the defect the ERROR exists to catch.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
