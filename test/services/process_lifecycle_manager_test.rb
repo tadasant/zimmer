@@ -1282,6 +1282,9 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "spawn takes a new id when a stub transcript already holds the one it would assert" do
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     original_session_id = @session.session_id
+    # A session that has never run: Zimmer has polled nothing, and the only thing
+    # anywhere under this id is the stub its first seconds left on disk.
+    @session.update!(transcript: nil)
     write_runtime_transcript("/tmp/test-clone", original_session_id, content: ai_title_stub(original_session_id))
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
 
