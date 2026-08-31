@@ -74,6 +74,109 @@ module Supervisor
       assert_response :unauthorized
     end
 
+    # === The challenge is for humans, not for the browser's guesses ===
+    #
+    # A 401 is the gate refusing. `WWW-Authenticate: Basic` on it is a separate
+    # instruction to the browser to go ask the human, and the browser obeys it
+    # for any same-origin credentialed fetch — including Turbo's hover-prefetch,
+    # which no one clicked. That is how a sign-in dialog appeared over the
+    # sessions dashboard at random moments. The refusal stays; the summons does
+    # not go out for a request nobody made.
+
+    test "a prefetched request is refused without a Basic challenge" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      get supervisor_logs_url, headers: { "HTTP_X_SEC_PURPOSE" => "prefetch" }
+
+      assert_response :unauthorized
+      assert_nil response.headers["WWW-Authenticate"],
+        "a challenge on a background fetch is what pops the browser's native sign-in dialog"
+    end
+
+    test "a browser-initiated prefetch is refused without a Basic challenge" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      # Speculation rules and <link rel=prefetch> send the standard header;
+      # Chrome has sent the pre-standard `Purpose:` spelling for years.
+      [ "HTTP_SEC_PURPOSE", "HTTP_PURPOSE" ].each do |header|
+        get supervisor_logs_url, headers: { header => "prefetch" }
+
+        assert_response :unauthorized, "#{header} should still be refused"
+        assert_nil response.headers["WWW-Authenticate"], "#{header} should not be challenged"
+      end
+    end
+
+    test "an unconfigured realm does not challenge a prefetch either" do
+      ENV.delete(PASSWORD_ENV)
+
+      get supervisor_logs_url, headers: { "HTTP_X_SEC_PURPOSE" => "prefetch" }
+
+      assert_response :unauthorized
+      assert_nil response.headers["WWW-Authenticate"]
+    end
+
+    # Turbo hands a prefetched response to a later click on the same link, so the
+    # 401 body is what a link that forgot `data-turbo-prefetch="false"` would
+    # render. It has to be HTML with a way forward — Turbo renders a non-HTML
+    # error response as a blank page.
+    test "the prefetch refusal renders a page that can reach the real challenge" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      get supervisor_logs_url, headers: { "HTTP_X_SEC_PURPOSE" => "prefetch" }
+
+      assert_equal "text/html", response.media_type
+      assert_select "a[href=?][data-turbo=?]", supervisor_logs_path, "false" do |links|
+        assert_equal 1, links.size, "one link back, forcing a real navigation that does get challenged"
+      end
+    end
+
+    # An unconfigured realm has no credential that opens the panel, so offering
+    # to prompt for one would send an operator to a dialog nothing satisfies —
+    # the operator confusion the log line above the gate exists to prevent.
+    test "the prefetch refusal says the realm is closed when it is unconfigured" do
+      ENV.delete(PASSWORD_ENV)
+
+      get supervisor_logs_url, headers: { "HTTP_X_SEC_PURPOSE" => "prefetch" }
+
+      assert_response :unauthorized
+      assert_select "h1", text: "Supervisor is closed"
+      assert_select "a", count: 0
+      assert_match(/SUPERVISOR_PASSWORD/, response.body)
+    end
+
+    # A deep link keeps its page and search params, so whoever follows the link
+    # back lands where the prefetch was aimed rather than at the index.
+    test "the prefetch refusal's link back preserves the query string" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      get supervisor_logs_url(page: 3, search: "boom"), headers: { "HTTP_X_SEC_PURPOSE" => "prefetch" }
+
+      assert_response :unauthorized
+      assert_select "a[href=?]", supervisor_logs_path(page: 3, search: "boom")
+    end
+
+    # The whole point of suppressing the challenge only for prefetches: a human
+    # who clicks the link must still be able to sign in.
+    test "a real navigation still gets the Basic challenge" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      # What Turbo Drive sends for a click: no prefetch marker anywhere.
+      get supervisor_logs_url, headers: { "HTTP_SEC_FETCH_MODE" => "cors", "HTTP_SEC_FETCH_DEST" => "empty" }
+
+      assert_response :unauthorized
+      assert_match(/Basic realm="#{Supervisor::ApplicationController::REALM}"/, response.headers["WWW-Authenticate"].to_s)
+    end
+
+    # A prefetch that *does* carry the credential is still a real request for a
+    # real page — suppressing the challenge must not suppress the panel.
+    test "a prefetch with the right credential still serves the panel" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      get supervisor_logs_url, headers: basic_auth_headers("supervisor", "s3cret").merge("HTTP_X_SEC_PURPOSE" => "prefetch")
+
+      assert_response :success
+    end
+
     # === Success path ===
 
     test "serves the panel with the right credential" do

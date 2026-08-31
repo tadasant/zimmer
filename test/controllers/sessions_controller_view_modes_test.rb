@@ -248,4 +248,18 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     assert_equal before.to_i, session.reload.last_user_activity_at.to_i,
       "a native browser prefetch must not count as a human view"
   end
+
+  test "Chrome's pre-standard Purpose header does not bump last_user_activity_at" do
+    session = make_session
+    session.update_column(:metadata, (session.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601))
+    before = session.reload.last_user_activity_at
+
+    # The third spelling SpeculativeRequest recognises. Chrome sent `Purpose:
+    # prefetch` for years and still does for some prefetch paths.
+    get session_path(session), headers: { "User-Agent" => DESKTOP_UA, "Purpose" => "prefetch" }
+
+    assert_response :success
+    assert_equal before.to_i, session.reload.last_user_activity_at.to_i,
+      "a Purpose: prefetch request must not count as a human view"
+  end
 end

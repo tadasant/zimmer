@@ -91,7 +91,13 @@
           <!-- Mobile: Dropdown menu -->
           <div id="index-mobile-menu-dropdown" data-mobile-menu-target="menu" class="hidden absolute top-16 right-4 left-4 bg-white border border-gray-200 rounded-lg shadow-lg z-50 md:hidden">
             <div class="p-2 space-y-1">
-              <%= link_to supervisor_root_path, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
+              <%# Turbo prefetches same-origin links on hover. /supervisor answers an
+                  unauthenticated GET with 401 + WWW-Authenticate: Basic, and the browser
+                  turns that into its native sign-in dialog even for a background fetch — so
+                  hovering here used to pop a credential prompt over the dashboard. The gate
+                  also suppresses the challenge for prefetches (Supervisor::ApplicationController#refuse);
+                  this stops the request being made at all. %>
+              <%= link_to supervisor_root_path, data: { turbo_prefetch: false }, class: "flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md" do %>
                 <svg class="mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
                   <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
@@ -178,7 +184,10 @@
           </svg>
           New Session
         <% end %>
-        <%= link_to supervisor_root_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
+        <%# No hover-prefetch: /supervisor 401s with a Basic challenge, which the browser
+              renders as a sign-in dialog even for a background fetch. See
+              Supervisor::ApplicationController#refuse. %>
+        <%= link_to supervisor_root_path, data: { turbo_prefetch: false }, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 2xl:w-full" do %>
           <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
             <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
