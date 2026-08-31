@@ -716,17 +716,12 @@ class AgentSessionJob < ApplicationJob
             level: "warning"
           )
           log_buffer.flush
-          # Try to hand off to a queued message BEFORE pausing — if a message is
-          # ready, we can continue without going through the recovery flow at all.
-          # This avoids a transient running → needs_input → running flap that fires
-          # ao_event watchers spuriously (see comment at the :needs_input
-          # exit-decision branch).
-          if process_next_enqueued_message_if_available(session, log_buffer)
-            log_buffer.add(
-              "Enqueued message being processed after recovery, exiting current job (handoff path — no pause flap)",
-              level: "info"
-            )
-            log_buffer.flush
+          # Hand off before pausing — see #handed_off_to_enqueued_message?. Here it
+          # also skips the recovery flow entirely: a ready message means there is
+          # something to run, so nothing needs recovering.
+          if handed_off_to_enqueued_message?(
+            session, log_buffer, "Enqueued message being processed after recovery, exiting current job"
+          )
             return
           end
           # The process this job was told to adopt is gone and the turn it was meant to
@@ -1700,19 +1695,11 @@ class AgentSessionJob < ApplicationJob
                   level: "info"
                 )
               end
-              # Try to hand off to a queued message BEFORE pausing — if a message
-              # is ready, the session stays running while the next AgentSessionJob
-              # takes over. This avoids a transient running → needs_input → running
-              # flap that fires ao_event watchers (e.g., session_needs_input wakes)
-              # and other one-shot subscribers spuriously.
+              # Hand off before pausing — see #handed_off_to_enqueued_message?.
               # Skip if parked — sending another message would just fail again.
-              if !parked && process_next_enqueued_message_if_available(session, log_buffer)
-                # A new job was enqueued to process the message, exit this job
-                log_buffer.add(
-                  "Enqueued message being processed, exiting current job (handoff path — no pause flap)",
-                  level: "info"
-                )
-                log_buffer.flush
+              if !parked && handed_off_to_enqueued_message?(
+                session, log_buffer, "Enqueued message being processed, exiting current job"
+              )
                 return
               end
               session.remove_metadata!(%w[
@@ -1852,17 +1839,12 @@ class AgentSessionJob < ApplicationJob
                 level: "info"
               )
             end
-            # Try to hand off to a queued message BEFORE pausing to avoid a
-            # running → needs_input → running flap that fires ao_event watchers
-            # spuriously (see comment at the :needs_input exit-decision branch).
+            # Hand off before pausing — see #handed_off_to_enqueued_message?.
             # Don't remove the running loader on the handoff path — the session
             # stays running and the new job will keep the loader visible.
-            if !parked && process_next_enqueued_message_if_available(session, log_buffer)
-              log_buffer.add(
-                "Enqueued message being processed, exiting current job (handoff path — no pause flap)",
-                level: "info"
-              )
-              log_buffer.flush
+            if !parked && handed_off_to_enqueued_message?(
+              session, log_buffer, "Enqueued message being processed, exiting current job"
+            )
               return
             end
             # Retire the recovery markers a restart from this door may have written.
@@ -2954,6 +2936,44 @@ class AgentSessionJob < ApplicationJob
     processor.process_next_message
   end
 
+  # Hand this job's ending off to a queued message instead of pausing, when one is
+  # ready. Returns true when the handoff happened and the caller should exit.
+  #
+  # == Why every "about to pause" site tries this first
+  #
+  # A pause is announced: the `session_needs_input` wake fan-out and the human's
+  # push notification. If a queued message is ready the session is not waiting on
+  # anybody — the next AgentSessionJob picks the message up and the session keeps
+  # running — so pausing would put a transient running → needs_input → running flap
+  # in front of every watcher. A one-time wake that fires destroys its siblings, so
+  # one flap can cost a watching session its whole wake set.
+  #
+  # SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW now catches this flap downstream
+  # as well, since EnqueuedMessageDrainJob::DELAY is comfortably inside it. Handing
+  # off here is still the better outcome: the session never leaves `running`, so
+  # there is no 30-second window in which the UI and every state query disagree with
+  # where the work actually is.
+  #
+  # This is the escape for the *turn-completion* pauses, and it is conditional by
+  # construction — no queued message, no handoff, and an ordinary end-of-turn pause
+  # is exactly what a watcher should be told about. The other class of pause, Zimmer
+  # restarting its own interrupted process, is silent for a different reason and by a
+  # different mechanism: it writes `paused_by: "recovery"` and the `pause` after
+  # block skips the announcement for it. See
+  # docs/src/content/docs/sessions/lifecycle.md.
+  #
+  # @param session [Session] the session about to pause
+  # @param log_buffer [LogBuffer] buffer for logging
+  # @param note [String] what to say in the log when the handoff happens
+  # @return [Boolean] true if a message was handed off and the caller should return
+  def handed_off_to_enqueued_message?(session, log_buffer, note)
+    return false unless process_next_enqueued_message_if_available(session, log_buffer)
+
+    log_buffer.add("#{note} (handoff path — no pause flap)", level: "info")
+    log_buffer.flush
+    true
+  end
+
   # Check if Claude has finished a turn and update status if needed
   # Fallback mechanism when process monitoring fails
   def check_and_update_status_if_turn_completed(session, process_pid, log_buffer)
@@ -2986,17 +3006,12 @@ class AgentSessionJob < ApplicationJob
         # Process is not running - this means the turn is complete
         Rails.logger.info "[AgentSessionJob] Detected completed turn with exited process #{process_pid}, updating status to needs_input"
 
-        # Try to hand off to a queued message BEFORE pausing to avoid a
-        # running → needs_input → running flap that fires ao_event watchers
-        # spuriously (see comment at the :needs_input exit-decision branch).
+        # Hand off before pausing — see #handed_off_to_enqueued_message?.
         # Don't remove the running loader on the handoff path — the session
         # stays running and the new job will keep the loader visible.
-        if process_next_enqueued_message_if_available(session, log_buffer)
-          log_buffer.add(
-            "Turn completed - enqueued message being processed (handoff path — no pause flap)",
-            level: "info"
-          )
-          log_buffer.flush
+        if handed_off_to_enqueued_message?(
+          session, log_buffer, "Turn completed - enqueued message being processed"
+        )
           return
         end
 
