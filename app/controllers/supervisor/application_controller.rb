@@ -6,6 +6,8 @@
 # you're free to overwrite the RESTful controller actions.
 module Supervisor
   class ApplicationController < Administrate::ApplicationController
+    include SpeculativeRequest
+
     # One shared HTTP Basic credential gates the whole Administrate surface. There
     # is no user model behind it — Zimmer is a single circle of trust, so this is
     # not "who are you" but "are you inside the perimeter at all". The panel
@@ -34,11 +36,44 @@ module Supervisor
 
       expected_username = ENV[USERNAME_ENV].presence || DEFAULT_USERNAME
 
-      authenticate_or_request_with_http_basic(REALM) do |username, password|
+      authenticated = authenticate_with_http_basic do |username, password|
         # `&`, not `&&`: compare both halves every time, so a wrong username costs
         # the same as a wrong password and neither leaks which one was wrong.
         secure_compare(username, expected_username) & secure_compare(password, expected_password)
       end
+
+      refuse unless authenticated
+    end
+
+    # Refusing and *challenging* are two different things, and separating them is
+    # the whole point of this method.
+    #
+    # The 401 is the gate saying no. The `WWW-Authenticate: Basic` header on it is
+    # a separate instruction — "ask the human for a credential" — and the browser
+    # obeys it for any same-origin `fetch` that carries credentials, not just for
+    # a navigation the human started (WHATWG Fetch, HTTP-network-or-cache fetch,
+    # step 4xx). Turbo Drive prefetches same-origin links on hover, so the cursor
+    # drifting over the dashboard's "Supervisor" button was enough to open the
+    # browser's native sign-in dialog on top of a page nobody was leaving. It
+    # looked random because it tracked the mouse, not any click.
+    #
+    # So a speculative request gets the refusal without the challenge. That
+    # weakens nothing: the request is still rejected, it was still going to
+    # render nothing, and every real navigation still gets the challenge and
+    # still logs in. It only stops the browser recruiting the human into a
+    # request they never made.
+    def refuse(realm_configured: true)
+      return request_http_basic_authentication(REALM) unless prefetch_request?
+
+      # Turbo hands a prefetched response to a subsequent click on the same link,
+      # so this body is what a link that forgot `data-turbo-prefetch="false"`
+      # would render. Give it somewhere to go rather than a blank page — and,
+      # when the realm is unconfigured, say so instead of sending an operator to
+      # a prompt no credential can satisfy.
+      render "supervisor/shared/prefetch_unauthorized",
+        layout: false,
+        status: :unauthorized,
+        locals: { realm_configured: realm_configured }
     end
 
     # Without the log line an operator sees a browser prompt that never accepts
@@ -46,7 +81,7 @@ module Supervisor
     # debug — the whole point of failing closed is lost if nobody can tell why.
     def refuse_unconfigured
       Rails.logger.warn("[supervisor] refusing #{request.path}: #{PASSWORD_ENV} is unset or blank, so the admin panel is closed")
-      request_http_basic_authentication(REALM)
+      refuse(realm_configured: false)
     end
 
     # Constant-time comparison, mirroring Api::BaseController#authenticate_api_key.
