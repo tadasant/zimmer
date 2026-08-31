@@ -720,7 +720,8 @@ class SpotSessionHold
         content: prompt,
         position: position,
         images: Array(images),
-        files: Array(files)
+        files: Array(files),
+        origin: origin_for(prompt)
       )
       message = "Spot session held before its next turn: a turn is already deferred to " \
                 "#{scheduled_at.iso8601}, so this prompt was queued behind it (position " \
@@ -738,6 +739,31 @@ class SpotSessionHold
         session.id, prompt, images: images.presence, files: files.presence,
         delay: SpotGateService::RETRY_DELAY
       )
+    end
+
+    # Who wrote the prompt this hold is parking in the queue.
+    #
+    # This method is the ONLY place a durable queue row is created from a prompt
+    # the gate refused, and it is a funnel rather than a caller: a trigger fire, a
+    # human follow-up and Zimmer's own recovery nudge all arrive here as the same
+    # opaque string. Most of what it sees is somebody else's message and is
+    # `caller`, which is the default and the wider bucket for exactly that reason.
+    #
+    # The one it can name is the recovery nudge. `AutomatedPrompts.system_recovery?`
+    # is the same predicate AgentSessionJob already keys `resume_for_system_recovery!`
+    # off, so this does not invent a second way to recognise the nudge — and reading
+    # the body is confined to this one write. Every reader afterwards asks the
+    # column.
+    #
+    # Getting this wrong in either direction is bounded and neither is silent: a
+    # nudge mis-stamped `caller` pages the way it did before, and a caller's message
+    # could only be mis-stamped by being byte-identical to the nudge template.
+    def origin_for(prompt)
+      if AutomatedPrompts.system_recovery?(prompt)
+        "automated_recovery_nudge"
+      else
+        "caller"
+      end
     end
 
     # Put a session whose turn was refused into the dormant `waiting` state a held

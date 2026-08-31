@@ -712,10 +712,11 @@ So `archive` moves them to `undelivered`, a fourth, terminal status alongside
   never delivered and is now marked undelivered: "What do you mean I pulled yellow onion?..."
   ```
 
-- An alert fires, deduped per session, **unless the caller forced past the archive guard** — see
-  [a forced archive records, it does not page](#a-forced-archive-records-it-does-not-page). Unlike
-  the unresolved-PR clause an unforced strand *is* an anomaly: a message was accepted and never
-  delivered, and the only reason to find that out from a user noticing is that nothing else said it.
+- An alert fires, deduped per session, **unless the caller forced past the archive guard**, or the
+  archive stranded nothing but [a notice Zimmer had addressed to the session
+  itself](#a-strand-nobody-was-waiting-on-records-it-does-not-page). Unlike the unresolved-PR clause
+  an unforced strand *is* an anomaly: a message was accepted and never delivered, and the only reason
+  to find that out from a user noticing is that nothing else said it.
 
 The row itself is kept, not destroyed — its content is the thing the sender was promised delivery
 of — and the session page lists it, marked as never delivered. That listing sits outside the
@@ -777,8 +778,8 @@ So the branch is on the archive, not on the message:
 
 | The archive | What happens |
 | --- | --- |
-| **Forced** past `Sessions::ArchiveGuard` | Rows retire, the archive line names them, and a `[StrandedQueue]` line goes to the log plane at WARN. No page. |
-| **Unforced** — every system-initiated archive | Rows retire, the archive line names them, **and it pages**, whatever the messages were. |
+| **Forced** past `Sessions::ArchiveGuard` | Rows retire, the archive line names them, and a `[StrandedQueue] forced=true` line goes to the log plane at WARN. No page. |
+| **Unforced** — every system-initiated archive | Rows retire, the archive line names them, **and it pages** for every message somebody was waiting on. |
 
 Production made the case on 2026-08-29. A spot-queue cleanup Tadas had asked for worked a list of
 eleven sessions that had refused archive over undelivered queued messages, read each queue as the
@@ -793,19 +794,88 @@ Three things this is *not*:
   load-bearing part: it is what puts the message in front of a caller that has not seen it. Only the
   page is dropped, and only once the caller has answered the refusal.
 - **Not silence.** The row still retires to `undelivered`, the archive line still names it, and
-  `SessionStateMachine#record_forced_strand` writes a line the log plane can be queried on — session,
+  `SessionStateMachine#record_strand_ledger` writes a line the log plane can be queried on — session,
   actor, count, and each row's id and origin. That is the fleet-wide question the per-session archive
   line cannot answer: *what has been force-discarded, and by whom?* It is logged at **WARN** on
   purpose; `Zimmer backend logging errors (excludes staging)` pages on ERROR and FATAL, and writing
   it at ERROR would move the page rather than remove it.
-- **Not "automated messages don't page".** The `origin` column still records who wrote each
-  message — `caller` for anything queued on someone's behalf, `automated_pr_merged` and
-  `automated_merge_conflict` for the notices Zimmer addresses to a session on its own behalf — and it
-  is emitted on the REST payload and in the MCP list, so a retired queue can be explained from
-  outside the database. But no origin is exempt by itself. A system sweep that strands a PR-merged
-  notice still pages, and that matters: a fork wrongly credited with its source's PR gets the merge
-  notice queued onto it and is then archived by the harvest job, and this alert is how that bug was
-  found.
+- **Not "automated messages don't page".** The `origin` column records who wrote each message —
+  `caller` for anything queued on someone's behalf, and `automated_pr_merged`,
+  `automated_merge_conflict` and `automated_recovery_nudge` for the notices Zimmer addresses to a
+  session on its own behalf — and it is emitted on the REST payload and in the MCP list, so a retired
+  queue can be explained from outside the database. Exactly [one of those origins is exempt on the
+  unforced path](#a-strand-nobody-was-waiting-on-records-it-does-not-page), and `automated_pr_merged`
+  is deliberately not it. A system sweep that strands a PR-merged notice still pages, and that
+  matters: a fork wrongly credited with its source's PR gets the merge notice queued onto it and is
+  then archived by the harvest job, and this alert is how that bug was found.
+
+#### A strand nobody was waiting on records, it does not page
+
+`force` answers *"did the caller read this?"*. It does not answer the other question the alert
+needs, which is *"was anybody waiting on it at all?"* — and there is one message in Zimmer's queue
+where the answer is no.
+
+On **2026-08-31 at 17:14:34Z**, `#alerts` paged over session
+[8810](https://zimmer.tadasant.com/sessions/8810). Everything in the chain was working:
+
+- 8810 was a **machine-created status-summary fork** of #7340 — a throwaway whose only job is to
+  write a status blurb for its source. No human ever spoke to it; Zimmer's own record of
+  human-authored messages reports **zero** anywhere in its hierarchy.
+- It was spot-held, and its re-check stopped firing. `SpotSessionHold`'s sweep re-armed it with
+  Zimmer's own **recovery nudge** — *"you may have been interrupted; continue if you were mid-task,
+  otherwise keep waiting. No human sent it."* The gate refused that turn too, so the nudge went into
+  the durable queue rather than onto a job.
+- The fork then failed to boot at all (`Runtime session id … is already in use`) and the
+  status-summary cleanup archived it. That cleanup does not consult `Sessions::ArchiveGuard` and
+  does not set `force` — correctly, on both counts — so the strand took the loud branch.
+
+The page said *"whoever queued them was told they would be sent"*. Nobody had queued it. Zimmer had
+written it, to a session that no longer existed, and then paged a human about throwing it away —
+burning a router session for a message with no author and no reader.
+
+So the unforced branch subtracts one thing, on the message rather than on the archive:
+
+| The retired queue | What happens |
+| --- | --- |
+| Anything somebody was waiting on | Rows retire, the archive line names them, **and it pages** — unchanged |
+| **Only** notices Zimmer addressed to this session | Rows retire, the archive line names them, and a `[StrandedQueue] forced=false` line goes to the log plane at WARN. No page. |
+| A mix of the two | It pages **about the caller's messages only**, and the body names how many nudges it left out |
+
+`EnqueuedMessage::SELF_ADDRESSED_ORIGINS` is that list and it has **one** entry,
+`automated_recovery_nudge`. The bar for a second is that the message must carry nothing still true
+once the session is archived. The recovery nudge clears it: its whole content is a question — *were
+you interrupted?* — put to a session that is now terminal, so it has no answer, no author waiting on
+one, and no reader left to discover the loss from.
+
+**`automated_pr_merged` deliberately does not clear it, and that contrast is the design.** A merge is
+a fact about the world that outlives the archive. An unforced strand of that notice is how the
+mis-credited-PR bug behind #555 was found — a status-summary fork that inherited its source's PR, had
+the merge notice queued onto it, and was archived by the harvest job. Keyed on "automated" this
+exemption would have silenced its own smoke detector; keyed on this one origin it cannot.
+`automated_merge_conflict` is out for the same reason: an unresolved conflict is still unresolved
+afterwards, and nothing else reports it.
+
+**Where the stamp comes from.** `SpotSessionHold#queue_behind_scheduled_turn` is the only place a
+refused turn's prompt becomes a durable queue row, and it is a funnel: a trigger fire, a human's
+follow-up and Zimmer's own nudge all reach it as the same opaque string. It stamps
+`automated_recovery_nudge` when `AutomatedPrompts.system_recovery?` recognises the prompt — the same
+predicate `AgentSessionJob` already keys `resume_for_system_recovery!` off — and `caller` otherwise,
+`caller` being the default and the wider bucket. Reading the body is confined to that one write; every
+reader afterwards asks the column. Getting it wrong is bounded in both directions and silent in
+neither: a nudge mis-stamped `caller` pages exactly as it did before, and a caller's message could
+only be mis-stamped by being byte-identical to the nudge template.
+
+Three things this is *not*, mirroring the forced branch:
+
+- **Not a hole in the guard.** `Sessions::ArchiveGuard` is untouched and still refuses an archive over
+  a queue holding a recovery nudge. The refusal is what puts an unread message in front of a caller;
+  only the page is dropped, and only for a message with no reader.
+- **Not silence.** The row still retires to `undelivered`, the archive line still names it, and
+  `record_strand_ledger` writes the `forced=false` ledger entry — so *"nothing was lost"* is a claim
+  somebody can audit rather than an absence.
+- **Not a fix for why the nudge was stranded.** A status-summary fork that cannot boot is a real
+  defect and is tracked separately. This changes who finds out about it: the fleet's log plane rather
+  than a 5pm page about a message nobody wrote.
 
 ##### One bulk archive is one page
 

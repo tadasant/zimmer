@@ -418,6 +418,51 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
                  "queueing behind a scheduled turn is not another rung on the backoff ladder"
   end
 
+  # Production session 8810, 2026-08-31. The spot-hold sweep re-armed a stalled
+  # hold with its own recovery nudge, the gate refused that turn too, and the
+  # nudge landed here — in the durable queue, stamped `caller`, indistinguishable
+  # from a message a human had sent. The fork was then archived by the cleanup
+  # that owns it and Zimmer paged about losing a message it had written itself.
+  # This method is the only place a refused prompt becomes a durable row, so it
+  # is the only place that can name what it is writing.
+  test "a queued recovery nudge is stamped as Zimmer's own, not as a caller's" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    nudge = AutomatedPrompts.system_recovery(
+      reason: "Zimmer's spot-hold sweep found this session's re-check had stopped firing"
+    )
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+      SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: nudge)
+    end
+
+    queued = session.reload.enqueued_messages.pending.order(:position).last
+    assert_equal nudge, queued.content
+    assert_equal "automated_recovery_nudge", queued.origin
+    assert queued.self_addressed?
+  end
+
+  # The funnel sees a human's follow-up and Zimmer's nudge as the same opaque
+  # string, so the stamp has to discriminate rather than blanket-exempt: `caller`
+  # is the default and the wider bucket, and a message somebody is waiting on
+  # must keep it.
+  test "a queued caller prompt stays a caller's message" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+      SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "add the onion back")
+    end
+
+    queued = session.reload.enqueued_messages.pending.order(:position).last
+    assert_equal "caller", queued.origin
+    refute queued.self_addressed?
+  end
+
   test "a queued second turn keeps its images and files" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
     session.update!(status: :running)

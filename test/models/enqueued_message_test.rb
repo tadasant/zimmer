@@ -460,6 +460,22 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
 
   # The vocabulary is what lets a reader of a retired queue tell a message
   # somebody is waiting on from one Zimmer wrote to itself.
+  # The alert's discriminator, and the one place the vocabulary is not just
+  # bookkeeping. A PR-merged notice is a fact about the world that outlives the
+  # archive, so it is deliberately NOT self-addressed: an unforced strand of it
+  # still pages, which is how the mis-credited-PR bug behind #555 was found.
+  test "only the recovery nudge is self-addressed" do
+    assert EnqueuedMessage.new(origin: "automated_recovery_nudge").self_addressed?
+    refute EnqueuedMessage.new(origin: "automated_pr_merged").self_addressed?
+    refute EnqueuedMessage.new(origin: "automated_merge_conflict").self_addressed?
+    refute EnqueuedMessage.new(origin: "caller").self_addressed?
+  end
+
+  test "every self-addressed origin is a real origin" do
+    assert (EnqueuedMessage::SELF_ADDRESSED_ORIGINS - EnqueuedMessage::ORIGINS).empty?,
+      "an origin that cannot be stamped cannot be exempted"
+  end
+
   test "accepts every origin in the vocabulary" do
     session = sessions(:running)
 

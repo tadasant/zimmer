@@ -14,13 +14,36 @@ class EnqueuedMessage < ApplicationRecord
   # queue: the web form, the two REST endpoints, MCP `manage_enqueued_messages`
   # and `action_session`, a trigger's follow-up, the GitHub comment poller. All
   # of them relay something somebody else said. The `automated_*` origins are
-  # the notices Zimmer addresses to a session on its own behalf, written by
-  # AutomatedSessionMessage when a poller sees GitHub move.
+  # the notices Zimmer addresses to a session on its own behalf: the two
+  # AutomatedSessionMessage writes when a poller sees GitHub move, and the
+  # recovery nudge SpotSessionHold parks in the queue when the gate refuses the
+  # turn that was carrying it.
   #
   # The distinction is not bookkeeping. It is what lets a reader of a retired
   # queue — on the session page, the REST index, the MCP list — tell a message
   # somebody is waiting on from one Zimmer wrote to itself.
-  ORIGINS = %w[caller automated_pr_merged automated_merge_conflict].freeze
+  ORIGINS = %w[caller automated_pr_merged automated_merge_conflict automated_recovery_nudge].freeze
+
+  # The origins whose message Zimmer addressed to the session itself, and which
+  # an archive therefore answers rather than discards.
+  #
+  # There is exactly one, and the bar for a second is high: the message has to
+  # carry nothing that is still true once the session is archived. The recovery
+  # nudge qualifies because its entire content is "you may have been interrupted
+  # — continue if you were mid-task, otherwise keep waiting". Delivered to an
+  # archived session, which is neither, it is a question with no answer. Nobody
+  # wrote it, nobody is waiting on a reply, and no reader is left to discover the
+  # loss from.
+  #
+  # `automated_pr_merged` deliberately does NOT qualify, and that contrast is the
+  # design rather than an omission. A merge is a fact about the world that
+  # outlives the archive, and an UNFORCED strand of that notice is how the
+  # mis-credited-PR bug behind #555 was found — a status-summary fork that
+  # inherited its source's PR, had the merge notice queued onto it, and was
+  # archived by the harvest job. Exempting it would silence the alert's own smoke
+  # detector. Same for `automated_merge_conflict`: an unresolved conflict is
+  # still unresolved afterwards and nothing else reports it.
+  SELF_ADDRESSED_ORIGINS = %w[automated_recovery_nudge].freeze
 
   belongs_to :session
 
@@ -72,6 +95,18 @@ class EnqueuedMessage < ApplicationRecord
   # that reported it queued.
   def mark_undelivered!
     update!(status: "undelivered")
+  end
+
+  # Whether this is a message Zimmer wrote to the session rather than one it
+  # accepted on somebody's behalf, and so whether an archive that discards it
+  # has lost anything. See SELF_ADDRESSED_ORIGINS for why the list is one entry
+  # long and why `automated_pr_merged` is not on it.
+  #
+  # Read by the strand alert only. Every other reader of a retired queue shows
+  # the row whatever its origin, because "what was in the queue" is a different
+  # question from "was anything lost".
+  def self_addressed?
+    SELF_ADDRESSED_ORIGINS.include?(origin)
   end
 
   # Reorder message to a new position

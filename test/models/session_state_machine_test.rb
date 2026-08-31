@@ -461,6 +461,114 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.archive!
   end
 
+  # Production session 8810, 2026-08-31T17:14:34Z. A machine-created
+  # status-summary fork of #7340 failed to boot ("Runtime session id ... is
+  # already in use"), and the cleanup that owns those forks archived it — an
+  # UNFORCED path, because the fork cleanup never consults Sessions::ArchiveGuard.
+  # The one thing in its queue was the recovery nudge Zimmer's own spot-hold sweep
+  # had written to it. No human message existed anywhere in that hierarchy, and
+  # the page still fired and burned a router session.
+  test "an unforced archive does not page when the only thing it strands is a recovery nudge" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.system_recovery(
+        reason: "Zimmer's spot-hold sweep found this session's re-check had stopped firing"
+      ),
+      position: 1,
+      status: "pending",
+      origin: "automated_recovery_nudge"
+    )
+
+    AlertService.expects(:raise_alert).never
+
+    session.archive_actor = "the status-summary fork cleanup"
+    session.archive!
+  end
+
+  # Not paging is not the same as not recording. "Nothing was lost" is a claim,
+  # and the ledger line is what makes it auditable — `forced=false` is what tells
+  # this branch from the authorized-discard one in a grep.
+  test "an unforced archive over only recovery nudges records the strand instead" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    nudge = session.enqueued_messages.create!(
+      content: AutomatedPrompts.system_recovery(reason: "a deploy restarted this session"),
+      position: 1,
+      status: "pending",
+      origin: "automated_recovery_nudge"
+    )
+    AlertService.stubs(:raise_alert)
+
+    entries = capture_log_entries do
+      session.archive_actor = "the status-summary fork cleanup"
+      session.archive!
+    end
+
+    severity, line = entries.find { |_severity, content| content.include?("[StrandedQueue]") }
+    assert line, "a self-addressed strand leaves a ledger entry"
+    assert_equal "WARN", severity,
+      "nothing was lost, and ERROR would page through the log-error alert instead"
+    assert_includes line, "session=#{session.id}"
+    assert_includes line, "forced=false"
+    assert_includes line, "the status-summary fork cleanup"
+    assert_includes line, "##{nudge.id}(automated_recovery_nudge)"
+    assert_equal "undelivered", nudge.reload.status, "the row is still retired"
+  end
+
+  # The subtraction is from the alert's payload only. The archive line is the
+  # per-session record of what the archive cost and must keep naming every row,
+  # whether or not anybody was waiting on it.
+  test "the archive line still names a stranded recovery nudge that did not page" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.system_recovery(reason: "a deploy restarted this session"),
+      position: 1,
+      status: "pending",
+      origin: "automated_recovery_nudge"
+    )
+    AlertService.expects(:raise_alert).never
+
+    session.archive!
+
+    line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes line, "1 queued message was never delivered and is now marked undelivered"
+    assert_includes line, "AUTOMATED SYSTEM MESSAGE"
+  end
+
+  # The guard against over-suppression, and the reason this is a partition rather
+  # than a blanket skip: one nudge sharing a queue with a real message must not
+  # buy that message silence. The page counts only what somebody is waiting on,
+  # and says how many nudges it left out so the page and the archive line cannot
+  # disagree about how many rows retired.
+  test "an unforced archive pages for the caller's message and names the nudge it left out" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    session.enqueued_messages.create!(
+      content: AutomatedPrompts.system_recovery(reason: "a deploy restarted this session"),
+      position: 1,
+      status: "pending",
+      origin: "automated_recovery_nudge"
+    )
+    session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
+
+    AlertService.expects(:raise_alert).with do |title, options|
+      title == "Queued messages stranded by an archive" &&
+        options[:details].include?("add the onion back") &&
+        options[:details].exclude?("AUTOMATED SYSTEM MESSAGE") &&
+        options[:details].include?("1 message(s) still queued") &&
+        options[:details].include?("1 automated recovery nudge")
+    end
+
+    session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
+    session.archive!
+
+    archive_line = session.logs.where("content LIKE ?", "%Session moved to trash%").sole.content
+    assert_includes archive_line, "2 queued messages were never delivered",
+      "the archive line still records both"
+  end
+
   # Deliberately an application-level failure rather than a StatementInvalid: a
   # real SQL error inside the transition's own transaction poisons the connection,
   # so the log insert that follows would fail too and the archive would roll back.

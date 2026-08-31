@@ -71,9 +71,9 @@ module SessionStateMachine
   # What the archive line says when the caller set no actor.
   ARCHIVE_ACTOR_UNRECORDED = "an unrecorded caller"
 
-  # How many retired row ids the forced-strand ledger line names before it
-  # summarises the rest. See record_forced_strand.
-  FORCED_STRAND_IDS_LOGGED = 20
+  # How many retired row ids the strand ledger line names before it summarises
+  # the rest. See record_strand_ledger.
+  STRAND_LEDGER_IDS_LOGGED = 20
 
   # Whether this archive was a caller overriding Sessions::ArchiveGuard.
   #
@@ -1100,7 +1100,7 @@ module SessionStateMachine
     # than a silent one, and paging a human about a loss they authorized is what
     # turned one sanctioned spot-queue cleanup into seven pages — and seven
     # router sessions — on 2026-08-29. The forced branch records instead: the
-    # rows retire, the archive line names them, and record_forced_strand leaves a
+    # rows retire, the archive line names them, and record_strand_ledger leaves a
     # queryable entry on the log plane.
     #
     # It is an assertion, not a proof, and the gap is worth naming: every surface
@@ -1113,16 +1113,30 @@ module SessionStateMachine
     # description.
     #
     # An UNFORCED strand is the failure this alert was built for, and stays at
-    # full volume whatever the messages were. The system-initiated archives
-    # (HealthMonitorService's stale sweep, the status-summary fork cleanup,
-    # SessionStatusSummaryHarvestJob) never consult the guard, so on those paths
-    # nobody has read anything — which is how the mis-credited-PR bug behind #555
-    # was found, via a status-summary fork that inherited its source's PR and was
-    # archived by the harvest job.
+    # full volume for every message somebody is waiting on. The system-initiated
+    # archives (HealthMonitorService's stale sweep, the status-summary fork
+    # cleanup, SessionStatusSummaryHarvestJob) never consult the guard, so on
+    # those paths nobody has read anything — which is how the mis-credited-PR bug
+    # behind #555 was found, via a status-summary fork that inherited its source's
+    # PR and was archived by the harvest job.
+    #
+    # The one thing subtracted from that branch is a message Zimmer addressed to
+    # the session itself and the archive answers: the recovery nudge. Nobody wrote
+    # it and nobody is waiting on a reply, so there is no reader to discover the
+    # loss from and nothing about it is still true afterwards — see
+    # EnqueuedMessage::SELF_ADDRESSED_ORIGINS, which is deliberately one origin
+    # long and deliberately excludes automated_pr_merged. This is a subtraction
+    # from the PAYLOAD, not from the retirement or the archive line, and a queue
+    # holding anything else still pages and says how many nudges it left out.
     if archive_forced
-      record_forced_strand(stranded)
+      record_strand_ledger(stranded, forced: true)
     else
-      alert_on_stranded_enqueued_messages(stranded)
+      self_addressed, awaited = stranded.partition(&:self_addressed?)
+      if awaited.any?
+        alert_on_stranded_enqueued_messages(awaited, suppressed: self_addressed.size)
+      else
+        record_strand_ledger(self_addressed, forced: false)
+      end
     end
     stranded
   rescue => e
@@ -1173,7 +1187,7 @@ module SessionStateMachine
   # Posted after commit, for the reason report_swallowed_side_effect explains:
   # AlertService talks to Slack synchronously, and an AASM `after` callback runs
   # inside the transition's own transaction.
-  def alert_on_stranded_enqueued_messages(stranded)
+  def alert_on_stranded_enqueued_messages(stranded, suppressed: 0)
     # Guarded here rather than at the call site, so nothing can build a
     # zero-count page — the same self-guarding shape stranded_enqueued_messages_clause has.
     return if stranded.blank?
@@ -1181,6 +1195,19 @@ module SessionStateMachine
     session_id = id
     previews = stranded.map { |message| "- #{message.content.to_s.truncate(200)}" }.join("\n")
     count = stranded.size
+    # Named rather than dropped silently, so the page and the archive line cannot
+    # disagree about how many rows this archive retired. Without it a mixed queue
+    # would page about "1 message" beside an archive line naming two, and the
+    # reader would have no way to tell a suppression from a bug.
+    footnote =
+      if suppressed.positive?
+        "\n\n(#{suppressed} automated recovery nudge#{"s" if suppressed > 1} Zimmer had addressed to " \
+        "this session #{suppressed > 1 ? "were" : "was"} also retired by this archive and " \
+        "#{suppressed > 1 ? "are" : "is"} not counted above: nobody wrote #{suppressed > 1 ? "them" : "it"} " \
+        "and nobody was waiting on a reply.)"
+      else
+        ""
+      end
 
     ActiveRecord.after_all_transactions_commit do
       AlertService.raise_alert(
@@ -1188,7 +1215,7 @@ module SessionStateMachine
         details: "Session #{session_id} was archived with #{count} message(s) still queued. They were " \
                  "never delivered and are now marked `undelivered`; whoever queued them was told they " \
                  "would be sent. Nobody was shown them before they were discarded: this archive " \
-                 "answered no refusal from Sessions::ArchiveGuard.\n\n#{previews}\n\n" \
+                 "answered no refusal from Sessions::ArchiveGuard.\n\n#{previews}#{footnote}\n\n" \
                  "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
         source: "SessionStateMachine#strand_pending_enqueued_messages",
         dedup_key: "stranded_enqueued_messages_#{session_id}"
@@ -1200,24 +1227,34 @@ module SessionStateMachine
     end
   end
 
-  # The ledger entry a forced strand leaves instead of a page.
+  # The ledger entry a strand leaves instead of a page.
   #
   # The session's own timeline already carries the human-readable version on the
   # archive line, and the rows themselves are readable as `undelivered` through
   # the REST index and the MCP list. What neither of those answers is the
-  # fleet-wide question — "what has been force-discarded, by whom, since
+  # fleet-wide question — "what has been discarded without paging, and why, since
   # Tuesday?" — because both are per session. This line is that answer: one
   # grep-able tag, the session, the actor, and each row's id and origin.
   #
-  # `warn` rather than `error`, deliberately. An authorized discard is not a
-  # fault, and the obs plane's `Zimmer backend logging errors (excludes staging)`
-  # rule pages on ERROR and FATAL — writing this at `error` would move the page
-  # rather than remove it.
+  # Two branches reach it, and `forced=` is what tells them apart in a grep:
+  #
+  # - `forced: true` — the caller answered Sessions::ArchiveGuard's refusal and
+  #   accepted the loss. What was discarded could have been anything.
+  # - `forced: false` — nobody was refused, but every retired row was a message
+  #   Zimmer had addressed to this session itself (see
+  #   EnqueuedMessage::SELF_ADDRESSED_ORIGINS). Nothing was lost, so there is
+  #   nothing to page about; the line exists so "nothing was lost" is a claim
+  #   somebody can audit rather than an absence.
+  #
+  # `warn` rather than `error`, deliberately. Neither of those is a fault, and
+  # the obs plane's `Zimmer backend logging errors (excludes staging)` rule pages
+  # on ERROR and FATAL — writing this at `error` would move the page rather than
+  # remove it.
   #
   # Deferred to after commit for the same reason the page is: the entry claims
   # an archive happened, and a transition that rolls back after this callback
   # would make that claim false.
-  def record_forced_strand(stranded)
+  def record_strand_ledger(stranded, forced:)
     return if stranded.blank?
 
     session_id = id
@@ -1226,19 +1263,26 @@ module SessionStateMachine
     # Bounded like every other rendering of a retired queue here — the previews
     # at 200 chars on the page, at 120 on the archive line. `retired=` carries
     # the true count, so a queue too long to list still reports its size.
-    listed = stranded.first(FORCED_STRAND_IDS_LOGGED)
+    listed = stranded.first(STRAND_LEDGER_IDS_LOGGED)
     rows = listed.map { |message| "##{message.id}(#{message.origin})" }.join(" ")
     rows += " +#{count - listed.size} more" if count > listed.size
+    reason =
+      if forced
+        "the caller passed `force`, which asserts it read the queue and is discarding it " \
+        "deliberately. Recorded rather than paged: the loss was authorized."
+      else
+        "every retired row was a notice Zimmer had addressed to this session itself. Recorded " \
+        "rather than paged: nobody wrote them and nobody was waiting on a reply."
+      end
 
     ActiveRecord.after_all_transactions_commit do
       Rails.logger.warn(
-        "[StrandedQueue] session=#{session_id} forced=true actor=#{actor.inspect} retired=#{count} " \
-        "messages=#{rows} — the caller passed `force`, which asserts it read the queue and is " \
-        "discarding it deliberately. Recorded rather than paged: the loss was authorized."
+        "[StrandedQueue] session=#{session_id} forced=#{forced} actor=#{actor.inspect} " \
+        "retired=#{count} messages=#{rows} — #{reason}"
       )
     rescue => e
       Rails.logger.error(
-        "[SessionStateMachine] Failed to record the forced strand on session #{session_id}: #{e.message}"
+        "[SessionStateMachine] Failed to record the strand on session #{session_id}: #{e.message}"
       )
     end
   rescue => e
