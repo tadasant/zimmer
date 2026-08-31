@@ -602,6 +602,9 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     initial_pid = 12345
     recovery_pid = 99999
+    # Read before the run: the manager holds this very object, so a renewal
+    # updates it in place and a later read would compare the new id to itself.
+    original_session_id = @session.session_id
 
     # First spawn (the one that will fail resume)
     @mock_cli_adapter.execute_hook = ->(opts) do
@@ -636,7 +639,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal @session.prompt, recovery_command[:prompt]
     # …under a NEW id. The resume that just failed is the proof there was no
     # conversation under the old one, and re-asserting it is what wedged #519.
-    assert_not_equal @session.session_id, recovery_command[:session_id]
+    assert_not_equal original_session_id, recovery_command[:session_id]
     assert_equal @session.reload.session_id, recovery_command[:session_id]
 
     # Verify session metadata was updated
