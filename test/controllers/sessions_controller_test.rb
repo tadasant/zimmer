@@ -3385,6 +3385,32 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-spot-hold-recheck]", text: /Next check/
   end
 
+  # A re-check due one second ago is a job that has not been picked up yet, not a
+  # stalled ladder — and the page must not say otherwise while /quotas, reading
+  # the same predicate with the sweep's grace, counts it as fine.
+  test "the spot hold banner does not call a barely-late re-check stalled" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 1.hour.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 30.seconds.ago.iso8601,
+      SpotSessionHold::HELD_COUNT => 3,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-banner] h3", { text: /Spot hold stalled/, count: 0 }
+    assert_select "[data-spot-hold-recheck]", { text: /has not fired/, count: 0 }
+  end
+
   # An overdue re-check is not a hold, it is a stalled ladder: the session is
   # waiting on nothing until SpotHoldSweepJob puts it back. The banner must never
   # print an already-past "next check" as if it were upcoming.

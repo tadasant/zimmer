@@ -94,19 +94,18 @@ class SpotHoldExplanation
     end
   end
 
-  # The other dormant population, and the one both surfaces used to omit
-  # entirely.
+  # The other dormant population.
   #
-  # `get_spot_policy` printed SpotSessionPause.paused_count under the heading
-  # "Spot sessions asleep in the spot queue", which reads as every dormant spot
-  # session and is not. On 2026-08-31 it reported 0 asleep while session 7507 —
-  # spot, `waiting`, held 145 times — was demonstrably asleep on a hold. The two
+  # Printing SpotSessionPause.paused_count alone under a heading like "Spot
+  # sessions asleep in the spot queue" reads as every dormant spot session and is
+  # not: on 2026-08-31 that reported 0 asleep while session 7507 — spot,
+  # `waiting`, held 145 times — was demonstrably asleep on a hold. The two
   # populations are disjoint and clear differently: a pause is resumed by
   # SpotCeilingSweepJob when the window falls, a hold by its own re-check.
   #
-  # The overdue figure is the one an operator acts on. A hold past its own
-  # re-check time is a ladder that has stopped, and until SpotHoldSweepJob existed
-  # nothing surfaced that at all.
+  # The overdue figure is the one an operator acts on: a hold past its own
+  # re-check time is a ladder that has stopped, and SpotHoldSweepJob is what
+  # repairs it.
   def sessions_held
     return "Nothing is waiting at the door — no spot turn has been refused and not yet let through." if
       @held_count.zero?

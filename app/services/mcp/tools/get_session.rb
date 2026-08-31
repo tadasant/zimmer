@@ -144,17 +144,25 @@ module Mcp
       # and was woken for a turn the gate refused, so "it never started" would be
       # the wrong story to read back.
       def spot_hold_lines(session)
+        # Gated on #held?, exactly as the session page's banner is, and for a
+        # sharper reason here: these lines say the spot-hold sweep will re-arm an
+        # overdue re-check, and that sweep only touches sessions dormant in
+        # `waiting`. An archived session keeps its hold record deliberately (see
+        # AgentSessionJob's archived guard), so reading one back with that promise
+        # attached would be a false statement to the agent reading its own session.
+        return [] unless SpotSessionHold.held?(session)
+
         hold = SpotSessionHold.record_for(session)
         return [] if hold.nil?
 
         what = hold.resuming? ? "next turn held" : "start held"
         [
-          "- **Spot gate: #{what}#{hold.reason.present? ? " (`#{hold.reason}`)" : ''}:** #{hold.detail}",
+          "- **Spot gate: #{what}#{hold.reason.present? ? " (`#{hold.reason}`)" : ''}:**" \
+          "#{hold.detail.present? ? " #{hold.detail}" : ' the gate recorded no sentence for this hold.'}",
           # The detail above is a SNAPSHOT of what the gate said at `spot_hold_at`,
-          # not a live reading, and an agent reading its own session had no way to
-          # tell. Session 7507 read back "5 of 5 session slots taken" eleven hours
-          # after the gate had gone back to `within_limits` — so the age travels
-          # with the sentence, in the same words the session page renders.
+          # not a live reading, so the age travels with it — in the same words the
+          # session page renders. Session 7507 read back "5 of 5 session slots
+          # taken" eleven hours after the gate had returned to `within_limits`.
           ("- **As of:** #{hold.as_of_sentence}" if hold.as_of_sentence),
           "- **Hold re-check:** #{hold.recheck_sentence}",
           "- **Holds so far:** #{hold.count}",
