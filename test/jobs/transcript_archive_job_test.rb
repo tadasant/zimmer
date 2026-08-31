@@ -280,4 +280,125 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
         "Manifest and metadata session counts should match"
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # #719 — the job's peak memory is decided by how many transcripts it holds at
+  # once. The build used to be handed `Session.where(id: […]).to_a`, which held
+  # every changed session live for the whole build; on a corpus that had never
+  # been archived that is every session in the database. On production it took the
+  # worker cgroup from a 1.5–2.5 GiB baseline to its 10 GiB cap in about ninety
+  # seconds, roughly four times an hour, with a single job thread active.
+  # ---------------------------------------------------------------------------
+
+  # Full-row reads are the ones that carry `transcript`. The marker scan selects only
+  # id and updated_at and is pinned by its own test above.
+  def full_session_row_selects(&block)
+    selects = []
+    callback = lambda do |_name, _start, _finish, _id, payload|
+      sql = payload[:sql].squish
+      selects << sql if sql.match?(/\ASELECT "sessions"\.\* FROM "sessions"/)
+    end
+
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record", &block)
+    selects
+  end
+
+  test "loads transcript payloads one session at a time, never as a batch" do
+    selects = full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    assert_not_empty selects, "expected the job to load session payloads at all"
+
+    selects.each do |sql|
+      assert_match(/WHERE "sessions"\."id" = /, sql,
+        "every transcript-bearing read must fetch a single session: #{sql}")
+      assert_no_match(/"sessions"\."id" IN /, sql,
+        "a multi-id payload read is exactly the #719 allocation: #{sql}")
+    end
+  end
+
+  test "reads one full session row per session it archives, and no more" do
+    selects = full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    archived = JSON.parse(File.read(@metadata_path))["sessions"].size
+
+    assert_equal archived, selects.size,
+      "the job should not instantiate sessions it does not write into the zip"
+  end
+
+  test "reconciling subagent-only sessions does not read their transcript payloads" do
+    # A first run archives everything, so the second run's only session work is the
+    # subagent reconciliation pass.
+    TranscriptArchiveJob.perform_now
+
+    subagent = SubagentTranscript.create!(
+      session: sessions(:archived),
+      agent_id: "reconcile-#{SecureRandom.hex(4)}",
+      transcript: '{"type": "user", "message": {"role": "user", "content": "hi"}}',
+      status: "completed"
+    )
+
+    selects = full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    assert_empty selects,
+      "an already-archived session should be reconciled by id, not by loading its transcript"
+  ensure
+    subagent&.destroy
+  end
+
+  test "caps how many sessions one run archives and defers the rest" do
+    total = Session.where.not(transcript: nil).count
+    assert_operator total, :>, 1, "fixtures need more than one transcript to exercise the cap"
+
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_equal 1, metadata["sessions"].size, "a capped run should archive exactly its slice"
+    assert File.exist?(@archive_path), "a capped run still has to publish what it did"
+  end
+
+  # The convergence half. A run that defers has to record the slice it finished, or the
+  # next tick starts from zero and stops in the same place — which is #495, and is why
+  # production had never completed a single run.
+  test "a capped run checkpoints its progress so the next run resumes after it" do
+    total = Session.where.not(transcript: nil).count
+    assert_operator total, :>, 1, "fixtures need more than one transcript to exercise this"
+
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+
+    counts = Array.new(total) do
+      TranscriptArchiveJob.perform_now
+      JSON.parse(File.read(@metadata_path))["sessions"].size
+    end
+
+    assert_equal (1..total).to_a, counts,
+      "each run should add exactly one more session rather than restarting the corpus"
+
+    Zip::File.open(@archive_path) do |zip|
+      Session.where.not(transcript: nil).pluck(:id).each do |id|
+        assert_not_nil zip.find_entry("sessions/#{id}.json"),
+          "session #{id} should have been picked up by one of the #{total} runs"
+      end
+    end
+  end
+
+  # Production ships only WARN and above to VictoriaLogs, so an INFO line here would be
+  # invisible on the one deployment that needs it. This is the line that names the job
+  # while it is catching up.
+  test "warns when a run defers work, at the severity production actually ships" do
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+
+    Rails.logger.stubs(:warn)
+    Rails.logger.expects(:warn).with(regexp_matches(/\[TranscriptArchiveJob\].*deferred to the next tick/)).at_least_once
+
+    TranscriptArchiveJob.perform_now
+  end
+
+  test "does not warn when the whole backlog fits in one run" do
+    Rails.logger.stubs(:warn)
+    Rails.logger.expects(:warn).with(regexp_matches(/deferred to the next tick/)).never
+
+    TranscriptArchiveJob.perform_now
+  end
 end
