@@ -14,11 +14,12 @@
 #     died halfway may have half-applied. Idempotency inside `up` is the task
 #     author's job, exactly as with a data migration.
 #
-#  2. **It never wedges.** Each task is worked inside its own rescue, so a task
-#     that raises is recorded and the next one still runs. The whole pass is
-#     bounded by a deadline, so a slow task hands its worker thread back rather
-#     than holding it. And nothing in the deploy waits on any of this — the
-#     runner is a cron job in the worker, not an entrypoint step.
+#  2. **It never wedges.** Each task is worked inside its own rescue — wide
+#     enough to cover a task file that will not even load — so a task that
+#     raises is recorded and the next one still runs. The whole pass is bounded
+#     by a deadline, so a slow task hands its worker thread back rather than
+#     holding it. And nothing in the deploy waits on any of this — the runner is
+#     a cron job in the worker, not an entrypoint step.
 #
 #  3. **A failure is visible without a shell.** Recorded on the row, counted in
 #     `PostDeployTaskRun.summary`, and rendered by the health page, the REST
@@ -113,7 +114,16 @@ class PostDeployTask
     # lease is up, which is the same path a hard-killed worker takes.
     rescue GoodJob::InterruptError
       raise
-    rescue StandardError => e
+    # ScriptError as well as StandardError, because the two most likely ways a
+    # task file is wrong are both ScriptError and neither is a StandardError:
+    # `NotImplementedError` — which is what the generator's scaffold raises, so
+    # it is the literal state of a task written but not yet filled in — and the
+    # `SyntaxError` / `LoadError` that `entry.task_class` raises on a malformed
+    # file. Uncaught, either would leave the row claimed and `running` forever
+    # (until the lease expired), abandon every task ordered behind it, and take
+    # the job down — which is precisely the "a failure is visible without a
+    # shell" promise this class is built on, inverted.
+    rescue StandardError, ScriptError => e
       run.finish_failure!(e)
       @logger.error("[PostDeployTask] #{entry.version} #{entry.task_name} failed: #{e.class}: #{e.message}")
       Rails.error.report(e, handled: true, context: { post_deploy_task: entry.version })
