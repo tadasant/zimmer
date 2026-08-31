@@ -252,8 +252,8 @@ and `DROP COLUMN` in raw SQL, heredocs included.
 
 It parses the migration rather than grepping it, because the direction is a syntactic fact. A
 `remove_column` inside `def down`, `dir.down { }` or `revert { }` is the undo of an `add_column`, and
-a regex cannot tell it from the forward body two lines above: 10 of this repo's migrations contain a
-`remove_column` and only 5 of them actually drop one. The pruning is by method *name* though, so a
+a regex cannot tell it from the forward body two lines above: 13 of this repo's migrations contain a
+`remove_column` and only 6 of them actually drop one. The pruning is by method *name* though, so a
 removal factored out of `down` into a helper is still reported. Inline it into `down` rather than
 annotating a phase 1 that never happened.
 
@@ -271,9 +271,11 @@ database, so `lint` runs it directly and answers in seconds. That is also how yo
 bundle exec ruby -r./test/support/two_phase_column_drop_guard -e 'puts TwoPhaseColumnDropGuard.report'
 ```
 
-Six migrations that dropped columns before the guard existed are named in its `GRANDFATHERED` list.
-That list is closed, and a `GRANDFATHER_CUTOFF` assertion keeps it that way: a new drop gets the two
-deploys, not a seventh entry.
+Seven migrations that dropped columns before the guard existed are named in its `GRANDFATHERED`
+list. That list is closed, and a `GRANDFATHER_CUTOFF` assertion keeps it that way: a new drop gets
+the two deploys, not an eighth entry. The newest entry is the case for the guard — `#680` dropped
+`app_settings.provenance_via_mcp_enabled` in a single phase on 2026-08-28, twelve days after the
+incident, because nothing was checking.
 
 **What it does not cover.** `rename_column`, `rename_table` and `drop_table` strand an old container
 in exactly the same way, and the guard says nothing about them. Their phase 1 is not an
