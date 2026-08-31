@@ -136,27 +136,39 @@ class PostDeployTask
 
   private
 
-  # A non-unique sweep key loses rows, silently and permanently.
+  # A sweep key that is not unique-and-non-null loses rows, silently and
+  # permanently.
   #
   # The cursor advances to `batch.last.key` and the next page asks for `key >
-  # cursor`, so any row that ties with the last row of a batch and did not fit in
-  # it is excluded from every subsequent page. Nothing raises, nothing retries,
-  # and the task reports success having skipped them — the worst shape a
-  # one-time data fix can take, because the ledger then says it ran.
+  # cursor`, so any row tying with the last row of a batch that did not fit in it
+  # is excluded from every later page. A NULL is worse: `NULL > x` is NULL, so
+  # once the cursor is set every null row disappears. Neither raises, and the
+  # task reports success — the worst shape a one-time data fix can take, because
+  # the ledger then records that it ran.
   #
-  # So the key has to be unique, and rather than say so only in a comment this
-  # refuses at the first batch. One `indexes` lookup per sweep, on the
-  # non-default path only.
+  # So the key must be the primary key, or a NOT NULL column carrying a TOTAL
+  # unique index. A *partial* unique index (`WHERE …`) is not enough: it says
+  # nothing about the rows it excludes, which are exactly the ones at risk.
+  # Checked rather than left to a doc comment, at one `indexes` lookup per sweep
+  # and only on the non-default path.
   def assert_unique_key!(relation, key)
     model = relation.klass
-    return if key.to_s == model.primary_key
+    name = key.to_s
+    return if name == model.primary_key
 
-    unique = model.connection.indexes(model.table_name).any? do |index|
-      index.unique && index.columns == [ key.to_s ]
+    column = model.columns_hash[name]
+    raise ArgumentError, "sweep(key: #{key.inspect}): #{model.name} has no column #{name}" if column.nil?
+
+    total_unique_index = model.connection.indexes(model.table_name).any? do |index|
+      index.unique && index.where.nil? && Array(index.columns) == [ name ]
     end
-    return if unique
+
+    return if total_unique_index && !column.null
 
     raise ArgumentError,
-      "sweep(key: #{key.inspect}) on #{model.name} needs a unique key: the cursor advances past "       "the last row of each batch, so rows sharing a value with it would be skipped and never "       "revisited. Use the primary key, or add a unique index on #{key}."
+      "sweep(key: #{key.inspect}) on #{model.name} needs a NOT NULL column with a total unique " \
+      "index (it has neither, or only a partial one). The cursor advances past the last row of " \
+      "each batch, so rows sharing its value — and every NULL row — would be skipped and never " \
+      "revisited. Use the primary key unless you have a reason not to."
   end
 end
