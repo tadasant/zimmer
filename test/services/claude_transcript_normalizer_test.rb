@@ -586,4 +586,26 @@ class ClaudeTranscriptNormalizerTest < ActiveSupport::TestCase
     assert_equal 1, links.length
     assert_equal "abc", links.first[:agent_id]
   end
+
+  # The #519 discriminator: which records count as conversation, and which are
+  # the bookkeeping Claude Code writes into the same file. A transcript holding
+  # only the latter is an id the runtime will neither create against nor resume.
+  test "conversation_record? separates messages from the bookkeeping around them" do
+    %w[user assistant system].each do |type|
+      assert @normalizer.conversation_record?({ "type" => type }), "#{type} is conversation"
+    end
+
+    ClaudeTranscriptNormalizer::NON_CONVERSATION_TYPES.each do |type|
+      refute @normalizer.conversation_record?({ "type" => type }), "#{type} is bookkeeping"
+    end
+  end
+
+  # A deny-list, not an allow-list: over-reporting costs one wasted resume that
+  # the failed-resume recovery already handles, while under-reporting abandons
+  # real history.
+  test "conversation_record? counts an unrecognized record as conversation" do
+    assert @normalizer.conversation_record?({ "type" => "some-record-from-a-later-cli" })
+    assert @normalizer.conversation_record?({})
+    refute @normalizer.conversation_record?(nil)
+  end
 end

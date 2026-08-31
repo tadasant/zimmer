@@ -2846,11 +2846,29 @@ class AgentSessionJob < ApplicationJob
       .resume_transcript_path(session: session, working_directory: working_directory)
   end
 
+  # Does Zimmer's stored transcript hold a conversation, as opposed to only the
+  # bookkeeping the runtime writes around one? Answered "yes" when it cannot be
+  # decided — the conservative direction everywhere this question is asked, since
+  # the cost of a wrong "yes" is one wasted resume and the cost of a wrong "no"
+  # is a restored file that never gets written.
+  def transcript_holds_conversation?(session)
+    RuntimeConversationPresence.conversation?(session.transcript, session: session)
+  rescue => e
+    Rails.logger.warn "[AgentSessionJob] Could not inspect the stored transcript for session #{session.id}: #{e.message}"
+    true
+  end
+
   # Write session transcript to a clone's Claude Code project directory so the
   # CLI can resume the conversation. Mirrors UnarchiveSessionService#write_transcript_file.
   def write_transcript_to_clone(session, working_directory, log_buffer = nil)
     path = transcript_file_path(session, working_directory)
     return if path.nil?
+    # The single funnel for materializing a stored transcript, so the #519 rule
+    # is applied once here rather than at each caller: never write a transcript
+    # with no conversation in it. Such a file gives a resume nothing to read and
+    # makes the id it names unusable by `--session-id` too.
+    return unless transcript_holds_conversation?(session)
+
     @file_system.mkdir_p(File.dirname(path))
     @file_system.write(path, session.transcript)
   rescue => e
@@ -2878,6 +2896,13 @@ class AgentSessionJob < ApplicationJob
   #   drops the user's prompt.
   def restore_regressed_transcript_if_needed(session, working_directory, log_buffer = nil)
     return true unless session.transcript.present? && session.session_id.present?
+    # A stored transcript with no conversation in it is not history to restore.
+    # Writing it would materialize the exact file that makes an id unusable by
+    # both flags — "already in use" for --session-id, "no conversation found" for
+    # --resume (#519) — and there is nothing in it a resume could read anyway. So
+    # there is nothing to repair here, and the spawn is free to proceed: it is
+    # already safe, which is what `true` says.
+    return true unless transcript_holds_conversation?(session)
 
     path = transcript_file_path(session, working_directory)
     # Runtimes without single-file restore (e.g. Codex) opt out; nothing to repair.

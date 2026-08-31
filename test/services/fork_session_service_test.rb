@@ -402,6 +402,35 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       "Forked session must have runtime_started=true for AgentSessionJob to use --resume mode"
   end
 
+  # A fork of a session wedged by #519 used to inherit the wedge on an id that
+  # had never been used: the source's transcript was a single `ai-title` record,
+  # the service copied it under the fork's freshly minted id, and the runtime
+  # then refused that id both ways — "already in use" for --session-id (the file
+  # exists), "no conversation found" for --resume (it holds no message). Prod
+  # session 8810 died this way summarising session 7340, which had died of the
+  # same bug eight days earlier.
+  test "a fork of a session whose transcript holds no conversation starts fresh instead" do
+    @source_session.update!(
+      transcript: "#{{ "type" => "ai-title", "aiTitle" => "Fix the thing", "sessionId" => @source_session.session_id }.to_json}\n"
+    )
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 0,
+      file_system: @mock_fs
+    )
+
+    assert result.success?, result.error
+    fork = result.forked_session
+    assert_equal false, fork.metadata["runtime_started"],
+      "there is nothing to resume into, so the first follow-up must spawn fresh"
+
+    transcript_path = ClaudeTranscriptSource.new(file_system: @mock_fs)
+      .resume_transcript_path(session: fork, working_directory: fork.metadata["working_directory"])
+    refute @mock_fs.exists?(transcript_path),
+      "writing the stub under the fork's new id is what poisons an id that was never used"
+  end
+
   test "generates MCP configuration file for forked session" do
     # This test verifies that the forked session has a fresh .mcp.json generated.
     # This is critical because:

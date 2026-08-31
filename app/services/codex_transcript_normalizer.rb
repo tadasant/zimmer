@@ -81,6 +81,20 @@ class CodexTranscriptNormalizer < TranscriptNormalizer
     []
   end
 
+  # @see TranscriptNormalizer#conversation_record?
+  #
+  # A rollout opens with `session_meta` and re-states `turn_context` whenever the
+  # model/cwd/approval settings change; neither carries conversation. Everything
+  # else — `response_item`, `compacted`, and the `event_msg` duplicates — does,
+  # so a rollout holding only the two meta lines is a rollout with nothing in it.
+  NON_CONVERSATION_TYPES = %w[session_meta turn_context].freeze
+
+  def conversation_record?(raw_event)
+    return false unless raw_event.is_a?(Hash)
+
+    !NON_CONVERSATION_TYPES.include?(raw_event["type"])
+  end
+
   private
 
   def event_id(ctx, suffix = "")

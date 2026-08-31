@@ -602,6 +602,9 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     initial_pid = 12345
     recovery_pid = 99999
+    # Read before the run: the manager holds this very object, so a renewal
+    # updates it in place and a later read would compare the new id to itself.
+    original_session_id = @session.session_id
 
     # First spawn (the one that will fail resume)
     @mock_cli_adapter.execute_hook = ->(opts) do
@@ -634,7 +637,10 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal 2, @mock_cli_adapter.executed_commands.size
     recovery_command = @mock_cli_adapter.executed_commands.last
     assert_equal @session.prompt, recovery_command[:prompt]
-    assert_equal @session.session_id, recovery_command[:session_id]
+    # …under a NEW id. The resume that just failed is the proof there was no
+    # conversation under the old one, and re-asserting it is what wedged #519.
+    assert_not_equal original_session_id, recovery_command[:session_id]
+    assert_equal @session.reload.session_id, recovery_command[:session_id]
 
     # Verify session metadata was updated
     @session.reload
@@ -1209,14 +1215,184 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_equal :idle, manager.current_state
   end
 
+  # ===========================================================================
+  # The message-free transcript stub (#519)
+  #
+  # Claude Code writes an `ai-title` record early and independently of any
+  # message, so a first job killed in its opening seconds leaves a ~126-byte
+  # transcript holding one record and no conversation. That file makes its id
+  # too present to create against ("already in use") AND too empty to resume
+  # ("no conversation found"), and every recovery path used to converge on
+  # re-asserting it until the conflict budget ran out and the session failed for
+  # good — dropping the request it carried, silently.
+  # ===========================================================================
+
+  # The restart route: the conflict handler must read a stub as "nothing here"
+  # and mint a new id, where a byte-counting presence test sent it to --resume.
+  test "handle_exit mints a new id when the held one names only a title record" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    @session.update!(transcript: ai_title_stub(original_session_id))
+    write_runtime_transcript("/tmp/test-clone", original_session_id, content: ai_title_stub(original_session_id))
+
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    @mock_file_system.write(stderr_path, "Error: Session ID #{original_session_id} is already in use.\n")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 99999, stderr_log_path: stderr_path } }
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_empty @mock_cli_adapter.resumed_sessions,
+      "a transcript with no message in it is nothing to resume into"
+    @session.reload
+    assert_not_equal original_session_id, @session.session_id
+    assert_equal @session.session_id, @mock_cli_adapter.executed_commands.last[:session_id]
+    assert_equal 1, @session.metadata["session_id_conflict_count"],
+      "one conflict, and the recovery must actually resolve it"
+  end
+
+  # The loop that made the wedge terminal: a failed resume recovering onto the
+  # same id, which the runtime then refuses as already in use.
+  test "handle_exit does not re-assert the id a resume just failed to find" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    @session.update!(transcript: ai_title_stub(original_session_id))
+    write_runtime_transcript("/tmp/test-clone", original_session_id, content: ai_title_stub(original_session_id))
+
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    @mock_file_system.write(stderr_path, "No conversation found with session ID: #{original_session_id}\n")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_not_equal original_session_id, @session.reload.session_id,
+      "the failed resume is the proof there is nothing under this id to preserve"
+    assert_equal @session.session_id, @mock_cli_adapter.executed_commands.last[:session_id]
+  end
+
+  # The first-launch route (prod session 5484): a session that had never run
+  # collided with a stub written under its own newly minted id, with no prior
+  # conflict to have learned it from. The spawn checks before the runtime refuses.
+  test "spawn takes a new id when a stub transcript already holds the one it would assert" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    # A session that has never run: Zimmer has polled nothing, and the only thing
+    # anywhere under this id is the stub its first seconds left on disk.
+    @session.update!(transcript: nil)
+    write_runtime_transcript("/tmp/test-clone", original_session_id, content: ai_title_stub(original_session_id))
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    assert result.success?
+    @session.reload
+    assert_not_equal original_session_id, @session.session_id
+    assert_equal @session.session_id, @mock_cli_adapter.executed_commands.last[:session_id]
+    assert_nil @session.metadata["session_id_conflict_count"],
+      "the point of checking first is that no conflict budget is spent"
+  end
+
+  # The other direction, which must not change: a file with a real conversation
+  # in it is a conversation to resume, and #handle_session_id_conflict's resume
+  # branch is what preserves it. Renewing here would throw history away.
+  test "spawn keeps its session id when the transcript on disk holds a conversation" do
+    original_session_id = @session.session_id
+    write_runtime_transcript("/tmp/test-clone", original_session_id)
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    assert_equal original_session_id, @session.reload.session_id
+    assert_equal original_session_id, @mock_cli_adapter.executed_commands.last[:session_id]
+  end
+
+  test "spawn leaves the session id alone when resuming" do
+    original_session_id = @session.session_id
+    write_runtime_transcript("/tmp/test-clone", original_session_id, content: ai_title_stub(original_session_id))
+    @mock_cli_adapter.resume_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone", resume: true)
+
+    assert_equal original_session_id, @session.reload.session_id,
+      "a resume is meant to land on an existing transcript; the failed-resume path handles it when it cannot"
+  end
+
+  # The direction that matters most, and the one a wrong presence answer would
+  # break: a real conversation must never be abandoned. Zimmer's stored copy is
+  # authoritative when the file on disk has been lost — a recreated clone — so
+  # the id stays, and the conflict handler's resume branch is what recovers it.
+  test "spawn keeps its session id when only Zimmer's copy holds the conversation" do
+    original_session_id = @session.session_id
+    @session.update!(transcript: "#{{ "type" => "assistant", "message" => { "content" => "real history" } }.to_json}\n")
+    write_runtime_transcript("/tmp/test-clone", original_session_id, content: ai_title_stub(original_session_id))
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    assert_equal original_session_id, @session.reload.session_id,
+      "a stub on disk over a stored conversation is a lost file, not an empty session"
+  end
+
+  # The empty-turn backstop renews too — same reasoning, different door in.
+  test "handle_exit restarts an empty turn under a new session id" do
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    @session.update!(transcript: nil)
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_not_equal original_session_id, @session.reload.session_id,
+      "nothing was written under the old id, and it may already be held by a stub"
+    assert_equal @session.session_id, @mock_cli_adapter.executed_commands.last[:session_id]
+  end
+
+  # Codex mints its own id, so the pre-spawn check has nothing to renew and must
+  # not try — the stored id is a record of what the runtime chose, not an
+  # instruction to it.
+  test "spawn does not renew the session id for a runtime that mints its own" do
+    session = create_codex_session
+    original_session_id = session.session_id
+    session.update!(transcript: nil)
+    codex_adapter = MockCodexRuntimeAdapter.new
+    codex_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/codex-clone/codex_stderr.log" } }
+    @mock_file_system.mkdir_p("/tmp/codex-clone")
+
+    ProcessLifecycleManager.new(
+      session: session,
+      cli_adapter: codex_adapter,
+      process_manager: @mock_process_manager,
+      log_buffer: LogBuffer.new(session),
+      file_system: @mock_file_system
+    ).spawn(prompt: "Hello", working_dir: "/tmp/codex-clone")
+
+    assert_equal original_session_id, session.reload.session_id
+  end
+
+  # The 126-byte file the bug is made of: one record, written before any message.
+  def ai_title_stub(session_uuid)
+    "#{{ "type" => "ai-title", "aiTitle" => "Fix the thing", "sessionId" => session_uuid }.to_json}\n"
+  end
+
   # The runtime's own conversation file, where TranscriptSource#locate looks for it.
-  def write_runtime_transcript(working_dir, session_uuid)
+  def write_runtime_transcript(working_dir, session_uuid, content: nil)
     require "path_sanitizer"
     dir = File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(working_dir))
     @mock_file_system.mkdir_p(dir)
     @mock_file_system.write(
       File.join(dir, "#{session_uuid}.jsonl"),
-      "#{{ "type" => "user", "message" => { "content" => "Hello" } }.to_json}\n"
+      content || "#{{ "type" => "user", "message" => { "content" => "Hello" } }.to_json}\n"
     )
   end
 

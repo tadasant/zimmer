@@ -119,8 +119,14 @@ class SessionStatusSummaryGenerator
   def unavailable_reason
     if session.status_summary_fork?
       Result.new(outcome: :skipped, message: "A status-summary fork does not summarize itself.")
-    elsif session.transcript_line_count.zero?
-      Result.new(outcome: :skipped, message: "Session has no transcript yet.")
+    elsif !RuntimeConversationPresence.conversation?(session.transcript, session: session)
+      # Line count is the wrong question here for the same reason it was the wrong
+      # question in RuntimeConversationPresence (#519): a session wedged in its
+      # opening seconds has a one-line transcript holding a title record and no
+      # conversation. Forking on that spends an agent turn asking for a summary of
+      # nothing, with neither a resume file nor an inline excerpt to answer from —
+      # an invitation to invent one.
+      Result.new(outcome: :skipped, message: "Session has no conversation to summarize yet.")
     elsif !force && !headless && !source_clone_available?
       Result.new(outcome: :unavailable, message: clone_unavailable_message)
     end
@@ -605,7 +611,15 @@ class SessionStatusSummaryGenerator
 
   def session_url = "#{AppUrl.base_url}/sessions/#{session.id}"
 
+  # Two conditions, because a fork resumes only when BOTH hold: the runtime has
+  # a deterministic resume file at all (Codex does not), and ForkSessionService
+  # actually wrote one. It declines to write for a source whose transcript holds
+  # no conversation — a session wedged by #519 has only a title record — and says
+  # so by leaving `runtime_started` off. Asking the path question alone would
+  # send such a fork to `--resume` against a file that was never written.
   def resumable_fork?(fork)
+    return false unless fork.metadata&.dig("runtime_started") == true
+
     working_directory = fork.metadata&.dig("working_directory")
     TranscriptRuntime.source_for(fork, file_system: @file_system)
       .resume_transcript_path(session: fork, working_directory: working_directory)

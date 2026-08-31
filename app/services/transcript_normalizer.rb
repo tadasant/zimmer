@@ -94,4 +94,29 @@ class TranscriptNormalizer
   def extract_subagent_spawns(raw_event)
     raise NotImplementedError, "#{self.class}#extract_subagent_spawns"
   end
+
+  # Is this record part of the CONVERSATION, as opposed to bookkeeping the
+  # runtime writes into the same file?
+  #
+  # The distinction exists because a transcript file's mere existence is not
+  # evidence that a conversation exists. Claude Code writes an `ai-title` record
+  # the moment it has a title, independently of any message, so a process killed
+  # in its opening seconds leaves a ~126-byte file with one record and no
+  # conversation. That file is simultaneously too present to create against
+  # (`--session-id <id>` → "Session ID … is already in use") and too empty to
+  # resume (`--resume <id>` → "No conversation found with session ID"), which is
+  # the wedge in #519. RuntimeConversationPresence asks this question of every
+  # record so "a conversation exists" means "a message was written", not "bytes
+  # were written".
+  #
+  # Implementations answer with a DENY-list of known bookkeeping types, not an
+  # allow-list of message types: an unrecognized record must count as
+  # conversation. Over-reporting costs one wasted resume, which the failed-resume
+  # recovery handles; under-reporting abandons real history.
+  #
+  # @param raw_event [Hash] one raw event
+  # @return [Boolean] true when the record carries conversation
+  def conversation_record?(raw_event)
+    raise NotImplementedError, "#{self.class}#conversation_record?"
+  end
 end

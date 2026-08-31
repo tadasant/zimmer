@@ -72,6 +72,68 @@ class RuntimeConversationPresenceTest < ActiveSupport::TestCase
     ), "an unanswerable lookup must never be read as proof the runtime wrote nothing"
   end
 
+  # ===========================================================================
+  # Conversation, not bytes (#519)
+  # ===========================================================================
+
+  # The 126-byte file that wedged sessions permanently: Claude Code writes the
+  # title record before any message, so a job killed in its opening seconds
+  # leaves an id the runtime will neither create against nor resume.
+  test "false when the only record either store holds is a title record" do
+    @session.update!(transcript: ai_title_stub)
+    write_runtime_transcript(content: ai_title_stub)
+
+    refute persisted?,
+      "a transcript with no message in it is not a conversation, however many bytes it has"
+  end
+
+  test "false for the bookkeeping records Claude Code writes around a conversation" do
+    @session.update!(transcript: [
+      { "type" => "queue-operation" }, { "type" => "mode" }, { "type" => "last-prompt" }
+    ].map { |r| JSON.generate(r) }.join("\n"))
+
+    refute persisted?
+  end
+
+  test "true when a stub on disk sits under a real stored conversation" do
+    @session.update!(transcript: "#{{ "type" => "assistant", "message" => { "content" => "hi" } }.to_json}\n")
+    write_runtime_transcript(content: ai_title_stub)
+
+    assert persisted?,
+      "the store that holds the conversation is the one that decides"
+  end
+
+  test "true when a stub in Zimmer's copy sits under a real conversation on disk" do
+    @session.update!(transcript: ai_title_stub)
+    write_runtime_transcript
+
+    assert persisted?
+  end
+
+  # Conservative direction, twice over: a record type this deployment's Claude
+  # Code has not written before counts as conversation, and so does a line the
+  # wire format cannot parse (a last line caught mid-flush).
+  test "true for a record type the deny-list has never met" do
+    @session.update!(transcript: "#{{ "type" => "some-new-record" }.to_json}\n")
+
+    assert persisted?
+  end
+
+  test "true for a transcript whose only line does not parse" do
+    @session.update!(transcript: "{\"type\":\"user\",\"messa")
+
+    assert persisted?
+  end
+
+  test "conversation? answers for a transcript that is not on disk yet" do
+    refute RuntimeConversationPresence.conversation?(ai_title_stub, session: @session)
+    assert RuntimeConversationPresence.conversation?(
+      "#{{ "type" => "user", "message" => { "content" => "hi" } }.to_json}\n", session: @session
+    )
+    refute RuntimeConversationPresence.conversation?(nil, session: @session)
+    refute RuntimeConversationPresence.conversation?("", session: @session)
+  end
+
   test "false for a nil session" do
     refute RuntimeConversationPresence.persisted?(
       session: nil, working_directory: @working_directory, file_system: @file_system
@@ -84,6 +146,10 @@ class RuntimeConversationPresenceTest < ActiveSupport::TestCase
     RuntimeConversationPresence.persisted?(
       session: @session, working_directory: @working_directory, file_system: @file_system
     )
+  end
+
+  def ai_title_stub
+    "#{{ "type" => "ai-title", "aiTitle" => "Fix the thing", "sessionId" => @session.session_id }.to_json}\n"
   end
 
   def write_runtime_transcript(content: nil)
