@@ -1544,7 +1544,7 @@ class ProcessLifecycleManager
       "Malformed tool call the retry ladder did not clear",
       details: [
         "A #{runtime} turn died on a tool call the CLI could not parse, and there was no retry " \
-          "budget left to take another draw with (MAX_RETRIES = #{ApiErrorRetryService::MAX_RETRIES}).",
+          "budget left to take another draw with (max #{ApiErrorRetryService::BUDGET.max}).",
         "",
         "Zimmer retries this failure because an unparseable tool call is normally a sampling " \
           "artifact. One that outlives the ladder is not: something in this turn is " \
