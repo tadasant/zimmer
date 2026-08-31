@@ -2451,6 +2451,22 @@ class AgentSessionJob < ApplicationJob
     # resume it into the very window that paused it — or, for a session a human
     # parked there from "Pause Until", straight out of the queue they put it in.
     #
+    # A session HELD by the gate is a fourth dormant shape, and it is a different
+    # population from the paused one: a pause writes `spot_pause_reason` and is
+    # resumed by SpotCeilingSweepJob, a hold writes `spot_hold_reason` and is
+    # resumed by its own re-check. Reading only the pause misses every held
+    # session, and case 1's own comment above already names the damage that does —
+    # "a spot hold lives entirely in `waiting` … pausing the session severs that
+    # chain for good". Case 1 covers only a session with no runtime session id; a
+    # held session that HAS run before falls to case 3, where without this test it
+    # is stamped `paused_by: "recovery"` on top of its hold and handed to the
+    # recovery sweeps. Session 7507 was: twelve auto-continue attempts against a
+    # clone deleted days earlier, then abandoned, leaving it in `waiting` with a
+    # hold record whose re-check had already been lost (tadasant/zimmer#648).
+    #
+    # Standing down does not by itself re-arm the ladder — SpotHoldSweepJob owns
+    # that, precisely so the repair does not depend on this path having run.
+    #
     # A session parked on an auth outage is the third dormant shape, and it arms
     # nothing either: AuthOutageParkService writes `auth_outage_reason` and sleeps
     # the session, and the only thing that wakes it is that service's own sweep
@@ -2468,8 +2484,8 @@ class AgentSessionJob < ApplicationJob
       if session.session_id.blank?
         requeue_interrupted_start(session)
         return
-      elsif session.awaiting_scheduled_wake? || SpotSessionPause.paused?(session) ||
-            AuthOutageParkService.parked?(session)
+      elsif session.awaiting_scheduled_wake? || SpotSessionHold.held?(session) ||
+            SpotSessionPause.paused?(session) || AuthOutageParkService.parked?(session)
         stand_down_for_dormant_session(session)
         return
       end
@@ -2580,7 +2596,9 @@ class AgentSessionJob < ApplicationJob
   # scheduled, a queued session jumps the queue, and a session parked because the
   # account pool is out of quota is resumed into the outage that parked it.
   def stand_down_for_dormant_session(session)
-    waiting_on = if SpotSessionPause.paused?(session)
+    waiting_on = if SpotSessionHold.held?(session)
+      "the spot gate's next re-check"
+    elsif SpotSessionPause.paused?(session)
       "its turn in the spot queue"
     elsif AuthOutageParkService.parked?(session)
       "the account pool to recover"

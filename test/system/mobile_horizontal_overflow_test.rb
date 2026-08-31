@@ -197,6 +197,30 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("session detail with an approval banner")
   end
 
+  # The stalled-hold banner is the longest prose block on the session page: a
+  # frozen gate sentence, an "as of" line carrying an ISO timestamp, and a
+  # re-check line carrying a second one. ISO timestamps are unbreakable tokens,
+  # which is signature 4 — so the phone width is where this one would go wide.
+  test "a stalled spot-hold banner does not overflow horizontally on a phone" do
+    session = create_session(status: :waiting, scheduling_class: SessionGenesis::SPOT)
+    session.update!(metadata: (session.metadata || {}).merge(
+      SpotSessionHold::HELD_AT => 11.hours.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken. Every " \
+                                      "running session counts, priority included — priority work is " \
+                                      "meant to crowd spot work out. Raise the limit on /quotas to widen it.",
+      SpotSessionHold::HELD_RETRY_AT => 10.hours.ago.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 145,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    ))
+
+    visit session_path(session)
+    assert_text "Spot hold stalled"
+
+    assert_no_horizontal_overflow("session detail with a stalled spot-hold banner")
+    page.save_screenshot("tmp/screenshots/proof-stalled-spot-hold-375.png")
+  end
+
   test "a lost-elicitation banner does not overflow horizontally on a phone" do
     session = create_session(status: :needs_input, metadata: {
       "lost_elicitation" => {

@@ -448,6 +448,19 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
                                 spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
   end
 
+  def held_spot_session(retry_at:)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "held", status: :waiting,
+                    genesis: SessionGenesis::GITHUB_ISSUE,
+                    metadata: {
+                      SpotSessionHold::HELD_AT => 11.hours.ago.utc.iso8601,
+                      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+                      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+                      SpotSessionHold::HELD_RETRY_AT => retry_at.utc.iso8601,
+                      SpotSessionHold::HELD_COUNT => 145,
+                      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+                    })
+  end
+
   def paused_spot_session
     Session.create!(git_root: "https://github.com/t/r.git", prompt: "paused", status: :waiting,
                     genesis: SessionGenesis::GITHUB_ISSUE,
@@ -456,6 +469,40 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
                       SpotSessionPause::PAUSED_REASON => SpotGateService::UTILIZATION_REASON,
                       SpotSessionPause::PAUSED_DETAIL => "Holding spot sessions."
                     })
+  end
+
+  # The card reported ONE dormant population — the sessions the ceiling paused
+  # mid-run — under a label that reads like every dormant spot session. Sessions
+  # the gate HELD before a turn are a second, disjoint population with a
+  # different resume owner, and they were invisible: on 2026-08-31 the surfaces
+  # said "asleep in the spot queue: 0" while session 7507 sat held.
+  test "show counts held sessions as well as paused ones" do
+    hold_spot_work(utilization_5h: 0.30, burn: 4.0, running: 1)
+    paused_spot_session
+    held_spot_session(retry_at: 20.minutes.from_now)
+
+    get quotas_url
+
+    assert_response :success
+    assert_select "#spot-paused-count", "1"
+    assert_select "#spot-held-count", "1"
+    assert_select "#spot-overdue-hold-count", count: 0
+    assert_match(/Spot sessions held before a turn/, response.body)
+  end
+
+  # A hold past its own re-check time is a ladder that has stopped, and until
+  # SpotHoldSweepJob existed nothing surfaced it anywhere.
+  test "show names held sessions whose re-check is overdue" do
+    hold_spot_work(utilization_5h: 0.30, burn: 4.0, running: 1)
+    held_spot_session(retry_at: 10.hours.ago)
+
+    get quotas_url
+
+    assert_response :success
+    assert_select "#spot-held-count", "1"
+    assert_select "#spot-overdue-hold-count", "1"
+    assert_match(/Its own re-check time has already passed/, response.body)
+    assert_match(/SpotHoldSweepJob/, response.body)
   end
 
   # The gate reads the Claude Code quota windows, so it has nothing to say on

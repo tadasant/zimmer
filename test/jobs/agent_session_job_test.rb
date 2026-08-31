@@ -2122,6 +2122,56 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "expected a log naming what it is actually waiting for"
   end
 
+  test "handle_interrupt_error stands down for a session held by the spot gate" do
+    # The fourth dormant shape, and the one that was missing. A spot HOLD is a
+    # different population from a spot PAUSE — `spot_hold_reason` vs
+    # `spot_pause_reason`, its own re-check vs the ceiling sweep — so reading only
+    # the pause let every held session fall through to the recovery path.
+    #
+    # Production session 7507 did exactly that on 2026-08-31: interrupted at
+    # 02:12:53 while dormant on hold #145, stamped paused_by: "recovery", swept
+    # twelve times by auto-continue against a clone deleted days earlier, and
+    # abandoned at 02:54:32 — leaving it in `waiting` with a hold record and no
+    # re-check coming (tadasant/zimmer#648).
+    @session.start!
+    job = AgentSessionJob.new(@session.id)
+    @session.update!(
+      running_job_id: job.job_id,
+      session_id: SecureRandom.uuid,
+      metadata: (@session.metadata || {}).merge("working_directory" => @transcript_dir)
+    )
+    @session.pause!
+    @session.reload.update!(metadata: @session.metadata.merge(
+      SpotSessionHold::HELD_AT => 30.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 10.minutes.from_now.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 145,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    ))
+    @session.sleep!
+    @session.reload
+    assert @session.waiting?
+    assert_not @session.awaiting_scheduled_wake?, "a hold arms nothing — the re-check job is all there is"
+    assert_not SpotSessionPause.paused?(@session), "a hold is not a pause; that is the whole confusion"
+    assert SpotSessionHold.held?(@session)
+
+    error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      job.send(:handle_interrupt_error, error)
+    end
+
+    @session.reload
+    assert @session.waiting?, "a held session must stay dormant, got #{@session.status}"
+    assert_equal "fleet_at_cap", @session.metadata[SpotSessionHold::HELD_REASON],
+      "the hold record must survive"
+    assert_not_equal "recovery", @session.metadata["paused_by"],
+      "stamping paused_by: recovery is what handed 7507 to twelve doomed auto-continue attempts"
+    assert @session.logs.any? { |log| log.content.include?("the spot gate's next re-check") },
+      "expected a log naming what it is actually waiting for"
+  end
+
   test "handle_interrupt_error falls back to needs_input when auto-continue cannot proceed" do
     # Session without session_id or working_directory — auto-continue should skip
     @session.start!

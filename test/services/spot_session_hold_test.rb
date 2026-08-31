@@ -483,6 +483,54 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     )
   end
 
+  # The turn is DEFERRED, never dropped — and until the prompt was recorded on the
+  # SESSION the only copy of it was the delayed job's argument list. A worker
+  # killed between the hold record committing and the enqueue below therefore
+  # lost the turn outright, which is exactly what stranded session 7507
+  # (tadasant/zimmer#648). The row is the durable copy.
+  test "a deferred resume records its prompt on the session, and clearing drops it" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session, follow_up_prompt: "please continue")
+    end
+
+    session.reload
+    assert_equal "please continue", session.metadata[SpotSessionHold::HELD_PROMPT]
+
+    SpotSessionHold.clear(session)
+    assert_nil session.reload.metadata[SpotSessionHold::HELD_PROMPT]
+  end
+
+  # #overdue_sessions compares `spot_hold_retry_at` as a STRING in SQL, and
+  # #held_sessions orders on `spot_hold_at` the same way. Both are only correct
+  # while the stamps are UTC ISO-8601 — an offset rendering ("+02:00") sorts into
+  # the wrong place and a stalled ladder goes unfound.
+  test "hold stamps are written in UTC so they sort lexicographically" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    Time.use_zone("America/New_York") do
+      SpotGateService.stub(:evaluate, held_decision) do
+        assert SpotSessionHold.hold_if_needed(session)
+      end
+    end
+
+    metadata = session.reload.metadata
+    assert_match(/Z\z/, metadata[SpotSessionHold::HELD_AT])
+    assert_match(/Z\z/, metadata[SpotSessionHold::HELD_RETRY_AT])
+  end
+
+  test "a hold at the starting line records no prompt" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session)
+    end
+
+    assert_nil session.reload.metadata[SpotSessionHold::HELD_PROMPT]
+  end
+
   def held_decision
     SpotGateService::Decision.new(
       allowed: false, reason: "at_utilization_limit",
