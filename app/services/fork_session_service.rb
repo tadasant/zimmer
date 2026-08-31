@@ -166,7 +166,8 @@ class ForkSessionService
     end
 
     # Write truncated transcript to the new location. :skipped (a runtime with no
-    # single-file resume path, e.g. Codex) is not a failure — only :failed is.
+    # single-file resume path, or a transcript with no conversation to resume
+    # into) is not a failure — only :failed is.
     write_transcript_result = write_transcript_file(
       forked_session: forked_session,
       new_working_directory: new_working_directory,
@@ -563,6 +564,24 @@ class ForkSessionService
     )
   end
 
+  # Is there a conversation in this transcript for the fork to resume into?
+  #
+  # Two decisions hang on the answer and must agree: whether to write the
+  # transcript at the fork's resume path, and whether to claim `runtime_started`.
+  # Both are yes for the ordinary fork — a real conversation, truncated at a
+  # message the user picked. Both are no when the source's transcript holds only
+  # bookkeeping (Claude Code's `ai-title` record and nothing else), because the
+  # copy would poison the fork's freshly minted session id rather than give it
+  # anything to resume. Memoized: it is asked once per decision, on the same
+  # bytes.
+  def resumable_transcript?(truncated_transcript)
+    return @resumable_transcript unless @resumable_transcript.nil?
+
+    @resumable_transcript = RuntimeConversationPresence.conversation?(
+      truncated_transcript, session: source_session
+    )
+  end
+
   def calculate_working_directory(new_clone_path)
     if source_session.subdirectory.present?
       File.join(new_clone_path, source_session.subdirectory)
@@ -593,6 +612,11 @@ class ForkSessionService
         # through to the failed-resume recovery the poller already handles. That
         # is unchanged by routing the write through the seam: the file this used
         # to write was one `codex` never read either. #54 tracks the real fix.
+        #
+        # A transcript with no conversation in it is the one case where the flag
+        # goes the other way: nothing is written for the fork to resume into, so
+        # claiming otherwise would send its first follow-up to `--resume` against
+        # a conversation that does not exist (#519).
         new_metadata = {
           "clone_path" => new_clone_path,
           "working_directory" => new_working_directory,
@@ -600,7 +624,7 @@ class ForkSessionService
           "forked_from_session_id" => source_session.id,
           "forked_at_message_index" => message_index,
           "broadcast_message_count" => @truncated_message_count, # Set to transcript length to prevent replay
-          "runtime_started" => true # Required for --resume mode on first follow-up
+          "runtime_started" => resumable_transcript?(truncated_transcript) # --resume mode on first follow-up
         }.merge(extra_metadata)
 
         # An empty clone is a deliberate state, not a half-finished copy — say so
@@ -697,6 +721,21 @@ class ForkSessionService
   #   the runtime has no single-file resume path, :failed when the write was
   #   attempted and raised
   def write_transcript_file(forked_session:, new_working_directory:, truncated_transcript:)
+    # A transcript with no conversation in it must not be written at all. The
+    # runtime refuses `--session-id` for an id whose file exists and `--resume`
+    # for one whose file holds no message, so copying a message-free transcript
+    # under the fork's freshly minted id makes that id unusable by either flag
+    # before the fork has run once — which is how a fork of a session wedged by
+    # #519 inherits the wedge on an id that was never used. The fork spawns fresh
+    # instead (see #resumable_transcript?, which turns runtime_started off to
+    # match).
+    unless resumable_transcript?(truncated_transcript)
+      @logger.info("Forked transcript holds no conversation; skipping transcript write so the fork's session id stays usable",
+        forked_session_id: forked_session.id
+      )
+      return :skipped
+    end
+
     transcript_file = TranscriptRuntime.source_for(forked_session, file_system: file_system)
       .resume_transcript_path(session: forked_session, working_directory: new_working_directory)
 

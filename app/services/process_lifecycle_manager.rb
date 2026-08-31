@@ -212,6 +212,8 @@ class ProcessLifecycleManager
       @append_system_prompt = append_system_prompt
       @model = model
 
+      renew_session_id_held_by_a_stub!(working_dir) unless resume
+
       spawn_result = if resume
         @cli_adapter.resume(
           session_id: session.session_id,
@@ -990,10 +992,18 @@ class ProcessLifecycleManager
   # fresh start won't re-trigger failed_resume_recovery_needed?, and a failed spawn returns :failed
   # immediately — so there's no loop risk.
   #
+  # The fresh start takes a NEW id, and this is the one call site where that is
+  # unconditionally safe: the failed resume is itself the proof that the old id
+  # names no conversation to preserve. Re-asserting it is what closed the loop in
+  # #519 — the runtime refuses `--session-id` for an id whose transcript file
+  # exists ("already in use") and refuses `--resume` for one whose transcript
+  # holds no message ("no conversation found"), so a stub transcript makes the
+  # id unusable both ways and re-asserting it just spends the conflict budget.
+  #
   # @param working_dir [String] Working directory for spawning fresh process
   # @return [ExitDecision] Decision on what to do next
   def handle_failed_resume_recovery(working_dir)
-    fresh_start!(working_dir, reason: "failed resume")
+    fresh_start!(working_dir, reason: "failed resume", renew_session_id: true)
   end
 
   # A turn ended with the runtime having written NOTHING — not one transcript
@@ -1027,7 +1037,12 @@ class ProcessLifecycleManager
 
     with_db_retry { session.merge_metadata!("empty_turn_recovery_count" => attempt) }
 
-    fresh_start!(working_dir, reason: "empty turn")
+    # A new id, for the same reason as the failed-resume path: this branch is
+    # reached only when neither store holds a conversation, so there is nothing
+    # the old id names that a restart would lose — and if the runtime got far
+    # enough to write a title record under it, re-asserting it is refused as
+    # "already in use" (#519).
+    fresh_start!(working_dir, reason: "empty turn", renew_session_id: true)
   rescue => e
     # The counter write is the only thing here outside #fresh_start!'s own rescue.
     # A bookkeeping failure must park the session, not raise out of handle_exit.
@@ -1043,10 +1058,13 @@ class ProcessLifecycleManager
   # handler it is indistinguishable from a completed turn and parks the session.
   #
   # Two shapes, two recoveries. If a conversation for that id exists, the id is
-  # held because there is something to resume, so resume it. If nothing has been
-  # written, the holder is a process from an earlier attempt at this same turn that
-  # outlived its job, and a new id costs nothing — #fresh_start! terminates such a
-  # process before spawning, so this is the belt to that braces.
+  # held because there is something to resume, so resume it. If no conversation
+  # has been written, the holder is either a process from an earlier attempt at
+  # this same turn that outlived its job — #fresh_start! terminates such a process
+  # before spawning, so this is the belt to that braces — or the transcript file
+  # itself, holding the runtime's own bookkeeping and no message (#519). A new id
+  # costs nothing in both cases, and in the second it is the ONLY way out: that
+  # file makes the id too present to create against and too empty to resume.
   #
   # Note: Called while in :handling_exit state. Must transition to :running
   # on success or :idle on failure before returning.
@@ -1087,7 +1105,7 @@ class ProcessLifecycleManager
     end
 
     add_log(
-      "Runtime refused to start: session id #{session.session_id} is already in use and nothing has been " \
+      "Runtime refused to start: session id #{session.session_id} is already in use and no conversation has been " \
       "written under it — retrying under a new session id (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
       level: "warning"
     )
@@ -1282,6 +1300,44 @@ class ProcessLifecycleManager
   rescue => e
     @logger.error("Failed to ask the retry strategy about a session id conflict", error: e.message)
     false
+  end
+
+  # An initial spawn asserts `--session-id <id>`, which the runtime accepts only
+  # for an id no transcript file holds. If one already holds it and that file
+  # carries no conversation, the id is unusable by BOTH flags — "already in use"
+  # for `--session-id`, "no conversation found" for `--resume` — so take a new
+  # one here rather than spending the conflict budget discovering it (#519).
+  #
+  # This is the first-launch half of that bug: a session whose opening seconds
+  # wrote a title record and nothing else, and a fork handed a transcript copied
+  # under its own freshly minted id, both arrive at this spawn with an id a stub
+  # already holds and no prior conflict to have learned it from.
+  #
+  # Preventive only, and best-effort by design: #handle_session_id_conflict still
+  # catches everything this check misses, so a lookup that cannot answer must not
+  # stop the spawn that carries the user's prompt.
+  #
+  # A no-op for runtimes that mint their own id (Codex) — the id Zimmer holds is
+  # a record of what the runtime chose, not an instruction to it.
+  #
+  # @param working_dir [String] the cwd this spawn will run in
+  def renew_session_id_held_by_a_stub!(working_dir)
+    return if session.session_id.blank? || working_dir.blank?
+    return if TranscriptRuntime.normalizer_for(session).mints_own_session_id?
+
+    source = TranscriptRuntime.source_for(session, file_system: @file_system)
+    path = source.resume_transcript_path(session: session, working_directory: working_dir)
+    return if path.blank? || !@file_system.exists?(path)
+    return if RuntimeConversationPresence.conversation?(source.read_raw(path), session: session, source: source)
+
+    add_log(
+      "A transcript already exists for session id #{session.session_id} but holds no conversation — " \
+      "the runtime would refuse both --session-id and --resume for it, so starting under a new id",
+      level: "warning"
+    )
+    renew_runtime_session_id!
+  rescue => e
+    @logger.warn("Could not check whether the session id is held by a stub transcript", error: e.message)
   end
 
   # Mint a new runtime session id so a fresh start is not blocked by the old one.

@@ -605,7 +605,15 @@ class SessionStatusSummaryGenerator
 
   def session_url = "#{AppUrl.base_url}/sessions/#{session.id}"
 
+  # Two conditions, because a fork resumes only when BOTH hold: the runtime has
+  # a deterministic resume file at all (Codex does not), and ForkSessionService
+  # actually wrote one. It declines to write for a source whose transcript holds
+  # no conversation — a session wedged by #519 has only a title record — and says
+  # so by leaving `runtime_started` off. Asking the path question alone would
+  # send such a fork to `--resume` against a file that was never written.
   def resumable_fork?(fork)
+    return false unless fork.metadata&.dig("runtime_started") == true
+
     working_directory = fork.metadata&.dig("working_directory")
     TranscriptRuntime.source_for(fork, file_system: @file_system)
       .resume_transcript_path(session: fork, working_directory: working_directory)
