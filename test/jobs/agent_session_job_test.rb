@@ -8410,7 +8410,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.update!(
       status: :running,
       metadata: (@session.metadata || {}).merge(
-        "mcp_retry_count" => AgentSessionJob::RetryBudget::MCP_CONNECTION.max,
+        "mcp_retry_count" => RetryBudget::MCP_CONNECTION.max,
         "mcp_degraded_servers" => [
           { "name" => "pulse-fetch", "error" => "Connection closed", "degraded_at" => 1.hour.ago.iso8601 }
         ]
@@ -8454,7 +8454,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       status: :running,
       mcp_servers: [ "notion" ],
       metadata: (@session.metadata || {}).merge(
-        "mcp_retry_count" => AgentSessionJob::RetryBudget::MCP_CONNECTION.max
+        "mcp_retry_count" => RetryBudget::MCP_CONNECTION.max
       ),
       custom_metadata: {
         "should_fail_session" => true,
