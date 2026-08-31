@@ -3477,7 +3477,7 @@ someone can measure them on the real corpus.
 
 ---
 
-## A runaway job on staging presents as a dead droplet, not as a dead job
+## A runaway job presents as a dead droplet, not as a dead job
 
 Staging is a 4 GB droplet with no swap, and the worker is the one role running work whose peak
 allocation is a function of the data it touches. `TranscriptArchiveJob` is such a job, and on
@@ -3486,13 +3486,15 @@ staging it allocates around 2.8 GB every ten minutes
 session as changed and loads all of their transcripts at once, then dies before writing the archive
 that would have made the next run cheap. It cannot bootstrap, so it retries forever.
 
-One of the two reasons there was never an archive on disk has since been removed: the job used to
-write under `Rails.root/storage`, a container overlay layer that every deploy destroys, so even a
-run that *did* finish left nothing for the next one to build on. It now writes under
-`~/.zimmer/transcript_archives`, on the `zimmer_data` volume, which survives deploys
-([#714](https://github.com/tadasant/zimmer/issues/714)). That makes the incremental path reachable
-after a first successful build, but it does **not** fix #495: the first build is still the one that
-has to fit in memory, and nothing here changes what that first build costs.
+Both reasons there was never an archive on disk have since been removed. The job used to write under
+`Rails.root/storage`, a container overlay layer that every deploy destroys, so even a run that *did*
+finish left nothing for the next one to build on; it now writes under `~/.zimmer/transcript_archives`,
+on the `zimmer_data` volume, which survives deploys
+([#714](https://github.com/tadasant/zimmer/issues/714)). And the first build no longer has to fit in
+memory: the job loads one session at a time rather than materializing every changed session at once,
+and archives at most `MAX_SESSIONS_PER_RUN` of them per tick, writing its metadata for the slice it
+finished ([#719](https://github.com/tadasant/zimmer/issues/719)). A run that does not get through the
+backlog now leaves the next one less to do, which is the property the bootstrap always lacked.
 
 The failure that follows is worth knowing by shape, because it misdirects. The allocation exhausts
 the host, so the kernel declares a *global* out-of-memory condition and takes victims across every
@@ -3512,8 +3514,12 @@ So on staging the `transcript_archive` cron key is also disabled at runtime, in 
 `good_job_settings` table (`cron_keys_disabled`), which is what actually stops the loop. That is a
 live database row rather than anything in this repository, so it survives deploys and is invisible
 in the config: staging builds no transcript archives until someone runs
-`GoodJob::Setting.cron_key_enable("transcript_archive")`. Re-enabling it before #495 is fixed
-restores the crash loop.
+`GoodJob::Setting.cron_key_enable("transcript_archive")`.
+
+That row is still set. Re-enabling it is what would prove #495's fix against a real corpus, and it is
+also the reason the fix could not be verified on staging before shipping — the environment kept for
+reproducing this has the job switched off in a place no deploy reaches. Nothing re-enables it
+automatically; someone has to, once, and watch the first few ticks.
 
 Production's worker carries `memory: 10g` (`config/deploy.production.yml`), for the same reason and
 with the same effect — but the number is derived from its own droplet rather than copied, and the
@@ -3541,8 +3547,18 @@ to thirteen, and nothing establishes that the cost per session stays linear in b
 enough load may reach the cap. That is accepted rather than solved. At that same load, uncapped,
 #449 already ends in a dead worker about twenty minutes in; the cap does not add a failure, it
 relocates one out of the host and into a cgroup, before the box has spent minutes thrashing on the
-way there. The same margin is comfortably above #495's 2.8 GB, so that job does not become a restart
-loop here the way it does on staging.
+way there.
+
+The margin was also read as comfortably above #495's 2.8 GB, and therefore as meaning that job could
+not become a restart loop on production the way it does on staging. That inference was wrong, and
+[#719](https://github.com/tadasant/zimmer/issues/719) is what it cost. 2.8 GB is what the allocation
+costs *on staging's corpus*; the job loads every session that has a transcript, so its peak is a
+function of corpus size, and production's corpus is far larger than staging's. Once fleet telemetry
+reached the production droplet on 2026-08-31 it caught the same loop running there — four
+`CONSTRAINT_MEMCG` kills in 46 minutes, anonymous memory climbing from a 1.5–2.5 GiB baseline to the
+10 GiB cap, on a ten-minute period matching the `transcript_archive` cron exactly. Carrying a figure
+measured on one environment's data across to another environment's is the mistake worth not repeating
+here: for a job whose allocation is a function of the data it touches, the number does not travel.
 
 None of this fixes #449; it bounds the blast radius. Under sustained heavy load the worker still
 restarts and still interrupts the sessions it supervises. What changes is that the rest of the

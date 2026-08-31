@@ -83,6 +83,33 @@ class TranscriptArchiveStatus
     metadata["session_count"].to_i
   end
 
+  # How many changed sessions the last run deferred to a later tick. Non-zero means the
+  # archive is a correct prefix of the corpus rather than the whole of it — see
+  # TranscriptArchiveJob::MAX_SESSIONS_PER_RUN. A sidecar written before this field
+  # existed has no opinion, and reads as complete.
+  def deferred_count
+    metadata["deferred_count"].to_i
+  end
+
+  # Whether the last run got through its whole backlog. Distinct from `stale?`: a
+  # mid-bootstrap archive is freshly written (so not stale) and still incomplete, which is
+  # exactly the case a caller cannot otherwise detect.
+  def complete?
+    return true unless metadata.key?("deferred_count")
+
+    deferred_count.zero?
+  end
+
+  # One line for a reader who got a partial archive, or nil when it is whole.
+  def incompleteness_note
+    return nil if complete?
+
+    "This archive covers #{session_count} session(s) and the last build deferred " \
+      "#{deferred_count} more to a later run, so it is a prefix of the corpus rather than " \
+      "all of it. TranscriptArchiveJob archives a bounded slice per run; it will catch up " \
+      "over subsequent ticks."
+  end
+
   def file_size_bytes
     recorded = metadata["file_size_bytes"]
     return recorded.to_i if recorded.present?

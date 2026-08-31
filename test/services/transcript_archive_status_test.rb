@@ -106,6 +106,32 @@ class TranscriptArchiveStatusTest < ActiveSupport::TestCase
     assert status.stale?, "an archive whose age cannot be read is not current"
   end
 
+  # A sidecar written before TranscriptArchiveJob recorded its backlog has no opinion about
+  # completeness, and must not be reported as a partial archive on that account.
+  test "a sidecar with no deferred_count reads as complete" do
+    File.binwrite(@archive_path, "zip")
+    write_metadata(generated_at: 1.minute.ago.iso8601, session_count: 3)
+
+    status = build_status
+
+    assert status.complete?
+    assert_equal 0, status.deferred_count
+    assert_nil status.incompleteness_note
+  end
+
+  # The case `stale?` cannot see: freshly written, and still only part of the corpus.
+  test "a partial archive reports incomplete while still reporting fresh" do
+    File.binwrite(@archive_path, "zip")
+    write_metadata(generated_at: 1.minute.ago.iso8601, session_count: 250, deferred_count: 3_750)
+
+    status = build_status
+
+    assert_not status.stale?, "it was just written, so it is not stale"
+    assert_not status.complete?, "but it is only a prefix of the corpus"
+    assert_equal 3_750, status.deferred_count
+    assert_match(/3750 more/, status.incompleteness_note)
+  end
+
   private
 
   def build_status(stale_after: 1.hour)

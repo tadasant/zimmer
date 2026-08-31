@@ -40,6 +40,7 @@ module Mcp
 
         url = "#{context.base_url.chomp('/')}#{DOWNLOAD_PATH}"
         staleness = archive.staleness_note
+        incompleteness = archive.incompleteness_note
 
         <<~TEXT.strip
           ## Transcript Archive
@@ -48,6 +49,7 @@ module Mcp
           - **Session Count:** #{archive.session_count}
           - **File Size:** #{format_file_size(archive.file_size_bytes)}
           - **Stale:** #{staleness ? "yes — #{staleness}" : 'no'}
+          - **Complete:** #{incompleteness ? "no — #{incompleteness}" : 'yes'}
 
           ### Download
 
