@@ -75,6 +75,10 @@ class TwoPhaseColumnDropGuard
   # the columns are long gone, and rewriting a migration that already ran buys
   # nothing. The list is closed — GRANDFATHER_CUTOFF is what keeps it that way,
   # so a new drop gets the two-deploy treatment and the annotation instead.
+  #
+  # The last entry is the argument for the whole file: #680 dropped that column
+  # in one phase on 2026-08-28, twelve days after the incident and nine after it
+  # was written up, because nothing was checking.
   GRANDFATHERED = %w[
     20251120202242_remove_filesystem_root_from_sessions.rb
     20260221002859_create_trigger_conditions.rb
@@ -82,10 +86,11 @@ class TwoPhaseColumnDropGuard
     20260529120000_rename_agent_type_to_agent_runtime_and_drop_claude_skills.rb
     20260704120000_add_extension_states_to_app_settings.rb
     20260815100000_drop_blocked_by_session_from_sessions.rb
+    20260828160000_remove_provenance_via_mcp_enabled_from_app_settings.rb
   ].freeze
 
   # The day the guard landed. Every grandfathered migration predates it.
-  GRANDFATHER_CUTOFF = "20260824000000"
+  GRANDFATHER_CUTOFF = "20260831000000"
 
   Removal = Struct.new(:line, :source, keyword_init: true)
 
