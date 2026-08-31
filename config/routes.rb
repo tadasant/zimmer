@@ -36,6 +36,11 @@ Rails.application.routes.draw do
     # would forge it. A row saved in error is superseded by saving another, or
     # removed here.
     resources :outcome_analyses, except: [ :new, :create, :edit, :update ]
+    # Read-only: a row records whether a one-time post-deploy task ran against
+    # this environment. Hand-marking one succeeded would assert an application
+    # nothing performed, and deleting one would make the task run again. Re-arm a
+    # failed task from the health page.
+    resources :post_deploy_task_runs, only: [ :index, :show ]
     # No create: a batch exists because someone clicked Analyze All. Edit is
     # limited to `status`/`state` (the dashboards' FORM_ATTRIBUTES) — the escape
     # hatch for a batch or item wedged in `running` that the pump cannot resolve.
@@ -204,6 +209,9 @@ Rails.application.routes.draw do
         get :queue_recovery_mode
         post :enter_queue_recovery_mode
         post :exit_queue_recovery_mode
+        # Re-arm and kick the one-time post-deploy tasks. Their status is already
+        # in the health report this endpoint's #show returns.
+        post :run_post_deploy_tasks
       end
 
       # Transcript archive download and status
@@ -230,6 +238,7 @@ Rails.application.routes.draw do
   get "health/export_diagnostics", to: "health#export_diagnostics", as: :export_diagnostics_health
   post "health/enter_queue_recovery_mode", to: "health#enter_queue_recovery_mode", as: :enter_queue_recovery_mode_health
   post "health/exit_queue_recovery_mode", to: "health#exit_queue_recovery_mode", as: :exit_queue_recovery_mode_health
+  post "health/run_post_deploy_tasks", to: "health#run_post_deploy_tasks", as: :run_post_deploy_tasks_health
 
   # Polled by every page for the "live updates paused" banner. Deliberately plain
   # HTTP: the condition it reports is the broadcast circuit breaker being open,

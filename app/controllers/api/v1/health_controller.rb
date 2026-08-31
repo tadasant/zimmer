@@ -52,6 +52,17 @@ class Api::V1::HealthController < Api::BaseController
     render_api_error("Queue recovery mode unavailable", e.message, status: :service_unavailable)
   end
 
+  # POST /api/v1/health/run_post_deploy_tasks
+  # Re-arm any failed one-time post-deploy task and enqueue a pass.
+  #
+  # Their current state is already in GET /api/v1/health under
+  # `health_report.post_deploy_task_health`; this is the action that unsticks one
+  # without a shell on the box. Idempotent, and deliberately not rate-limited:
+  # it enqueues a job and rewrites nothing in bulk.
+  def run_post_deploy_tasks
+    render json: PostDeployTask::Runner.request!
+  end
+
   # POST /api/v1/health/exit_queue_recovery_mode
   # Resume normal processing. Idempotent, and never gated: the way out of a halt
   # must always be available.

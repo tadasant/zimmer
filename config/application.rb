@@ -26,7 +26,14 @@ module Zimmer
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.
     # Common ones are `templates`, `generators`, or `middleware`, for example.
-    config.autoload_lib(ignore: %w[assets tasks])
+    #
+    # `generators` is on that list because Rails::Generators finds a generator
+    # through its own lookup path (`lib/generators/**/*_generator.rb`) and
+    # `require`s it directly. Leaving it to Zeitwerk would demand the file define
+    # `Generators::PostDeployTask::PostDeployTaskGenerator`, which is not the
+    # name `bin/rails generate` looks for — and eager loading would fail the boot
+    # (and, because test_helper.rb eager loads, the whole suite).
+    config.autoload_lib(ignore: %w[assets tasks generators])
 
     # Zimmer Extensions (see app/services/zimmer/extension.rb) live one directory each
     # under app/extensions/<id>/ so an extension is a single self-contained,

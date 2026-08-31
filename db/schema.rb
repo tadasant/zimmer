@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_29_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_30_100000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -429,6 +429,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_29_120000) do
     t.integer "total_count", default: 0, null: false
     t.datetime "updated_at", null: false
     t.index ["status", "id"], name: "index_outcome_analysis_batches_on_status_and_id"
+  end
+
+  create_table "post_deploy_task_runs", force: :cascade do |t|
+    t.integer "attempts", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.jsonb "cursor", default: {}, null: false
+    t.integer "failures", default: 0, null: false
+    t.datetime "finished_at"
+    t.text "last_error"
+    t.datetime "last_error_at"
+    t.datetime "last_ran_at"
+    t.datetime "locked_at"
+    t.string "locked_by"
+    t.string "name", null: false
+    t.datetime "next_attempt_at"
+    t.datetime "started_at"
+    t.jsonb "stats", default: {}, null: false
+    t.string "status", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.string "version", null: false
+    t.index ["status"], name: "index_post_deploy_task_runs_on_status"
+    t.index ["version"], name: "index_post_deploy_task_runs_on_version", unique: true
   end
 
   create_table "push_subscriptions", force: :cascade do |t|
