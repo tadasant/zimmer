@@ -58,6 +58,15 @@ tree with runtime-generated UUID filenames, so Zimmer cannot recreate a resumabl
 fresh fork. A Codex summary fork therefore starts as a fresh one-shot turn and receives the copied
 conversation inline in the summary prompt.
 
+A source session with **no conversation** to copy takes that same fresh-turn path whatever its
+runtime. A session that died in its opening seconds has a transcript holding only the runtime's own
+bookkeeping, and copying that to the fork's resume path would hand the fork an id the runtime
+refuses both ways — see [A transcript with no conversation in
+it](/sessions/spawning/#a-transcript-with-no-conversation-in-it-wedges-a-session-id). So
+`ForkSessionService` writes nothing and leaves `runtime_started` off, and the fork answers from the
+prompt alone. Before that, the summary fork of a session wedged this way was wedged in turn, which
+is how a dead session also lost the summary that would have made it visible.
+
 Forking rather than a one-shot completion is a deliberate trade. The specifics that justify a link —
 "CI is red on the migration test, see message 214" — live in the session's own conversation. A
 headless inference call (the substrate `SessionTitleJob` uses for titles and categories) only ever

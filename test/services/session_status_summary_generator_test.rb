@@ -450,6 +450,23 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal :skipped, generate.outcome
   end
 
+  # #519: a session wedged in its opening seconds has a one-line transcript
+  # holding a title record and no conversation. Forking on that spends an agent
+  # turn asking for a summary of nothing — with neither a resume file nor an
+  # inline excerpt to answer from.
+  test "a session whose transcript holds no conversation is skipped" do
+    @session.update_column(
+      :transcript,
+      "#{{ "type" => "ai-title", "aiTitle" => "Ship the thing", "sessionId" => @session.session_id }.to_json}\n"
+    )
+
+    result = nil
+    assert_no_difference -> { Session.count } do
+      result = generate
+    end
+    assert_equal :skipped, result.outcome
+  end
+
   # --- The trash -------------------------------------------------------------
 
   # Archive is how a Zimmer session FINISHES, and a finished session is exactly

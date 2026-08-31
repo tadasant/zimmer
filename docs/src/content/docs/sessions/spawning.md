@@ -424,8 +424,12 @@ upstream of this check.
 
 Failed resume is separate from process death. Claude reports it as a successful
 exit with "No conversation found"; Codex reports it as a failed exit with "no
-rollout found". In both cases Zimmer starts a fresh runtime process against the
-same Zimmer session id. The prompt for that fresh start is chosen from the most
+rollout found". In both cases Zimmer starts a fresh runtime process — under a
+**new runtime session id**, on the same Zimmer session. The failed resume is
+itself the proof there was no conversation under the old id to preserve, and
+re-asserting an id the runtime has already written a file for is refused as
+"already in use" (see [A transcript with no conversation in
+it](#a-transcript-with-no-conversation-in-it-wedges-a-session-id)). The prompt for that fresh start is chosen from the most
 durable in-flight source: `active_follow_up_prompt`, then `sent_message`, then
 `pending_follow_up_prompt`, then the original `session.prompt`. `AgentSessionJob`
 sets `active_follow_up_prompt` to the exact expanded runtime prompt for every
@@ -439,13 +443,13 @@ which guards those fallbacks, therefore checks the persisted transcript for the
 prompt rather than trusting the slot's presence — see
 [When the pool runs dry](/auth/harness/#the-park-has-to-survive-the-paths-that-do-not-know-about-it).
 
-A turn that ends with the runtime having written **nothing at all** is the general backstop behind
-every specific branch above. A normal-looking exit over a completely empty transcript is not a
-completed turn — it is what "the agent never got going" looks like from the outside — so Zimmer
-restarts it from scratch instead of parking, bounded by `MAX_EMPTY_TURN_RECOVERIES`. "Nothing at
-all" is asked of both stores (`RuntimeConversationPresence`): Zimmer's polled `session.transcript`
-*and* the runtime's own file on disk, so a lagging poller can never be enough to abandon a real
-conversation. The invariant it restores: a failure Zimmer chose to retry never leaves the session at
+A turn that ends with the runtime having written **no conversation at all** is the general backstop
+behind every specific branch above. A normal-looking exit over a transcript with no message in it is
+not a completed turn — it is what "the agent never got going" looks like from the outside — so
+Zimmer restarts it from scratch under a new runtime session id, bounded by
+`MAX_EMPTY_TURN_RECOVERIES`. "No conversation" is asked of both stores
+(`RuntimeConversationPresence`): Zimmer's polled `session.transcript` *and* the runtime's own file on
+disk, so a lagging poller can never be enough to abandon a real conversation. The invariant it restores: a failure Zimmer chose to retry never leaves the session at
 rest with an empty transcript and nothing driving it forward. Before it existed, a five-second npm
 hiccup during MCP connect could park a session in `needs_input` with a blank transcript until a
 human noticed and typed "continue".
@@ -454,9 +458,9 @@ Two supporting rules make that reachable rather than theoretical. `runtime_start
 moment a pid is recorded, before the runtime has written a line — so when Zimmer kills a process
 that persisted no conversation, `AgentSessionJob#terminate_process` clears the flag, and the next
 turn spawns fresh instead of issuing a `--resume` that is dead on arrival. And when the runtime
-refuses a `--session-id` because that id is still held, Zimmer mints a new one and retries rather
-than reading the refusal — which Claude reports with its "turn complete" exit code 1 — as a
-finished turn.
+refuses a `--session-id` because that id is still held, Zimmer either resumes the conversation that
+id names or mints a new one, rather than reading the refusal — which Claude reports with its "turn
+complete" exit code 1 — as a finished turn.
 
 Every replacement process is monitored. The recovery paths spawn through the same
 `AgentProcessLiveness` guard `#spawn` uses, and the job cleans up the lifecycle manager's current pid
@@ -503,6 +507,46 @@ Codex, until #3779 characterizes its transcript envelope — answers `classifies
 gets the loud log without the page, because for it "no classifier matched" is the designed-for path
 rather than news.
 :::
+
+### A transcript with no conversation in it wedges a session id
+
+Claude Code writes an `ai-title` record into the transcript early, and independently of any message.
+A first job killed in its opening seconds — an MCP server that would not connect, a deploy, an OOM —
+therefore leaves a ~126-byte file holding one record and no conversation. The runtime then
+disagrees with itself about that id, and both answers are refusals:
+
+```
+--session-id <id>   ->  Error: Session ID <id> is already in use.        (the file exists)
+--resume <id>       ->  No conversation found with session ID: <id>      (it holds no message)
+```
+
+The id is simultaneously **too present to create and too empty to resume**, so a recovery that
+re-asserts it cannot succeed no matter how many times it runs. That is why "has the runtime written
+a conversation" means *at least one message record* rather than *any bytes*: each runtime's
+normalizer answers `conversation_record?` with a deny-list of the bookkeeping it writes around a
+conversation (Claude Code's `ai-title`, `queue-operation`, `attachment`, `last-prompt`, `mode`,
+`atis-latch`, `pr-link`, `summary`, `file-history-snapshot`; Codex's `session_meta` and
+`turn_context`), so a record type the
+list has not met counts as conversation — over-reporting costs one wasted resume, under-reporting
+abandons real history.
+
+Three places act on that answer:
+
+- **Failed-resume and empty-turn recovery** restart under a **new** runtime session id, because both
+  have already established there is nothing under the old one to keep.
+- **`ProcessLifecycleManager#spawn`** checks, before an initial (`--session-id`) spawn, whether a
+  transcript already holds the id it is about to assert. If one does and it carries no conversation,
+  the spawn takes a new id rather than spending the conflict budget discovering the refusal. This is
+  the first-launch case: a session that had never run, colliding with a stub written under its own
+  freshly minted id.
+- **`ForkSessionService`** declines to copy a message-free transcript to the fork's resume path, and
+  leaves `runtime_started` off to match, so the fork spawns fresh instead of inheriting an
+  unresumable-but-existing transcript under a brand-new id.
+
+Without those, the session burned its `MAX_SESSION_ID_CONFLICT_RECOVERIES` budget and failed
+permanently, dropping whatever request it carried: `failed` sessions reject `follow_up`, the
+status-summary fork died of the same fault on its own new id, and nothing in any queue read as "a
+request was lost" ([#519](https://github.com/tadasant/zimmer/issues/519)).
 
 ### Not every "API error" in the transcript is the API
 

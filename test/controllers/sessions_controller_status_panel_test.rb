@@ -209,7 +209,7 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
       post regenerate_status_summary_session_url(@session)
     end
 
-    assert_match "no transcript", flash[:alert]
+    assert_match "no conversation", flash[:alert]
   end
 
   test "a summary fork's own panel offers no button, and refuses the post" do
@@ -239,7 +239,7 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     body = JSON.parse(response.body)
     assert_equal false, body["success"]
-    assert_match "no transcript", body["error"]
+    assert_match "no conversation", body["error"]
   end
 
   # The turbo_stream response is what the button actually gets, and it must not

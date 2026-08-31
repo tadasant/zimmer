@@ -167,6 +167,34 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
     end
   end
 
+  # @see TranscriptNormalizer#conversation_record?
+  #
+  # Claude Code interleaves conversation (`user`, `assistant`, `system`) with
+  # records that describe the session rather than continue it. The list below is
+  # the set observed across 400 transcripts sampled from a production Zimmer
+  # host; 2% of those files held no conversation at all, and every one of them
+  # was a lone `ai-title` — the #519 stub.
+  #
+  # A deny-list, deliberately: a record type this list has not met yet counts as
+  # conversation, which is the recoverable direction (see the base class).
+  NON_CONVERSATION_TYPES = %w[
+    ai-title
+    atis-latch
+    attachment
+    file-history-snapshot
+    last-prompt
+    mode
+    pr-link
+    queue-operation
+    summary
+  ].freeze
+
+  def conversation_record?(raw_event)
+    return false unless raw_event.is_a?(Hash)
+
+    !NON_CONVERSATION_TYPES.include?(raw_event["type"])
+  end
+
   private
 
   # Per-line state shared by the type-specific builders.
