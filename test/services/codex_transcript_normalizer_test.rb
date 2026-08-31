@@ -305,4 +305,14 @@ class CodexTranscriptNormalizerTest < ActiveSupport::TestCase
     session_meta = events.find { |e| e["type"] == "session_meta" }
     assert_equal "0199b3d2-codex-4d2e-8f1a-rollout000001", @normalizer.extract_session_id(session_meta)
   end
+
+  # The runtime-agnostic half of #519: a rollout that holds only its opening
+  # meta lines has no conversation in it, whatever its byte count says.
+  test "conversation_record? treats the rollout meta lines as bookkeeping" do
+    refute @normalizer.conversation_record?({ "type" => "session_meta" })
+    refute @normalizer.conversation_record?({ "type" => "turn_context" })
+    assert @normalizer.conversation_record?({ "type" => "response_item" })
+    assert @normalizer.conversation_record?({ "type" => "compacted" })
+    assert @normalizer.conversation_record?({ "type" => "event_msg" })
+  end
 end
