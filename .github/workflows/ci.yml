@@ -40,6 +40,14 @@ jobs:
           bundle install --jobs 4 --retry 3
       - name: Rubocop
         run: bin/rubocop -f github --parallel
+      # The two-phase-drop guard is Rails-free by design, so it runs here as
+      # well as inside `bin/rails test` — this job has no Postgres and no Redis,
+      # and answers in seconds instead of after a full suite boot. See
+      # docs/operate/deploying.md, "Dropping a column takes two deploys".
+      - name: Two-phase column drop guard
+        run: |
+          bundle exec ruby -r./test/support/two_phase_column_drop_guard \
+            -e 'report = TwoPhaseColumnDropGuard.report; abort(report) unless report.empty?'
 
   security:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
