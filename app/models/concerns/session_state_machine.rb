@@ -1132,11 +1132,15 @@ module SessionStateMachine
       record_strand_ledger(stranded, forced: true)
     else
       self_addressed, awaited = stranded.partition(&:self_addressed?)
-      if awaited.any?
-        alert_on_stranded_enqueued_messages(awaited, suppressed: self_addressed.size)
-      else
-        record_strand_ledger(self_addressed, forced: false)
-      end
+      alert_on_stranded_enqueued_messages(awaited, suppressed: self_addressed.size) if awaited.any?
+      # Written whenever anything was suppressed, not only when the whole queue
+      # was. A nudge dropped from a MIXED queue is discarded-without-paging just
+      # as much as one dropped from a queue of its own, and the ledger's question
+      # is fleet-wide — "what has been discarded without paging, and why?" — so
+      # answering it for one of those two cases and not the other would leave the
+      # grep quietly incomplete. The alert body's footnote is per session and does
+      # not answer it.
+      record_strand_ledger(self_addressed, forced: false) if self_addressed.any?
     end
     stranded
   rescue => e

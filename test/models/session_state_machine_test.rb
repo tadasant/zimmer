@@ -569,6 +569,34 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       "the archive line still records both"
   end
 
+  # A nudge dropped from a MIXED queue is discarded-without-paging just as much as
+  # one dropped from a queue of its own, so the fleet-wide grep has to see both.
+  # The alert body's footnote is per session and does not answer that question.
+  test "an unforced archive ledgers the nudge it suppressed even when it also pages" do
+    session = sessions(:waiting)
+    session.update!(status: :running)
+    nudge = session.enqueued_messages.create!(
+      content: AutomatedPrompts.system_recovery(reason: "a deploy restarted this session"),
+      position: 1,
+      status: "pending",
+      origin: "automated_recovery_nudge"
+    )
+    session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
+    AlertService.stubs(:raise_alert)
+
+    entries = capture_log_entries do
+      session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
+      session.archive!
+    end
+
+    severity, line = entries.find { |_severity, content| content.include?("[StrandedQueue]") }
+    assert line, "the suppressed nudge is still on the log plane"
+    assert_equal "WARN", severity
+    assert_includes line, "forced=false"
+    assert_includes line, "retired=1", "the ledger names the suppressed row, not the paged one"
+    assert_includes line, "##{nudge.id}(automated_recovery_nudge)"
+  end
+
   # Deliberately an application-level failure rather than a StatementInvalid: a
   # real SQL error inside the transition's own transaction poisons the connection,
   # so the log insert that follows would fail too and the archive would roll back.

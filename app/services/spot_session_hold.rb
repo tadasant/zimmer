@@ -757,7 +757,22 @@ class SpotSessionHold
     #
     # Getting this wrong in either direction is bounded and neither is silent: a
     # nudge mis-stamped `caller` pages the way it did before, and a caller's message
-    # could only be mis-stamped by being byte-identical to the nudge template.
+    # could only be mis-stamped by opening with the nudge template verbatim.
+    #
+    # That second direction is REACHABLE rather than impossible, and it is worth
+    # saying so plainly. A follow-up sent to a spot-class session travels
+    # deliver_follow_up! -> AgentSessionJob -> hold_if_needed -> here, so a caller
+    # who opened their message with the whole template would have it stamped as
+    # Zimmer's and would lose the page if that message were later stranded. Three
+    # things bound it: the column itself is settable by no request (every create
+    # site names its attributes literally, and no permit list mentions `origin`),
+    # so this is a content collision rather than field injection; the only thing
+    # the collision buys is silence about the collider's OWN discarded message;
+    # and AgentSessionJob already keys `resume_for_system_recovery!` off this same
+    # predicate, so recognising the nudge by its body is a mechanism this codebase
+    # already relies on rather than one introduced here. Threading an explicit
+    # origin down from each of the dozen senders would close it properly and is
+    # the right shape if this ever needs to be airtight.
     def origin_for(prompt)
       if AutomatedPrompts.system_recovery?(prompt)
         "automated_recovery_nudge"
