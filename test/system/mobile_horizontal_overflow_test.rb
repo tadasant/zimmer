@@ -11,8 +11,9 @@ require "application_system_test_case"
 # ancestor. It is deliberately about geometry rather than about any one utility
 # class, so a future refactor that keeps the page usable keeps the test green.
 class MobileHorizontalOverflowTest < ApplicationSystemTestCase
-  MOBILE_WIDTH = 375
-  MOBILE_HEIGHT = 812
+  # The probe and the two assertions live in test/support so a screen with its
+  # own setup can reuse them rather than reimplement them.
+  include MobileOverflowAssertions
 
   setup do
     page.driver.browser.manage.window.resize_to(MOBILE_WIDTH, MOBILE_HEIGHT)
@@ -57,44 +58,6 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     )
     trigger.save!
     trigger
-  end
-
-  # Returns [document_overflow_px, [clipped control descriptions]].
-  def overflow_report
-    page.evaluate_script(<<~JS)
-      (function () {
-        const W = document.documentElement.clientWidth;
-        const clipped = [];
-        document.querySelectorAll("button, a, input, select, textarea, summary, table, h1, h2, h3, code, pre").forEach((el) => {
-          const cs = getComputedStyle(el);
-          if (cs.display === "none" || cs.visibility === "hidden") return;
-          const b = el.getBoundingClientRect();
-          if (b.width === 0 || b.height === 0) return;
-          let p = el.parentElement, clipper = null;
-          while (p && p !== document.documentElement) {
-            const s = getComputedStyle(p);
-            if (s.overflowX === "hidden" || s.overflowX === "clip") { clipper = p; break; }
-            p = p.parentElement;
-          }
-          if (!clipper) return;
-          const cut = Math.round(b.right - clipper.getBoundingClientRect().right);
-          if (cut > 1) {
-            clipped.push(cut + "px past its container: <" + el.tagName.toLowerCase() + "> " +
-              JSON.stringify((el.innerText || el.value || "").trim().slice(0, 40)));
-          }
-        });
-        return [document.documentElement.scrollWidth - W, clipped];
-      })()
-    JS
-  end
-
-  def assert_no_horizontal_overflow(label)
-    doc_overflow, clipped = overflow_report
-
-    assert doc_overflow <= 0,
-      "#{label} scrolls sideways at #{MOBILE_WIDTH}px: the document is #{doc_overflow}px wider than the viewport."
-    assert_empty clipped,
-      "#{label} has controls clipped out of reach at #{MOBILE_WIDTH}px:\n  #{clipped.join("\n  ")}"
   end
 
   test "sessions index does not overflow horizontally on a phone" do

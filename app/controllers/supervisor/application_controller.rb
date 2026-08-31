@@ -62,13 +62,18 @@ module Supervisor
     # render nothing, and every real navigation still gets the challenge and
     # still logs in. It only stops the browser recruiting the human into a
     # request they never made.
-    def refuse
+    def refuse(realm_configured: true)
       return request_http_basic_authentication(REALM) unless prefetch_request?
 
       # Turbo hands a prefetched response to a subsequent click on the same link,
       # so this body is what a link that forgot `data-turbo-prefetch="false"`
-      # would render. Give it somewhere to go rather than a blank page.
-      render "supervisor/shared/prefetch_unauthorized", layout: false, status: :unauthorized
+      # would render. Give it somewhere to go rather than a blank page — and,
+      # when the realm is unconfigured, say so instead of sending an operator to
+      # a prompt no credential can satisfy.
+      render "supervisor/shared/prefetch_unauthorized",
+        layout: false,
+        status: :unauthorized,
+        locals: { realm_configured: realm_configured }
     end
 
     # Without the log line an operator sees a browser prompt that never accepts
@@ -76,7 +81,7 @@ module Supervisor
     # debug — the whole point of failing closed is lost if nobody can tell why.
     def refuse_unconfigured
       Rails.logger.warn("[supervisor] refusing #{request.path}: #{PASSWORD_ENV} is unset or blank, so the admin panel is closed")
-      refuse
+      refuse(realm_configured: false)
     end
 
     # Constant-time comparison, mirroring Api::BaseController#authenticate_api_key.

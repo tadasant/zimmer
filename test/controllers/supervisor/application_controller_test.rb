@@ -130,6 +130,31 @@ module Supervisor
       end
     end
 
+    # An unconfigured realm has no credential that opens the panel, so offering
+    # to prompt for one would send an operator to a dialog nothing satisfies —
+    # the operator confusion the log line above the gate exists to prevent.
+    test "the prefetch refusal says the realm is closed when it is unconfigured" do
+      ENV.delete(PASSWORD_ENV)
+
+      get supervisor_logs_url, headers: { "HTTP_X_SEC_PURPOSE" => "prefetch" }
+
+      assert_response :unauthorized
+      assert_select "h1", text: "Supervisor is closed"
+      assert_select "a", count: 0
+      assert_match(/SUPERVISOR_PASSWORD/, response.body)
+    end
+
+    # A deep link keeps its page and search params, so whoever follows the link
+    # back lands where the prefetch was aimed rather than at the index.
+    test "the prefetch refusal's link back preserves the query string" do
+      ENV[PASSWORD_ENV] = "s3cret"
+
+      get supervisor_logs_url(page: 3, search: "boom"), headers: { "HTTP_X_SEC_PURPOSE" => "prefetch" }
+
+      assert_response :unauthorized
+      assert_select "a[href=?]", supervisor_logs_path(page: 3, search: "boom")
+    end
+
     # The whole point of suppressing the challenge only for prefetches: a human
     # who clicks the link must still be able to sign in.
     test "a real navigation still gets the Basic challenge" do

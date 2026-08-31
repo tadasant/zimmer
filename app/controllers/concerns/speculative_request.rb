@@ -24,9 +24,13 @@ module SpeculativeRequest
   private
 
   # True when the browser fetched this speculatively rather than because someone
-  # asked for it. Header-based and therefore advisory: a client that sends
-  # nothing is treated as a real request, which is the safe direction to be
-  # wrong in — it means we under-suppress, never under-serve.
+  # asked for it. Header-based and therefore advisory, and it can be wrong in
+  # both directions. A client that sends nothing is treated as a real request,
+  # which costs nothing. A proxy that stamps `Purpose: prefetch` onto a request a
+  # human did make costs a little: the supervisor gate answers with its
+  # interstitial rather than the credential dialog, which is one extra click, and
+  # SessionsController declines to count the page as a view, which self-corrects
+  # on the next one.
   def prefetch_request?
     PREFETCH_HEADERS.any? { |header| request.headers[header].to_s.include?("prefetch") }
   end

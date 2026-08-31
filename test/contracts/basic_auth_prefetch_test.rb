@@ -39,6 +39,12 @@ class BasicAuthPrefetchTest < ActiveSupport::TestCase
 
   OPT_OUT = /turbo_prefetch:\s*false|["']data-turbo-prefetch["']\s*=>\s*["']false["']|data-turbo-prefetch=["']false["']/
 
+  # The limit of this sweep: it sees `link_to` calls inside an ERB tag under
+  # app/views. A hand-written `<a href="<%= supervisor_root_path %>">`, or a link
+  # emitted from a helper or a component, would evade it. Nothing like that
+  # exists today, and BasicAuthPrefetchRenderingTest below checks the rendered
+  # output of the two pages that carry these links as a second net.
+
   test "every view link to a Basic-auth-gated path opts out of Turbo prefetch" do
     offenders = []
 

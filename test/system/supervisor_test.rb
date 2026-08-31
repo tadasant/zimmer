@@ -2,6 +2,7 @@ require "application_system_test_case"
 
 class SupervisorTest < ApplicationSystemTestCase
   include SupervisorAuthTestHelper
+  include MobileOverflowAssertions
 
   setup do
     @session = sessions(:running)
@@ -51,7 +52,8 @@ class SupervisorTest < ApplicationSystemTestCase
   # real screen — Turbo hands a prefetched response to a later click on the same
   # link — and Zimmer gets read on a phone, so it has to fit one.
   test "the prefetch refusal page fits a phone and offers a way in" do
-    page.driver.browser.manage.window.resize_to(375, 812)
+    page.driver.browser.manage.window.resize_to(MobileOverflowAssertions::MOBILE_WIDTH,
+      MobileOverflowAssertions::MOBILE_HEIGHT)
     present_prefetch_marker_instead_of_credential
 
     visit supervisor_root_url
@@ -59,26 +61,18 @@ class SupervisorTest < ApplicationSystemTestCase
     assert_selector "h1", text: "Sign in to Supervisor"
     assert_link "Continue to Supervisor", href: supervisor_root_path
 
-    # Probe 1: the document is no wider than the viewport.
-    assert page.evaluate_script("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"),
-      "the page is wider than a 375px viewport"
-
-    # Probe 2: nothing sticks out past the right edge. Probe 1 cannot see past a
-    # clipping ancestor or a fixed box; this can.
-    overflowing = page.evaluate_script(<<~JS)
-      (function () {
-        const limit = document.documentElement.clientWidth;
-        return Array.from(document.querySelectorAll("*"))
-          .filter((el) => el.getBoundingClientRect().right > limit + 1)
-          .slice(0, 20)
-          .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value} @ ${Math.round(el.getBoundingClientRect().right)}px`);
-      })()
-    JS
-    assert_empty overflowing, "elements past the right edge at 375px: #{overflowing.inspect}"
+    assert_no_horizontal_overflow("supervisor prefetch refusal")
 
     page.save_screenshot(Rails.root.join("tmp/screenshots/supervisor-prefetch-401-375.png").to_s)
   ensure
     page.driver.browser.manage.window.resize_to(1400, 900)
+    # Network.setExtraHTTPHeaders replaces the whole extra-header set, and
+    # Capybara reuses the browser across test CLASSES — neither the window
+    # resize above nor Capybara.reset_sessions! clears CDP headers. Leaving the
+    # prefetch marker set would make every later system test look speculative to
+    # SpeculativeRequest, silently suppressing touch_user_view! and
+    # notification-read for whoever writes the next test against them.
+    present_supervisor_credential
   end
 
   private
