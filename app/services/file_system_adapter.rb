@@ -87,6 +87,16 @@ class FileSystemAdapter
     raise NotImplementedError, "#{self.class}#rm_rf must be implemented"
   end
 
+  # Rename a file or directory. Atomic when both ends are on the same filesystem,
+  # which is what AtomicCloneRemoval relies on to make a clone delete all-or-nothing.
+  # @param src [String] The existing path
+  # @param dest [String] The new path (must not exist)
+  # @return [void]
+  # @raise [SystemCallError] ENOENT when +src+ is gone, EXDEV across filesystems
+  def rename(src, dest)
+    raise NotImplementedError, "#{self.class}#rename must be implemented"
+  end
+
   # Change file permissions
   # @param mode [Integer] The file mode (e.g., 0o755)
   # @param path [String] The file path

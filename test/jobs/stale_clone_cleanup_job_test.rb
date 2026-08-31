@@ -529,6 +529,40 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(real_dir) if real_dir && File.directory?(real_dir)
   end
 
+  # --- interrupted-delete tombstones (#412) --------------------------------
+
+  test "a deletion tombstone the reap did not take is still not swept as an orphaned clone" do
+    # The skip guard is load-bearing for the tombstones the reap does NOT take:
+    # one past REAP_LIMIT, or one a concurrent delete created after the reap ran.
+    # So the reap is stubbed out and the tombstone is aged past the orphan cutoff,
+    # which is the only shape in which the guard is what decides the outcome.
+    AtomicCloneRemoval.stubs(:reap_tombstones).returns(0)
+    tombstone = File.join(@clones_base, "test-clone-1770000000-abcd1234.deleting-0123abcd")
+    FileUtils.mkdir_p(tombstone)
+    FileUtils.touch(tombstone, mtime: 2.hours.ago.to_time)
+
+    result = StaleCloneCleanupJob.new.send(:sweep_orphaned_clones)
+
+    assert_equal 0, result[:cleaned], "a tombstone is not an orphaned clone and must not be counted as one"
+    assert File.directory?(tombstone), "and the orphan sweep must not have deleted it as one either"
+  end
+
+  test "the orphan sweep reaps leftover tombstones without touching live clones" do
+    tombstone = File.join(@clones_base, "test-clone-1770000001-abcd1234.deleting-0123abcd")
+    FileUtils.mkdir_p(File.join(tombstone, "app"))
+
+    live = sessions(:needs_input)
+    live_dir = File.join(@clones_base, "test-clone-1770000002-abcd1234")
+    FileUtils.mkdir_p(live_dir)
+    FileUtils.touch(live_dir, mtime: 2.hours.ago.to_time)
+    live.update!(trash_after: nil, metadata: { "clone_path" => live_dir })
+
+    StaleCloneCleanupJob.new.perform
+
+    assert_not File.exist?(tombstone)
+    assert File.directory?(live_dir), "a live session's clone must survive the reap"
+  end
+
   test "referenced_clone_owners_by_basename maps unique basenames to session ids" do
     @session.update!(status: :needs_input, metadata: { "clone_path" => "/a/base/zzz-clone-aaa" })
 

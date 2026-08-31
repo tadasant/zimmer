@@ -209,7 +209,9 @@ module Execution
         return unless Dir.exist?(clone_path)
 
         log_debug("Removing clone at #{clone_path}")
-        FileUtils.rm_rf(clone_path)
+        # Rename aside, then delete, so an interrupt cannot leave a half-tree
+        # wearing the clone's name (#412).
+        AtomicCloneRemoval.remove(clone_path.to_s)
       end
 
       def clone_exists?

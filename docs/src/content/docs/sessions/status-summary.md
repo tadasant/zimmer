@@ -106,8 +106,8 @@ Three things keep that from failing a fork:
 - **A failed fork cleans up after itself.** The partial destination is removed rather than left for
   `OrphanCloneFilesystemCleanupJob`, whose scheduled sweep ignores anything younger than 48 hours
   (2 hours on [the disk-pressure path](/operate/background-jobs/#clone-pruning-has-a-second-urgent-gear)). A retry only
-  proceeds once the destination is confirmed gone — `rm_rf` reports nothing when it removes part of a
-  tree, and a copy into a destination that still exists nests or merges rather than failing. The same
+  proceeds once the destination is confirmed gone — a cleanup reports nothing when it fails to clear
+  the path, and a copy into a destination that still exists nests or merges rather than failing. The same
   holds for a fork that fails *after* the copy succeeded: if the session record does not save, or the
   transcript cannot be written, the copied clone is discarded on the way out rather than stranded.
 
@@ -150,12 +150,13 @@ working directory is scaffolded in its place, and the generation carries on — 
 That closes the narrow race the pre-flight check cannot: the clone was there when the button was
 pressed and gone by the time the job ran.
 
-The question it asks is about the **session**, not about the clone, and that is deliberate. `rm_rf`
-unlinks children bottom-up and removes the directory root last, so for the whole of a large clone's
-deletion the root is still there while the copy is already failing on paths inside it — a check for
-"is the clone root gone" would answer "still there" for exactly the window this races, and page. It
-also means a copy in that window still looks retryable and still spends its retry budget before
-failing; it costs a background job ~2.5 seconds, and it no longer wakes anyone.
+The question it asks is about the **session**, not about the clone, and that is deliberate. A clone
+being deleted is renamed aside before its bytes go
+([`AtomicCloneRemoval`](/operate/background-jobs/#both-clone-sweeps-reap-deletion-tombstones)), and
+the copy walking that tree keeps resolving the paths it already opened — so "is the clone root gone"
+is a question whose answer flips mid-copy for reasons that have nothing to do with whether this fork
+is in trouble. The session's status does not. A copy in that window still looks retryable and still
+spends its retry budget before failing; it costs a background job ~2.5 seconds, and it wakes no one.
 
 The distinction is the point, and it is deliberately narrow. A clone that is missing while its
 session is **live** is a genuine fault — a stray delete, a volume gone, a cleanup that ran against

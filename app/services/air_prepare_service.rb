@@ -521,7 +521,7 @@ class AirPrepareService
     max_attempts = AIR_PREPARE_RETRY_DELAYS_SECONDS.length + 1
     catalog_refreshed = false
 
-    # Unlike GitCloneService (which rm -rf's the clone dir between attempts), we
+    # Unlike GitCloneService (which discards the clone dir between attempts), we
     # re-run `air prepare` over the same target without cleanup: the failure mode
     # we retry is the catalog clone, which AIR performs into its own cache before
     # writing the target, and `air prepare` is idempotent over its own output —

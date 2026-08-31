@@ -161,6 +161,24 @@ class RealFileSystemAdapterTest < ActiveSupport::TestCase
     assert_nothing_raised { @adapter.rm_rf(path) }
   end
 
+  test "rename moves a whole directory tree in one step" do
+    src = File.join(@temp_dir, "clone")
+    dest = File.join(@temp_dir, "clone.deleting-0123abcd")
+    @adapter.mkdir_p(File.join(src, "subdir"))
+    @adapter.write(File.join(src, "subdir", "file.txt"), "content")
+
+    @adapter.rename(src, dest)
+
+    assert_not @adapter.exists?(src)
+    assert_equal "content", @adapter.read(File.join(dest, "subdir", "file.txt"))
+  end
+
+  test "rename raises for a source that does not exist" do
+    assert_raises(Errno::ENOENT) do
+      @adapter.rename(File.join(@temp_dir, "nope"), File.join(@temp_dir, "elsewhere"))
+    end
+  end
+
   test "read raises error for non-existent file" do
     path = File.join(@temp_dir, "nonexistent.txt")
 

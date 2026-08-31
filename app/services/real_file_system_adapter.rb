@@ -42,6 +42,10 @@ class RealFileSystemAdapter < FileSystemAdapter
     FileUtils.rm_rf(path)
   end
 
+  def rename(src, dest)
+    File.rename(src, dest)
+  end
+
   def chmod(mode, path)
     File.chmod(mode, path)
   end
