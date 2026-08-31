@@ -2948,11 +2948,11 @@ class AgentSessionJob < ApplicationJob
   # in front of every watcher. A one-time wake that fires destroys its siblings, so
   # one flap can cost a watching session its whole wake set.
   #
-  # SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW now catches this flap downstream
-  # as well, since EnqueuedMessageDrainJob::DELAY is comfortably inside it. Handing
-  # off here is still the better outcome: the session never leaves `running`, so
-  # there is no 30-second window in which the UI and every state query disagree with
-  # where the work actually is.
+  # SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW catches this flap downstream as
+  # well, since EnqueuedMessageDrainJob::DELAY is comfortably inside it. Handing off
+  # here is still the better outcome: the session never leaves `running`, so there is
+  # no 30-second window in which the UI and every state query disagree with where the
+  # work actually is.
   #
   # This is the escape for the *turn-completion* pauses, and it is conditional by
   # construction — no queued message, no handoff, and an ordinary end-of-turn pause
