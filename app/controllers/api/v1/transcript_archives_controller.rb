@@ -44,7 +44,10 @@ class Api::V1::TranscriptArchivesController < Api::BaseController
       session_count: archive.session_count,
       file_size_bytes: archive.file_size_bytes,
       stale: archive.stale?,
-      stale_reason: archive.staleness_note
+      stale_reason: archive.staleness_note,
+      complete: archive.complete?,
+      deferred_count: archive.deferred_count,
+      incomplete_reason: archive.incompleteness_note
     }
   end
 

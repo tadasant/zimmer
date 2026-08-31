@@ -379,6 +379,27 @@ a different claim from "not there", and both surfaces say which one it is. See
 `TranscriptArchiveJob` rebuilds a `latest.zip` of all transcripts every 10 minutes (temp file +
 atomic rename). It's served by `GET /api/v1/transcript_archive/download`.
 
+The rebuild is incremental in both directions. It reads sessions one at a time rather than loading
+every changed session at once — a transcript is a single large payload, so holding a whole corpus of
+them is what used to run the worker out of memory
+([#719](https://github.com/tadasant/zimmer/issues/719)) — and it archives at most
+`MAX_SESSIONS_PER_RUN` sessions per tick, recording what it finished before it stops. A backlog
+therefore drains over several ticks instead of being retried whole. Steady state is a handful of
+changed sessions per tick, where neither bound is reached.
+
+That makes the job's peak a function of the largest single transcript rather than of the corpus. Not
+one copy of it: `sessions.transcript` is a `json` column, so a loaded row holds the raw database
+string *and* the type-cast value, and serializing it builds a third copy before the write. Budget
+about three times the largest transcript.
+
+A draining backlog is visible in two places, and it has to be, because a catching-up archive is
+rewritten on every tick and so is never *stale* — staleness and completeness are different
+questions. The job logs a `deferred to the next tick` line at WARN, the severity production ships to
+its log store; and the metadata sidecar records `deferred_count`, which surfaces as `complete`,
+`deferred_count` and `incomplete_reason` on `GET /api/v1/transcript_archive/status` and as a
+**Complete:** line in the `get_transcript_archive` MCP tool. A reader that must not mistake a partial
+export for the whole corpus should check that rather than the age.
+
 It writes under `~/.zimmer/transcript_archives` — the `zimmer_data` named volume, mounted at the
 same path in both the `web` and `worker` containers. That matters because the writer and the readers
 are in different containers: cron runs only in `worker` (GoodJob starts a cron capsule only in an
