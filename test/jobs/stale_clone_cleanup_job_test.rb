@@ -561,7 +561,7 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     assert File.directory?(live_dir), "a live session's clone must survive the reap"
   end
 
-    test "referenced_clone_owners_by_basename maps unique basenames to session ids" do
+  test "referenced_clone_owners_by_basename maps unique basenames to session ids" do
     @session.update!(status: :needs_input, metadata: { "clone_path" => "/a/base/zzz-clone-aaa" })
 
     map = StaleCloneCleanupJob.new.send(:referenced_clone_owners_by_basename)
