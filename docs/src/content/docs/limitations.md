@@ -1784,30 +1784,36 @@ The scaffolded directory belongs to the fork, is reclaimed when the fork is arch
 nothing about the source session is restored, mutated, or left behind. See
 [Status summary](/sessions/status-summary/#what-a-scaffolded-fork-leaves-behind).
 
-### An interrupted clone delete still mangles a live working tree
+### A clone delete that cannot rename falls back to a non-atomic in-place delete
 
-Clone deletion — the archive/trash path, the pruning `CloneDiskGuard` triggers before a clone, and
-the sweeps in `StaleCloneCleanupJob` and `OrphanCloneFilesystemCleanupJob` — is a plain recursive
-`rm -rf` on the clone in place. If it starts on a tree that is still live and is interrupted partway
-(a deploy, a SIGTERM, a session that turns out not to be dead), it leaves an arbitrary surviving
-subset of the tree behind: files gone in readdir order, no marker, nothing that detects it. The
-session whose clone that is keeps running against a tree with holes in it.
+Clone deletion goes through `AtomicCloneRemoval`: the clone is renamed to a sibling
+`<clone>.deleting-<hex>` tombstone and the tombstone is deleted. `rename(2)` is atomic within a
+filesystem, so an interrupt — a deploy, a SIGTERM, the worker container being recreated — leaves
+either the whole tree at the clone's path or nothing at it, never a half-tree wearing the clone's
+name. Whatever is left behind is a tombstone, which no consumer resolves and which the hourly sweeps
+in `StaleCloneCleanupJob` and `OrphanCloneFilesystemCleanupJob` reap.
 
-[Issue #411](https://github.com/tadasant/zimmer/issues/411) closed the two ways that spread — archive
-no longer preserves the deletions as uncommitted work, and unarchive no longer replays a patch that
-guts the fresh clone (see [the archive path](/sessions/lifecycle/)) — but the origin is untouched.
-Making deletion atomic (rename the clone out of the way, then delete the renamed copy, so an
-interrupt leaves either the whole tree or nothing) is tracked separately in
-[#412](https://github.com/tadasant/zimmer/issues/412). Same family as
-[#406](https://github.com/tadasant/zimmer/issues/406), the fork-side delete-race, and
-[#410](https://github.com/tadasant/zimmer/issues/410), where an interrupted `BundleInstallJob` leaves
-a clone permanently unusable.
+The residue is the case where the rename itself cannot be done — a cross-device rename (`EXDEV`, if
+the clones base were ever a mount point with the clone below it) or a permission error. Skipping the
+delete there would leak the bytes forever and, on the archive path, leave a caller believing the
+clone is gone, so the fallback is the old in-place `rm -rf`, logged at `.warn`. In that narrow case
+an interrupt can still mangle the tree — the pre-existing hazard, taken visibly rather than silently.
 
-It is not rare. On 2026-08-12, the day the guard shipped, it defused nine clones across nine
-sessions in one afternoon, and a read-only scan of the production clones directory that evening
-found 20 of 87 clones carrying a mass-deletion tree — both figures recorded in
+Two smaller edges remain. The tombstone is only unresolvable by *name*: a process that already holds
+an open path inside the clone keeps reading it as the tree is unlinked. And the per-session
+directories `StaleCloneCleanupJob` sweeps — scratch, the Claude config dir, the two prompt-attachment
+trees — are still deleted in place; they are not clones and nothing resolves a partial one as state,
+but an interrupt there still leaves a subset behind.
+
+The guards from [#411](https://github.com/tadasant/zimmer/issues/411) stay in place either way:
+archive does not preserve a mass-deletion tree as uncommitted work, and unarchive refuses to replay
+one. Historically this was not rare — on 2026-08-12, the day that guard shipped, it defused nine
+clones across nine sessions in one afternoon, and a read-only scan of the production clones directory
+that evening found 20 of 87 clones carrying a mass-deletion tree, both figures recorded in
 [#415](https://github.com/tadasant/zimmer/issues/415). `MangledCloneReportJob` is what keeps that
-number visible day to day.
+number visible day to day, and with the origin fixed in
+[#412](https://github.com/tadasant/zimmer/issues/412) it is the signal for whether anything still
+produces one.
 
 ### A session that deletes 50+ tracked files and nothing else loses those deletions on archive
 

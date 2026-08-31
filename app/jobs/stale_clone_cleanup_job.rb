@@ -236,9 +236,26 @@ class StaleCloneCleanupJob < ApplicationJob
     referenced_owners = referenced_clone_owners_by_basename
     cutoff = ORPHAN_AGE_THRESHOLD.ago
 
+    # Directories left by a clone delete that was interrupted between the rename
+    # and the recursive unlink (#412). They are counted and logged by
+    # AtomicCloneRemoval rather than folded into this sweep's totals: they are not
+    # orphaned clones, and the age and ownership guards below do not apply to them
+    # — a tombstone is doomed the moment it is created.
+    #
+    # Behind #sweepable_root? even though the rest of this sweep is not. The rest
+    # is guarded by asking the database who owns each directory, which is a bad
+    # question when the database does not describe the volume; a tombstone has no
+    # owner to ask about, so the environment fence is the only guard it can have.
+    # It is also what keeps `bin/dev` and `bin/rails test` on a machine sharing
+    # ~/.zimmer/clones from deleting inside the durable volume.
+    AtomicCloneRemoval.reap_tombstones(clones_base) if sweepable_root?("clones", clones_base)
+
     Dir.children(clones_base).each do |entry|
       full_path = File.join(clones_base, entry)
       next unless File.directory?(full_path)
+      # Not a clone: a delete in flight, or one interrupted since the reap above.
+      # Either way it is never this sweep's to reason about.
+      next if AtomicCloneRemoval.tombstone?(entry)
 
       normalized = File.expand_path(full_path)
       next if live_clone_paths.include?(normalized)

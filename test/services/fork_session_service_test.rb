@@ -845,16 +845,19 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     ForkSessionService.any_instance.stubs(:sleep)
     fs = failing_copy_adapter(@mock_fs, failures: 1)
 
-    removed = []
-    fs.define_singleton_method(:rm_rf) do |path|
-      removed << path
-      super(path)
+    # The destination is cleared by AtomicCloneRemoval (#412), which renames it
+    # aside before deleting it — so the path the retry needs empty is emptied in
+    # one atomic step rather than unlinked out from under itself.
+    renamed = []
+    fs.define_singleton_method(:rename) do |src, dest|
+      renamed << src
+      super(src, dest)
     end
 
     result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: fs)
 
     assert result.success?
-    assert_includes removed, fs.copy_attempts.first,
+    assert_includes renamed, fs.copy_attempts.first,
       "a half-written destination must be cleared, not merged into by the next attempt"
     # The effect, not just the call: the failing attempt wrote Gemfile.lock into
     # the destination, and the fork that succeeded must not have inherited it.
@@ -862,13 +865,16 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       "the successful attempt must start from an empty destination"
   end
 
-  # rm_rf reports nothing when it removes only part of a tree, and cp_r given a
-  # destination that already exists copies INTO it — so a retry over a surviving
-  # partial tree would produce a nested clone instead of a failure.
+  # A cleanup reports nothing when it fails to clear the destination, and cp_r
+  # given a destination that already exists copies INTO it — so a retry over a
+  # surviving partial tree would produce a nested clone instead of a failure. The
+  # rename-aside cleanup makes this much harder to reach (the path is cleared in
+  # one step), which is why the adapter here has to defeat both halves of it.
   test "a destination that survives the cleanup fails the fork instead of being retried into" do
     ForkSessionService.any_instance.stubs(:sleep)
     fs = failing_copy_adapter(@mock_fs, failures: 1)
-    fs.define_singleton_method(:rm_rf) { |_path| nil } # a cleanup that silently removes nothing
+    fs.define_singleton_method(:rename) { |_src, _dest| nil } # a cleanup that silently moves nothing
+    fs.define_singleton_method(:rm_rf) { |_path| nil } # ...and silently removes nothing
 
     result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: fs)
 

@@ -14,6 +14,7 @@ class FileSystemAdapterTest < ActiveSupport::TestCase
     assert_raises(NotImplementedError) { adapter.mtime("/path") }
     assert_raises(NotImplementedError) { adapter.mkdir_p("/path") }
     assert_raises(NotImplementedError) { adapter.rm_rf("/path") }
+    assert_raises(NotImplementedError) { adapter.rename("/path", "/other") }
     assert_raises(NotImplementedError) { adapter.chmod(0o755, "/path") }
   end
 end

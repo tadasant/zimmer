@@ -105,6 +105,13 @@ class CacheClearService
       end
     end
 
+    # The first path segment of `path` below the clones base — that is, the clone
+    # directory a nested cache belongs to. Going through the clone's own name is
+    # what lets a tombstone be recognized however deep the cache sits inside it.
+    def relative_clone_root(clones_dir, path)
+      path.to_s.delete_prefix("#{clones_dir}#{File::SEPARATOR}").split(File::SEPARATOR).first.to_s
+    end
+
     # Clear .npm-cache directories inside agent clone working directories.
     #
     # RuntimeConfigPostProcessor#pin_npx_caches_to_clone! points every npx MCP
@@ -122,6 +129,9 @@ class CacheClearService
       end
 
       cache_dirs = Dir.glob(File.join(clones_dir, "**", ".npm-cache"))
+        # Skip caches inside a clone that is mid-delete (AtomicCloneRemoval, #412);
+        # the whole tree is on its way out.
+        .reject { |dir| AtomicCloneRemoval.tombstone?(relative_clone_root(clones_dir, dir)) }
       if cache_dirs.empty?
         return { cleared: false, path: clones_dir, message: "No per-clone .npm-cache directories found" }
       end

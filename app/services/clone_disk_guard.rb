@@ -218,6 +218,9 @@ module CloneDiskGuard
 
     candidate = Dir.children(base)
       .select { |entry| entry.start_with?("#{repo_name}-") }
+      # A tombstone is a clone mid-delete (AtomicCloneRemoval, #412). Sizing one
+      # would measure a tree that is disappearing under `du`.
+      .reject { |entry| AtomicCloneRemoval.tombstone?(entry) }
       .map { |entry| File.join(base, entry) }
       .select { |path| File.directory?(File.join(path, ".git")) }
       .max_by { |path| File.mtime(path) }
