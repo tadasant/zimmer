@@ -302,8 +302,8 @@ class ForkSessionService
   # LIVE tree being churned by its own agent — a genuine copy failure, which must
   # keep failing loudly rather than being written off as an empty scaffold. The
   # session's status is the discriminator for the same reason #archived_source_session?
-  # explains: rm_rf removes the clone root last, so asking the tree answers "still
-  # there" for exactly the window this races.
+  # explains: what the tree looks like mid-delete is not a fact about whether this
+  # fork is in trouble.
   def materialize_fork_clone(new_clone_path)
     return scaffold_clone(new_clone_path) if scaffold_clone?
 
@@ -483,11 +483,12 @@ class ForkSessionService
   # DeferredCloneCleanupJob deletes an archived session's clone.
   #
   # The SESSION's status is the ground truth here, deliberately, rather than
-  # whether the clone root is still on disk. rm_rf unlinks children bottom-up and
-  # removes the root last, so for the whole of a large clone's deletion the root
-  # is still there while the copy is already failing on paths inside it — the
-  # exact window this races. A live session is never this case: its clone going
-  # missing is a genuine fault and stays loud.
+  # whether the clone root is still on disk. AtomicCloneRemoval renames the clone
+  # aside before deleting it, and the copy walking that tree keeps resolving the
+  # paths it already opened — so "is the clone root there" answers differently at
+  # different instants of one deletion, for reasons that say nothing about this
+  # fork. A live session is never this case: its clone going missing is a genuine
+  # fault and stays loud.
   #
   # `reload` because the archive lands DURING the copy, which is the whole race:
   # the status this service was handed says nothing about it. Nothing here may

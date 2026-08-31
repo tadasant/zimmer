@@ -241,7 +241,14 @@ class StaleCloneCleanupJob < ApplicationJob
     # AtomicCloneRemoval rather than folded into this sweep's totals: they are not
     # orphaned clones, and the age and ownership guards below do not apply to them
     # — a tombstone is doomed the moment it is created.
-    AtomicCloneRemoval.reap_tombstones(clones_base)
+    #
+    # Behind #sweepable_root? even though the rest of this sweep is not. The rest
+    # is guarded by asking the database who owns each directory, which is a bad
+    # question when the database does not describe the volume; a tombstone has no
+    # owner to ask about, so the environment fence is the only guard it can have.
+    # It is also what keeps `bin/dev` and `bin/rails test` on a machine sharing
+    # ~/.zimmer/clones from deleting inside the durable volume.
+    AtomicCloneRemoval.reap_tombstones(clones_base) if sweepable_root?("clones", clones_base)
 
     Dir.children(clones_base).each do |entry|
       full_path = File.join(clones_base, entry)

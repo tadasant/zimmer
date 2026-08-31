@@ -73,6 +73,32 @@ class AtomicCloneRemovalTest < ActiveSupport::TestCase
     assert_equal 3, tombstones.size
   end
 
+  test "reap_tombstones does not count a tombstone that survived the delete" do
+    # FileUtils.rm_rf is rm_r(force: true): it swallows every error and returns
+    # normally, so a tombstone with an unwritable subtree would otherwise be
+    # reported as reaped on every run, forever, while sitting on disk.
+    tombstone = File.join(@base, "zimmer-main-1770000000-cafebabe.deleting-0123abcd")
+    FileUtils.mkdir_p(tombstone)
+    FileUtils.stubs(:rm_rf).returns([ tombstone ])
+
+    assert_equal 0, AtomicCloneRemoval.reap_tombstones(@base)
+    assert File.directory?(tombstone), "the fixture must still be there — otherwise this proves nothing"
+  end
+
+  test "reap_tombstones takes a tombstone that is not a directory" do
+    # ForkSessionService disposes of a destination that may be "a partially written
+    # tree, a bare directory, or nothing", so a tombstone is not always a directory.
+    file_tombstone = File.join(@base, "zimmer-main-1770000000-cafebabe.deleting-0123abcd")
+    File.write(file_tombstone, "not a directory")
+    dangling = File.join(@base, "zimmer-main-1770000001-cafebabe.deleting-0123abce")
+    File.symlink(File.join(@base, "gone"), dangling)
+
+    assert_equal 2, AtomicCloneRemoval.reap_tombstones(@base)
+
+    assert_not File.exist?(file_tombstone)
+    assert_not File.symlink?(dangling)
+  end
+
   test "reap_tombstones is a no-op on a base that does not exist" do
     assert_equal 0, AtomicCloneRemoval.reap_tombstones(File.join(@base, "nope"))
     assert_equal 0, AtomicCloneRemoval.reap_tombstones(nil)
@@ -102,6 +128,20 @@ class AtomicCloneRemovalTest < ActiveSupport::TestCase
     assert AtomicCloneRemoval.remove(tombstone)
 
     assert_not File.exist?(tombstone)
+    assert_empty tombstones
+  end
+
+  test "an empty clone directory handed over as a Pathname is still removed" do
+    # Pathname answers `empty?`, and Pathname#empty? is true for an empty
+    # DIRECTORY — so a `blank?` guard here would silently decline to delete a clone
+    # whose `git clone` was killed before it wrote anything. Two call sites hand
+    # this a Pathname.
+    empty_clone = File.join(@base, "zimmer-main-1770000000-0badf00d")
+    FileUtils.mkdir_p(empty_clone)
+
+    assert AtomicCloneRemoval.remove(Pathname.new(empty_clone))
+
+    assert_not File.exist?(empty_clone)
     assert_empty tombstones
   end
 

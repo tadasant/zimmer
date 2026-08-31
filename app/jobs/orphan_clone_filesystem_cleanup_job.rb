@@ -137,9 +137,14 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     orphans = find_orphan_directories(clones_base, cutoff: PRESSURE_AGE_THRESHOLD.ago)
 
     if orphans.empty?
+      # Still report what the reap freed. This method's contract is "bytes freed",
+      # and answering 0 after deleting tombstones would tell both the caller and the
+      # operator that nothing was reclaimed.
+      freed = bytes_freed_since(starting_free, clones_base)
       Rails.logger.warn "[OrphanCloneFilesystemCleanupJob] Disk pressure on #{clones_base} " \
-        "but no orphaned clones are eligible for reclamation"
-      return 0
+        "but no orphaned clones are eligible for reclamation " \
+        "(#{reaped} interrupted-delete tombstone(s) reaped, #{freed} bytes freed)"
+      return freed
     end
 
     deadline = monotonic_now + RECLAIM_BUDGET_SECONDS
@@ -165,12 +170,7 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
       break if current_free && current_free >= target_free_bytes
     end
 
-    ending_free = CloneDiskGuard.available_bytes(clones_base)
-    freed = if starting_free && ending_free
-      [ ending_free - starting_free, 0 ].max
-    else
-      0
-    end
+    freed = bytes_freed_since(starting_free, clones_base)
 
     Rails.logger.info "[OrphanCloneFilesystemCleanupJob] Reclaimed #{freed} bytes from " \
       "#{cleaned} orphan clones under disk pressure"
@@ -182,6 +182,15 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
 
   def monotonic_now
     Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  # Bytes the volume gave back since `starting_free`, measured against the volume
+  # rather than summed from the deleted directories. Zero when either probe failed.
+  def bytes_freed_since(starting_free, clones_base)
+    ending_free = CloneDiskGuard.available_bytes(clones_base)
+    return 0 unless starting_free && ending_free
+
+    [ ending_free - starting_free, 0 ].max
   end
 
   # Whether this deployment is allowed to delete from `clones_base` at all.

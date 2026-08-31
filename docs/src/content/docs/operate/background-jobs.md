@@ -175,20 +175,22 @@ will not size a tree that is disappearing under `du`, and `CacheClearService` wi
 
 ## Counting mangled clones without paging for each one
 
-An interrupted `rm -rf` on a live clone leaves a working tree that is nothing but deletions of
-tracked files. `CloneArtifactService` refuses to preserve such a tree on archive — see
-[the archive path](/sessions/lifecycle/) — and that refusal is fully self-healing: the corruption is
-dropped, the session's real work still travels in the bundle and the filtered patch, and the deleted
-files come back from `HEAD`.
+A recursive delete that runs on a live clone *in place* and is interrupted leaves a working tree that
+is nothing but deletions of tracked files. `CloneArtifactService` refuses to preserve such a tree on
+archive — see [the archive path](/sessions/lifecycle/) — and that refusal is fully self-healing: the
+corruption is dropped, the session's real work still travels in the bundle and the filtered patch,
+and the deleted files come back from `HEAD`.
 
 It used to log at `.error`, which meant `StructuredLogger` reported it to GlitchTip and tripped the
 "backend logging errors" alert rule for every clone the guard *successfully* handled. Nine pages in
 one afternoon, for nine sessions that all archived fine. It logs at `.warn` now, so the
 per-occurrence line still reaches VictoriaLogs and nobody is woken up for it.
 
-The rate still matters — it is the live signal for
-[#412](https://github.com/tadasant/zimmer/issues/412), the non-atomic clone delete that mangles the
-trees in the first place — so the count is kept in two durable places rather than in the alert:
+The rate still matters. Clone deletion is atomic (the section above), which removes the mechanism
+that produced these trees — [#412](https://github.com/tadasant/zimmer/issues/412) — so the count is
+the measurement of whether anything still does: the residual in-place fallback when a rename is
+impossible, or a delete path nobody routed through `AtomicCloneRemoval`. It is kept in two durable
+places rather than in the alert:
 
 - `DeferredCloneCleanupJob` stamps `mangled_clone_dropped_deletions` and `mangled_clone_defused_at`
   on the session, which makes the history countable in SQL long after the log line has aged out.

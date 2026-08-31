@@ -16,18 +16,18 @@
 #
 # So: `rename(2)` the clone to a sibling path no consumer resolves, then delete
 # the renamed copy. The rename is atomic and the sibling shares the clones base,
-# so it stays on one filesystem. An interrupt now leaves either the whole tree at
-# its original path or nothing at it — never a half-tree wearing the clone's name.
-# What it can leave behind is a `<clone>.deleting-<hex>` tombstone, which is
-# exactly what the hourly sweeps reap (see .reap_tombstones).
+# so it stays on one filesystem. An interrupt therefore leaves either the whole
+# tree at its original path or nothing at it — never a half-tree wearing the
+# clone's name. What it can leave behind is a `<clone>.deleting-<hex>` tombstone,
+# which is exactly what the hourly sweeps reap (see .reap_tombstones).
 #
 # Failure of the rename itself
 # ----------------------------
 # A cross-device rename (EXDEV) or a permission error must NOT silently skip the
 # delete: the bytes would leak forever and, on the archive path, the caller
-# believes the clone is gone. So the fallback is the old in-place `rm_rf`, logged
-# at `.warn` — the pre-existing hazard, taken deliberately and visibly, rather
-# than a new one.
+# believes the clone is gone. The fallback is therefore an in-place `rm_rf`,
+# logged at `.warn` — one narrow case that keeps the hazard described above,
+# taken deliberately and visibly, rather than a different one taken silently.
 module AtomicCloneRemoval
   # Marker for a directory that is mid-deletion. Chosen so it cannot collide with
   # a clone name (`<repo>-<branch>-<timestamp>-<random>`) — the hex run is
@@ -58,7 +58,11 @@ module AtomicCloneRemoval
   # @param file_system [FileSystemAdapter] injected for the call sites that own one
   # @return [Boolean] true when there was something to remove
   def remove(path, file_system: RealFileSystemAdapter.new)
-    return false if path.blank?
+    # Not `blank?`: a Pathname answers `empty?`, and Pathname#empty? is true for an
+    # empty *directory* — so `blank?` would silently decline to delete a clone whose
+    # `git clone` was killed before it wrote anything. Two of the call sites hand
+    # this a Pathname.
+    return false if path.nil? || path.to_s.empty?
     return false unless file_system.exists?(path)
 
     # Already unresolvable by any consumer — deleting in place is what "delete the
@@ -85,6 +89,9 @@ module AtomicCloneRemoval
     # Deliberately not rescued: the clone is already gone from its own name, which
     # is the guarantee this module exists for. A failure here leaves a tombstone
     # the sweeps reap, and the caller's own error handling still sees the fault.
+    # `FileUtils.rm_rf` swallows its own errors, so in practice only an injected
+    # adapter raises — which is what makes "the path is already clear" the useful
+    # guarantee rather than the return value.
     file_system.rm_rf(tombstone)
     true
   end
@@ -97,11 +104,17 @@ module AtomicCloneRemoval
   # harmless — both processes are deleting the same doomed tree and `rm_rf`
   # ignores files that vanish under it.
   #
+  # Docker Compose teardown is deliberately not attempted here. Every call site that
+  # can have compose resources tears them down before it asks for the delete, so a
+  # tombstone's teardown has already happened; and this runs on the disk-pressure
+  # path, where `COMPOSE_DOWN_TIMEOUT` (120s) per directory would blow the sweep's
+  # wall-clock budget many times over.
+  #
   # @param base [String] the clones base directory
   # @param limit [Integer] most tombstones to remove in one pass
   # @return [Integer] how many were removed
   def reap_tombstones(base, limit: REAP_LIMIT)
-    return 0 if base.blank? || !File.directory?(base)
+    return 0 if base.nil? || base.to_s.empty? || !File.directory?(base)
 
     tombstones = begin
       Dir.children(base).select { |entry| tombstone?(entry) }
@@ -116,9 +129,23 @@ module AtomicCloneRemoval
 
     tombstones.first(limit).each do |entry|
       full_path = File.join(base, entry)
-      next unless File.directory?(full_path)
 
+      # No `File.directory?` guard: a tombstone can be a file or a dangling symlink
+      # (ForkSessionService disposes of a destination that may be "a partially
+      # written tree, a bare directory, or nothing"), and skipping those would leak
+      # them forever.
       FileUtils.rm_rf(full_path)
+
+      # `rm_rf` is `rm_r(force: true)`: it swallows every error and returns
+      # normally, so the count cannot come from the call. An unwritable subtree
+      # would otherwise be reported as reaped on every run, forever, while sitting
+      # on disk and consuming one of the REAP_LIMIT slots in silence.
+      if File.exist?(full_path) || File.symlink?(full_path)
+        Rails.logger.warn "[AtomicCloneRemoval] Tombstone #{full_path} survived its reap; " \
+          "leaving it for the next sweep"
+        next
+      end
+
       reaped += 1
     rescue StandardError => e
       Rails.logger.error "[AtomicCloneRemoval] Failed to reap tombstone #{full_path}: #{e.class} - #{e.message}"
@@ -134,11 +161,11 @@ module AtomicCloneRemoval
   # A sibling of `path` — same directory, therefore same filesystem, therefore an
   # atomic rename.
   def tombstone_path_for(path)
-    cleaned = path.to_s.chomp(File::SEPARATOR)
-
+    # File.dirname and File.basename both ignore trailing separators, so a path
+    # handed over as "<clone>/" still yields a sibling rather than a child.
     File.join(
-      File.dirname(cleaned),
-      "#{File.basename(cleaned)}#{TOMBSTONE_MARKER}#{SecureRandom.hex(4)}"
+      File.dirname(path.to_s),
+      "#{File.basename(path.to_s)}#{TOMBSTONE_MARKER}#{SecureRandom.hex(4)}"
     )
   end
 end
