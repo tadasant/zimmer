@@ -383,8 +383,8 @@ the curve catches up, the same job starts the session normally.
 A re-check job that a worker shutdown catches *mid-pickup* is re-enqueued verbatim rather than
 treated as an interrupted session — see [`waiting` is two different situations, and neither is a
 recovery](/sessions/lifecycle/#waiting-is-three-different-situations-and-none-of-them-is-a-recovery).
-Only the re-check job schedules the next re-check, so anything that ends the chain strands the
-session for good.
+The chain has no redundancy along it: each re-check is what forges the next one. So when a link is
+lost, a sweep re-forges it — see [A hold that loses its re-check](#a-hold-that-loses-its-re-check).
 
 Archiving a held session ends it deliberately. The delayed job is left in the queue — nothing
 cancels it — but `AgentSessionJob` refuses an archived session before it reaches the gate, so
@@ -441,6 +441,49 @@ what the hold banner already says.
 
 Refusing instead would mean the gate silently deletes work: a `github_issue` trigger that fires once
 during a busy afternoon would never run at all.
+
+### A hold that loses its re-check
+
+The ladder above is a chain of single delayed jobs, and until 2026-08-31 it had no redundancy
+anywhere along it. A hold is a promise — *"re-checking at 02:43:15"* — kept by exactly one job, and
+each re-check is what enqueues the next one. Lose one link and the session waits forever, in a state
+indistinguishable at a glance from a session merely queued.
+
+That is not hypothetical. Session 7507 was held for the 145th time at `02:12:30Z`; the hold record
+committed, and 23 seconds later the worker was gone. GoodJob re-picked the row and raised
+`InterruptError`, and the hold's own log line never reached the database — it was still in the
+in-memory `LogBuffer`, which is how we know the execution died *between* the metadata write and the
+flush, taking the un-enqueued re-check with it. At `02:43:15Z` nothing happened, and nothing ever
+would have. Eleven hours later the session page was still showing a human `5 of 5 session slots
+taken` while the live gate said `within_limits` at 1 of 5.
+
+Two changes make that recoverable rather than terminal.
+
+**The durable record is the session, not the job.** `spot_hold_retry_at` on the session is what the
+ladder rests on, and `SpotHoldSweepJob` reconciles it against reality every five minutes. A hold
+more than ten minutes past its own re-check time, with no `AgentSessionJob` still queued against
+that session, is a broken ladder: the sweep advances the stamp under a row lock and enqueues the
+turn again. The advanced stamp is its own idempotency key, so the next pass leaves the session
+alone. It re-arms at most ten a pass, spread over three minutes, so a recovered backlog walks back
+onto the ladder rather than hitting the gate at once.
+
+A re-arm is a **re-check, not an admission**: it puts the same turn back through the gate, which
+decides again. If the gate is open the session runs; if it is still closed the session is held
+again, with a fresh re-check behind it.
+
+**The refused prompt is recorded on the session too.** *"Deferred, never dropped"* is the promise the
+hold makes, and while the only copy of the prompt was the delayed job's argument list, a lost job
+broke it. A deferred resume now writes `spot_hold_prompt` alongside the rest of the hold record, so
+the sweep replays the real turn. A hold recorded before that — every session stranded today — has no
+prompt to replay and comes back on a recovery nudge instead, which is said out loud in its log.
+
+**An interrupt no longer mistakes a hold for a stranded session.** A held session is dormant on
+purpose, exactly like a ceiling pause or an auth-outage park, and `AgentSessionJob`'s interrupt
+recovery now recognises it as such. It used to read only the *pause* record (`spot_pause_reason`),
+so a held session — `spot_hold_reason`, a different population with a different resume owner — fell
+through to the recovery path and was stamped `paused_by: "recovery"` on top of its hold. Session
+7507 was: twelve auto-continue attempts against a clone deleted days earlier, then abandoned at
+`02:54:32Z`, leaving it in `waiting` holding a re-check that had already been lost.
 
 ### A hold lasts as long as the number does
 

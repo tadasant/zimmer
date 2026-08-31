@@ -45,10 +45,18 @@ class SpotHoldExplanation
   Line = Data.define(:label, :sentence)
 
   # @param decision [SpotGateService::Decision]
-  # @param paused_count [Integer] SpotSessionPause.paused_count
-  def initialize(decision, paused_count:)
+  # @param paused_count [Integer] SpotSessionPause.paused_count — sessions the
+  #   ceiling interrupted MID-RUN
+  # @param held_count [Integer] SpotSessionHold.held_count — sessions the gate
+  #   refused BEFORE a turn. A different population with a different resume
+  #   owner, which is why it gets its own figure rather than being folded in.
+  # @param overdue_hold_count [Integer] how many of those are past their own
+  #   re-check time, i.e. how many ladders have stalled
+  def initialize(decision, paused_count:, held_count: 0, overdue_hold_count: 0)
     @decision = decision
     @paused_count = paused_count.to_i
+    @held_count = held_count.to_i
+    @overdue_hold_count = overdue_hold_count.to_i
   end
 
   # @return [Array<Line>] empty when spot work is running — there is no hold to
@@ -86,7 +94,56 @@ class SpotHoldExplanation
     end
   end
 
+  # The other dormant population, and the one both surfaces used to omit
+  # entirely.
+  #
+  # `get_spot_policy` printed SpotSessionPause.paused_count under the heading
+  # "Spot sessions asleep in the spot queue", which reads as every dormant spot
+  # session and is not. On 2026-08-31 it reported 0 asleep while session 7507 —
+  # spot, `waiting`, held 145 times — was demonstrably asleep on a hold. The two
+  # populations are disjoint and clear differently: a pause is resumed by
+  # SpotCeilingSweepJob when the window falls, a hold by its own re-check.
+  #
+  # The overdue figure is the one an operator acts on. A hold past its own
+  # re-check time is a ladder that has stopped, and until SpotHoldSweepJob existed
+  # nothing surfaced that at all.
+  def sessions_held
+    return "Nothing is waiting at the door — no spot turn has been refused and not yet let through." if
+      @held_count.zero?
+
+    subject = @held_count == 1 ? "It is" : "Each is"
+    pronoun = @held_count == 1 ? "It re-checks itself" : "They re-check themselves"
+    # No backticks around "waiting": this sentence is rendered as plain text on
+    # /quotas as well as into `get_spot_policy`'s markdown, and the page shows
+    # them literally.
+    sentence = "#{subject} dormant in waiting before a turn the gate refused — a different population " \
+               "from the paused one above, and asleep rather than running, so it counts toward neither " \
+               "the sessions-running figure nor the concurrency limit. #{pronoun} on a backoff ladder " \
+               "and comes back with the turn it was holding."
+
+    return sentence if @overdue_hold_count.zero?
+
+    "#{sentence} #{overdue_clause}"
+  end
+
   private
+
+  # A stalled ladder, named. `spot_hold_retry_at` is the whole promise a held
+  # session rests on, so one in the past means the session is waiting on nothing.
+  def overdue_clause
+    tail = "SpotHoldSweepJob puts %s back on within a few minutes."
+
+    if @overdue_hold_count > 1
+      "#{@overdue_hold_count} of them are past their own re-check time: those ladders have stalled, " \
+        "and #{tail % 'them'}"
+    elsif @held_count > 1
+      "One of them is past its own re-check time: that ladder has stalled, and #{tail % 'it'}"
+    else
+      # "One of them", with exactly one held session, reads as though there were
+      # others.
+      "Its own re-check time has already passed: the ladder has stalled, and #{tail % 'it'}"
+    end
+  end
 
   def why
     case @decision.ceiling

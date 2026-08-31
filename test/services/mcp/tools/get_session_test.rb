@@ -91,7 +91,8 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
       SpotSessionHold::HELD_REASON => "at_utilization_limit",
       SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
-      SpotSessionHold::HELD_RETRY_AT => "2026-08-22T18:30:00Z",
+      SpotSessionHold::HELD_AT => 20.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_RETRY_AT => 40.minutes.from_now.utc.iso8601,
       SpotSessionHold::HELD_COUNT => 3,
       SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
     })
@@ -99,9 +100,34 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     output = @tool.call("id" => session.id)
 
     assert_includes output, "**Spot gate: next turn held (`at_utilization_limit`):**"
-    assert_includes output, "- **Hold re-check at:** 2026-08-22T18:30:00Z"
+    assert_includes output, "- **Hold re-check:** Next check"
     assert_includes output, "- **Holds so far:** 3"
     assert_includes output, "The prompt that woke it is not lost"
+  end
+
+  # The detail above is a SNAPSHOT of what the gate said at `spot_hold_at`, and an
+  # agent reading its own session had no way to tell. Session 7507 read back "5 of
+  # 5 session slots taken" eleven hours after the gate had returned to
+  # `within_limits` at 1 of 5 — the same fossil the session page showed, in the
+  # same words, which is why both surfaces now render it from one object.
+  test "a held session says how old the gate reading is, and names an overdue re-check" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionHold::HELD_AT => 11.hours.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 10.hours.ago.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 145,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **As of:** That was the gate's reading about 11 hours ago"
+    assert_includes output, "not a live one"
+    assert_includes output, "Its re-check was due about 10 hours ago"
+    assert_includes output, "has not fired, so the ladder has stalled"
+    refute_includes output, "Hold re-check:** Next check"
   end
 
   test "a spot session held at the starting line does not claim a queued prompt" do

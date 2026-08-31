@@ -339,9 +339,22 @@ class QuotasController < ApplicationController
     # dormant in `waiting`, so this number is unrelated to the concurrency limit
     # and is routinely larger than it — see SpotSessionPause.paused_count.
     @spot_paused_count = SpotSessionPause.paused_count
+    # The OTHER dormant population: sessions the gate refused before a turn and
+    # has not yet let through. Disjoint from the paused one above and resumed by a
+    # different mechanism (their own re-check, not the ceiling sweep), so the card
+    # prints both rather than one under a label that reads like both.
+    @spot_held_count = SpotSessionHold.held_count
+    # How many of those ladders have stalled — a hold whose own re-check time has
+    # passed is waiting on nothing until SpotHoldSweepJob puts it back.
+    @spot_overdue_hold_count = SpotSessionHold.overdue_count
     # Which of the three ceilings is holding spot work and what lifts it, in the
     # words `get_spot_policy` uses for the same decision.
-    @spot_hold_explanation = SpotHoldExplanation.new(@spot_decision, paused_count: @spot_paused_count)
+    @spot_hold_explanation = SpotHoldExplanation.new(
+      @spot_decision,
+      paused_count: @spot_paused_count,
+      held_count: @spot_held_count,
+      overdue_hold_count: @spot_overdue_hold_count
+    )
     # The capacity model behind the reserve controls: the form types a
     # percentage and prints the dollars that percentage carves out, and both
     # come from the same object the decision above was taken on.
