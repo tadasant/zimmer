@@ -299,16 +299,17 @@ resource "digitalocean_droplet" "zimmer" {
   tags     = ["zimmer", "zimmer-${var.environment}"]
 
   # DigitalOcean's metrics agent (CPU / memory / disk / load history, and the only
-  # metrics DO's own resource alert policies can evaluate). Free, and on by default
-  # for every droplet this module creates from here on.
+  # metrics DO's own resource alert policies can evaluate). Free, and installed on
+  # every droplet this module creates.
   #
-  # It is `ForceNew` in the provider -- every version in the 2.x line, including the
-  # `~> 2.43` pinned above -- so flipping it on a droplet that already exists is a
-  # REPLACE, not an in-place update. That is why it is under `ignore_changes` below:
-  # a persistent host that runs every session must not be destroyed to turn on a
-  # metrics agent. An existing droplet gets the agent either from the control panel
-  # (or the `enable_monitoring` droplet action), after which the read converges on
-  # this value with nothing to reconcile, or from its next deliberate rebuild.
+  # Create-time only. The attribute is `ForceNew` in the provider (every version in
+  # the 2.x line, including the `~> 2.43` pinned above), and DigitalOcean exposes no
+  # droplet action to enable it either -- so on a droplet that already exists this is
+  # a REPLACE, not an in-place update. That is why it is under `ignore_changes`
+  # below: a persistent host that runs every session must not be destroyed to turn on
+  # a metrics agent. An existing droplet gets the agent from a rebuild, or from DO's
+  # install script run as root on the box -- which this deployment has no clean path
+  # to. See docs limitations, and tadasant/zimmer#651.
   monitoring = true
 
   # Pin the droplet into the managed cluster's VPC (production) so its private_host
@@ -325,9 +326,12 @@ resource "digitalocean_droplet" "zimmer" {
     # plan diff and will not reach the box. Both require an explicit
     # `terraform taint digitalocean_droplet.zimmer`. See docs limitations.
     #
-    # `monitoring` is here for a different reason: it is ForceNew, so without this an
-    # apply against a droplet created before the flag existed would DESTROY AND
-    # RECREATE it -- and the staging deploy workflow applies with -auto-approve.
+    # `monitoring` is here for a different reason: it is ForceNew, so on a droplet
+    # whose state has it false an apply plans DESTROY AND RECREATE -- and BOTH
+    # environments apply with -auto-approve, so nobody reads that plan first. The
+    # production apply is the one that matters: it runs from the companion repo and
+    # owns the box every session runs on.
+    #
     # Ignoring it costs nothing on create ("the arguments corresponding to the given
     # attribute names are considered when planning a create operation, but are
     # ignored when planning an update"), so new droplets still boot with the agent.

@@ -790,10 +790,12 @@ place — see [Known limitations](/limitations/#user_data-is-frozen-so-the-deplo
 `monitoring` is in that same `ignore_changes` list, for the same reason from the other direction. The
 droplet asks for DigitalOcean's metrics agent (`monitoring = true`) so a newly created box gets host
 CPU/memory/disk/load history for free, but the attribute is `ForceNew` in the provider — setting it on
-a droplet that already exists is a replace, not an update. Ignoring it keeps a routine `apply` from
-destroying the host over a metrics agent; the trade is that a pre-existing droplet needs the toggle
-flipped once in the DigitalOcean control panel. See
-[Known limitations](/limitations/#the-digitalocean-metrics-agent-only-reaches-a-droplet-that-is-created-after-the-flag).
+a droplet that already exists is a replace, not an update, and both environments apply with
+`-auto-approve`. Ignoring it keeps a routine `apply` from destroying the host over a metrics agent.
+The trade is that an existing droplet only gets the agent when it is rebuilt: DigitalOcean offers no
+API action to enable it, and its documented remedy is a root shell on the box, which this deployment
+does not have. See
+[Known limitations](/limitations/#the-digitalocean-metrics-agent-reaches-only-a-droplet-terraform-creates-never-one-that-exists).
 
 ## Terraform, briefly
 
