@@ -39,7 +39,9 @@ class FixClonePathMetadataTest < ActiveSupport::TestCase
     assert_equal 42, broken.metadata["process_pid"], "unrelated keys survive"
 
     assert_equal "/clones/def", healthy.reload.metadata["clone_path"]
-    assert_equal({ "process_pid" => 7 }, untouched.reload.metadata)
+    # Not compared whole: Session's own after_create writes into `metadata` too.
+    assert_equal 7, untouched.reload.metadata["process_pid"]
+    assert_not untouched.metadata.key?("clone_path")
 
     assert_equal 1, run.stats["repaired"]
     assert_equal 0, run.stats["skipped"]
@@ -77,12 +79,16 @@ class FixClonePathMetadataTest < ActiveSupport::TestCase
     assert_equal 1, first.reload.stats["repaired"], "the repaired row no longer matches the predicate"
   end
 
-  test "repairs a session whose agent_root no longer resolves in the catalog" do
-    # The reason this uses update_column rather than update!: Session validates
-    # agent_root against the artifact catalog, and a session old enough to carry
-    # the broken shape may well name a root that has since been retired.
+  test "repairs a session that would no longer pass its own validations" do
+    # Why the task uses update_column rather than update!. A session old enough
+    # to carry the broken shape may name an `agent_runtime` that is no longer in
+    # RuntimeRegistry, and `validates :agent_runtime, inclusion:` reads the LIVE
+    # registry — so `update!` would raise on exactly the rows most likely to need
+    # repairing.
     broken = session("clone_path" => { "clone_path" => "/clones/abc" })
-    broken.update_column(:agent_root, "a-root-that-was-retired-years-ago")
+    broken.update_column(:agent_runtime, "a_runtime_that_was_retired_years_ago")
+
+    assert_not broken.reload.valid?, "the fixture must be a session update! would refuse"
 
     run, = run_task
 

@@ -39,11 +39,16 @@ class FixClonePathMetadata < PostDeployTask
 
   private
 
-  # `update_column`, not `update!`: this is a data repair on rows that may be
-  # years old, and Session validates `agent_root` and `catalog_skills` against
-  # the artifact catalog. A session whose agent root has since been retired is
-  # still a session whose metadata needs fixing, and failing the whole task on
-  # one of those would be absurd.
+  # `update_column`, not `update!`, for two reasons.
+  #
+  # Validations: `validates :agent_runtime, inclusion:` reads the LIVE
+  # RuntimeRegistry, and the catalog validations read the live catalog. A session
+  # old enough to carry the broken shape is exactly the one most likely to name a
+  # runtime or a skill that has since been retired — and failing the whole repair
+  # on one of those would be absurd.
+  #
+  # Callbacks: Session broadcasts on `after_update_commit`. A bulk repair has no
+  # business pushing a Turbo update per row for sessions nobody is looking at.
   def repair(session)
     nested = session.metadata["clone_path"]
     return false unless nested.is_a?(Hash)

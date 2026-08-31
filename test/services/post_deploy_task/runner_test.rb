@@ -6,6 +6,8 @@ require "tmpdir"
 # End-to-end for the mechanism: a task goes from pending to run, the run is
 # recorded, a second pass does not re-run it, and a failure behaves as designed.
 class PostDeployTask::RunnerTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   # Scopes the runner at a throwaway directory of task files, so these tests
   # exercise the real Registry rather than a stub of it.
   ScopedRegistry = Struct.new(:root) do

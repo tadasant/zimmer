@@ -42,7 +42,11 @@ class PostDeployTaskRun < ApplicationRecord
 
   class LeaseExpired < StandardError; end
 
-  validates :version, presence: true, uniqueness: true
+  # No `uniqueness:` on `version`. The unique index is the arbiter — a model-level
+  # uniqueness check is a read-then-write that two containers booting together can
+  # both win — and `ledger_for` below rescues the constraint violation directly, so
+  # a validation that fired first would only convert the race into an exception.
+  validates :version, presence: true
   validates :name, presence: true
   validates :status, inclusion: { in: STATUSES }
 
@@ -50,14 +54,14 @@ class PostDeployTaskRun < ApplicationRecord
   scope :in_version_order, -> { order(:version) }
 
   class << self
-    # The row for a task, created on first sight. `create_or_find_by!` rather
-    # than `find_or_create_by!` because the racing callers here are two
-    # containers booting together, and the unique index — not a read — is what
-    # decides which one wins.
-    def ledger_for(task_class)
-      create_or_find_by!(version: task_class.version) do |run|
-        run.name = task_class.task_name
-      end
+    # The row for a task, created on first sight and read back on every sight
+    # after. The unique index — not the read above it — is what decides a race
+    # between two containers booting together: the loser's INSERT is refused and
+    # it reads the winner's row.
+    def ledger_for(task)
+      find_by(version: task.version) || create!(version: task.version, name: task.task_name)
+    rescue ActiveRecord::RecordNotUnique
+      find_by!(version: task.version)
     end
 
     # Turn abandoned claims back into ordinary failures.
