@@ -218,6 +218,42 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     JS
   end
 
+  # Capybara's matchers retry until the page agrees; a plain `assert` on a record
+  # reads the database exactly once. A test that asserts a DOM change and then
+  # reads a row is reading two independent channels, and the DOM one can be the
+  # faster: a broadcast fires from the `after_commit` of one write while the
+  # request thread is still doing the work that produces the second. The read
+  # then loses a race it never had to enter.
+  #
+  # So this is the database-side counterpart to the two wait helpers above —
+  # poll the block until it is truthy, and fail when the deadline passes. Use it
+  # instead of weakening the assertion or sleeping a fixed amount before it.
+  #
+  # It is deliberately less forgiving than Capybara's own retry loop, which
+  # swallows a known set of element errors while it waits: an exception raised
+  # inside the block propagates on its first occurrence rather than being
+  # retried for the whole timeout. A query that raises is a real failure, and
+  # burying it for five seconds would only make it harder to read.
+  #
+  # It lives here rather than in AssertionHelpers because the race it answers is
+  # a system test's own: a second thread serving the page while the test reads
+  # behind it.
+  def assert_eventually(message = nil, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    satisfied = false
+
+    loop do
+      satisfied = yield
+      break if satisfied || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      sleep 0.05
+    end
+
+    # The caller's message says what was expected; the timeout says how long the
+    # read waited for it, which is what tells the next reader this was a poll
+    # rather than a single-shot assertion.
+    assert satisfied, [ message, "not true within #{timeout}s" ].compact.join(" — ")
+  end
+
   # Block until Stimulus has connected the named controller.
   #
   # A controller that fills a field on connect leaves the field server-rendered
