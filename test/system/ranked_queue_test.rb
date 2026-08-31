@@ -241,8 +241,9 @@ class RankedQueueTest < ApplicationSystemTestCase
     # (the test adapter holds it), so the session's own log is what says so.
     click_link "Start now"
     assert_selector "#flash", text: "next turn is due now"
-    assert queued.logs.reload.any? { |log| log.content.include?("Started now") },
-      "Start now should record itself on the session it started"
+    assert_eventually "Start now should record itself on the session it started" do
+      queued.logs.reload.any? { |log| log.content.include?("Started now") }
+    end
 
     # Trash archives through the same #archive every other Trash affordance posts
     # to, and the row leaves over the ranked stream rather than by a reload.
@@ -263,9 +264,15 @@ class RankedQueueTest < ApplicationSystemTestCase
     kebab_for(queued).click
     click_button "Promote to priority"
 
+    # The row reaching the priority list does not mean the promote has finished.
+    # `broadcast_ranked_membership` fires from the `after_commit` of the
+    # scheduling-class write, so the delivery that moves the row can land while
+    # the request thread is still in `start_after_promotion` — the read of the
+    # log it writes has to wait for it rather than take the DOM's word for it.
     assert_selector "[data-ranked-queue-target='priorityList'] #ranked_row_#{queued.id}", wait: 5
-    assert queued.logs.reload.any? { |log| log.content.include?("Started now") },
-      "a promote should start the session rather than leave it waiting out its re-check"
+    assert_eventually "a promote should start the session rather than leave it waiting out its re-check" do
+      queued.logs.reload.any? { |log| log.content.include?("Started now") }
+    end
   end
 
   # The title is the reading surface of a queue row, and clicking it should not
