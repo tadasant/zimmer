@@ -1626,7 +1626,7 @@ header is a `${VAR}`, so `SecretsInterpolator` never rewrites the host), and
 `RuntimeConfigPostProcessor#retarget_zimmer_servers_to_current_env!` early-returns in production
 (`return if Rails.env.production?`). Dev and staging rewrite that placeholder to the instance's real
 `ZIMMER_*_BASE_URL`; a **production** instance running the in-image catalog does not, so its router
-sessions would dial a dead host and — after `MAX_MCP_CONNECTION_RETRIES` — be failed outright
+sessions would dial a dead host and — after `RetryBudget::MCP_CONNECTION` is spent — be failed outright
 (`AgentSessionJob` → `session.fail!`).
 
 That prod no-op is only sound under the assumption written into its own comment: that production

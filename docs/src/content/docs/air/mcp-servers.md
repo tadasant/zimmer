@@ -163,7 +163,7 @@ classifies the failure and takes one of three routes:
 | Failure class | What happens |
 | --- | --- |
 | An **OAuth-capable** server needs authorization | `session.fail!` with `failure_reason: oauth_required`. The one fatal class, because a human clicking Authorize is the fix. |
-| Anything else, first three times | The retry ladder: `MAX_MCP_CONNECTION_RETRIES = 3`, backing off 30s / 60s / 120s. Most connect failures are transient — a server still starting after a deploy, an `npx` cache race — and self-heal here. |
+| Anything else, first three times | The retry ladder: `RetryBudget::MCP_CONNECTION` (3 attempts), backing off 30s / 60s / 120s. Most connect failures are transient — a server still starting after a deploy, an `npx` cache race — and self-heal here. |
 | Anything else, definitively | The server is **left out** and the session runs on. Also taken immediately, with no retries, for a static credential the provider rejected: a wrong API token does not become right in 30 seconds. |
 
 "A static credential the provider rejected" is read from two places, because a server can name the

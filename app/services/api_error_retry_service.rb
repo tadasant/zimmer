@@ -52,8 +52,9 @@ require "automated_prompts"
 class ApiErrorRetryService
   include DatabaseRetry
 
-  # Maximum retry attempts for API errors
-  MAX_RETRIES = 6
+  # The API-error budget: attempts, metadata keys, and the stable stretch that wins
+  # them back. Declared once in RetryBudget.
+  BUDGET = RetryBudget::API_ERROR
 
   # Exponential backoff delays (seconds) for each retry attempt under normal conditions
   # Total worst-case: 5 + 15 + 30 + 60 + 120 + 300 = 530s (~9 min across all retries)
@@ -564,7 +565,7 @@ class ApiErrorRetryService
     # Process died during verification - try next retry
     attempt_next_retry(working_directory)
   rescue => e
-    if retry_attempt >= MAX_RETRIES
+    if retry_attempt >= BUDGET.max
       # Final attempt failed and no retries remain — this is a genuine failure,
       # so log at error (which surfaces to GlitchTip, with a backtrace).
       add_log(
@@ -604,14 +605,15 @@ class ApiErrorRetryService
   # @param working_directory [String] The working directory
   # @return [Symbol] :success, :exhausted, :aborted
   def execute_retry(working_directory)
-    current_retry_count = session.reload.metadata&.dig("api_error_retry_count") || 0
+    session.reload
+    current_retry_count = BUDGET.count_for(session)
 
-    if current_retry_count >= MAX_RETRIES
-      add_log("API error retry limit reached (#{MAX_RETRIES} attempts)", level: "warning")
+    if BUDGET.exhausted?(session)
+      add_log("API error retry limit reached (#{BUDGET.max} attempts)", level: "warning")
       return :exhausted
     end
 
-    retry_attempt = current_retry_count + 1
+    retry_attempt = BUDGET.next_attempt(session)
 
     # Record event in global rate limit tracker only for actual rate limit errors
     # Server errors (500/502/503) should not escalate delays for other sessions
@@ -644,7 +646,7 @@ class ApiErrorRetryService
     end
 
     add_log(
-      "#{error_category} detected - attempting auto-retry #{retry_attempt}/#{MAX_RETRIES}" \
+      "#{error_category} detected - attempting auto-retry #{retry_attempt}/#{BUDGET.max}" \
         " after #{retry_delay}s delay",
       level: "warning"
     )
@@ -656,12 +658,10 @@ class ApiErrorRetryService
 
     # Record retry attempt in metadata
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "api_error_retry_count" => retry_attempt,
-          "last_api_error_retry_at" => Time.current.iso8601,
-          "api_error_last_checked_line" => get_transcript_line_count(working_directory)
-        )
+      BUDGET.record!(
+        session,
+        attempt: retry_attempt,
+        extra: { "api_error_last_checked_line" => get_transcript_line_count(working_directory) }
       )
     end
 

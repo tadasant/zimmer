@@ -2541,7 +2541,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       .send(:request_worker_side_termination, 4242)
 
     AgentSessionJob.new.send(
-      :check_and_reset_sigterm_retry_counter, worker_view, 10.minutes.ago, LogBuffer.new(worker_view)
+      :reset_retry_budget, worker_view, RetryBudget::SIGTERM, 10.minutes.ago, LogBuffer.new(worker_view)
     )
 
     @session.reload
@@ -2563,7 +2563,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     web_view.update!(metadata: web_view.metadata.merge("pending_follow_up_prompt" => "please fix the failing test"))
 
     AgentSessionJob.new.send(
-      :check_and_reset_api_error_retry_counter, worker_view, 10.minutes.ago, LogBuffer.new(worker_view)
+      :reset_retry_budget, worker_view, RetryBudget::API_ERROR, 10.minutes.ago, LogBuffer.new(worker_view)
     )
 
     @session.reload
@@ -5682,11 +5682,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Tests for SIGTERM retry counter reset functionality (issue pulsemcp/agents#459)
-  test "SIGTERM_RETRY_RESET_THRESHOLD constant is defined" do
-    assert_equal 60, AgentSessionJob::SIGTERM_RETRY_RESET_THRESHOLD
+  test "the shared reset threshold is 60 seconds" do
+    assert_equal 60, RetryBudget::DEFAULT_RESET_AFTER
+    assert_equal [ 60 ], RetryBudget.all.map(&:reset_after).uniq
   end
 
-  test "check_and_reset_sigterm_retry_counter resets counter after threshold" do
+  test "reset_retry_budget for SIGTERM resets counter after threshold" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5702,7 +5703,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     # Call the method with a timestamp more than 60 seconds ago
     last_sigterm_at = 65.seconds.ago
-    job.send(:check_and_reset_sigterm_retry_counter, @session, last_sigterm_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGTERM, last_sigterm_at, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5716,7 +5717,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert logs.any? { |log| log.include?("SIGTERM retry counter reset") }
   end
 
-  test "check_and_reset_sigterm_retry_counter does not reset before threshold" do
+  test "reset_retry_budget for SIGTERM does not reset before threshold" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5732,7 +5733,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     # Call the method with a timestamp less than 60 seconds ago
     last_sigterm_at = 30.seconds.ago
-    job.send(:check_and_reset_sigterm_retry_counter, @session, last_sigterm_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGTERM, last_sigterm_at, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5740,7 +5741,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal 2, @session.metadata["sigterm_retry_count"]
   end
 
-  test "check_and_reset_sigterm_retry_counter does nothing when no retry count" do
+  test "reset_retry_budget for SIGTERM does nothing when no retry count" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5754,7 +5755,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     # Call the method
     last_sigterm_at = 65.seconds.ago
-    job.send(:check_and_reset_sigterm_retry_counter, @session, last_sigterm_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGTERM, last_sigterm_at, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5765,7 +5766,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_empty logs
   end
 
-  test "check_and_reset_sigterm_retry_counter does nothing when last_sigterm_at is nil" do
+  test "reset_retry_budget for SIGTERM does nothing when last_sigterm_at is nil" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5778,7 +5779,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     )
 
     # Call with nil timestamp
-    job.send(:check_and_reset_sigterm_retry_counter, @session, nil, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGTERM, nil, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5790,7 +5791,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # Signal-Death (OOM/SIGKILL) Resume Counter Reset Tests
   # ============================================================================
 
-  test "check_and_reset_signal_death_retry_counter resets counter after threshold" do
+  test "reset_retry_budget for signal death resets counter after threshold" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5804,7 +5805,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     # A resumed process that has been stable past the threshold gets a fresh budget.
     last_signal_death_at = 65.seconds.ago
-    job.send(:check_and_reset_signal_death_retry_counter, @session, last_signal_death_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGNAL_DEATH, last_signal_death_at, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5815,7 +5816,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert logs.any? { |log| log.include?("Signal-death resume counter reset") }
   end
 
-  test "check_and_reset_signal_death_retry_counter does not reset before threshold" do
+  test "reset_retry_budget for signal death does not reset before threshold" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5828,7 +5829,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     )
 
     last_signal_death_at = 30.seconds.ago
-    job.send(:check_and_reset_signal_death_retry_counter, @session, last_signal_death_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGNAL_DEATH, last_signal_death_at, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5839,7 +5840,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # API Error Retry Counter Reset Tests
   # ============================================================================
 
-  test "check_and_reset_api_error_retry_counter resets counter after threshold" do
+  test "reset_retry_budget for API errors resets counter after threshold" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5853,7 +5854,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     )
 
     last_api_error_retry_at = 65.seconds.ago
-    job.send(:check_and_reset_api_error_retry_counter, @session, last_api_error_retry_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::API_ERROR, last_api_error_retry_at, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5868,7 +5869,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert logs.any? { |log| log.include?("API error retry counter reset") }
   end
 
-  test "check_and_reset_api_error_retry_counter does not reset before threshold" do
+  test "reset_retry_budget for API errors does not reset before threshold" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5882,21 +5883,21 @@ class AgentSessionJobTest < ActiveJob::TestCase
     )
 
     last_api_error_retry_at = 30.seconds.ago
-    job.send(:check_and_reset_api_error_retry_counter, @session, last_api_error_retry_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::API_ERROR, last_api_error_retry_at, log_buffer)
     log_buffer.flush
 
     @session.reload
     assert_equal 2, @session.metadata["api_error_retry_count"]
   end
 
-  test "check_and_reset_api_error_retry_counter does nothing when no retry count" do
+  test "reset_retry_budget for API errors does nothing when no retry count" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
     @session.update!(status: :running, metadata: {})
 
     last_api_error_retry_at = 65.seconds.ago
-    job.send(:check_and_reset_api_error_retry_counter, @session, last_api_error_retry_at, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::API_ERROR, last_api_error_retry_at, log_buffer)
     log_buffer.flush
 
     @session.reload
@@ -5905,7 +5906,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_empty logs
   end
 
-  test "check_and_reset_api_error_retry_counter does nothing when last_api_error_retry_at is nil" do
+  test "reset_retry_budget for API errors does nothing when last_api_error_retry_at is nil" do
     job = AgentSessionJob.new
     log_buffer = LogBuffer.new(@session)
 
@@ -5914,11 +5915,140 @@ class AgentSessionJobTest < ActiveJob::TestCase
       metadata: { "api_error_retry_count" => 2 }
     )
 
-    job.send(:check_and_reset_api_error_retry_counter, @session, nil, log_buffer)
+    job.send(:reset_retry_budget, @session, RetryBudget::API_ERROR, nil, log_buffer)
     log_buffer.flush
 
     @session.reload
     assert_equal 2, @session.metadata["api_error_retry_count"]
+  end
+
+  # The MCP-connection and context-length budgets never reset before #527: a
+  # long-lived session accumulated toward their maxima across its whole life and then
+  # failed permanently. They now get the same per-incident budget the other three have.
+  test "reset_retry_budget for MCP connections resets a budget that never used to" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "mcp_retry_count" => 2,
+        "mcp_last_retry_at" => "2025-11-29T18:22:09Z",
+        "mcp_failed_servers" => [ { "name" => "slack" } ]
+      }
+    )
+
+    job.send(:reset_retry_budget, @session, RetryBudget::MCP_CONNECTION, 65.seconds.ago, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_nil @session.metadata["mcp_retry_count"]
+    assert_nil @session.metadata["mcp_last_retry_at"]
+    assert_equal [ { "name" => "slack" } ], @session.metadata["mcp_failed_servers"],
+      "which servers failed is diagnosis, not budget"
+
+    logs = @session.logs.reload.pluck(:content)
+    assert logs.any? { |log| log.include?("MCP connection retry counter reset") }
+  end
+
+  test "reset_retry_budget for context length resets a budget that never used to" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: {
+        "compact_retry_count" => 1,
+        "last_compact_at" => "2025-11-29T18:22:09Z",
+        "pending_compact_continuation" => true,
+        "context_length_last_checked_line" => 17
+      }
+    )
+
+    job.send(:reset_retry_budget, @session, RetryBudget::CONTEXT_LENGTH, 65.seconds.ago, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    assert_nil @session.metadata["compact_retry_count"]
+    assert_nil @session.metadata["last_compact_at"]
+    assert_equal true, @session.metadata["pending_compact_continuation"],
+      "the compact still owes the user a continuation"
+    assert_equal 17, @session.metadata["context_length_last_checked_line"],
+      "the scan position must survive a counter reset"
+
+    logs = @session.logs.reload.pluck(:content)
+    assert logs.any? { |log| log.include?("Context-length compact counter reset") }
+  end
+
+  test "reset_stable_retry_budgets hands back every declared budget at once" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(
+      status: :running,
+      metadata: RetryBudget.all.index_by(&:key).transform_values { 1 }
+        .merge(RetryBudget.all.index_by(&:stamp).transform_values { "2025-11-29T18:22:09Z" })
+    )
+
+    stale = RetryBudget.all.index_with { 65.seconds.ago }
+    job.send(:reset_stable_retry_budgets, @session, stale, log_buffer)
+    log_buffer.flush
+
+    @session.reload
+    RetryBudget.all.each do |budget|
+      assert_nil @session.metadata[budget.key], "#{budget.name} counter should have been reset"
+      assert_nil @session.metadata[budget.stamp], "#{budget.name} stamp should have been reset"
+    end
+  end
+
+  # schedule_mcp_retry stamps mcp_last_retry_at and only THEN waits out a 30/60/120s
+  # backoff before a fresh job spawns a new process. Seeding the reset clock from that
+  # stamp alone would put the second attempt onward already past the 60s threshold on
+  # the new job's first iteration — handing the budget back before the new process had
+  # attempted a handshake, so it never reaches its maximum and a session with a broken
+  # MCP server ping-pongs paused -> running forever instead of failing loudly.
+  test "a budget's stability clock never predates the process the reset is measuring" do
+    stamped_before_a_120s_backoff = 130.seconds.ago
+    monitoring_started_at = Time.current
+
+    clock = RetryBudget.all.index_with do |budget|
+      last_attempt = budget.last_attempt_at(@session)
+      last_attempt && [ last_attempt, monitoring_started_at ].max
+    end
+    assert(clock.values.all?(&:nil?), "an unspent budget has no clock to floor")
+
+    @session.update!(metadata: {
+      "mcp_retry_count" => 2,
+      "mcp_last_retry_at" => stamped_before_a_120s_backoff.iso8601
+    })
+    budget = RetryBudget::MCP_CONNECTION
+    floored = [ budget.last_attempt_at(@session), monitoring_started_at ].max
+
+    assert_equal monitoring_started_at.to_i, floored.to_i,
+      "the clock must start when this process did, not when the pre-backoff stamp was written"
+    assert_nil budget.reset_if_stable!(@session, since: floored),
+      "a process that has only just started has not earned the budget back"
+    assert_equal 2, @session.reload.metadata["mcp_retry_count"]
+
+    # And it still resets once the new process really has been stable for the threshold.
+    reset = budget.reset_if_stable!(@session, since: floored, now: monitoring_started_at + 61.seconds)
+    assert_equal 2, reset.previous_count
+    assert_nil @session.reload.metadata["mcp_retry_count"]
+  end
+
+  test "a failed budget reset logs at warn, not error" do
+    job = AgentSessionJob.new
+    log_buffer = LogBuffer.new(@session)
+
+    @session.update!(status: :running, metadata: { "sigterm_retry_count" => 2 })
+    # Failing to reset a retry COUNTER is harmless — the session keeps a stale budget
+    # and the next stable stretch clears it — so it must not trip the
+    # "any Zimmer ERROR -> critical" Grafana rule (see ApplicationJob).
+    @session.stubs(:remove_metadata!).raises(StandardError, "boom")
+    Rails.logger.expects(:error).never
+    Rails.logger.expects(:warn).with(regexp_matches(/Error resetting sigterm retry budget/)).at_least_once
+
+    job.send(:reset_retry_budget, @session, RetryBudget::SIGTERM, 65.seconds.ago, log_buffer)
   end
 
   # ============================================================================
@@ -6122,7 +6252,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Set up session with existing retry count at maximum
     @session.update!(
       metadata: {
-        "sigterm_retry_count" => SigtermRetryService::MAX_RETRIES
+        "sigterm_retry_count" => RetryBudget::SIGTERM.max
       }
     )
 
@@ -7804,7 +7934,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.update!(
       status: :running,
       metadata: (@session.metadata || {}).merge(
-        "mcp_retry_count" => AgentSessionJob::MAX_MCP_CONNECTION_RETRIES
+        "mcp_retry_count" => RetryBudget::MCP_CONNECTION.max
       ),
       custom_metadata: {
         "should_fail_session" => true,
@@ -8211,13 +8341,13 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   test "check_and_handle_mcp_failure leaves the server out and keeps the session alive after max retries exhausted" do
-    # GitHub issue #521. Before this, MAX_MCP_CONNECTION_RETRIES exhaustion killed the
+    # GitHub issue #521. Before this, exhausting RetryBudget::MCP_CONNECTION killed the
     # session outright — a fallback server nobody had called could orphan hours of
     # completed work. The retry ladder is unchanged; only what happens at the end of it is.
     @session.update!(
       status: :running,
       metadata: (@session.metadata || {}).merge(
-        "mcp_retry_count" => AgentSessionJob::MAX_MCP_CONNECTION_RETRIES
+        "mcp_retry_count" => RetryBudget::MCP_CONNECTION.max
       ),
       custom_metadata: {
         "should_fail_session" => true,
@@ -8280,7 +8410,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     @session.update!(
       status: :running,
       metadata: (@session.metadata || {}).merge(
-        "mcp_retry_count" => AgentSessionJob::MAX_MCP_CONNECTION_RETRIES,
+        "mcp_retry_count" => RetryBudget::MCP_CONNECTION.max,
         "mcp_degraded_servers" => [
           { "name" => "pulse-fetch", "error" => "Connection closed", "degraded_at" => 1.hour.ago.iso8601 }
         ]
@@ -8324,7 +8454,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       status: :running,
       mcp_servers: [ "notion" ],
       metadata: (@session.metadata || {}).merge(
-        "mcp_retry_count" => AgentSessionJob::MAX_MCP_CONNECTION_RETRIES
+        "mcp_retry_count" => RetryBudget::MCP_CONNECTION.max
       ),
       custom_metadata: {
         "should_fail_session" => true,
@@ -8378,7 +8508,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify warning log mentions the retry count
     log_buffer.flush
     warning_logs = @session.logs.where(level: "warning").pluck(:content)
-    assert warning_logs.any? { |c| c.include?("retry 2/#{AgentSessionJob::MAX_MCP_CONNECTION_RETRIES}") }
+    assert warning_logs.any? { |c| c.include?("retry 2/#{RetryBudget::MCP_CONNECTION.max}") }
   end
 
   test "check_and_handle_mcp_failure does not retry OAuth failures" do

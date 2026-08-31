@@ -600,6 +600,33 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("health dashboard (pool recovering)")
   end
 
+  # The retry-budget panel is a five-row list of counter keys — `signal_death_retry_count`
+  # is 24 unbreakable characters — next to a four-up figure grid. Both are the shapes that
+  # run off a phone, and the panel renders whether or not any budget has been spent.
+  test "the retry budget panel does not overflow horizontally on a phone" do
+    create_session(status: :running, metadata: {
+      "mcp_retry_count" => 1, "mcp_last_retry_at" => 2.hours.ago.iso8601
+    })
+    create_session(status: :failed, metadata: {
+      "compact_retry_count" => 2, "last_compact_at" => 3.hours.ago.iso8601
+    })
+    create_session(status: :failed, metadata: {
+      "signal_death_retry_count" => 3, "last_signal_death_at" => 90.minutes.ago.iso8601
+    })
+
+    visit health_dashboard_path
+    assert_text "Retry Budgets"
+    # All five, including the three no health surface reported before #527.
+    RetryBudget.all.each { |budget| assert_text budget.key }
+
+    assert_no_horizontal_overflow("health dashboard (retry budgets)")
+
+    # Captured as PR evidence — scrolled to the panel, since a viewport screenshot
+    # of a page this long otherwise shows only the header.
+    page.execute_script("document.evaluate(\"//h3[text()='Retry Budgets']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
+    page.save_screenshot("tmp/screenshots/health-retry-budgets-375.png")
+  end
+
   test "CLI tools does not overflow horizontally on a phone" do
     visit clis_path
     assert_selector "h1"

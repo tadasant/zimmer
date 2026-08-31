@@ -335,7 +335,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     service.define_singleton_method(:sleep) { |_| }
 
     assert_equal :exhausted, service.attempt_retry("/tmp/test-clone")
-    assert_equal ApiErrorRetryService::MAX_RETRIES, resume_count,
+    assert_equal ApiErrorRetryService::BUDGET.max, resume_count,
       "bounded by MAX_RETRIES — a repeating failure must not be retried forever"
     assert service.detected_malformed_tool_call?,
       "the caller reads this on the exhausted path to decide whether to alert"
@@ -684,7 +684,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
   end
 
   test "uses correct constants" do
-    assert_equal 6, ApiErrorRetryService::MAX_RETRIES
+    assert_equal 6, ApiErrorRetryService::BUDGET.max
     assert_equal 5, ApiErrorRetryService::SUCCESS_THRESHOLD
     assert_equal 10, ApiErrorRetryService::STATUS_CHECK_INTERVAL
     assert_equal 300, ApiErrorRetryService::MAX_SINGLE_DELAY

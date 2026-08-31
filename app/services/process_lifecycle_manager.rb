@@ -71,13 +71,12 @@ class ProcessLifecycleManager
   # Enough to capture the operative error without dumping an unbounded log.
   STDERR_TAIL_LINES = 20
 
-  # Maximum resume attempts after an abnormal signal death (SIGKILL/SIGSEGV/etc.),
-  # e.g. an OOM kill of a long-running session. Mirrors SigtermRetryService's
-  # MAX_RETRIES. The counter is reset by AgentSessionJob once a resumed process
-  # runs stably (SIGTERM_RETRY_RESET_THRESHOLD), so a genuinely long-lived session
-  # that OOMs occasionally gets a fresh budget each time rather than accumulating
-  # toward a permanent failure over its lifetime.
-  MAX_SIGNAL_DEATH_RETRIES = 3
+  # The signal-death resume budget — how many times an abnormal signal death
+  # (SIGKILL/SIGSEGV/etc., e.g. an OOM kill of a long-running session) is resumed.
+  # AgentSessionJob resets the counter once a resumed process runs stably, so a
+  # genuinely long-lived session that OOMs occasionally gets a fresh budget each time
+  # rather than accumulating toward a permanent failure over its lifetime.
+  BUDGET = RetryBudget::SIGNAL_DEATH
 
   # Maximum number of times a turn that ended with the runtime having written
   # NOTHING is restarted from scratch before the session is allowed to come to
@@ -765,7 +764,7 @@ class ProcessLifecycleManager
 
   # Handle an abnormal signal death (SIGKILL/SIGSEGV/etc.) by resuming the session.
   #
-  # Bounded by MAX_SIGNAL_DEATH_RETRIES. Each attempt resumes the existing runtime
+  # Bounded by RetryBudget::SIGNAL_DEATH. Each attempt resumes the existing runtime
   # session id (via spawn_continuation) with the SYSTEM_RECOVERY prompt so the agent
   # picks up where it left off. AgentSessionJob resets signal_death_retry_count once
   # a resumed process runs stably, so this is a per-incident budget, not a lifetime
@@ -780,12 +779,12 @@ class ProcessLifecycleManager
   # @return [ExitDecision] Decision on what to do next
   def handle_signal_death(status, working_dir)
     signal_desc = exit_status_description(status)
-    retry_count = session.metadata&.dig("signal_death_retry_count").to_i
+    retry_count = BUDGET.count_for(session)
 
-    if retry_count >= MAX_SIGNAL_DEATH_RETRIES
+    if BUDGET.exhausted?(session)
       add_log(
         "Process killed by #{signal_desc} and signal-death resume limit reached " \
-        "(#{MAX_SIGNAL_DEATH_RETRIES} attempts) — failing session",
+        "(#{BUDGET.max} attempts) — failing session",
         level: "warning"
       )
       @logger.warn("Signal-death resume limit exhausted", signal: signal_desc, attempts: retry_count)
@@ -804,17 +803,14 @@ class ProcessLifecycleManager
       return ExitDecision.new(action: :aborted)
     end
 
-    next_attempt = retry_count + 1
+    next_attempt = BUDGET.next_attempt(session)
     with_db_retry do
-      session.merge_metadata!(
-        "signal_death_retry_count" => next_attempt,
-        "last_signal_death_at" => Time.current.iso8601
-      )
+      BUDGET.record!(session, attempt: next_attempt)
     end
 
     add_log(
       "Process killed by #{signal_desc} (likely OOM or external kill) — resuming session " \
-      "(attempt #{next_attempt}/#{MAX_SIGNAL_DEATH_RETRIES})",
+      "(attempt #{next_attempt}/#{BUDGET.max})",
       level: "info"
     )
     @logger.info("Recovering from signal death", signal: signal_desc, attempt: next_attempt)
@@ -1548,7 +1544,7 @@ class ProcessLifecycleManager
       "Malformed tool call the retry ladder did not clear",
       details: [
         "A #{runtime} turn died on a tool call the CLI could not parse, and there was no retry " \
-          "budget left to take another draw with (MAX_RETRIES = #{ApiErrorRetryService::MAX_RETRIES}).",
+          "budget left to take another draw with (max #{ApiErrorRetryService::BUDGET.max}).",
         "",
         "Zimmer retries this failure because an unparseable tool call is normally a sampling " \
           "artifact. One that outlives the ladder is not: something in this turn is " \

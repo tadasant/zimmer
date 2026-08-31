@@ -407,7 +407,7 @@ class ContextLengthRetryServiceTest < ActiveSupport::TestCase
   # ============================================================================
 
   test "uses correct retry limits from constants" do
-    assert_equal 2, ContextLengthRetryService::MAX_RETRIES
+    assert_equal 2, ContextLengthRetryService::BUDGET.max
     assert_equal 5, ContextLengthRetryService::SUCCESS_THRESHOLD
     assert_equal 6, ContextLengthRetryService::CONTEXT_LENGTH_ERROR_PATTERNS.size
   end

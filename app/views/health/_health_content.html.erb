@@ -498,6 +498,42 @@
   </div>
 </div>
 
+<!-- Retry Budgets Section (Full Width) -->
+<div class="mt-6 bg-white rounded-lg shadow">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <h3 class="text-lg font-medium text-gray-900">Retry Budgets</h3>
+    <p class="mt-1 text-sm text-gray-500">Every bounded auto-recovery loop — how much of each budget the fleet has spent, and how many sessions ran out of it.</p>
+  </div>
+  <ul class="divide-y divide-gray-200">
+    <% health_report[:retry_budget_health][:budgets].each do |budget| %>
+      <li class="px-4 py-4 sm:px-6">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span class="text-sm font-medium text-gray-900"><%= budget[:label] %></span>
+          <span class="text-xs text-gray-500">max <%= budget[:max_retries] %> · <code><%= budget[:count_key] %></code></span>
+        </div>
+        <dl class="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-sm">
+          <div>
+            <dt class="text-xs text-gray-500">Sessions</dt>
+            <dd class="font-medium text-gray-900"><%= budget[:total_sessions] %></dd>
+          </div>
+          <div>
+            <dt class="text-xs text-gray-500">Attempts</dt>
+            <dd class="font-medium text-gray-900"><%= budget[:total_retries_attempted] %></dd>
+          </div>
+          <div>
+            <dt class="text-xs text-gray-500">Recent (24h)</dt>
+            <dd class="font-medium <%= budget[:recent_count] > 0 ? "text-yellow-600" : "text-gray-900" %>"><%= budget[:recent_count] %></dd>
+          </div>
+          <div>
+            <dt class="text-xs text-gray-500">Exhausted</dt>
+            <dd class="font-medium <%= budget[:exhausted_retry_count] > 0 ? "text-red-600" : "text-gray-900" %>"><%= budget[:exhausted_retry_count] %></dd>
+          </div>
+        </dl>
+      </li>
+    <% end %>
+  </ul>
+</div>
+
 <!-- Recent Failures Section (Full Width) -->
 <% if health_report[:session_health][:recent_failures].any? %>
   <div class="mt-6 bg-white rounded-lg shadow">
