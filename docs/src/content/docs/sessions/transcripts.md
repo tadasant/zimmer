@@ -379,6 +379,15 @@ a different claim from "not there", and both surfaces say which one it is. See
 `TranscriptArchiveJob` rebuilds a `latest.zip` of all transcripts every 10 minutes (temp file +
 atomic rename). It's served by `GET /api/v1/transcript_archive/download`.
 
+The rebuild is incremental in both directions. It reads sessions one at a time rather than loading
+every changed session at once — a transcript is a single large payload, so holding a whole corpus of
+them is what used to run the worker out of memory
+([#719](https://github.com/tadasant/zimmer/issues/719)) — and it archives at most
+`MAX_SESSIONS_PER_RUN` sessions per tick, recording what it finished before it stops. A backlog
+therefore drains over several ticks instead of being retried whole; while one is draining the job
+logs a `deferred to the next tick` line at WARN, which is the severity production ships to its log
+store. Steady state is a handful of changed sessions per tick, where neither bound is reached.
+
 It writes under `~/.zimmer/transcript_archives` — the `zimmer_data` named volume, mounted at the
 same path in both the `web` and `worker` containers. That matters because the writer and the readers
 are in different containers: cron runs only in `worker` (GoodJob starts a cron capsule only in an
