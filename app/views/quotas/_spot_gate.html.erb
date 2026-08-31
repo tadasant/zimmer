@@ -156,11 +156,11 @@
         Priority sessions are never paused.
       </p>
 
-      <%# The population the card used to leave out entirely. A session HELD at
-          the door is dormant in `waiting` just like a paused one, but it is a
-          different population with a different resume owner — so reporting only
-          the paused figure told an operator "0 asleep" while sessions sat held.
-          `get_spot_policy` prints the same two numbers from the same object. %>
+      <%# The other dormant population. A session HELD at the door is dormant in
+          `waiting` just like a paused one, but it is a different population with a
+          different resume owner — reporting only the paused figure tells an
+          operator "0 asleep" while sessions sit held. `get_spot_policy` prints the
+          same two numbers from the same object. %>
       <p class="mt-2 text-sm <%= @spot_overdue_hold_count.positive? ? "text-amber-800" : "text-gray-600" %>" id="spot-gate-held-decision">
         Spot sessions held before a turn:
         <strong id="spot-held-count"><%= @spot_held_count %></strong><% if @spot_overdue_hold_count.positive? %>,

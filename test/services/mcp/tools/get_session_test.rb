@@ -130,6 +130,30 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     refute_includes output, "Hold re-check:** Next check"
   end
 
+  # These lines promise the spot-hold sweep will re-arm an overdue re-check, and
+  # that sweep only touches sessions dormant in `waiting`. An archived session
+  # keeps its hold record deliberately, so reading one back with that promise
+  # attached would tell an agent something false about its own session.
+  test "a session that is no longer waiting reads back no hold at all" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionHold::HELD_AT => 11.hours.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 10.hours.ago.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 145,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+    assert_includes @tool.call("id" => session.id), "**Spot gate:"
+
+    session.update_columns(status: Session.statuses[:archived])
+
+    output = @tool.call("id" => session.id)
+
+    refute_includes output, "**Spot gate:"
+    refute_includes output, "spot-hold sweep re-arms it automatically"
+  end
+
   test "a spot session held at the starting line does not claim a queued prompt" do
     session = sessions(:running)
     session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {

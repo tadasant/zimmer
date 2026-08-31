@@ -111,11 +111,10 @@ module Mcp
         # the same question differently.
         decision = SpotGateService.evaluate
         paused_count = SpotSessionPause.paused_count
-        # The second dormant population, which this tool used to omit: sessions
-        # the gate refused BEFORE a turn. Reporting only `paused_count` under a
-        # heading that reads like every dormant spot session is what made this
-        # tool answer "asleep in the spot queue: 0" on a deployment holding
-        # session 7507 (tadasant/zimmer#648).
+        # The second dormant population: sessions the gate refused BEFORE a
+        # turn. Reporting only `paused_count` under a heading that reads like
+        # every dormant spot session answers "asleep in the spot queue: 0" on a
+        # deployment holding session 7507 (tadasant/zimmer#648).
         held_count = SpotSessionHold.held_count
         overdue_hold_count = SpotSessionHold.overdue_count
         explanation = SpotHoldExplanation.new(

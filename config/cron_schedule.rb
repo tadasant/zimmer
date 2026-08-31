@@ -267,7 +267,7 @@ module CronSchedule
       environments: %i[production staging]
     },
     spot_hold_sweep: {
-      cron: "*/5 * * * *", # Every 5 minutes, offset in effect from spot_ceiling_sweep by OVERDUE_GRACE
+      cron: "*/5 * * * *", # Every 5 minutes; SpotSessionHold::OVERDUE_GRACE is what bounds staleness
       class: "SpotHoldSweepJob",
       description: "Put held spot sessions back on the re-check ladder when their re-check never fired",
       environments: %i[production staging]

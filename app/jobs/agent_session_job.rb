@@ -2454,12 +2454,12 @@ class AgentSessionJob < ApplicationJob
     # A session HELD by the gate is a fourth dormant shape, and it is a different
     # population from the paused one: a pause writes `spot_pause_reason` and is
     # resumed by SpotCeilingSweepJob, a hold writes `spot_hold_reason` and is
-    # resumed by its own re-check. Reading only the pause missed every held
+    # resumed by its own re-check. Reading only the pause misses every held
     # session, and case 1's own comment above already names the damage that does —
     # "a spot hold lives entirely in `waiting` … pausing the session severs that
-    # chain for good". Case 1 only ever covered a session with no runtime session
-    # id; a held session that HAS run before falls to case 3, where until now it
-    # was stamped `paused_by: "recovery"` on top of its hold and handed to the
+    # chain for good". Case 1 covers only a session with no runtime session id; a
+    # held session that HAS run before falls to case 3, where without this test it
+    # is stamped `paused_by: "recovery"` on top of its hold and handed to the
     # recovery sweeps. Session 7507 was: twelve auto-continue attempts against a
     # clone deleted days earlier, then abandoned, leaving it in `waiting` with a
     # hold record whose re-check had already been lost (tadasant/zimmer#648).

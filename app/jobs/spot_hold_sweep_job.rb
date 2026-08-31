@@ -9,8 +9,8 @@
 # re-check forges the next link. There is no redundancy anywhere along that
 # chain, so a single lost link strands the session in `waiting` forever — in a
 # state indistinguishable, at a glance, from a session merely queued. Nothing
-# else was looking: SpotCeilingSweepJob only resumes the `spot_pause_*`
-# population, the quota-recovery wake only reads auth-outage parks, and a
+# else looks for it either: SpotCeilingSweepJob resumes only the `spot_pause_*`
+# population, the quota-recovery wake reads only auth-outage parks, and a
 # start-held session has no runtime session to restart.
 #
 # Session 7507 lost its link to a worker shutdown that landed between the hold
