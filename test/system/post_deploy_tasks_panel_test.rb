@@ -12,6 +12,15 @@ require "application_system_test_case"
 class PostDeployTasksPanelTest < ApplicationSystemTestCase
   SCREENSHOT_DIR = Rails.root.join("tmp", "capybara")
 
+  # Capybara resets the session between tests but NOT the browser window, so a
+  # test that shrinks it to a phone leaves every test that runs after it looking
+  # at a phone — where anything `hidden md:block` is present in the DOM and not
+  # visible. Restoring it is the idiom mobile_horizontal_overflow_test.rb uses,
+  # for the same reason.
+  teardown do
+    page.driver.browser.manage.window.resize_to(1400, 900)
+  end
+
   setup do
     PostDeployTaskRun.create!(
       version: "20260830100500", name: "FixClonePathMetadata", status: "succeeded",
