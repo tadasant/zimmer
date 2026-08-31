@@ -23,6 +23,10 @@ Terraform only provisions the **host**. The app image, its env, and the data sto
 | `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
 | `app_required_backends` | Client backends the database must be able to serve. Not a free parameter — it is what `ConnectionBudget.required_backends` derives (see [the connection budget](/operate/deploying/#the-database-connection-budget)), and a test fails if the two drift. A `lifecycle.postcondition` on the managed cluster fails the plan when its plan slug cannot serve it. |
 
+`ssh_key_fingerprints` is not the only `ForceNew` attribute on the droplet. `monitoring` — hardcoded
+`true`, so not a variable — is the other, and it is handled by sitting in `ignore_changes` rather than
+by a warning: see [Known limitations](/limitations/#the-digitalocean-metrics-agent-reaches-only-a-droplet-terraform-creates-never-one-that-exists).
+
 **Secrets** (as `TF_VAR_*`):
 
 `do_token` · `tailscale_auth_key` · `deploy_ssh_pubkey` (public half of the Kamal deploy key;
