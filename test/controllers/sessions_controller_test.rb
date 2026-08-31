@@ -3356,6 +3356,64 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-spot-hold-banner]", text: /it will start on its own once the gate lets it/
   end
 
+  # A hold record is a SNAPSHOT of what the gate said at `spot_hold_at`, and the
+  # banner used to replay it as a present-tense claim with nothing to say
+  # otherwise. Session 7507's page read "5 of 5 session slots taken" eleven hours
+  # after the gate had gone back to `within_limits` and 1 of 5, and the only tell
+  # was a "next check" time already in the past, rendered as though upcoming.
+  test "the spot hold banner says how old the gate reading is" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 3.hours.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 10.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 145,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-as-of]", text: /gate's reading about 3 hours ago/
+    assert_select "[data-spot-hold-as-of]", text: /not a live one/
+    assert_select "[data-spot-hold-recheck]", text: /Next check/
+  end
+
+  # An overdue re-check is not a hold, it is a stalled ladder: the session is
+  # waiting on nothing until SpotHoldSweepJob puts it back. The banner must never
+  # print an already-past "next check" as if it were upcoming.
+  test "the spot hold banner names an overdue re-check as overdue, not as upcoming" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 11.hours.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 10.hours.ago.iso8601,
+      SpotSessionHold::HELD_COUNT => 145,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-banner] h3", text: /Spot hold stalled/
+    assert_select "[data-spot-hold-recheck]", text: /re-check was due about 10 hours ago/
+    assert_select "[data-spot-hold-recheck]", text: /has not fired/
+    assert_select "[data-spot-hold-recheck]", text: /spot-hold sweep re-arms it/
+    assert_select "[data-spot-hold-recheck]", { text: /Next check/, count: 0 }
+  end
+
   test "should use normal restart for pre-prompt failure with complete setup artifacts even if clone deleted" do
     session = Session.create!(
       prompt: "Fix the bug",

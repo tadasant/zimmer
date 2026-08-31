@@ -77,8 +77,11 @@ module Mcp
         - when the hold lifts, as far as the model can honestly say — for two of the three ceilings that
           is a condition rather than a time, and it is stated as one instead of being dressed up as an ETA
         - what the running fleet is burning in $/min, and what one more session is projected to add
-        - how many spot sessions are asleep in the spot queue (dormant in `waiting`, NOT running — this
-          number is unrelated to the concurrency limit and routinely exceeds it), and what brings them back
+        - the two dormant spot populations, both in `waiting` and NOT running, so both are unrelated to
+          the concurrency limit and routinely exceed it: the ones the budget ceiling PAUSED mid-run (the
+          ceiling sweep brings those back), and the ones the gate HELD before a turn (their own re-check
+          brings those back). A held session past its own re-check time is reported separately as overdue —
+          its ladder has stopped, and `SpotHoldSweepJob` is what puts it back on
         - each window in full: estimated capacity, dollars remaining, dollars reserved, spot budget left,
           how long until it rolls over, the sustainable burn rate that empties it exactly then, and where
           the pacing curve says the window should be right now
@@ -108,7 +111,19 @@ module Mcp
         # the same question differently.
         decision = SpotGateService.evaluate
         paused_count = SpotSessionPause.paused_count
-        explanation = SpotHoldExplanation.new(decision, paused_count: paused_count)
+        # The second dormant population, which this tool used to omit: sessions
+        # the gate refused BEFORE a turn. Reporting only `paused_count` under a
+        # heading that reads like every dormant spot session is what made this
+        # tool answer "asleep in the spot queue: 0" on a deployment holding
+        # session 7507 (tadasant/zimmer#648).
+        held_count = SpotSessionHold.held_count
+        overdue_hold_count = SpotSessionHold.overdue_count
+        explanation = SpotHoldExplanation.new(
+          decision,
+          paused_count: paused_count,
+          held_count: held_count,
+          overdue_hold_count: overdue_hold_count
+        )
         classes = SessionGenesis.effective_classes(setting.genesis_class_overrides)
         counts = Session.genesis_counts
 
@@ -142,7 +157,13 @@ module Mcp
           # already stopped: sessions dormant in `waiting`, not running ones, so
           # this figure has nothing to do with the concurrency limit and is
           # regularly larger than it. Same number the /quotas card shows.
-          "- **Spot sessions asleep in the spot queue:** #{paused_count}. #{explanation.sessions_asleep}"
+          "- **Spot sessions paused mid-run by the ceiling:** #{paused_count}. #{explanation.sessions_asleep}",
+          # Same two figures the /quotas card renders, from the same object, so a
+          # human reading the page and an agent reading this tool are told the
+          # same thing about who is asleep and whose ladder has stopped.
+          "- **Spot sessions held before a turn:** #{held_count}" \
+          "#{overdue_hold_count.positive? ? ", #{overdue_hold_count} of them overdue for a re-check" : ''}. " \
+          "#{explanation.sessions_held}"
         ]
 
         if decision.pool_size
