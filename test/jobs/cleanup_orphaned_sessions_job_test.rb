@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
   setup do
@@ -809,6 +810,46 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
       "an abandoned session must stop generating log lines entirely"
   end
 
+  # The counterpart to the recovery carve-out in SessionStateMachine's `pause`
+  # after block (issue #328). A recovery pause wakes no watcher and sends no push,
+  # on the promise that one of these sweeps will continue the session. Giving up is
+  # that promise expiring — so the announcement the pause skipped is owed here, and
+  # owed exactly once. Without this, suppressing the pause would fail silently in
+  # the direction of less visibility: a session Zimmer cannot restart would sit in
+  # the action queue with nothing having said so.
+  test "giving up on auto-continue announces the pause the recovery carve-out suppressed" do
+    @session.update!(
+      status: :needs_input,
+      running_job_id: nil,
+      session_id: nil,
+      push_notifications_enabled: true,
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    # Every pass that still has budget stays silent — the session is still Zimmer's
+    # to restart.
+    (SessionContinuation::MAX_CONTINUE_ATTEMPTS - 1).times do
+      CleanupOrphanedSessionsJob.perform_now
+      assert_empty announcement_jobs_for(@session),
+        "a recovery-paused session with budget left must stay silent"
+    end
+
+    # The pass that spends the budget hands the session to a human, and says so.
+    CleanupOrphanedSessionsJob.perform_now
+    announced = announcement_jobs_for(@session)
+    assert_equal 1, announced.count { |job| job["job_class"] == "AoEventTriggerJob" },
+      "giving up must wake the watchers the recovery pause did not"
+    assert_equal 1, announced.count { |job| job["job_class"] == "SendPushNotificationJob" },
+      "giving up must push the notification the recovery pause did not"
+
+    # Once, not once per sweep: the marker is gone, so no later pass re-announces.
+    CleanupOrphanedSessionsJob.perform_now
+    assert_equal 2, announcement_jobs_for(@session).size,
+      "an abandoned session must be announced exactly once"
+  end
+
   test "should not auto-continue session paused by user" do
     working_dir = Dir.mktmpdir
     @session.update!(
@@ -1013,5 +1054,22 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
   # content prefix instead so the assertion targets exactly one row.
   def orphan_detection_warning(session)
     session.logs.find_by("level = ? AND content LIKE ?", "warning", "Detected orphaned session%")
+  end
+
+  # The announcement jobs enqueued about ONE session — the settled
+  # `session_needs_input` wake and the debounced push.
+  #
+  # Scoped by session id rather than by job class, because this sweep touches every
+  # session in the fixture set on every pass: other orphaned fixtures get recovered
+  # and paused, and each of those pauses enqueues its own announcement. A bare
+  # `assert_no_enqueued_jobs(only: AoEventTriggerJob)` counts those too and fails on
+  # a sweep that behaved perfectly.
+  def announcement_jobs_for(session)
+    enqueued_jobs.select do |job|
+      case job["job_class"]
+      when "AoEventTriggerJob" then job["arguments"][1] == session.id
+      when "SendPushNotificationJob" then job["arguments"][0] == session.id
+      end
+    end
   end
 end
