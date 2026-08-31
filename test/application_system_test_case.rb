@@ -218,6 +218,28 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     JS
   end
 
+  # Capybara's matchers retry until the page agrees; a plain `assert` on a record
+  # reads the database exactly once. A test that asserts a DOM change and then
+  # reads a row is reading two independent channels, and the DOM one can be the
+  # faster: a broadcast fires from the `after_commit` of one write while the
+  # request thread is still doing the work that produces the second. The read
+  # then loses a race it never had to enter.
+  #
+  # This is the Capybara-shaped wait for that read — poll the block until it is
+  # truthy, and fail with `message` when the deadline passes. Use it instead of
+  # weakening the assertion or sleeping a fixed amount before it.
+  def assert_eventually(message = nil, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    satisfied = false
+
+    until satisfied || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      satisfied = yield
+      sleep 0.05 unless satisfied
+    end
+
+    assert satisfied, message || "the expected condition was not true within #{timeout}s"
+  end
+
   # Block until Stimulus has connected the named controller.
   #
   # A controller that fills a field on connect leaves the field server-rendered
