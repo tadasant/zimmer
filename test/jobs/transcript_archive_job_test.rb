@@ -401,4 +401,125 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
 
     TranscriptArchiveJob.perform_now
   end
+
+  # ---------------------------------------------------------------------------
+  # Findings from the fresh-eyes review of #721.
+  # ---------------------------------------------------------------------------
+
+  # The sidecar describes a zip. If the zip is gone and the sidecar is not, every session
+  # it lists is recorded as archived into a file that does not exist — and since those
+  # sessions are not "changed" and there is no old archive to copy them from, they would
+  # never be rebuilt while manifest.json went on reporting the full count.
+  test "a surviving sidecar is discarded when the zip it describes is gone" do
+    TranscriptArchiveJob.perform_now
+    archived_ids = JSON.parse(File.read(@metadata_path))["sessions"].keys.sort
+    assert_operator archived_ids.size, :>, 0
+
+    File.delete(@archive_path)
+
+    TranscriptArchiveJob.perform_now
+
+    assert File.exist?(@archive_path), "the archive should have been rebuilt"
+    rebuilt = JSON.parse(File.read(@metadata_path))["sessions"].keys.sort
+    assert_equal archived_ids, rebuilt, "metadata should still claim the same sessions"
+
+    Zip::File.open(@archive_path) do |zip|
+      archived_ids.each do |id|
+        assert_not_nil zip.find_entry("sessions/#{id}.json"),
+          "session #{id} is claimed by the sidecar, so it has to be back in the zip"
+      end
+    end
+  end
+
+  # A mid-bootstrap archive is freshly written, so `stale?` is false and nothing else
+  # distinguishes it from a complete one. AGENTS.md wants that answerable without a shell.
+  test "a deferred run records its backlog in the metadata, not only in the log" do
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+    total = Session.where.not(transcript: nil).count
+
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_equal total - 1, metadata["deferred_count"]
+    assert_equal false, metadata["complete"]
+
+    status = TranscriptArchiveStatus.new(archive_path: @archive_path, metadata_path: @metadata_path)
+    assert_not status.complete?
+    assert_equal total - 1, status.deferred_count
+    assert_not status.stale?, "a just-written partial archive is incomplete, not stale"
+    assert_match(/prefix of the corpus/, status.incompleteness_note)
+  end
+
+  test "a run that clears its backlog records the archive as complete" do
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_equal 0, metadata["deferred_count"]
+    assert_equal true, metadata["complete"]
+
+    status = TranscriptArchiveStatus.new(archive_path: @archive_path, metadata_path: @metadata_path)
+    assert status.complete?
+    assert_nil status.incompleteness_note
+  end
+
+  # The trickiest interaction in the change: removals force the full-rebuild path, and the
+  # cap truncates the changed set at the same time. A deferred session must be postponed,
+  # never dropped.
+  test "a deferred session survives a run that also processes a removal" do
+    TranscriptArchiveJob.perform_now
+    archived_ids = JSON.parse(File.read(@metadata_path))["sessions"].keys.sort
+    assert_operator archived_ids.size, :>, 2, "need enough fixtures to defer and remove"
+
+    # Force every remaining session to look changed, then remove one and cap the run.
+    Session.where.not(transcript: nil).find_each { |s| s.update_column(:updated_at, 1.hour.from_now) }
+    removed = Session.where.not(transcript: nil).order(:id).last
+    removed_id = removed.id.to_s
+    removed.update_column(:transcript, nil)
+
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_not_includes metadata["sessions"].keys, removed_id,
+      "the removed session should be dropped from tracking"
+
+    survivors = archived_ids - [ removed_id ]
+    Zip::File.open(@archive_path) do |zip|
+      survivors.each do |id|
+        assert_not_nil zip.find_entry("sessions/#{id}.json"),
+          "session #{id} was deferred, not removed — its entry must survive the rebuild"
+      end
+    end
+    assert_equal survivors.sort, metadata["sessions"].keys.sort
+  end
+
+  # The id stays in changed_ids, so it is subtracted out of unchanged_ids and its old entry
+  # is not copied forward either. Leaving the claim would have the manifest counting an
+  # entry the zip does not contain.
+  test "a session deleted mid-run is dropped from metadata rather than left claimed" do
+    TranscriptArchiveJob.perform_now
+
+    doomed = Session.where.not(transcript: nil).order(:id).first
+    doomed_id = doomed.id.to_s
+    doomed.update_column(:updated_at, 1.hour.from_now)
+
+    # The row is gone by the time the build tries to load it — the race between the change
+    # scan and each_changed_session. `find_by` is the job's only per-session payload read.
+    Session.stubs(:find_by).returns(nil)
+
+    TranscriptArchiveJob.perform_now
+
+    metadata = JSON.parse(File.read(@metadata_path))
+    assert_not_includes metadata["sessions"].keys, doomed_id,
+      "a row that vanished before it could be loaded must not stay claimed in metadata"
+
+    Zip::File.open(@archive_path) do |zip|
+      manifest = JSON.parse(zip.find_entry("manifest.json").get_input_stream.read)
+      assert_equal metadata["sessions"].size, manifest["session_count"]
+      manifest["session_ids"].each do |id|
+        assert_not_nil zip.find_entry("sessions/#{id}.json"),
+          "manifest must not count an entry the zip does not contain"
+      end
+    end
+  end
 end

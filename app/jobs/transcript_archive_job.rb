@@ -68,7 +68,16 @@ class TranscriptArchiveJob < ApplicationJob
   #
   # Steady state is a handful of changed sessions per tick, so the cap is invisible
   # there; it only binds while catching up.
+  #
+  # The slice is taken in ascending id order, which archives the oldest sessions first.
+  # That is deliberate rather than incidental: newest-first would put the sessions a
+  # reader most likely wants at the front, but actively running sessions re-enter the
+  # changed set on every tick, so they would keep taking the slice and the tail would
+  # never drain. Ascending order is what makes the frontier advance monotonically.
   MAX_SESSIONS_PER_RUN = 250
+
+  # Ids per `IN` list, well under Postgres's 65,535 bind-parameter ceiling.
+  BIND_SLICE_SIZE = 5_000
 
   # An archive older than this is still served, but is reported as stale rather
   # than presented as current. Six cron ticks — long enough that a single slow or
@@ -95,7 +104,21 @@ class TranscriptArchiveJob < ApplicationJob
     FileUtils.mkdir_p(archive_dir)
 
     previous_metadata = load_metadata
-    previous_sessions = previous_metadata["sessions"] || {}
+
+    # The sidecar is only trustworthy while the zip it describes is still on disk.
+    # TranscriptArchiveStatus already names the state where it is not (`:missing` — "a run
+    # finished once and the zip has since been removed or half-written"), and in that state
+    # every session the sidecar lists is recorded as archived into a file that no longer
+    # exists. Believing it means those sessions are never rebuilt: they are not "changed",
+    # and there is no old archive to copy them from, so the new zip contains only whatever
+    # changed since, while manifest.json goes on reporting the full count. Discarding the
+    # sidecar re-detects the corpus instead, which MAX_SESSIONS_PER_RUN is what makes
+    # affordable.
+    previous_sessions = if File.exist?(archive_path)
+      previous_metadata["sessions"] || {}
+    else
+      {}
+    end
 
     # Find all sessions with transcripts (any status)
     session_ids_to_archive = Set.new
@@ -128,17 +151,27 @@ class TranscriptArchiveJob < ApplicationJob
       # One `pluck` for existence rather than `Session.find_by` per id. The old form
       # instantiated a full Session — transcript column and all — for every session
       # with a subagent transcript, just to ask whether the row was still there.
-      Session.where(id: candidate_ids).pluck(:id).each do |sid|
-        removed_session_ids.delete(sid.to_s)
-        session_ids_to_archive << sid
+      #
+      # Sliced because the list is bound one parameter per id and Postgres refuses a
+      # statement with more than 65,535 of them. `candidate_ids` is small in practice, so
+      # this is about not having a corpus-sized ceiling on a job whose whole point is to
+      # no longer have one.
+      candidate_ids.each_slice(BIND_SLICE_SIZE) do |slice|
+        Session.where(id: slice).pluck(:id).each do |sid|
+          removed_session_ids.delete(sid.to_s)
+          session_ids_to_archive << sid
+        end
       end
     end
 
     # Ordered so a capped run is a prefix and the next run resumes after it, rather
     # than re-picking an arbitrary subset of the same backlog.
     changed_ids = session_ids_to_archive.to_a.sort
-    deferred_count = [ changed_ids.size - max_sessions_per_run, 0 ].max
-    changed_ids = changed_ids.first(max_sessions_per_run)
+    # Floored at 1 at the point of use, not at the reader: a cap of zero would archive
+    # nothing on every run while still reporting success — a silent, permanent no-op.
+    cap = [ max_sessions_per_run.to_i, 1 ].max
+    deferred_count = [ changed_ids.size - cap, 0 ].max
+    changed_ids = changed_ids.first(cap)
 
     if changed_ids.empty? && removed_session_ids.empty? && File.exist?(archive_path)
       Rails.logger.info "[TranscriptArchiveJob] No changes detected, skipping rebuild"
@@ -154,7 +187,7 @@ class TranscriptArchiveJob < ApplicationJob
                         "#{deferred_count} deferred to the next tick"
     end
 
-    build_archive(changed_ids, previous_sessions, removed_session_ids)
+    build_archive(changed_ids, previous_sessions, removed_session_ids, deferred_count: deferred_count)
   end
 
   # Path accessors — instance methods so tests can stub them for isolation
@@ -184,7 +217,7 @@ class TranscriptArchiveJob < ApplicationJob
     {}
   end
 
-  def build_archive(changed_ids, previous_sessions, removed_session_ids)
+  def build_archive(changed_ids, previous_sessions, removed_session_ids, deferred_count: 0)
     temp_path = archive_dir.join("latest_#{SecureRandom.hex(8)}.zip.tmp")
     all_sessions_metadata = previous_sessions.dup
 
@@ -208,7 +241,7 @@ class TranscriptArchiveJob < ApplicationJob
       FileUtils.mv(temp_path, archive_path)
 
       # Write metadata
-      write_metadata(all_sessions_metadata)
+      write_metadata(all_sessions_metadata, deferred_count: deferred_count)
 
       Rails.logger.info "[TranscriptArchiveJob] Archive updated: #{all_sessions_metadata.size} sessions, " \
                         "#{changed_ids.size} changed, #{removed_session_ids.size} removed, " \
@@ -229,15 +262,26 @@ class TranscriptArchiveJob < ApplicationJob
   # ninety seconds, roughly four times an hour. Loading one row per iteration puts a
   # ceiling of a single transcript on the job's peak, whatever the corpus does.
   #
-  # `uncached` matters as much as the one-at-a-time loop. Rails runs a job inside the
-  # executor's query cache, so without it every row loaded here would be retained by
-  # the cache until `perform` returned — which reintroduces exactly the retention this
-  # method exists to remove. CatalogRefreshJob reaches for `uncached` in the same place
-  # for the same reason.
-  def each_changed_session(changed_ids)
+  # `uncached` is the other half. Rails runs a job inside the executor's query cache, and
+  # each `find_by(id: n)` is a distinct cache key, so without it the result sets stay live
+  # after the loop has dropped the record — up to the cache's 100-entry LRU bound
+  # (`QueryCache::Store::DEFAULT_SIZE`). That bound means the exposure is a hundred
+  # transcripts rather than the corpus, which is not the OOM on its own but is easily
+  # gigabytes, and it is retention this loop exists to avoid. CatalogRefreshJob uses
+  # `uncached` too, though for the opposite concern — it needs each poll to see a fresh
+  # row — so treat it as precedent for the API, not for the reason.
+  #
+  # A row that vanished between the change scan and here is dropped from the metadata as
+  # well as skipped. It has to be: it was subtracted out of `unchanged_ids`, so its old
+  # entry is not copied forward either, and leaving the claim in place would have the
+  # sidecar and manifest counting an entry the zip does not contain.
+  def each_changed_session(changed_ids, all_sessions_metadata)
     changed_ids.each do |id|
       session = with_db_retry { Session.uncached { Session.find_by(id: id) } }
-      next if session.nil? # deleted between the change scan and here
+      if session.nil?
+        all_sessions_metadata.delete(id.to_s)
+        next
+      end
 
       yield session
     end
@@ -245,7 +289,7 @@ class TranscriptArchiveJob < ApplicationJob
 
   def update_zip(zip_path, changed_ids, all_sessions_metadata)
     Zip::File.open(zip_path) do |zip|
-      each_changed_session(changed_ids) do |session|
+      each_changed_session(changed_ids, all_sessions_metadata) do |session|
         add_session_to_zip(zip, session)
         all_sessions_metadata[session.id.to_s] = session.updated_at.iso8601(6)
       end
@@ -261,7 +305,10 @@ class TranscriptArchiveJob < ApplicationJob
 
     # First, copy unchanged sessions from the old archive if it exists
     if File.exist?(archive_path)
-      unchanged_ids = previous_sessions.keys - removed_session_ids.to_a - changed_ids.map(&:to_s)
+      # A Set, because the `include?` below runs once per entry in the old archive: an
+      # Array would make this O(entries × previously-archived-ids), which is a second
+      # cost that scales with the corpus in a job whose point is to no longer have one.
+      unchanged_ids = (previous_sessions.keys - removed_session_ids.to_a - changed_ids.map(&:to_s)).to_set
 
       Zip::File.open(zip_path) do |new_zip|
         Zip::File.open(archive_path) do |old_zip|
@@ -279,7 +326,7 @@ class TranscriptArchiveJob < ApplicationJob
         end
 
         # Add changed sessions
-        each_changed_session(changed_ids) do |session|
+        each_changed_session(changed_ids, all_sessions_metadata) do |session|
           add_session_to_zip(new_zip, session)
           all_sessions_metadata[session.id.to_s] = session.updated_at.iso8601(6)
         end
@@ -287,7 +334,7 @@ class TranscriptArchiveJob < ApplicationJob
     else
       # First time building — only add changed sessions
       Zip::File.open(zip_path) do |zip|
-        each_changed_session(changed_ids) do |session|
+        each_changed_session(changed_ids, all_sessions_metadata) do |session|
           add_session_to_zip(zip, session)
           all_sessions_metadata[session.id.to_s] = session.updated_at.iso8601(6)
         end
@@ -375,10 +422,19 @@ class TranscriptArchiveJob < ApplicationJob
     end
   end
 
-  def write_metadata(all_sessions_metadata)
+  # `deferred_count` is recorded, not just logged. A mid-bootstrap archive is a complete,
+  # freshly-written zip as far as every reader can tell — `stale?` is false because the file
+  # was just rewritten, and `session_count` counts what landed — so without this a caller
+  # pulling the archive during a multi-hour drain gets a partial corpus with no in-band way
+  # to know it. AGENTS.md asks for an observable answer to "has it run, and what does it
+  # cover" through a surface reachable without a shell on the box; a WARN line in a log store
+  # is weaker than the status endpoint this job already has.
+  def write_metadata(all_sessions_metadata, deferred_count: 0)
     metadata = {
       "generated_at" => Time.current.iso8601,
       "session_count" => all_sessions_metadata.size,
+      "deferred_count" => deferred_count,
+      "complete" => deferred_count.zero?,
       "file_size_bytes" => File.exist?(archive_path) ? File.size(archive_path) : 0,
       "sessions" => all_sessions_metadata
     }
