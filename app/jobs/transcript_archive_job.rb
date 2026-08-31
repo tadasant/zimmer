@@ -259,8 +259,14 @@ class TranscriptArchiveJob < ApplicationJob
   # that has never been archived, "every changed session" is every session in the
   # database that has a transcript, and materializing them together is what drove the
   # production worker's cgroup from a 1.5–2.5 GiB baseline to its 10 GiB cap in about
-  # ninety seconds, roughly four times an hour. Loading one row per iteration puts a
-  # ceiling of a single transcript on the job's peak, whatever the corpus does.
+  # ninety seconds, roughly four times an hour. Loading one row per iteration makes the
+  # peak a function of the largest single transcript rather than of the corpus.
+  #
+  # Not one copy of it, and the difference is worth stating rather than rounding away —
+  # this is exactly the kind of number someone later budgets a memory cap against.
+  # `transcript` is a `json` column, so a loaded row holds both the raw database string
+  # and the type-cast value, and `JSON.generate` builds a third copy before the write.
+  # Budget about three times the largest transcript.
   #
   # `uncached` is the other half. Rails runs a job inside the executor's query cache, and
   # each `find_by(id: n)` is a distinct cache key, so without it the result sets stay live
