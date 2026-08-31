@@ -36,6 +36,44 @@ Rotating the deploy key is rare; changing the domain is rarer. But neither is a 
 
 Tracked in [#121](https://github.com/tadasant/zimmer/issues/121).
 
+### The DigitalOcean metrics agent reaches only a droplet Terraform creates, never one that exists
+
+`digitalocean_droplet.zimmer` sets `monitoring = true`, so a droplet this module creates boots with
+DigitalOcean's metrics agent — CPU, memory, disk and load history, and the only metrics DO's own
+resource alert policies can evaluate. It is free.
+
+It is also **create-time only**, and there is no second path. `monitoring` is `ForceNew` in the
+provider (the schema flag, in every 2.x release including the `~> 2.43` pin; the Update function has
+no `monitoring` branch), and DigitalOcean's API exposes no droplet action to enable it — the
+`droplet_action.type` enum runs `enable_backups` through `snapshot` with nothing for monitoring, and
+`godo`, the client the provider itself uses, has no method for it. So on a droplet that already
+exists, asking for the agent is a *destroy and recreate*. Both environments apply with
+`-auto-approve`, and the production apply owns the box every Zimmer session runs on. `monitoring`
+therefore sits in `ignore_changes` alongside `user_data`, which suppresses that diff and the
+replacement with it.
+
+What is left for an existing droplet is DigitalOcean's own remedy: open a root shell on the box and
+run `curl -sSL https://repos.insights.digitalocean.com/install.sh | sudo bash`. **This deployment has
+no clean way to do that.** A root shell on production is the thing
+[Ops actions ship with the deploy](/operate/deploying/#ops-actions-ship-with-the-deploy) exists to
+rule out — the operator key is not authorized as root, and the DigitalOcean console fallback needs
+the root password that [has no converge path](#productions-forced-root-password-expiry-has-no-converge-path).
+So in practice the production droplet gets the agent when it is next rebuilt, and not before.
+
+That gap is a departure from this repo's own rule that an ops step must ship with the deploy, and it
+is tracked in [#651](https://github.com/tadasant/zimmer/issues/651) — the plausible fix is an
+idempotent deploy-time install over the root SSH access Kamal already holds. Adjacent, and different:
+[#442](https://github.com/tadasant/zimmer/issues/442) wants a `node_exporter` in cloud-init for an
+external monitoring plane, which is a different agent feeding a different consumer.
+
+Two smaller edges. `ignore_changes` also means Terraform will not turn the agent back off, or back on
+if someone disables it — both cheaper than a replace. And it is unconfirmed whether a hand-installed
+agent makes the API report `monitoring` in the droplet's `features[]`, which is what the provider
+reads; if it does not, config and state stay divergent forever, harmlessly.
+
+The DO agent reports host metrics. App telemetry goes to the self-hosted OTLP stack — see
+[Observability](/operate/observability/).
+
 ### RAILS_MASTER_KEY is optional on staging, and silently degrades when absent
 
 Staging *can* read encrypted credentials: `config/credentials/staging.yml.enc` is committed, and

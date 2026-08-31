@@ -108,3 +108,18 @@ auto-deployed — it is `workflow_dispatch` only. Pass `recreate_droplet: true` 
 force a droplet rebuild (needed only for the cloud-init-delivered changes that
 `ignore_changes = [user_data]` otherwise pins — see
 [Known limitations](../../docs/src/content/docs/limitations.md)).
+
+## Droplet monitoring
+
+The droplet sets `monitoring = true`, so DigitalOcean's (free) metrics agent is
+installed on every box this module creates — host CPU, memory, disk and load
+history, and the only metrics DO's own resource alert policies can evaluate.
+
+It is create-time only. `monitoring` is `ForceNew` in the provider and DigitalOcean
+has no droplet action to enable it, so it is also under `ignore_changes`: without
+that, an apply against an existing droplet would **destroy and recreate** it, and
+both environments apply with `-auto-approve`. The trade-off is that an
+already-running droplet gets the agent only when it is rebuilt — DO's own remedy
+is a root shell running their install script, which this deployment has no clean
+path to. See [Known limitations](../../docs/src/content/docs/limitations.md) and
+[zimmer#651](https://github.com/tadasant/zimmer/issues/651).
