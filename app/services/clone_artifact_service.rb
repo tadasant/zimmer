@@ -53,8 +53,8 @@ class CloneArtifactService
 
   class ArtifactError < StandardError; end
 
-  # Does a set of changed-file counts have the shape of an interrupted `rm -rf`
-  # rather than of human (or agent) work? Shared by the archive path, which
+  # Does a set of changed-file counts have the shape of a recursive delete that ran
+  # on the live tree and was interrupted, rather than of human (or agent) work? Shared by the archive path, which
   # refuses to preserve such a patch, and the unarchive path, which refuses to
   # apply one and validates the tree it produced.
   def self.mass_deletion?(deleted:, changed:)
@@ -220,8 +220,8 @@ class CloneArtifactService
         # backend logging errors" Grafana rule, which at .error meant a page per
         # defused clone (#415). The unarchive-side refusals do stay at .error:
         # those are the paths that can leave a session broken. The frequency —
-        # the live signal for #412, the non-atomic clone delete that mangles
-        # these trees — stays countable through the marker
+        # which, with clone deletion atomic (#412), is the measurement of whether
+        # anything still mangles these trees — stays countable through the marker
         # DeferredCloneCleanupJob writes and MangledCloneReportJob aggregates.
         @logger.warn(
           "Refusing to preserve mass deletions from a mangled clone",
@@ -471,9 +471,9 @@ class CloneArtifactService
   #
   # This filters the diff already in memory rather than re-running git with
   # --diff-filter=d. The mass-deletion guard fires precisely when a concurrent
-  # recursive delete is gutting the clone (#412), so a second chdir into that
-  # directory raced the delete and raised Errno::ENOENT, failing the whole
-  # preservation (#425). No second git invocation, no race.
+  # recursive delete is gutting the clone, so a second chdir into that directory
+  # raced the delete and raised Errno::ENOENT, failing the whole preservation
+  # (#425). No second git invocation, no race.
   #
   # Byte-identical to what --diff-filter=d produced for every shape a diff of a
   # staged tree can take — text and binary deletions, symlink deletions, renames,

@@ -728,9 +728,10 @@ agent process when it sees the archive and leaves the clone where it is, because
 beats the preservation by about ten seconds and there is nothing left to preserve from a tree that
 is already being unlinked. [#653](https://github.com/tadasant/zimmer/issues/653) is what happens
 when that ordering is not respected, and it costs two things: the session's uncommitted work is
-destroyed rather than saved, and the preservation dies on `ENOENT` against a half-deleted tree —
-`File.directory?` is still true, because a recursive delete unlinks children under the live path —
-which pages. Nothing leaks by waiting: `StaleCloneCleanupJob` (archived with no trash deadline, one
+destroyed rather than saved, and the preservation dies on `ENOENT` against a tree the other deleter
+has already renamed out from under it (see
+[`AtomicCloneRemoval`](/operate/background-jobs/#both-clone-sweeps-reap-deletion-tombstones)), which
+pages. Nothing leaks by waiting: `StaleCloneCleanupJob` (archived with no trash deadline, one
 hour) and `EmptyTrashJob` (at the deadline) are the backstops if the deferred job never runs.
 
 Preservation is not instant on a large tree — a `git bundle create`, a `git add -A` and a
@@ -792,7 +793,7 @@ clone is the better of the two losses.
 In both cases the artifacts stay on disk and the session log records where — unarchive clears
 `trash_after`, so nothing else will ever reap them, and the path is the only way back to whatever
 real work the patch held. See [issue #411](https://github.com/tadasant/zimmer/issues/411) and
-[the limitation this does not close](/limitations/#an-interrupted-clone-delete-still-mangles-a-live-working-tree).
+[the limitation this does not close](/limitations/#a-clone-delete-that-cannot-rename-falls-back-to-a-non-atomic-in-place-delete).
 
 The session's [scratch directory](/sessions/spawning/) and prompt attachments are on the trash
 schedule too, not the undo-window one: nothing can rebuild them from a remote the way a clone is

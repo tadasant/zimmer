@@ -531,18 +531,20 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
 
   # --- interrupted-delete tombstones (#412) --------------------------------
 
-  test "a deletion tombstone is not swept as an orphaned clone" do
-    # A young tombstone would otherwise sail past the age bar and linger forever;
-    # an old one would be miscounted as an orphaned clone. Neither is true: it is
-    # a clone mid-delete, and the reaper owns it.
+  test "a deletion tombstone the reap did not take is still not swept as an orphaned clone" do
+    # The skip guard is load-bearing for the tombstones the reap does NOT take:
+    # one past REAP_LIMIT, or one a concurrent delete created after the reap ran.
+    # So the reap is stubbed out and the tombstone is aged past the orphan cutoff,
+    # which is the only shape in which the guard is what decides the outcome.
+    AtomicCloneRemoval.stubs(:reap_tombstones).returns(0)
     tombstone = File.join(@clones_base, "test-clone-1770000000-abcd1234.deleting-0123abcd")
     FileUtils.mkdir_p(tombstone)
+    FileUtils.touch(tombstone, mtime: 2.hours.ago.to_time)
 
-    job = StaleCloneCleanupJob.new
-    result = job.send(:sweep_orphaned_clones)
+    result = StaleCloneCleanupJob.new.send(:sweep_orphaned_clones)
 
     assert_equal 0, result[:cleaned], "a tombstone is not an orphaned clone and must not be counted as one"
-    assert_not File.exist?(tombstone), "but it must still be reaped"
+    assert File.directory?(tombstone), "and the orphan sweep must not have deleted it as one either"
   end
 
   test "the orphan sweep reaps leftover tombstones without touching live clones" do

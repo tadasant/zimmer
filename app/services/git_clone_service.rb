@@ -180,9 +180,10 @@ class GitCloneService
 
       AtomicCloneRemoval.remove(path, file_system: file_system)
     rescue StandardError => e
-      # Logged, not retried: by the time a failure can be raised the clone has
-      # already been renamed out of the way, so the path the caller cares about is
-      # gone. What is left is a tombstone, which the hourly clone sweeps reap.
+      # Logged, not retried: a failure can only be raised once the clone has been
+      # renamed out of the way, so the path the caller cares about is already gone
+      # and a second attempt at it would be a no-op. What is left is a tombstone,
+      # which the hourly clone sweeps reap.
       logger.error("Failed to cleanup clone", path: path, error: e.message)
     end
 

@@ -3,16 +3,18 @@
 # Daily aggregate of how often the archive-side mass-deletion guard has to defuse
 # a mangled clone.
 #
-# An interrupted `rm -rf` on a live clone leaves a working tree that is nothing
-# but deletions of tracked files. `CloneArtifactService` refuses to preserve such
-# a tree (#411/#413) and `DeferredCloneCleanupJob` stamps the two keys below on
-# the session when it does.
+# A recursive delete that runs on a live clone *in place* and is interrupted
+# leaves a working tree that is nothing but deletions of tracked files.
+# `CloneArtifactService` refuses to preserve such a tree (#411/#413) and
+# `DeferredCloneCleanupJob` stamps the two keys below on the session when it does.
 #
 # That refusal is self-healing, so it logs at `.warn` — routing it through
 # `StructuredLogger#error` reported one GlitchTip event and one Grafana-rule ERROR
 # per clone the guard *successfully* handled (#415). The frequency still matters:
-# it is the live signal for #412, the non-atomic clone delete that mangles the
-# trees in the first place. Zimmer ships no metrics pipeline (logs and errors
+# AtomicCloneRemoval (#412) removed the mechanism that produced these trees, so
+# this count is the measurement of whether anything still does — the residual
+# in-place fallback when a rename is impossible, or a delete path nobody routed
+# through it. Zimmer ships no metrics pipeline (logs and errors
 # only — see docs/operate/observability.md), so this job is the counter: one
 # aggregate line a day, at `.warn` so it reaches VictoriaLogs, summing what the
 # guard caught. One line a day is cheap to read and impossible to mistake for a
@@ -75,7 +77,8 @@ class MangledCloneReportJob < ApplicationJob
       "[MangledCloneReportJob] Mass-deletion guard defused a mangled clone for #{session_ids.size} session(s) " \
       "in the last #{REPORT_WINDOW.inspect}, dropping #{total_dropped} tracked-file deletion(s). " \
       "Sessions: #{shown.join(', ')}#{suffix}. " \
-      "Root cause is the non-atomic clone delete tracked in zimmer#412."
+      "Clone deletion is atomic (zimmer#412), so a non-zero count means a delete that " \
+      "fell back to an in-place rm -rf, or one that does not go through AtomicCloneRemoval."
     )
   end
 

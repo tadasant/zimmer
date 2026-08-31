@@ -196,8 +196,8 @@ class DeferredCloneCleanupJob < ApplicationJob
   # Durable record that this session's clone was mangled and that the
   # archive-side guard defused it. The refusal is a `.warn` (#415), so this is
   # what keeps the *rate* countable, in SQL, after the log line has aged out:
-  # MangledCloneReportJob aggregates these daily, and they are the standing
-  # evidence for #412, the non-atomic clone delete that mangles the trees. An
+  # MangledCloneReportJob aggregates these daily, and they are how anyone can tell
+  # whether a delete still mangles a tree despite AtomicCloneRemoval (#412). An
   # archive the guard never touched writes nothing, so the marker's presence is
   # itself the signal.
   #
