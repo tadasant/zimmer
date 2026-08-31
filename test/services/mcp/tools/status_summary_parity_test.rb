@@ -143,7 +143,7 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
       end
     end
 
-    assert_match(/no transcript/, error.message)
+    assert_match(/no conversation/, error.message)
   end
 
   # The tool's prose is the only thing an agent reads before choosing the

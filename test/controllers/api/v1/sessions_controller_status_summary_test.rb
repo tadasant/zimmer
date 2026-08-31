@@ -129,7 +129,7 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
     end
 
     assert_response :unprocessable_entity
-    assert_match "no transcript", response.body
+    assert_match "no conversation", response.body
   end
 
   test "get_session's text-less states are distinguishable over MCP too" do
