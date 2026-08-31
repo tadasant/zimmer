@@ -599,9 +599,14 @@ class TranscriptPollerService
   # of pre-start session, and every other reason for sitting in `waiting` (queued
   # behind the fleet cap, waiting on a clone) is equally benign.
   #
-  # Drawn no wider than `waiting` on purpose. Every other state keeps paging: a
-  # session that reached running, needs_input or failed got past the spawn, and
-  # silencing those would trade an alert nobody needs for a failure nobody sees.
+  # Drawn no wider than `waiting` on purpose: every other state keeps paging,
+  # because widening the exemption to "any session without the key" would swallow
+  # the case the line exists to catch, and an alert nobody needs is a cheaper
+  # failure than a defect nobody sees. That deliberately leaves one benign ERROR
+  # in place — `restart_from_scratch` strips this key and resumes the session to
+  # running before the re-clone has written a new one, so a poll inside that
+  # window still pages. It predates this split and the state cannot tell it apart;
+  # see docs/src/content/docs/limitations.md.
   def log_missing_working_directory
     if @session.waiting?
       Rails.logger.info "[TranscriptPollerService] Session #{@session.id} has no working_directory yet — still waiting, not spawned"

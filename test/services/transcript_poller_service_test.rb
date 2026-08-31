@@ -179,7 +179,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
   # spawned yet is *expected* not to have one. Logging that at .error paged
   # #alerts every time the poller touched a spot session held for quota headroom.
 
-  test "a waiting session with no working_directory logs below error" do
+  test "a session that has not been spawned logs below error" do
     waiting_session = sessions(:waiting)
     waiting_session.update!(metadata: {})
 
@@ -192,7 +192,10 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
       "still returns nil — this is a log-level change, not a behavior change"
   end
 
-  test "a spot-held session with no working_directory logs below error" do
+  test "a spot-held session logs below error on the metadata that paged in production" do
+    # The state is what the branch reads, so the hold markers do not change the
+    # answer — this pins the exact shape session 4773 carried, because spot-hold
+    # is the case that will keep producing pre-start polls.
     held_session = sessions(:waiting)
     held_session.update!(metadata: {
       "spot_hold_reason" => "forecast_breached",
@@ -200,10 +203,26 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     })
 
     Rails.logger.expects(:error).never
+    Rails.logger.expects(:info).with(regexp_matches(/Session #{held_session.id} has no working_directory yet/)).at_least_once
 
     service = TranscriptPollerService.new(held_session, file_system: @mock_file_system)
 
     assert_nil service.send(:get_transcript_directory)
+  end
+
+  test "the whole pre-start poll emits no error at the public boundary" do
+    # get_transcript_directory is private and the demotion has to survive the
+    # only path that reaches it: poll_and_broadcast still logs its own WARN and
+    # still returns false, and neither of those pages.
+    waiting_session = sessions(:waiting)
+    waiting_session.update!(metadata: {})
+
+    Rails.logger.expects(:error).never
+
+    service = TranscriptPollerService.new(waiting_session, file_system: @mock_file_system)
+
+    assert_equal false, service.poll_and_broadcast,
+      "the return value the transcript-poll failure budget counts is unchanged"
   end
 
   test "a started session with no working_directory still logs at error" do
@@ -218,9 +237,10 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
   end
 
   test "the pre-start exemption is drawn no wider than waiting" do
-    # A session that reached needs_input or failed got past the spawn, so a
-    # missing working_directory there is as anomalous as it is while running.
-    [ :needs_input, :failed ].each do |fixture|
+    # Every state other than waiting keeps paging. Widening the exemption to
+    # "any session without the key" would swallow the defect the line exists to
+    # catch, which is the worse of the two failures.
+    [ :needs_input, :failed, :archived ].each do |fixture|
       session = sessions(fixture)
       session.update!(metadata: {})
 
