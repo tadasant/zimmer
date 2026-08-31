@@ -276,6 +276,12 @@ module CronSchedule
       description: "Pause running spot sessions when a quota window reaches its target, and resume them when it falls",
       environments: %i[production staging]
     },
+    spot_hold_sweep: {
+      cron: "*/5 * * * *", # Every 5 minutes; SpotSessionHold::OVERDUE_GRACE is what bounds staleness
+      class: "SpotHoldSweepJob",
+      description: "Put held spot sessions back on the re-check ladder when their re-check never fired",
+      environments: %i[production staging]
+    },
     burn_rate_recompute: {
       cron: "*/20 * * * *", # Every 20 minutes — the ledger only lands every 10, so this is not the bound
       class: "BurnRateRecomputeJob",

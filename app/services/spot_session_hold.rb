@@ -116,6 +116,21 @@ class SpotSessionHold
   TURN_START = "start"
   TURN_RESUME = "resume"
 
+  # The prompt a deferred RESUME turn is carrying, recorded on the SESSION as
+  # well as on the delayed job.
+  #
+  # "The turn is DEFERRED, never dropped" is this class's central promise, and
+  # the session's own row is what keeps it. A copy held only in the delayed job's
+  # argument list is lost with that job when a worker is killed between the hold
+  # record committing and the enqueue — see #sweep! for the production case — so
+  # anything rebuilding the re-check replays the real prompt rather than
+  # inventing a nudge.
+  #
+  # Written only for a resume, and cleared the moment the session gets through,
+  # so it is not a standing copy of every prompt in the fleet. `metadata` already
+  # carries prompts this way for the same reason (`pending_follow_up_prompt`).
+  HELD_PROMPT = "spot_hold_prompt"
+
   # Read by two callers, and the second is what keeps the backoff honest. `clear`
   # drops these when a session gets through — and the three "restart from scratch"
   # paths (the Restart button, `action_session`, `POST /api/v1/sessions/:id/restart`)
@@ -127,7 +142,8 @@ class SpotSessionHold
   # re-check — no prompt, no resume flag — so without it a person clicking Restart
   # on a session sitting at 40 minutes would push it to an hour, which is the
   # opposite of what they asked for.
-  METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT, HELD_TURN ].freeze
+  METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT, HELD_TURN,
+                    HELD_PROMPT ].freeze
 
   # Spread over which held sessions re-check, so a backlog does not re-evaluate
   # in lockstep.
@@ -171,6 +187,111 @@ class SpotSessionHold
   # session's status would exempt exactly the population this class creates.
   RUNNING_HOLD_REASONS = [ UTILIZATION_REASON ].freeze
 
+  # How far past its own re-check time a hold has to be before #sweep! treats the
+  # ladder as BROKEN rather than merely late.
+  #
+  # Sized against the two things that make an honest re-check late: the jitter
+  # (up to RETRY_JITTER) and a backed-up `agents` queue. Ten minutes is well clear
+  # of both, so a hold this far past due has no job coming.
+  OVERDUE_GRACE = 10.minutes
+
+  # How many stranded ladders one sweep re-arms. Each re-arm is an admission
+  # attempt, and the gate refuses most of them cheaply — but a deployment that
+  # has accumulated a large stranded population should walk it back onto the
+  # ladder over a few passes rather than putting the whole backlog through the
+  # gate in one minute.
+  MAX_REARMS_PER_SWEEP = 10
+
+  # Re-armed re-checks are spread over this window, for the same reason the
+  # ordinary ladder carries jitter: a batch that all re-checks in the same second
+  # reads the same fleet size before any of them has started.
+  REARM_SPREAD = 3.minutes
+
+  # The auth-outage park's own marker. AuthOutageParkService keeps its key list
+  # as a bare `%w[]` with no per-key constant, so the one this service has to
+  # exclude is named here rather than reaching into that array by index.
+  AUTH_OUTAGE_REASON_KEY = "auth_outage_reason"
+
+  # How many overdue holds one pass LOADS. The batch it re-arms is bounded by
+  # MAX_REARMS_PER_SWEEP; this bounds the read, so a deployment that has stalled
+  # en masse does not pull every stranded session's row — `transcript`, `prompt`,
+  # `goal` and all — into one worker's memory (tadasant/zimmer#719).
+  MAX_LOADED_PER_SWEEP = MAX_REARMS_PER_SWEEP * 5
+
+
+  # === Reading a hold back ===
+
+  # One hold record, with the two things every surface was missing: how OLD it
+  # is, and whether the re-check it promises is still coming.
+  #
+  # A hold record is a SNAPSHOT. `detail` is the sentence the gate produced at
+  # `held_at`, frozen on the row, so a surface that replays it in the present
+  # tense answers "why is this waiting" with something that may have been false
+  # for hours. On 2026-08-31 session 7507's page read "5 of 5 session slots
+  # taken" at 13:39Z from a hold taken at 02:12Z, while the live gate said
+  # `within_limits` and 1 of 5; the only tell was a "next check" time already in
+  # the past, rendered as though it were upcoming.
+  #
+  # So a Record never hands out `detail` without also being able to say when it
+  # was taken, and the two sentences below are the shared wording the session
+  # page and `get_session` both render — the surfaces cannot drift.
+  Record = Data.define(:detail, :reason, :turn, :count, :held_at, :retry_at) do
+    include ActionView::Helpers::DateHelper
+
+    def resuming? = turn == TURN_RESUME
+
+    # Whether the re-check this hold promised is late enough to mean the ladder
+    # has stopped. `retry_at` is the entire promise a held session rests on, so a
+    # stamp in the past means nothing is scheduled to move this session.
+    #
+    # The grace defaults to OVERDUE_GRACE, and every surface takes that default,
+    # because they must all draw the line in the same place. A re-check due one
+    # second ago is not a stalled ladder — it is a job that has not been picked
+    # up yet, and the window in which that is true is widest during exactly the
+    # `agents` congestion this class's header documents. Naming that "stalled" on
+    # the session page while /quotas counted 0 overdue would be this PR's own
+    # defect wearing the other face.
+    def overdue?(now: Time.current, grace: OVERDUE_GRACE)
+      retry_at.present? && retry_at + grace < now
+    end
+
+    def age(now: Time.current) = held_at.present? ? now - held_at : nil
+
+    # "as of", said out loud. Nil when the hold carries no timestamp, so a
+    # caller renders nothing rather than "as of unknown".
+    def as_of_sentence(now: Time.current)
+      return nil if held_at.blank?
+
+      "That was the gate's reading #{distance_of_time_in_words(now, held_at)} ago " \
+        "(#{held_at.utc.iso8601}), not a live one."
+    end
+
+    # What happens next, and whether it is still going to happen. An overdue
+    # re-check is named as overdue rather than printed as an upcoming time.
+    def recheck_sentence(now: Time.current)
+      return "No re-check time was recorded for this hold." if retry_at.blank?
+
+      if overdue?(now: now)
+        "Its re-check was due #{distance_of_time_in_words(now, retry_at)} ago " \
+          "(#{retry_at.utc.iso8601}) and has not fired, so the ladder has stalled. " \
+          "Zimmer's spot-hold sweep re-arms it automatically."
+      else
+        "Next check #{retry_at.utc.iso8601}, in #{distance_of_time_in_words(now, retry_at)}."
+      end
+    end
+  end
+
+  # What one #sweep! pass did.
+  #
+  # The four numbers account for the whole overdue population, which is the point:
+  # a pass that re-armed 5 of 40 must not read as "5 were stalled". `skipped` is
+  # the ones whose re-check job is queued and merely running late; `deferred` is
+  # the ones this pass did not reach — over the batch bound, or dormant for a
+  # reason that outranks the hold.
+  Sweep = Data.define(:rearmed, :overdue, :skipped, :deferred) do
+    def to_h = { rearmed: rearmed, overdue: overdue, skipped: skipped, deferred: deferred }
+  end
+
   class << self
     # True when the turn was refused and the caller should stop. False means
     # carry on and run it.
@@ -208,7 +329,282 @@ class SpotSessionHold
       Rails.logger.warn("[SpotSessionHold] Could not clear hold on session #{session.id}: #{e.message}")
     end
 
+    # @param session [Session]
+    # @return [Record, nil] nil when this session carries no hold record.
+    def record_for(session)
+      metadata = session.metadata || {}
+      # Keyed on HELD_REASON, the same marker #held? reads. Keying this on
+      # HELD_DETAIL instead would let the two disagree about whether a hold
+      # exists, and a session #held? claims but #record_for denies is one the
+      # sweep counts and then silently refuses to re-arm on every pass forever.
+      return nil if metadata[HELD_REASON].blank?
+
+      Record.new(
+        detail: metadata[HELD_DETAIL],
+        reason: metadata[HELD_REASON],
+        turn: metadata[HELD_TURN],
+        count: metadata[HELD_COUNT].to_i,
+        held_at: parse_time(metadata[HELD_AT]),
+        retry_at: parse_time(metadata[HELD_RETRY_AT])
+      )
+    end
+
+    # Whether this session is dormant on a hold — refused at the door, or before
+    # its next turn, and sitting in `waiting` with nothing but its own re-check
+    # coming for it.
+    #
+    # Deliberately the same shape as SpotSessionPause.paused?, and deliberately a
+    # SEPARATE population from it: a pause carries `spot_pause_reason` and is
+    # resumed by SpotCeilingSweepJob, a hold carries `spot_hold_reason` and is
+    # resumed by its own re-check. Every caller that has to ask "is this session
+    # asleep on purpose?" needs both questions, and asking only the pause one is
+    # how a held session gets treated as stranded (AgentSessionJob's interrupt
+    # recovery) or reported as absent (`get_spot_policy`).
+    def held?(session)
+      session.waiting? && (session.metadata || {})[HELD_REASON].present?
+    end
+
+    # Every session dormant on a hold, oldest hold first.
+    #
+    # A session that ALSO carries a ceiling pause or an auth-outage park is not in
+    # this population. Those are counted and resumed by their own owners, so
+    # counting them here would double-count them — and #rearm! refuses them, so a
+    # surface that included them would promise a repair that never comes.
+    def held_sessions
+      Session
+        .where(status: :waiting)
+        .where("metadata->>? IS NOT NULL", HELD_REASON)
+        .where("metadata->>? IS NULL", SpotSessionPause::PAUSED_REASON)
+        .where("metadata->>? IS NULL", AUTH_OUTAGE_REASON_KEY)
+        .order(Arel.sql("metadata->>'spot_hold_at' ASC NULLS FIRST"))
+    end
+
+    # The standing population of sessions the gate has refused and not yet let
+    # through — the number /quotas and `get_spot_policy` report beside the paused
+    # one.
+    #
+    # NOT the same figure as SpotSessionPause.paused_count, and not a subset of
+    # it. That one counts sessions the `spot_budget` ceiling interrupted MID-RUN;
+    # this one counts sessions refused BEFORE a turn. They have different resume
+    # owners, so a surface that prints one of them under a label covering both
+    # reports a deployment holding session 7507 as "asleep in the spot queue: 0".
+    def held_count
+      held_sessions.count
+    rescue ActiveRecord::ActiveRecordError
+      0
+    end
+
+    # The held sessions whose ladder has stalled: past their own re-check time by
+    # more than the grace, and therefore waiting on nothing.
+    #
+    # A STRING comparison, not a cast. `spot_hold_retry_at` is written by #hold!
+    # as a UTC ISO-8601 stamp, and those sort lexicographically in exactly
+    # timestamp order — so `<` answers "is this in the past" without a
+    # `::timestamptz`, which would raise on the whole query if any one row's
+    # stamp were unparseable and take the /quotas card down with it. Filtering
+    # here rather than in Ruby also keeps this off the page's hot path: /quotas
+    # asks for the count on every render, and the alternative loads every dormant
+    # session's row — `metadata` included, which now carries deferred prompts.
+    def overdue_sessions(now: Time.current, grace: OVERDUE_GRACE)
+      held_sessions.where("metadata->>? < ?", HELD_RETRY_AT, (now - grace).utc.iso8601)
+    end
+
+    def overdue_count(now: Time.current, grace: OVERDUE_GRACE)
+      overdue_sessions(now: now, grace: grace).count
+    rescue ActiveRecord::ActiveRecordError
+      0
+    end
+
+    # === Repairing a stalled ladder ===
+
+    # One pass: put every held session whose re-check never fired back on the
+    # ladder.
+    #
+    # == Why a sweep has to exist
+    #
+    # A hold is a promise ("re-checking at 02:43:15") kept by exactly one thing:
+    # the delayed job the hold enqueued. Each re-check forges the next link, so
+    # the chain has no redundancy anywhere along it — lose one link and the
+    # session waits forever, in a state that looks identical to a session merely
+    # queued. Nothing else picks it up: SpotCeilingSweepJob only resumes the
+    # `spot_pause_*` population, the quota-recovery wake only reads auth-outage
+    # parks, and a start-held session has no runtime session to restart.
+    #
+    # That is not hypothetical. Session 7507 (tadasant/zimmer#648):
+    #
+    #   02:12:25  a re-check begins
+    #   02:12:30  hold #145 COMMITS — `spot_hold_retry_at: 02:43:15`
+    #   02:12:53  the worker is gone; GoodJob re-picks the row and raises
+    #             InterruptError. The hold's own log line never reached the
+    #             database, because it was still in the LogBuffer — which is how
+    #             we know the execution died between the metadata write and the
+    #             flush, taking the un-enqueued re-check with it.
+    #   02:43:15  nothing happens, and nothing ever will.
+    #
+    # It was still sitting there eleven hours later, holding a fossilised "5 of 5
+    # session slots taken" in front of a human while the live gate said 1 of 5.
+    #
+    # So the ladder's next rung stops depending on one job surviving: the DURABLE
+    # record is `spot_hold_retry_at` on the session, and this sweep reconciles it
+    # against reality every five minutes. A hold that is past due with no job
+    # behind it gets a new one.
+    #
+    # == Not racing a re-check that is merely late
+    #
+    # Two guards, because a duplicated turn is a real cost. A hold has to be
+    # OVERDUE_GRACE past due before it counts as stalled, and a session with an
+    # unfinished AgentSessionJob against it is left alone — the job is queued and
+    # running late, which is a busy worker rather than a broken ladder.
+    #
+    # Never raises. It runs on a cron beside everything else, and the condition is
+    # re-read from scratch five minutes later, so a failed pass costs a pass.
+    #
+    # @return [Sweep]
+    def sweep!(logger: nil)
+      logger ||= StructuredLogger.new({ service: "SpotSessionHold" })
+      overdue = overdue_count
+      return Sweep.new(rearmed: 0, overdue: 0, skipped: 0, deferred: 0) if overdue.zero?
+
+      stalled = overdue_sessions.limit(MAX_LOADED_PER_SWEEP).to_a
+      queued = session_ids_with_a_pending_turn(stalled.map(&:id))
+      candidates, skipped = stalled.partition { |session| queued.exclude?(session.id) }
+
+      # Dropped BEFORE the batch is taken, not inside #rearm!, and that ordering
+      # is what stops the sweep starving. A session dormant for a reason that
+      # outranks the hold is refused every pass and never advances its stamp, so
+      # it stays overdue forever — and `held_sessions` orders oldest-hold-first,
+      # which walks exactly those sessions to the head of the queue. Refusing them
+      # only under the lock would let ten of them occupy the whole batch and keep
+      # the sweep from ever reaching a genuinely stranded session, which is the
+      # failure this job exists to prevent. The under-lock check stays as the race
+      # guard.
+      candidates, blocked = candidates.partition { |session| !dormant_for_another_reason?(session) }
+
+      batch = candidates.first(MAX_REARMS_PER_SWEEP)
+      deferred = overdue - skipped.size - batch.size
+
+      logger.info("Held spot sessions are past their own re-check time",
+        overdue: overdue, with_a_job_still_queued: skipped.size,
+        dormant_for_another_reason: blocked.size, in_this_batch: batch.size)
+
+      rearmed = batch.count { |session| rearm!(session, logger) }
+
+      Sweep.new(rearmed: rearmed, overdue: overdue, skipped: skipped.size, deferred: deferred)
+    rescue StandardError => e
+      logger.warn("Spot hold sweep failed", error: "#{e.class}: #{e.message}")
+      Sweep.new(rearmed: 0, overdue: 0, skipped: 0, deferred: 0)
+    end
+
     private
+
+    # Put one stranded session back on the ladder.
+    #
+    # The re-arm is a re-check, not an admission: it enqueues the same turn the
+    # lost job was carrying and lets the gate decide again. If the gate is open
+    # the session runs; if it is still closed the session is held again, with a
+    # fresh re-check job behind it. Either way it stops waiting on nothing.
+    #
+    # `spot_hold_retry_at` is advanced BEFORE the job is enqueued and under the
+    # row lock, so the stamp is the sweep's own idempotency key: the next pass
+    # five minutes from now reads a re-check in the future and leaves the session
+    # alone.
+    def rearm!(session, logger)
+      record = record_for(session)
+      return false if record.nil?
+
+      delay = rand(REARM_SPREAD.to_i).seconds
+      retry_at = Time.current + delay
+      # Only a String is a prompt. `enqueue_with_prompt` raises ArgumentError on
+      # anything else, and it would raise AFTER the stamp was advanced — so the
+      # session would re-arm, fail, and repeat every pass with no job. Anything
+      # unusable falls back to the recovery nudge below.
+      held_prompt = (session.metadata || {})[HELD_PROMPT]
+      prompt = held_prompt.is_a?(String) ? held_prompt.presence : nil
+
+      rearmed = false
+      ActiveRecord::Base.transaction do
+        session.lock!
+        # Re-asked under the lock. A re-check that fired between #sweep!'s read
+        # and this write has already advanced the ladder, and re-arming on top of
+        # it would put a second job against the same turn.
+        raise ActiveRecord::Rollback unless held?(session) &&
+          record_for(session)&.overdue?(grace: OVERDUE_GRACE) &&
+          !dormant_for_another_reason?(session)
+
+        session.merge_metadata!(HELD_RETRY_AT => retry_at.utc.iso8601)
+        rearmed = true
+      end
+      return false unless rearmed
+
+      # The job first, the sentence about it second. A log line written ahead of a
+      # failed enqueue is a session timeline promising a re-check that does not
+      # exist — the fossil-read-as-live-state this whole class is about.
+      if record.resuming?
+        AgentSessionJob.enqueue_with_prompt(
+          session.id,
+          prompt || AutomatedPrompts.system_recovery(
+            reason: "Zimmer's spot-hold sweep found this session's re-check had stopped firing"
+          ),
+          delay: delay
+        )
+      else
+        AgentSessionJob.enqueue_new_session(session.id, delay: delay)
+      end
+
+      session.logs.create!(
+        level: "warning",
+        content: "The re-check this spot hold promised (#{record.retry_at&.utc&.iso8601 || "unknown"}) " \
+                 "never fired, so the session was waiting on nothing. Zimmer's spot-hold sweep put it " \
+                 "back on the ladder: re-checking at #{retry_at.utc.iso8601}. " \
+                 "#{prompt.present? || !record.resuming? ? "The turn it was holding is carried with it." :
+                    "The prompt it was woken for was lost with the re-check, so it comes back on a " \
+                    "recovery nudge instead."}"
+      )
+
+      logger.info("Re-armed a stalled spot hold",
+        session_id: session.id, holds: record.count, carried_prompt: prompt.present?)
+      true
+    rescue StandardError => e
+      logger.warn("Could not re-arm a stalled spot hold",
+        session_id: session.id, error: "#{e.class}: #{e.message}")
+      false
+    end
+
+    # Whether something OTHER than the hold is why this session is asleep. A
+    # ceiling pause, an auth-outage park and a wall-clock pause each own their own
+    # resume, and re-arming underneath one of them would start a session its owner
+    # deliberately stopped.
+    def dormant_for_another_reason?(session)
+      SpotSessionPause.paused?(session) ||
+        AuthOutageParkService.parked?(session) ||
+        session.paused_until_scheduled_time?
+    end
+
+    # Which of these sessions already has an AgentSessionJob queued or running.
+    #
+    # Reads GoodJob directly, the same way Sessions::StartNow and
+    # SessionRecoveryService match a session's pending jobs.
+    # `serialized_params -> 'arguments' ->> 0` is the session id every
+    # AgentSessionJob is enqueued with, and only the ids come back — the rest of
+    # the payload is the refused prompt, which there is no reason to load.
+    def session_ids_with_a_pending_turn(ids)
+      return Set.new if ids.empty?
+
+      GoodJob::Job
+        .where(job_class: AgentSessionJob.name, finished_at: nil)
+        .where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s))
+        .pluck(Arel.sql("serialized_params -> 'arguments' ->> 0"))
+        .map(&:to_i)
+        .to_set
+    end
+
+    def parse_time(value)
+      return nil if value.blank?
+
+      Time.zone.parse(value.to_s)
+    rescue ArgumentError, TypeError
+      nil
+    end
 
     # Whether this decision refuses this turn. Every hold reason refuses a session
     # that holds no slot; a session already counted in the running fleet is
@@ -250,14 +646,21 @@ class SpotSessionHold
       # a prompt nothing else is carrying.
       session.merge_metadata!(
         {
-          HELD_AT => Time.current.iso8601,
+          # UTC, for the same reason SpotSessionPause#pause! writes UTC: both of
+          # these stamps are compared and ordered LEXICOGRAPHICALLY as stored
+          # strings (see #held_sessions and #overdue_sessions), and an offset
+          # rendering would sort into the wrong place.
+          HELD_AT => Time.current.utc.iso8601,
           HELD_REASON => decision.reason,
           HELD_DETAIL => decision.detail,
-          HELD_RETRY_AT => retry_at.iso8601,
+          HELD_RETRY_AT => retry_at.utc.iso8601,
           HELD_COUNT => count,
           HELD_TURN => resuming ? TURN_RESUME : TURN_START
-        },
-        resuming ? %w[pending_follow_up_prompt pending_follow_up_sent_at] : []
+          # The prompt goes on the row as well as on the job. Custody without a
+          # durable copy is how a turn gets lost: the job is the only carrier, and
+          # a worker that dies before the enqueue below takes the prompt with it.
+        }.merge(resuming ? { HELD_PROMPT => follow_up_prompt } : {}),
+        resuming ? %w[pending_follow_up_prompt pending_follow_up_sent_at] : [ HELD_PROMPT ]
       )
 
       message = "Spot session held #{resuming ? 'before its next turn' : 'before starting'}: " \
@@ -304,10 +707,8 @@ class SpotSessionHold
       retry_at = metadata[HELD_RETRY_AT]
       return nil if retry_at.blank?
 
-      at = Time.zone.parse(retry_at.to_s)
+      at = parse_time(retry_at)
       at if at.present? && at > Time.current
-    rescue ArgumentError, TypeError
-      nil
     end
 
     # Put a refused prompt into the session's durable message queue, behind the

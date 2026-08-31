@@ -10,11 +10,18 @@
     One partial for all four because a session is only ever in one of them, and
     they are ordered most-specific first: a human's choice describes the session
     better than the gate reason layered on top of it. %>
-<% hold_detail = agent_session.metadata&.dig(SpotSessionHold::HELD_DETAIL) %>
-<% hold_reason = agent_session.metadata&.dig(SpotSessionHold::HELD_REASON) %>
+<%# The hold, read through SpotSessionHold::Record rather than key by key, so
+    the two sentences this banner needs — how old the reading is, and whether the
+    re-check it promises is still coming — are the SAME sentences `get_session`
+    prints. A hold detail is a snapshot taken at `spot_hold_at`, and rendering it
+    with nothing to say so is how session 7507's page told a human "5 of 5
+    session slots taken" eleven hours after that stopped being true. %>
+<% hold = SpotSessionHold.record_for(agent_session) %>
+<% hold_detail = hold&.detail %>
+<% hold_reason = hold&.reason %>
 <%# A hold on a RESUME is a turn that was refused, not a session that never
     started: the session has run before and is waiting to run its next turn. %>
-<% held_turn = agent_session.metadata&.dig(SpotSessionHold::HELD_TURN) %>
+<% held_turn = hold&.turn %>
 <% pause_detail = agent_session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL) %>
 <% if (hold_detail.present? || pause_detail.present?) && agent_session.waiting? %>
   <% paused_mid_run = hold_detail.blank? %>
@@ -23,7 +30,6 @@
       gets its own sentence rather than being described as a casualty of the
       ceiling. %>
   <% queued_by_user = SpotSessionPause.queued_by_user?(agent_session) %>
-  <% retry_at = agent_session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT) %>
   <%# A data attribute rather than an id: this partial renders twice per page —
       once in the mobile block, once in the desktop header, mirroring
       auth_outage_banner — and two elements cannot share one id. %>
@@ -38,6 +44,11 @@
             Waiting in the spot queue
           <% elsif paused_mid_run %>
             Paused mid-run for quota headroom
+          <% elsif hold&.overdue? %>
+            <%# The headline stops claiming a live ceiling once the re-check it
+                rests on has come and gone: at that point the session is not
+                being held by anything, it is waiting on a job that never ran. %>
+            Spot hold stalled — its re-check never fired
           <% elsif hold_reason == "fleet_at_cap" %>
             Held for a free session slot
           <% elsif held_turn == SpotSessionHold::TURN_RESUME %>
@@ -47,6 +58,14 @@
           <% end %>
         </h3>
         <p class="mt-1 text-sm text-amber-800"><%= paused_mid_run ? pause_detail : hold_detail %></p>
+        <%# The age of the sentence above, always, and never as an afterthought:
+            without it a reader has no way to tell an eleven-hour-old gate
+            reading from a live one. %>
+        <% if !paused_mid_run && hold&.as_of_sentence %>
+          <p class="mt-1 text-xs text-amber-700" data-spot-hold-as-of>
+            <%= hold.as_of_sentence %>
+          </p>
+        <% end %>
         <p class="mt-2 text-xs text-amber-700">
           This is a <span class="font-medium">spot</span> session
           (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
@@ -59,12 +78,19 @@
             it was already running when a window reached its target, and it resumes on its own
             once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
           <% elsif held_turn == SpotSessionHold::TURN_RESUME %>
-            the turn it was woken for is queued and runs on its own once the gate lets
-            it<%= ", next check #{retry_at}" if retry_at.present? %>.
+            the turn it was woken for is queued and runs on its own once the gate lets it.
           <% else %>
-            it will start on its own once the gate lets it<%= ", next check #{retry_at}" if retry_at.present? %>.
+            it will start on its own once the gate lets it.
           <% end %>
         </p>
+        <%# What happens next, stated as what it IS. An overdue re-check is named
+            as overdue and paired with the sweep that repairs it, rather than
+            printed as a time that has already passed and reads as upcoming. %>
+        <% if !paused_mid_run && hold %>
+          <p class="mt-1 text-xs <%= hold.overdue? ? "font-medium text-amber-900" : "text-amber-700" %>" data-spot-hold-recheck>
+            <%= hold.recheck_sentence %>
+          </p>
+        <% end %>
         <%# Moves this session alone. The genesis-wide lever on /quotas would
             move every other session that shares its origin, which is exactly the
             blast radius that made it the wrong tool for one held session. %>

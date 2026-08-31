@@ -128,8 +128,8 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   # to be able to read that second answer.
   test "get_spot_policy reports how many spot sessions are asleep in the queue" do
     output = get_policy
-    assert_match(/Spot sessions asleep in the spot queue:\*\* 0/, output)
-    assert_match(/asleep in the spot queue:\*\* 0\. The ceiling has stopped nothing/, output)
+    assert_match(/Spot sessions paused mid-run by the ceiling:\*\* 0/, output)
+    assert_match(/by the ceiling:\*\* 0\. The ceiling has stopped nothing/, output)
 
     Session.create!(
       git_root: "https://github.com/t/r.git", prompt: "work", status: :waiting,
@@ -142,12 +142,58 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     )
 
     output = get_policy
-    assert_match(/Spot sessions asleep in the spot queue:\*\* 1/, output)
+    assert_match(/Spot sessions paused mid-run by the ceiling:\*\* 1/, output)
     # The count is of DORMANT sessions, and the sentence has to say so — reading
     # it as running sessions is what made the figure look like a contradiction
     # beside the concurrency limit.
     assert_match(/It was paused mid-run when a window's spot budget ran out/, output)
     assert_match(/asleep rather than running/, output)
+  end
+
+  # The defect Tadas hit from the reporting side. This tool printed
+  # SpotSessionPause.paused_count under "asleep in the spot queue" — a heading
+  # that reads like every dormant spot session — so on 2026-08-31 it asserted
+  # "asleep in the spot queue: 0" while session 7507, spot and `waiting` and held
+  # 145 times, was demonstrably asleep on a hold (tadasant/zimmer#648). The two
+  # populations are disjoint and resume by different mechanisms, so both are
+  # reported, in the same words the /quotas card uses.
+  test "get_spot_policy counts spot sessions held before a turn, not just paused ones" do
+    output = get_policy
+    assert_match(/Spot sessions held before a turn:\*\* 0/, output)
+    assert_match(/Nothing is waiting at the door/, output)
+
+    held_session(retry_at: 20.minutes.from_now)
+
+    output = get_policy
+    assert_match(/Spot sessions held before a turn:\*\* 1/, output)
+    assert_match(/dormant in waiting before a turn the gate refused/, output)
+    # It is a hold, not a pause: the pause figure must not move.
+    assert_match(/Spot sessions paused mid-run by the ceiling:\*\* 0/, output)
+  end
+
+  test "get_spot_policy reports a held session whose re-check is overdue as overdue" do
+    held_session(retry_at: 10.hours.ago)
+
+    output = get_policy
+
+    assert_match(/Spot sessions held before a turn:\*\* 1, 1 of them overdue for a re-check/, output)
+    assert_match(/Its own re-check time has already passed/, output)
+    assert_match(/SpotHoldSweepJob/, output)
+  end
+
+  def held_session(retry_at:)
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "work", status: :waiting,
+      genesis: SessionGenesis::GITHUB_ISSUE,
+      metadata: {
+        SpotSessionHold::HELD_AT => 11.hours.ago.utc.iso8601,
+        SpotSessionHold::HELD_REASON => "fleet_at_cap",
+        SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+        SpotSessionHold::HELD_RETRY_AT => retry_at.utc.iso8601,
+        SpotSessionHold::HELD_COUNT => 145,
+        SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+      }
+    )
   end
 
   # Parity with /quotas: an agent asking why it is held has to see the same

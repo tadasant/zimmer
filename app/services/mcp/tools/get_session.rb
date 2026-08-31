@@ -144,20 +144,31 @@ module Mcp
       # and was woken for a turn the gate refused, so "it never started" would be
       # the wrong story to read back.
       def spot_hold_lines(session)
-        detail = session.metadata&.dig(SpotSessionHold::HELD_DETAIL)
-        return [] if detail.blank?
+        # Gated on #held?, exactly as the session page's banner is, and for a
+        # sharper reason here: these lines say the spot-hold sweep will re-arm an
+        # overdue re-check, and that sweep only touches sessions dormant in
+        # `waiting`. An archived session keeps its hold record deliberately (see
+        # AgentSessionJob's archived guard), so reading one back with that promise
+        # attached would be a false statement to the agent reading its own session.
+        return [] unless SpotSessionHold.held?(session)
 
-        retry_at = session.metadata&.dig(SpotSessionHold::HELD_RETRY_AT)
-        reason = session.metadata&.dig(SpotSessionHold::HELD_REASON)
-        resuming = session.metadata&.dig(SpotSessionHold::HELD_TURN) == SpotSessionHold::TURN_RESUME
-        what = resuming ? "next turn held" : "start held"
+        hold = SpotSessionHold.record_for(session)
+        return [] if hold.nil?
+
+        what = hold.resuming? ? "next turn held" : "start held"
         [
-          "- **Spot gate: #{what}#{reason.present? ? " (`#{reason}`)" : ''}:** #{detail}",
-          "- **Hold re-check at:** #{retry_at.presence || 'unknown'}",
-          "- **Holds so far:** #{session.metadata&.dig(SpotSessionHold::HELD_COUNT).to_i}",
-          ("- **The prompt that woke it is not lost:** it is queued with the re-check above " \
-           "and is delivered when the gate lets the turn through. Promote this session to " \
-           "priority to run it now." if resuming)
+          "- **Spot gate: #{what}#{hold.reason.present? ? " (`#{hold.reason}`)" : ''}:**" \
+          "#{hold.detail.present? ? " #{hold.detail}" : ' the gate recorded no sentence for this hold.'}",
+          # The detail above is a SNAPSHOT of what the gate said at `spot_hold_at`,
+          # not a live reading, so the age travels with it — in the same words the
+          # session page renders. Session 7507 read back "5 of 5 session slots
+          # taken" eleven hours after the gate had returned to `within_limits`.
+          ("- **As of:** #{hold.as_of_sentence}" if hold.as_of_sentence),
+          "- **Hold re-check:** #{hold.recheck_sentence}",
+          "- **Holds so far:** #{hold.count}",
+          ("- **The prompt that woke it is not lost:** it is recorded with the hold and " \
+           "delivered when the gate lets the turn through. Promote this session to " \
+           "priority to run it now." if hold.resuming?)
         ].compact
       end
 

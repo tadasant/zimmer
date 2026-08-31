@@ -155,6 +155,11 @@
       "class": "SpotCeilingSweepJob",
       "description": "Pause running spot sessions when a quota window reaches its target, and resume them when it falls"
     },
+    "spot_hold_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "SpotHoldSweepJob",
+      "description": "Put held spot sessions back on the re-check ladder when their re-check never fired"
+    },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
       "class": "BurnRateRecomputeJob",
@@ -367,6 +372,11 @@
       "class": "SpotCeilingSweepJob",
       "description": "Pause running spot sessions when a quota window reaches its target, and resume them when it falls"
     },
+    "spot_hold_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "SpotHoldSweepJob",
+      "description": "Put held spot sessions back on the re-check ladder when their re-check never fired"
+    },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
       "class": "BurnRateRecomputeJob",
@@ -424,15 +434,15 @@
     }
   },
   "development": {
-    "cleanup_orphaned_sessions": {
-      "cron": "*/5 * * * *",
-      "class": "CleanupOrphanedSessionsJob",
-      "description": "Cleanup orphaned sessions every 5 minutes"
-    },
     "outcome_analysis_batch_pump": {
       "cron": "* * * * *",
       "class": "OutcomeAnalysisBatchPumpJob",
       "description": "Advance every running Outcomes Analyze All batch: reconcile in-flight analyses, spawn the next wave"
+    },
+    "cleanup_orphaned_sessions": {
+      "cron": "*/5 * * * *",
+      "class": "CleanupOrphanedSessionsJob",
+      "description": "Cleanup orphaned sessions every 5 minutes"
     },
     "heartbeat_sweep": {
       "cron": "*/30 * * * * *",
