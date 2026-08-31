@@ -122,8 +122,10 @@ transition, and it does nine things beyond changing status:
    other side effect does: a raise here must not wedge the transition.
 4. `fire_settled_needs_input_ao_event(marker)` — wakes anything watching this session, *if the
    session is still at rest when the settle window closes*. See
-   [a turn boundary is not a rest](#a-turn-boundary-is-not-a-rest).
-5. `enqueue_debounced_needs_input_push_notification(marker)` — see below.
+   [a turn boundary is not a rest](#a-turn-boundary-is-not-a-rest). Skipped entirely for a
+   recovery pause; see [which pauses announce themselves](#which-pauses-announce-themselves).
+5. `enqueue_debounced_needs_input_push_notification(marker)` — see below. Skipped for a recovery
+   pause, for the same reason. Steps 4 and 5 are the pause's *announcement* and travel together.
 6. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
 7. `enqueue_status_summary_refresh` — the **only** automatic trigger for the
    [Status summary](/sessions/status-summary/). The generator still refuses when the session has
@@ -157,9 +159,9 @@ to be re-registered.
 
 So the event is now **settled** rather than emitted on the edge. The job is enqueued with a
 `wait:` of `SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW` (30 seconds) and the marker from step 3;
-when it runs, it is dropped unless `Session#resting_in_needs_input?` still holds — the session is in
-`needs_input`, holds no unexecuted `pending_sleep`, and has nothing queued for it — and unless the
-marker still matches, which is how a later transition supersedes an earlier one's event.
+when it runs, it is dropped unless `Session#resting_in_needs_input?` still holds — the session is
+still in `needs_input` — and unless the marker still matches, which is how a later transition
+supersedes an earlier one's event.
 
 `fail` and `archive` emit through the unchanged `fire_ao_event_triggers`, immediately: a terminal
 state cannot flap, and delaying the event that ends a wait would be pure latency.
@@ -183,6 +185,30 @@ running` between turns, and without debouncing every flap would push a notificat
 push job is enqueued with a 60-second delay (`NEEDS_INPUT_DEBOUNCE`) carrying a monotonic
 marker from `custom_metadata["needs_input_count"]`. If the session churns during the window,
 the marker won't match and the deferred job no-ops.
+
+#### Which pauses announce themselves
+
+Steps 4 and 5 are the pause's **announcement**: the settled `session_needs_input` wake that reaches every watcher, and the push notification that reaches the human. `running → needs_input` is one transition covering several unrelated situations, and only some of them mean "a person is now needed here".
+
+| Pause | Announced? | Why |
+| --- | --- | --- |
+| The agent's turn ended | **yes** | The session is at rest waiting on a human. This is what the transition is for, and it is the hot path. |
+| A human hit Pause (`paused_by: "user"`), an interrupt, an API/MCP/web pause | **yes** | Also at rest, and a watcher wants to know the session stopped. |
+| Zimmer recovering its own interrupted process (`paused_by: "recovery"`) | **no** | The session is not waiting on anybody. It is on its way back to `running` under a sweep that owes it a restart. |
+| A status-summary fork | **no** | Zimmer's own bookkeeping, harvested rather than queued. Skips steps 3–7, not just the announcement. |
+| Parked on an auth or quota outage (`AuthOutageParkService`) | **yes** | Deliberately writes *no* recovery marker, precisely so it is not swept back into an exhausted pool. A parked session is a real stop and is announced as one. |
+
+The settle window above does not cover the recovery case, and the arithmetic is why the carve-out exists. The boundaries the window suppresses leave `needs_input` within microseconds (a self-wake) or ten seconds (a queued-message drain). A recovery pause does not: nothing moves the session until `CleanupOrphanedSessionsJob`'s five-minute cron reaches it, so at settle time it is still sitting in `needs_input` and `resting_in_needs_input?` — status and nothing else, by design — says yes. It would fire.
+
+So the marker is read at the source instead. Every recovery path writes `metadata["paused_by"] = "recovery"` immediately before `pause!` — `AgentSessionJob`'s dead-process branch and its `GoodJob::InterruptError` handler, and `SessionRecoveryService#transition_to_needs_input` — and `SessionStateMachine#recovery_pause?` reads it in the `pause` callback. **The state transition still happens.** The session really is in `needs_input`, really is in the homepage action queue, and the timeline still says so. Only the two outward signals are withheld.
+
+That matters because a fired one-time wake destroys its siblings. The pattern [`wake_me_up_when_session_changes_state`](/sessions/triggers/) documents for watching a child is a wake set plus a `wake_me_up_later` deadline, so a single spurious `session_needs_input` costs the watcher the whole set — including the backstop that was supposed to catch a genuinely hung child.
+
+**The suppression is a deferral, not a deletion, and that is what makes it safe.** `CleanupOrphanedSessionsJob` (every five minutes) and `DeploymentRecoveryJob` (once at boot) both select on `paused_by = 'recovery'` and auto-continue what they find. `SessionContinuation` bounds that at `MAX_CONTINUE_ATTEMPTS` — roughly an hour — and when it gives up it drops the marker, writes an `error`-level "will not be retried again" line, **and makes the announcement the pause skipped**, via `Session#announce_deferred_needs_input!`. So a recovery-paused session that is never continued still wakes its watchers and still pushes, exactly once, at the moment it stopped being Zimmer's problem and became a human's.
+
+Which is why the carve-out asks whether a sweep is actually coming, not merely whether the marker is set. A session parked in a **frozen category** is excluded from every query in both sweeps (`Session.not_in_frozen_category`), so there is no deferral to make — nothing continues it, and `SessionContinuation` never runs to announce it later either. That pause is announced at the time, like any other stop. `AgentSessionJob`'s recovery-pause writers do not check the category, because they run inside the session's own job rather than in a bulk recovery flow; `SessionRecoveryService` bails on a frozen category before it ever pauses.
+
+Two edges the deferred announcement deliberately does not cover. A session abandoned in `failed` already fired `session_failed` and an unconditional failure push when it failed. A session bounced to `waiting` by `execute_pending_sleep` is dormant, and telling a watcher it "needs input" would be a claim about a state it is not in — the settled event would drop it anyway.
 
 #### A session does not idle on its own queue
 

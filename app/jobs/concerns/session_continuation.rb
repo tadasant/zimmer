@@ -181,6 +181,7 @@ module SessionContinuation
                  "This session will not be retried again — restart it to try once more.",
         level: "error"
       )
+      announce_abandoned_pause(session)
       return false
     end
 
@@ -190,6 +191,35 @@ module SessionContinuation
       level: "warning"
     )
     false
+  end
+
+  # Say out loud what the recovery pause did not.
+  #
+  # A recovery pause fires no `session_needs_input` wake and sends no push
+  # (SessionStateMachine's `pause` after block), on the promise that one of these
+  # sweeps will continue the session. Giving up is that promise expiring: the
+  # session is now resting in the human action queue with nobody coming for it,
+  # which is exactly the transition the pause would have announced. Making the
+  # announcement here rather than at pause time is the whole reason the carve-out
+  # is safe — otherwise suppressing it would fail silently in the direction of
+  # less visibility.
+  #
+  # Only for a session actually resting in `needs_input`. The other two states this
+  # abandonment can reach are already covered or are not a rest at all: a `failed`
+  # session fired `session_failed` and an unconditional failure push when it failed,
+  # and a `waiting` session is dormant — telling a watcher it "needs input" would be
+  # a claim about a state it is not in, and the settled event would drop it anyway.
+  def announce_abandoned_pause(session)
+    return unless session.reload.resting_in_needs_input?
+
+    session.announce_deferred_needs_input!
+  rescue => e
+    # Best-effort, exactly as on the pause path: the session is already in the
+    # homepage action queue and carries the give-up log line, and a failed
+    # notification must not stop the sweep reaching the next session.
+    Rails.logger.error(
+      "[#{self.class.name}] Failed to announce abandoned recovery pause for session #{session.id}: #{e.message}"
+    )
   end
 
   # Validate session has required fields for continue

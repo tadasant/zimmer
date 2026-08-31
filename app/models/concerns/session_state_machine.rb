@@ -149,9 +149,14 @@ module SessionStateMachine
             # One bump, two consumers. Both the wake fan-out and the push are
             # debounced against the same counter, so bumping it twice would make
             # each one's marker stale to the other and suppress both.
+            #
+            # The bump happens even when the announcement below is suppressed. It
+            # is what supersedes an earlier pause's still-pending settled event,
+            # and a session that recovery-paused inside that window is precisely
+            # one that has churned — leaving the counter alone would let the older
+            # event survive its own settle check and fire.
             marker = bump_needs_input_transition_counter
-            fire_settled_needs_input_ao_event(marker)
-            enqueue_debounced_needs_input_push_notification(marker)
+            announce_needs_input(marker) unless announcement_deferred_to_recovery_sweep?
             enqueue_session_inference_if_needed
             enqueue_status_summary_refresh
           end
@@ -736,7 +741,78 @@ module SessionStateMachine
     custom_metadata&.dig("needs_input_count").to_i
   end
 
+  # True when the pause this session is sitting in — or about to enter — is Zimmer
+  # restarting its own interrupted process, rather than the agent finishing a turn.
+  #
+  # The marker is written by every recovery path immediately before `pause!`:
+  # AgentSessionJob's dead-process branch and its GoodJob::InterruptError handler,
+  # and SessionRecoveryService#transition_to_needs_input. It is cleared again by
+  # `resume` (clear_paused_by_metadata) and by the sweeps' continuation path, which
+  # drops the whole of Session::STALE_RETRY_METADATA_KEYS. So it is true for exactly
+  # the window in which Zimmer owes this session a restart.
+  #
+  # NEEDS_INPUT_SETTLE_WINDOW does not cover this on its own, and the arithmetic is
+  # the reason this predicate exists. The boundaries that window suppresses leave
+  # `needs_input` within microseconds (a self-wake) or ten seconds (a queued-message
+  # drain). A recovery pause does not: nothing moves the session until
+  # CleanupOrphanedSessionsJob's five-minute cron reaches it, so at settle time it is
+  # still sitting in `needs_input` and #resting_in_needs_input? — which asks about
+  # status and nothing else, by design — says yes.
+  #
+  # Deliberately an equality test on "recovery" rather than "anything but a human".
+  # The other `paused_by` values are different situations with different audiences:
+  # "user" is a human holding the session, "spot_quota" is the spot gate, "mcp_retry"
+  # is a delayed retry job. None of them is swept by CleanupOrphanedSessionsJob or
+  # DeploymentRecoveryJob, both of which match `paused_by = 'recovery'` exactly — so
+  # none of them has the auto-continue promise that makes this suppression safe.
+  def recovery_pause?
+    metadata&.dig("paused_by") == "recovery"
+  end
+
+  # Announce a `needs_input` the `pause` callback deliberately did not.
+  #
+  # A recovery pause says nothing to watchers and sends no push, on the promise that
+  # a recovery sweep will continue the session. SessionContinuation is where that
+  # promise can expire: once it has spent MAX_CONTINUE_ATTEMPTS it drops the marker
+  # and stops sweeping, and the session is then resting in the action queue with
+  # nobody coming for it. Announcing here is what keeps the carve-out from being able
+  # to hide a stuck session — the watcher's wake set survives the flap and still
+  # fires, exactly once, at the moment the session became a human's problem.
+  #
+  # Bumps its own marker rather than taking one, because it is not part of a
+  # transition and has no other consumer to share with.
+  def announce_deferred_needs_input!
+    announce_needs_input(bump_needs_input_transition_counter)
+  end
+
   private
+
+  # Whether this pause's announcement is being DEFERRED to a recovery sweep, rather
+  # than skipped outright. That distinction is the whole safety argument, so it is
+  # the question the callback asks.
+  #
+  # A recovery pause qualifies only when a sweep will actually reach the session.
+  # Both CleanupOrphanedSessionsJob and DeploymentRecoveryJob scope every query
+  # through Session.not_in_frozen_category, so a session parked in a frozen category
+  # is one neither will ever select. AgentSessionJob's two recovery-pause writers do
+  # not check the category — they run inside the session's own job rather than in a
+  # bulk recovery flow, unlike SessionRecoveryService, which bails on a frozen
+  # category before it ever pauses — so this pause really can happen there.
+  # Suppressing it would not defer the announcement, it would delete it: no sweep
+  # continues the session, so SessionContinuation never runs and the give-up branch
+  # that makes the deferred announcement is never reached either. That session is
+  # stuck, and stuck is exactly what a watcher has to hear about.
+  def announcement_deferred_to_recovery_sweep?
+    recovery_pause? && !category&.is_frozen?
+  end
+
+  # The pause's announcement: the settled `session_needs_input` wake fan-out, and
+  # the human's debounced push. Both gate on the same marker — see the "one bump,
+  # two consumers" note at the `pause` callback.
+  def announce_needs_input(marker)
+    fire_settled_needs_input_ao_event(marker)
+    enqueue_debounced_needs_input_push_notification(marker)
+  end
 
   # Report a transition side effect that failed and was swallowed.
   #
