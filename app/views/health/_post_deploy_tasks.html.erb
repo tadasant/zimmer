@@ -20,7 +20,11 @@
       </div>
       <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
         <%= status_badge(tasks[:status]) %>
+        <%# No hover-prefetch: /supervisor 401s with a Basic challenge, which the browser
+            renders as a sign-in dialog even for a background fetch. See
+            Supervisor::ApplicationController#refuse. %>
         <%= link_to "All runs", supervisor_post_deploy_task_runs_path,
+              data: { turbo_prefetch: false },
               class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
       </div>
     </div>
