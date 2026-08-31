@@ -43,6 +43,17 @@ class EnqueuedMessage < ApplicationRecord
   # archived by the harvest job. Exempting it would silence the alert's own smoke
   # detector. Same for `automated_merge_conflict`: an unresolved conflict is
   # still unresolved afterwards and nothing else reports it.
+  #
+  # `AutomatedPrompts::HEARTBEAT` is the honest near-miss, and it is left OUT
+  # deliberately rather than by oversight. It reaches the same queue by the same
+  # route — HeartbeatSweepJob -> deliver_follow_up! -> a refused spot turn -> the
+  # durable queue — and on the criterion above it would qualify: Zimmer writes it,
+  # and "keep working toward the goal, or turn the heartbeat off" is not still
+  # true once the session is archived. What it does not have is an observed page.
+  # Every origin added here is a permanent narrowing of the one alert that reports
+  # a message being thrown away, so the bar for widening it is a firing this
+  # exemption would have prevented, not an argument that it would fit. Add the
+  # heartbeat when it pages, and not before.
   SELF_ADDRESSED_ORIGINS = %w[automated_recovery_nudge].freeze
 
   belongs_to :session

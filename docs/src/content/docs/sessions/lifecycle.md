@@ -839,13 +839,19 @@ So the unforced branch subtracts one thing, on the message rather than on the ar
 | --- | --- |
 | Anything somebody was waiting on | Rows retire, the archive line names them, **and it pages** — unchanged |
 | **Only** notices Zimmer addressed to this session | Rows retire, the archive line names them, and a `[StrandedQueue] forced=false` line goes to the log plane at WARN. No page. |
-| A mix of the two | It pages **about the caller's messages only**, and the body names how many nudges it left out |
+| A mix of the two | It pages **about the caller's messages only**, the body names how many nudges it left out, and the suppressed rows still get their `forced=false` ledger line |
 
 `EnqueuedMessage::SELF_ADDRESSED_ORIGINS` is that list and it has **one** entry,
 `automated_recovery_nudge`. The bar for a second is that the message must carry nothing still true
 once the session is archived. The recovery nudge clears it: its whole content is a question — *were
 you interrupted?* — put to a session that is now terminal, so it has no answer, no author waiting on
 one, and no reader left to discover the loss from.
+
+`AutomatedPrompts::HEARTBEAT` is the near-miss, and it is left out on purpose. It reaches the same
+queue by the same route and would meet the criterion — but every origin added here permanently
+narrows the one alert that reports a message being thrown away, so the bar for widening it is a
+firing this exemption would have prevented, not an argument that it would fit. The heartbeat goes on
+the list when it pages, and not before.
 
 **`automated_pr_merged` deliberately does not clear it, and that contrast is the design.** A merge is
 a fact about the world that outlives the archive. An unforced strand of that notice is how the
