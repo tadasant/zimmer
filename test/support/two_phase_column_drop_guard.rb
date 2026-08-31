@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+# Prism is a Ruby 3.4 default gem, so this resolves with or without a bundle —
+# which is what lets the guard run in CI's `lint` job, with no services and no
+# Rails boot.
 require "prism"
 
 # Finds migrations that drop a column in one deploy instead of two.
@@ -19,8 +22,15 @@ require "prism"
 # is the second one. See docs/src/content/docs/operate/deploying.md,
 # "Dropping a column takes two deploys".
 #
+# Scope: column *removals* only. `rename_column`, `rename_table` and `drop_table`
+# strand an old container exactly the same way and are deliberately not caught
+# here — their phase 1 is not an `ignored_columns` entry but an add-and-backfill,
+# which is a different recipe this guard does not have an annotation for
+# (zimmer#722).
+#
 # Deliberately Rails-free: it reads files, so it runs on its own without a
-# database. TwoPhaseColumnDropTest is its wiring into CI, and
+# database. TwoPhaseColumnDropTest is its wiring into `bin/rails test`, the
+# `lint` job runs it directly, and
 #
 #   bundle exec ruby -r./test/support/two_phase_column_drop_guard \
 #     -e 'puts TwoPhaseColumnDropGuard.report'
@@ -41,19 +51,30 @@ class TwoPhaseColumnDropGuard
   # Bodies that run in the reverse direction. A `remove_column` in here is the
   # undo of an `add_column`, not a drop, and the column only disappears if
   # someone rolls back.
+  #
+  # Pruning is by method *name*, not by reachability, so a removal factored out
+  # of `down` into a helper is still reported. Inline it into `down` rather than
+  # annotating a phase 1 that never happened.
   REVERSING_BLOCKS = %i[down revert].freeze
 
-  ANNOTATION = /^\s*#\s*two-phase-drop:\s*phase\s*2\s+of\s+(\S.*?)\s*$/
+  # Raw SQL, matched against string *contents* so a heredoc counts — which is
+  # how anyone actually writes SQL in a migration.
+  DROP_COLUMN_SQL = /DROP\s+COLUMN/i
+
+  ANNOTATION = /\A\s*#\s*two-phase-drop:\s*phase\s*2\s+of\s+(\S.*?)\s*\z/
 
   # The annotation has to name something a reviewer can go and read: a PR or
   # issue number, a commit sha, or the phase-1 migration's version. "phase 2 of
-  # the earlier PR" is not evidence that phase 1 shipped.
+  # the earlier PR" is not evidence that phase 1 shipped. The sha branch is
+  # loose enough to accept a hex-looking word (`deadbeef`); tightening it buys
+  # nothing, since the point is to make the author name a thing, not to resolve
+  # it.
   REF = /(?:#\d+)|(?:\b[0-9a-f]{7,40}\b)|(?:\b\d{14}\b)/
 
   # Single-phase drops that shipped before this guard existed. They are history:
   # the columns are long gone, and rewriting a migration that already ran buys
-  # nothing. Nothing should ever be added here — a new drop gets the two-deploy
-  # treatment and the annotation instead.
+  # nothing. The list is closed — GRANDFATHER_CUTOFF is what keeps it that way,
+  # so a new drop gets the two-deploy treatment and the annotation instead.
   GRANDFATHERED = %w[
     20251120202242_remove_filesystem_root_from_sessions.rb
     20260221002859_create_trigger_conditions.rb
@@ -62,6 +83,9 @@ class TwoPhaseColumnDropGuard
     20260704120000_add_extension_states_to_app_settings.rb
     20260815100000_drop_blocked_by_session_from_sessions.rb
   ].freeze
+
+  # The day the guard landed. Every grandfathered migration predates it.
+  GRANDFATHER_CUTOFF = "20260824000000"
 
   Removal = Struct.new(:line, :source, keyword_init: true)
 
@@ -99,6 +123,23 @@ class TwoPhaseColumnDropGuard
     # it doubles as the standalone command's output.
     def report(violations = self.violations)
       violations.map { |result| violation_message(result) }.join("\n")
+    end
+
+    # The other half of the convention: deploy 2 drops the column AND removes
+    # the `ignored_columns` entry. An entry naming a column that is already gone
+    # is a phase-2 cleanup someone forgot.
+    #
+    # `models` is anything responding to `name` and `ignored_columns`; the block
+    # returns the column names the table really has. Both are injected so this
+    # stays testable without a database — Active Record's own `column_names`
+    # could never detect it, since it filters `ignored_columns` out itself.
+    def stale_ignored_columns(models)
+      models.flat_map do |model|
+        ignored = Array(model.ignored_columns).map(&:to_s)
+        next [] if ignored.empty?
+
+        (ignored - yield(model)).map { |column| "#{model.name}.ignored_columns: #{column}" }
+      end
     end
 
     private
@@ -139,22 +180,30 @@ class TwoPhaseColumnDropGuard
     @source = File.read(@path)
   end
 
-  def scan
-    Result.new(path: @path, removals: forward_removals, annotation: @source[ANNOTATION, 1])
-  end
-
-  private
-
   # Parsed rather than grepped, because the direction is a syntactic fact:
   # `def down`, `dir.down { }` and `revert { }` are all reversals, and a regex
-  # over the file cannot tell them from the forward body two lines above.
-  def forward_removals
+  # over the file cannot tell them from the forward body two lines above. The
+  # annotation comes off the parsed comments for the same reason — over raw text,
+  # a `# two-phase-drop:` line inside a SQL heredoc would read as evidence.
+  def scan
     parsed = Prism.parse(@source)
     raise ArgumentError, "#{@path} does not parse: #{parsed.errors.first&.message}" if parsed.failure?
 
     collector = Collector.new
     parsed.value.accept(collector)
-    collector.removals.sort_by(&:line)
+
+    Result.new(path: @path, removals: collector.removals.sort_by(&:line), annotation: annotation(parsed))
+  end
+
+  private
+
+  # The first annotation that names a reference wins, so a stray earlier one
+  # cannot mask a real one; failing that, the first annotation at all, so the
+  # error message can still say what was written.
+  def annotation(parsed)
+    written = parsed.comments.filter_map { |comment| comment.slice[ANNOTATION, 1] }
+
+    written.find { |ref| ref.match?(REF) } || written.first
   end
 
   # Walks the AST, refusing to descend into anything that runs in reverse.
@@ -178,25 +227,34 @@ class TwoPhaseColumnDropGuard
       # other migration and has nothing here to inspect.
       return if node.block && REVERSING_BLOCKS.include?(node.name)
 
-      record(node)
+      push(node) if drop_call?(node)
+      super
+    end
+
+    # Any string literal, not just an argument to `execute` — that also covers
+    # `connection.execute`, a SQL constant, and the heredoc forms, and the
+    # reversing-body pruning above still applies to all of them.
+    def visit_string_node(node)
+      push_sql(node) if node.unescaped.match?(DROP_COLUMN_SQL)
       super
     end
 
     private
 
-    def record(node)
-      if DROP_METHODS.include?(node.name) ||
-         (RECEIVER_DROP_METHODS.include?(node.name) && node.receiver)
-        return push(node)
-      end
-
-      # `execute` is the escape hatch out of the schema DSL, and it can drop a
-      # column just as thoroughly.
-      push(node) if node.name == :execute && node.slice.match?(/DROP\s+COLUMN/i)
+    def drop_call?(node)
+      DROP_METHODS.include?(node.name) ||
+        (RECEIVER_DROP_METHODS.include?(node.name) && node.receiver)
     end
 
     def push(node)
       @removals << Removal.new(line: node.location.start_line, source: node.slice.lines.first.strip)
+    end
+
+    def push_sql(node)
+      lines = node.unescaped.lines
+      offset = lines.index { |line| line.match?(DROP_COLUMN_SQL) } || 0
+
+      @removals << Removal.new(line: node.location.start_line + offset, source: lines[offset].strip)
     end
   end
 end

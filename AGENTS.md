@@ -68,8 +68,10 @@ they booted with the column present, so their model still has the attribute, but
 2. **Deploy 2** — a later PR drops the column, removes the `ignored_columns` entry, and
    annotates the migration `# two-phase-drop: phase 2 of #<phase-1 PR>`.
 
-`test/migrations/two_phase_column_drop_test.rb` fails CI on a forward `remove_column` /
-`remove_reference` / `t.remove` / `DROP COLUMN` without that annotation. Full recipe:
+`TwoPhaseColumnDropGuard` (`test/support/two_phase_column_drop_guard.rb`) fails the `lint` and
+`test-unit` CI jobs on a forward `remove_column` / `remove_reference` / `t.remove` / `DROP COLUMN`
+without that annotation. It does *not* cover `rename_column` or `drop_table`, which are the same
+hazard — see [#722](https://github.com/tadasant/zimmer/issues/722). Full recipe:
 [Dropping a column takes two deploys](docs/src/content/docs/operate/deploying.md).
 
 ## Documentation lives in `docs/` — update it in the same PR
