@@ -57,8 +57,8 @@ before_action :authenticate_supervisor
 
 def authenticate_supervisor
   expected_password = ENV[PASSWORD_ENV].to_s
-  return request_http_basic_authentication(REALM) if expected_password.empty?
-  # ...constant-time compare of username and password
+  return refuse_unconfigured if expected_password.blank?
+  # ...constant-time compare of username and password, then `refuse` on failure
 end
 ```
 
@@ -66,6 +66,25 @@ One shared credential, no user model — this is not "who are you", it is "are y
 perimeter at all". Set `SUPERVISOR_PASSWORD`; `SUPERVISOR_USERNAME` is optional and defaults to
 `supervisor`. Both halves are compared with `ActiveSupport::SecurityUtils.secure_compare`, the same
 constant-time primitive `Api::BaseController#authenticate_api_key` uses.
+
+#### The refusal and the challenge are separate
+
+A 401 is the gate saying no. The `WWW-Authenticate: Basic` header on it is a *second*, separable
+instruction — "go ask the human" — and browsers obey it for any same-origin credentialed `fetch`,
+not just for a navigation someone started ([WHATWG Fetch, HTTP-network-or-cache
+fetch](https://fetch.spec.whatwg.org/#http-network-or-cache-fetch)).
+
+Turbo Drive prefetches same-origin links 100ms after the cursor enters them, which made that
+distinction load-bearing: hovering the dashboard's **Supervisor** button fired a background GET at
+the realm, and the browser opened its native sign-in dialog on top of a page nobody was leaving. It
+looked random because it tracked the mouse rather than any click.
+
+So `Supervisor::ApplicationController#refuse` withholds the challenge — and only the challenge —
+from a request the browser made speculatively (`SpeculativeRequest#prefetch_request?`, which reads
+`X-Sec-Purpose`, `Sec-Purpose` and `Purpose`). The request is still refused with a 401; a real
+navigation still gets the challenge and still signs in. Belt and braces, every link to the realm
+also carries `data-turbo-prefetch="false"`, so the request is not made at all —
+`test/contracts/basic_auth_prefetch_test.rb` sweeps `app/views/**` and fails if a new one forgets.
 
 **It fails closed.** With `SUPERVISOR_PASSWORD` unset — or blank, which is what a trailing space in
 an env file gets you — every request to every dashboard gets a 401, and the refusal is logged.

@@ -6,6 +6,7 @@ class SessionsController < ApplicationController
   include SessionSearchable
   include PendingMessageDelivery
   include SessionTranscriptLookup
+  include SpeculativeRequest
 
   # Pattern for validating temporary session IDs used for pre-session image uploads
   TEMP_SESSION_ID_PATTERN = /\Atemp_[a-f0-9\-]+\z/
@@ -3301,15 +3302,13 @@ class SessionsController < ApplicationController
   end
 
   # True when the current request is a deliberate human page/drawer load, as
-  # opposed to passive machinery. We require an HTML request and exclude Turbo's
-  # speculative hover-prefetch (it sends X-Sec-Purpose: prefetch; native browser
-  # prefetch sends Sec-Purpose: prefetch), which would otherwise count "hovering
-  # a link" as a view.
+  # opposed to passive machinery. We require an HTML request and exclude the
+  # browser's speculative hover-prefetch (SpeculativeRequest), which would
+  # otherwise count "hovering a link" as a view.
   def human_initiated_view?
     return false unless request.format.html?
 
-    request.headers["X-Sec-Purpose"].to_s.exclude?("prefetch") &&
-      request.headers["Sec-Purpose"].to_s.exclude?("prefetch")
+    !prefetch_request?
   end
 
   # Check OAuth requirements for MCP servers
