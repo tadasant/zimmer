@@ -71,6 +71,31 @@ class PostDeployTaskTest < ActiveSupport::TestCase
     assert_equal sessions.map(&:id).sort, seen, "no row is visited twice across the slices"
   end
 
+  test "sweep refuses a key that is not unique, rather than silently skipping rows" do
+    error = assert_raises(ArgumentError) do
+      PostDeployTask.new(run: @run).sweep(Session.all, key: :created_at) { }
+    end
+
+    assert_match(/needs a NOT NULL column with a total unique index/, error.message)
+  end
+
+  test "sweep refuses a key whose unique index is partial, or whose column is nullable" do
+    # `sessions.idempotency_key` is nullable with a `WHERE idempotency_key IS NOT
+    # NULL` unique index — unique for the rows it covers, and silently invisible
+    # to the sweep for the rest, which is the trap this guard closes.
+    assert_raises(ArgumentError) do
+      PostDeployTask.new(run: @run).sweep(Session.all, key: :idempotency_key) { }
+    end
+  end
+
+  test "sweep accepts a non-primary key that is NOT NULL with a total unique index" do
+    # The rule is uniqueness, not "must be the primary key".
+    # `post_deploy_task_runs.version` is exactly such a column.
+    assert_nothing_raised do
+      PostDeployTask.new(run: @run).sweep(PostDeployTaskRun.none, key: :version) { }
+    end
+  end
+
   test "sweep on an empty relation is a no-op that reports done" do
     yielded = false
     result = PostDeployTask.new(run: @run).sweep(Session.where(id: -1)) { yielded = true }

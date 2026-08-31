@@ -102,7 +102,8 @@ class PostDeployTask
   #
   # The relation must be stable under the key: rows the block *removes* are fine
   # (the cursor only moves forward), rows inserted behind the cursor are not
-  # revisited. Order by the primary key unless you have a reason not to.
+  # revisited. Order by the primary key unless you have a reason not to — and if
+  # you do have a reason, the key still has to be unique. See `assert_unique_key!`.
   #
   # THE BUDGET IS CHECKED BETWEEN BATCHES, NOT INSIDE ONE. A single batch query
   # runs to completion however long it takes, so the budget only bounds the slice
@@ -112,6 +113,8 @@ class PostDeployTask
   # a large table does not, and the last query of the sweep is a full scan — fine
   # for a table of thousands, not for one of millions.
   def sweep(relation, batch_size: 500, key: :id)
+    assert_unique_key!(relation, key)
+
     cursor_key = "sweep_last_#{key}"
     last = cursor[cursor_key]
 
@@ -129,5 +132,31 @@ class PostDeployTask
 
       return CONTINUE if out_of_time?
     end
+  end
+
+  private
+
+  # A non-unique sweep key loses rows, silently and permanently.
+  #
+  # The cursor advances to `batch.last.key` and the next page asks for `key >
+  # cursor`, so any row that ties with the last row of a batch and did not fit in
+  # it is excluded from every subsequent page. Nothing raises, nothing retries,
+  # and the task reports success having skipped them — the worst shape a
+  # one-time data fix can take, because the ledger then says it ran.
+  #
+  # So the key has to be unique, and rather than say so only in a comment this
+  # refuses at the first batch. One `indexes` lookup per sweep, on the
+  # non-default path only.
+  def assert_unique_key!(relation, key)
+    model = relation.klass
+    return if key.to_s == model.primary_key
+
+    unique = model.connection.indexes(model.table_name).any? do |index|
+      index.unique && index.columns == [ key.to_s ]
+    end
+    return if unique
+
+    raise ArgumentError,
+      "sweep(key: #{key.inspect}) on #{model.name} needs a unique key: the cursor advances past "       "the last row of each batch, so rows sharing a value with it would be skipped and never "       "revisited. Use the primary key, or add a unique index on #{key}."
   end
 end
