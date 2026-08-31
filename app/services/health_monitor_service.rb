@@ -127,6 +127,7 @@ class HealthMonitorService
       retry_budget_health: retry_budget_health,
       sigterm_retry_health: sigterm_retry_health,
       api_error_retry_health: api_error_retry_health,
+      post_deploy_task_health: post_deploy_task_health,
       overall_status: calculate_overall_status,
       generated_at: Time.current
     }
@@ -206,6 +207,30 @@ class HealthMonitorService
   # Get SIGTERM retry health information
   # Tracks sessions that have experienced SIGTERM exits and their retry behavior
   # @return [Hash] SIGTERM retry health data
+  # Which one-time post-deploy tasks have run, which are pending, and which
+  # failed — the answer to that question on a surface a human can reach without a
+  # shell on the box, which is the whole point of the mechanism (AGENTS.md, "No
+  # production box access").
+  #
+  # Folded into the health report rather than given its own endpoint so that the
+  # /health page, GET /api/v1/health and the `get_system_health` MCP tool all
+  # read the same object and cannot drift.
+  #
+  # Rescued rather than raised: a broken task file — a duplicate version, a class
+  # that is not a PostDeployTask — must not take down the whole health report,
+  # which is the thing an operator reaches for when something is wrong. The
+  # degraded reading says so in its own message.
+  def post_deploy_task_health
+    PostDeployTaskRun.summary
+  rescue StandardError => e
+    @logger.warn("Post-deploy task health could not be read", error: e.message)
+    {
+      status: HealthStatus.new(status: :warning, message: "Post-deploy task status could not be read: #{e.message}"),
+      total: 0, pending: 0, running: 0, succeeded: 0, failed: 0, blocked: 0,
+      awaiting_first_tick: 0, tasks: []
+    }
+  end
+
   def sigterm_retry_health
     rate_limit_tracker = GlobalRateLimitTracker.new
     stats = retry_budget_stats(RetryBudget::SIGTERM)
@@ -949,7 +974,9 @@ class HealthMonitorService
     egress_status = egress_health[:status]
     auth_status = auth_health[:status]
 
-    statuses = [ process_status, session_status, system_status, egress_status, auth_status ]
+    post_deploy_status = post_deploy_task_health[:status]
+
+    statuses = [ process_status, session_status, system_status, egress_status, auth_status, post_deploy_status ]
 
     if statuses.any?(&:critical?)
       HealthStatus.new(status: :critical, message: "One or more critical issues detected")

@@ -111,6 +111,15 @@ Getting history into the ledger used to mean somebody SSH'ing into production an
 [deploy is the delivery mechanism for ops actions](/operate/deploying/#ops-actions-ship-with-the-deploy),
 and the Costs page was quietly wrong until a human found the time.
 
+:::note[Do not copy this apparatus for the next one]
+The table, the cursor, the completion marker, the partial unique index and the three read surfaces
+below were all invented for this one backfill. They no longer have to be:
+[one-time post-deploy tasks](/operate/deploying/#one-time-post-deploy-tasks) is the general
+mechanism, and a new one-off step is one file in `db/post_deploy/`. This one keeps its own
+apparatus because it is merged, working, and load-bearing for the coverage panel — not because it is
+the pattern to follow.
+:::
+
 The property that makes an unattended sweep safe is the one the unique index already gave us:
 ingestion is idempotent on `request_id`. A re-swept directory writes nothing, so a slice that dies
 mid-chunk, a recurring sweep overlapping the backfill, and a full re-scan all cost time and nothing

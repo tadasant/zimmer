@@ -61,6 +61,31 @@ class HealthController < ApplicationController
     end
   end
 
+  # POST /health/run_post_deploy_tasks
+  #
+  # Re-arm any failed one-time post-deploy task and kick a pass. The mechanism
+  # runs itself after every deploy; this is the surface for the case it cannot
+  # handle on its own — a task that failed for a reason somebody has now fixed —
+  # so that unsticking it does not need a shell on the box.
+  #
+  # Not behind HealthActionCooldown: it terminates nothing and rewrites nothing
+  # in bulk, and the way to restart a stuck rollout should work first time.
+  def run_post_deploy_tasks
+    result = PostDeployTask::Runner.request!
+
+    respond_to do |format|
+      format.html do
+        flash[:notice] = if result[:rearmed].positive?
+          "Re-armed #{result[:rearmed]} post-deploy task#{'s' unless result[:rearmed] == 1} and queued a run"
+        else
+          "Queued a post-deploy task run"
+        end
+        redirect_to health_dashboard_path
+      end
+      format.json { render json: result }
+    end
+  end
+
   def retry_sessions
     return render_rate_limited if rate_limited?(:retry_sessions)
 

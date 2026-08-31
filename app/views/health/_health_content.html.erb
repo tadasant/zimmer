@@ -534,6 +534,8 @@
   </ul>
 </div>
 
+<%= render "health/post_deploy_tasks", health_report: health_report %>
+
 <!-- Recent Failures Section (Full Width) -->
 <% if health_report[:session_health][:recent_failures].any? %>
   <div class="mt-6 bg-white rounded-lg shadow">

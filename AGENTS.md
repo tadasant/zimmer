@@ -40,9 +40,15 @@ interrupted for.
 
 Deliver ops actions one of three ways, in this order:
 
-1. **A deploy** — a migration, or a one-shot idempotent job that a cron entry starts and that goes
-   idle once its work is done.
-2. **A scheduled idempotent job** — for anything that has to keep converging.
+1. **A deploy** — a migration, or, for a **one-time** step that needs application code, a
+   **post-deploy task**: one file in `db/post_deploy/` (`bin/rails generate post_deploy_task
+   <name>`), run automatically by `PostDeployTaskJob` within a couple of minutes of the deploy and
+   never again. That is the default answer for "and then someone runs `rake …` on prod", including
+   for work that takes an hour — a task returns `PostDeployTask::CONTINUE` to be resumed from its
+   cursor on the next tick. See
+   [One-time post-deploy tasks](docs/src/content/docs/operate/deploying.md).
+2. **A scheduled idempotent job** — for anything that has to keep converging. A *recurring* need is
+   a cron entry, not a post-deploy task.
 3. **The app's own surfaces** — a button in the web UI, a REST endpoint, an MCP action — for
    anything an operator triggers deliberately.
 
@@ -51,7 +57,10 @@ unique key, an upsert, a completion marker — something that makes a second run
 give an **observable answer** to "has it run, and what does it cover" through a surface a human can
 reach without SSH. A rake task is fine as a developer convenience; it is not the delivery mechanism.
 
-`TokenUsageBackfillJob` is the worked example — see
+A post-deploy task gets both for free: `succeeded` is terminal and the claim is a conditional
+`UPDATE`, and `post_deploy_task_runs` is rendered on `/health`, in `GET /api/v1/health`, by
+`get_system_health`, and at `/supervisor/post_deploy_task_runs`. `TokenUsageBackfillJob` is the
+older hand-rolled worked example — see
 [Token spend](docs/src/content/docs/operate/costs.md) and
 [Ops actions ship with the deploy](docs/src/content/docs/operate/deploying.md).
 
@@ -100,6 +109,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `config/goals.json`, `app/services/orchestrator_system_prompt_builder.rb` | `sessions/goals.md` |
 | any cron job (`config/cron_schedule.rb`) | `operate/background-jobs.md` |
 | an ops action that would otherwise need a prod shell | `operate/deploying.md` (Ops actions ship with the deploy) |
+| `db/post_deploy/**`, `PostDeployTask*` | `operate/deploying.md` (One-time post-deploy tasks) |
 | `config/initializers/otel_logs_exporter.rb`, `config/initializers/sentry.rb`, `lib/tasks/obs.rake` | `operate/observability.md` |
 | `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
 | `config.public_file_server.headers` | `operate/deploying.md` |

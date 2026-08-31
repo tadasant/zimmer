@@ -1,0 +1,117 @@
+<%# One-time post-deploy tasks (db/post_deploy/). %>
+<%#
+  The whole point of the mechanism is that a one-time operational step ships with
+  the deploy and needs no shell on the box — which is only true if "did it run,
+  and did it fail" is answerable from here. Same object as the REST health
+  report, `get_system_health` and /supervisor/post_deploy_task_runs.
+
+  Full width rather than a half-column card: the failure this panel exists to
+  surface is a task stuck with an error, and an error message needs the room.
+%>
+<% tasks = health_report[:post_deploy_task_health] %>
+<div class="mt-6 bg-white rounded-lg shadow">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h3 class="text-lg font-medium text-gray-900">Post-Deploy Tasks</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          One-time steps in <code class="font-mono text-xs">db/post_deploy/</code>, run automatically after a deploy.
+        </p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+        <%= status_badge(tasks[:status]) %>
+        <%= link_to "All runs", supervisor_post_deploy_task_runs_path,
+              class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+      </div>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <dl class="grid grid-cols-2 gap-4 mb-6 sm:grid-cols-4">
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Succeeded</dt>
+        <dd class="mt-1 text-2xl font-semibold text-green-600"><%= tasks[:succeeded] %></dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Pending</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= tasks[:pending] + tasks[:awaiting_first_tick] %></dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Running</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= tasks[:running] %></dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Failed</dt>
+        <dd class="mt-1 text-2xl font-semibold <%= tasks[:failed] > 0 ? 'text-red-600' : 'text-gray-900' %>">
+          <%= tasks[:failed] %>
+        </dd>
+      </div>
+    </dl>
+
+    <% if tasks[:tasks].any? %>
+      <div class="overflow-x-auto -mx-4 sm:mx-0">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead>
+            <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th class="px-4 py-2">Task</th>
+              <th class="px-4 py-2">Status</th>
+              <th class="px-4 py-2">Last run</th>
+              <th class="px-4 py-2">Progress</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% tasks[:tasks].each do |task| %>
+              <tr>
+                <td class="px-4 py-3 align-top">
+                  <div class="font-medium text-gray-900 break-words"><%= task[:name] %></div>
+                  <div class="font-mono text-xs text-gray-500"><%= task[:version] %></div>
+                  <% unless task[:registered] %>
+                    <div class="text-xs text-gray-400">task file removed</div>
+                  <% end %>
+                </td>
+                <td class="px-4 py-3 align-top">
+                  <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <%= post_deploy_task_status_class(task) %>">
+                    <%= task[:blocked] ? "blocked" : task[:status] %>
+                  </span>
+                  <% if task[:attempts] > 1 %>
+                    <div class="text-xs text-gray-500 mt-1"><%= task[:attempts] %> attempts</div>
+                  <% end %>
+                </td>
+                <td class="px-4 py-3 align-top text-gray-600 whitespace-nowrap">
+                  <%= task[:last_ran_at] ? time_ago_in_words(task[:last_ran_at]) + " ago" : "never" %>
+                  <% if task[:next_attempt_at] %>
+                    <div class="text-xs text-gray-500">retry in <%= time_ago_in_words(task[:next_attempt_at]) %></div>
+                  <% end %>
+                </td>
+                <td class="px-4 py-3 align-top text-gray-600">
+                  <% if task[:stats].present? %>
+                    <span class="font-mono text-xs break-words"><%= task[:stats].map { |k, v| "#{k}=#{v}" }.join(" ") %></span>
+                  <% else %>
+                    <span class="text-gray-400">—</span>
+                  <% end %>
+                </td>
+              </tr>
+              <% if task[:last_error].present? && task[:status] != "succeeded" %>
+                <tr>
+                  <td colspan="4" class="px-4 pb-3">
+                    <pre class="bg-red-50 text-red-700 text-xs rounded-md p-3 whitespace-pre-wrap break-words"><%= task[:last_error] %></pre>
+                  </td>
+                </tr>
+              <% end %>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="text-sm text-gray-500">
+        <%= tasks[:awaiting_first_tick].positive? ? "#{tasks[:awaiting_first_tick]} task(s) written, none run yet." : "No post-deploy tasks have been written." %>
+      </p>
+    <% end %>
+
+    <% if tasks[:failed] > 0 || tasks[:awaiting_first_tick] > 0 %>
+      <%= button_to "Re-arm and run now", run_post_deploy_tasks_health_path,
+          method: :post,
+          class: "mt-4 w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white #{tasks[:blocked] > 0 ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600 hover:bg-indigo-700'}" %>
+    <% end %>
+  </div>
+</div>

@@ -136,6 +136,16 @@ module CronSchedule
       description: "Sweep the whole transcript corpus into the ledger once, a slice at a time, so history needs no shell on the box",
       environments: %i[production staging]
     },
+    # Every two minutes rather than every minute: the steady state is one indexed
+    # lookup per task file, but a task that yields for a slice should be handed
+    # back promptly, and 2 minutes against a 90-second slice budget is the
+    # cadence that keeps a long sliced task moving without ever overlapping.
+    post_deploy_tasks: {
+      cron: "*/2 * * * *",
+      class: "PostDeployTaskJob",
+      description: "Run the one-time post-deploy tasks in db/post_deploy, so an ops step ships with the deploy instead of needing a shell",
+      environments: %i[production staging development]
+    },
     experimental_flag_backfill: {
       cron: "*/15 * * * *", # Every 15 minutes; an indexed anti-join that writes nothing once history is labelled
       class: "ExperimentalFlagBackfillJob",

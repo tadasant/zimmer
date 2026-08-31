@@ -76,6 +76,20 @@ module HealthHelper
     content_tag(:span, status.status.to_s.capitalize, class: "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium #{badge_class}")
   end
 
+  # The pill on the Post-Deploy Tasks panel. `blocked` is not a status the model
+  # stores — it is `failed` with the retries spent — but it is the one a reader
+  # has to act on, so it gets its own colour.
+  def post_deploy_task_status_class(task)
+    return "bg-red-100 text-red-800" if task[:blocked]
+
+    case task[:status]
+    when "succeeded" then "bg-green-100 text-green-800"
+    when "running" then "bg-blue-100 text-blue-800"
+    when "failed" then "bg-yellow-100 text-yellow-800"
+    else "bg-gray-100 text-gray-800"
+    end
+  end
+
   def session_status_color(status)
     case status.to_s
     when "running"
