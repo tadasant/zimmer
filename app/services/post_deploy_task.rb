@@ -103,6 +103,14 @@ class PostDeployTask
   # The relation must be stable under the key: rows the block *removes* are fine
   # (the cursor only moves forward), rows inserted behind the cursor are not
   # revisited. Order by the primary key unless you have a reason not to.
+  #
+  # THE BUDGET IS CHECKED BETWEEN BATCHES, NOT INSIDE ONE. A single batch query
+  # runs to completion however long it takes, so the budget only bounds the slice
+  # if each query is cheap. That is a constraint on the relation you pass: a
+  # predicate the database can serve from an index stays cheap even at the tail,
+  # where the query has to prove there is nothing left. An unindexed predicate on
+  # a large table does not, and the last query of the sweep is a full scan — fine
+  # for a table of thousands, not for one of millions.
   def sweep(relation, batch_size: 500, key: :id)
     cursor_key = "sweep_last_#{key}"
     last = cursor[cursor_key]

@@ -68,8 +68,15 @@ class PostDeployTask
     module_function
 
     # Every task on disk, oldest first. Ordering is by version, and the runner
-    # honours it — but it is not a barrier: a task that fails does not hold up
-    # the ones behind it. A task that genuinely depends on an earlier one should
+    # honours it.
+    #
+    # A *failure* is not a barrier — the runner works each task in its own rescue,
+    # so a task that raises does not hold up the ones behind it. A task that is
+    # merely SLOW is: one that keeps returning CONTINUE is still the earliest due
+    # task on the next tick, so nothing behind it gets a turn until it finishes.
+    # That is the right default for one-time steps, which are ordered for a
+    # reason — but it means a task written to run for hours delays the ones after
+    # it by hours. A task that genuinely depends on an earlier one should still
     # check for what it needs rather than trusting the order.
     def all(root: DEFAULT_ROOT)
       return [] unless File.directory?(root)

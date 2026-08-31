@@ -22,18 +22,19 @@
 class FixClonePathMetadata < PostDeployTask
   # `metadata` is `json`, not `jsonb`, so this is `json_typeof`. A NULL metadata
   # or a missing key yields NULL, which is not 'object', so both are skipped.
+  #
+  # Unindexed, deliberately: an index built for a repair that runs once is a
+  # bigger thing to leave behind than the scan it saves. `sweep` only checks the
+  # budget between batches, so the last query — the one that proves nothing is
+  # left — is a scan of `sessions`. That is seconds on a table of this size, and
+  # it happens once per environment, ever.
   BROKEN = "json_typeof(metadata->'clone_path') = 'object'"
 
   def up
-    checkpoint!(repaired: stats.fetch("repaired", 0), skipped: stats.fetch("skipped", 0))
+    checkpoint!(repaired: stats.fetch("repaired", 0))
 
     sweep(Session.where(BROKEN), batch_size: 200) do |batch|
-      repaired = batch.count { |session| repair(session) }
-
-      checkpoint!(
-        repaired: stats.fetch("repaired", 0) + repaired,
-        skipped: stats.fetch("skipped", 0) + (batch.size - repaired)
-      )
+      checkpoint!(repaired: stats.fetch("repaired", 0) + batch.count { |session| repair(session) })
     end
   end
 
@@ -51,6 +52,9 @@ class FixClonePathMetadata < PostDeployTask
   # business pushing a Turbo update per row for sessions nobody is looking at.
   def repair(session)
     nested = session.metadata["clone_path"]
+    # Belt and braces. The predicate that selected this row already guarantees
+    # the value is a JSON object, so this cannot fire from the sweep above — it
+    # is here so the method is safe to call on a row from anywhere else.
     return false unless nested.is_a?(Hash)
 
     metadata = session.metadata.dup

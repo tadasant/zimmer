@@ -44,7 +44,6 @@ class FixClonePathMetadataTest < ActiveSupport::TestCase
     assert_not untouched.metadata.key?("clone_path")
 
     assert_equal 1, run.stats["repaired"]
-    assert_equal 0, run.stats["skipped"]
   end
 
   test "does not overwrite a working_directory that is already correct" do

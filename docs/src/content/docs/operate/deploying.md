@@ -343,13 +343,23 @@ end
 The token-usage backfill's hour of wall clock is exactly this shape; it predates the mechanism and
 keeps its own apparatus, but a new task of that size does not need one.
 
+Two things to know about the budget. It is checked **between** batches, not inside one, so a single
+batch query runs to completion however long it takes — pass `sweep` a relation the database can
+serve from an index, or the last query of the sweep (the one that proves nothing is left) is a full
+scan. And version order is honoured, but only a *failure* is not a barrier: a task that keeps
+yielding is still the earliest due task on the next tick, so one written to run for hours delays the
+tasks behind it by hours.
+
 ### When it fails
 
 A task that raises is recorded on its row and retried with backoff — 1m, 5m, 15m, 30m, 1h — and
 then **stops**, so a durably broken task is not burning a worker slice every two minutes. At that
-point it reads as `blocked`, and the health page turns critical. A worker killed mid-task (a deploy,
-an OOM) leaves its claim behind; the lease expires after 20 minutes and the abandoned claim is
-converted into an ordinary failure, so it retries down the same path.
+point it reads as `blocked`, and the health page turns critical. "Raises" is wide on purpose: it
+covers `ScriptError` as well as `StandardError`, because a task file that will not load
+(`SyntaxError`, `LoadError`) and one generated but not yet filled in (`NotImplementedError`) are
+both the former. A worker killed mid-task (a deploy, an OOM) leaves its claim behind; the lease
+expires after 20 minutes and the abandoned claim is converted into an ordinary failure, so it
+retries down the same path.
 
 ### Seeing it without a shell
 

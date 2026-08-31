@@ -73,12 +73,27 @@ class PostDeployTask
 
       PostDeployTaskRun.reap_expired_leases!
 
+      # A duplicate version, or a file that does not define its class, is an
+      # authoring bug that `registry_test` fails CI on. If one reaches production
+      # anyway it must not raise out of the job every two minutes: this
+      # deployment escalates a recurring ERROR to a page, and the pass has
+      # nothing useful to do either way. Reported, then the pass is a no-op —
+      # `HealthMonitorService#post_deploy_task_health` rescues the same error, so
+      # the health panel is where a human sees it.
+      entries = begin
+        @registry.all
+      rescue Registry::InvalidTask => e
+        @logger.error("[PostDeployTask] the task directory does not resolve: #{e.message}")
+        Rails.error.report(e, handled: true, context: { post_deploy_task: "registry" })
+        return []
+      end
+
       results = []
 
       # An explicit loop rather than `filter_map`: the budget check has to be
       # able to stop the pass, and `break` out of a block would discard the
       # results already collected.
-      @registry.all.each do |entry|
+      entries.each do |entry|
         break if deadline && Time.current >= deadline
 
         run = PostDeployTaskRun.ledger_for(entry)
@@ -124,7 +139,17 @@ class PostDeployTask
     # the job down — which is precisely the "a failure is visible without a
     # shell" promise this class is built on, inverted.
     rescue StandardError, ScriptError => e
-      run.finish_failure!(e)
+      # Guarded on `running`, for the same reason the reaper guards its write: a
+      # task that ignores its deadline can outlive its own lease, be reaped, and
+      # be re-claimed by another worker while it is still going. An unguarded
+      # write here would then flip that live claim back to `failed` and clear the
+      # lease out from under its new owner. `false` means exactly that happened —
+      # the row is not ours any more, and whoever holds it records its outcome.
+      unless run.finish_failure!(e, guard_status: "running")
+        @logger.warn("[PostDeployTask] #{entry.version} #{entry.task_name} failed after losing its claim; " \
+                     "another worker holds the row, so this outcome is not recorded")
+      end
+
       @logger.error("[PostDeployTask] #{entry.version} #{entry.task_name} failed: #{e.class}: #{e.message}")
       Rails.error.report(e, handled: true, context: { post_deploy_task: entry.version })
       Result.new(version: entry.version, name: entry.task_name, outcome: :failed, error: e)

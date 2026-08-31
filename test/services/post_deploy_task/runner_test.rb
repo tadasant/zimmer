@@ -186,6 +186,39 @@ class PostDeployTask::RunnerTest < ActiveSupport::TestCase
     end
   end
 
+  test "a task that only raises NotImplementedError is still recorded as a failure" do
+    # The literal state of a task generated and not yet filled in.
+    # NotImplementedError is a ScriptError, NOT a StandardError, so a rescue that
+    # only named StandardError would let it out of the pass — leaving the row
+    # claimed until its lease expired and abandoning every task behind it.
+    files = counting_task("RunnerScaffoldTask", "20260209000000", "def up = raise(NotImplementedError, 'write the step here')")
+      .merge(counting_task("RunnerAfterScaffoldTask", "20260209000001", "def up = checkpoint!(ok: true)"))
+
+    with_runner(files) do |runner|
+      results = nil
+      assert_nothing_raised { results = runner.call }
+
+      assert_equal %i[failed succeeded], results.map(&:outcome)
+
+      run = PostDeployTaskRun.find_by!(version: "20260209000000")
+      assert_equal "failed", run.status
+      assert_match(/NotImplementedError: write the step here/, run.last_error)
+    end
+  end
+
+  test "a task directory that does not resolve makes the pass a no-op rather than raising" do
+    # A duplicate version is an authoring bug registry_test fails CI on. If one
+    # reached production, raising out of the job every two minutes would be an
+    # ERROR line per tick, which this deployment escalates to a page.
+    broken = Struct.new(:error) do
+      def all = raise(PostDeployTask::Registry::InvalidTask, "duplicate post-deploy task version: 20260101000000")
+    end
+
+    runner = PostDeployTask::Runner.new(registry: broken.new(nil))
+
+    assert_nothing_raised { assert_empty runner.call }
+  end
+
   test "the pass stops when its budget is spent rather than running every task" do
     files = counting_task("RunnerBudgetFirstTask", "20260207000000", "def up = checkpoint!(ok: true)")
       .merge(counting_task("RunnerBudgetSecondTask", "20260207000001", "def up = checkpoint!(ok: true)"))
