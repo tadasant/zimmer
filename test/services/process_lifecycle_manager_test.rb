@@ -2241,7 +2241,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # session was cgroup-OOM-killed (SIGKILL/9) and left in a terminal `failed` state
   # until the generic ~15-min stuck-session sweep noticed it. A signal death is now
   # a recoverable/transient condition: the session resumes immediately (bounded by
-  # MAX_SIGNAL_DEATH_RETRIES) instead of failing.
+  # RetryBudget::SIGNAL_DEATH.max) instead of failing.
   # ============================================================================
 
   test "signal_death_exit? classifies non-SIGTERM signals as signal death" do
@@ -2324,7 +2324,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # Already at the max — the next signal death must not resume again.
     @session.update!(
       metadata: @session.metadata.merge(
-        "signal_death_retry_count" => ProcessLifecycleManager::MAX_SIGNAL_DEATH_RETRIES
+        "signal_death_retry_count" => RetryBudget::SIGNAL_DEATH.max
       )
     )
 
@@ -2505,7 +2505,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "handle_exit alerts when a malformed tool call outlives the retry budget" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_malformed_tool_call
-    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
 
     alert = nil
     AlertService.stubs(:raise_alert).with do |title, opts|
@@ -2536,7 +2536,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "the malformed tool call alert does not claim retries that were spent on something else" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_malformed_tool_call
-    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
 
     alert = nil
     AlertService.stubs(:raise_alert).with do |title, opts|
@@ -2607,7 +2607,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "handle_exit does not raise the malformed-tool-call alert for an exhausted server-error ladder" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_api_server_error("500 Internal Server Error")
-    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
     AlertService.expects(:raise_alert).never
 
     manager = create_manager
@@ -3550,7 +3550,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "an exhausted signal-death budget does not alert" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     @session.update!(metadata: @session.metadata.merge(
-      "signal_death_retry_count" => ProcessLifecycleManager::MAX_SIGNAL_DEATH_RETRIES
+      "signal_death_retry_count" => RetryBudget::SIGNAL_DEATH.max
     ))
     AlertService.expects(:raise_alert).never
 

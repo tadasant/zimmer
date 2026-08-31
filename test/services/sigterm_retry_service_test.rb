@@ -367,7 +367,7 @@ class SigtermRetryServiceTest < ActiveSupport::TestCase
   end
 
   test "uses correct retry delays from constants" do
-    assert_equal 3, SigtermRetryService::MAX_RETRIES
+    assert_equal 3, SigtermRetryService::BUDGET.max
     assert_equal 5, SigtermRetryService::SUCCESS_THRESHOLD
     assert_equal 10, SigtermRetryService::STATUS_CHECK_INTERVAL
 

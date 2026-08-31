@@ -330,13 +330,6 @@ class AgentSessionJob < ApplicationJob
     end
   end
 
-  # Minimum successful run duration (seconds) before resetting SIGTERM retry counter.
-  # When a process runs successfully for this duration after a SIGTERM retry,
-  # the retry counter is reset to 0, allowing fresh retries for future SIGTERMs.
-  # This prevents premature session failures when multiple SIGTERM events are
-  # separated by periods of successful operation.
-  SIGTERM_RETRY_RESET_THRESHOLD = 60
-
   # Upper bound (characters) on the exception message persisted into
   # metadata["exception_message"] when a session fails. The actionable part of a
   # failure — e.g. an AirPrepareError embeds the full `air prepare` stderr/stdout,
@@ -1521,9 +1514,25 @@ class AgentSessionJob < ApplicationJob
       # Tracks whether we've already logged entry into an elicitation-blocked wait,
       # so we log it once per block rather than on every 0.5s loop iteration.
       waiting_on_elicitation = false
-      last_sigterm_retry_at = session.metadata&.dig("last_sigterm_at") ? Time.parse(session.metadata["last_sigterm_at"]) : nil
-      last_api_error_retry_at = session.metadata&.dig("last_api_error_retry_at") ? Time.parse(session.metadata["last_api_error_retry_at"]) : nil
-      last_signal_death_at = session.metadata&.dig("last_signal_death_at") ? Time.parse(session.metadata["last_signal_death_at"]) : nil
+      # When each retry budget last fired, as the reset check measures stability from.
+      # Seeded from the session's own stamps so a budget spent by an earlier run of this
+      # job is still resettable, then re-stamped wholesale on every successful retry.
+      #
+      # Floored at the moment this loop starts, because the number the reset is really
+      # asking for is "how long has THIS process been up" — which is what the log line
+      # it writes claims. The stamp alone is not that whenever a retry crosses a job
+      # boundary: schedule_mcp_retry stamps mcp_last_retry_at and only THEN waits out a
+      # 30/60/120s backoff before a fresh job spawns a new process, so from the second
+      # MCP attempt on, an unfloored clock is already past the threshold on the new
+      # job's first iteration. The budget would be handed back before the new process
+      # had attempted a handshake, never reach its maximum, and a session with a
+      # genuinely broken MCP server would ping-pong paused -> running forever instead of
+      # failing loudly.
+      monitoring_started_at = Time.current
+      last_retry_attempt_at = RetryBudget.all.index_with do |budget|
+        last_attempt = budget.last_attempt_at(session)
+        last_attempt && [ last_attempt, monitoring_started_at ].max
+      end
 
       loop do
         loop_iteration += 1
@@ -1753,10 +1762,9 @@ class AgentSessionJob < ApplicationJob
               session.reload
               process_pid = session.metadata&.dig("process_pid")
               stderr_log_path = session.stderr_log_path
-              # Update retry timestamps to track successful run duration for reset logic
-              last_sigterm_retry_at = Time.current
-              last_api_error_retry_at = Time.current
-              last_signal_death_at = Time.current
+              # Restart every budget's stability clock: the process the reset logic
+              # measures is this new one, whichever budget paid for it.
+              last_retry_attempt_at = RetryBudget.all.index_with { Time.current }
               # Restart log streaming thread for new process
               log_streaming_thread&.stop!
               log_streaming_thread = start_log_streaming(session, process_pid, stderr_log_path, working_directory)
@@ -2024,13 +2032,11 @@ class AgentSessionJob < ApplicationJob
           next
         end
 
-        # 5. Reset retry counters if process has been running successfully
-        # for SIGTERM_RETRY_RESET_THRESHOLD seconds since the last retry.
-        # This prevents premature failure when multiple errors are separated by
-        # periods of successful operation (see issue pulsemcp/agents#459).
-        check_and_reset_sigterm_retry_counter(session, last_sigterm_retry_at, log_buffer)
-        check_and_reset_api_error_retry_counter(session, last_api_error_retry_at, log_buffer)
-        check_and_reset_signal_death_retry_counter(session, last_signal_death_at, log_buffer)
+        # 5. Reset retry budgets whose process has been running successfully for the
+        # budget's reset threshold since its last attempt. This prevents premature
+        # failure when multiple errors are separated by periods of successful
+        # operation (see issue pulsemcp/agents#459).
+        reset_stable_retry_budgets(session, last_retry_attempt_at, log_buffer)
 
         # 6. Check for fallback: end_turn + dead process
         # This should rarely trigger now that we're in the same job,
@@ -3106,10 +3112,10 @@ class AgentSessionJob < ApplicationJob
     Rails.logger.error "[AgentSessionJob] Error checking turn completion: #{e.message}"
   end
 
-  # Maximum number of automatic retries for transient MCP connection failures.
-  # After this many attempts, the session permanently fails.
+  # The MCP connection budget — automatic retries for transient MCP connection
+  # failures, after which the session permanently fails. Declared once in RetryBudget.
   # Total wait time: 30s + 60s + 120s = 210s (~3.5 minutes)
-  MAX_MCP_CONNECTION_RETRIES = 3
+  MCP_BUDGET = RetryBudget::MCP_CONNECTION
 
   # Base delay (in seconds) for the first MCP retry. Subsequent retries
   # double: 30s, 60s, 120s. This gives MCP servers time to start after a deploy.
@@ -3124,7 +3130,7 @@ class AgentSessionJob < ApplicationJob
   # When MCP failure is detected:
   # 1. Log the failure details
   # 2. Terminate the Claude CLI process
-  # 3. For non-OAuth failures: retry with exponential backoff (up to MAX_MCP_CONNECTION_RETRIES)
+  # 3. For non-OAuth failures: retry with exponential backoff (up to MCP_BUDGET.max)
   # 4. On OAuth failure: transition to failed state, so a human can authorize the
   #    connector at /connectors and restart
   # 5. On any other definitive failure — retries exhausted, or a static credential
@@ -3383,16 +3389,16 @@ class AgentSessionJob < ApplicationJob
       # install on the next attempt (GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109).
       heal_partial_npx_cache(session, failed_servers, log_buffer)
 
-      mcp_retry_count = (session.metadata&.dig("mcp_retry_count") || 0).to_i
+      mcp_retry_count = MCP_BUDGET.count_for(session)
 
-      if mcp_retry_count < MAX_MCP_CONNECTION_RETRIES
+      unless MCP_BUDGET.exhausted?(session)
         return schedule_mcp_retry(session, failed_servers, mcp_retry_count, log_buffer)
       end
 
       # Max retries exhausted — the failure is definitive, so stop retrying and
       # leave the server out rather than killing the session over it.
       log_buffer.add(
-        "MCP connection retry limit exhausted (#{MAX_MCP_CONNECTION_RETRIES} attempts).",
+        "MCP connection retry limit exhausted (#{MCP_BUDGET.max} attempts).",
         level: "warning"
       )
 
@@ -3403,7 +3409,7 @@ class AgentSessionJob < ApplicationJob
       # VictoriaLogs via the OTLP exporter, where the per-server error is greppable.
       # See GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109.
       Rails.logger.warn(
-        "MCP servers failed to connect after #{MAX_MCP_CONNECTION_RETRIES} retries — left out, " \
+        "MCP servers failed to connect after #{MCP_BUDGET.max} retries — left out, " \
         "session continues | session_id=#{session.id} " \
         "failed_servers=#{failed_servers.map { |s| s["name"] }.join(",")}"
       )
@@ -3412,7 +3418,7 @@ class AgentSessionJob < ApplicationJob
         session,
         failed_servers,
         log_buffer,
-        reason: "they did not connect after #{MAX_MCP_CONNECTION_RETRIES} retries"
+        reason: "they did not connect after #{MCP_BUDGET.max} retries"
       )
     end
 
@@ -3633,7 +3639,7 @@ class AgentSessionJob < ApplicationJob
     delay = MCP_RETRY_BASE_DELAY * (2**mcp_retry_count)
 
     log_buffer.add(
-      "MCP connection failure — scheduling retry #{mcp_retry_count + 1}/#{MAX_MCP_CONNECTION_RETRIES} " \
+      "MCP connection failure — scheduling retry #{mcp_retry_count + 1}/#{MCP_BUDGET.max} " \
       "in #{delay} seconds (servers: #{failed_servers.map { |s| s['name'] }.join(', ')})",
       level: "warning"
     )
@@ -3642,10 +3648,10 @@ class AgentSessionJob < ApplicationJob
     session.update!(
       running_job_id: nil,
       metadata: (session.metadata || {}).merge(
-        "paused_by" => "mcp_retry",
-        "mcp_retry_count" => mcp_retry_count + 1,
-        "mcp_last_retry_at" => Time.current.iso8601,
-        "mcp_failed_servers" => failed_servers
+        MCP_BUDGET.attempt_attributes(mcp_retry_count + 1).merge(
+          "paused_by" => "mcp_retry",
+          "mcp_failed_servers" => failed_servers
+        )
       )
     )
     session.pause! if session.may_pause?
@@ -3859,100 +3865,53 @@ class AgentSessionJob < ApplicationJob
     false
   end
 
-  # Reset SIGTERM retry counter if process has been running successfully
-  # for SIGTERM_RETRY_RESET_THRESHOLD seconds since the last SIGTERM retry.
+  # Hand back every retry budget the running process has earned back.
   #
-  # This prevents premature session failures when multiple SIGTERM events occur
-  # but are separated by meaningful periods of successful operation. For example,
-  # if a session experiences 3 SIGTERMs over several hours, with successful runs
-  # between them, we don't want to fail the session on the 4th SIGTERM.
+  # A budget is a per-incident allowance, not a lifetime cap: errors separated by a
+  # stable stretch are separate incidents. Without this, a session that hits a SIGTERM,
+  # an API error or an OOM once every few hours accumulates toward its maximum over its
+  # whole life and then fails permanently on an error it should have survived
+  # (issue pulsemcp/agents#459).
+  #
+  # Every declared budget, not a hand-picked three. The MCP-connection and
+  # context-length budgets never reset before this: a long-lived session accumulated
+  # toward MCP_CONNECTION.max / CONTEXT_LENGTH.max across its whole life and then
+  # failed permanently — the exact failure the signal-death reset was added to
+  # prevent, applied to only one of the three loops that needed it.
+  #
+  # One loop rather than one method per failure class, so a sixth failure class resets
+  # because it was declared, not because someone remembered to copy twenty lines.
   #
   # @param session [Session] The current session
-  # @param last_sigterm_retry_at [Time, nil] When the last SIGTERM retry occurred
+  # @param last_attempt_at [Hash<RetryBudget, Time|nil>] when each budget last fired
   # @param log_buffer [LogBuffer] Buffer for logging
-  def check_and_reset_sigterm_retry_counter(session, last_sigterm_retry_at, log_buffer)
-    return unless last_sigterm_retry_at
-    return unless session.metadata&.dig("sigterm_retry_count")&.positive?
-
-    time_since_last_sigterm = Time.current - last_sigterm_retry_at
-    return unless time_since_last_sigterm >= SIGTERM_RETRY_RESET_THRESHOLD
-
-    # Process has been running successfully for the threshold duration - reset counter
-    previous_count = session.metadata["sigterm_retry_count"]
-    with_db_retry do
-      session.remove_metadata!(Session::SIGTERM_RETRY_METADATA_KEYS)
+  def reset_stable_retry_budgets(session, last_attempt_at, log_buffer)
+    RetryBudget.all.each do |budget|
+      reset_retry_budget(session, budget, last_attempt_at[budget], log_buffer)
     end
-
-    log_buffer.add(
-      "SIGTERM retry counter reset (was #{previous_count}) - process stable for #{time_since_last_sigterm.round}s",
-      level: "info"
-    )
-  rescue => e
-    Rails.logger.error "[AgentSessionJob] Error resetting SIGTERM retry counter: #{e.message}"
   end
 
-  # Reset API error retry counter if process has been running successfully
-  # for SIGTERM_RETRY_RESET_THRESHOLD seconds since the last API error retry.
-  #
-  # Uses the same threshold as SIGTERM retries since the principle is the same:
-  # if the process has been stable for a while, allow fresh retries for future errors.
+  # Reset one budget if the process has been stable for its reset threshold.
   #
   # @param session [Session] The current session
-  # @param last_api_error_retry_at [Time, nil] When the last API error retry occurred
+  # @param budget [RetryBudget] The budget to consider
+  # @param last_attempt_at [Time, nil] When that budget last fired, nil if never
   # @param log_buffer [LogBuffer] Buffer for logging
-  def check_and_reset_api_error_retry_counter(session, last_api_error_retry_at, log_buffer)
-    return unless last_api_error_retry_at
-    return unless session.metadata&.dig("api_error_retry_count")&.positive?
-
-    time_since_last_retry = Time.current - last_api_error_retry_at
-    return unless time_since_last_retry >= SIGTERM_RETRY_RESET_THRESHOLD
-
-    previous_count = session.metadata["api_error_retry_count"]
-    # Only clear retry count and timestamp — preserve api_error_last_checked_line
-    # so the transcript scanner doesn't re-process old errors on the next failure.
-    # The scan position tracks which errors have been handled; the retry count
-    # tracks how many retries have been attempted. These are independent concerns.
-    with_db_retry do
-      session.remove_metadata!(%w[api_error_retry_count last_api_error_retry_at])
-    end
+  def reset_retry_budget(session, budget, last_attempt_at, log_buffer)
+    reset = with_db_retry { budget.reset_if_stable!(session, since: last_attempt_at) }
+    return unless reset
 
     log_buffer.add(
-      "API error retry counter reset (was #{previous_count}) - process stable for #{time_since_last_retry.round}s",
+      "#{budget.counter_label} reset (was #{reset.previous_count}) - " \
+      "process stable for #{reset.elapsed_seconds.round}s",
       level: "info"
     )
   rescue => e
-    Rails.logger.error "[AgentSessionJob] Error resetting API error retry counter: #{e.message}"
-  end
-
-  # Reset the signal-death resume counter once a resumed process has been running
-  # successfully for SIGTERM_RETRY_RESET_THRESHOLD seconds.
-  #
-  # Uses the same threshold and principle as the SIGTERM/API resets: a genuinely
-  # long-running session that OOMs (SIGKILL) once every few hours should get a
-  # fresh resume budget after each stable stretch, rather than accumulating toward
-  # MAX_SIGNAL_DEATH_RETRIES over its whole lifetime and then failing permanently.
-  #
-  # @param session [Session] The current session
-  # @param last_signal_death_at [Time, nil] When the last signal-death resume occurred
-  # @param log_buffer [LogBuffer] Buffer for logging
-  def check_and_reset_signal_death_retry_counter(session, last_signal_death_at, log_buffer)
-    return unless last_signal_death_at
-    return unless session.metadata&.dig("signal_death_retry_count")&.positive?
-
-    time_since_last_death = Time.current - last_signal_death_at
-    return unless time_since_last_death >= SIGTERM_RETRY_RESET_THRESHOLD
-
-    previous_count = session.metadata["signal_death_retry_count"]
-    with_db_retry do
-      session.remove_metadata!(%w[signal_death_retry_count last_signal_death_at])
-    end
-
-    log_buffer.add(
-      "Signal-death resume counter reset (was #{previous_count}) - process stable for #{time_since_last_death.round}s",
-      level: "info"
-    )
-  rescue => e
-    Rails.logger.error "[AgentSessionJob] Error resetting signal-death retry counter: #{e.message}"
+    # Deliberately .warn, not .error: any Zimmer ERROR pages a critical Grafana rule
+    # (see ApplicationJob), and failing to reset a retry COUNTER is harmless by
+    # construction — the session keeps a stale budget and the next stable stretch
+    # clears it.
+    Rails.logger.warn "[AgentSessionJob] Error resetting #{budget.name} retry budget: #{e.message}"
   end
 
   # Terminate a running process

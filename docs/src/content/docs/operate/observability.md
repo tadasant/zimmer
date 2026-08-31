@@ -298,6 +298,28 @@ turns that silence into an answer:
 
 It prints the marker it emitted and the exact LogsQL query that confirms the record landed.
 
+## Retry budgets on the health surface
+
+`HealthMonitorService#retry_budget_health` reports every bounded auto-recovery loop
+Zimmer runs — SIGTERM retry, API-error retry, signal-death resume, MCP connection retry,
+context-length compact — as one uniform section, rendered on `/health`, returned by
+`GET /api/v1/health`, and included in the `get_system_health` MCP tool's JSON. Per budget
+it carries the declared counter key, the maximum, how many sessions have spent any of it,
+total attempts, how many recovered, how many **failed with the budget fully spent**, and
+how many attempts happened in the last 24 hours.
+
+That last number is the one to reach for when the question is "why did this session fail
+permanently": it is answerable for all five loops. It was answerable for two of them
+until #527 — the section was built by naming metadata keys in SQL, and only SIGTERM and
+API-error had ever been wired, so a session that burned through its MCP-connection or
+compact budget was invisible to every health surface while the dashboard read as
+complete. The section is now built by enumerating `RetryBudget.all`, so a budget appears
+because it was declared. See [Retry budgets](/sessions/spawning/#retry-budgets).
+
+The SIGTERM and API-error panels remain alongside it: they carry rate-limit pressure and
+account-quota detail the generic section has no equivalent of. They read their numbers
+from the same per-budget query rather than from a second copy of it.
+
 ## Failure mode
 
 If the collector is down or wedged, the exporter's background thread logs once and **drops the

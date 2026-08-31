@@ -1002,9 +1002,10 @@ The state machine is not the only actor:
   see [Spawning](/sessions/spawning/#when-the-process-exits).
 - **`SessionRecoveryService`** handles hung and interrupted sessions on a best-effort basis;
   `SigtermRetryService` covers gracefully SIGTERM'd sessions (deploys) with a bounded retry
-  ladder (`MAX_RETRIES = 3`); an abnormal signal death (SIGKILL from an OOM kill, SIGSEGV, …)
-  is instead resumed by `ProcessLifecycleManager#handle_signal_death`
-  (`MAX_SIGNAL_DEATH_RETRIES = 3`) — see [Spawning](/sessions/spawning/#when-the-process-exits).
+  ladder (`RetryBudget::SIGTERM`, 3 attempts); an abnormal signal death (SIGKILL from an OOM
+  kill, SIGSEGV, …) is instead resumed by `ProcessLifecycleManager#handle_signal_death`
+  (`RetryBudget::SIGNAL_DEATH`, 3 attempts) — see
+  [Retry budgets](/sessions/spawning/#retry-budgets).
 
 ## How a process actually gets terminated
 
