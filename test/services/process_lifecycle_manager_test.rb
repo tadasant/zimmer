@@ -2505,7 +2505,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "handle_exit alerts when a malformed tool call outlives the retry budget" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_malformed_tool_call
-    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
 
     alert = nil
     AlertService.stubs(:raise_alert).with do |title, opts|
@@ -2536,7 +2536,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "the malformed tool call alert does not claim retries that were spent on something else" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_malformed_tool_call
-    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
 
     alert = nil
     AlertService.stubs(:raise_alert).with do |title, opts|
@@ -2607,7 +2607,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   test "handle_exit does not raise the malformed-tool-call alert for an exhausted server-error ladder" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
     setup_transcript_with_api_server_error("500 Internal Server Error")
-    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::MAX_RETRIES))
+    @session.update!(metadata: @session.metadata.merge("api_error_retry_count" => ApiErrorRetryService::BUDGET.max))
     AlertService.expects(:raise_alert).never
 
     manager = create_manager
