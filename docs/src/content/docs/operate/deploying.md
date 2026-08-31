@@ -174,6 +174,115 @@ must give an **observable answer** to "did it run, and what does it cover", or a
 traded a shell for a guess. A rake task is still fine as a developer convenience; it is not the
 delivery mechanism.
 
+## Dropping a column takes two deploys
+
+**A migration that drops a column and the code change that stops using it cannot ship in the same
+deploy.** kamal-proxy health-gates the cutover, so the old and new containers run *together* until
+the new one answers `/up`. That is the same window the
+[connection budget](#the-database-connection-budget) doubles for, and `bin/docker-entrypoint` has
+already run `db:prepare` by the time it opens. So for its whole length the **old** processes are
+serving against the **new** schema.
+
+That is not a survivable combination. The old process booted with the column present, so its model
+still defines the attribute; its `SELECT`s now come back without it, and reading the attribute raises
+`ActiveModel::MissingAttributeError`.
+
+```mermaid
+sequenceDiagram
+    participant Old as old container (booted pre-drop)
+    participant PG as Postgres
+    participant New as new container
+    New->>PG: db:prepare — ALTER TABLE … DROP COLUMN
+    New-->>New: boot, wait for /up to answer
+    loop until /up is healthy
+        Old->>PG: SELECT * FROM sessions
+        PG-->>Old: row without the column
+        Old--xOld: ActiveModel::MissingAttributeError
+    end
+    Note over Old,New: kamal-proxy cuts over, old container stops
+```
+
+Dropping `sessions.blocked_by_session_id` in one phase did exactly this: 12 `ERROR` records in 12.8
+seconds across `GitHubPullRequestPollerJob`, `GithubCommentPollerJob` and
+`GitHubMergeConflictPollerJob`, which crossed the backend log-error alert threshold and paged
+`#alerts`. The polls it interrupted really did abort — they recovered on the next tick, but a
+PR-merge notification arrived a poll interval late. See
+[zimmer#482](https://github.com/tadasant/zimmer/issues/482).
+
+### The recipe
+
+**Deploy 1 — stop reading the column.** Add it to the owning model's `ignored_columns` and delete
+every code reference: the attribute, the association, the scope, the strong parameter, the view, the
+fixture column. No migration.
+
+```ruby
+class Session < ApplicationRecord
+  # Phase 1 of dropping this column. Active Record stops loading it, so nothing
+  # in either image reads it. Phase 2 drops the column and this line.
+  self.ignored_columns += %w[blocked_by_session_id]
+end
+```
+
+`ignored_columns` makes Active Record behave as if the column were already gone — no attribute
+method, and it is left out of `SELECT` lists. That is what makes the *next* deploy safe: by the time
+the column disappears, the old containers were never reading it either.
+
+**Deploy 2 — drop it.** A separate pull request, merged after deploy 1 is actually live. It drops the
+column *and* removes the `ignored_columns` line, and it annotates the migration with the number of
+the pull request that shipped phase 1:
+
+```ruby
+# two-phase-drop: phase 2 of #474
+class DropBlockedBySessionFromSessions < ActiveRecord::Migration[8.0]
+  def up
+    remove_reference :sessions, :blocked_by_session, index: true
+  end
+end
+```
+
+Leaving the `ignored_columns` entry behind is not harmless: it silently hides a column of that name
+if one is ever added back.
+
+### The guard
+
+`TwoPhaseColumnDropGuard` (`test/support/two_phase_column_drop_guard.rb`) fails CI when a migration
+removes a column in the forward direction without that annotation. It catches `remove_column`,
+`remove_columns`, `remove_reference`, `remove_belongs_to`, `t.remove` inside a `change_table` block,
+and `DROP COLUMN` in raw SQL, heredocs included.
+
+It parses the migration rather than grepping it, because the direction is a syntactic fact. A
+`remove_column` inside `def down`, `dir.down { }` or `revert { }` is the undo of an `add_column`, and
+a regex cannot tell it from the forward body two lines above: 13 of this repo's migrations contain a
+`remove_column` and only 6 of them actually drop one. The pruning is by method *name* though, so a
+removal factored out of `down` into a helper is still reported. Inline it into `down` rather than
+annotating a phase 1 that never happened.
+
+The annotation is the escape hatch, and it has to name something a reviewer can go and read: a PR or
+issue number (`#474`), a commit sha, or the phase-1 migration's version. It is read off the parsed
+comments, so the same text inside a SQL heredoc is not evidence, and `# two-phase-drop: phase 2 of the
+earlier PR` does not pass.
+
+Two jobs run it. `bin/rails test` picks up `test/migrations/two_phase_column_drop_test.rb` in
+`test-unit`, which is also where the `ignored_columns` half is checked — an entry naming a column that
+no longer exists is a phase-2 cleanup someone forgot. The guard itself needs neither Rails nor a
+database, so `lint` runs it directly and answers in seconds. That is also how you run it by hand:
+
+```bash
+bundle exec ruby -r./test/support/two_phase_column_drop_guard -e 'puts TwoPhaseColumnDropGuard.report'
+```
+
+Seven migrations that dropped columns before the guard existed are named in its `GRANDFATHERED`
+list. That list is closed, and a `GRANDFATHER_CUTOFF` assertion keeps it that way: a new drop gets
+the two deploys, not an eighth entry. The newest entry is the case for the guard — `#680` dropped
+`app_settings.provenance_via_mcp_enabled` in a single phase on 2026-08-28, twelve days after the
+incident, because nothing was checking.
+
+**What it does not cover.** `rename_column`, `rename_table` and `drop_table` strand an old container
+in exactly the same way, and the guard says nothing about them. Their phase 1 is not an
+`ignored_columns` entry but an add-and-backfill, which is a longer recipe this repo has not written
+down — see [zimmer#722](https://github.com/tadasant/zimmer/issues/722). Treat them with the same
+suspicion by hand.
+
 ## The database connection budget
 
 Managed Postgres hands out a hard, small number of connection slots, and an ActiveRecord pool is a

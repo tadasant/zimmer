@@ -55,6 +55,25 @@ reach without SSH. A rake task is fine as a developer convenience; it is not the
 [Token spend](docs/src/content/docs/operate/costs.md) and
 [Ops actions ship with the deploy](docs/src/content/docs/operate/deploying.md).
 
+## Dropping a column takes two deploys
+
+**Never drop a column in the same deploy that stops using it.** kamal-proxy health-gates
+the cutover, so the old containers keep serving while the new schema is already live:
+they booted with the column present, so their model still has the attribute, but their
+`SELECT`s come back without it and raise `ActiveModel::MissingAttributeError`. That cost
+12 errors and a page to `#alerts` the one time it shipped ([#482](https://github.com/tadasant/zimmer/issues/482)).
+
+1. **Deploy 1** — add the column to the owning model's `ignored_columns` and remove every
+   code reference. No migration.
+2. **Deploy 2** — a later PR drops the column, removes the `ignored_columns` entry, and
+   annotates the migration `# two-phase-drop: phase 2 of #<phase-1 PR>`.
+
+`TwoPhaseColumnDropGuard` (`test/support/two_phase_column_drop_guard.rb`) fails the `lint` and
+`test-unit` CI jobs on a forward `remove_column` / `remove_reference` / `t.remove` / `DROP COLUMN`
+without that annotation. It does *not* cover `rename_column` or `drop_table`, which are the same
+hazard — see [#722](https://github.com/tadasant/zimmer/issues/722). Full recipe:
+[Dropping a column takes two deploys](docs/src/content/docs/operate/deploying.md).
+
 ## Documentation lives in `docs/` — update it in the same PR
 
 `docs/` is the Zimmer documentation site (Astro Starlight, deployed to Cloudflare
@@ -84,6 +103,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `config/initializers/otel_logs_exporter.rb`, `config/initializers/sentry.rb`, `lib/tasks/obs.rake` | `operate/observability.md` |
 | `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
 | `config.public_file_server.headers` | `operate/deploying.md` |
+| a migration that removes a column | `operate/deploying.md` (Dropping a column takes two deploys) |
 
 Pages are `docs/src/content/docs/**`. A new page must also be added to the `sidebar`
 array in `docs/astro.config.mjs` — Starlight does not auto-discover it. `cd docs &&

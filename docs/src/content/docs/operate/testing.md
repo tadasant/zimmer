@@ -11,7 +11,7 @@ sidebar:
 
 | Job | What |
 | --- | --- |
-| `lint` | `bin/rubocop -f github --parallel` |
+| `lint` | `bin/rubocop -f github --parallel`, then the two-phase column-drop guard (pure Ruby, no Rails boot — see [Deploying](/operate/deploying/#the-guard)) |
 | `security` | `bin/brakeman --no-pager -q` |
 | `verify_lockfile` | `bundle lock` then `git diff --exit-code Gemfile.lock` |
 | `test-unit` | `bin/rails test` — unit + integration; Postgres 16 + Redis 7 service containers |
