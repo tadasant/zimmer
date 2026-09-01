@@ -579,9 +579,12 @@ class TriggerCondition < ApplicationRecord
   # required by validation). Their configured slot governs the first fire exactly
   # as it governs every later one — a schedule created at 05:00 for an 03:00 slot
   # is not due until 03:00 the next day, because that is what "every day at 03:00"
-  # says. Treating a nil `last_triggered_at` as due instead fired those within a
-  # minute of creation AND advanced `last_triggered_at`, consuming the very slot
-  # the schedule existed for, so the intended run never happened (#447).
+  # says.
+  #
+  # A nil `last_triggered_at` must therefore not short-circuit to "due": that fires
+  # the schedule a minute after creation at whatever hour that is, and a fire
+  # advances `last_triggered_at`, so it also consumes the slot the schedule exists
+  # for and the intended run never happens (#447).
   #
   # With no previous fire there is no elapsed interval to measure, so that term is
   # replaced by #armed_before? rather than skipped: creation is the anchor the
@@ -727,13 +730,17 @@ class TriggerCondition < ApplicationRecord
   #
   # A schedule created at 05:00 has not *missed* that day's 03:00 slot: the slot
   # passed before the schedule existed, so there is nothing there to have missed.
-  # Its first fire is the next slot, 03:00 tomorrow. Without this term, `now >=
-  # target` alone still makes a fresh 03:00 schedule due the moment it is created
-  # at any hour after 03:00 — which is the shape of #447 as it was actually
-  # observed (created 04:35 PT, fired 04:49 PT).
+  # Its first fire is the next slot, 03:00 tomorrow. `now >= target` alone does not
+  # express that — it is satisfied at every hour after 03:00 on the creation day,
+  # which is the shape #447 took in production (created 04:35 PT, fired 04:49 PT).
   #
   # `created_at`, not `updated_at`: a schedule is armed when it is created, and a
-  # plain re-save of the trigger form must not push its first fire out a day.
+  # plain re-save of the trigger form must not push its first fire out a day. The
+  # cost is that creation is the *only* arming instant — re-enabling a disabled
+  # schedule, or editing a never-fired one's `time`, does not re-arm it, so it can
+  # still fire off-slot once. Closing that needs a persisted `armed_at`
+  # ([#745](https://github.com/tadasant/zimmer/issues/745)).
+  #
   # An unpersisted condition has no creation instant to measure from and is
   # treated as armed.
   def armed_before?(target)

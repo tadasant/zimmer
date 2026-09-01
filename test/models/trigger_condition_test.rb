@@ -663,6 +663,47 @@ class TriggerConditionTest < ActiveSupport::TestCase
     end
   end
 
+  # An interval > 1 has no meaning before the first fire — there is no previous run to count
+  # from — so the first fire is the next configured slot and it becomes the anchor the interval
+  # is measured from. "Every 3 days at 03:00" created at 01:00 runs two hours later, not in
+  # three days.
+  test "schedule_due? ignores the interval on a first fire and anchors on it thereafter" do
+    @schedule_condition.update!(
+      configuration: { "unit" => "days", "interval" => 3, "time" => "03:00",
+                      "timezone" => "America/Los_Angeles" },
+      last_triggered_at: nil,
+      created_at: Time.utc(2026, 5, 12, 8, 0) # 01:00 PT the same day
+    )
+
+    travel_to Time.utc(2026, 5, 12, 10, 0) do # 03:00 PT, two hours after creation
+      assert @schedule_condition.schedule_due?
+    end
+
+    @schedule_condition.update!(last_triggered_at: Time.utc(2026, 5, 12, 10, 0))
+
+    travel_to Time.utc(2026, 5, 14, 10, 0) do # two days later, interval not yet elapsed
+      assert_not @schedule_condition.schedule_due?
+    end
+
+    travel_to Time.utc(2026, 5, 15, 10, 0) do # three days later
+      assert @schedule_condition.schedule_due?
+    end
+  end
+
+  # The boundary is strict: a schedule created in the same minute as its slot, but a second
+  # after it, waits for tomorrow rather than firing into a slot it did not exist for.
+  test "schedule_due? treats a schedule created exactly at its slot as having missed it" do
+    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 10, 0)) # 03:00 PT exactly
+
+    travel_to Time.utc(2026, 5, 12, 10, 1) do
+      assert_not condition.schedule_due?
+    end
+
+    travel_to Time.utc(2026, 5, 13, 10, 0) do
+      assert condition.schedule_due?
+    end
+  end
+
   test "schedule_due? is false for a never-triggered weekly schedule before its configured time" do
     condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 4, 8, 0)) # Mon a week earlier
     travel_to Time.utc(2026, 5, 11, 16, 59) do # Monday 09:59 PT, before the 10:00 slot

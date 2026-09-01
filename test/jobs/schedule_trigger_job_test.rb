@@ -46,6 +46,36 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     end
   end
 
+  # #447 as it was actually reported: a job tick, not a model predicate. A daily schedule
+  # created at 04:35 PT for an 03:00 PT slot produced a session at 04:49 PT and advanced
+  # last_triggered_at, so the 03:00 run it existed for never happened.
+  test "a daily schedule created after its configured time does not fire on the next tick" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    @condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "03:00",
+                      "timezone" => "America/Los_Angeles" },
+      last_triggered_at: nil,
+      created_at: Time.utc(2026, 5, 12, 11, 35) # 04:35 PT
+    )
+
+    travel_to Time.utc(2026, 5, 12, 11, 49) do # 04:49 PT — the observed premature fire
+      assert_no_difference("Session.count") do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+
+    assert_nil @condition.reload.last_triggered_at,
+      "a fire that never happened must not consume the schedule's next slot"
+
+    travel_to Time.utc(2026, 5, 13, 10, 0) do # 03:00 PT the next day
+      assert_difference("Session.count", 1) do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+  end
+
   test "skips disabled schedule triggers" do
     condition = trigger_conditions(:disabled_schedule_condition)
     condition.update!(last_triggered_at: nil)
@@ -71,16 +101,19 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
-    # Make multiple conditions due
-    make_due!
-    TriggerCondition.schedule
-      .joins(:trigger)
-      .where(triggers: { status: "enabled" })
-      .update_all(last_triggered_at: nil)
+    # Arm every enabled schedule condition. update_all alone would not do it: a days/weeks
+    # condition also needs its slot to be past and its arming behind that slot, which is
+    # what make_due! arranges — so each is armed individually.
+    due = TriggerCondition.schedule.joins(:trigger).where(triggers: { status: "enabled" })
+      .reject(&:one_time_schedule?)
+    due.each { |condition| make_due!(condition) }
+    assert_operator due.count, :>, 1, "the test needs more than one due condition to be meaningful"
 
     # Even if one condition fails, others should be processed
-    assert_nothing_raised do
-      ScheduleTriggerJob.perform_now
+    assert_difference("Session.count", due.count) do
+      assert_nothing_raised do
+        ScheduleTriggerJob.perform_now
+      end
     end
   end
 
@@ -678,18 +711,25 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
   private
 
-  # Make @condition due on this tick, whatever wall-clock time the suite runs at.
+  # Make a recurring schedule condition due on this tick, whatever wall-clock time the
+  # suite runs at.
   #
-  # Clearing last_triggered_at used to be enough on its own, and no longer is: a daily
-  # schedule is due only once its configured time has come round, and only if it already
-  # existed when that slot passed (#447). So the slot moves to midnight — past on every
-  # tick — and the condition is dated back behind it. last_triggered_at stays nil, so
-  # tests that assert it advances from nil keep asserting exactly that.
+  # Clearing last_triggered_at is not enough on its own: a days/weeks schedule is due only
+  # once its configured slot has come round, and only if it was already armed when that slot
+  # passed (#447). So the slot moves to midnight — past on every tick — a weekly condition's
+  # day_of_week moves to today, and the condition is dated back behind both. last_triggered_at
+  # stays nil, so tests that assert it advances from nil keep asserting exactly that.
   def make_due!(condition = @condition)
+    slot = { "time" => "00:00" }
+    if condition.schedule_unit == "weeks"
+      today = Time.current.in_time_zone(condition.schedule_timezone)
+      slot["day_of_week"] = TriggerCondition::DAYS_OF_WEEK[(today.wday - 1) % 7]
+    end
+
     condition.update!(
       last_triggered_at: nil,
       created_at: 2.days.ago,
-      configuration: condition.configuration.merge("time" => "00:00")
+      configuration: condition.configuration.merge(slot)
     )
     condition
   end
