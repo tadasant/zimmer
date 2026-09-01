@@ -77,7 +77,9 @@
 # session comes back through, and which re-reads the queue before it enqueues
 # anything. For this population it resolves to "nothing is queued and nothing
 # ever started", which is the single case where enqueuing is the right answer
-# rather than a duplicate.
+# rather than a duplicate — and the one that re-reads the session's images and
+# files off the durable volume, so a restarted turn arrives carrying what the
+# lost one carried.
 #
 # Two things are FAILED rather than restarted, and both come from the same
 # judgement: a `failed` row is on the dashboard with a reason on it, and a
@@ -267,8 +269,7 @@ class StalledSessionStart
         level: "warning",
         content: "This session was created #{age_phrase(session)} and never started: the job that " \
                  "would have run its first turn is gone, and nothing was left to start it. Zimmer's " \
-                 "stalled-start sweep enqueued it again (attempt #{count + 1} of #{MAX_RESTARTS}). " \
-                 "Any images or files the original turn carried are not replayed with it."
+                 "stalled-start sweep enqueued it again (attempt #{count + 1} of #{MAX_RESTARTS})."
       )
       logger.info("Restarted a session that never started",
         session_id: session.id, attempt: count + 1, created_at: session.created_at.utc.iso8601)

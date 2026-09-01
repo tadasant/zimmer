@@ -29,8 +29,9 @@
 #     def self.storage_subdir  = STORAGE_SUBDIR
 #     def self.attachment_noun = "thing"
 #
-#     def store(...) = ...        # writes one attachment, returns a metadata Hash
-#     def copy_entry(...) = ...   # re-stores one entry into another session
+#     def store(...) = ...          # writes one attachment, returns a metadata Hash
+#     def copy_entry(...) = ...     # re-stores one entry into another session
+#     def describe_entry(...) = ... # rebuilds one stored entry's metadata Hash
 #   end
 #
 # Declaring the subclass is not the whole job. Nothing discovers a storage kind
@@ -101,6 +102,23 @@ class SessionAttachmentStorage
   # @return [Hash, nil] metadata for the new entry, or nil to skip it
   def copy_entry(content:, old_path:, destination:)
     raise NotImplementedError, "#{self.class.name} must implement #copy_entry"
+  end
+
+  # Describe one already-stored entry as the metadata Hash the enqueue paths
+  # pass around — the same shape #store returned when the bytes were first
+  # written, rebuilt from what is on disk.
+  #
+  # This is the read half of the storing above, and it exists because a job
+  # argument is not the only place an attachment can be recovered from. A turn
+  # that has to be enqueued a second time (Sessions::StartNow) has the bytes but
+  # not the metadata, and reconstructing the metadata is a lookup rather than a
+  # guess: an image's media type is sniffed from its own magic bytes, a file's
+  # original name from its own basename.
+  #
+  # @param path [String] a path returned by #list
+  # @return [Hash, nil] metadata for the entry, or nil if it cannot be described
+  def describe_entry(path)
+    raise NotImplementedError, "#{self.class.name} must implement #describe_entry"
   end
 
   # Check that a path exists and is inside this session's directory.
@@ -179,6 +197,27 @@ class SessionAttachmentStorage
     copied
   end
 
+  # Every attachment stored for a session, described as enqueue-argument
+  # metadata (see #describe_entry).
+  #
+  # Best-effort and never raises: the caller is a start path, and a storage tree
+  # that cannot be read is a turn with no attachments rather than a turn that
+  # does not run. Entries are ordered by mtime so several attachments reach the
+  # agent in roughly the order they were uploaded.
+  #
+  # @param session_id [Integer, String]
+  # @return [Array<Hash>]
+  def self.stored_for(session_id)
+    service = new(session_id: session_id)
+
+    service.list
+           .sort_by { |path| [ entry_written_at(path), path ] }
+           .filter_map { |path| service.describe_entry(path) }
+  rescue StandardError => e
+    Rails.logger.warn("[#{name}] Could not read stored #{attachment_noun}s for session #{session_id}: #{e.message}")
+    []
+  end
+
   # Reclaim a session's stored attachments (best-effort; never raises).
   #
   # Durable storage (see .storage_root) survives container recreation, so it has
@@ -231,6 +270,16 @@ class SessionAttachmentStorage
 
     File.join(storage_root, "test-worker-#{Process.pid}")
   end
+
+  # Sort key for .stored_for. An entry that vanished between the glob and here
+  # sorts first rather than taking the whole read down with it — #describe_entry
+  # drops it a moment later.
+  def self.entry_written_at(path)
+    File.mtime(path)
+  rescue SystemCallError
+    Time.at(0)
+  end
+  private_class_method :entry_written_at
 
   private
 

@@ -49,6 +49,17 @@ class StalledSessionStartTest < ActiveSupport::TestCase
     session.reload
   end
 
+  # A 1x1 PNG, so ImageStorageService's magic-byte sniffing has something real to
+  # read back off disk.
+  def minimal_png
+    png = [ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A ].pack("C*")
+    ihdr = [ 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0 ].pack("C*")
+    png += [ ihdr.length ].pack("N") + "IHDR" + ihdr + [ Zlib.crc32("IHDR" + ihdr) ].pack("N")
+    idat = Zlib::Deflate.deflate([ 0, 255, 0, 0 ].pack("C*"))
+    png += [ idat.length ].pack("N") + "IDAT" + idat + [ Zlib.crc32("IDAT" + idat) ].pack("N")
+    png + [ 0 ].pack("N") + "IEND" + [ Zlib.crc32("IEND") ].pack("N")
+  end
+
   # Written straight into GoodJob rather than enqueued: the suite runs on the
   # ActiveJob test adapter, which persists nothing, and the pending-turn check
   # deliberately reads the durable queue.
@@ -76,6 +87,26 @@ class StalledSessionStartTest < ActiveSupport::TestCase
     assert session.waiting?, "the repair is a job, not a status change"
     assert session.logs.where(level: "warning").any? { |log| log.content.include?("never started") },
       "the session's own log has to say why a turn suddenly appeared"
+  end
+
+  # The unattended caller is what turns a dropped attachment from "a button did
+  # less than you expected" into a degraded turn nobody sees Zimmer run (#739).
+  # AgentSessionJob reads images and files ONLY out of its job arguments, so the
+  # replacement job has to be built carrying them.
+  test "a restarted turn arrives carrying the attachments the lost one carried" do
+    session = stalled_session
+    storage = ImageStorageService.new(session_id: session.id)
+    stored = storage.store(data: Base64.strict_encode64(minimal_png), filename: "shot.png")
+
+    StalledSessionStart.sweep!
+
+    job = enqueued_jobs.find { |queued| queued["job_class"] == "AgentSessionJob" }
+    args = ActiveJob::Arguments.deserialize(job["arguments"])
+    assert_equal [ { path: stored[:path], media_type: "image/png" } ], args.dig(2, :images)
+    assert session.logs.reload.any? { |log| log.content.include?("carrying 1 image") },
+      "the session's log has to say what the replacement turn is carrying"
+  ensure
+    storage&.cleanup!
   end
 
   test "the sweep reports nothing to do when every waiting session is healthy" do

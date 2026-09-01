@@ -93,15 +93,27 @@ class FileStorageService < SessionAttachmentStorage
   #
   # Files are copied verbatim; nothing is ever dropped.
   def copy_entry(content:, old_path:, destination:)
-    # The old filename is "<unique_id>-<sanitized_original>"; recover the
-    # sanitized original portion so the new entry has a clean basename
-    # (a fresh unique_id is generated on store).
-    original_filename = File.basename(old_path).sub(/\A[a-f0-9]+-/, "")
+    destination.store(data: content, filename: original_filename_of(old_path))
+  end
 
-    destination.store(data: content, filename: original_filename)
+  # Describe one stored file (see SessionAttachmentStorage#describe_entry).
+  #
+  # Nothing is ever dropped: a file is stored verbatim, so its path, recovered
+  # basename and size on disk are the whole of what the prompt's attachment note
+  # needs.
+  def describe_entry(path)
+    { path: path, original_filename: original_filename_of(path), size: File.size(path) }
   end
 
   private
+
+  # A stored filename is "<unique_id>-<sanitized_original>"; recover the
+  # sanitized original portion. A copy gets a fresh unique_id on store, and a
+  # description reports the name the human recognizes rather than the one on
+  # disk.
+  def original_filename_of(path)
+    File.basename(path).sub(/\A[a-f0-9]+-/, "")
+  end
 
   # Sanitize a filename to prevent path traversal and other shenanigans.
   # Strips any directory components, limits to safe characters, and caps length.

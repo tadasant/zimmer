@@ -201,6 +201,54 @@ module SessionAttachmentStorageConformance
       paths.each { |path| assert File.exist?(path) }
     end
 
+    # --- Describing what is already stored ------------------------------------
+    #
+    # The read half of #store: a turn that has to be enqueued a second time has
+    # the bytes but not the metadata (see Sessions::StartNow). Every attachment
+    # kind has to be able to hand its own metadata back, or the kind that cannot
+    # is silently dropped from the replay.
+
+    test "conformance: describe_entry rebuilds a stored entry's metadata" do
+      stored = store_sample(conformance_service, filename: "described")
+
+      described = conformance_service.describe_entry(stored[:path])
+
+      assert described, "#{expected_attachment_noun} should be describable from disk"
+      assert_equal stored[:path], described[:path]
+    end
+
+    test "conformance: stored_for describes every attachment the session has" do
+      first = store_sample(conformance_service, filename: "one")
+      second = store_sample(conformance_service, filename: "two")
+
+      described = storage_class.stored_for(conformance_service.session_id.to_i)
+
+      assert_equal [ first[:path], second[:path] ].sort, described.map { |entry| entry[:path] }.sort
+    end
+
+    test "conformance: stored_for is empty for a session that stored nothing" do
+      assert_equal [], storage_class.stored_for(conformance_service.session_id.to_i)
+    end
+
+    # The caller is a start path. A storage tree that cannot be read is a turn
+    # with no attachments, never a turn that does not run.
+    test "conformance: stored_for swallows an unreadable storage tree" do
+      store_sample(conformance_service)
+
+      entries = capture_log_entries do
+        Dir.stub(:glob, ->(*) { raise Errno::EACCES, conformance_service.session_dir }) do
+          assert_equal [], storage_class.stored_for(conformance_service.session_id.to_i)
+        end
+      end
+
+      assert_includes entries.map(&:last).join("\n"),
+        "Could not read stored #{expected_attachment_noun}s"
+    end
+
+    test "conformance: stored_for swallows an invalid session id" do
+      assert_equal [], storage_class.stored_for(0)
+    end
+
     test "conformance: store writes into the session directory with unique paths" do
       first = store_sample(conformance_service)
       second = store_sample(conformance_service)
