@@ -129,6 +129,7 @@ RUN npm install --prefix /opt/air-cli \
     @pulsemcp/air-cli@0.13.0 \
     @pulsemcp/air-adapter-claude@0.13.0 \
     @pulsemcp/air-adapter-codex@0.13.0 \
+    @pulsemcp/air-adapter-pi@0.13.0 \
     @pulsemcp/air-secrets-env@0.13.0 \
     @pulsemcp/air-provider-github@0.13.0 && \
     touch /opt/air-cli/.air-version-0.13.0
@@ -143,6 +144,32 @@ RUN set -eo pipefail; \
     for i in 1 2 3; do npm install -g @openai/codex@0.146.0 && break || { echo "codex install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
     codex --version
 
+# Install the Pi coding agent CLI for the `pi` agent runtime.
+# Installed globally so the `pi` binary lands on PATH at /usr/local/bin/pi,
+# alongside `claude` and `codex`. The version is pinned for reproducible image
+# builds; `pi --version` runs in the build so a broken install fails fast.
+RUN set -eo pipefail; \
+    for i in 1 2 3; do npm install -g @earendil-works/pi-coding-agent@0.84.4 && break || { echo "pi install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
+    pi --version
+
+# Install the Pi extensions Zimmer loads into every Pi session.
+#
+# Pi ships skills and nothing else — no MCP, no hooks, no plugins — so each of
+# those arrives as an extension that PiRuntimeAdapter passes with `-e`. The
+# authoritative list, including the pinned versions, is PiExtensions::REGISTRY;
+# the pi_extensions_test asserts this install line and that registry agree.
+#
+# Only the published packages are named here. `@tadasant/pi-hooks` and
+# `@tadasant/pi-plugins` (tadasant/pi-extensions) are not on npm yet, and
+# `npm install` is all-or-nothing — naming an unpublished package would 404 and
+# fail the whole base image. They are marked `pending_publish` in the registry,
+# PiExtensions#resolved_paths skips what is not on disk, and CliStatusService
+# reports the gap. When v0.1.0 publishes, add them to this line and drop the
+# `pending_publish:` flags.
+RUN set -eo pipefail; \
+    npm install --prefix /opt/pi-extensions \
+    pi-mcp-adapter@2.32.1
+
 # Create rails user for security (non-root runtime)
 # Use --force for groupadd to handle pre-existing GID 1000 in base images
 # Use --non-unique for useradd to allow UID 1000 if already taken
@@ -155,6 +182,7 @@ RUN groupadd --system --gid 1000 --force rails && \
 # use playwright-stealth-mcp-server@latest.
 RUN chown -R rails:rails /opt/playwright
 RUN chown -R rails:rails /opt/air-cli
+RUN chown -R rails:rails /opt/pi-extensions
 
 # Create image storage directory with correct ownership before volume mount.
 # When Docker mounts an empty named volume over this directory, it copies the
@@ -175,6 +203,14 @@ RUN mkdir -p /home/rails/.config && \
 # login flow that populates this directory is wired up separately.
 RUN mkdir -p /home/rails/.codex && \
     chown rails:rails /home/rails/.codex
+
+# Pre-create ~/.pi/agent (PI_CODING_AGENT_DIR) with rails ownership so the Pi CLI
+# can write its auth.json / models.json / settings.json at runtime, mirroring
+# ~/.claude and ~/.codex above. Unlike those two, Pi keeps no rotation pool here:
+# it resolves a provider API key from the session environment on each request
+# (see PiAuthProvider), so this directory exists for Pi's own bookkeeping.
+RUN mkdir -p /home/rails/.pi/agent && \
+    chown -R rails:rails /home/rails/.pi
 
 # Install Fly.io CLI for the rails user (installs to ~/.fly)
 USER 1000:1000
@@ -227,6 +263,13 @@ ENV PATH="/home/rails/.local/bin:${FLYCTL_INSTALL}/bin:${PATH}"
 # rails user's home (the CLI default is ~/.codex) so the location is
 # unambiguous for runtime auth and any volume mounting.
 ENV CODEX_HOME="/home/rails/.codex"
+
+# Pin PI_CODING_AGENT_DIR to the rails user's home (the CLI default is
+# ~/.pi/agent) so the location is explicit and identical in every container.
+# PiHome resolves the same value, and PiRuntimeAdapter exports it to the spawned
+# `pi` so the child cannot fall back to a home directory on the ephemeral overlay
+# filesystem, where credentials are wiped on container restart.
+ENV PI_CODING_AGENT_DIR="/home/rails/.pi/agent"
 
 # Switch back to root for the app build stage (Dockerfile will switch to rails user at the end)
 USER root

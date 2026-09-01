@@ -96,9 +96,49 @@ module RuntimeRegistry
     mcp_credential_writer_class: CodexMcpCredentialWriter
   ).freeze
 
+  # Pi coding agent runtime. Pi is the first runtime Zimmer supports that arrives
+  # with NO MCP, hooks, or plugin support of its own — those are supplied by Pi
+  # extensions (see PiExtensions), and `@pulsemcp/air-adapter-pi` is deliberately
+  # skills-only. Two bundle slots follow directly from that:
+  #
+  #   * `config_post_processor_class` is PiMcpConfigPostProcessor, which SEEDS
+  #     `.mcp.json` from Zimmer's catalog rather than merely adjusting a file AIR
+  #     wrote — because for Pi, AIR writes none.
+  #   * `mcp_status_detector_class` is nil. Pi writes no per-server MCP log files
+  #     (so the Claude log poller has nothing to read), and unlike Codex it
+  #     records no `mcp__<server>__<tool>` calls to mine either: the pi-mcp-adapter
+  #     extension routes every server through ONE `mcp` proxy tool, so a
+  #     transcript shows `mcp` being called and never names the server behind it.
+  #     There is no signal to detect per server, so the slot stays nil rather than
+  #     acquiring a detector that would always answer "unknown".
+  #
+  # `prompt_contribution_class` is populated here AND registered in
+  # RuntimePromptContribution.for — the bundle slot is what the harness doc calls
+  # dead weight today (nothing reads it), but leaving it nil while the class
+  # exists is exactly the inconsistency zimmer#97 tracks, so Pi fills it.
+  #
+  # `auth_provider_class` follows the established convention and stays nil: auth
+  # resolves through RuntimeAuthProvider.for, where PiAuthProvider is registered.
+  # `config_preparer_class` is nil everywhere and nothing reads it.
+  PI_BUNDLE = Bundle.new(
+    runtime: "pi",
+    air_adapter_name: "pi",
+    cli_adapter_class: PiRuntimeAdapter,
+    retry_strategy_class: PiRetryStrategy,
+    transcript_source_class: PiTranscriptSource,
+    transcript_normalizer_class: PiTranscriptNormalizer,
+    mcp_status_detector_class: nil,
+    prompt_contribution_class: PiRuntimePromptContribution,
+    config_preparer_class: nil,
+    config_post_processor_class: PiMcpConfigPostProcessor,
+    auth_provider_class: nil,
+    mcp_credential_writer_class: nil
+  ).freeze
+
   BUNDLES = {
     "claude_code" => CLAUDE_CODE_BUNDLE,
-    "codex" => CODEX_BUNDLE
+    "codex" => CODEX_BUNDLE,
+    "pi" => PI_BUNDLE
   }.freeze
 
   # Human-readable labels for each runtime, surfaced in the UI (runtime selector,
@@ -106,7 +146,8 @@ module RuntimeRegistry
   # raw identifier, so adding a runtime to BUNDLES without a label still renders.
   LABELS = {
     "claude_code" => "Claude Code",
-    "codex" => "Codex"
+    "codex" => "Codex",
+    "pi" => "Pi"
   }.freeze
 
   module_function
@@ -182,6 +223,12 @@ module RuntimeRegistry
   #
   # @return [Array<Class>]
   def mcp_credential_writer_classes
-    BUNDLES.values.map(&:mcp_credential_writer_class).uniq
+    # `.compact`: a runtime whose slot is nil has no host-global credential store
+    # to clear (Pi keeps MCP OAuth tokens inside the pi-mcp-adapter extension's
+    # own state, which Zimmer does not write). The caller instantiates every class
+    # this returns, so a nil left in the list would NoMethodError on the retire
+    # path — which runs only while a credential is already failing, i.e. at the
+    # worst possible moment. See McpOauthCredentialInjector#delete_runtime_credentials.
+    BUNDLES.values.filter_map(&:mcp_credential_writer_class).uniq
   end
 end

@@ -70,7 +70,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert install_called, "npm install should be called when binary is missing"
   end
 
-  test "install_air_cli! installs the codex adapter alongside the claude adapter and pins every package to AIR_CLI_VERSION" do
+  test "install_air_cli! installs every runtime adapter alongside the claude adapter and pins every package to AIR_CLI_VERSION" do
     # Force a reinstall by removing the fake binary so the install path runs.
     File.delete(File.join(@tmp_air_dir, "node_modules", ".bin", "air"))
 
@@ -95,6 +95,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "@pulsemcp/air-cli@#{version}",
       "@pulsemcp/air-adapter-claude@#{version}",
       "@pulsemcp/air-adapter-codex@#{version}",
+      "@pulsemcp/air-adapter-pi@#{version}",
       "@pulsemcp/air-secrets-env@#{version}",
       "@pulsemcp/air-provider-github@#{version}"
     ]
@@ -105,8 +106,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
     # Every @pulsemcp/air-* package must be pinned to the same version (lockstep).
     air_packages = install_cmd.select { |a| a.to_s.start_with?("@pulsemcp/air-") }
-    assert_equal 5, air_packages.length,
-      "expected exactly the 5 pinned AIR packages, got: #{air_packages.inspect}"
+    assert_equal expected_packages.length, air_packages.length,
+      "expected exactly the #{expected_packages.length} pinned AIR packages, got: #{air_packages.inspect}"
     air_packages.each do |pkg|
       assert pkg.end_with?("@#{version}"),
         "#{pkg} must be pinned to AIR_CLI_VERSION (#{version}) — AIR packages move in lockstep"
