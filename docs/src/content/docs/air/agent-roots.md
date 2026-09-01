@@ -37,17 +37,30 @@ The `default_skills`, `default_mcp_servers`, `default_hooks`, `default_plugins`,
 computes them by [inverting `default_in_roots`](/air/overview/#default_in_roots--the-inversion) from
 each artifact's own entry.
 
-### Omitting a list is not the same as asking for an empty one
+### A list you pass replaces the root's defaults
 
 On the three surfaces that create a session against a root — the MCP `start_session` tool, `POST
-/api/v1/sessions`, and the new-session form — an **omitted**
-`mcp_servers`/`skills`/`plugins`/`hooks` takes the root's defaults, while an explicit **`[]`** takes
-none of that artifact. They are two different requests and Zimmer keeps them apart.
+/api/v1/sessions`, and the new-session form — `mcp_servers`/`skills`/`plugins`/`hooks` has three
+distinct states, not two:
 
-This matters most for MCP servers, because a root's defaults can carry real privilege (SSH access to
-a production host, a secrets store). A caller that narrows to `[]` is asking for least privilege, and
-silently handing it the full default set instead is the failure mode this distinction exists to
-prevent.
+| What the caller sends | What the session gets |
+| --- | --- |
+| the parameter **omitted** | the root's defaults, in full |
+| an explicit **`[]`** | none of that artifact |
+| a **non-empty list** | exactly that list — every default not named is dropped |
+
+Omitted and `[]` are two different requests and Zimmer keeps them apart. A non-empty list is a
+*replacement*, never a union: a caller that names one server on a root declaring two gets one, and
+nothing warns it about the other.
+
+This matters most for MCP servers, and it cuts both ways. A root's defaults can carry real privilege
+(SSH access to a production host, a secrets store), so a caller that narrows to `[]` is asking for
+least privilege and silently handing it the full default set instead is the failure mode this
+distinction exists to prevent. But a root's default *skill* can also depend on a root's default
+*server*, and dropping the server still loads the skill — the session then fails at the point of
+use, mid-task, with no workaround. A caller narrowing the list has to start from the root's
+`default_mcp_servers` and subtract from it, rather than composing a fresh list from what the task
+appears to need.
 
 An empty `mcp_servers` column is otherwise ambiguous: it is also where a session lands when the
 catalog resolve was incomplete at create time, which `McpServerBackfill` heals by restoring the

@@ -208,6 +208,34 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     refute_includes enum, "remote_sandbox"
   end
 
+  # A router read "drop servers the task doesn't need" and wrote a fresh
+  # one-element list; the root's other default went with it, and the skill that
+  # needed that server was still attached and had nothing to call. The partial
+  # list is the case the description used to leave implied.
+  # https://github.com/tadasant/tadasant-internal/issues/2145
+  test "every artifact list description states that a list replaces the root's defaults" do
+    properties = Mcp::Tools::StartSession.input_schema.to_h[:properties]
+
+    %i[mcp_servers skills plugins hooks].each do |param|
+      description = properties.dig(param, :description)
+
+      assert_includes description, "REPLACES the agent root's default_#{param}",
+        "#{param} must say a list replaces the root's defaults"
+      assert_includes description, "every default you do not name is dropped",
+        "#{param} must name the partial-list case, not just the omitted and [] ones"
+      assert_includes description, "copy it, and subtract",
+        "#{param} must tell the caller to start from the defaults rather than compose a fresh list"
+    end
+  end
+
+  test "the tool description enumerates all three list states" do
+    description = Mcp::Tools::StartSession.description
+
+    assert_includes description, "REPLACES the root's defaults, it is never merged with them"
+    assert_includes description, "Every root default you did not name is dropped, silently"
+    assert_includes description, "complete final set"
+  end
+
   test "the execution_provider description does not promise a sandbox" do
     description = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :execution_provider, :description)
 
