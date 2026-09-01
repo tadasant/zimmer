@@ -120,7 +120,7 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
 - `start_session` requires an `agent_root`, it must be in the list, and its `mcp_servers` must
   **exactly** match that root's `default_mcp_servers` — no additions, no removals. That includes
   `[]`: on an unrestricted connection an explicit empty array is a valid request for no servers
-  ([omitted vs `[]`](/air/agent-roots/#omitting-a-list-is-not-the-same-as-asking-for-an-empty-one)),
+  ([omitted vs `[]`](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults)),
   but here it is a removal and is rejected unless the root has no defaults to begin with.
 - `action_trigger` may only create, update, delete, toggle, or invoke triggers on an allowed root,
   and `search_triggers` only shows those.

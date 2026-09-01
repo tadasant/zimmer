@@ -208,7 +208,35 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     result = with_mixed_catalog(roots: roots) { @tool.call({}) }
 
     assert_includes result,
-      "- **Default MCP Servers:** `context7`, `strad-secrets-staging-rw` (unavailable)"
+      "- **Default MCP Servers (omit `mcp_servers` to take all of these):** `context7`, " \
+      "`strad-secrets-staging-rw` (unavailable)"
+  end
+
+  # The failure this warning exists for: a router passed one of a root's two
+  # default servers, the other was dropped without a word, and a skill that
+  # depended on it ran with nothing to call.
+  # https://github.com/tadasant/tadasant-internal/issues/2145
+  test "the usage notes warn that a list passed to start_session replaces the root's defaults" do
+    result = with_mixed_catalog { @tool.call({}) }
+
+    assert_includes result, "REPLACES the root's defaults, it is not added to them"
+    assert_includes result, "every default you did not name dropped silently"
+  end
+
+  # start_session tells a caller narrowing hooks or plugins to copy the root's
+  # defaults from here and subtract. Both lists were absent from this rendering,
+  # which left that instruction impossible to follow for two of the four lists.
+  test "a root's hook and plugin defaults are rendered, not only its servers and skills" do
+    roots = {
+      "zimmer" => {
+        "title" => "Zimmer", "description" => "The app.", "url" => "https://github.com/tadasant/zimmer",
+        "default_hooks" => %w[git-push-ci-reminder], "default_plugins" => %w[some-plugin]
+      }
+    }
+    result = with_mixed_catalog(roots: roots) { @tool.call({}) }
+
+    assert_includes result, "- **Default Hooks:** `git-push-ci-reminder`"
+    assert_includes result, "- **Default Plugins:** `some-plugin`"
   end
 
   # A store outage makes every variable indeterminate at once. Omitting the

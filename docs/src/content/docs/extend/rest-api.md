@@ -143,7 +143,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins |
 | `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. Sessions in a frozen category are parked and excluded |
 | `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors`. A session with a queued message lands in `errors` and is left alone; `force: true` applies to the whole batch, not one member of it |
-| `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#omitting-a-list-is-not-the-same-as-asking-for-an-empty-one) does not restore the root's defaults |
+| `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults) does not restore the root's defaults |
 | `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50 |
 | `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime |
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000; empty string clears |
@@ -253,11 +253,12 @@ See [Spot and priority](/sessions/spot-and-priority/). Every session object carr
 `branch`, `subdirectory` and the catalog defaults, and is recorded as `metadata.agent_root_key`. An
 invalid one → `422 {"error": "Invalid agent_root"}`.
 
-**Omitting an artifact list is not the same as sending an empty one.** For `mcp_servers`,
-`catalog_skills`, `catalog_hooks`, and `catalog_plugins`, leaving the key out takes the agent root's
-defaults for that list, while sending an explicit `[]` creates the session with none of that
-artifact. The two are different requests — see [omitted vs
-`[]`](/air/agent-roots/#omitting-a-list-is-not-the-same-as-asking-for-an-empty-one) for the full rule
+**An artifact list you send replaces the root's defaults.** For `mcp_servers`, `catalog_skills`,
+`catalog_hooks`, and `catalog_plugins`, leaving the key out takes the agent root's defaults for that
+list, sending an explicit `[]` creates the session with none of that artifact, and sending a
+non-empty list creates it with exactly that list — every default not named is dropped. All three are
+different requests — see [what a list
+replaces](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults) for the full rule
 and for why an explicit `[]` survives to job start rather than being restored from the root's
 defaults. Note that a form-encoded body cannot express an empty array; send JSON to request none.
 Zimmer's own injected servers (`zimmer-self-session`) are added separately and still arrive.
