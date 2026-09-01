@@ -1310,8 +1310,23 @@ class Session < ApplicationRecord
   #   parent, or at the default when it has none. See SessionPrecedence.
   # @param metadata [Hash] additional metadata to store on the session
   # @param custom_metadata [Hash] additional custom metadata
+  # @yieldparam session [Session] the session, the instant its row is SAVED and before
+  #   its start job is enqueued — including when the save itself raised on the way out
+  #   through an after_commit callback, which is the point. Creating a session is
+  #   several steps and only the first is a database write: a caller that treats a
+  #   raise as "nothing was created" will re-create on the next pass if anything after
+  #   the INSERT is what failed. The return value cannot tell it otherwise, because
+  #   there is no return value when this raises — which is how one `ready to merge`
+  #   label got two merge-gate sessions (#704). A caller holding a retryable event uses
+  #   this to learn the row exists either way.
+  #
+  #   "Saved", not "committed": under an enclosing transaction (SlackTriggerPollerJob
+  #   wraps its fire in one) the real commit is the outer one, so a rollback there can
+  #   still take the row away after this has yielded. A caller that both opens its own
+  #   transaction and consumes an event on this signal has to account for that; no
+  #   caller does today.
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, &on_created)
     agent_root = AgentRootsConfig.find!(agent_root_name)
 
     # An explicit override wins over the root's declared runtime; either way the
@@ -1331,7 +1346,7 @@ class Session < ApplicationRecord
       resolved_model = AppSetting.current.resolved_default_model_for(resolved_runtime)
     end
 
-    session = create!(
+    session = new(
       prompt: prompt,
       agent_runtime: resolved_runtime,
       git_root: agent_root.url,
@@ -1378,6 +1393,20 @@ class Session < ApplicationRecord
       custom_metadata: custom_metadata,
       config: { "model" => resolved_model }
     )
+
+    # `ensure`, not a line after #save!, because #save! does not return before the
+    # row's after_create_commit callbacks have run — and two of them raise without
+    # a rescue (#broadcast_create_to_sessions_index does a Turbo/Redis broadcast,
+    # #enqueue_session_inference enqueues SessionTitleJob). A GoodJob enqueue or a
+    # Redis blip in either one comes back out of #save! over a row that is already
+    # committed, which is exactly the state on_created exists to report. Guarded on
+    # #persisted? so a genuine validation failure, where no row exists, reports
+    # nothing.
+    begin
+      session.save!
+    ensure
+      on_created.call(session) if on_created && session.persisted?
+    end
 
     AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence) unless skip_enqueue
     session

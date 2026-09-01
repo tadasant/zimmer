@@ -751,7 +751,8 @@ The semantics that follow — all of them covered by tests:
 | PR is closed or merged while labelled | Drops out of the `is:open` search; after the grace window it leaves the seen-set. If it is reopened still labelled, it fires again. |
 | You add a repo or a label to the condition | The condition **re-baselines**. Items already labelled in the newly-watched scope are absorbed, not stampeded into sessions. |
 | A `reuse_session` trigger *drops* the follow-up (target session busy) | Not counted as a fire. The item stays unseen and is retried next tick, rather than the event being silently consumed. |
-| Session creation fails for an item | Same — the item is not recorded, so the next tick retries it. |
+| Session creation fails **before** a session exists | The item is not recorded, so the next tick retries it. |
+| Session creation fails **after** the session row exists | Counted as a fire. A session exists for that label; re-firing would spawn a second one. See below. |
 
 `github_issue` conditions are genuinely event-shaped — an issue's creation time never changes — so
 those use an ordinary `created_at` cursor. Two wrinkles, both of which would otherwise lose issues
@@ -769,6 +770,45 @@ silently:
 
 In both cases state advances only for items that actually produced a session. A failure to create
 one leaves the item to be retried on the next tick rather than swallowing it.
+
+#### "Produced a session" is not "returned cleanly"
+
+Creating a session is two steps, and only the first is a database write. `Session` commits the row,
+then enqueues the one `AgentSessionJob` the session's first turn rides on, and the trigger keeps
+working after that — repointing its reuse pointer, bumping its counter, clearing its missed-fire
+run. Any of that can fail over a session that already exists.
+
+The poller therefore asks **"does a session exist for this item"**, not "did the fire return
+cleanly". A fire that raised after the row was committed is a fire: the item is recorded, the error
+is logged loudly, and nothing spawns for it again. A fire that raised before the row existed is a
+dropped event: the item stays unseen and the next tick retries it.
+
+Reading a post-commit failure as "nothing happened" is what put **two** merge-gate sessions on one
+`ready to merge` label on 2026-08-29 — 55 seconds apart, and 43 seconds apart on a second PR where
+both of them ran. Two gate sessions rating one PR concurrently is a double-merge race on the one
+mechanism authorized to merge without human sign-off.
+
+A session created that way may still have lost its start job, and that is a separate condition with
+a separate owner: `StalledStartSweepJob` restarts a `waiting` session that has no job
+([Background jobs](/operate/background-jobs/)). Re-firing would not have rescued it
+either — it would have spawned a sibling and left the original stranded regardless.
+
+The other half of the same guarantee, and it applies to the **`github_label` seen-set only**, is
+*when* the record is written. A fired key is persisted the instant its session exists, rather than
+only in the single state write at the end of the tick. Everything between those two points can fail
+— another item's fire, the re-read the state write does, the write itself, or the worker being torn
+down mid-tick — and every one of those failures used to lose keys whose sessions had already been
+created, handing the next tick an event that was already in hand. The end-of-tick write is still the
+authority on the whole seen-set: it is what maintains the grace counts and what drops keys whose
+grace has run out. The per-fire write only ever *adds* a key that just fired, so it cannot resurrect
+a key the grace window was about to drop.
+
+A `github_issue` condition has no such floor. Its cursor and its fired-key set are still written once,
+at the end of the tick, so a lost write there leaves both untouched and the next tick re-fires every
+issue in that batch — the same duplicate, on the other condition type. The half of this that *is*
+shared is the one that produced the observed defect: "does a session exist for this item" is asked by
+the same `#fire` for both, so a raise after the row was committed consumes the event on either path.
+Tracked in [#748](https://github.com/tadasant/zimmer/issues/748).
 
 ### Rate-limit budget
 
