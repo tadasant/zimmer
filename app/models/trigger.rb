@@ -388,6 +388,10 @@ class Trigger < ApplicationRecord
   def create_session!(prompt:, genesis: nil)
     @last_fire_burst_suppressed = false
     @last_fire_pending_session = nil
+    # Reset with its siblings, and for the same reason: a caller reads it after
+    # #create_session! RAISED, where a value left over from an earlier fire on
+    # this instance would name a session this fire did not create.
+    @last_fire_created_session = nil
     # Reset with its siblings. The jobs read #last_follow_up_dropped? after
     # #create_session! on paths that never reach #follow_up_session! — the
     # one-time-reuse "target not reusable" return below, and every spawn — where
@@ -516,6 +520,21 @@ class Trigger < ApplicationRecord
   def skip_if_pending_session_inert?
     skip_if_pending_session? && reuse_session?
   end
+
+  # The session the most recent #create_session! call on this in-memory instance
+  # actually created, or nil when it created none.
+  #
+  # Unlike its #last_fire_* siblings this is readable after #create_session!
+  # RAISED, which is the only reason it exists. The session row is committed part
+  # way through Session.create_from_agent_root!, and a fire keeps working after
+  # that: it enqueues the session's start job, repoints `last_session_id`, bumps
+  # the counter and clears the missed-fire count. An exception in any of that
+  # leaves a real session behind and still unwinds out of #create_session!,
+  # so a caller whose only signal is "did this return a session" concludes that
+  # nothing happened and re-fires the same event — which is how trigger 352 put
+  # two merge-gate sessions on one `ready to merge` label (#704). Callers that
+  # hold a retryable event must consult this before putting it back.
+  attr_reader :last_fire_created_session
 
   # The still-pending session that made the most recent #create_session! call on
   # this in-memory instance spawn nothing, or nil when dedup did not apply. Given
@@ -1522,6 +1541,12 @@ class Trigger < ApplicationRecord
   end
 
   def create_new_session!(prompt:)
+    # The block runs the instant the session row is committed — before its start
+    # job is enqueued, and before any of the bookkeeping below. That ordering is
+    # the point: everything after the row exists can raise, and none of those
+    # failures un-creates the session. A caller that reads a raise as "no session
+    # was created" and puts the event back spawns a SECOND session for it on its
+    # next pass. See #last_fire_created_session.
     session = Session.create_from_agent_root!(
       agent_root_name: agent_root_name,
       prompt: prompt,
@@ -1534,7 +1559,7 @@ class Trigger < ApplicationRecord
       scheduling_class: session_scheduling_class,
       precedence: session_precedence,
       metadata: { trigger_id: id, trigger_name: name }
-    )
+    ) { |created| @last_fire_created_session = created }
 
     # Track the session for potential reuse. Bookkeeping-only write: skip
     # validations/callbacks (same rationale as #follow_up_session!). Avoids

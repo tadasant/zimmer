@@ -253,6 +253,133 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal [ "tadasant/zimmer#3:ready to merge" ], @label_condition.reload.github_seen_items
   end
 
+  # ── #704: one label event, one session — even when the fire falls over ────
+  #
+  # Trigger 352 spawned TWO merge-gate sessions for one `ready to merge` label,
+  # 55s and 43s apart, on 2026-08-29. Both pairs are consecutive poller ticks, and
+  # the poller cannot run twice at once (GoodJob `total_limit: 1`), so the second
+  # session means the FIRST tick's bookkeeping did not record a key whose session
+  # already existed. Two ways that happens, both covered here.
+  #
+  # The opposite failure is the worse one — #647 is a real label event swallowed —
+  # so every case below has its mirror: an item that genuinely produced no session
+  # must still be left unseen for the next tick to retry.
+
+  test "an item whose session was created but whose fire then failed is not spawned for twice" do
+    # The mechanism behind #704. Session.create_from_agent_root! commits the session
+    # row and THEN enqueues its one AgentSessionJob; Trigger#create_session! keeps
+    # working after that. A raise anywhere in there used to unwind out of #fire as
+    # "no session was created", leaving the key unseen for the next tick to re-fire.
+    # That is session 10426 (created, never dispatched) and its sibling 10427.
+    labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
+
+    AgentSessionJob.stubs(:enqueue_new_session).raises(RuntimeError, "the agents queue is unreachable")
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    AgentSessionJob.unstub(:enqueue_new_session)
+
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items,
+                 "a session exists for this label, so the event is consumed even though the fire raised"
+
+    # The next tick, sixty seconds later. Without the fix this is where the duplicate
+    # gate session was born.
+    stub_search(label: labelled) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  test "a fired key survives a lost end-of-tick state write and is not spawned for twice" do
+    # The other route to the same duplicate: the fire succeeded outright, and the
+    # single write that was supposed to remember it never landed. Every key fired in
+    # that tick used to come back as new.
+    labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
+
+    AlertService.stubs(:raise_alert)
+    GithubTriggerPollerJob.any_instance.stubs(:write_state).raises(RuntimeError, "the state write was lost")
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    GithubTriggerPollerJob.any_instance.unstub(:write_state)
+
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items,
+                 "the key is recorded the instant its session exists, not only at the end of the tick"
+    assert_not_nil @label_condition.reload.last_triggered_at,
+                   "last_triggered_at rides along with the state it belongs to"
+
+    stub_search(label: labelled) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  test "an item that produced no session at all is left unseen for the next tick" do
+    # #647's direction. The guard above must key on "does a session exist", not on
+    # "did the fire raise" — a fire that fell over BEFORE creating anything is a
+    # dropped event, and dropping a `ready to merge` label silently is the failure
+    # that leaves a PR waiting forever with nobody to notice.
+    labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
+
+    Trigger.any_instance.stubs(:create_session!).raises(RuntimeError, "the catalog would not resolve")
+    stub_search(label: labelled) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+    Trigger.any_instance.unstub(:create_session!)
+
+    assert_equal [], @label_condition.reload.github_seen_items,
+                 "no session was created, so the label must still look new"
+
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  test "a fire that fails before spawning does not inherit the previous item's session" do
+    # The trap in keying on Trigger#last_fire_created_session: both items in a tick
+    # share one in-memory Trigger, so a raise BEFORE #create_session! is entered would
+    # read the marker the previous item left and record an item that has no session.
+    # #7 sorts before #8, so the first interpolation is #7's and the second is #8's.
+    two = [ item(number: 7, labels: [ "ready to merge" ]), item(number: 8, labels: [ "ready to merge" ]) ]
+
+    Trigger.any_instance.stubs(:interpolate_prompt)
+      .returns("rate this PR").then.raises(RuntimeError, "the prompt template blew up")
+
+    stub_search(label: two) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    Trigger.any_instance.unstub(:interpolate_prompt)
+
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items,
+                 "#8 never reached a spawn, so it must not be credited with #7's session"
+
+    # And it really does retry, rather than being lost.
+    stub_search(label: two) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#7:ready to merge", "tadasant/zimmer#8:ready to merge" ],
+                 @label_condition.reload.github_seen_items
+  end
+
+  test "recording a fired key immediately does not resurrect a key the grace window dropped" do
+    # The per-fire write only ever ADDS the key it just fired for, so the end-of-tick
+    # write remains the authority on removals. Without that, a key could be written
+    # back after the grace window had accepted its removal, and a genuine re-label
+    # would never fire again — #647 by another route.
+    labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
+
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    GithubTriggerPollerJob::REMOVAL_GRACE_TICKS.times do
+      stub_search(label: []) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [], @label_condition.reload.github_seen_items
+
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
   test "label query batches every watched repo and label into one request" do
     @label_condition.update!(configuration: @label_condition.configuration.merge(
       "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ],
