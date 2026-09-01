@@ -466,7 +466,7 @@ class SpotSessionHold
       return Sweep.new(rearmed: 0, overdue: 0, skipped: 0, deferred: 0) if overdue.zero?
 
       stalled = overdue_sessions.limit(MAX_LOADED_PER_SWEEP).to_a
-      queued = session_ids_with_a_pending_turn(stalled.map(&:id))
+      queued = PendingAgentTurns.for(stalled.map(&:id))
       candidates, skipped = stalled.partition { |session| queued.exclude?(session.id) }
 
       # Dropped BEFORE the batch is taken, not inside #rearm!, and that ordering
@@ -578,24 +578,6 @@ class SpotSessionHold
       SpotSessionPause.paused?(session) ||
         AuthOutageParkService.parked?(session) ||
         session.paused_until_scheduled_time?
-    end
-
-    # Which of these sessions already has an AgentSessionJob queued or running.
-    #
-    # Reads GoodJob directly, the same way Sessions::StartNow and
-    # SessionRecoveryService match a session's pending jobs.
-    # `serialized_params -> 'arguments' ->> 0` is the session id every
-    # AgentSessionJob is enqueued with, and only the ids come back — the rest of
-    # the payload is the refused prompt, which there is no reason to load.
-    def session_ids_with_a_pending_turn(ids)
-      return Set.new if ids.empty?
-
-      GoodJob::Job
-        .where(job_class: AgentSessionJob.name, finished_at: nil)
-        .where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s))
-        .pluck(Arel.sql("serialized_params -> 'arguments' ->> 0"))
-        .map(&:to_i)
-        .to_set
     end
 
     def parse_time(value)
