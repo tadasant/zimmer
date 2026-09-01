@@ -322,6 +322,39 @@ minute-resolution. That is the cadence chosen for the job, not a platform limit 
 cron with a seconds field works, and three other pollers use it
 ([Background jobs](/operate/background-jobs/)).
 
+#### When a new recurring schedule first fires
+
+The two families of `unit` answer that differently, because only one of them names a
+wall-clock instant to wait for.
+
+`minutes` and `hours` are pure intervals. "Every 15 minutes" has no anchor time to miss, so a
+newly created one is due on the next tick, and that first fire becomes the anchor the interval
+is measured from thereafter.
+
+`days` and `weeks` do have an anchor — `time`, plus `day_of_week` for weekly, both required by
+validation — and it governs the first fire exactly as it governs every later one. **A schedule
+first fires at the first configured slot that arrives after it was created.** Create "every day
+at 03:00 America/Los_Angeles" at 01:00 and it runs at 03:00 that same morning; create it at
+05:00 and its first run is 03:00 the *next* day. The 03:00 slot that passed before the schedule
+existed was not missed — there was nothing there to miss.
+
+That reading is deliberate, and the alternative is worse than it looks: treating "has never fired"
+as "is due" fires a daily schedule within a minute of being created, at whatever hour that happens
+to be — and because firing advances `last_triggered_at`, it *consumes* that day's slot, so the run
+you actually asked for never happens
+([#447](https://github.com/tadasant/zimmer/issues/447)).
+
+The comparison is wall-clock in the condition's own `timezone`, never UTC, so a schedule keeps its
+local hour across a DST change rather than sliding by one.
+
+**Creation is the only arming instant, and two edits slip past it.** Re-enabling a schedule that
+was disabled when its slot passed, and changing the `time` on one that has never fired, both leave
+the original creation instant in place — so either can still fire once at an arbitrary hour, the
+same symptom in miniature. Closing that needs a stored arming timestamp rather than a derived one
+([#745](https://github.com/tadasant/zimmer/issues/745), and
+[Limitations](/limitations/#a-re-enabled-or-retimed-schedule-can-still-fire-off-slot-once)). A
+schedule that has fired at least once is unaffected either way.
+
 #### When a one-time fire fails
 
 A one-time trigger whose fire raises is **not** destroyed. `ScheduleTriggerJob` parks it in
