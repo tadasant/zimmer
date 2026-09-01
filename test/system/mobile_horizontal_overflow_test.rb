@@ -64,7 +64,12 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     create_session(status: :failed)
     create_session(title: "Short one", status: :needs_input)
 
-    visit root_path
+    # Every status, the way the UI asks for it: an explicit Filters submit with
+    # nothing ticked. A bare "/" defaults to needs_input alone, which would filter
+    # the long-token session out and leave this first assertion measuring a page
+    # whose only card is "Short one" — no unbreakable token on it at all.
+    visit root_path(every_status_params)
+    assert_text LONG_TOKEN_TITLE
     assert_text "Short one"
 
     assert_no_horizontal_overflow("sessions index")
@@ -78,9 +83,23 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("sessions index with Filters > Advanced open")
 
     # A multi-status selection must not widen it either — the pills have to wrap.
+    # Both statuses are ticked explicitly rather than one of them being inherited
+    # from whatever the visit above left ticked: "every status" renders as *no*
+    # pill ticked, so a single check would apply a one-status filter and this
+    # assertion would stop being about a multi-status selection at all. The two
+    # guards pin that starting state, so a change that pre-ticks a box shows up
+    # here rather than in a silently idempotent `check`.
+    assert_not find("#status-filter-failed", visible: :all).checked?
+    assert_not find("#status-filter-needs-input", visible: :all).checked?
     check "status-filter-failed", allow_label_click: true
+    check "status-filter-needs-input", allow_label_click: true
     click_on "Apply filters"
+    # The summary lists the applied statuses in STATUS_FILTER_OPTIONS order (the
+    # form's DOM order, which is the order the browser submits them), not in the
+    # order the boxes were ticked above.
+    assert_text "showing needs input and failed"
     assert_text LONG_TOKEN_TITLE
+    assert_text "Short one"
 
     assert_no_horizontal_overflow("sessions index with a multi-status filter applied")
   end
@@ -829,7 +848,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     trigger = create_trigger
     page.driver.browser.manage.window.resize_to(1400, 900)
 
-    [ root_path, new_session_path, settings_path, triggers_path, trigger_path(trigger),
+    # root_path asks for every status for the same reason the phone-width test does:
+    # the session seeded above is `waiting`, and the dashboard's default filter is
+    # `needs_input` alone — so a bare "/" would measure a dashboard with none of
+    # this test's long-token fixture on it.
+    [ root_path(every_status_params), new_session_path, settings_path, triggers_path, trigger_path(trigger),
       quotas_path, health_dashboard_path, clis_path, connectors_path,
       notifications_path, outcomes_path, outcomes_stats_path ].each do |path|
       visit path
