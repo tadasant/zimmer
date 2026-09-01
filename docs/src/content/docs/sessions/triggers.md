@@ -338,14 +338,22 @@ at 03:00 America/Los_Angeles" at 01:00 and it runs at 03:00 that same morning; c
 05:00 and its first run is 03:00 the *next* day. The 03:00 slot that passed before the schedule
 existed was not missed — there was nothing there to miss.
 
-That reading is deliberate, and the alternative is worse than it looks. Zimmer used to treat "has
-never fired" as "is due", which meant a daily schedule fired within a minute of being created, at
-whatever hour that happened to be — and because firing advances `last_triggered_at`, it *consumed*
-that day's slot, so the run you actually asked for never happened
+That reading is deliberate, and the alternative is worse than it looks: treating "has never fired"
+as "is due" fires a daily schedule within a minute of being created, at whatever hour that happens
+to be — and because firing advances `last_triggered_at`, it *consumes* that day's slot, so the run
+you actually asked for never happens
 ([#447](https://github.com/tadasant/zimmer/issues/447)).
 
 The comparison is wall-clock in the condition's own `timezone`, never UTC, so a schedule keeps its
 local hour across a DST change rather than sliding by one.
+
+**Creation is the only arming instant, and two edits slip past it.** Re-enabling a schedule that
+was disabled when its slot passed, and changing the `time` on one that has never fired, both leave
+the original creation instant in place — so either can still fire once at an arbitrary hour, the
+same symptom in miniature. Closing that needs a stored arming timestamp rather than a derived one
+([#745](https://github.com/tadasant/zimmer/issues/745), and
+[Limitations](/limitations/#a-re-enabled-or-retimed-schedule-can-still-fire-off-slot-once)). A
+schedule that has fired at least once is unaffected either way.
 
 #### When a one-time fire fails
 

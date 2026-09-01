@@ -2381,6 +2381,28 @@ lookup entirely for `tadasant/*` (no API call, always actionable). The exposed c
 owned by someone else that is actually private. The drop logs at `warn` naming the comment and
 repo, which is the only signal you get.
 
+### A re-enabled or retimed schedule can still fire off-slot once
+
+A `days`/`weeks` schedule fires at the first configured slot that arrives after it was created
+([Triggers](/sessions/triggers/#when-a-new-recurring-schedule-first-fires)), and *created* is the
+operative word: `TriggerCondition#armed_before?` derives arming from `created_at`, so creation is
+the only instant that arms a schedule. Two ordinary edits slip past it. Re-enable a schedule that
+was disabled when its slot passed, and it fires within a minute of the toggle rather than at its
+next slot. Change the `time` on a schedule that has never fired, to an hour already past today, and
+it fires on the next tick — the condition never existed with that slot at the moment the slot went
+by.
+
+Both are the same symptom as [#447](https://github.com/tadasant/zimmer/issues/447) in miniature: one
+run at an arbitrary hour, and — because a fire advances `last_triggered_at` — that day's configured
+run silently skipped. Bounded, though: it takes a disable/enable cycle or a `time` edit on a
+schedule with no fires behind it, and it costs exactly one off-slot run. A schedule that has fired
+at least once is governed by `last_triggered_at` and is unaffected.
+
+Fixing it needs a stored arming timestamp rather than a derived one — set on create, refreshed when
+the trigger is enabled and when the schedule's shape changes, and pointedly *not* refreshed by a
+no-op re-save, which is the trap `updated_at` would fall into. That is a column, so it is tracked
+separately in [#745](https://github.com/tadasant/zimmer/issues/745).
+
 ### A failed one-time wake does not retry itself
 
 A one-time wake whose fire raises is not destroyed: `ScheduleTriggerJob` (scheduled wakes) and
