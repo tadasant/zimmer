@@ -184,7 +184,10 @@ class PiTranscriptSource < TranscriptSource
   # returning it unchecked would show one session another's conversation — the
   # Codex bug, reintroduced by the back door. Reading the header closes that.
   #
-  # Only the first line is materialized, never the whole transcript.
+  # Streamed line-by-line and abandoned at the first non-blank one, never read
+  # whole: this runs inside #locate, which the poller calls on every tick, so a
+  # multi-megabyte transcript would otherwise be fully read and split on every
+  # poll just to check one header field.
   def restored_transcript_matching(transcript_directory, session_id)
     path = File.join(transcript_directory, RESTORED_TRANSCRIPT_FILENAME)
     return [] unless file_system.exists?(path)
@@ -196,7 +199,13 @@ class PiTranscriptSource < TranscriptSource
   # The session id Pi stamped on the file's header (its first JSONL line).
   # Returns nil when the line is missing, unparseable, or carries no id.
   def header_session_id(path)
-    first_line = file_system.read(path).to_s.lines.find { |line| line.strip.present? }
+    first_line = nil
+    file_system.each_line(path) do |line|
+      next if line.strip.empty?
+
+      first_line = line
+      break
+    end
     return nil if first_line.blank?
 
     JSON.parse(first_line)["id"]

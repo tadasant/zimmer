@@ -14,8 +14,10 @@
 #
 # Zimmer's timeline is flat and chronological, so the tree is deliberately NOT
 # reconstructed here: entries are normalized in file order, which is the order
-# they happened. `parentId` is carried through in `provider_raw` for anything
-# that later wants the shape.
+# they happened. The tree links are not preserved either: `provider_raw` carries
+# the inner AgentMessage for message entries, which has no `parentId` — only the
+# outer entry does. Nothing downstream needs the shape today, and carrying the
+# outer entry would put a second copy of every message body in `provider_raw`.
 #
 # == One entry can produce several events ==
 #

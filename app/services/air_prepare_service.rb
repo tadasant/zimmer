@@ -223,7 +223,39 @@ class AirPrepareService
   # moves from the staging directory into the published one.
   INSTALLED_ENTRIES = %w[node_modules package.json package-lock.json].freeze
 
+  # Every AIR package the CLI needs to prepare a session, pinned in lockstep.
+  # One entry per runtime adapter Zimmer can prepare with, plus the CLI and the
+  # secrets/provider extensions.
+  AIR_PACKAGES = [
+    "@pulsemcp/air-cli@#{AIR_CLI_VERSION}",
+    "@pulsemcp/air-adapter-claude@#{AIR_CLI_VERSION}",
+    "@pulsemcp/air-adapter-codex@#{AIR_CLI_VERSION}",
+    "@pulsemcp/air-adapter-pi@#{AIR_CLI_VERSION}",
+    "@pulsemcp/air-secrets-env@#{AIR_CLI_VERSION}",
+    "@pulsemcp/air-provider-github@#{AIR_CLI_VERSION}"
+  ].freeze
+
   class << self
+    # The install-completion marker filename.
+    #
+    # Keyed on the PACKAGE SET, not on AIR_CLI_VERSION alone. The marker is the
+    # fast path's whole proof that the install on disk is the one this code
+    # expects, and a version-only key cannot see a change to the package LIST:
+    # adding `@pulsemcp/air-adapter-pi` at the same 0.13.0 leaves every host that
+    # already holds `.air-version-0.13.0` short-circuiting past the install, so
+    # the new adapter never lands and the first session on that runtime dies with
+    # an unknown-adapter error. That is precisely the "and then someone runs a
+    # command on the box" failure the repo's ops rule exists to prevent, since
+    # there is no in-app remedy for it.
+    #
+    # The digest makes the marker change whenever the list does, so the next
+    # ensure_air_installed! reinstalls by itself. `air_config_parity_test`
+    # asserts Dockerfile.base touches this exact filename.
+    def air_marker_filename
+      digest = Digest::SHA1.hexdigest(AIR_PACKAGES.join(","))[0, 8]
+      ".air-version-#{AIR_CLI_VERSION}-#{digest}"
+    end
+
     # Ensure the AIR CLI is installed. Idempotent: no-op if the expected version
     # is already present. Callable from any context that needs the AIR binary
     # (AirCatalogService, AirPrepareService#run_air_prepare!).
@@ -241,7 +273,7 @@ class AirPrepareService
     # succeed, so its presence is proof the install was valid. Health is
     # re-verified inside install_air_cli! for fresh installs.
     def ensure_air_installed!
-      marker = File.join(AIR_INSTALL_DIR, ".air-version-#{AIR_CLI_VERSION}")
+      marker = File.join(AIR_INSTALL_DIR, air_marker_filename)
       binary = File.join(AIR_INSTALL_DIR, "node_modules", ".bin", "air")
       return if File.exist?(marker) && File.exist?(binary)
 
@@ -286,14 +318,7 @@ class AirPrepareService
       FileUtils.rm_rf(File.join(AIR_INSTALL_DIR, RETIRED_DIR_NAME))
       FileUtils.mkdir_p(staging)
 
-      packages = [
-        "@pulsemcp/air-cli@#{AIR_CLI_VERSION}",
-        "@pulsemcp/air-adapter-claude@#{AIR_CLI_VERSION}",
-        "@pulsemcp/air-adapter-codex@#{AIR_CLI_VERSION}",
-        "@pulsemcp/air-adapter-pi@#{AIR_CLI_VERSION}",
-        "@pulsemcp/air-secrets-env@#{AIR_CLI_VERSION}",
-        "@pulsemcp/air-provider-github@#{AIR_CLI_VERSION}"
-      ]
+      packages = AIR_PACKAGES
       install_cmd = [ "npm", "install", "--prefix", staging ] + packages
 
       Rails.logger.info "[AirPrepareService] Installing AIR packages: #{packages.join(', ')}"

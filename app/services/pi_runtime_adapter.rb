@@ -312,6 +312,11 @@ class PiRuntimeAdapter
     stderr_file.close
 
     { pid: pid, stderr_log_path: stderr_log_path }
+  rescue PiCliError
+    # Already ours and already specific (the working-dir guard raises this).
+    # Re-wrapping would bury its actionable message under a generic prefix.
+    stderr_file&.close
+    raise
   rescue => e
     stderr_file&.close
     raise PiCliError, "Failed to spawn Pi CLI: #{e.message}"
@@ -345,6 +350,11 @@ class PiRuntimeAdapter
   # from the session .env take precedence.
   def quiet_pi_startup(env_vars)
     defaults = { "PI_SKIP_VERSION_CHECK" => "1", "PI_TELEMETRY" => "0" }
-    defaults.reject { |key, _| env_vars[key].present? }.merge(env_vars)
+    # `select(&:present?)` on the session's values, not `reject` on the defaults:
+    # the merge already lets any present session value win, so rejecting on the
+    # defaults side is a no-op. What it must NOT do is let a BLANK session value
+    # (`PI_TELEMETRY=` in a .env) override the default with an empty string,
+    # which is how the flag would silently stop meaning anything.
+    defaults.merge(env_vars.select { |key, value| !defaults.key?(key) || value.present? })
   end
 end

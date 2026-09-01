@@ -124,7 +124,11 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN ./bin/preinstall-mcp-packages --python-only
 
 # Pre-install AIR CLI packages for agent session preparation.
-# Version must match AirPrepareService::AIR_CLI_VERSION.
+# The package list must match AirPrepareService::AIR_PACKAGES, and the marker
+# filename must match AirPrepareService.air_marker_filename — the marker is keyed
+# on a digest of the package SET, so adding an adapter changes it and any host
+# holding the old marker reinstalls instead of silently skipping the new package.
+# air_config_parity_test asserts both.
 RUN npm install --prefix /opt/air-cli \
     @pulsemcp/air-cli@0.13.0 \
     @pulsemcp/air-adapter-claude@0.13.0 \
@@ -132,7 +136,7 @@ RUN npm install --prefix /opt/air-cli \
     @pulsemcp/air-adapter-pi@0.13.0 \
     @pulsemcp/air-secrets-env@0.13.0 \
     @pulsemcp/air-provider-github@0.13.0 && \
-    touch /opt/air-cli/.air-version-0.13.0
+    touch /opt/air-cli/.air-version-0.13.0-715a27ec
 
 # Install the OpenAI Codex CLI for the `codex` agent runtime.
 # Installed globally so the `codex` binary lands on PATH at /usr/local/bin/codex,
@@ -167,8 +171,8 @@ RUN set -eo pipefail; \
 # reports the gap. When v0.1.0 publishes, add them to this line and drop the
 # `pending_publish:` flags.
 RUN set -eo pipefail; \
-    npm install --prefix /opt/pi-extensions \
-    pi-mcp-adapter@2.32.1
+    for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
+    test -f /opt/pi-extensions/node_modules/pi-mcp-adapter/dist/index.js
 
 # Create rails user for security (non-root runtime)
 # Use --force for groupadd to handle pre-existing GID 1000 in base images

@@ -100,7 +100,12 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
     if server.remote?
       return warn_unusable(server, "no url") if server.url.blank?
 
-      build_http_entry(url: server.url, headers: server.headers || {})
+      entry = build_http_entry(url: server.url, headers: server.headers || {})
+      # ServersConfig#remote? covers both `sse` and `streamable-http`, and they
+      # are different wire protocols. Carrying the catalog's own type through
+      # keeps an `sse` entry from being announced to the adapter as `http`.
+      entry["type"] = server.type if server.type == "sse"
+      entry
     else
       return warn_unusable(server, "no command") if server.command.blank?
 
