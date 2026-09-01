@@ -102,6 +102,18 @@ refusing them would strand the wake this guard exists to protect. See
 [A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence) for the other
 three callers that decline, and why the guard lives here rather than in a prompt.
 
+#### Entering `running` re-arms the fleet-idle event
+
+An `after_commit` on the status column — not a hook on `start` and `resume` — calls
+`FleetIdleMonitor.record_busy!` whenever a commit lands a session in `running`. The fact
+[`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) needs is "a session is
+running", and every path that produces it has to count: both AASM events, an elicitation unblocking,
+a recovery writing the column directly. Missing one would leave that event's latch spent against a
+fleet that had gone back to work, because a session that starts and finishes inside one cron tick is
+invisible to the sweep that samples for it.
+
+After the commit, and best-effort: a transition is never slowed or rolled back by this bookkeeping.
+
 ### `pause` — `running → needs_input`
 
 Fired when the agent's turn ends (the process exits normally). This is the workhorse

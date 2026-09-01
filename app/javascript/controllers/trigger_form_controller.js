@@ -80,6 +80,7 @@ export default class extends Controller {
     if (aoEventConfig) aoEventConfig.classList.toggle("hidden", type !== "ao_event")
     if (systemEventConfig) systemEventConfig.classList.toggle("hidden", type !== "system_event")
 
+    this.updateEventNameFieldsInCard(card, type)
     this.updateGithubFieldsInCard(card, type)
 
     // Lazily load the channel list the first time this card's Slack config is shown
@@ -114,6 +115,22 @@ export default class extends Controller {
     const channelName = card.querySelector("[data-trigger-form-target='channelName']")
     if (channelId) channelId.value = ""
     if (channelName) channelName.value = ""
+  }
+
+  // Disable whichever event_name select is hidden.
+  //
+  // ao_event and system_event are different vocabularies on the same
+  // configuration key, so a card carries two selects both named
+  // `configuration[event_name]`. Leaving the hidden one enabled submits the key
+  // twice and the LAST one in the DOM wins, which silently overwrote an
+  // ao_event condition's chosen event with the empty system_event select.
+  // Disabling keeps a card submitting exactly the one event it is showing.
+  updateEventNameFieldsInCard(card, type) {
+    const aoSelect = card.querySelector("[data-trigger-form-target='aoEventConfig'] select")
+    const systemSelect = card.querySelector("[data-trigger-form-target='systemEventConfig'] select")
+
+    if (aoSelect) aoSelect.disabled = type !== "ao_event"
+    if (systemSelect) systemSelect.disabled = type !== "system_event"
   }
 
   // Show/hide the GitHub fields for a card, and disable the ones that are hidden.
@@ -560,7 +577,7 @@ export default class extends Controller {
         <div data-trigger-form-target="aoEventConfig" class="hidden space-y-3">
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Event <span class="text-red-500">*</span></label>
-            <select name="${name}[configuration][event_name]" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+            <select name="${name}[configuration][event_name]" disabled class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
               <option value="">Select event...</option>
               <option value="session_needs_input">Session transitions to needs_input</option>
               <option value="session_failed">Session transitions to failed</option>
@@ -568,6 +585,18 @@ export default class extends Controller {
               <option value="account_needs_reauth">Account needs re-authentication</option>
             </select>
             <p class="mt-1 text-xs text-gray-500">Session events fire when an autonomous session transitions to the selected state; sessions created by this trigger are excluded to prevent loops. "Account needs re-authentication" is about a runtime account, not a session — it fires when one can no longer refresh its token, at most once every 12 hours per account.</p>
+          </div>
+        </div>
+
+        <div data-trigger-form-target="systemEventConfig" class="hidden space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Event <span class="text-red-500">*</span></label>
+            <select name="${name}[configuration][event_name]" disabled class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+              <option value="">Select event...</option>
+              <option value="quota_available">Quota available again (the account pool recovered)</option>
+              <option value="no_sessions_in_progress">No sessions in progress (nothing running or queued for 5 minutes)</option>
+            </select>
+            <p class="mt-1 text-xs text-gray-500">Deployment-wide events, each fired once on the edge rather than on every check. "Quota available again" fires when the Claude Code account pool goes from serving nothing to serving something, and is what wakes quota-parked spot sessions. "No sessions in progress" fires when nothing has been running <em>and</em> nothing is queued in the spot queue for 5 continuous minutes, and cannot fire again until the fleet has work again — so it is one wake per quiet stretch, not one per check.</p>
           </div>
         </div>
 
