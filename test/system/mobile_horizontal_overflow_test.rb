@@ -64,7 +64,12 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     create_session(status: :failed)
     create_session(title: "Short one", status: :needs_input)
 
-    visit root_path
+    # Every status, the way the UI asks for it: an explicit Filters submit with
+    # nothing ticked. A bare "/" defaults to needs_input alone, which would filter
+    # the long-token session out and leave this first assertion measuring a page
+    # whose only card is "Short one" — no unbreakable token on it at all.
+    visit root_path(every_status_params)
+    assert_text LONG_TOKEN_TITLE
     assert_text "Short one"
 
     assert_no_horizontal_overflow("sessions index")
@@ -78,9 +83,17 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("sessions index with Filters > Advanced open")
 
     # A multi-status selection must not widen it either — the pills have to wrap.
+    # "Every status" renders as *no* pill ticked, so both boxes start unchecked
+    # and each check below is a real transition rather than a no-op on a box that
+    # was already ticked — which is what would hollow this assertion out.
+    assert_not find("#status-filter-failed", visible: :all).checked?
+    assert_not find("#status-filter-needs-input", visible: :all).checked?
     check "status-filter-failed", allow_label_click: true
+    check "status-filter-needs-input", allow_label_click: true
     click_on "Apply filters"
+    assert_text "showing needs input and failed"
     assert_text LONG_TOKEN_TITLE
+    assert_text "Short one"
 
     assert_no_horizontal_overflow("sessions index with a multi-status filter applied")
   end

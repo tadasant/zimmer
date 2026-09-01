@@ -183,7 +183,7 @@ class ConcurrentOperationsTest < IntegrationTestCase
     Session.delete_all
 
     # Create many sessions
-    10.times do |i|
+    seeded = 10.times.map do |i|
       Session.create!(
         git_root: "https://github.com/test/repo.git",
         prompt: "Session #{i}",
@@ -192,12 +192,20 @@ class ConcurrentOperationsTest < IntegrationTestCase
       )
     end
 
-    # Get index
-    get root_path
+    # Get index. The dashboard defaults to needs_input alone, and needs_input is
+    # deliberately not among the statuses seeded above — so a bare "/" renders
+    # none of these ten. Ask for every status, the way the UI does: an explicit
+    # Filters submit with nothing ticked.
+    get root_path(every_status_params)
     assert_response :success
 
-    # Should show non-archived sessions
-    assert_select "turbo-frame[id^='session_']"
+    # Every seeded session renders its own card, asserted by id. A bare
+    # "any turbo-frame is present" would also be satisfied by the drawer's
+    # always-rendered #session_detail frame, which says nothing about these ten.
+    seeded.each do |session|
+      assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(session)}",
+        1, "session #{session.id} (#{session.status}) is missing from the index"
+    end
   end
 
   test "should handle concurrent follow-up prompts" do
