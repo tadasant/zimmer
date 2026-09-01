@@ -76,7 +76,13 @@ class TriggerCondition < ApplicationRecord
   # quota-available. It is an edge, not a level, so it fires once per recovery
   # rather than every time the pool is measured while healthy. See
   # QuotaAvailabilityMonitor.
-  SYSTEM_EVENT_NAMES = %w[quota_available].freeze
+  #
+  # `no_sessions_in_progress` fires once the deployment has had nothing to do for
+  # FleetIdleMonitor::IDLE_THRESHOLD. Idleness is a LEVEL rather than a
+  # transition, so that monitor latches the fire, re-arms only when the fleet has
+  # work again, and holds a cooldown under both — the event means "the fleet ran
+  # out of work", not "the fleet is quiet". See FleetIdleMonitor.
+  SYSTEM_EVENT_NAMES = %w[quota_available no_sessions_in_progress].freeze
 
   GITHUB_CONDITION_TYPES = %w[github_label github_issue].freeze
   GITHUB_TARGETS = %w[pull_request issue].freeze
@@ -533,6 +539,8 @@ class TriggerCondition < ApplicationRecord
       case system_event_name
       when "quota_available"
         "System Event: Quota available again"
+      when "no_sessions_in_progress"
+        "System Event: No sessions in progress"
       else
         "System Event: #{system_event_name}"
       end

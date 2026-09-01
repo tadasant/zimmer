@@ -1161,6 +1161,30 @@ whole spot wake into one event, and the sharp edges are all about that concentra
   `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d` for a quota park, shown in the banner, and read
   by nothing.
 
+### The idle-fleet event is sampled, latched and floored, and each of the three has an edge
+
+🟡 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) fires when the deployment
+has had nothing to do for five minutes. Idleness is a level rather than an edge, so `FleetIdleMonitor`
+manufactures one — and the machinery that does it has known limits:
+
+- **It is sampled once a minute, so the clock starts up to a tick late.** `fleet_idle_since` is
+  written at the first observation with nothing to do, not at the moment the last session finished,
+  so "five continuous minutes" is really "five minutes since we noticed", ±60 seconds. The
+  `SessionStateMachine` hook closes the opposite gap — a session that starts and finishes between two
+  ticks still re-arms — but nothing narrows the start.
+- **One stuck `waiting` spot session suppresses it indefinitely.** A queued spot session counts as
+  work in hand, deliberately, so a session stranded in `waiting` that nothing will ever start (see the
+  hold and park edges above) also means the fleet never reads as out of work. Status-summary forks are
+  excluded for exactly this reason; nothing else is.
+- **The hourly floor is a blunt instrument.** `MIN_FIRE_INTERVAL` exists because the session the
+  event spawns re-arms the latch by running, so without it a quiet deployment would get one spawn
+  every five minutes or so, forever. One hour is a number chosen to be obviously safe rather than
+  tuned, and it applies even when the previous fire delivered nothing.
+- **Neither column is surfaced anywhere.** `fleet_idle_since` and `fleet_idle_event_fired_at` are
+  readable only from the database, so "why has this not fired?" is not answerable from `/health`,
+  `get_system_health`, or any page. The monitor logs its transitions, and that is the whole story a
+  human gets.
+
 ### `CodexRetryStrategy` classifies almost nothing
 
 🔴 It returns `false` from `context_length_error?`, `api_error_for_retry?`, and

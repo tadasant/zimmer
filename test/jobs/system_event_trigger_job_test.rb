@@ -180,6 +180,36 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
     assert_equal 1, Session.for_trigger(skipping.id).count
   end
 
+  # The fleet-idle event is the second citizen of this job, and the one place it
+  # must behave differently: its latch is NOT put back when nothing listened.
+  test "an undelivered no_sessions_in_progress fire does not re-arm anything" do
+    AppSetting.editable.update!(quota_pool_available: true, fleet_idle_since: 10.minutes.ago,
+                                fleet_idle_event_fired_at: Time.current)
+
+    assert_no_difference -> { Session.count } do
+      SystemEventTriggerJob.perform_now("no_sessions_in_progress")
+    end
+
+    setting = AppSetting.current.reload
+    assert_equal true, setting.quota_pool_available,
+      "the quota edge belongs to the other event and must not be spent by this one"
+    assert_not_nil setting.fleet_idle_event_fired_at,
+      "an idle fleet nobody listens for is not a reason to fire every sweep"
+  end
+
+  test "fires a trigger listening for no_sessions_in_progress" do
+    trigger = wake_trigger(event_name: "no_sessions_in_progress")
+
+    assert_difference -> { Session.count }, 1 do
+      SystemEventTriggerJob.perform_now("no_sessions_in_progress")
+    end
+
+    session = Session.order(:id).last
+    assert_equal trigger.id.to_s, session.metadata["trigger_id"].to_s
+    assert_includes session.prompt, "The fleet has run out of work"
+    assert_not_nil trigger.trigger_conditions.first.reload.last_triggered_at
+  end
+
   test "an unknown event name does nothing" do
     wake_trigger
 

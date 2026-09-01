@@ -18,7 +18,7 @@ flowchart LR
         SL["slack<br/>channel_id + event_type<br/>(new_message | bot_mention | dm_message |<br/>passive_listen_thread | passive_listen_channel)"]
         SC["schedule<br/>recurring (interval/unit/time/day)<br/>or one-time (scheduled_at)"]
         AO["ao_event<br/>session_needs_input<br/>session_failed<br/>session_archived<br/>account_needs_reauth"]
-        SE["system_event<br/>quota_available"]
+        SE["system_event<br/>quota_available<br/>no_sessions_in_progress"]
         GL["github_label<br/>repos + target<br/>(pull_request | issue) + labels"]
         GI["github_issue<br/>repos + exclude_labels"]
     end
@@ -26,7 +26,7 @@ flowchart LR
     SL -->|"SlackTriggerPollerJob<br/>(cron, every minute)"| T["Trigger"]
     SC -->|"ScheduleTriggerJob<br/>(cron, every minute)"| T
     AO -->|"AoEventTriggerJob<br/>(enqueued from state machine callbacks)"| T
-    SE -->|"SystemEventTriggerJob<br/>(enqueued from QuotaAvailabilityMonitor)"| T
+    SE -->|"SystemEventTriggerJob<br/>(enqueued from QuotaAvailabilityMonitor<br/>or FleetIdleMonitor)"| T
     GL -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
     GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
 
@@ -514,22 +514,92 @@ saw only schedules would offer every parked state-change wake a "Re-arm" button 
 
 ### `system_event`
 
-Fires when the **deployment** changes state, rather than a session. One event today:
-`quota_available`, the account pool going from serving nothing to serving something.
+Fires when the **deployment** changes state, rather than a session. Two events:
+`quota_available`, the account pool going from serving nothing to serving something; and
+`no_sessions_in_progress`, the fleet having had nothing to do for five minutes.
 
 It is a separate condition type rather than a fourth `AO_EVENT_NAMES` entry because every decision
 `ao_event` makes is about a session — watched-session scoping, the `is_autonomous` filter, the guard
 that stops a trigger firing on the session it created. A fleet-wide event has no session at all.
 
-`QuotaAvailabilityMonitor` owns the edge detection and `SystemEventTriggerJob` does the firing.
-System events are broadcast and recurring by nature: every enabled trigger carrying a matching
-condition fires, the condition is never spent, and the trigger is never auto-deleted. A fire that
-raises alerts and stays enabled — parking it would silently stop every future recovery wake.
+Every system event is **edge-fired**: a monitor owns the detection and decides when the deployment
+ENTERED the state, and `SystemEventTriggerJob` does the firing. `QuotaAvailabilityMonitor` owns
+`quota_available`; `FleetIdleMonitor` owns `no_sessions_in_progress`. System events are broadcast and
+recurring by nature: every enabled trigger carrying a matching condition fires, the condition is
+never spent, and the trigger is never auto-deleted. A fire that raises alerts and stays enabled —
+parking it would silently stop every future recovery wake.
+
+#### `quota_available`
 
 This is what wakes quota-parked spot sessions. The shipped trigger spawns one `fleet-maintenance`
 session running the `awaken-waiting-sessions` skill, which decides — in precedence order, against the
 spot thresholds and the concurrency ceiling — which `waiting` sessions start. See
 [When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
+
+#### `no_sessions_in_progress`
+
+Fires when the deployment has had **nothing to do** for `FleetIdleMonitor::IDLE_THRESHOLD` — five
+minutes. It is the "there is nobody left to run" signal, so a job that hands work out has a second
+way to be started besides its daily schedule.
+
+*Idle* means the fleet has nothing to do, never that it cannot do anything. Confusing the two is the
+expensive mistake — it hands more work to a deployment that is already blocked, at the moment it has
+least room for it — so four questions all have to answer no:
+
+| Question | Why it counts |
+| --- | --- |
+| Any session `running`? | Every runtime and class. A running Codex session occupies the deployment as much as a Claude one |
+| Any **spot** session `waiting`? | Work already held and not started. An idle-looking fleet with a backed-up spot queue is blocked, not out of things to do — handing it more would deepen a queue |
+| Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Not scoped to spot: an outage parks priority sessions too, and `QuotaResetCheckerJob` resumes those on its own schedule |
+| Can the account pool serve anything? | The level `QuotaAvailabilityMonitor` persists. An empty pool makes a quiet fleet a symptom rather than an opportunity |
+
+The `running` check is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
+`DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and
+counting it would pin the monitor to "busy" forever with nothing to say why.
+
+Priority sessions merely `waiting` deliberately do not hold the event off. Priority work is never
+gated, so an unparked priority session sitting there is in the seconds before its job picks it up
+rather than in a queue, and treating it as one would suppress the event on ordinary churn.
+
+This is the one system event where the analogy to `quota_available` needs care. A pool recovering is
+naturally a transition; "nothing is running" is a **state** that stays true for as long as the
+deployment is quiet, so a monitor that fired whenever it observed the state would fire every tick,
+forever, precisely while nothing was happening. `FleetIdleMonitor` turns it into an edge with two
+columns on `app_settings`:
+
+| Column | Means |
+| --- | --- |
+| `fleet_idle_since` | when the fleet was first observed with nothing to do — the clock the threshold is measured against. `NULL` means the fleet had work at the last observation |
+| `fleet_idle_event_fired_at` | when the event last fired. Two jobs: within one quiet stretch it is the **latch**, and across stretches it is the **cooldown** clock |
+
+`fleet_idle_since` is cleared the moment the fleet has work again, and that happens two ways:
+`FleetIdleCheckerJob` observes it on its next tick, and `SessionStateMachine` writes it directly the
+moment any session enters `running`. The second is what makes a session that starts and finishes
+inside one tick count — sampling alone would never see it, and the latch would stay spent against a
+fleet that had gone back to work. (It is an `after_commit`, so it does not cover a `update_column`
+write of `status`; nothing does that today, and the sweep re-arms on its next tick regardless.)
+
+##### The latch is not enough on its own
+
+The reason is circular and easy to miss: **the fire spawns a session, that session enters `running`,
+and running is exactly what re-arms the latch.** On a deployment quiet for some other reason — an
+empty backlog, a gate that declines — the steady state would be one spawned session every five
+minutes plus however long it takes to finish, forever. The event's own answer would keep
+re-qualifying it.
+
+`FleetIdleMonitor::MIN_FIRE_INTERVAL` — one hour — is the floor under that, which is why
+`fleet_idle_event_fired_at` is *not* cleared when the fleet gets work. "Has this stretch already
+fired" is the comparison `fired_at >= idle_since`, not mere presence.
+
+The fire itself is a guarded `UPDATE` on `(id, fleet_idle_since, fleet_idle_event_fired_at)` rather
+than a plain write, so a re-arm landing between the read and the write cannot be clobbered from a
+stale record — losing that race means the fleet got work while the monitor was deciding, which is
+exactly when it must not fire.
+
+One more asymmetry. An undelivered `quota_available` fire **re-arms** its edge, because the sessions
+it exists to wake are still parked and the next sweep should try again. An undelivered
+`no_sessions_in_progress` fire does not: nothing is waiting on it, and re-arming would produce one
+fire per tick for as long as the quiet lasted — the exact loop the latch exists to prevent.
 
 ### `github_label`
 

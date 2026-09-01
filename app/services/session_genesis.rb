@@ -107,10 +107,10 @@ module SessionGenesis
       key: SYSTEM_EVENT,
       label: "System-event trigger",
       default_class: PRIORITY,
-      description: "A system-event trigger fired because the DEPLOYMENT changed state — today, the " \
-                   "account pool recovering. Priority by default: the session it spawns is the one " \
-                   "that decides which spot work starts, so gating it on the quota it exists to " \
-                   "manage would deadlock the queue it is there to drain."
+      description: "A system-event trigger fired because the DEPLOYMENT changed state: the account " \
+                   "pool recovering, or the fleet running out of work. Priority by default: the " \
+                   "session it spawns is the one that decides which spot work starts, so gating it " \
+                   "on the quota it exists to manage would deadlock the queue it is there to drain."
     ),
     Kind.new(
       key: API,
