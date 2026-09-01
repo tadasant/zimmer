@@ -789,6 +789,7 @@ A waiting session is dormant in one of three shapes, and each has its own door b
 | Held at the starting line by [SpotSessionHold](#what-hold-does) | its **already-queued** delayed `AgentSessionJob` is rescheduled to now, through GoodJob's own `reschedule_job` |
 | …and it is still `spot` | the gate is asked again *now* rather than in forty minutes — it is not bypassed. A window still over its target holds the session again, and the message says so rather than claiming a start it cannot promise. Promotion is what removes the gate, which is what the hold banner has always pointed at |
 | Paused mid-run by the ceiling, or parked from **Pause Until → Spot Queue** | `SpotSessionPause`'s own resume — the same locked re-check the sweep performs, restoring the prompt a human left with the park |
+| Neither, and it has **never** run | a fresh `AgentSessionJob` — the one branch that builds a turn out of nothing rather than moving one that exists |
 | Neither: it has run before and has nothing scheduled | nothing, from a promote. It is stranded rather than queued, so **Start now** sends it the same continue nudge Refresh does |
 
 The first row is the one worth internalizing. A held session is **not** a session with nothing
@@ -799,6 +800,16 @@ points at a *live* job, but the deferred one fires whenever it likes, and a sess
 finished its turn and gone back to `waiting` has no live job to stand it down. That second turn would
 run for real, re-delivering a prompt that was already delivered. Pulling the queued job forward keeps
 it at one job, one turn, prompt intact.
+
+That last-but-one row is the only one that has to rebuild the turn's *attachments* too.
+`AgentSessionJob` receives images and files exclusively as job arguments, so a job built from
+scratch starts with none — which is how a session whose prompt was "here is the screenshot, fix
+this" came to be started with the prompt and without the screenshot. `Sessions::StartNow` re-reads
+them from the durable volume, where they sit keyed by session id, and says in the session's log what
+the turn is carrying. It leaves out anything a **queued follow-up** already owns: both live in the
+same per-session directory, and a screenshot attached to a message somebody queued for later belongs
+to that message, not to the turn before it. The other rows must *not* re-read storage — their job
+already carries its own copy.
 
 A session **asleep on a wake-up it has not reached** is refused rather than started. The wake is that
 session's next event and it carries its own prompt; starting underneath it would race the two.

@@ -3189,12 +3189,21 @@ Three neighbours are **not** covered.
   within ~10 minutes rather than never — but the honest fix is for the create to be undone, or the
   enqueue to happen, on that path.
 
-**A restarted turn does not carry its attachments.** `Sessions::StartNow` — which is also what the
-Ranked view's **Start** button uses — enqueues `AgentSessionJob.enqueue_new_session(session.id)`
-with no `images:`/`files:`, and `AgentSessionJob` only ever receives attachments as job arguments.
-So a session whose prompt was "here is the screenshot, fix this" comes back with the prompt and
-without the screenshot. The session's own log line says so; the fix is
-[#739](https://github.com/tadasant/zimmer/issues/739).
+A turn this sweep restarts **does** carry its attachments, and that is worth stating because it does
+not come for free: `AgentSessionJob` receives images and files only as job arguments, and the
+replacement job is built from scratch rather than inherited. `Sessions::StartNow` — which is also
+what the Ranked view's **Start** entry and a promote to priority use — re-reads them from the durable
+volume, where they sit keyed by session id, and the session's log line names what the turn is
+carrying. Two things are deliberately left out of that replay: an image whose media type cannot be
+sniffed from its own bytes, which is dropped rather than guessed at, and any attachment a **queued
+follow-up** already owns — both kinds live in the same per-session directory, so a screenshot
+attached to a message somebody queued for later is not smuggled onto the turn before it.
+
+The session page's **Restart from scratch** button is a different door and still drops them.
+`SessionsController#restart_from_scratch` and MCP `action_session`'s `restart` clear `session_id` and
+call `AgentSessionJob.enqueue_new_session(session.id)` directly rather than going through
+`Sessions::StartNow`, so a session restarted by hand re-runs its prompt without the screenshot that
+came with it — tracked in [#746](https://github.com/tadasant/zimmer/issues/746).
 
 Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on
 the dashboard with a reason on it, a `waiting` one is on nobody's list. A session past
