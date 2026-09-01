@@ -30,6 +30,7 @@ class ProductionParityTest < ActiveSupport::TestCase
     MockProcessManager
     MockClaudeCliAdapter
     MockCodexRuntimeAdapter
+    MockPiRuntimeAdapter
     MockFileSystemAdapterTest
     MockRateLimitTracker
   ].freeze

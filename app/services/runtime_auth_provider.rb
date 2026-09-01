@@ -111,6 +111,13 @@ class RuntimeAuthProvider
       ClaudeAuthProvider.new
     when "codex"
       CodexAuthProvider.new
+    when "pi"
+      # Registered here but deliberately absent from RUNTIMES: Pi pools no
+      # accounts, so it has nothing for the refresh dispatcher or the auth
+      # warm-up to sweep. It still needs a provider, because several
+      # runtime-agnostic call sites pass session.agent_runtime straight into
+      # this method and the `else` branch below raises. See PiAuthProvider.
+      PiAuthProvider.new
     else
       raise ArgumentError, "No auth provider registered for runtime #{runtime.inspect}"
     end

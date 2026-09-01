@@ -1,0 +1,189 @@
+# frozen_string_literal: true
+
+require "test_helper"
+
+class PiRuntimeAdapterTest < ActiveSupport::TestCase
+  WORKING_DIR = "/tmp/pi-adapter-test"
+  SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+  setup do
+    @adapter = PiRuntimeAdapter.new
+    @process_manager = MockProcessManager.new
+    @file_system = MockFileSystemAdapter.new
+    @adapter.process_manager = @process_manager
+    @adapter.file_system = @file_system
+  end
+
+  test "binary_name and stderr log filename identify the Pi runtime" do
+    assert_equal "pi", @adapter.binary_name
+    assert_equal "pi_stderr.log", PiRuntimeAdapter.stderr_log_filename
+    assert_equal File.join(WORKING_DIR, "pi_stderr.log"), PiRuntimeAdapter.stderr_log_path(WORKING_DIR)
+    assert_equal "Pi CLI", PiRuntimeAdapter.cli_label
+  end
+
+  test "execute builds a non-interactive JSON-mode command carrying the Zimmer session id" do
+    execute!
+
+    assert_equal "pi", command[0]
+    assert_includes command, "-p"
+    assert_flag_value "--mode", "json"
+    # Zimmer's id IS Pi's id — the flag Codex has no analog for.
+    assert_flag_value "--session-id", SESSION_ID
+    assert_flag_value "--session-dir", File.join(WORKING_DIR, ".pi", "sessions")
+  end
+
+  # Without --approve, Pi treats the .pi/skills and .mcp.json Zimmer just wrote
+  # as untrusted project-local files and, having no TTY in -p mode to ask about
+  # them, silently ignores everything prepared for the session.
+  test "execute trusts the project-local files Zimmer prepared" do
+    execute!
+
+    assert_includes command, "--approve"
+  end
+
+  # Everything after `--` is message content, so a prompt starting with a dash is
+  # not read as a flag.
+  test "the prompt is passed after the option terminator" do
+    execute!(prompt: "-- not a flag")
+
+    terminator = command.index("--")
+    assert terminator, "expected a `--` terminator in #{command.inspect}"
+    assert_equal "-- not a flag", command.last
+    assert_operator command.index("-- not a flag"), :>, terminator
+  end
+
+  test "the model is passed through verbatim as a provider-qualified pattern" do
+    execute!(model: "anthropic/claude-opus-4-6")
+
+    assert_flag_value "--model", "anthropic/claude-opus-4-6"
+  end
+
+  test "no --model flag is passed when the session has no model" do
+    execute!(model: nil)
+
+    assert_not_includes command, "--model"
+  end
+
+  # The orchestrator prompt runs to many kilobytes; inline argv would risk E2BIG.
+  test "the append system prompt is staged to a file and passed by path" do
+    execute!(append_system_prompt: "You are running inside Zimmer.")
+
+    staged = File.join(WORKING_DIR, "pi_system_prompt.md")
+    assert_flag_value "--append-system-prompt", staged
+    assert_equal "You are running inside Zimmer.", @file_system.read(staged)
+  end
+
+  test "no system prompt flag is passed when there is nothing to append" do
+    execute!(append_system_prompt: nil)
+
+    assert_not_includes command, "--append-system-prompt"
+  end
+
+  test "images are attached with Pi's @path message syntax" do
+    execute!(images: [ { path: "/tmp/shot.png" } ])
+
+    assert_includes command, "@/tmp/shot.png"
+  end
+
+  # Pi has no `resume` subcommand: re-invoking with the same --session-id
+  # continues that session's tree.
+  test "resume reuses the same session id rather than a resume subcommand" do
+    @adapter.resume(session_id: SESSION_ID, working_dir: WORKING_DIR, prompt: "keep going")
+
+    assert_not_includes command, "resume"
+    assert_flag_value "--session-id", SESSION_ID
+    assert_equal "keep going", command.last
+  end
+
+  test "resume tolerates a blank prompt" do
+    @adapter.resume(session_id: SESSION_ID, working_dir: WORKING_DIR, prompt: nil)
+
+    assert_equal "--", command.last
+  end
+
+  test "the session directory is created before spawning" do
+    execute!
+
+    assert @file_system.directory?(File.join(WORKING_DIR, ".pi", "sessions"))
+  end
+
+  test "the spawn is process-grouped with detached stdio" do
+    execute!
+
+    options = @process_manager.spawned_processes.last[:options]
+    assert_equal WORKING_DIR, options[:chdir]
+    assert options[:pgroup]
+    assert_equal File::NULL, options[:in]
+    assert_equal File::NULL, options[:out]
+  end
+
+  test "PI_CODING_AGENT_DIR is exported so credentials resolve off the durable path" do
+    execute!
+
+    assert_equal PiHome.path, spawn_env["PI_CODING_AGENT_DIR"]
+  end
+
+  # PI_OFFLINE would also suppress Pi's provider model-catalog refresh, which a
+  # session actually depends on — so only the two pointless calls are silenced.
+  test "the pointless startup network calls are silenced but the runtime is not put offline" do
+    execute!
+
+    assert_equal "1", spawn_env["PI_SKIP_VERSION_CHECK"]
+    assert_equal "0", spawn_env["PI_TELEMETRY"]
+    assert_nil spawn_env["PI_OFFLINE"]
+  end
+
+  test "execute and resume both refuse a nil working directory" do
+    assert_raises(PiRuntimeAdapter::PiCliError) do
+      @adapter.execute(prompt: "hi", session_id: SESSION_ID, working_dir: nil)
+    end
+    assert_raises(PiRuntimeAdapter::PiCliError) do
+      @adapter.resume(session_id: SESSION_ID, working_dir: nil)
+    end
+  end
+
+  test "command_summary starts with the binary name and names the session" do
+    summary = @adapter.command_summary(session_id: SESSION_ID, prompt: "do the thing")
+
+    assert summary.start_with?("pi"), summary
+    assert_includes summary, SESSION_ID
+  end
+
+  test "retry_strategy returns the Pi classifier" do
+    strategy = @adapter.retry_strategy(
+      session: Session.new(agent_runtime: "pi"),
+      file_system: @file_system,
+      process_manager: @process_manager,
+      rate_limit_tracker: nil
+    )
+
+    assert_instance_of PiRetryStrategy, strategy
+  end
+
+  private
+
+  def execute!(prompt: "do the thing", model: nil, images: nil, append_system_prompt: nil)
+    @adapter.execute(
+      prompt: prompt,
+      session_id: SESSION_ID,
+      working_dir: WORKING_DIR,
+      model: model,
+      images: images,
+      append_system_prompt: append_system_prompt
+    )
+  end
+
+  def command
+    @process_manager.spawned_processes.last[:command]
+  end
+
+  def spawn_env
+    @process_manager.spawned_processes.last[:env]
+  end
+
+  def assert_flag_value(flag, value)
+    index = command.index(flag)
+    assert index, "expected #{flag} in #{command.inspect}"
+    assert_equal value, command[index + 1]
+  end
+end

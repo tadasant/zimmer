@@ -160,8 +160,9 @@ class AirPrepareService
 
   # The config files the Claude adapter reports as its `configFiles`, relative to
   # the target directory. The Codex adapter deliberately reports none (its config
-  # is TOML), so inspecting this list under Codex finds nothing rather than
-  # needing a runtime branch.
+  # is TOML) and the Pi adapter reports none either (it is skills-only and writes
+  # no config file at all), so inspecting this list under either finds nothing
+  # rather than needing a runtime branch.
   #
   # Used only to describe the directory's state in an error AIR left pathless.
   AIR_TARGET_CONFIG_FILES = [
@@ -289,6 +290,7 @@ class AirPrepareService
         "@pulsemcp/air-cli@#{AIR_CLI_VERSION}",
         "@pulsemcp/air-adapter-claude@#{AIR_CLI_VERSION}",
         "@pulsemcp/air-adapter-codex@#{AIR_CLI_VERSION}",
+        "@pulsemcp/air-adapter-pi@#{AIR_CLI_VERSION}",
         "@pulsemcp/air-secrets-env@#{AIR_CLI_VERSION}",
         "@pulsemcp/air-provider-github@#{AIR_CLI_VERSION}"
       ]
