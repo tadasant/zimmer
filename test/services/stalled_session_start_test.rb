@@ -18,6 +18,7 @@ require "mocha/minitest"
 # started underneath the thing that stopped it.
 class StalledSessionStartTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
+  include AttachmentFixtures
 
   setup do
     GoodJob::Job.delete_all
@@ -47,17 +48,6 @@ class StalledSessionStartTest < ActiveSupport::TestCase
     # back where the test wants it.
     session.update_columns(updated_at: session.created_at)
     session.reload
-  end
-
-  # A 1x1 PNG, so ImageStorageService's magic-byte sniffing has something real to
-  # read back off disk.
-  def minimal_png
-    png = [ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A ].pack("C*")
-    ihdr = [ 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0 ].pack("C*")
-    png += [ ihdr.length ].pack("N") + "IHDR" + ihdr + [ Zlib.crc32("IHDR" + ihdr) ].pack("N")
-    idat = Zlib::Deflate.deflate([ 0, 255, 0, 0 ].pack("C*"))
-    png += [ idat.length ].pack("N") + "IDAT" + idat + [ Zlib.crc32("IDAT" + idat) ].pack("N")
-    png + [ 0 ].pack("N") + "IEND" + [ Zlib.crc32("IEND") ].pack("N")
   end
 
   # Written straight into GoodJob rather than enqueued: the suite runs on the

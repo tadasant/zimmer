@@ -98,9 +98,13 @@ class FileStorageService < SessionAttachmentStorage
 
   # Describe one stored file (see SessionAttachmentStorage#describe_entry).
   #
-  # Nothing is ever dropped: a file is stored verbatim, so its path, recovered
-  # basename and size on disk are the whole of what the prompt's attachment note
-  # needs.
+  # A file is stored verbatim, so its path, recovered basename and size on disk
+  # are the whole of what the prompt's attachment note needs.
+  #
+  # The recovered name is the SANITIZED one, because that is the only one on
+  # disk: a turn described from storage names `My_Notes_1_.md` where the original
+  # enqueue said `My Notes (1).md`. The agent is being pointed at a file it has
+  # to open, so the name that matches the path is the more useful of the two.
   def describe_entry(path)
     { path: path, original_filename: original_filename_of(path), size: File.size(path) }
   end

@@ -8,6 +8,7 @@ require "test_helper"
 # the same session is a second turn nobody asked for.
 class Sessions::StartNowTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
+  include AttachmentFixtures
 
   def waiting_session(session_id: nil, metadata: {})
     Session.create!(
@@ -39,26 +40,13 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
     @storages.last.store(data: content, filename: filename)
   end
 
-  def teardown
-    @storages&.each(&:cleanup!)
-  end
+  teardown { @storages&.each(&:cleanup!) }
 
   # The arguments of the one AgentSessionJob this start enqueued.
   def enqueued_agent_session_args
     jobs = enqueued_jobs.select { |job| job["job_class"] == "AgentSessionJob" }
     assert_equal 1, jobs.length, "expected exactly one enqueued AgentSessionJob"
     ActiveJob::Arguments.deserialize(jobs.first["arguments"])
-  end
-
-  # A 1x1 PNG, so ImageStorageService's magic-byte sniffing has something real to
-  # read back off disk.
-  def minimal_png
-    png = [ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A ].pack("C*")
-    ihdr = [ 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0 ].pack("C*")
-    png += [ ihdr.length ].pack("N") + "IHDR" + ihdr + [ Zlib.crc32("IHDR" + ihdr) ].pack("N")
-    idat = Zlib::Deflate.deflate([ 0, 255, 0, 0 ].pack("C*"))
-    png += [ idat.length ].pack("N") + "IDAT" + idat + [ Zlib.crc32("IDAT" + idat) ].pack("N")
-    png + [ 0 ].pack("N") + "IEND" + [ Zlib.crc32("IEND") ].pack("N")
   end
 
   # The deferred job SpotSessionHold leaves behind, as GoodJob stores it. The

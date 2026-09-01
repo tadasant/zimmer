@@ -75,6 +75,12 @@ module Sessions
   # without the screenshot (#739). The other two branches move a job that already
   # carries its own, and must not re-read: that would attach a second copy.
   #
+  # The narrow duplicate-job gap named above rides along with it. A session that
+  # takes this branch while a hold job is mid-execution can end up with two turns,
+  # and both now carry the attachments — the second re-delivers the screenshot
+  # rather than arriving bare. That is the existing gap costing slightly more, not
+  # a new one: the fix for it is the same fix it always was.
+  #
   # == What it refuses
   #
   # A pause with a wake-up ARMED. That wake is the session's next event and it
@@ -195,6 +201,12 @@ module Sessions
     # session whose prompt was "here is the screenshot, fix this" started with the
     # prompt, without the screenshot, and with nothing saying an attachment had
     # ever been meant to be there.
+    #
+    # What is read is "everything on disk, minus what the queue owns" rather than
+    # a recorded list of the first turn's own attachments — nothing records one.
+    # The two coincide because this branch is reached only when `session_id` is
+    # blank, which is what "has never run" means everywhere in recovery, so no
+    # earlier turn can have consumed any of it.
     #
     # @return [Array(Array<Hash>, Array<Hash>)] images, files
     def first_turn_attachments
