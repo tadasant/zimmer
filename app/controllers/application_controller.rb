@@ -23,6 +23,28 @@ class ApplicationController < ActionController::Base
   # enforcement for every descendant controller with no visible symptom.
   rescue_from ActionController::InvalidAuthenticityToken, with: :invalid_authenticity_token
 
+  # Asking an HTML-only action for JSON is a content-negotiation miss — a client
+  # error, and the one thing the server can never satisfy. Rails already answers it
+  # with the right status: ActionController::UnknownFormat carries a
+  # `rescue_responses` mapping to :not_acceptable, so the client gets a 406 either
+  # way. What it does NOT do is treat the event as client-caused. Unrescued, the
+  # exception reaches ActionDispatch::DebugExceptions, which logs it at ERROR — and
+  # a single ERROR record trips the "Zimmer backend logging errors" Grafana alert.
+  # Production emitted exactly two of these in fourteen days, from TriggersController#show
+  # and ConnectorsController#index, and each one paged a human (#453).
+  #
+  # So this changes the log level and the deliberateness of the response, not the
+  # status. Same precedent as InvalidAuthenticityToken above and RoutingError in
+  # ErrorsController: don't suppress the signal, re-log it at INFO with the fields
+  # triage actually needs.
+  #
+  # Deliberately narrow. UnknownFormat means templates for the action exist but not
+  # in the negotiated format — by construction a negotiation miss, never a missing
+  # template. An action whose template is genuinely absent raises
+  # ActionController::MissingExactTemplate (or ActionView::MissingTemplate) instead,
+  # neither of which is rescued here, so forgetting a template is still loud.
+  rescue_from ActionController::UnknownFormat, with: :unknown_format
+
   before_action :reconcile_queue_recovery_mode
 
   private
@@ -117,6 +139,28 @@ class ApplicationController < ActionController::Base
       render plain: "The change you wanted was rejected: CSRF token verification failed. " \
         "Reload the page and try again.", status: :unprocessable_entity
     end
+  end
+
+  # One line, carrying what separates a curious client from a broken one.
+  #
+  # `formats` is the negotiated list — the same value Rails put in the exception
+  # message — and is what says which representation was asked for. `path` plus
+  # `user_agent` say whether this is a probe walking the web routes or a real
+  # integration pointed at the wrong host: every resource this happens on that has
+  # a JSON representation has it under /api/v1, so a repeat offender on one path is
+  # a client that needs redirecting rather than an action that needs a template.
+  def unknown_format
+    Rails.logger.info(
+      "Unrenderable format 406: #{request.request_method} #{request.path} " \
+      "formats=#{request.formats.map(&:to_s).inspect} " \
+      "ip=#{request.remote_ip} " \
+      "user_agent=#{request.user_agent.to_s.inspect}"
+    )
+
+    # No body: the client stated the formats it accepts, and the reason we are here
+    # is that the server can produce none of them. Anything rendered would be in a
+    # format the request already refused.
+    head :not_acceptable
   end
 
   # Whether the *request* arrived carrying the session cookie — not whether a

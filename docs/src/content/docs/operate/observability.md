@@ -55,14 +55,33 @@ signal survives without paging anyone:
 | --- | --- | --- | --- |
 | Unmatched route | `ErrorsController#not_found` | 404 | `Unmatched route 404: <verb> <path>` |
 | Failed CSRF check | `ApplicationController#invalid_authenticity_token` | 422 | `CSRF verification failed 422: <verb> <path> ip=… session_cookie=present\|absent user_agent="…" reason="…"` |
+| A format the action cannot render | `ApplicationController#unknown_format` | 406 | `Unrenderable format 406: <verb> <path> formats=[…] ip=… user_agent="…"` |
 
-Neither one weakens the check it reports on. Only the log level and the information content
+None of them weakens the check it reports on. Only the log level and the information content
 of the line change — CSRF verification still runs and still aborts the action before it
 executes. Three controllers opt out of that check for their own reasons, and the handler
 simply never fires for them: `ErrorsController` (`skip_forgery_protection`, because a 404
 carries no state to protect), `McpOauthController` (`skip_forgery_protection only:` its three
 callback actions), and `PushSubscriptionsController` (`skip_before_action
 :verify_authenticity_token`, for the service worker).
+
+The format handler is the one where the **status was never the defect**. Asking an HTML-only
+action for JSON raises `ActionController::UnknownFormat`, which already carries a Rails
+`rescue_responses` mapping to `:not_acceptable` — the client got a 406 before the handler
+existed, and gets a 406 now. What changes is the record: unrescued, the exception reached
+`ActionDispatch::DebugExceptions`, which logs at ERROR, and one ERROR record pages. Production
+emitted exactly two of them in fourteen days, from `TriggersController#show` and
+`ConnectorsController#index` ([#453](https://github.com/tadasant/zimmer/issues/453)) — two
+different HTML-only actions, same unrescued exception, one page each.
+
+The handler is deliberately narrow. `UnknownFormat` is raised only when templates for the
+action exist but not in the negotiated format, which is a negotiation miss by construction. An
+action whose template is genuinely *missing* raises `ActionController::MissingExactTemplate` or
+`ActionView::MissingTemplate`, neither of which is rescued — so a forgotten template is still a
+loud server error rather than a quiet 406. Its reach is the web UI and nothing else: the
+JSON API descends from `Api::BaseController < ActionController::API` and Administrate from
+`Administrate::ApplicationController`, so neither inherits the handler, and a format error on
+either surface still surfaces the way it did.
 
 Two fields carry the triage on a CSRF record. **`session_cookie`** separates client
 populations: *present* means a browser that has been here before — a stale form, an expired
