@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class TriggerConditionTest < ActiveSupport::TestCase
   setup do
@@ -561,10 +562,16 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_not condition.schedule_due?
   end
 
+  # An interval schedule names no wall-clock instant to wait for, so "never fired"
+  # really does mean "due now" — the first fire is what anchors the interval. This
+  # and its `hours` twin guard the half of the case statement #447 must NOT change:
+  # the clock is pinned to the arbitrary hour the daily regression defers at.
   test "schedule_due? returns true when never triggered for minutes" do
     @schedule_condition.configuration = { "unit" => "minutes", "interval" => 15 }
     @schedule_condition.last_triggered_at = nil
-    assert @schedule_condition.schedule_due?
+    travel_to Time.utc(2026, 5, 12, 11, 49) do
+      assert @schedule_condition.schedule_due?
+    end
   end
 
   test "schedule_due? returns true when enough time has passed for minutes" do
@@ -582,7 +589,9 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "schedule_due? returns true when never triggered for hours" do
     @schedule_condition.configuration = { "unit" => "hours", "interval" => 2 }
     @schedule_condition.last_triggered_at = nil
-    assert @schedule_condition.schedule_due?
+    travel_to Time.utc(2026, 5, 12, 11, 49) do
+      assert @schedule_condition.schedule_due?
+    end
   end
 
   test "schedule_due? returns true when enough time has passed for hours" do
@@ -597,9 +606,94 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_not @schedule_condition.schedule_due?
   end
 
-  test "schedule_due? returns true when never triggered for days" do
-    @schedule_condition.last_triggered_at = nil
-    assert @schedule_condition.schedule_due?
+  # A never-fired daily/weekly schedule waits for its configured wall-clock slot.
+  #
+  # The regression these pin down (#447): a nil last_triggered_at used to short-circuit
+  # to "due" before the configured time was ever consulted, so a schedule created at
+  # 11:35 UTC fired on the next minute's tick at 11:49 UTC — and, because a fire advances
+  # last_triggered_at, silently consumed the 03:00 slot it was created for.
+  #
+  # 2026-05-11 is a Monday and 2026-05-12 a Tuesday; America/Los_Angeles is UTC-7 in May.
+
+  test "schedule_due? is false for a never-triggered daily schedule before its configured time" do
+    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
+    travel_to Time.utc(2026, 5, 12, 9, 59) do # 02:59 PT, one minute before the 03:00 slot
+      assert_not condition.schedule_due?
+    end
+  end
+
+  test "schedule_due? is true for a never-triggered daily schedule once its configured time arrives" do
+    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
+    travel_to Time.utc(2026, 5, 12, 10, 0) do # 03:00 PT exactly
+      assert condition.schedule_due?
+    end
+  end
+
+  # The production report: two daily triggers created at ~11:35 UTC (04:35 PT) fired at
+  # ~11:49 UTC instead of at their 03:00 PT slot. The slot had already passed when the
+  # schedule was created, so it was not missed — the first run belongs to the next day.
+  test "schedule_due? defers a daily schedule created after its configured time to the next day" do
+    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 11, 35)) # 04:35 PT
+
+    travel_to Time.utc(2026, 5, 12, 11, 49) do # 04:49 PT — the observed premature fire
+      assert_not condition.schedule_due?, "must not fire on the same day the slot already passed"
+    end
+
+    travel_to Time.utc(2026, 5, 12, 18, 0) do # 11:00 PT, still the day of creation
+      assert_not condition.schedule_due?
+    end
+
+    travel_to Time.utc(2026, 5, 13, 10, 0) do # 03:00 PT the next day
+      assert condition.schedule_due?, "the first run is the next configured slot after creation"
+    end
+  end
+
+  # The configured time is wall-clock in the condition's own timezone. Reading "03:00"
+  # against UTC would make this pair indistinguishable — the first instant is hours past
+  # 03:00 UTC and the schedule is still not due, because in Los Angeles it is 02:05.
+  test "schedule_due? reads the configured time in the condition's timezone, not UTC" do
+    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 5, 0)) # 05-11 22:00 PT
+
+    travel_to Time.utc(2026, 5, 12, 9, 5) do # 02:05 PT — but 09:05 UTC, long past 03:00 UTC
+      assert_not condition.schedule_due?
+    end
+
+    travel_to Time.utc(2026, 5, 12, 10, 0) do # 03:00 PT
+      assert condition.schedule_due?
+    end
+  end
+
+  test "schedule_due? is false for a never-triggered weekly schedule before its configured time" do
+    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 4, 8, 0)) # Mon a week earlier
+    travel_to Time.utc(2026, 5, 11, 16, 59) do # Monday 09:59 PT, before the 10:00 slot
+      assert_not condition.schedule_due?
+    end
+  end
+
+  test "schedule_due? is true for a never-triggered weekly schedule once its configured time arrives" do
+    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 4, 8, 0))
+    travel_to Time.utc(2026, 5, 11, 17, 0) do # Monday 10:00 PT exactly
+      assert condition.schedule_due?
+    end
+  end
+
+  test "schedule_due? is false for a never-triggered weekly schedule on the wrong day" do
+    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 4, 8, 0))
+    travel_to Time.utc(2026, 5, 12, 20, 0) do # Tuesday 13:00 PT — past the time, wrong day
+      assert_not condition.schedule_due?
+    end
+  end
+
+  test "schedule_due? defers a weekly schedule created after its configured time to the next week" do
+    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 11, 18, 0)) # Mon 11:00 PT
+
+    travel_to Time.utc(2026, 5, 11, 19, 0) do # the same Monday, 12:00 PT
+      assert_not condition.schedule_due?
+    end
+
+    travel_to Time.utc(2026, 5, 18, 17, 0) do # the following Monday, 10:00 PT
+      assert condition.schedule_due?
+    end
   end
 
   test "schedule_due? returns true when enough days have passed" do
@@ -616,11 +710,6 @@ class TriggerConditionTest < ActiveSupport::TestCase
       @schedule_condition.last_triggered_at = Time.zone.parse("2026-02-17 09:00:00 UTC")
       assert_not @schedule_condition.schedule_due?
     end
-  end
-
-  test "schedule_due? returns true when never triggered for weeks" do
-    @weekly_condition.last_triggered_at = nil
-    assert @weekly_condition.schedule_due?
   end
 
   test "schedule_due? returns true when enough weeks have passed" do
@@ -1130,6 +1219,30 @@ class TriggerConditionTest < ActiveSupport::TestCase
   end
 
   private
+
+  # A never-fired "every day at 03:00 America/Los_Angeles" condition — the shape from
+  # #447 — armed at +created_at+. Persisted, because created_at is what the first fire
+  # is measured from and an in-memory record would have none.
+  def fresh_daily_condition(created_at:)
+    @schedule_condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "03:00",
+                      "timezone" => "America/Los_Angeles" },
+      last_triggered_at: nil,
+      created_at: created_at
+    )
+    @schedule_condition
+  end
+
+  # The weekly twin: "every Monday at 10:00 America/Los_Angeles", never fired.
+  def fresh_weekly_condition(created_at:)
+    @weekly_condition.update!(
+      configuration: { "unit" => "weeks", "interval" => 1, "time" => "10:00",
+                      "day_of_week" => "monday", "timezone" => "America/Los_Angeles" },
+      last_triggered_at: nil,
+      created_at: created_at
+    )
+    @weekly_condition
+  end
 
   # The deployment-wide allow-list resolves through SecretsLoader (encrypted
   # credentials) first, ENV second -- the same order SlackService uses for its token.

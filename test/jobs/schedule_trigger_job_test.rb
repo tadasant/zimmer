@@ -30,8 +30,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
-    # Make the condition due by clearing last_triggered_at
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     assert_difference("Session.count", 1) do
       ScheduleTriggerJob.perform_now
@@ -73,6 +72,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     AgentSessionJob.stubs(:enqueue_new_session)
 
     # Make multiple conditions due
+    make_due!
     TriggerCondition.schedule
       .joins(:trigger)
       .where(triggers: { status: "enabled" })
@@ -88,7 +88,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     ScheduleTriggerJob.perform_now
 
@@ -98,7 +98,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
   end
 
   test "advances last_triggered_at when session creation fails" do
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     # Stub create_session! to raise an error (e.g. invalid MCP server)
     Trigger.any_instance.stubs(:create_session!).raises(ActiveRecord::RecordInvalid.new(@trigger))
@@ -113,7 +113,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
   end
 
   test "raises exactly one alert when session creation fails" do
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("mcp_servers contains invalid server(s): agent-orchestrator-pulse-directory-management"))
 
@@ -127,7 +127,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
   end
 
   test "alert carries the exception itself, so the snippet has class, message and frames" do
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     boom = StandardError.new("agent root not found in catalog")
     boom.set_backtrace([ "app/models/trigger.rb:42:in `heal_stale_agent_root!'", "app/models/trigger.rb:99:in `create_session!'" ])
@@ -202,7 +202,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     ScheduleTriggerJob.perform_now
 
@@ -229,7 +229,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     never_ran.update_columns(session_id: nil, transcript: nil)
 
     @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: never_ran.id)
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     AlertService.expects(:raise_alert).never
     UnarchiveSessionService.expects(:call).never
@@ -546,7 +546,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     )
 
     @trigger.update!(reuse_session: true, last_session_id: requester.id)
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     ScheduleTriggerJob.perform_now
 
@@ -554,7 +554,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
   end
 
   test "does not create infinite retry loop on persistent errors" do
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("persistent error"))
     AlertService.stubs(:raise_alert)
@@ -663,7 +663,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
     @trigger.update!(max_sessions_per_minute: 3)
     @trigger.update_columns(burst_active_until: 2.minutes.from_now)
-    @condition.update!(last_triggered_at: nil)
+    make_due!
 
     assert_no_difference("Session.count") do
       ScheduleTriggerJob.perform_now
@@ -674,5 +674,23 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
         ScheduleTriggerJob.perform_now
       end
     end
+  end
+
+  private
+
+  # Make @condition due on this tick, whatever wall-clock time the suite runs at.
+  #
+  # Clearing last_triggered_at used to be enough on its own, and no longer is: a daily
+  # schedule is due only once its configured time has come round, and only if it already
+  # existed when that slot passed (#447). So the slot moves to midnight — past on every
+  # tick — and the condition is dated back behind it. last_triggered_at stays nil, so
+  # tests that assert it advances from nil keep asserting exactly that.
+  def make_due!(condition = @condition)
+    condition.update!(
+      last_triggered_at: nil,
+      created_at: 2.days.ago,
+      configuration: condition.configuration.merge("time" => "00:00")
+    )
+    condition
   end
 end
