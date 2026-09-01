@@ -55,6 +55,49 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "New Trigger"
   end
 
+  # The event has to be reachable from the form, or "add a trigger for it" means
+  # editing the database by hand.
+  test "new form offers both system events" do
+    get new_trigger_path
+    assert_response :success
+
+    assert_select "select[name=?] option[value=?]", "trigger[trigger_conditions_attributes][0][configuration][event_name]", "quota_available"
+    assert_select "select[name=?] option[value=?]", "trigger[trigger_conditions_attributes][0][configuration][event_name]", "no_sessions_in_progress"
+  end
+
+  # A card carries two selects named `configuration[event_name]` — one per event
+  # vocabulary — so the hidden one has to be disabled or the browser submits the
+  # key twice and the LAST one in the DOM wins, silently blanking the chosen
+  # ao_event.
+  test "only the event_name select for the condition's own type is submittable" do
+    get new_trigger_path
+    assert_response :success
+
+    name = "trigger[trigger_conditions_attributes][0][configuration][event_name]"
+    assert_select "select[name=?]", name, 2, "both event vocabularies render on a blank card"
+    assert_select "select[name=?]:not([disabled])", name, 0,
+      "a blank card has no condition type yet, so neither select may submit"
+  end
+
+  test "the event_name select of an edited condition's own type is enabled" do
+    trigger = Trigger.create!(
+      name: "Idle fleet groomer",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Groom the backlog. {{event}}",
+      trigger_conditions_attributes: [
+        { condition_type: "system_event", configuration: { "event_name" => "no_sessions_in_progress" } }
+      ]
+    )
+
+    get edit_trigger_path(trigger)
+    assert_response :success
+
+    name = "trigger[trigger_conditions_attributes][0][configuration][event_name]"
+    assert_select "select[name=?]:not([disabled])", name, 1
+    assert_select "select[name=?]:not([disabled]) option[selected][value=?]", name, "no_sessions_in_progress", 1
+  end
+
   test "new form offers the DM and passive-listening event types, and not the deprecated one" do
     get new_trigger_path
     assert_response :success
