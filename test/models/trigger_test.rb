@@ -3681,6 +3681,61 @@ class TriggerTest < ActiveSupport::TestCase
       "a dropped follow-up is not progress and must not clear a run of real misses"
   end
 
+  # === #704: a fire that raises after the session row exists ===
+
+  test "last_fire_created_session names the session a fire created, even when the fire then raised" do
+    # Creating a session is two steps and only the first is a database write.
+    # Session.create_from_agent_root! commits the row and then enqueues the one
+    # AgentSessionJob the session's first turn rides on; #create_session! keeps
+    # working after that. A caller whose only signal is the return value cannot
+    # tell "nothing was created" from "created, then the enqueue fell over" — and
+    # putting the event back on the second reading is how trigger 352 spawned two
+    # merge-gate sessions for one `ready to merge` label.
+    @trigger.update!(reuse_session: false)
+    AgentSessionJob.stubs(:enqueue_new_session).raises(RuntimeError, "the agents queue is unreachable")
+
+    created = nil
+    assert_difference "Session.count", 1 do
+      assert_raises(RuntimeError) { @trigger.create_session!(prompt: "Rate this PR") }
+      created = @trigger.last_fire_created_session
+    end
+
+    assert_not_nil created, "the fire raised, but it left a real session behind"
+    assert_equal Session.order(:id).last.id, created.id
+  end
+
+  test "last_fire_created_session is nil when the fire raised before creating anything" do
+    # The other direction, and the one that must not be traded away: a fire that
+    # never got as far as a session row is a DROPPED event, and a caller holding a
+    # retryable one has to put it back. #647 is that failure — a `ready to merge`
+    # label swallowed, leaving a PR waiting forever with nobody to notice.
+    @trigger.update!(reuse_session: false)
+    AgentRootsConfig.stubs(:find!).raises(AgentRootsConfig::AgentRootNotFoundError, "gone")
+
+    assert_no_difference "Session.count" do
+      assert_raises(AgentRootsConfig::AgentRootNotFoundError) { @trigger.create_session!(prompt: "Rate this PR") }
+    end
+
+    assert_nil @trigger.last_fire_created_session
+  end
+
+  test "last_fire_created_session is cleared by the next fire rather than carried into it" do
+    # Read after a raise, so it cannot be reset on the way out. It is reset on the
+    # way IN instead, which is what stops a second item in the same tick — same
+    # in-memory trigger — from being credited with the first item's session.
+    @trigger.update!(reuse_session: false)
+
+    @trigger.create_session!(prompt: "First")
+    first = @trigger.last_fire_created_session
+    assert_not_nil first
+
+    AgentRootsConfig.stubs(:find!).raises(AgentRootsConfig::AgentRootNotFoundError, "gone")
+    assert_raises(AgentRootsConfig::AgentRootNotFoundError) { @trigger.create_session!(prompt: "Second") }
+
+    assert_nil @trigger.last_fire_created_session,
+      "the second fire created nothing; it must not report the first fire's session"
+  end
+
   test "skip_if_pending_session_inert? is true for a reuse trigger and false for a spawning one" do
     @trigger.update!(skip_if_pending_session: true, reuse_session: false)
     assert_not @trigger.skip_if_pending_session_inert?

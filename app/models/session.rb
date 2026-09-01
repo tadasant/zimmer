@@ -1310,8 +1310,15 @@ class Session < ApplicationRecord
   #   parent, or at the default when it has none. See SessionPrecedence.
   # @param metadata [Hash] additional metadata to store on the session
   # @param custom_metadata [Hash] additional custom metadata
+  # @yieldparam session [Session] the session, the instant its row is committed and
+  #   BEFORE its start job is enqueued. Creating a session is two steps, and only the
+  #   first is a database write: a caller that treats a raise as "nothing was created"
+  #   will re-create on the next pass if the enqueue is what failed. The return value
+  #   cannot tell it otherwise, because there is no return value when this raises —
+  #   which is how one `ready to merge` label got two merge-gate sessions (#704). A
+  #   caller holding a retryable event uses this to learn the row exists either way.
   # @return [Session] the created and enqueued session
-  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil)
+  def self.create_from_agent_root!(agent_root_name:, prompt:, agent_runtime: nil, mcp_servers: nil, catalog_skills: nil, catalog_hooks: nil, catalog_plugins: nil, goal: nil, parent_session_id: nil, metadata: {}, custom_metadata: {}, images: nil, files: nil, skip_enqueue: false, genesis: nil, scheduling_class: nil, precedence: nil, &on_created)
     agent_root = AgentRootsConfig.find!(agent_root_name)
 
     # An explicit override wins over the root's declared runtime; either way the
@@ -1378,6 +1385,8 @@ class Session < ApplicationRecord
       custom_metadata: custom_metadata,
       config: { "model" => resolved_model }
     )
+
+    on_created&.call(session)
 
     AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence) unless skip_enqueue
     session
