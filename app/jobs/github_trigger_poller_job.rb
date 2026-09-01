@@ -381,7 +381,16 @@ class GithubTriggerPollerJob < ApplicationJob
 
     (current_keys - seen).sort.each do |key|
       item, label = candidates[key]
-      fired << key if fire(condition, item, event: "label added: #{label}")
+      next unless fire(condition, item, event: "label added: #{label}")
+
+      fired << key
+      # Record the key the instant its session exists, rather than only in the
+      # end-of-tick write below. Everything between here and there can fail —
+      # another key's fire, the reload in #write_state, the update! itself, or the
+      # worker being torn down mid-tick — and every one of those failures loses a
+      # key whose session was already created. The next tick then sees it as new
+      # and spawns a second session for the same label. See #record_fired_key.
+      record_fired_key(condition, scope, key)
     end
 
     # A key that was seen but is absent this tick is NOT dropped on sight. GitHub's search
@@ -408,6 +417,51 @@ class GithubTriggerPollerJob < ApplicationJob
       { "seen_items" => (retained + fired + grace_retained).to_a.sort, "seen_missing_counts" => next_missing },
       fired: fired.any?
     )
+  end
+
+  # Persist ONE fired key, on its own, immediately after its session was created.
+  #
+  # The end-of-tick #write_state is still the authority on the whole seen-set: it
+  # is what maintains `seen_missing_counts` and what drops keys whose grace has
+  # run out. This is only the durability floor underneath it — the guarantee that
+  # a key whose session exists cannot come back as new, whatever happens to the
+  # rest of the tick.
+  #
+  # It only ever ADDS a key that just fired, so it cannot resurrect a key the
+  # grace window was about to drop, and it cannot suppress a fire: an item that
+  # did not produce a session is never passed here and is still left unseen for
+  # the next tick to retry. That direction matters — #647 is the opposite failure,
+  # a real label event swallowed, and it is the worse of the two.
+  #
+  # `fired: true` for the same reason #write_github_state! folds last_triggered_at
+  # into the state write: the trigger fired, and the two must not disagree.
+  #
+  # Rescued rather than raised. A failure here costs exactly what today's code
+  # costs — the end-of-tick write is still coming — so it must not abort a tick
+  # that is otherwise working.
+  #
+  # The #reload drops the condition's association cache, so every item after the
+  # first in a tick re-reads its trigger. That is correct rather than merely
+  # tolerable: all the state a fire consults across items — the burst window and
+  # latch, `last_session_id`, the missed-fire count — is DB-backed and taken under
+  # a row lock, so a fresh instance reads the same answer. Nothing here may depend
+  # on instance memoization surviving the loop.
+  def record_fired_key(condition, scope, key)
+    condition.reload
+
+    # Same mid-poll re-scope check #write_state makes, for the same reason: a
+    # condition the user re-pointed while this tick was in flight is being
+    # re-baselined, and this tick's keys are not part of that baseline.
+    return if condition.github_watch_scope != scope
+    return if condition.github_seen_items.include?(key)
+
+    condition.write_github_state!(
+      { "seen_items" => (condition.github_seen_items + [ key ]).sort },
+      fired: true
+    )
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Could not record fired key #{key} for condition " \
+                      "#{condition.id} immediately (#{e.message}); the end-of-tick write is the fallback"
   end
 
   def label_query(condition)
@@ -523,6 +577,21 @@ class GithubTriggerPollerJob < ApplicationJob
     # with no idea which PR it is about. Append the item rather than firing blind.
     prompt = "#{prompt}\n\n#{context_block(item, event: event)}" unless trigger.references_github_context?
 
+    # Set immediately before the call, and read only in the rescue below.
+    # #create_session! clears the trigger's created-session marker on entry, so the
+    # marker is a true report of THIS fire — but only once we are inside it. A raise
+    # before that (interpolation, the context block) would otherwise read the marker
+    # left by the PREVIOUS item in this same tick, and record an item as fired that
+    # has no session at all. That is #647's direction, and it is the worse one.
+    #
+    # Whether the previous item's marker is still reachable depends on the caller.
+    # #process_new_issue_condition loops #fire over its batch with nothing in between,
+    # so `condition.trigger` stays the same memoized instance across items and the
+    # stale read is live. #process_label_condition happens not to be exposed today,
+    # because #record_fired_key reloads the condition after every successful fire and
+    # #reload drops the association cache — an accident of an unrelated call, not a
+    # property to rely on.
+    spawn_attempted = true
     session = trigger.create_session!(prompt: prompt)
 
     # Burst control suppressed the spawn: the trigger has exceeded its cap and is
@@ -562,6 +631,37 @@ class GithubTriggerPollerJob < ApplicationJob
                       "#{trigger.id} from #{item_key(item)} (#{event})"
     true
   rescue => e
+    # A raise is NOT proof that nothing was created. Session.create_from_agent_root!
+    # commits the session row and then enqueues its one AgentSessionJob, and
+    # Trigger#create_session! keeps going afterwards — the reuse pointer, the
+    # sessions_created counter, the missed-fire clear. Anything from the enqueue
+    # onward can raise over a live session row, and returning false here would
+    # leave the item unseen and hand the next tick, sixty seconds later, an event
+    # that already has a session.
+    #
+    # That is defect 1 of #704: trigger 352 spawned TWO merge-gate sessions for one
+    # `ready to merge` label, 55s and 43s apart, on the one mechanism authorized to
+    # merge without human sign-off — a double-merge race whenever both dispatch.
+    #
+    # So the question is not "did this method return cleanly" but "does a session
+    # exist for this item", and Trigger#last_fire_created_session answers it. When
+    # one does, the event is consumed: report the failure loudly, and treat the item
+    # as fired so it is never spawned for twice.
+    #
+    # A session that was created but whose start job did not survive the failure is
+    # defect 2 of the same issue, and it has its own owner: StalledStartSweepJob
+    # restarts a `waiting` session with no job (#737). Re-firing here would not have
+    # rescued it either — it would have spawned a sibling and left the original
+    # stranded regardless, which is precisely what happened to session 10426.
+    created = spawn_attempted ? trigger.last_fire_created_session : nil
+    if created
+      Rails.logger.error "[GithubTriggerPollerJob] Trigger #{trigger.id} created session " \
+                         "#{created.id} for #{item_key(item)} (#{event}) but the fire then failed: " \
+                         "#{e.message}. Treating the event as fired — the session exists, so " \
+                         "re-firing would spawn a duplicate. If it never starts, StalledStartSweepJob owns it."
+      return true
+    end
+
     Rails.logger.error "[GithubTriggerPollerJob] Failed to create session for " \
                        "#{item_key(item)} (#{event}): #{e.message}"
     false
