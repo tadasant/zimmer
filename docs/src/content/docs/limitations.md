@@ -2866,6 +2866,19 @@ Also:
 
 ## Testing
 
+### Every clone on a host shares one AIR CLI install directory per environment
+
+🟡 `AIR_INSTALL_DIR` is keyed on the environment, not on the clone: every test suite on a host
+installs into `~/.cache/air-cli-test`, and every `bin/agent-dev` into `~/.cache/air-cli`. Two agent
+sessions on branches that pin different AIR versions — or the same version with different package
+sets — therefore take turns reinstalling that one directory, each replacing the other's tree and
+deleting its version marker.
+
+A cross-process `flock` serialises the installs, so this costs a repeated ~60s `npm install` rather
+than a corrupt tree, and since 2026-09-01 neither environment can reach the deployed app's
+`/opt/air-cli`, so it can no longer take production down with it. Set `AIR_INSTALL_DIR` explicitly
+to give a clone its own.
+
 ### Playwright e2e scripts do not run in CI
 
 🟡 CI runs the Chrome-driven Ruby system suite (`test/system/*.rb`) in the `test-system` job, but the
