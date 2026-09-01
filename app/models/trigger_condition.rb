@@ -567,6 +567,28 @@ class TriggerCondition < ApplicationRecord
   end
 
   # Check if the schedule trigger should fire now
+  #
+  # The two families of unit answer "is it due" differently, and a never-fired
+  # condition is where they part company.
+  #
+  # `minutes` and `hours` are pure intervals — "every 15 minutes" names no
+  # wall-clock instant to wait for, so a condition that has never fired is due
+  # on the next tick and the first fire becomes the anchor for the rest.
+  #
+  # `days` and `weeks` DO name one (`time`, and for weeks `day_of_week`, both
+  # required by validation). Their configured slot governs the first fire exactly
+  # as it governs every later one — a schedule created at 05:00 for an 03:00 slot
+  # is not due until 03:00 the next day, because that is what "every day at 03:00"
+  # says.
+  #
+  # A nil `last_triggered_at` must therefore not short-circuit to "due": that fires
+  # the schedule a minute after creation at whatever hour that is, and a fire
+  # advances `last_triggered_at`, so it also consumes the slot the schedule exists
+  # for and the intended run never happens (#447).
+  #
+  # With no previous fire there is no elapsed interval to measure, so that term is
+  # replaced by #armed_before? rather than skipped: creation is the anchor the
+  # first fire is measured from, exactly as each fire is the anchor for the next.
   def schedule_due?
     return false unless condition_type == "schedule"
     return false unless trigger&.enabled?
@@ -586,16 +608,17 @@ class TriggerCondition < ApplicationRecord
     when "hours"
       last.nil? || now - last >= schedule_interval.hours
     when "days"
-      return true if last.nil?
       target = parse_schedule_time(now)
-      now >= target && (now.to_date - last.to_date).to_i >= schedule_interval
+      return false unless now >= target
+      return armed_before?(target) if last.nil?
+      (now.to_date - last.to_date).to_i >= schedule_interval
     when "weeks"
-      return true if last.nil?
       target_day = DAYS_OF_WEEK.index(schedule_day_of_week) # 0=monday
       current_day = (now.wday - 1) % 7 # Convert Sunday=0 to Monday=0
       target = parse_schedule_time(now)
-      weeks_elapsed = ((now.to_date - last.to_date).to_i / 7.0).floor
-      current_day == target_day && now >= target && weeks_elapsed >= schedule_interval
+      return false unless current_day == target_day && now >= target
+      return armed_before?(target) if last.nil?
+      ((now.to_date - last.to_date).to_i / 7.0).floor >= schedule_interval
     else
       false
     end
@@ -700,6 +723,30 @@ class TriggerCondition < ApplicationRecord
     end
 
     scope_of.call(configuration) != scope_of.call(configuration_was)
+  end
+
+  # Whether a never-fired `days`/`weeks` schedule already existed when +target+ —
+  # the slot `now` has just reached — came round.
+  #
+  # A schedule created at 05:00 has not *missed* that day's 03:00 slot: the slot
+  # passed before the schedule existed, so there is nothing there to have missed.
+  # Its first fire is the next slot, 03:00 tomorrow. `now >= target` alone does not
+  # express that — it is satisfied at every hour after 03:00 on the creation day,
+  # which is the shape #447 took in production (created 04:35 PT, fired 04:49 PT).
+  #
+  # `created_at`, not `updated_at`: a schedule is armed when it is created, and a
+  # plain re-save of the trigger form must not push its first fire out a day. The
+  # cost is that creation is the *only* arming instant — re-enabling a disabled
+  # schedule, or editing a never-fired one's `time`, does not re-arm it, so it can
+  # still fire off-slot once. Closing that needs a persisted `armed_at`
+  # ([#745](https://github.com/tadasant/zimmer/issues/745)).
+  #
+  # An unpersisted condition has no creation instant to measure from and is
+  # treated as armed.
+  def armed_before?(target)
+    return true if created_at.nil?
+
+    created_at.in_time_zone(schedule_timezone) < target
   end
 
   def parse_schedule_time(reference_time)

@@ -147,7 +147,12 @@ module Mcp
           applies to sessions spawned from now on.
 
         **Schedule configuration:**
-        - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units
+        - **Recurring**: `{"interval": 2, "unit": "hours", "timezone": "UTC"}` — fires every N units.
+          `unit` is minutes, hours, days or weeks. `days` and `weeks` additionally REQUIRE a `time`
+          ("HH:MM", wall-clock in `timezone`), and `weeks` a `day_of_week` ("monday").
+        - A `days`/`weeks` schedule first fires at the first configured slot that arrives AFTER you
+          create it — not immediately. Create "every day at 03:00" at 05:00 and nothing happens until
+          03:00 tomorrow. `minutes` and `hours` have no such slot and do fire on the next tick.
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
 
         **Zimmer event configuration:**
