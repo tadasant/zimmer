@@ -3178,21 +3178,33 @@ Three neighbours are **not** covered.
   `waiting` without that marker and without a hold, a pause, a park or an armed wake is stranded
   with nothing looking for it. `Session#continue_nudge_on_refresh?` is the manual door: a human
   pressing **Refresh** sends it the continue nudge.
-- **A clone-only session whose setup job was lost.** It has no prompt, so it is filtered out: its
-  repair is a clone (`AgentSessionJob.enqueue_for_clone_only`), not a turn, and starting one as a
-  fresh session would spawn an agent the human never asked for. It sits in `waiting` until someone
-  notices.
+- **A session with no prompt.** That is not a lost job: `POST /api/v1/sessions` enqueues nothing
+  when the caller sends no prompt, deliberately, and the session waits in `waiting` for a follow-up.
+  Starting one would run an agent nobody asked for. (A clone-only session created in the web UI is
+  a different thing again — `SessionsController` creates it `needs_input`, so it is out of the
+  population by status. A clone-only setup job that is lost is not repaired by anything.)
 - **The enqueue itself.** The attachment-copy failure paths in `SessionsController#quick_prompt`
   and `#chat_bubble` create the session with `skip_enqueue: true` and then raise before reaching
   `AgentSessionJob.enqueue_new_session`. The human gets a flash message and the row is now rescued
   within ~10 minutes rather than never — but the honest fix is for the create to be undone, or the
   enqueue to happen, on that path.
 
-The repair is also bounded: `StalledSessionStart::MAX_RESTARTS` (3) attempts, after which the
-session is **failed** rather than re-queued again. That is a deliberate trade — a `waiting` row is
-on nobody's list and a `failed` one is on the dashboard — but it means a session whose start job is
-being eaten by something systemic ends up failed with a `failure_reason` that names the symptom and
-not the cause.
+**A restarted turn does not carry its attachments.** `Sessions::StartNow` — which is also what the
+Ranked view's **Start** button uses — enqueues `AgentSessionJob.enqueue_new_session(session.id)`
+with no `images:`/`files:`, and `AgentSessionJob` only ever receives attachments as job arguments.
+So a session whose prompt was "here is the screenshot, fix this" comes back with the prompt and
+without the screenshot. The session's own log line says so; the fix is
+[#739](https://github.com/tadasant/zimmer/issues/739).
+
+Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on
+the dashboard with a reason on it, a `waiting` one is on nobody's list. A session past
+`MAX_RESTARTS` (3) attempts, because whatever is eating its start job is not something more
+attempts will fix. And a session stalled longer than `MAX_STALL_AGE` (1 day), because by then the
+turn is stale rather than late: session 10426's own PR was merged seven minutes after it was
+spawned, so a sweep that found it on day three and simply started it would have run a merge gate
+against an already-merged PR. The cost of that second rule is that a genuinely still-wanted turn
+older than a day needs a human to press Restart — which is a thing they can now see, rather than a
+row nothing was looking at.
 
 ---
 

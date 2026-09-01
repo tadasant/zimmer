@@ -17,7 +17,8 @@ class StalledStartSweepJobTest < ActiveSupport::TestCase
       genesis: SessionGenesis::GITHUB_LABEL,
       status: :waiting
     )
-    session.update_columns(created_at: 3.days.ago, updated_at: 3.days.ago)
+    stalled_for = StalledSessionStart::GRACE + 5.minutes
+    session.update_columns(created_at: stalled_for.ago, updated_at: stalled_for.ago)
 
     assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
       StalledStartSweepJob.perform_now
