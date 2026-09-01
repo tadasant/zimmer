@@ -165,6 +165,11 @@
       "class": "SpotHoldSweepJob",
       "description": "Put held spot sessions back on the re-check ladder when their re-check never fired"
     },
+    "stalled_start_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "StalledStartSweepJob",
+      "description": "Re-enqueue the first turn of a session that has been waiting to start with no job behind it"
+    },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
       "class": "BurnRateRecomputeJob",
@@ -387,6 +392,11 @@
       "class": "SpotHoldSweepJob",
       "description": "Put held spot sessions back on the re-check ladder when their re-check never fired"
     },
+    "stalled_start_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "StalledStartSweepJob",
+      "description": "Re-enqueue the first turn of a session that has been waiting to start with no job behind it"
+    },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
       "class": "BurnRateRecomputeJob",
@@ -479,15 +489,15 @@
       "class": "GitHubMergeConflictPollerJob",
       "description": "Poll GitHub PRs for merge conflicts and notify sessions"
     },
-    "experimental_flag_backfill": {
-      "cron": "*/15 * * * *",
-      "class": "ExperimentalFlagBackfillJob",
-      "description": "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
-    },
     "post_deploy_tasks": {
       "cron": "*/2 * * * *",
       "class": "PostDeployTaskJob",
       "description": "Run the one-time post-deploy tasks in db/post_deploy, so an ops step ships with the deploy instead of needing a shell"
+    },
+    "experimental_flag_backfill": {
+      "cron": "*/15 * * * *",
+      "class": "ExperimentalFlagBackfillJob",
+      "description": "Label pre-tracking sessions with what each experimental setting was, so the Costs experiment report has history"
     },
     "cli_status_refresh": {
       "cron": "*/2 * * * *",

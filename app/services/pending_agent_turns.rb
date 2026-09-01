@@ -1,0 +1,37 @@
+# frozen_string_literal: true
+
+# Which of these sessions already has an AgentSessionJob queued or running.
+#
+# Every repair sweep that considers re-enqueuing a turn has to ask this first,
+# because the two wrong answers are asymmetric. Miss a job that is merely late
+# and the sweep enqueues a second one, which is a duplicated turn against one
+# clone and real quota spent re-delivering a prompt. Report a job that no longer
+# exists and the sweep stands down on a session nothing will ever start — the
+# failure the sweeps exist to end.
+#
+# GoodJob is read directly rather than through `sessions.running_job_id`, and the
+# difference matters for exactly the population these sweeps look at:
+# `running_job_id` is written from INSIDE `AgentSessionJob#perform`, so a session
+# whose start job is sitting in the queue — or was deferred with a delay — has a
+# blank one and reads as abandoned. The job row is the durable fact.
+#
+# `serialized_params -> 'arguments' ->> 0` is the session id every AgentSessionJob
+# is enqueued with, on every one of its four enqueue helpers, and only the ids
+# come back: the rest of the payload is a deferred prompt with its attachments,
+# which there is no reason to load.
+module PendingAgentTurns
+  module_function
+
+  # @param ids [Array<Integer>] session ids to ask about
+  # @return [Set<Integer>] the subset that has an unfinished AgentSessionJob
+  def for(ids)
+    return Set.new if ids.empty?
+
+    GoodJob::Job
+      .where(job_class: AgentSessionJob.name, finished_at: nil)
+      .where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s))
+      .pluck(Arel.sql("serialized_params -> 'arguments' ->> 0"))
+      .map(&:to_i)
+      .to_set
+  end
+end
