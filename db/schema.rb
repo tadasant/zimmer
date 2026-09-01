@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_31_180000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_01_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -72,6 +72,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_31_180000) do
     t.string "default_model"
     t.string "default_runtime"
     t.jsonb "extension_states", default: {}, null: false
+    t.datetime "fleet_idle_event_fired_at"
+    t.datetime "fleet_idle_since"
     t.jsonb "genesis_class_overrides", default: {}, null: false
     t.boolean "mcp_tool_search_enabled", default: true, null: false
     t.jsonb "queue_recovery_mode", default: {}, null: false

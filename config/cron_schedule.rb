@@ -270,6 +270,12 @@ module CronSchedule
       description: "Check if quota-exceeded accounts have reset and restore them to active",
       environments: %i[production staging]
     },
+    fleet_idle_checker: {
+      cron: "* * * * *", # Every minute — the resolution of FleetIdleMonitor::IDLE_THRESHOLD
+      class: "FleetIdleCheckerJob",
+      description: "Fire the no_sessions_in_progress event once the fleet has had nothing to do for 5 minutes",
+      environments: %i[production staging]
+    },
     spot_ceiling_sweep: {
       cron: "*/5 * * * *", # Every 5 minutes — quota readings land every 15, so this is not the bound
       class: "SpotCeilingSweepJob",

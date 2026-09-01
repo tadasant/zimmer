@@ -12,6 +12,9 @@
 # Currently supports:
 # - quota_available: the account pool went from serving nothing to serving
 #   something. See QuotaAvailabilityMonitor, which owns the edge detection.
+# - no_sessions_in_progress: the deployment has had nothing to do for five
+#   continuous minutes. See FleetIdleMonitor, which owns the latch and the
+#   cooldown under it.
 #
 # System events are broadcast by nature — every enabled trigger carrying a
 # matching condition fires — and recurring, so a condition is never spent and the
@@ -128,8 +131,17 @@ class SystemEventTriggerJob < ApplicationJob
     false
   end
 
-  # Only `quota_available` carries an edge that can be spent; a future system
-  # event with no stored level has nothing to put back.
+  # Only `quota_available` gets its edge put back, and the asymmetry is
+  # deliberate. That edge exists to wake sessions that are still parked, so a
+  # fire nobody listened to leaves real work stranded and the next sweep should
+  # try again.
+  #
+  # `no_sessions_in_progress` has nobody waiting on it: an idle fleet with no
+  # enabled trigger is a deployment that has not asked for idle-time work.
+  # Re-arming its latch would fire once per sweep for as long as the quiet
+  # lasts, which is the loop FleetIdleMonitor's latch exists to prevent — so an
+  # undelivered fire is simply spent, and the next one comes after the fleet has
+  # actually run something.
   def rearm(event_name)
     QuotaAvailabilityMonitor.rearm! if event_name == QuotaAvailabilityMonitor::EVENT_NAME
     nil
@@ -139,6 +151,9 @@ class SystemEventTriggerJob < ApplicationJob
     case event_name
     when "quota_available"
       "The Claude Code account pool has capacity again"
+    when "no_sessions_in_progress"
+      "The fleet has run out of work: nothing running and nothing queued for " \
+        "#{FleetIdleMonitor::IDLE_THRESHOLD.inspect}"
     else
       event_name.to_s.humanize
     end

@@ -57,6 +57,7 @@ From `config.good_job.cron`:
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
 | 1m | `OutcomeAnalysisBatchPumpJob` | Advance every running Outcomes "Analyze All" batch: reconcile in-flight analyses, spawn the next wave |
 | 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
+| 1m | `FleetIdleCheckerJob` | Fire the `no_sessions_in_progress` trigger event once the deployment has had nothing to do for 5 continuous minutes — nothing running, nothing queued in the spot queue, nothing parked on an outage, and a pool that can serve. Idleness is a level, not an edge, so `FleetIdleMonitor` latches the fire (one per quiet stretch, re-armed only when the fleet has work) under an hourly floor, because the session the fire spawns would otherwise re-qualify it by running. Production and staging only — the fire spawns a real session. See [Triggers](/sessions/triggers/#no_sessions_in_progress). |
 | 2m | `GitHubMergeConflictPollerJob` | Detect merge conflicts on open PRs |
 | 2m | `CliStatusRefreshJob` | Refresh the `gh` / `claude` / `codex` version cache |
 | 5m | `GithubTriggerHealthCheckJob` | Alert when GitHub trigger polling has silently stopped succeeding |

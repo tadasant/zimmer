@@ -324,6 +324,29 @@ module SessionStateMachine
         end
       end
     end
+
+    # Re-arm the `no_sessions_in_progress` system event: the fleet is demonstrably
+    # not idle.
+    #
+    # An after_commit on the status column rather than a hook on `start` and
+    # `resume`, because the fact FleetIdleMonitor needs is "a session is running",
+    # and every path that produces it has to count — both AASM events, an
+    # elicitation unblocking, a session created directly in `running`. Missing one
+    # would leave the latch spent against a fleet that had gone back to work.
+    #
+    # It does NOT cover `update_column`/`update_all`, which skip callbacks; no
+    # caller writes `status` that way, and the sweep re-arms on its next tick
+    # regardless, so the hook is the fast path rather than the only one.
+    #
+    # After the commit, so a transition is never slowed or rolled back by this
+    # bookkeeping; FleetIdleMonitor.record_busy! swallows its own failures for the
+    # same reason.
+    after_commit :rearm_fleet_idle_event, if: -> { saved_change_to_status? && running? }
+  end
+
+  # See the after_commit above.
+  def rearm_fleet_idle_event
+    FleetIdleMonitor.record_busy!
   end
 
   class_methods do
