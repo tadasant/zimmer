@@ -439,6 +439,13 @@ class GithubTriggerPollerJob < ApplicationJob
   # Rescued rather than raised. A failure here costs exactly what today's code
   # costs — the end-of-tick write is still coming — so it must not abort a tick
   # that is otherwise working.
+  #
+  # The #reload drops the condition's association cache, so every item after the
+  # first in a tick re-reads its trigger. That is correct rather than merely
+  # tolerable: all the state a fire consults across items — the burst window and
+  # latch, `last_session_id`, the missed-fire count — is DB-backed and taken under
+  # a row lock, so a fresh instance reads the same answer. Nothing here may depend
+  # on instance memoization surviving the loop.
   def record_fired_key(condition, scope, key)
     condition.reload
 
@@ -574,9 +581,16 @@ class GithubTriggerPollerJob < ApplicationJob
     # #create_session! clears the trigger's created-session marker on entry, so the
     # marker is a true report of THIS fire — but only once we are inside it. A raise
     # before that (interpolation, the context block) would otherwise read the marker
-    # left by the PREVIOUS item in this same tick, on this same trigger instance, and
-    # record an item as fired that has no session at all. That is #647's direction, and
-    # it is the worse one.
+    # left by the PREVIOUS item in this same tick, and record an item as fired that
+    # has no session at all. That is #647's direction, and it is the worse one.
+    #
+    # Whether the previous item's marker is still reachable depends on the caller.
+    # #process_new_issue_condition loops #fire over its batch with nothing in between,
+    # so `condition.trigger` stays the same memoized instance across items and the
+    # stale read is live. #process_label_condition happens not to be exposed today,
+    # because #record_fired_key reloads the condition after every successful fire and
+    # #reload drops the association cache — an accident of an unrelated call, not a
+    # property to rely on.
     spawn_attempted = true
     session = trigger.create_session!(prompt: prompt)
 

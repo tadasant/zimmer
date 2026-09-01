@@ -525,15 +525,18 @@ class Trigger < ApplicationRecord
   # actually created, or nil when it created none.
   #
   # Unlike its #last_fire_* siblings this is readable after #create_session!
-  # RAISED, which is the only reason it exists. The session row is committed part
-  # way through Session.create_from_agent_root!, and a fire keeps working after
-  # that: it enqueues the session's start job, repoints `last_session_id`, bumps
-  # the counter and clears the missed-fire count. An exception in any of that
-  # leaves a real session behind and still unwinds out of #create_session!,
-  # so a caller whose only signal is "did this return a session" concludes that
-  # nothing happened and re-fires the same event — which is how trigger 352 put
-  # two merge-gate sessions on one `ready to merge` label (#704). Callers that
-  # hold a retryable event must consult this before putting it back.
+  # RAISED, which is the only reason it exists. The row is INSERTed part way
+  # through Session.create_from_agent_root!, and work continues after that: the
+  # session's own after_commit callbacks, enqueuing its start job, repointing
+  # `last_session_id`, bumping the counter, clearing the missed-fire count. An
+  # exception in any of that leaves a real session behind and still unwinds out
+  # of #create_session!, so a caller whose only signal is "did this return a
+  # session" concludes that nothing happened and re-fires the same event — which
+  # is how trigger 352 put two merge-gate sessions on one `ready to merge` label
+  # (#704). Callers that hold a retryable event must consult this before putting
+  # it back. Read Session.create_from_agent_root!'s @yieldparam for the one
+  # caveat: under an enclosing transaction the outer commit can still roll the
+  # row back after this has been set.
   attr_reader :last_fire_created_session
 
   # The still-pending session that made the most recent #create_session! call on
