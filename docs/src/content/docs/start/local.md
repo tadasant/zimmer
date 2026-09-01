@@ -78,6 +78,12 @@ On boot, `config/initializers/air_catalog.rb` runs `AirCatalogService.refresh!`,
 `npm install`s the AIR CLI (pinned to `0.13.0`) into `AIR_INSTALL_DIR` and then shells out to
 `air resolve`. The first boot is slow because of that install.
 
+`AIR_INSTALL_DIR` defaults to `/opt/air-cli` where that exists (the Docker image bakes it there)
+and `~/.cache/air-cli` otherwise. The test environment is deliberately separate — always
+`~/.cache/air-cli-test` — because `test/test_helper.rb` installs the CLI at suite boot, and on a
+host that is also running Zimmer that would reinstall over the running app's copy. Set the variable
+explicitly to override either.
+
 If the catalog fails to resolve, the app downgrades to a warning and serves a stale snapshot —
 but the test suite is less forgiving. See below.
 

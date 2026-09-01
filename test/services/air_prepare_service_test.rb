@@ -54,8 +54,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       cmd_args = args.is_a?(Array) ? args : [ args ]
       if cmd_args.any? { |a| a.to_s.include?("npm") }
         install_called = true
-        # Simulate npm install creating a working binary
-        create_fake_air_binary(@tmp_air_dir)
+        # Simulate npm install creating a working binary under its --prefix
+        create_fake_air_binary(npm_install_prefix(cmd_args))
       end
       [ "", "", stub(success?: true, exitstatus: 0) ]
     }) do
@@ -81,7 +81,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       if cmd_args.any? { |a| a.to_s.include?("npm") }
         install_cmd = cmd_args
         # Simulate npm install producing a working binary so the health check passes.
-        create_fake_air_binary(@tmp_air_dir)
+        create_fake_air_binary(npm_install_prefix(cmd_args))
       end
       [ "", "", stub(success?: true, exitstatus: 0) ]
     }) do
@@ -111,6 +111,73 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       assert pkg.end_with?("@#{version}"),
         "#{pkg} must be pinned to AIR_CLI_VERSION (#{version}) — AIR packages move in lockstep"
     end
+  end
+
+  test "the test environment never resolves AIR_INSTALL_DIR to the shared production directory" do
+    # @original_air_dir is the constant as it resolved at boot, before setup
+    # redirected it — i.e. what a `bin/rails test` in an agent session's clone
+    # would install into. Agent sessions run on the production host, so if that
+    # is /opt/air-cli, a suite boot reinstalls over the directory the live app
+    # shells out to and takes its `air` binary away mid-request.
+    assert_not_equal "/opt/air-cli", @original_air_dir,
+      "the test suite must never install the AIR CLI into the production container's " \
+      "/opt/air-cli — a session running tests on the prod host would wipe it out from under " \
+      "the live app (GlitchTip #60/#61, 2026-09-01)"
+  end
+
+  test "a reinstall leaves the working binary in place until the replacement is staged and healthy" do
+    live_binary = File.join(@tmp_air_dir, "node_modules", ".bin", "air")
+    # Drop the marker (keeping the binary) so ensure_air_installed! reinstalls —
+    # the case a version bump or a changed package set produces.
+    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+
+    binary_during_install = nil
+    install_prefix = nil
+
+    stub_air_subprocess(proc { |*args, **opts|
+      cmd_args = args.is_a?(Array) ? args : [ args ]
+      if cmd_args.any? { |a| a.to_s.include?("npm") }
+        # Sampled while npm is "running" — the window in which readers that hold
+        # no lock spawn the binary.
+        binary_during_install = File.exist?(live_binary)
+        install_prefix = npm_install_prefix(cmd_args)
+        create_fake_air_binary(install_prefix)
+      end
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.ensure_air_installed!
+    end
+
+    assert binary_during_install,
+      "the published binary must stay readable for the whole install — deleting the tree first " \
+      "hands every concurrent reader Errno::ENOENT for as long as npm takes"
+    assert_not_equal @tmp_air_dir, install_prefix,
+      "npm must install into a staging directory, not straight over the published one"
+    assert File.exist?(live_binary), "the staged install must be swapped into place"
+    assert File.exist?(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}")),
+      "a completed install must leave its marker behind"
+    assert_not File.exist?(File.join(@tmp_air_dir, AirPrepareService::STAGING_DIR_NAME)),
+      "the staging directory must not survive a successful install"
+  end
+
+  test "a failed install leaves the previous working tree untouched" do
+    live_binary = File.join(@tmp_air_dir, "node_modules", ".bin", "air")
+    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+
+    stub_air_subprocess(proc { |*args, **opts|
+      cmd_args = args.is_a?(Array) ? args : [ args ]
+      if cmd_args.any? { |a| a.to_s.include?("npm") }
+        next [ "", "npm ERR! 503 registry unavailable", stub(success?: false, exitstatus: 1) ]
+      end
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      assert_raises(AirPrepareService::AirPrepareError) { AirPrepareService.ensure_air_installed! }
+    end
+
+    assert File.exist?(live_binary),
+      "a registry outage must not cost the host the working AIR CLI it already had"
+    assert_not File.exist?(File.join(@tmp_air_dir, AirPrepareService::STAGING_DIR_NAME)),
+      "a failed install must clean up its staging directory"
   end
 
   test "ensure_air_installed! trusts the marker and does NOT reinstall when binary exists but crashes" do
@@ -1350,6 +1417,13 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     binary_path = File.join(bin_dir, "air")
     File.write(binary_path, "#!/bin/sh\necho '0.0.16'\n")
     File.chmod(0o755, binary_path)
+  end
+
+  # The directory `npm install --prefix <dir>` was pointed at. A real npm writes
+  # its tree there, so a stub standing in for one has to write there too.
+  def npm_install_prefix(cmd_args)
+    stringified = cmd_args.map(&:to_s)
+    stringified[stringified.index("--prefix") + 1]
   end
 
   # Check if a capture3 call is a health check (`air --version`).

@@ -237,6 +237,21 @@ pinned to `AIR_CLI_VERSION = "0.13.0"` — the CLI plus both adapters, the secre
 the GitHub provider. Guarded by a version marker file, a binary health check (`air --version`), and
 a cross-process install lock.
 
+The install builds into a `.incoming` staging directory and swaps the finished tree into place. The
+published directory therefore stays readable for the whole install, which matters because readers
+hold no lock: `AirCatalogService` spawns `<AIR_INSTALL_DIR>/node_modules/.bin/air` directly, so an
+install that emptied the directory first would hand every concurrent reader `Errno::ENOENT` for the
+minute npm takes. A failed install leaves the previous tree in place.
+
+`AIR_INSTALL_DIR` defaults to `/opt/air-cli` when that path exists or `/opt` is writable, and to
+`~/.cache/air-cli` otherwise — **except under `RAILS_ENV=test`, which always uses
+`~/.cache/air-cli-test`**. Agent sessions run on the same host as the production container, and
+`test/test_helper.rb` calls `ensure_air_installed!` at boot, so a session running `bin/rails test`
+in its clone would otherwise reinstall over the directory the live app is shelling out to. That is
+not hypothetical: on 2026-09-01 a branch that added an adapter to the package set did exactly this
+and produced 10 production `ERROR` records in a minute, including an `ActionView::Template::Error`
+rendering the dashboard's session cards.
+
 :::caution[Two versions to keep in lockstep]
 `Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0` into `/opt/air-cli` and touches a
 `.air-version-0.13.0` marker; `AirPrepareService::AIR_CLI_VERSION` is what `ensure_air_installed!`

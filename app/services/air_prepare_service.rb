@@ -176,9 +176,35 @@ class AirPrepareService
   # runners (which can't write to /opt) can redirect to a user-writable path.
   # Default prefers /opt/air-cli when the parent dir is writable (Docker
   # production), falling back to a user cache directory otherwise.
+  #
+  # The test environment never resolves to /opt/air-cli, even when that path
+  # exists and is writable. Agent sessions run on the same host as the
+  # production container and clone this repo, so `bin/rails test` in a session's
+  # clone boots test_helper.rb, which calls ensure_air_installed! — against the
+  # very directory the live app shells out to for `air resolve`. A branch whose
+  # marker or package set differs from what is on disk therefore reinstalls, and
+  # the reinstall takes production's binary away. On 2026-09-01 that produced 10
+  # production ERROR records in one minute, including an ActionView error on the
+  # dashboard's session cards, and paged #alerts twice (GlitchTip #60 / #61).
+  # A suite gets its own directory; only the app writes the app's.
   AIR_INSTALL_DIR = ENV.fetch("AIR_INSTALL_DIR") do
-    File.writable?("/opt") || File.directory?("/opt/air-cli") ? "/opt/air-cli" : File.join(Dir.home, ".cache", "air-cli")
+    if Rails.env.test?
+      File.join(Dir.home, ".cache", "air-cli-test")
+    elsif File.writable?("/opt") || File.directory?("/opt/air-cli")
+      "/opt/air-cli"
+    else
+      File.join(Dir.home, ".cache", "air-cli")
+    end
   end
+
+  # Subdirectory of AIR_INSTALL_DIR that a fresh install is built in before it
+  # is swapped into place. Lives inside the install dir so the swap is a rename
+  # within one filesystem — /opt itself is not writable by the rails user.
+  STAGING_DIR_NAME = ".incoming"
+
+  # The entries `npm install --prefix` produces, and therefore the ones the swap
+  # moves from the staging directory into the published one.
+  INSTALLED_ENTRIES = %w[node_modules package.json package-lock.json].freeze
 
   class << self
     # Ensure the AIR CLI is installed. Idempotent: no-op if the expected version
@@ -206,7 +232,7 @@ class AirPrepareService
         # finished installing while we were waiting.
         return if File.exist?(marker) && File.exist?(binary)
 
-        install_air_cli!(marker, binary)
+        install_air_cli!(marker)
       end
     end
 
@@ -224,9 +250,20 @@ class AirPrepareService
 
     private
 
-    def install_air_cli!(marker, binary)
-      FileUtils.rm_rf(AIR_INSTALL_DIR)
+    # Install into a staging subdirectory and swap the result into place, rather
+    # than emptying the published directory and refilling it over the ~60s an
+    # npm install takes. Concurrent readers hold no lock — AirCatalogService
+    # spawns the binary directly — so an install that begins by deleting the
+    # tree hands every one of them Errno::ENOENT until it finishes, which is
+    # what the #alerts pages on 2026-09-01 were. Building elsewhere first keeps
+    # the working tree readable throughout; the exposure shrinks to the two
+    # renames per entry in swap_staged_install!.
+    def install_air_cli!(marker)
       FileUtils.mkdir_p(AIR_INSTALL_DIR)
+      staging = File.join(AIR_INSTALL_DIR, STAGING_DIR_NAME)
+      FileUtils.rm_rf(staging)
+      FileUtils.mkdir_p(staging)
+
       packages = [
         "@pulsemcp/air-cli@#{AIR_CLI_VERSION}",
         "@pulsemcp/air-adapter-claude@#{AIR_CLI_VERSION}",
@@ -234,22 +271,50 @@ class AirPrepareService
         "@pulsemcp/air-secrets-env@#{AIR_CLI_VERSION}",
         "@pulsemcp/air-provider-github@#{AIR_CLI_VERSION}"
       ]
-      install_cmd = [ "npm", "install", "--prefix", AIR_INSTALL_DIR ] + packages
+      install_cmd = [ "npm", "install", "--prefix", staging ] + packages
 
       Rails.logger.info "[AirPrepareService] Installing AIR packages: #{packages.join(', ')}"
       _stdout, stderr, status = Open3.capture3(*install_cmd)
 
       unless SubprocessStatus.success?(status)
+        FileUtils.rm_rf(staging)
         raise AirPrepareError, "Failed to install AIR packages: #{SubprocessStatus.describe_failure(status, stderr)}"
       end
 
-      unless air_binary_healthy?(binary)
+      staged_binary = File.join(staging, "node_modules", ".bin", "air")
+      unless air_binary_healthy?(staged_binary)
+        FileUtils.rm_rf(staging)
         raise AirPrepareError,
-          "AIR CLI installed but binary is broken (#{binary} --version failed). " \
+          "AIR CLI installed but binary is broken (#{staged_binary} --version failed). " \
           "This usually means a broken npm publish of @pulsemcp/air-cli@#{AIR_CLI_VERSION}."
       end
 
+      swap_staged_install!(staging)
+
+      # Markers are the fast path's whole proof of what is on disk, so the ones
+      # describing the tree just replaced have to go before the new one lands.
+      Dir.glob(File.join(AIR_INSTALL_DIR, ".air-version-*")).each { |stale| FileUtils.rm_f(stale) }
       FileUtils.touch(marker)
+    end
+
+    # Move a verified staged install over the published one. Per entry this is
+    # rename-out then rename-in — microseconds of exposure rather than the
+    # length of an npm install, and never a partially-populated node_modules,
+    # since a rename either happened or did not.
+    def swap_staged_install!(staging)
+      retired = File.join(AIR_INSTALL_DIR, ".retired-#{Process.pid}")
+      FileUtils.rm_rf(retired)
+      FileUtils.mkdir_p(retired)
+
+      INSTALLED_ENTRIES.each do |entry|
+        published = File.join(AIR_INSTALL_DIR, entry)
+        staged = File.join(staging, entry)
+        File.rename(published, File.join(retired, entry)) if File.exist?(published)
+        File.rename(staged, published) if File.exist?(staged)
+      end
+
+      FileUtils.rm_rf(retired)
+      FileUtils.rm_rf(staging)
     end
 
     # Acquire an exclusive flock on a sibling lockfile so concurrent callers
