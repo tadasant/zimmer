@@ -3152,12 +3152,59 @@ a worker restart or a deploy — but if it is discarded (retries exhausted on an
 a manual queue purge, a failed deserialization), the session sits in `waiting` indefinitely with a
 banner whose "next check" time is permanently in the past. `DeploymentRecoveryJob` will not pick it
 up: that only claims sessions carrying `metadata["paused_by"] == "recovery"`, which a held session
-does not have. A sweep for `waiting` sessions whose `spot_hold_retry_at` is well past would close
-this.
+does not have.
 
-The backoff on consecutive holds widens the window in which this can go unnoticed: a session pinned
-at the one-hour ceiling has an hour, rather than ten minutes, between the moment its chain breaks
-and the moment anyone could tell from `spot_hold_retry_at` that it has.
+`SpotHoldSweepJob` is what closes it — the sweep for `waiting` sessions whose `spot_hold_retry_at`
+is well past that this entry used to ask for. What remains is latency, not permanence: the backoff
+on consecutive holds widens the window in which a broken chain goes unnoticed, so a session pinned
+at the one-hour ceiling can be up to an hour past its promised re-check before `spot_hold_retry_at`
+says so, plus `SpotSessionHold::OVERDUE_GRACE` and a sweep tick on top.
+
+---
+
+## A stranded `waiting` session is only rescued if it never started
+
+`StalledStartSweepJob` closes the case that stranded production session 10426 for three days: a
+session created, queued, and then left in `waiting` because the one `AgentSessionJob` carrying its
+first turn was lost. Its population is deliberately narrow — `waiting`, no `session_id`, a prompt to
+run, nothing queued in GoodJob, none of the markers that mean "asleep on purpose" — because that is
+the one shape whose repair is unambiguous: run the job creation would have run.
+
+Three neighbours are **not** covered.
+
+- **A session that has already run.** With a `session_id` there is a conversation and a clone, so
+  re-running the start job would re-clone underneath it. Those come back through
+  `metadata["paused_by"] = "recovery"` and the two recovery sweeps — and a session that reaches
+  `waiting` without that marker and without a hold, a pause, a park or an armed wake is stranded
+  with nothing looking for it. `Session#continue_nudge_on_refresh?` is the manual door: a human
+  pressing **Refresh** sends it the continue nudge.
+- **A session with no prompt.** That is not a lost job: `POST /api/v1/sessions` enqueues nothing
+  when the caller sends no prompt, deliberately, and the session waits in `waiting` for a follow-up.
+  Starting one would run an agent nobody asked for. (A clone-only session created in the web UI is
+  a different thing again — `SessionsController` creates it `needs_input`, so it is out of the
+  population by status. A clone-only setup job that is lost is not repaired by anything.)
+- **The enqueue itself.** The attachment-copy failure paths in `SessionsController#quick_prompt`
+  and `#chat_bubble` create the session with `skip_enqueue: true` and then raise before reaching
+  `AgentSessionJob.enqueue_new_session`. The human gets a flash message and the row is now rescued
+  within ~10 minutes rather than never — but the honest fix is for the create to be undone, or the
+  enqueue to happen, on that path.
+
+**A restarted turn does not carry its attachments.** `Sessions::StartNow` — which is also what the
+Ranked view's **Start** button uses — enqueues `AgentSessionJob.enqueue_new_session(session.id)`
+with no `images:`/`files:`, and `AgentSessionJob` only ever receives attachments as job arguments.
+So a session whose prompt was "here is the screenshot, fix this" comes back with the prompt and
+without the screenshot. The session's own log line says so; the fix is
+[#739](https://github.com/tadasant/zimmer/issues/739).
+
+Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on
+the dashboard with a reason on it, a `waiting` one is on nobody's list. A session past
+`MAX_RESTARTS` (3) attempts, because whatever is eating its start job is not something more
+attempts will fix. And a session stalled longer than `MAX_STALL_AGE` (1 day), because by then the
+turn is stale rather than late: session 10426's own PR was merged seven minutes after it was
+spawned, so a sweep that found it on day three and simply started it would have run a merge gate
+against an already-merged PR. The cost of that second rule is that a genuinely still-wanted turn
+older than a day needs a human to press Restart — which is a thing they can now see, rather than a
+row nothing was looking at.
 
 ---
 

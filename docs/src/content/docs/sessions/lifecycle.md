@@ -1112,6 +1112,13 @@ The state machine is not the only actor:
   elicitation or with pending enqueued messages — resuming those would spawn a second process.
 - **`CleanupOrphanedSessionsJob`** (every 5 min) catches sessions marked `running` whose process
   is gone.
+- **`StalledStartSweepJob`** (every 5 min) catches the opposite end: a session that never
+  started. A first turn rides on exactly one `AgentSessionJob`, and — unlike a spot hold, a
+  ceiling pause, an auth park or a recovery pause — a session that has never run carries no
+  marker saying so, so a lost start job leaves a plain `waiting` row that looks exactly like a
+  session created a second ago. `StalledSessionStart` re-enqueues it, and fails it after three
+  attempts rather than re-queuing forever. See
+  [Background jobs](/operate/background-jobs/#the-cron-schedule).
 - **`ZombieReaperJob`** (every 5 min) reaps dead child processes that nothing is waiting on. It
   deliberately leaves alone any pid a live waiter has claimed — see
   [Background jobs](/operate/background-jobs/#the-zombie-reaper-only-takes-what-nobody-is-waiting-for).

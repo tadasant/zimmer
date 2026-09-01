@@ -288,6 +288,16 @@ module CronSchedule
       description: "Put held spot sessions back on the re-check ladder when their re-check never fired",
       environments: %i[production staging]
     },
+    # Not in development, on the same rule as the two spot sweeps beside it: the
+    # repair is to START a session, which spends quota. A developer's database is
+    # full of `waiting` rows left over from testing, and a sweep that woke all of
+    # them at once would be a surprising way to spend an afternoon's tokens.
+    stalled_start_sweep: {
+      cron: "*/5 * * * *", # Every 5 minutes; StalledSessionStart::GRACE is what bounds staleness
+      class: "StalledStartSweepJob",
+      description: "Re-enqueue the first turn of a session that has been waiting to start with no job behind it",
+      environments: %i[production staging]
+    },
     burn_rate_recompute: {
       cron: "*/20 * * * *", # Every 20 minutes — the ledger only lands every 10, so this is not the bound
       class: "BurnRateRecomputeJob",
