@@ -12,9 +12,9 @@
 # Currently supports:
 # - quota_available: the account pool went from serving nothing to serving
 #   something. See QuotaAvailabilityMonitor, which owns the edge detection.
-# - no_sessions_in_progress: the fleet has had nothing running and nothing queued
-#   in the spot queue for five continuous minutes. See FleetIdleMonitor, which
-#   owns the latch.
+# - no_sessions_in_progress: the deployment has had nothing to do for five
+#   continuous minutes. See FleetIdleMonitor, which owns the latch and the
+#   cooldown under it.
 #
 # System events are broadcast by nature — every enabled trigger carrying a
 # matching condition fires — and recurring, so a condition is never spent and the
@@ -152,7 +152,7 @@ class SystemEventTriggerJob < ApplicationJob
     when "quota_available"
       "The Claude Code account pool has capacity again"
     when "no_sessions_in_progress"
-      "The fleet has had no sessions running and none queued for " \
+      "The fleet has run out of work: nothing running and nothing queued for " \
         "#{FleetIdleMonitor::IDLE_THRESHOLD.inspect}"
     else
       event_name.to_s.humanize

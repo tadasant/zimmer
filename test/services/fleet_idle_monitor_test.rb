@@ -17,7 +17,8 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     # The fixtures ship sessions in `running` and in `waiting`, which is exactly
     # the state this class reads. Every case states its own fleet.
     Session.delete_all
-    AppSetting.editable.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: nil)
+    AppSetting.editable.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: nil,
+                                quota_pool_available: true)
   end
 
   def session(status:, genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: nil, metadata: {})
@@ -102,13 +103,14 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
       travel 1.minute
       assert_not FleetIdleMonitor.check!
       assert_nil setting.fleet_idle_since, "a running session clears the idle clock"
-      assert_nil setting.fleet_idle_event_fired_at, "and re-arms the latch"
+      assert_not_nil setting.fleet_idle_event_fired_at,
+        "the last-fire timestamp survives — it is the cooldown clock, not just the latch"
 
       running.update_columns(status: Session.statuses[:archived])
       travel 1.minute
       assert_not FleetIdleMonitor.check!, "the clock restarts rather than firing straight away"
 
-      travel FleetIdleMonitor::IDLE_THRESHOLD
+      travel FleetIdleMonitor::MIN_FIRE_INTERVAL
       assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
         assert FleetIdleMonitor.check!
       end
@@ -201,8 +203,82 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
       waiting = session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY)
       waiting.update!(status: :running)
 
+      assert_nil setting.fleet_idle_since, "the idle clock is cleared, so the stretch is over"
+    end
+  end
+
+  # The circular failure the cooldown exists for: the session this event spawns
+  # runs, which re-arms the latch, which lets the event fire again five minutes
+  # after it finishes — forever, on a deployment quiet for any other reason.
+  test "the cooldown holds even when a session ran in between" do
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor::IDLE_THRESHOLD
+      assert FleetIdleMonitor.check!
+
+      # Stand in for the session the fire spawned: it runs, then finishes.
+      spawned = session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY)
+      spawned.update!(status: :running)
+      travel 2.minutes
+      spawned.update!(status: :archived)
+
+      travel FleetIdleMonitor::IDLE_THRESHOLD + 1.minute
+      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+        assert_not FleetIdleMonitor.check!,
+          "the fleet went quiet again, but the hourly floor has not been spent"
+      end
+
+      travel FleetIdleMonitor::MIN_FIRE_INTERVAL
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!
+      end
+    end
+  end
+
+  # An empty pool makes a quiet fleet a symptom, not an opportunity — and the
+  # session this would spawn is priority, so it would start, find nothing to
+  # serve, park, and have re-armed the latch on the way through.
+  test "an account pool with nothing to serve holds the event off" do
+    AppSetting.editable.update!(quota_pool_available: false)
+
+    freeze_time do
+      assert_not FleetIdleMonitor.check!
+      travel FleetIdleMonitor::IDLE_THRESHOLD + 1.minute
+      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+        assert_not FleetIdleMonitor.check!
+      end
+      assert_nil AppSetting.current.reload.fleet_idle_since
+    end
+  end
+
+  # A park is the clearest statement Zimmer makes that work exists and cannot
+  # run, and an outage parks priority sessions too.
+  test "a session parked on an auth outage holds the event off, whatever its class" do
+    session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY,
+            metadata: { "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED })
+
+    freeze_time do
+      assert_not FleetIdleMonitor.check!
+      travel FleetIdleMonitor::IDLE_THRESHOLD + 1.minute
+      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+        assert_not FleetIdleMonitor.check!
+      end
       assert_nil setting.fleet_idle_since
-      assert_nil setting.fleet_idle_event_fired_at
+    end
+  end
+
+  # Nothing repairs an orphaned `running` row in a frozen category — both
+  # recovery jobs skip them — so counting it would pin this to "busy" forever.
+  test "a running session in a frozen category does not hold the event off" do
+    frozen = Category.create!(name: "Frozen #{SecureRandom.hex(3)}", is_frozen: true)
+    session(status: :running).update!(category: frozen)
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor::IDLE_THRESHOLD
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!
+      end
     end
   end
 
@@ -219,6 +295,6 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
 
     assert_equal before.to_i, setting.fleet_idle_since.to_i
-    assert_nil setting.fleet_idle_event_fired_at
+    assert_nil setting.fleet_idle_event_fired_at, "nothing was fired, so nothing was recorded"
   end
 end

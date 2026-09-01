@@ -77,11 +77,11 @@ class TriggerCondition < ApplicationRecord
   # rather than every time the pool is measured while healthy. See
   # QuotaAvailabilityMonitor.
   #
-  # `no_sessions_in_progress` fires once the fleet has had nothing running and
-  # nothing queued in the spot queue for FleetIdleMonitor::IDLE_THRESHOLD.
-  # Idleness is a LEVEL rather than a transition, so that monitor latches the
-  # fire and re-arms only when the fleet has work again — the event means "the
-  # fleet went quiet", not "the fleet is quiet". See FleetIdleMonitor.
+  # `no_sessions_in_progress` fires once the deployment has had nothing to do for
+  # FleetIdleMonitor::IDLE_THRESHOLD. Idleness is a LEVEL rather than a
+  # transition, so that monitor latches the fire, re-arms only when the fleet has
+  # work again, and holds a cooldown under both — the event means "the fleet ran
+  # out of work", not "the fleet is quiet". See FleetIdleMonitor.
   SYSTEM_EVENT_NAMES = %w[quota_available no_sessions_in_progress].freeze
 
   GITHUB_CONDITION_TYPES = %w[github_label github_issue].freeze
