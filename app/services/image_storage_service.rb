@@ -79,6 +79,20 @@ class ImageStorageService < SessionAttachmentStorage
     destination.store(data: Base64.strict_encode64(content), filename: File.basename(old_path))
   end
 
+  # Describe one stored image (see SessionAttachmentStorage#describe_entry).
+  #
+  # The media type is sniffed from the bytes, the same way it was when the image
+  # was first stored — so the description is derived from the image rather than
+  # from a filename anyone could have chosen. An entry whose type cannot be
+  # sniffed is dropped, for the same reason #copy_entry drops it: the CLI has
+  # nothing to put in the message's `media_type`.
+  def describe_entry(path)
+    media_type = detect_media_type_from_content(@file_system.binread(path))
+    return nil unless media_type
+
+    { path: path, media_type: media_type }
+  end
+
   # Retrieve an image as base64 for passing to CLI
   #
   # @param path [String] Path to the stored image
