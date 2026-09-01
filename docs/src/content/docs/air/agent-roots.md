@@ -39,9 +39,8 @@ each artifact's own entry.
 
 ### A list you pass replaces the root's defaults
 
-On the three surfaces that create a session against a root — the MCP `start_session` tool, `POST
-/api/v1/sessions`, and the new-session form — `mcp_servers`/`skills`/`plugins`/`hooks` has three
-distinct states, not two:
+On the two surfaces that resolve a root's defaults — the MCP `start_session` tool and `POST
+/api/v1/sessions` — `mcp_servers`/`skills`/`plugins`/`hooks` has three distinct states, not two:
 
 | What the caller sends | What the session gets |
 | --- | --- |
@@ -51,7 +50,9 @@ distinct states, not two:
 
 Omitted and `[]` are two different requests and Zimmer keeps them apart. A non-empty list is a
 *replacement*, never a union: a caller that names one server on a root declaring two gets one, and
-nothing warns it about the other.
+nothing warns it about the other. (The new-session form is the third surface that distinguishes an
+explicit `[]` from an accident, but it never reaches the "omitted" row: its multi-selects always
+submit a key, so what a human sees on screen is what the session gets.)
 
 This matters most for MCP servers, and it cuts both ways. A root's defaults can carry real privilege
 (SSH access to a production host, a secrets store), so a caller that narrows to `[]` is asking for
