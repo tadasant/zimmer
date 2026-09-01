@@ -102,9 +102,9 @@ module Mcp
         lines << "- Use `git_root` from **Agent Roots** to start sessions with preconfigured defaults"
         lines << "- Use **Runtime Models** to choose a `config.model` value that belongs to the selected `agent_runtime`"
         lines << "- If an **Agent Root** has a `default_subdirectory`, pass it as `subdirectory` in `start_session` — do not set `subdirectory` to arbitrary internal paths"
-        lines << "- If you pass `skills` at all, start from the root's **Default Skills** and add to " \
-                 "it — skills are cheap text files with no blast radius, so dropping a default " \
-                 "should be rare and deliberate"
+        lines << "- Skills are the one list where the usual move is to add rather than subtract: start from " \
+                 "the root's **Default Skills** and append. They are cheap text files with no blast " \
+                 "radius, so dropping a default should be rare and deliberate"
         lines << "- Use `id` values from **Goals** in `start_session` `goal` parameter"
 
         lines.join("\n")
@@ -234,6 +234,16 @@ module Mcp
         lines << "- **Default Goal:** `#{data[:default_goal]}`" if data[:default_goal].present?
         if data[:default_skills].present?
           lines << "- **Default Skills:** #{data[:default_skills].map { |s| "`#{s}`" }.join(', ')}"
+        end
+        # Hooks and plugins are rendered for the same reason the servers and skills
+        # are: `start_session` tells a caller narrowing one of these lists to copy
+        # the root's defaults from here and subtract, and a default it cannot read
+        # is one it writes a list without.
+        if data[:default_hooks].present?
+          lines << "- **Default Hooks:** #{data[:default_hooks].map { |h| "`#{h}`" }.join(', ')}"
+        end
+        if data[:default_plugins].present?
+          lines << "- **Default Plugins:** #{data[:default_plugins].map { |p| "`#{p}`" }.join(', ')}"
         end
         lines << "- **Default Model:** `#{data[:default_model]}`" if data[:default_model].present?
         lines << ""

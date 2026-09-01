@@ -41,11 +41,13 @@ module Mcp
                           "get_configs, copy it, and subtract only what the task genuinely must not have."
 
       MCP_SERVERS_DESC = <<~TEXT.strip
-        The session's MCP servers, by name. A non-empty list #{format(REPLACES_DEFAULTS, "default_mcp_servers", "default_mcp_servers")} Omit the parameter to take the root's defaults unchanged (the right call unless you have a reason to narrow); pass [] for no servers at all.
+        The session's MCP servers, by name. A non-empty list #{format(REPLACES_DEFAULTS, "default_mcp_servers", "default_mcp_servers")} Omit the parameter to take the root's defaults unchanged — the right call unless you have a reason to narrow. Pass [] to attach none of the catalog's servers; Zimmer's own zimmer-self-session is injected either way.
 
         Dropping a default silently is how sessions lose a capability they were built around: a root's skill can depend on a root's server (an upload skill on a filesystem server, say), and the skill still loads when the server is gone — the session then fails at the point of use, mid-task, with no workaround. If you are unsure whether a default is needed, keep it.
 
         Example: an agent root defaulting to ["github-development", "slack"] and a task that needs no Slack takes mcp_servers: ["github-development"] — the full default list minus the one server, not a list written from the task's needs.
+
+On a connection restricted to specific agent roots you cannot narrow at all: pass the root's defaults exactly, or omit the parameter.
       TEXT
 
       SKILLS_DESC = <<~TEXT.strip
@@ -61,7 +63,7 @@ module Mcp
       HOOKS_DESC = <<~TEXT.strip
         The session's catalog hook IDs. Hooks are shell commands the agent runtime fires on lifecycle events, so a hook that is noise for the task is worth dropping. A non-empty list #{format(REPLACES_DEFAULTS, "default_hooks", "default_hooks")} Omit the parameter to take the root's default_hooks unchanged; pass [] to select none.
 
-        Selecting no hooks is not the same as running with none: a plugin bundles hooks of its own, and those are added on top of this list — to drop a hook a selected plugin bundles, narrow `plugins` too. Example: ["git-push-ci-reminder"]
+        Selecting no hooks is not the same as running with none: a plugin can bundle hooks of its own, and those are added on top of this list — to drop a hook a selected plugin bundles, narrow `plugins` too. Example: ["git-push-ci-reminder"]
       TEXT
 
       CONFIG_DESC = <<~TEXT.strip
@@ -105,11 +107,11 @@ module Mcp
 
         - **Omit the parameter** → the session takes that root default in full. This is the safe default; prefer it unless you have a specific reason to narrow.
         - **Pass `[]`** → the session gets NONE of that artifact. Omitted and `[]` are two different requests.
-        - **Pass a non-empty list** → the session gets EXACTLY that list. Every root default you did not name is dropped, silently and without warning.
+        - **Pass a non-empty list** → the session gets EXACTLY that list. Every root default you did not name is dropped, silently.
 
         So a list you pass has to be the **complete final set**. Call get_configs, copy the root's `default_*` list, and subtract from it — never compose a fresh list from what the task seems to need, because a default you simply didn't think of goes missing.
 
-        - **MCP servers:** This is where a dropped default bites hardest. A root's skill can depend on a root's server (an upload skill on a filesystem server, say); dropping the server still loads the skill, and the session fails at the point of use, mid-task, with no workaround. Narrow for least privilege by all means — pass `default_mcp_servers` minus what the task must not have, and `[]` when it needs no servers at all — but subtract deliberately, server by server. When this connection is restricted to specific agent roots, you cannot add or remove servers at all: the list you pass must match the root's defaults exactly, and `[]` is rejected unless the root has no defaults.
+        - **MCP servers:** This is where a dropped default bites hardest, because a root's skill can depend on a root's server and the skill still loads without it. Narrow for least privilege by passing `default_mcp_servers` minus what the task must not have, or `[]` when it needs none. When this connection is restricted to specific agent roots you cannot add or remove servers at all: the list you pass must match the root's defaults exactly, and `[]` is rejected unless the root has no defaults.
         - **Skills:** Add beyond `default_skills` freely. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
         - **Hooks:** Drop one from `default_hooks` when it fires on work this session won't do (a CI-reminder hook on a docs-only task, say) by passing the narrowed list, or `[]` to select none. Selecting no hooks is not the same as running with none: a plugin bundles hooks of its own, and those are added on top of the list you pass, so dropping a hook a selected plugin bundles means narrowing `plugins` as well.
 
