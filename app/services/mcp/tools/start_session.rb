@@ -29,13 +29,42 @@ module Mcp
 
       EXECUTION_PROVIDER_DESC = 'Execution environment. Only option: "local_filesystem" — the agent runs on the Zimmer host itself, unsandboxed, with the host\'s git and gh credentials. Default: "local_filesystem"'
 
-      MCP_SERVERS_DESC = 'List of MCP server names to enable for this session. Example: ["github-development", "slack"]'
+      # The one sentence every list-valued parameter below repeats, because the
+      # failure it prevents was a caller that had read "drop what you don't need"
+      # and wrote a fresh one-element list: the root's OTHER default went with it,
+      # and the skill that needed that server was still attached. Stated per
+      # parameter rather than once in the tool description — an agent composing a
+      # single argument reads that argument's description, not the prose above it.
+      REPLACES_DEFAULTS = "REPLACES the agent root's %s — the two are never merged. " \
+                          "Whatever you pass is the complete final set, so every default you do not " \
+                          "name is dropped. Do not write this list from scratch: read the root's %s in " \
+                          "get_configs, copy it, and subtract only what the task genuinely must not have."
 
-      SKILLS_DESC = 'List of skill names to enable for this session. Always include the agent root\'s default_skills from get_configs as the starting point — omitting skills means the session gets none. Add extras as needed; removing a default should be rare and intentional. Example: ["discovery-classify", "publish-and-pr"]'
+      MCP_SERVERS_DESC = <<~TEXT.strip
+        The session's MCP servers, by name. A non-empty list #{format(REPLACES_DEFAULTS, "default_mcp_servers", "default_mcp_servers")} Omit the parameter to take the root's defaults unchanged — the right call unless you have a reason to narrow. Pass [] to attach none of the catalog's servers; Zimmer's own zimmer-self-session is injected either way.
 
-      PLUGINS_DESC = 'List of plugin names to enable for this session. Plugins extend agent capabilities with additional integrations. Example: ["my-plugin"]'
+        Dropping a default silently is how sessions lose a capability they were built around: a root's skill can depend on a root's server (an upload skill on a filesystem server, say), and the skill still loads when the server is gone — the session then fails at the point of use, mid-task, with no workaround. If you are unsure whether a default is needed, keep it.
 
-      HOOKS_DESC = 'List of catalog hook IDs to enable for this session. Hooks are shell commands the agent runtime fires on lifecycle events, so a hook that is noise for the task is worth dropping. Omitting hooks takes the agent root\'s default_hooks; pass [] to select none. A plugin can bundle hooks of its own, and those are added on top of this list — to drop a hook a selected plugin bundles, narrow `plugins` too. Example: ["git-push-ci-reminder"]'
+        Example: an agent root defaulting to ["github-development", "slack"] and a task that needs no Slack takes mcp_servers: ["github-development"] — the full default list minus the one server, not a list written from the task's needs.
+
+On a connection restricted to specific agent roots you cannot narrow at all: pass the root's defaults exactly, or omit the parameter.
+      TEXT
+
+      SKILLS_DESC = <<~TEXT.strip
+        The session's skills, by name. A non-empty list #{format(REPLACES_DEFAULTS, "default_skills", "default_skills")} Omit the parameter to take the root's default_skills unchanged; pass [] for no skills.
+
+        Add extras beyond the defaults freely. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing one with a more capable variant covering the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing. Example: ["discovery-classify", "publish-and-pr"]
+      TEXT
+
+      PLUGINS_DESC = <<~TEXT.strip
+        The session's plugins, by name. Plugins extend agent capabilities with additional integrations, and can bundle skills, hooks, and MCP servers of their own. A non-empty list #{format(REPLACES_DEFAULTS, "default_plugins", "default_plugins")} Omit the parameter to take the root's default_plugins unchanged; pass [] for no plugins. Example: ["my-plugin"]
+      TEXT
+
+      HOOKS_DESC = <<~TEXT.strip
+        The session's catalog hook IDs. Hooks are shell commands the agent runtime fires on lifecycle events, so a hook that is noise for the task is worth dropping. A non-empty list #{format(REPLACES_DEFAULTS, "default_hooks", "default_hooks")} Omit the parameter to take the root's default_hooks unchanged; pass [] to select none.
+
+        Selecting no hooks is not the same as running with none: a plugin can bundle hooks of its own, and those are added on top of this list — to drop a hook a selected plugin bundles, narrow `plugins` too. Example: ["git-push-ci-reminder"]
+      TEXT
 
       CONFIG_DESC = <<~TEXT.strip
         Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.6-terra"} for a codex runtime, or {"model": "fable"} for claude_code). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model, then the global session default configured on the Settings page, then the runtime's catalog default; a model that is not valid for the resolved runtime is replaced by that fallback. An explicit config.model always takes precedence.
@@ -74,11 +103,17 @@ module Mcp
 
         **Agent Roots:** Use `agent_root` to specify which preconfigured agent root to use. The API resolves git_root, branch, subdirectory, default_model, and other defaults from the agent root configuration.
 
-        **Defaults from Agent Roots:** The agent root defines `default_mcp_servers`, `default_skills`, `default_hooks`, `default_plugins`, and optionally a `default_goal`. Omitting `mcp_servers`, `skills`, `plugins`, or `hooks` means the session takes the root's defaults for that list. Passing an explicit empty array (`[]`) means the session gets NONE of that artifact — omitted and `[]` are two different requests, not the same one.
+        **Defaults from Agent Roots — a list you pass REPLACES the root's defaults, it is never merged with them.** The agent root defines `default_mcp_servers`, `default_skills`, `default_hooks`, `default_plugins`, and optionally a `default_goal`. For each of `mcp_servers`, `skills`, `plugins`, and `hooks` there are **three** distinct requests, not two:
 
-        - **MCP servers:** Start with `default_mcp_servers`. Drop servers the task doesn't need (least-privilege) by passing the narrowed list; pass `[]` when the task needs no servers at all. When this connection is restricted to specific agent roots, you cannot add or remove servers — the list you pass must match the root's defaults exactly, and `[]` is rejected unless the root has no defaults.
-        - **Skills:** Start with `default_skills`. You can freely add skills beyond the defaults. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
-        - **Hooks:** Start with `default_hooks`. Drop one when it fires on work this session won't do (a CI-reminder hook on a docs-only task, say) by passing the narrowed list, or `[]` to select none. Selecting no hooks is not the same as running with none: a plugin bundles hooks of its own, and those are added on top of the list you pass, so dropping a hook a selected plugin bundles means narrowing `plugins` as well.
+        - **Omit the parameter** → the session takes that root default in full. This is the safe default; prefer it unless you have a specific reason to narrow.
+        - **Pass `[]`** → the session gets NONE of that artifact. Omitted and `[]` are two different requests.
+        - **Pass a non-empty list** → the session gets EXACTLY that list. Every root default you did not name is dropped, silently.
+
+        So a list you pass has to be the **complete final set**. Call get_configs, copy the root's `default_*` list, and subtract from it — never compose a fresh list from what the task seems to need, because a default you simply didn't think of goes missing.
+
+        - **MCP servers:** This is where a dropped default bites hardest, because a root's skill can depend on a root's server and the skill still loads without it. Narrow for least privilege by passing `default_mcp_servers` minus what the task must not have, or `[]` when it needs none. When this connection is restricted to specific agent roots you cannot add or remove servers at all: the list you pass must match the root's defaults exactly, and `[]` is rejected unless the root has no defaults.
+        - **Skills:** Add beyond `default_skills` freely. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
+        - **Hooks:** Drop one from `default_hooks` when it fires on work this session won't do (a CI-reminder hook on a docs-only task, say) by passing the narrowed list, or `[]` to select none. Selecting no hooks is not the same as running with none: a plugin bundles hooks of its own, and those are added on top of the list you pass, so dropping a hook a selected plugin bundles means narrowing `plugins` as well.
 
         **Runtime and model selection:** Pass `agent_runtime` to override which agent runtime the session uses — `claude_code` (Claude Code) or `codex` (OpenAI Codex CLI). Pass `config: { model: "..." }` to choose the model (e.g. `opus`/`sonnet`/`haiku`/`fable` for claude_code, `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` for codex). Both are optional: when omitted, resolution falls through the agent root's `default_runtime`/`default_model`, then the global session defaults set on the Settings page, then the hardcoded defaults. Call get_configs to discover each root's defaults and pick a model that is valid for the chosen runtime.
 
