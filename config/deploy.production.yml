@@ -21,9 +21,16 @@ servers:
         # thread store) under CODEX_HOME. A runtime home left on the container layer is
         # destroyed by each deploy, which makes the next `resume` fail with "no rollout
         # found" and restarts the conversation from zero.
+        #
+        # Pi is the exception that still gets a mount: its TRANSCRIPT lives inside the
+        # session's own clone (PiRuntimeAdapter passes --session-dir), so it is durable
+        # via zimmer_data above. PI_CODING_AGENT_DIR holds its credential and provider
+        # state instead — auth.json, models.json, settings.json — which is milder to
+        # lose but just as invisible, so it is mounted on the same terms.
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
         - codex_home:/home/rails/.codex
+        - pi_home:/home/rails/.pi/agent
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
         # The PRODUCTION catalog + its encrypted credentials, delivered to the host by
@@ -105,6 +112,7 @@ servers:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
         - codex_home:/home/rails/.codex
+        - pi_home:/home/rails/.pi/agent
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
         # Same catalog + credentials as web, so agent sessions (which run in the
