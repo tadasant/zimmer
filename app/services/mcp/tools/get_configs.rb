@@ -78,6 +78,20 @@ module Mcp
         end
 
         lines << "---" << "" << "### Usage Notes" << ""
+        # The trap the per-root `Default …` lines above cannot show on their own:
+        # they read as "what this root comes with", which is true only until the
+        # caller names a list of its own. https://github.com/tadasant/zimmer/pull/310
+        # keeps explicit-replaces-defaults deliberately, so the warning has to
+        # arrive here — before the agent composes the list, not after it has
+        # spawned a session missing a server one of its skills needed.
+        lines << "- **A list you pass to `start_session` is the final set — it REPLACES the root's " \
+                 "defaults, it is not added to them.** Omit `mcp_servers`/`skills`/`hooks`/`plugins` " \
+                 "and the session takes that root default in full; pass a list and it gets exactly " \
+                 "that list, with every default you did not name dropped silently. Copy the root's " \
+                 "`Default …` line above and subtract from it — never write a fresh list from what " \
+                 "the task seems to need. A dropped MCP server is the one that bites: a root's " \
+                 "default skill can depend on a root's default server, and the skill still loads " \
+                 "without it, so the session fails mid-task at the point of use"
         lines << "- Use `name` values from **MCP Servers** in `start_session` `mcp_servers` parameter"
         lines << "- Servers under **Unavailable** are in the catalog but cannot start — they are not " \
                  "missing, and registering a replacement for one is wrong. Leave them out of " \
@@ -88,7 +102,9 @@ module Mcp
         lines << "- Use `git_root` from **Agent Roots** to start sessions with preconfigured defaults"
         lines << "- Use **Runtime Models** to choose a `config.model` value that belongs to the selected `agent_runtime`"
         lines << "- If an **Agent Root** has a `default_subdirectory`, pass it as `subdirectory` in `start_session` — do not set `subdirectory` to arbitrary internal paths"
-        lines << "- Pass `default_skills` from **Agent Roots** in the `skills` parameter of `start_session` — sessions won't have skills loaded unless you explicitly pass them"
+        lines << "- If you pass `skills` at all, start from the root's **Default Skills** and add to " \
+                 "it — skills are cheap text files with no blast radius, so dropping a default " \
+                 "should be rare and deliberate"
         lines << "- Use `id` values from **Goals** in `start_session` `goal` parameter"
 
         lines.join("\n")
@@ -213,7 +229,7 @@ module Mcp
           defaults = data[:default_mcp_servers].map do |name|
             unavailable_server_names.include?(name) ? "`#{name}` (unavailable)" : "`#{name}`"
           end
-          lines << "- **Default MCP Servers:** #{defaults.join(', ')}"
+          lines << "- **Default MCP Servers (omit `mcp_servers` to take all of these):** #{defaults.join(', ')}"
         end
         lines << "- **Default Goal:** `#{data[:default_goal]}`" if data[:default_goal].present?
         if data[:default_skills].present?
