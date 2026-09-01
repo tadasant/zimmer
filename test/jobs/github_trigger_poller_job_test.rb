@@ -359,11 +359,12 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
                  @label_condition.reload.github_seen_items
   end
 
-  test "recording a fired key immediately does not resurrect a key the grace window dropped" do
-    # The per-fire write only ever ADDS the key it just fired for, so the end-of-tick
-    # write remains the authority on removals. Without that, a key could be written
-    # back after the grace window had accepted its removal, and a genuine re-label
-    # would never fire again — #647 by another route.
+  test "the per-fire write leaves the documented remove-then-re-label semantics intact" do
+    # An end-to-end guard rather than a discriminating one: a key cannot be both
+    # newly-fired and in the removal path in the same tick, so #record_fired_key is
+    # never invoked on the ticks that expire the grace. What it pins is the property
+    # that matters to #647 — that adding a durability floor under `seen_items` did not
+    # quietly make a genuine re-label stop firing.
     labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
 
     stub_search(label: labelled) do
@@ -694,6 +695,39 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     stub_search(issue: [ fresh ]) do
       assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
     end
+  end
+
+  test "an issue whose fire fails before spawning does not inherit the previous issue's session" do
+    # Where the stale-marker guard is load-bearing. This loop calls #fire over its
+    # batch with nothing in between, so `condition.trigger` stays the SAME memoized
+    # instance across items — unlike the label path, where #record_fired_key's reload
+    # happens to drop the association cache. Without the guard, #51 raising before it
+    # reaches #create_session! would read the marker #50 left, count as fired, and drag
+    # `last_issue_at` past an issue that never got a session. That is #647's direction:
+    # an event silently dropped, permanently, with nothing to say why.
+    a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
+    b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
+
+    Trigger.any_instance.stubs(:interpolate_prompt)
+      .returns("triage this issue").then.raises(RuntimeError, "the prompt template blew up")
+
+    stub_search(issue: [ a, b ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    Trigger.any_instance.unstub(:interpolate_prompt)
+
+    @issue_condition.reload
+    assert_equal [ "tadasant/zimmer#50" ], @issue_condition.github_seen_issue_keys,
+                 "#51 never got a session, so it must not be remembered as fired"
+    assert_equal "2026-07-12T09:00:00Z", @issue_condition.github_last_issue_at,
+                 "the cursor must stop at the last issue that actually produced a session"
+
+    # And it really is retried rather than lost.
+    stub_search(issue: [ a, b ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#50", "tadasant/zimmer#51" ],
+                 @issue_condition.reload.github_seen_issue_keys.sort
   end
 
   test "two issues created in the same second both fire and are both remembered" do

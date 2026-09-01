@@ -760,14 +760,22 @@ a separate owner: `StalledStartSweepJob` restarts a `waiting` session that has n
 ([Background jobs](/operate/background-jobs/)). Re-firing would not have rescued it
 either — it would have spawned a sibling and left the original stranded regardless.
 
-The other half of the same guarantee is *when* the record is written. A fired key is persisted the
-instant its session exists, rather than only in the single state write at the end of the tick.
-Everything between those two points can fail — another item's fire, the re-read the state write
-does, the write itself, or the worker being torn down mid-tick — and every one of those failures
-used to lose keys whose sessions had already been created, handing the next tick an event that was
-already in hand. The end-of-tick write is still the authority on the whole seen-set: it is what
-maintains the grace counts and what drops keys whose grace has run out. The per-fire write only ever
-*adds* a key that just fired, so it cannot resurrect a key the grace window was about to drop.
+The other half of the same guarantee, and it applies to the **`github_label` seen-set only**, is
+*when* the record is written. A fired key is persisted the instant its session exists, rather than
+only in the single state write at the end of the tick. Everything between those two points can fail
+— another item's fire, the re-read the state write does, the write itself, or the worker being torn
+down mid-tick — and every one of those failures used to lose keys whose sessions had already been
+created, handing the next tick an event that was already in hand. The end-of-tick write is still the
+authority on the whole seen-set: it is what maintains the grace counts and what drops keys whose
+grace has run out. The per-fire write only ever *adds* a key that just fired, so it cannot resurrect
+a key the grace window was about to drop.
+
+A `github_issue` condition has no such floor. Its cursor and its fired-key set are still written once,
+at the end of the tick, so a lost write there leaves both untouched and the next tick re-fires every
+issue in that batch — the same duplicate, on the other condition type. The half of this that *is*
+shared is the one that produced the observed defect: "does a session exist for this item" is asked by
+the same `#fire` for both, so a raise after the row was committed consumes the event on either path.
+Tracked in [#748](https://github.com/tadasant/zimmer/issues/748).
 
 ### Rate-limit budget
 

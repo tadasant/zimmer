@@ -3704,6 +3704,25 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal Session.order(:id).last.id, created.id
   end
 
+  test "last_fire_created_session survives a raise from the session's own after_commit callbacks" do
+    # The narrow reading of this — "report the session once #save! has returned" —
+    # misses the widest way a fire raises over a committed row. Rails runs
+    # after_create_commit INSIDE #save!, and two of Session's are unrescued: one does
+    # a Turbo/Redis broadcast, the other enqueues SessionTitleJob. A Redis blip or a
+    # failed GoodJob enqueue in either comes back out of #save! with the row already
+    # written, and it happens BEFORE AgentSessionJob.enqueue_new_session is reached.
+    @trigger.update!(reuse_session: false)
+    Session.any_instance.stubs(:enqueue_session_inference).raises(RuntimeError, "redis is unreachable")
+
+    assert_difference "Session.count", 1 do
+      assert_raises(RuntimeError) { @trigger.create_session!(prompt: "Rate this PR") }
+    end
+
+    assert_not_nil @trigger.last_fire_created_session,
+      "the row was written before the callback raised, so the fire did create a session"
+    assert_equal Session.order(:id).last.id, @trigger.last_fire_created_session.id
+  end
+
   test "last_fire_created_session is nil when the fire raised before creating anything" do
     # The other direction, and the one that must not be traded away: a fire that
     # never got as far as a session row is a DROPPED event, and a caller holding a
