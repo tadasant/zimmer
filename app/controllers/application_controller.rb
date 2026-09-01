@@ -23,6 +23,35 @@ class ApplicationController < ActionController::Base
   # enforcement for every descendant controller with no visible symptom.
   rescue_from ActionController::InvalidAuthenticityToken, with: :invalid_authenticity_token
 
+  # Asking an HTML-only action for JSON is a content-negotiation miss — a client
+  # error, and the one thing the server can never satisfy. Rails already answers it
+  # with the right status: ActionController::UnknownFormat carries a
+  # `rescue_responses` mapping to :not_acceptable, so the client gets a 406 either
+  # way. What it does NOT do is treat the event as client-caused. Unrescued, the
+  # exception reaches ActionDispatch::DebugExceptions, which logs it at ERROR — and
+  # a single ERROR record trips the "Zimmer backend logging errors" Grafana alert.
+  # Production emitted exactly two of these in fourteen days, from TriggersController#show
+  # and ConnectorsController#index, and each one paged a human (#453).
+  #
+  # So this changes the log level and the deliberateness of the response, not the
+  # status. Same precedent as InvalidAuthenticityToken above and RoutingError in
+  # ErrorsController: don't suppress the signal, re-log it at INFO with the fields
+  # triage actually needs.
+  #
+  # Narrow by intent, and the pair of declarations below is what makes it narrow.
+  # ActionController::MissingExactTemplate is a SUBCLASS of UnknownFormat, and
+  # rescue_from matches with `klass === exception`, so the first line alone would
+  # also swallow it. That is the one case that must stay loud: Rails raises it from
+  # the branch of ImplicitRender#default_render where the action has no template in
+  # ANY format on an ordinary browser page load, which is a forgotten view, not a
+  # client asking for the wrong one. Handler lookup runs in reverse declaration
+  # order, so the later, more specific declaration wins and re-raises — leaving that
+  # case exactly where it was: an ERROR record, and a page.
+  rescue_from ActionController::UnknownFormat, with: :unknown_format
+  rescue_from ActionController::MissingExactTemplate do |exception|
+    raise exception
+  end
+
   before_action :reconcile_queue_recovery_mode
 
   private
@@ -117,6 +146,31 @@ class ApplicationController < ActionController::Base
       render plain: "The change you wanted was rejected: CSRF token verification failed. " \
         "Reload the page and try again.", status: :unprocessable_entity
     end
+  end
+
+  # One line, carrying what separates a curious client from a broken one.
+  #
+  # `formats` is the negotiated list — the same value Rails puts in the exception
+  # message — and says which representation was asked for. `action` is the field the
+  # two production records were identified by, and it carries more than `path` does:
+  # a `respond_to` block with no branch for the negotiated format raises the same
+  # exception as an HTML-only action, and only the action name tells the two apart.
+  # `user_agent` separates a probe walking the web routes from a real integration
+  # pointed at the wrong host — every resource this happens on that has a JSON
+  # representation has one under /api/v1, so a repeat offender on one action is a
+  # client that needs redirecting rather than an action that needs a template.
+  def unknown_format
+    Rails.logger.info(
+      "Unrenderable format 406: #{request.request_method} #{request.path} " \
+      "action=#{self.class.name}##{action_name} " \
+      "formats=#{request.formats.map(&:to_s).inspect} " \
+      "ip=#{request.remote_ip} " \
+      "user_agent=#{request.user_agent.to_s.inspect}"
+    )
+
+    # No body. A 406 has nothing to say that the status has not already said, and
+    # the one format the client would read it in is the format that got us here.
+    head :not_acceptable
   end
 
   # Whether the *request* arrived carrying the session cookie — not whether a
