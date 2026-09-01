@@ -55,14 +55,45 @@ signal survives without paging anyone:
 | --- | --- | --- | --- |
 | Unmatched route | `ErrorsController#not_found` | 404 | `Unmatched route 404: <verb> <path>` |
 | Failed CSRF check | `ApplicationController#invalid_authenticity_token` | 422 | `CSRF verification failed 422: <verb> <path> ip=… session_cookie=present\|absent user_agent="…" reason="…"` |
+| A format the action cannot render | `ApplicationController#unknown_format` | 406 | `Unrenderable format 406: <verb> <path> formats=[…] ip=… user_agent="…"` |
 
-Neither one weakens the check it reports on. Only the log level and the information content
+None of them weakens the check it reports on. Only the log level and the information content
 of the line change — CSRF verification still runs and still aborts the action before it
 executes. Three controllers opt out of that check for their own reasons, and the handler
 simply never fires for them: `ErrorsController` (`skip_forgery_protection`, because a 404
 carries no state to protect), `McpOauthController` (`skip_forgery_protection only:` its three
 callback actions), and `PushSubscriptionsController` (`skip_before_action
 :verify_authenticity_token`, for the service worker).
+
+The format row is the one where the **status is not what the handler is for**. Asking an
+HTML-only action for JSON raises `ActionController::UnknownFormat`, and that exception carries a
+Rails `rescue_responses` mapping to `:not_acceptable` — so 406 is the answer with or without the
+handler. What the handler decides is the record. Left unrescued, the exception reaches
+`ActionDispatch::DebugExceptions`, which logs at ERROR, and one ERROR record pages; handled, it
+is one INFO line naming the client that asked. Production emitted exactly two of these in
+fourteen days, from `TriggersController#show` and `ConnectorsController#index`
+([#453](https://github.com/tadasant/zimmer/issues/453)) — two different HTML-only actions, same
+exception, one page each.
+
+Two things keep the handler narrow, and the first is easy to get wrong.
+`ActionController::MissingExactTemplate` — what Rails raises when an action has no template in
+*any* format on an ordinary browser page load — is a **subclass** of `UnknownFormat`, and
+`rescue_from` matches subclasses, so a lone `rescue_from ActionController::UnknownFormat` would
+swallow a forgotten view into a quiet 406 as well. `ApplicationController` therefore declares a
+second, more specific handler that re-raises it; handler lookup runs in reverse declaration
+order, so the specific one wins and a missing template stays a loud ERROR. Second, the reach is
+the web UI and nothing else: the JSON API descends from `Api::BaseController <
+ActionController::API` and Administrate from `Administrate::ApplicationController`, so neither
+inherits the handler and a format error on either of those surfaces is left to surface on its
+own terms.
+
+One class of genuine defect does land at INFO, and the log line is shaped to make it findable: a
+`respond_to` block with no branch for the format a client actually sent raises the same
+`UnknownFormat` as an HTML-only action, and nothing distinguishes them from the outside.
+`QuotasController#refresh_account` is the live example — `turbo_stream` only, so a POST that
+arrives without Turbo's `Accept` header gets a 406. That is why the record carries `action=` as
+well as `path`: a defect of this kind shows up as one action recurring, where a client mistake
+shows up as one client wandering.
 
 Two fields carry the triage on a CSRF record. **`session_cookie`** separates client
 populations: *present* means a browser that has been here before — a stale form, an expired
