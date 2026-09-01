@@ -38,12 +38,19 @@ class ApplicationController < ActionController::Base
   # ErrorsController: don't suppress the signal, re-log it at INFO with the fields
   # triage actually needs.
   #
-  # Deliberately narrow. UnknownFormat means templates for the action exist but not
-  # in the negotiated format — by construction a negotiation miss, never a missing
-  # template. An action whose template is genuinely absent raises
-  # ActionController::MissingExactTemplate (or ActionView::MissingTemplate) instead,
-  # neither of which is rescued here, so forgetting a template is still loud.
+  # Narrow by intent, and the pair of declarations below is what makes it narrow.
+  # ActionController::MissingExactTemplate is a SUBCLASS of UnknownFormat, and
+  # rescue_from matches with `klass === exception`, so the first line alone would
+  # also swallow it. That is the one case that must stay loud: Rails raises it from
+  # the branch of ImplicitRender#default_render where the action has no template in
+  # ANY format on an ordinary browser page load, which is a forgotten view, not a
+  # client asking for the wrong one. Handler lookup runs in reverse declaration
+  # order, so the later, more specific declaration wins and re-raises — leaving that
+  # case exactly where it was: an ERROR record, and a page.
   rescue_from ActionController::UnknownFormat, with: :unknown_format
+  rescue_from ActionController::MissingExactTemplate do |exception|
+    raise exception
+  end
 
   before_action :reconcile_queue_recovery_mode
 
@@ -143,23 +150,26 @@ class ApplicationController < ActionController::Base
 
   # One line, carrying what separates a curious client from a broken one.
   #
-  # `formats` is the negotiated list — the same value Rails put in the exception
-  # message — and is what says which representation was asked for. `path` plus
-  # `user_agent` say whether this is a probe walking the web routes or a real
-  # integration pointed at the wrong host: every resource this happens on that has
-  # a JSON representation has it under /api/v1, so a repeat offender on one path is
-  # a client that needs redirecting rather than an action that needs a template.
+  # `formats` is the negotiated list — the same value Rails puts in the exception
+  # message — and says which representation was asked for. `action` is the field the
+  # two production records were identified by, and it carries more than `path` does:
+  # a `respond_to` block with no branch for the negotiated format raises the same
+  # exception as an HTML-only action, and only the action name tells the two apart.
+  # `user_agent` separates a probe walking the web routes from a real integration
+  # pointed at the wrong host — every resource this happens on that has a JSON
+  # representation has one under /api/v1, so a repeat offender on one action is a
+  # client that needs redirecting rather than an action that needs a template.
   def unknown_format
     Rails.logger.info(
       "Unrenderable format 406: #{request.request_method} #{request.path} " \
+      "action=#{self.class.name}##{action_name} " \
       "formats=#{request.formats.map(&:to_s).inspect} " \
       "ip=#{request.remote_ip} " \
       "user_agent=#{request.user_agent.to_s.inspect}"
     )
 
-    # No body: the client stated the formats it accepts, and the reason we are here
-    # is that the server can produce none of them. Anything rendered would be in a
-    # format the request already refused.
+    # No body. A 406 has nothing to say that the status has not already said, and
+    # the one format the client would read it in is the format that got us here.
     head :not_acceptable
   end
 

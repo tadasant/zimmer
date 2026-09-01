@@ -56,6 +56,9 @@ class UnknownFormatTest < ActionDispatch::IntegrationTest
 
     line = info_record(entries)
     assert_match %r{\AUnrenderable format 406: GET #{Regexp.escape(trigger_path(trigger))} }, line
+    # The field the two production records were identified by. Without it a
+    # `respond_to` block missing a branch and an HTML-only action read identically.
+    assert_match "action=TriggersController#show", line
     assert_match 'formats=["application/json"]', line
     assert_match(/ip=\S+/, line)
     assert_match 'user_agent="probe/1.0"', line
@@ -66,12 +69,20 @@ class UnknownFormatTest < ActionDispatch::IntegrationTest
   # exception unrescued the 406 is rendered by DebugExceptions, which logs the ERROR
   # record that pages. Pinning the severity is what keeps the handler from being
   # "simplified" back out.
-  test "no format miss anywhere in the web UI is logged above INFO" do
+  test "the format miss is not recorded at any severity above INFO" do
     entries = capture_log_entries do
       get connectors_path, headers: { "Accept" => "application/json" }
     end
 
-    assert_empty entries.map(&:first) & %w[WARN ERROR FATAL ANY],
+    # Scoped to entries that name the event, not to every entry in the request: an
+    # unrelated deprecation WARN from somewhere in /connectors would otherwise fail
+    # this with a message pointing at the wrong thing.
+    above_info = entries.select do |severity, message|
+      %w[WARN ERROR FATAL ANY].include?(severity) &&
+        (message.include?("UnknownFormat") || message.include?("Unrenderable format"))
+    end
+
+    assert_empty above_info,
       "a content-negotiation miss is a client error and must not reach a severity the alert counts"
   end
 
@@ -101,18 +112,30 @@ class UnknownFormatTest < ActionDispatch::IntegrationTest
     assert_equal "text/html", response.media_type
   end
 
-  # A missing template is a server defect, not a negotiation miss, and Rails raises a
-  # different exception for it (MissingExactTemplate / ActionView::MissingTemplate).
-  # Neither is rescued, so a forgotten template is still loud rather than a quiet 406.
-  test "only UnknownFormat is rescued, so a genuinely missing template still raises" do
-    assert_equal [ ActionController::UnknownFormat ],
-      ApplicationController.rescue_handlers.filter_map { |klass, handler|
-        klass.safe_constantize if handler == :unknown_format
-      }
-    refute_includes ApplicationController.rescue_handlers.map(&:first),
-      "ActionController::MissingExactTemplate"
-    refute_includes ApplicationController.rescue_handlers.map(&:first),
-      "ActionView::MissingTemplate"
+  # The trap in the whole fix, and the reason this test is behavioural rather than a
+  # look at the rescue_handlers registry: ActionController::MissingExactTemplate is a
+  # SUBCLASS of UnknownFormat, and rescue_from matches subclasses. A registry
+  # assertion would pass while the handler silently swallowed it, because the
+  # registry never lists subclasses in the first place.
+  #
+  # An action with no template in any format is a forgotten view — a server defect on
+  # a real user's page load, not a client asking for the wrong format — so it has to
+  # stay at ERROR. Issue the request and read the severity; nothing else proves it.
+  test "an action with no template at all stays a loud ERROR, not a quiet 406" do
+    with_routing do |routes|
+      routes.draw { get "missing_template_probe", to: "missing_template_probe#show" }
+
+      entries = capture_log_entries do
+        get "/missing_template_probe"
+      end
+
+      errors = entries.select { |severity, _| severity == "ERROR" }
+      assert_equal 1, errors.size,
+        "a forgotten template must still page: #{entries.map(&:inspect).join("\n")}"
+      assert_match "MissingExactTemplate", errors.first.last
+      assert_empty entries.select { |_, message| message.start_with?("Unrenderable format 406:") },
+        "a forgotten template must not be re-logged as a client-side format miss"
+    end
   end
 
   # The blast radius of a blanket `rescue_from`. The JSON API is a separate
@@ -139,4 +162,11 @@ class UnknownFormatTest < ActionDispatch::IntegrationTest
     errors = entries.select { |severity, _| severity == "ERROR" }
     assert_empty errors, "a content-negotiation miss must not emit an ERROR record: #{errors.inspect}"
   end
+end
+
+# The subject of the missing-template test above. It descends from
+# ApplicationController — which is the whole point, since the handler under test is
+# declared there — and has no template anywhere, in any format.
+class MissingTemplateProbeController < ApplicationController
+  def show; end
 end

@@ -75,14 +75,25 @@ fourteen days, from `TriggersController#show` and `ConnectorsController#index`
 ([#453](https://github.com/tadasant/zimmer/issues/453)) — two different HTML-only actions, same
 exception, one page each.
 
-The handler is deliberately narrow. `UnknownFormat` is raised only when templates for the
-action exist but not in the negotiated format, which is a negotiation miss by construction. An
-action whose template is genuinely *missing* raises `ActionController::MissingExactTemplate` or
-`ActionView::MissingTemplate`, neither of which is rescued — so a forgotten template is still a
-loud server error rather than a quiet 406. Its reach is the web UI and nothing else: the JSON
-API descends from `Api::BaseController < ActionController::API` and Administrate from
-`Administrate::ApplicationController`, so neither inherits the handler and a format error on
-either of those surfaces is left to surface on its own terms.
+Two things keep the handler narrow, and the first is easy to get wrong.
+`ActionController::MissingExactTemplate` — what Rails raises when an action has no template in
+*any* format on an ordinary browser page load — is a **subclass** of `UnknownFormat`, and
+`rescue_from` matches subclasses, so a lone `rescue_from ActionController::UnknownFormat` would
+swallow a forgotten view into a quiet 406 as well. `ApplicationController` therefore declares a
+second, more specific handler that re-raises it; handler lookup runs in reverse declaration
+order, so the specific one wins and a missing template stays a loud ERROR. Second, the reach is
+the web UI and nothing else: the JSON API descends from `Api::BaseController <
+ActionController::API` and Administrate from `Administrate::ApplicationController`, so neither
+inherits the handler and a format error on either of those surfaces is left to surface on its
+own terms.
+
+One class of genuine defect does land at INFO, and the log line is shaped to make it findable: a
+`respond_to` block with no branch for the format a client actually sent raises the same
+`UnknownFormat` as an HTML-only action, and nothing distinguishes them from the outside.
+`QuotasController#refresh_account` is the live example — `turbo_stream` only, so a POST that
+arrives without Turbo's `Accept` header gets a 406. That is why the record carries `action=` as
+well as `path`: a defect of this kind shows up as one action recurring, where a client mistake
+shows up as one client wandering.
 
 Two fields carry the triage on a CSRF record. **`session_cookie`** separates client
 populations: *present* means a browser that has been here before — a stale form, an expired
