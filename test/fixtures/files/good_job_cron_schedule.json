@@ -153,7 +153,7 @@
     "fleet_idle_checker": {
       "cron": "* * * * *",
       "class": "FleetIdleCheckerJob",
-      "description": "Fire the no_sessions_in_progress event once the fleet has had nothing running and nothing queued for 5 minutes"
+      "description": "Fire the no_sessions_in_progress event once the fleet has had nothing to do for 5 minutes"
     },
     "spot_ceiling_sweep": {
       "cron": "*/5 * * * *",
@@ -375,7 +375,7 @@
     "fleet_idle_checker": {
       "cron": "* * * * *",
       "class": "FleetIdleCheckerJob",
-      "description": "Fire the no_sessions_in_progress event once the fleet has had nothing running and nothing queued for 5 minutes"
+      "description": "Fire the no_sessions_in_progress event once the fleet has had nothing to do for 5 minutes"
     },
     "spot_ceiling_sweep": {
       "cron": "*/5 * * * *",

@@ -47,6 +47,11 @@ export default class extends Controller {
       const typeSelect = card.querySelector("[data-trigger-form-target='conditionTypeSelect']")
       this.updateGithubFieldsInCard(card, typeSelect ? typeSelect.value : "")
 
+      // Same for the two event_name selects, which share one name — the server
+      // renders the right disabled state, and this keeps the DOM self-correcting
+      // rather than leaving the two sibling mechanisms working differently.
+      this.updateEventNameFieldsInCard(card, typeSelect ? typeSelect.value : "")
+
       // Initialize the Slack channel field's visibility for the saved event type
       const eventTypeSelect = card.querySelector("[data-trigger-form-target='slackEventTypeSelect']")
       if (eventTypeSelect) this.applySlackEventType(card, eventTypeSelect.value)
@@ -594,9 +599,9 @@ export default class extends Controller {
             <select name="${name}[configuration][event_name]" disabled class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
               <option value="">Select event...</option>
               <option value="quota_available">Quota available again (the account pool recovered)</option>
-              <option value="no_sessions_in_progress">No sessions in progress (nothing running or queued for 5 minutes)</option>
+              <option value="no_sessions_in_progress">No sessions in progress (the fleet has run out of work — at most once an hour)</option>
             </select>
-            <p class="mt-1 text-xs text-gray-500">Deployment-wide events, each fired once on the edge rather than on every check. "Quota available again" fires when the Claude Code account pool goes from serving nothing to serving something, and is what wakes quota-parked spot sessions. "No sessions in progress" fires when nothing has been running <em>and</em> nothing is queued in the spot queue for 5 continuous minutes, and cannot fire again until the fleet has work again — so it is one wake per quiet stretch, not one per check.</p>
+            <p class="mt-1 text-xs text-gray-500">Deployment-wide events, each fired once on the edge rather than on every check. "Quota available again" fires when the Claude Code account pool goes from serving nothing to serving something, and is what wakes quota-parked spot sessions. "No sessions in progress" fires when the deployment has had nothing to do for 5 continuous minutes — nothing running, nothing queued in the spot queue, nothing parked on a quota outage, and a pool that can serve. It cannot fire again until the fleet has work again, and never more than once an hour, so it is a wake for a fleet that has run out of work rather than one per check.</p>
           </div>
         </div>
 

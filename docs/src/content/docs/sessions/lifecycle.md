@@ -108,9 +108,13 @@ An `after_commit` on the status column — not a hook on `start` and `resume` �
 `FleetIdleMonitor.record_busy!` whenever a commit lands a session in `running`. The fact
 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) needs is "a session is
 running", and every path that produces it has to count: both AASM events, an elicitation unblocking,
-a recovery writing the column directly. Missing one would leave that event's latch spent against a
+a session created directly in `running`. Missing one would leave that event's latch spent against a
 fleet that had gone back to work, because a session that starts and finishes inside one cron tick is
 invisible to the sweep that samples for it.
+
+It does not cover `update_column` / `update_all`, which skip callbacks — no caller writes `status`
+that way, and the sweep re-arms on its next tick regardless, so this is the fast path rather than
+the only one.
 
 After the commit, and best-effort: a transition is never slowed or rolled back by this bookkeeping.
 

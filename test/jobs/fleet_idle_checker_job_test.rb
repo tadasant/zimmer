@@ -11,7 +11,8 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
     # The fixtures ship sessions in `running` and in `waiting`, which is exactly
     # what the monitor reads.
     Session.delete_all
-    AppSetting.editable.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: nil)
+    AppSetting.editable.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: nil,
+                                quota_pool_available: true)
   end
 
   def idle_trigger(status: "enabled", skip_if_pending_session: false)
@@ -57,7 +58,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
     end
 
     assert_equal trigger.id.to_s, session.metadata["trigger_id"].to_s
-    assert_includes session.prompt, "no sessions running"
+    assert_includes session.prompt, "The fleet has run out of work"
     assert_equal SessionGenesis::SYSTEM_EVENT, session.genesis
     assert_not_nil trigger.trigger_conditions.first.reload.last_triggered_at
   end
@@ -76,6 +77,42 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
           perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
           travel 1.minute
         end
+      end
+    end
+  end
+
+  # The production case the test above does NOT reach: there, the spawned session
+  # sits in `waiting` forever. In production it runs, and running is what re-arms
+  # the latch — so without the cooldown the fleet would go quiet again five
+  # minutes after it finished and the event would fire again, indefinitely.
+  test "the session the event spawns cannot re-qualify the event by running" do
+    idle_trigger
+
+    freeze_time do
+      FleetIdleCheckerJob.perform_now
+      travel FleetIdleMonitor::IDLE_THRESHOLD
+      perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
+      spawned = Session.order(:id).last
+
+      assert_difference -> { Session.count }, 0 do
+        # The spawned session works for ten minutes, finishes, and the fleet is
+        # quiet again — three times over, well past IDLE_THRESHOLD each time.
+        3.times do
+          spawned.update!(status: :running)
+          travel 10.minutes
+          spawned.update!(status: :archived)
+
+          6.times do
+            perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
+            travel 1.minute
+          end
+        end
+      end
+
+      # Past the floor, a quiet fleet is a fresh opportunity again.
+      travel FleetIdleMonitor::MIN_FIRE_INTERVAL
+      assert_difference -> { Session.count }, 1 do
+        perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
       end
     end
   end

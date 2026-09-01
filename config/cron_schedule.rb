@@ -273,7 +273,7 @@ module CronSchedule
     fleet_idle_checker: {
       cron: "* * * * *", # Every minute — the resolution of FleetIdleMonitor::IDLE_THRESHOLD
       class: "FleetIdleCheckerJob",
-      description: "Fire the no_sessions_in_progress event once the fleet has had nothing running and nothing queued for 5 minutes",
+      description: "Fire the no_sessions_in_progress event once the fleet has had nothing to do for 5 minutes",
       environments: %i[production staging]
     },
     spot_ceiling_sweep: {
