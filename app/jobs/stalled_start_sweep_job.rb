@@ -11,17 +11,13 @@
 # session does not have. Session 10426 sat in `waiting` for three days.
 #
 # Every rule about what counts as stalled, and what is done about it, lives in
-# StalledSessionStart. Cadence is five minutes, matching the other repair sweeps:
-# a pass with nothing to do is one indexed query over the waiting population.
+# StalledSessionStart — including the logging, so this job adds no line of its
+# own. Cadence is five minutes, matching the other repair sweeps: a pass with
+# nothing to do is one indexed query over the waiting population.
 class StalledStartSweepJob < ApplicationJob
   include SingletonSweep
 
   def perform
-    logger = StructuredLogger.new({ service: "StalledStartSweepJob" })
-    result = StalledSessionStart.sweep!(logger: logger)
-
-    return if result.stalled.zero?
-
-    logger.info("Stalled-start sweep acted", **result.to_h)
+    StalledSessionStart.sweep!(logger: StructuredLogger.new({ service: "StalledStartSweepJob" }))
   end
 end

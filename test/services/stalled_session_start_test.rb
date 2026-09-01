@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The sweep for a session that was created, queued, and then forgotten.
 #
@@ -70,7 +71,7 @@ class StalledSessionStartTest < ActiveSupport::TestCase
 
     assert_equal 1, result.restarted
     assert_equal 1, result.stalled
-    assert_equal 0, result.skipped
+    assert_equal 0, result.refused
     assert_equal 1, session.reload.metadata[StalledSessionStart::RESTART_COUNT]
     assert session.waiting?, "the repair is a job, not a status change"
     assert session.logs.where(level: "warning").any? { |log| log.content.include?("never started") },
@@ -95,8 +96,10 @@ class StalledSessionStartTest < ActiveSupport::TestCase
   end
 
   # A congested `agents` queue is not a lost job. Re-enqueuing here would put a
-  # SECOND agent against one clone.
-  test "a session whose start job is still queued is counted but not restarted" do
+  # SECOND agent against one clone. Filtered in SQL, so such a session is not even
+  # counted as stalled — see PendingAgentTurns.without_a_pending_turn for why
+  # discarding it after a bounded read would starve the sweep instead.
+  test "a session whose start job is still queued is not stalled at all" do
     session = stalled_session
     queue_a_turn_for(session)
     jobs_before = GoodJob::Job.count
@@ -104,8 +107,7 @@ class StalledSessionStartTest < ActiveSupport::TestCase
     result = StalledSessionStart.sweep!
 
     assert_equal 0, result.restarted
-    assert_equal 1, result.stalled
-    assert_equal 1, result.skipped
+    assert_equal 0, result.stalled
     assert_equal jobs_before, GoodJob::Job.count, "no second job may be enqueued"
     assert_nil session.reload.metadata[StalledSessionStart::RESTART_COUNT]
   end
@@ -219,7 +221,12 @@ class StalledSessionStartTest < ActiveSupport::TestCase
     end
   end
 
-  test "a clone-only session with no prompt is not restarted" do
+  # A prompt-less `waiting` row is not a lost job — it is what POST
+  # /api/v1/sessions creates when the caller sends no prompt: the controller
+  # enqueues nothing, deliberately, and the session waits for a follow-up.
+  # (A clone-only session is not this case: SessionsController creates it
+  # `needs_input`, so it is out of the population by status.)
+  test "a prompt-less session created without a job is not started" do
     stalled_session(prompt: nil)
 
     assert_no_enqueued_jobs(only: AgentSessionJob) do
@@ -278,13 +285,24 @@ class StalledSessionStartTest < ActiveSupport::TestCase
     assert_equal 2, session.reload.metadata[StalledSessionStart::RESTART_COUNT]
   end
 
-  test "one pass restarts at most MAX_RESTARTS_PER_SWEEP sessions" do
-    (StalledSessionStart::MAX_RESTARTS_PER_SWEEP + 3).times { stalled_session }
+  test "one pass acts on at most MAX_ACTIONS_PER_SWEEP sessions" do
+    (StalledSessionStart::MAX_ACTIONS_PER_SWEEP + 3).times { stalled_session }
 
     result = StalledSessionStart.sweep!
 
-    assert_equal StalledSessionStart::MAX_RESTARTS_PER_SWEEP, result.restarted
-    assert_equal StalledSessionStart::MAX_RESTARTS_PER_SWEEP + 3, result.stalled
+    assert_equal StalledSessionStart::MAX_ACTIONS_PER_SWEEP, result.restarted
+    assert_equal StalledSessionStart::MAX_ACTIONS_PER_SWEEP + 3, result.stalled
+  end
+
+  # The load window is bounded separately from the batch, so a big backlog is
+  # worked down over successive passes rather than in one.
+  test "one pass loads at most MAX_LOADED_PER_SWEEP sessions but still counts them all" do
+    (StalledSessionStart::MAX_LOADED_PER_SWEEP + 2).times { stalled_session }
+
+    result = StalledSessionStart.sweep!
+
+    assert_equal StalledSessionStart::MAX_LOADED_PER_SWEEP + 2, result.stalled
+    assert_equal StalledSessionStart::MAX_ACTIONS_PER_SWEEP, result.restarted
   end
 
   # Having restarted once, the next pass five minutes later must see the job it
@@ -317,8 +335,77 @@ class StalledSessionStartTest < ActiveSupport::TestCase
   # It runs on a cron beside everything else: a failed pass costs a pass.
   test "the sweep never raises" do
     stalled_session
-    Sessions::StartNow.stub(:call, ->(*) { raise "boom" }) do
+    Sessions::StartNow.stub(:call, ->(*, **) { raise "boom" }) do
       assert_equal 0, StalledSessionStart.sweep!.restarted
     end
+  end
+
+  # StartNow is the sweep's last guard: it re-reads the queue and refuses if
+  # anything changed. A refusal must not burn the budget or write a log line
+  # claiming a turn was enqueued.
+  test "a session StartNow refuses is counted as refused and costs no budget" do
+    session = stalled_session
+    refused = Sessions::StartNow::Result.new(outcome: :refused, message: "nope")
+
+    result = nil
+    Sessions::StartNow.stub(:call, ->(*, **) { refused }) do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        result = StalledSessionStart.sweep!
+      end
+    end
+
+    assert_equal 1, result.refused
+    assert_equal 0, result.restarted
+    session.reload
+    assert_nil session.metadata[StalledSessionStart::RESTART_COUNT]
+    assert_empty session.logs.where(level: "warning")
+  end
+
+  # --- too old to start blind ------------------------------------------------------
+
+  # The motivating case, taken to its conclusion. Session 10426's PR was merged
+  # by a human seven minutes after it was spawned; a sweep that found it three
+  # days later and simply started it would have run a merge gate against an
+  # already-merged PR. Past MAX_STALL_AGE the turn is stale, so the session is
+  # failed — visible, with a reason, and restartable by a human who still wants it.
+  test "a session stalled longer than MAX_STALL_AGE is failed rather than started" do
+    session = stalled_session(age: StalledSessionStart::MAX_STALL_AGE + 1.hour)
+
+    result = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      result = StalledSessionStart.sweep!
+    end
+
+    assert_equal 1, result.failed
+    assert_equal 0, result.restarted
+    session.reload
+    assert session.failed?
+    assert_includes session.metadata["failure_reason"], "longer than"
+    assert session.logs.where(level: "error").any? { |log| log.content.include?("too old to run blind") }
+  end
+
+  test "a session stalled inside MAX_STALL_AGE is still started" do
+    session = stalled_session(age: StalledSessionStart::MAX_STALL_AGE - 1.hour)
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      assert_equal 1, StalledSessionStart.sweep!.restarted
+    end
+  end
+
+  # `fail!` can be refused by its guard or raise from a callback. The session
+  # then stays `waiting` and comes back next pass — where an unconditional log
+  # write would add an identical error line every GRACE, forever.
+  test "giving up twice on the same session writes one error line" do
+    session = stalled_session(age: StalledSessionStart::MAX_STALL_AGE + 1.hour)
+
+    Session.any_instance.stubs(:may_fail?).returns(false)
+    result = StalledSessionStart.sweep!
+    assert_equal 0, result.failed
+    assert_equal 1, result.refused
+
+    session.reload.update_columns(updated_at: session.created_at)
+    StalledSessionStart.sweep!
+
+    assert_equal 1, session.reload.logs.where(level: "error").count
   end
 end

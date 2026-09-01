@@ -34,4 +34,26 @@ module PendingAgentTurns
       .map(&:to_i)
       .to_set
   end
+
+  # The same question as an anti-join, for a caller that wants the sessions with
+  # nothing queued rather than the ids of those with something.
+  #
+  # A sweep that reads a bounded page of candidates and *then* discards the ones
+  # with a job pending has a starvation mode the set form cannot fix: a discarded
+  # session advances no timestamp, so it keeps its place at the head of an
+  # oldest-first ordering and can fill the whole page. Under the congested queue
+  # this sweep exists for — 251 ready jobs on 2026-08-22 — that is exactly when
+  # the page fills with sessions whose jobs are merely late. Filtering in SQL
+  # means the page only ever contains rows worth acting on.
+  #
+  # @param relation [ActiveRecord::Relation<Session>] must select from `sessions`
+  # @return [ActiveRecord::Relation<Session>]
+  def without_a_pending_turn(relation)
+    relation.where(
+      "NOT EXISTS (SELECT 1 FROM good_jobs WHERE good_jobs.job_class = ? " \
+      "AND good_jobs.finished_at IS NULL " \
+      "AND good_jobs.serialized_params -> 'arguments' ->> 0 = sessions.id::text)",
+      AgentSessionJob.name
+    )
+  end
 end
