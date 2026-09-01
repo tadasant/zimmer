@@ -65,6 +65,22 @@ module Sessions
   # reported as `nothing_queued` for the caller to decide on: the web UI nudges
   # it with the same continue prompt Refresh sends, a promote leaves it alone.
   #
+  # == The first turn carries its attachments
+  #
+  # The one branch that builds a job out of nothing — a session that has never run
+  # and has nothing queued — re-reads the session's images and files off the
+  # durable volume and puts them on the job. AgentSessionJob reads attachments
+  # ONLY out of its job arguments, so enqueuing without them started a session
+  # whose prompt was "here is the screenshot, fix this" with the prompt and
+  # without the screenshot (#739). The other two branches move a job that already
+  # carries its own, and must not re-read: that would attach a second copy.
+  #
+  # The narrow duplicate-job gap named above rides along with it. A session that
+  # takes this branch while a hold job is mid-execution can end up with two turns,
+  # and both now carry the attachments — the second re-delivers the screenshot
+  # rather than arriving bare. That is the existing gap costing slightly more, not
+  # a new one: the fix for it is the same fix it always was.
+  #
   # == What it refuses
   #
   # A pause with a wake-up ARMED. That wake is the session's next event and it
@@ -139,8 +155,9 @@ module Sessions
       # which is the one case where enqueuing is the right answer rather than a
       # duplicate.
       if session.session_id.blank?
-        AgentSessionJob.enqueue_new_session(session.id)
-        return started("its first turn was enqueued")
+        images, files = first_turn_attachments
+        AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
+        return started("its first turn was enqueued#{attachment_phrase(images, files)}")
       end
 
       Result.new(
@@ -169,6 +186,73 @@ module Sessions
       # human waiting on an answer, not a sweep that can 500.
       Rails.logger.warn("[Sessions::StartNow] Could not read wake-ups for session #{session.id}: #{e.message}")
       "Could not read session #{session.id}'s pending wake-ups, so it was left alone. Try again."
+    end
+
+    # The attachments the first turn was created with, read back off disk.
+    #
+    # This branch is the only one that builds a job out of nothing. The other two
+    # move a job that already exists, and a queued AgentSessionJob carries its own
+    # `images:`/`files:` arguments — so re-reading storage for them would attach a
+    # second copy of what is already on the turn.
+    #
+    # Enqueuing without them was a silent correctness loss rather than a missing
+    # feature (#739): the bytes are still on the durable volume, keyed by session
+    # id, and AgentSessionJob reads attachments ONLY out of its job arguments. A
+    # session whose prompt was "here is the screenshot, fix this" started with the
+    # prompt, without the screenshot, and with nothing saying an attachment had
+    # ever been meant to be there.
+    #
+    # What is read is "everything on disk, minus what the queue owns" rather than
+    # a recorded list of the first turn's own attachments — nothing records one.
+    # The two coincide because this branch is reached only when `session_id` is
+    # blank, which is what "has never run" means everywhere in recovery, so no
+    # earlier turn can have consumed any of it.
+    #
+    # @return [Array(Array<Hash>, Array<Hash>)] images, files
+    def first_turn_attachments
+      claimed = paths_claimed_by_the_queue
+      # An unreadable queue degrades this to the old attachment-free start rather
+      # than risking the duplicate: a turn short an attachment is a worse turn, a
+      # turn carrying somebody else's is a wrong one.
+      return [ [], [] ] if claimed.nil?
+
+      [
+        ImageStorageService.stored_for(session.id),
+        FileStorageService.stored_for(session.id)
+      ].map { |attachments| attachments.reject { |entry| claimed.include?(entry[:path]) } }
+    end
+
+    # Attachment paths that belong to a QUEUED message rather than to the first
+    # turn.
+    #
+    # Both live in the same per-session storage directory — a follow-up composed
+    # while the session sat unstarted uploads through the same service — so
+    # "everything on disk" is not the same set as "what the first turn carried".
+    # An EnqueuedMessage records the paths it owns, and delivering them twice
+    # would put a screenshot the human queued for later onto the turn before it.
+    #
+    # @return [Set<String>, nil] nil when the queue could not be read, which is
+    #   NOT the same answer as "nothing is queued"
+    def paths_claimed_by_the_queue
+      session.enqueued_messages
+             .flat_map { |message| Array(message.images) + Array(message.files) }
+             .filter_map { |entry| entry["path"] || entry[:path] if entry.is_a?(Hash) }
+             .to_set
+    rescue ActiveRecord::ActiveRecordError => e
+      Rails.logger.warn("[Sessions::StartNow] Could not read session #{session.id}'s queued messages: #{e.message}")
+      nil
+    end
+
+    # What the session's log says the turn is carrying. Silence when it carries
+    # nothing: a first turn with no attachments is the ordinary case, and saying
+    # so every time would bury the times it does.
+    def attachment_phrase(images, files)
+      carried = []
+      carried << "#{images.size} #{"image".pluralize(images.size)}" if images.any?
+      carried << "#{files.size} #{"file".pluralize(files.size)}" if files.any?
+      return "" if carried.empty?
+
+      ", carrying #{carried.to_sentence}"
     end
 
     def resume_from_the_queue

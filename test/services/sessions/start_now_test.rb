@@ -8,6 +8,7 @@ require "test_helper"
 # the same session is a second turn nobody asked for.
 class Sessions::StartNowTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
+  include AttachmentFixtures
 
   def waiting_session(session_id: nil, metadata: {})
     Session.create!(
@@ -25,6 +26,27 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
       SpotSessionHold::HELD_RETRY_AT => retry_at.iso8601,
       SpotSessionHold::HELD_COUNT => 3
     })
+  end
+
+  # A stored attachment, written through the same service the upload paths use —
+  # the point of the fix is that what is on disk is enough to rebuild the turn.
+  def store_image(session)
+    (@storages ||= []) << ImageStorageService.new(session_id: session.id)
+    @storages.last.store(data: Base64.strict_encode64(minimal_png), filename: "shot.png")
+  end
+
+  def store_file(session, filename:, content:)
+    (@storages ||= []) << FileStorageService.new(session_id: session.id)
+    @storages.last.store(data: content, filename: filename)
+  end
+
+  teardown { @storages&.each(&:cleanup!) }
+
+  # The arguments of the one AgentSessionJob this start enqueued.
+  def enqueued_agent_session_args
+    jobs = enqueued_jobs.select { |job| job["job_class"] == "AgentSessionJob" }
+    assert_equal 1, jobs.length, "expected exactly one enqueued AgentSessionJob"
+    ActiveJob::Arguments.deserialize(jobs.first["arguments"])
   end
 
   # The deferred job SpotSessionHold leaves behind, as GoodJob stores it. The
@@ -131,6 +153,126 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
 
     assert result.started?, result.message
     assert session.logs.reload.any? { |log| log.content.include?("Started now") }
+  end
+
+  # --- the first turn's attachments -------------------------------------------
+  #
+  # AgentSessionJob reads images and files ONLY out of its job arguments, so the
+  # one branch that builds a job out of nothing has to rebuild the attachments
+  # too. Enqueuing without them started a session whose prompt was "here is the
+  # screenshot, fix this" with the prompt and without the screenshot (#739).
+
+  test "a first turn is enqueued carrying the images the session was created with" do
+    session = waiting_session
+    stored = store_image(session)
+
+    Sessions::StartNow.call(session)
+
+    args = enqueued_agent_session_args
+    assert_equal [ { path: stored[:path], media_type: "image/png" } ], args.dig(2, :images)
+    assert_nil args.dig(2, :files)
+  end
+
+  test "a first turn is enqueued carrying the files the session was created with" do
+    session = waiting_session
+    stored = store_file(session, filename: "notes.txt", content: "read me")
+
+    Sessions::StartNow.call(session)
+
+    files = enqueued_agent_session_args.dig(2, :files)
+    assert_equal [ stored[:path] ], files.map { |f| f[:path] }
+    assert_equal [ "notes.txt" ], files.map { |f| f[:original_filename] }
+    assert_equal [ "read me".bytesize ], files.map { |f| f[:size] }
+  end
+
+  # The ordinary case, and the one this must not change: no storage directory at
+  # all, so the job is enqueued exactly as it was before.
+  test "a session with no stored attachments is enqueued with no attachment arguments" do
+    session = waiting_session
+
+    result = nil
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      result = Sessions::StartNow.call(session)
+    end
+
+    assert result.started?, result.message
+    refute_match(/carrying/, result.message)
+  end
+
+  # Both kinds of attachment live in the same per-session directory, so
+  # "everything on disk" is not the same set as "what the first turn carried".
+  test "an attachment a queued follow-up owns is not smuggled onto the first turn" do
+    session = waiting_session
+    first_turn = store_image(session)
+    follow_up = store_image(session)
+    session.enqueued_messages.create!(
+      content: "and now this one", position: 1,
+      images: [ { "path" => follow_up[:path], "media_type" => "image/png" } ]
+    )
+
+    Sessions::StartNow.call(session)
+
+    assert_equal [ { path: first_turn[:path], media_type: "image/png" } ],
+      enqueued_agent_session_args.dig(2, :images)
+  end
+
+  # A turn short an attachment is a worse turn; a turn carrying somebody else's
+  # is a wrong one. An unreadable queue therefore falls back to the former.
+  test "an unreadable message queue falls back to a turn with no attachments" do
+    session = waiting_session
+    store_image(session)
+
+    session.stub(:enqueued_messages, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
+      Sessions::StartNow.call(session)
+    end
+
+    assert_equal [ session.id ], enqueued_agent_session_args,
+      "a queue that cannot be read must not produce a duplicate attachment"
+  end
+
+  test "the session's log names what the first turn is carrying" do
+    session = waiting_session
+    store_image(session)
+    store_file(session, filename: "notes.txt", content: "read me")
+
+    result = Sessions::StartNow.call(session)
+
+    assert_match(/carrying 1 image and 1 file/, result.message)
+    assert session.logs.reload.any? { |log| log.content.include?("carrying 1 image and 1 file") }
+  end
+
+  # The other two branches move a job that already carries its own arguments.
+  # Re-reading storage for them would attach a second copy.
+  test "a pulled-forward turn is not given a second copy of the attachments" do
+    session = held_session
+    store_image(session)
+    job = queued_turn(session, scheduled_at: 40.minutes.from_now)
+
+    result = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      result = Sessions::StartNow.call(session)
+    end
+
+    assert result.started?, result.message
+    refute_match(/carrying/, result.message)
+    assert_equal [ session.id ], job.reload.serialized_params["arguments"],
+      "the queued job's own arguments are the turn's attachments; nothing here rewrites them"
+  end
+
+  test "a resume from the spot queue does not re-read storage" do
+    session = waiting_session(session_id: "cli-abc", metadata: {
+      SpotSessionPause::PAUSED_AT => 1.hour.ago.utc.iso8601,
+      SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+      SpotSessionPause::PAUSED_DETAIL => "Holding spot sessions: the 5-hour window spent its spot budget.",
+      SpotSessionPause::PAUSED_COUNT => 1,
+      "paused_by" => SpotSessionPause::PAUSED_BY
+    })
+    store_image(session)
+
+    result = Sessions::StartNow.call(session)
+
+    assert result.started?, result.message
+    refute_match(/carrying/, result.message)
   end
 
   test "a session that has run before and has nothing queued is reported, not nudged" do
