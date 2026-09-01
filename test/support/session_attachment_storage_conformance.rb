@@ -249,6 +249,34 @@ module SessionAttachmentStorageConformance
       assert_equal [], storage_class.stored_for(0)
     end
 
+    # One unreadable entry must cost that one attachment, not the whole set. A
+    # turn short one screenshot is a worse turn; a turn silently stripped of all
+    # of them is the bug .stored_for exists to fix — and both subclasses raise
+    # rather than returning nil when the bytes go (File.size, binread), so the
+    # rescue that keeps the rest has to be per entry.
+    test "conformance: an entry that cannot be read does not take the rest with it" do
+      kept = store_sample(conformance_service, filename: "kept")
+      doomed = store_sample(conformance_service, filename: "doomed")
+
+      service = storage_class.new(session_id: conformance_service.session_id.to_i)
+      service.define_singleton_method(:describe_entry) do |path|
+        raise Errno::ENOENT, path if path == doomed[:path]
+
+        super(path)
+      end
+
+      entries = capture_log_entries do
+        storage_class.stub(:new, service) do
+          described = storage_class.stored_for(conformance_service.session_id.to_i)
+
+          assert_equal [ kept[:path] ], described.map { |entry| entry[:path] }
+        end
+      end
+
+      assert_includes entries.map(&:last).join("\n"),
+        "Dropped an unreadable #{expected_attachment_noun} at #{doomed[:path]}"
+    end
+
     test "conformance: store writes into the session directory with unique paths" do
       first = store_sample(conformance_service)
       second = store_sample(conformance_service)
