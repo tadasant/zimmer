@@ -113,23 +113,33 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "the test environment never resolves AIR_INSTALL_DIR to the shared production directory" do
-    # @original_air_dir is the constant as it resolved at boot, before setup
-    # redirected it — i.e. what a `bin/rails test` in an agent session's clone
-    # would install into. Agent sessions run on the production host, so if that
-    # is /opt/air-cli, a suite boot reinstalls over the directory the live app
-    # shells out to and takes its `air` binary away mid-request.
+  test "neither development nor test resolves AIR_INSTALL_DIR to the shared /opt/air-cli" do
+    # Agent sessions run on the production host and clone this repo, so a suite
+    # boot (test_helper.rb) and a `bin/agent-dev` boot (development) both call
+    # ensure_air_installed!. If either resolves to /opt/air-cli they reinstall
+    # over the directory the live app shells out to and take its `air` binary
+    # away mid-request (GlitchTip #60/#61, 2026-09-01).
+    %w[test development].each do |env|
+      resolved = AirPrepareService.default_install_dir(ActiveSupport::StringInquirer.new(env))
+      assert_not_equal "/opt/air-cli", resolved,
+        "#{env} must not install the AIR CLI into the deployed app's /opt/air-cli"
+    end
+
+    # And the constant as it actually resolved at boot, before setup redirected
+    # it — i.e. what this very suite would have installed into.
     assert_not_equal "/opt/air-cli", @original_air_dir,
-      "the test suite must never install the AIR CLI into the production container's " \
-      "/opt/air-cli — a session running tests on the prod host would wipe it out from under " \
-      "the live app (GlitchTip #60/#61, 2026-09-01)"
+      "this suite resolved AIR_INSTALL_DIR to the deployed app's install directory"
   end
 
   test "a reinstall leaves the working binary in place until the replacement is staged and healthy" do
     live_binary = File.join(@tmp_air_dir, "node_modules", ".bin", "air")
-    # Drop the marker (keeping the binary) so ensure_air_installed! reinstalls —
-    # the case a version bump or a changed package set produces.
+    # Give the tree on disk a distinguishable identity, and a marker for some
+    # older version, so ensure_air_installed! reinstalls — the case a version
+    # bump or a changed package set produces.
+    create_fake_air_binary(@tmp_air_dir, "0.0.1-old")
     File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    stale_marker = File.join(@tmp_air_dir, ".air-version-0.0.1-old")
+    FileUtils.touch(stale_marker)
 
     binary_during_install = nil
     install_prefix = nil
@@ -138,26 +148,59 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       cmd_args = args.is_a?(Array) ? args : [ args ]
       if cmd_args.any? { |a| a.to_s.include?("npm") }
         # Sampled while npm is "running" — the window in which readers that hold
-        # no lock spawn the binary.
-        binary_during_install = File.exist?(live_binary)
+        # no lock spawn the binary. The old tree must still answer here.
+        binary_during_install = File.exist?(live_binary) ? File.read(live_binary) : nil
         install_prefix = npm_install_prefix(cmd_args)
-        create_fake_air_binary(install_prefix)
+        create_fake_air_binary(install_prefix, "9.9.9-new")
       end
       [ "", "", stub(success?: true, exitstatus: 0) ]
     }) do
       AirPrepareService.ensure_air_installed!
     end
 
-    assert binary_during_install,
+    assert_not_nil binary_during_install,
       "the published binary must stay readable for the whole install — deleting the tree first " \
       "hands every concurrent reader Errno::ENOENT for as long as npm takes"
+    assert_includes binary_during_install, "0.0.1-old",
+      "the OLD binary is what a concurrent reader must get mid-install"
     assert_not_equal @tmp_air_dir, install_prefix,
       "npm must install into a staging directory, not straight over the published one"
-    assert File.exist?(live_binary), "the staged install must be swapped into place"
+
+    assert_includes File.read(live_binary), "9.9.9-new",
+      "the staged install must be swapped into place, replacing the old binary"
+    assert_includes File.read(File.join(@tmp_air_dir, "package.json")), "9.9.9-new",
+      "package.json must be swapped alongside node_modules"
+    assert_includes File.read(File.join(@tmp_air_dir, "package-lock.json")), "9.9.9-new",
+      "package-lock.json must be swapped alongside node_modules"
+
     assert File.exist?(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}")),
       "a completed install must leave its marker behind"
+    assert_not File.exist?(stale_marker),
+      "the marker describing the tree that was just replaced must not survive it — the fast path " \
+      "reads markers as proof of what is on disk"
     assert_not File.exist?(File.join(@tmp_air_dir, AirPrepareService::STAGING_DIR_NAME)),
       "the staging directory must not survive a successful install"
+    assert File.exist?(File.join(@tmp_air_dir, AirPrepareService::RETIRED_DIR_NAME)),
+      "the replaced tree is kept until the next install, for readers still inside it"
+  end
+
+  test "a second reinstall reclaims the tree the previous one retired" do
+    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    retired = File.join(@tmp_air_dir, AirPrepareService::RETIRED_DIR_NAME)
+    FileUtils.mkdir_p(File.join(retired, "node_modules"))
+    File.write(File.join(retired, "node_modules", "leftover.txt"), "from the install before last")
+
+    stub_air_subprocess(proc { |*args, **opts|
+      cmd_args = args.is_a?(Array) ? args : [ args ]
+      create_fake_air_binary(npm_install_prefix(cmd_args)) if cmd_args.any? { |a| a.to_s.include?("npm") }
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      AirPrepareService.ensure_air_installed!
+    end
+
+    assert_not File.exist?(File.join(retired, "node_modules", "leftover.txt")),
+      "each install must reclaim the tree the previous one retired, or superseded trees pile up " \
+      "in the install directory forever"
   end
 
   test "a failed install leaves the previous working tree untouched" do
@@ -1411,12 +1454,17 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   private
 
   # Create a fake air binary that exits 0 — enough for air_binary_healthy? to pass.
-  def create_fake_air_binary(air_dir)
+  # The reported version doubles as a marker of WHICH tree a binary came from,
+  # so a swap can be told apart from a no-op.
+  def create_fake_air_binary(air_dir, version = "0.0.16")
     bin_dir = File.join(air_dir, "node_modules", ".bin")
     FileUtils.mkdir_p(bin_dir)
     binary_path = File.join(bin_dir, "air")
-    File.write(binary_path, "#!/bin/sh\necho '0.0.16'\n")
+    File.write(binary_path, "#!/bin/sh\necho '#{version}'\n")
     File.chmod(0o755, binary_path)
+    # npm writes these alongside node_modules, and the swap moves all three.
+    File.write(File.join(air_dir, "package.json"), %({"dependencies":{"@pulsemcp/air-cli":"#{version}"}}\n))
+    File.write(File.join(air_dir, "package-lock.json"), %({"lockfileVersion":3,"version":"#{version}"}\n))
   end
 
   # The directory `npm install --prefix <dir>` was pointed at. A real npm writes
