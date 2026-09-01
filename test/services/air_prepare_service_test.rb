@@ -26,7 +26,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # Pre-create the version marker AND a working fake binary so ensure_air_installed!
     # is a no-op — tests exercise the air prepare command, not the npm install bootstrap.
     @tmp_air_dir = Dir.mktmpdir("air-cli-test")
-    FileUtils.touch(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    FileUtils.touch(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
     create_fake_air_binary(@tmp_air_dir)
     @original_air_dir = AirPrepareService::AIR_INSTALL_DIR
     AirPrepareService.send(:remove_const, :AIR_INSTALL_DIR)

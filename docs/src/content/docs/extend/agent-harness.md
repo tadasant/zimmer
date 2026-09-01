@@ -60,13 +60,24 @@ Two `pi` slots are `nil` for reasons of their own rather than by that convention
   `mcp__<server>__<tool>` calls to mine either: the `pi-mcp-adapter` extension
   routes every server through one `mcp` proxy tool, so a transcript shows `mcp`
   being called and never names the server behind it. There is no per-server
-  signal to detect, so the slot stays empty rather than acquiring a detector that
-  could only ever answer "unknown".
+  signal to detect — but the slot holds `NullMcpStatusDetector`, **not `nil`**.
+  `TranscriptPollerService#initialize` calls `.new` on this slot with no nil
+  check, so a `nil` here raises `NoMethodError` on every poll of every session on
+  the runtime, before any MCP-specific guard can run. That is the general rule:
+  **a slot some caller dereferences must never be `nil`** — a runtime with
+  nothing real to put there supplies a null object.
+  `test/contracts/runtime_bundle_slot_contract_test.rb` enforces this for every
+  registered runtime and every unconditionally-dereferenced slot.
 - **`mcp_credential_writer_class`** — Pi keeps MCP OAuth tokens inside the
-  `pi-mcp-adapter` extension's own state, which Zimmer does not write. Note that
-  `RuntimeRegistry.mcp_credential_writer_classes` compacts the list for this
-  reason: the caller instantiates every class it returns, and that runs on the
-  credential-retire path, i.e. while a credential is already failing.
+  `pi-mcp-adapter` extension's own state, which Zimmer does not write. This slot
+  *may* be `nil` because both its callers are guarded:
+  `RuntimeRegistry.mcp_credential_writer_classes` compacts the list (the caller
+  instantiates every class it returns, on the credential-retire path — i.e. while
+  a credential is already failing), and `McpOauthCredentialInjector` asks
+  `#credential_store?` first. That second guard is load-bearing rather than
+  defensive: `McpOauthController#reinject_and_resume` calls injection and the
+  resume service inside one `rescue`, so a raise from injection would skip the
+  resume and leave a session parked on an OAuth gate permanently un-resumable.
 
 ## The three registries that bypass the bundle
 
@@ -271,6 +282,14 @@ registry, and `PiRuntimeAdapter` passes each entrypoint with `pi -e <path>` from
 `/opt/pi-extensions`. `pi-mcp-adapter` reads the same `.mcp.json` Claude Code
 does — that file is a cross-vendor convention, not a Claude private format, which
 is why the JSON format hooks live in the shared `McpJsonConfigFormat` module.
+
+**Transcript hooks need a per-runtime parser.** `TranscriptHooks::ToolCallParser.for`
+dispatches on the runtime, and Pi's shape (`toolCall` content blocks whose
+`arguments` are a real Hash, plus a `toolResult` message stating `isError`
+inline) matches neither Claude's nor Codex's. Falling through to the Claude
+parser would find nothing and make every hook a silent no-op, so
+`TranscriptHooks::PiToolCallParser` exists and the dispatcher now warns on an
+unrecognized runtime instead of quietly defaulting.
 
 **Pi's MCP tools are not individually callable.** `pi-mcp-adapter` exposes one
 `mcp` proxy tool that the agent searches and calls through, so a dozen servers

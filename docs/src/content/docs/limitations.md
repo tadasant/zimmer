@@ -908,6 +908,28 @@ entrypoints that exist on disk, and `PiExtensions.status_summary` reports the ga
 `pending_publish:` flags — no code change, and `pi_extensions_test.rb` asserts the
 Dockerfile and the registry agree.
 
+### A Pi session gets no per-server MCP status, no MCP OAuth, and no token-usage ingestion
+
+🟡 Three things a Claude Code session gets for free do not reach a Pi session, all for the same
+underlying reason — Pi keeps the relevant state somewhere Zimmer does not write or read:
+
+- **No per-server MCP status.** Pi writes no MCP log files, and the `pi-mcp-adapter` extension
+  routes every server through one `mcp` proxy tool, so a transcript shows `mcp` being called and
+  never names the server behind it. `NullMcpStatusDetector` fills the bundle slot and reports
+  nothing, so a Pi session's servers stay at their `pending` placeholder rather than turning
+  green or red. (The slot is a null object rather than `nil` on purpose:
+  `TranscriptPollerService` dereferences it unconditionally, so `nil` there would raise on every
+  poll.)
+- **No MCP OAuth credential delivery.** `mcp_credential_writer_class` is `nil` for Pi, because
+  `pi-mcp-adapter` holds OAuth tokens in its own state rather than in a host-global file Zimmer
+  owns. `McpOauthCredentialInjector#credential_store?` makes injection a logged no-op instead of
+  a raise — which matters, because `McpOauthController#reinject_and_resume` calls injection and
+  the resume service inside one `rescue`, so a raise would leave a Pi session parked on an OAuth
+  gate permanently un-resumable. **An OAuth-backed MCP server does not work on Pi.**
+- **No token-usage or cost ingestion.** `TokenUsageIngestionService` reads
+  `~/.claude/projects`, which is Claude-specific, so Pi sessions contribute nothing to spend
+  tracking.
+
 ### A Pi session's status summary always takes the cheap path
 
 🟡 `SessionStatusSummaryGenerator#pool_exhausted?` asks the runtime's auth provider whether

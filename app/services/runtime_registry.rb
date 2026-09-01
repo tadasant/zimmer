@@ -104,13 +104,16 @@ module RuntimeRegistry
   #   * `config_post_processor_class` is PiMcpConfigPostProcessor, which SEEDS
   #     `.mcp.json` from Zimmer's catalog rather than merely adjusting a file AIR
   #     wrote — because for Pi, AIR writes none.
-  #   * `mcp_status_detector_class` is nil. Pi writes no per-server MCP log files
-  #     (so the Claude log poller has nothing to read), and unlike Codex it
-  #     records no `mcp__<server>__<tool>` calls to mine either: the pi-mcp-adapter
-  #     extension routes every server through ONE `mcp` proxy tool, so a
-  #     transcript shows `mcp` being called and never names the server behind it.
-  #     There is no signal to detect per server, so the slot stays nil rather than
-  #     acquiring a detector that would always answer "unknown".
+  #   * `mcp_status_detector_class` is NullMcpStatusDetector. Pi writes no
+  #     per-server MCP log files (so the Claude log poller has nothing to read),
+  #     and unlike Codex it records no `mcp__<server>__<tool>` calls to mine
+  #     either: the pi-mcp-adapter extension routes every server through ONE
+  #     `mcp` proxy tool, so a transcript shows `mcp` being called and never
+  #     names the server behind it. There is no per-server signal to detect — but
+  #     the slot gets a null object rather than nil, because
+  #     TranscriptPollerService dereferences it unconditionally in its
+  #     constructor, so a nil here is a NoMethodError on every poll of every Pi
+  #     session.
   #
   # `prompt_contribution_class` is populated here AND registered in
   # RuntimePromptContribution.for — the bundle slot is what the harness doc calls
@@ -127,7 +130,7 @@ module RuntimeRegistry
     retry_strategy_class: PiRetryStrategy,
     transcript_source_class: PiTranscriptSource,
     transcript_normalizer_class: PiTranscriptNormalizer,
-    mcp_status_detector_class: nil,
+    mcp_status_detector_class: NullMcpStatusDetector,
     prompt_contribution_class: PiRuntimePromptContribution,
     config_preparer_class: nil,
     config_post_processor_class: PiMcpConfigPostProcessor,
