@@ -18,6 +18,16 @@
 #       A resume consumes a pending wake without firing it, so this shape can
 #       never fire again and is collectable the moment it appears, whatever its
 #       scheduled_at says.
+#
+#       Unlike (b), this ground can match a trigger a firing job is still
+#       working through: it goes true the instant ScheduleTriggerJob or
+#       AoEventTriggerJob advances last_triggered_at, which is before their own
+#       sibling cleanup and auto-delete run. That race is benign in both
+#       directions — delivery has already happened by then, #destroy_sibling_wakes!
+#       reads last_session_id off an in-memory trigger rather than re-finding the
+#       row, and a #destroy! of a row this job already deleted affects zero rows
+#       without raising. Losing the race just means this job did the auto-delete
+#       the firing job was about to do.
 #    b. Every condition is a one-time schedule whose scheduled_at is more than
 #       1 hour in the past. ScheduleTriggerJob should have destroyed these on its
 #       next tick; if they linger, something went wrong.

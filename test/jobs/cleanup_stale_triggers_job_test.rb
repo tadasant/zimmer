@@ -196,9 +196,9 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
   # one-time wake on any deliberate resume by stamping last_triggered_at. That
   # closes #schedule_due? forever, so ScheduleTriggerJob never fires it and never
   # runs its own auto-delete — and the lapsed-schedule ground below is keyed on
-  # the wake's ORIGINAL scheduled_at, so a wake set 12 hours out and consumed
-  # five minutes later used to sit in the list, `enabled` and apparently armed,
-  # for ~13 hours.
+  # the wake's ORIGINAL scheduled_at, which on its own would leave a wake set 12
+  # hours out and consumed five minutes later sitting in the list, `enabled` and
+  # apparently armed, for ~13 hours.
 
   test "destroys a one-time wake consumed by a resume even though its scheduled_at is far in the future" do
     requester = make_session(status: :waiting)
@@ -387,6 +387,61 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
 
     assert Trigger.exists?(delivered.id),
       "a wake that spawned a session is the firing job's residue — it falls to the lapsed-schedule ground on the old terms"
+  end
+
+  test "preserves a wake a system-recovery resume deliberately left armed" do
+    # The preserve branch is the one resume that does NOT stamp last_triggered_at:
+    # the session did not choose to wake, so its wakes are not moot. Nothing here
+    # may collect them.
+    requester = make_session(status: :waiting)
+
+    preserved = Trigger.create!(
+      name: "Wake me in 12 hours",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    requester.system_recovery_resume = true
+    requester.send(:cancel_pending_one_time_wake_triggers)
+    assert_nil preserved.trigger_conditions.first.reload.last_triggered_at,
+      "guard: a system-recovery resume must leave the wake armed"
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(preserved.id), "a recovered session's wake is still going to fire"
+  end
+
+  test "leaves a consumed ao_event-only wake alone — this sweep only reaches one-time schedules" do
+    # Pins the known gap rather than hiding it: Trigger#dead_one_time_wake? is
+    # true for this trigger, but the candidate query asks for a schedule
+    # condition, so the sweep never sees it. Tracked in tadasant/zimmer#793 —
+    # if that is fixed, this expectation flips deliberately.
+    requester = make_session(status: :waiting)
+    watched = make_session(status: :running)
+
+    watcher = Trigger.create!(
+      name: "Watch that session",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go {{event}}",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id } }
+      ]
+    )
+    watcher.trigger_conditions.first.update!(last_triggered_at: Time.current)
+    assert watcher.reload.dead_one_time_wake?, "guard: the predicate does answer for this shape"
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(watcher.id), "out of this sweep's candidate set — see #793"
   end
 
   test "does not destroy triggers whose one-time schedule lapsed under the threshold" do

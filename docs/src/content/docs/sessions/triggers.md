@@ -384,11 +384,12 @@ deliver nothing.
 
 `CleanupStaleTriggersJob` skips failed triggers in both of its sweeps, and
 `Trigger#destroy_sibling_wakes!` skips them too. A parked trigger is lapsed by definition, so the
-lapsed-schedule ground matches every one of them — and the consumed-wake ground matches the rest,
-since the one failure that does not re-arm is precisely the one that arrives with its schedule
-already spent; and in the triple-wake pattern below, a sibling that fires successfully later would
-otherwise delete the record of the one that tried and could not. Both would delete the evidence as
-a side effect, which is the silent loss the parking exists to prevent. Only you clear a failed trigger — which also means nothing bounds how many
+lapsed-schedule ground matches every one of them, and the consumed-wake ground matches a strict
+subset of those sooner — the one failure that does not re-arm is precisely the one that arrives
+with its schedule already spent. And in the triple-wake pattern below, a sibling that fires
+successfully later would otherwise delete the record of the one that tried and could not. All of
+them would delete the evidence as a side effect, which is the silent loss the parking exists to
+prevent. Only you clear a failed trigger — which also means nothing bounds how many
 accumulate, so a systemic fault leaves a list to clear by hand
 ([Limitations](/limitations/#a-failed-one-time-wake-does-not-retry-itself)).
 
@@ -1299,7 +1300,7 @@ Neither auto-deletes a one-time trigger on a suppressed fire.
 
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"
 and "wake me up when that other session changes state." A human clicking **Pause Until** in the web
-UI creates the same one-time shape. Two mechanisms make this reliable:
+UI creates the same one-time shape. Four mechanisms make this reliable:
 
 **Auto-sleep.** `Trigger#sleep_target_session_if_applicable` runs on trigger creation. If the
 target session is `needs_input`, it sleeps immediately (`needs_input → waiting`). If it's
@@ -1337,12 +1338,22 @@ permanent: `schedule_due?` is false forever afterwards, so the trigger never fir
 the auto-delete that normally removes a spent one-time trigger.
 
 What is left is a row that can never fire again, sitting in `/triggers` and in `search_triggers` as
-`enabled` with 0 sessions — indistinguishable from an armed wake. `CleanupStaleTriggersJob` collects
-it on its next tick (`Trigger#dead_one_time_wake?`: every condition is a one-shot, every one of them
-is consumed, and the trigger created no session). The *lapsed* ground alone would not reach it for a
-long time — `scheduled_at` more than an hour in the past is a function of when the wake was
+`enabled` with 0 sessions — indistinguishable from an armed wake. `Trigger#dead_one_time_wake?` is
+the predicate for it: every condition is a one-shot, every one of them is consumed, and the trigger
+created no session. `CleanupStaleTriggersJob` collects a trigger matching it on the next tick, so a
+consumed `wake_me_up_later` clears within the hour. The *lapsed* ground alone would not reach it for
+much longer — `scheduled_at` more than an hour in the past is a function of when the wake was
 scheduled rather than of when it died, so a wake set 12 hours out and consumed five minutes later
-sits there for another thirteen hours.
+would sit there for another thirteen hours.
+
+**The sweep reaches this only for a trigger carrying a one-time schedule.** Its candidate query asks
+for a `schedule` condition with a `scheduled_at`, so a wake built purely from session-scoped
+`ao_event` conditions — what `wake_me_up_when_session_changes_state` creates — is consumed by the
+same resume, satisfies `dead_one_time_wake?` just as squarely, and is still not collected. It has no
+`scheduled_at` to lapse either, so it survives until its target session is archived. In the
+recommended two-row pattern below, that means the deadline backstop is cleared and the watcher
+beside it is not
+([Limitations](/limitations/#an-ao_event-only-wake-consumed-by-a-resume-is-never-reaped-on-a-timer)).
 
 The predicate is deliberately narrow, because destroying an armed wake fails silently: the symptom
 is a session that simply never wakes up. A wake whose condition has *not* been consumed is never
