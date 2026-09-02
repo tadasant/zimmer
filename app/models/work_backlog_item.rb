@@ -70,7 +70,14 @@ class WorkBacklogItem < ApplicationRecord
   # next — rides in `payload`.
   PROMOTED_KEYS = %w[id issue repo surface title kind scope_direction estimated_cost gate_verdict
                      decided_at added_at added_by precedence pinned].freeze
-  PAYLOAD_KEYS = %w[ratings prompt notes gate_session].freeze
+
+  # Postgres `integer`. A hand-placed precedence past this would raise at the
+  # UPDATE rather than at validation.
+  PRECEDENCE_RANGE = (-(2**31)..(2**31 - 1))
+
+  # Session validates its title at this length; a title written past it leaves
+  # the session unable to save through its own state machine.
+  SESSION_TITLE_MAX = 100
 
   MAX_URL_LENGTH = 2048
   MAX_PAYLOAD_BYTES = 64.kilobytes
@@ -91,7 +98,7 @@ class WorkBacklogItem < ApplicationRecord
   validates :added_by, presence: true, length: { maximum: 100 }
   validates :added_at, presence: true
   validates :issue_url, length: { maximum: MAX_URL_LENGTH }, allow_nil: true
-  validates :precedence, numericality: { only_integer: true }
+  validates :precedence, numericality: { only_integer: true, in: PRECEDENCE_RANGE }
   validates :removal_reason, presence: true, if: :removed?
   validate :issueless_items_need_a_prompt_and_a_human
   validate :payload_must_be_an_object
@@ -143,11 +150,16 @@ class WorkBacklogItem < ApplicationRecord
 
   # The title the groomer gave every session it pulled: "Implement zimmer#498
   # (…)". Cosmetic now — `started_session_id` is the countable key — but it is
-  # what a human scanning the Ranked view expects to see.
+  # what a human scanning the Ranked view expects to see. Budgeted so the
+  # prefix always survives and the whole thing fits Session's title limit.
   def session_title
     short = repo.to_s.split("/").last
     label = issue_number ? "#{short}##{issue_number}" : key
-    "Implement #{label} (#{title})".truncate(200)
+    prefix = "Implement #{label} ("
+    room = SESSION_TITLE_MAX - prefix.length - 1
+    return prefix.chomp(" (").truncate(SESSION_TITLE_MAX) if room < 4
+
+    "#{prefix}#{title.to_s.truncate(room, omission: "…")})"
   end
 
   # --- transitions -----------------------------------------------------------

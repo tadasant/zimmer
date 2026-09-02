@@ -17,12 +17,13 @@ module WorkBacklog
   #   large    500–1999, base 1000
   #
   # An append lands GAP below the lowest unpinned peer in its band (FIFO within a
-  # band: new work does not jump work of its own size already waiting), clamped
-  # at the floor. When the band reaches its floor it is re-spaced — its unpinned
-  # peers spread evenly across [floor, base], order preserved — and the append
-  # retried. A band that cannot be re-spaced past its floor raises BandFull rather
-  # than crossing into the band below, because crossing would silently rank cheap
-  # work below expensive work, which is the one property this exists to guarantee.
+  # band: new work does not jump work of its own size already waiting). When the
+  # next slot would be at or below the floor the band is re-spaced first — its
+  # unpinned peers spread evenly across [floor, base], order preserved — and the
+  # append placed below the re-spaced lowest. A band that a re-space cannot make
+  # room in raises BandFull, before any row moves, rather than crossing into the
+  # band below: crossing would silently rank cheap work below expensive work,
+  # which is the one property this exists to guarantee.
   #
   # PINNED ITEMS ARE NEVER TOUCHED. `pinned` is how a human hand-moves an item and
   # has it stay moved: it may sit anywhere, including below a floor, and it is
@@ -104,14 +105,23 @@ module WorkBacklog
     # Move every unpinned queued item that sits outside its band back into it.
     # Oldest `added_at` first, one at a time, so they land in a stable order.
     #
+    # BEST-EFFORT, ON PURPOSE. This runs on every write — a pull, a pin, a
+    # removal — and a single drifted item whose band is full must not turn every
+    # one of those into a failure: the item is left where it is, the reason is
+    # logged, and the caller's write goes through. `place` for an APPEND still
+    # raises, because there the item has nowhere to go.
+    #
     # @return [Integer] how many items moved
-    def rerank!(now: Time.current)
+    def rerank!(now: Time.current, logger: Rails.logger)
       drifted = WorkBacklogItem.queued.unpinned.reject(&:in_band?)
-      drifted.sort_by { |item| [ item.added_at, item.id ] }.each do |item|
+      drifted.sort_by { |item| [ item.added_at, item.id ] }.count do |item|
         placement = place(item.estimated_cost, except: item)
         item.update_columns(precedence: placement.precedence, updated_at: now)
+        true
+      rescue BandFull => e
+        logger.warn("[WorkBacklog::Ranking] left #{item.key} at #{item.precedence}: #{e.message}")
+        false
       end
-      drifted.size
     end
 
     # The unpinned queued items of this cost that sit INSIDE the band, highest

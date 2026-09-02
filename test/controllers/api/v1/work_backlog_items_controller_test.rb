@@ -98,6 +98,29 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "n", item["notes"]
   end
 
+  test "create keeps an unknown key in payload and accepts writing_session_id like the gate ledger does" do
+    post api_v1_work_backlog_items_path,
+      params: append_attributes(key: "zimmer#9", "new_gate_field" => { "x" => 1 }, "writing_session_id" => sessions(:running).id),
+      headers: @headers, as: :json
+
+    assert_response :created
+    assert_equal({ "x" => 1 }, body.dig("work_backlog_item", "payload", "new_gate_field"))
+    assert_equal sessions(:running).id, body.dig("work_backlog_item", "writing_session_id")
+    assert_not body.dig("work_backlog_item", "payload").key?("work_backlog_item"), "the ParamsWrapper copy is not payload"
+    assert_not body.dig("work_backlog_item", "payload").key?("writing_session_id")
+  end
+
+  test "create rejects a pinned flag it cannot read and a precedence outside the integer range" do
+    post api_v1_work_backlog_items_path, params: append_attributes("pinned" => "yes", "precedence" => 1), headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert body["messages"].any? { |m| m.include?("pinned must be true or false") }
+
+    post api_v1_work_backlog_items_path, params: append_attributes("pinned" => true, "precedence" => 2**31), headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert body["messages"].any? { |m| m.include?("Precedence") }
+    assert_equal 0, WorkBacklogItem.count
+  end
+
   test "create is idempotent on key, answering 200 and created false" do
     post api_v1_work_backlog_items_path, params: append_attributes(key: "zimmer#9"), headers: @headers, as: :json
     post api_v1_work_backlog_items_path, params: append_attributes(key: "zimmer#9"), headers: @headers, as: :json
@@ -147,6 +170,43 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "zimmer#2" ], body["removed"].map { |r| r.dig("work_backlog_item", "key") }
     assert_equal "session:#{groomer.id}", WorkBacklogItem.find_by(key: "zimmer#2").removed_by
     assert_equal 0, body.dig("counts", "queued")
+  end
+
+  test "pull by keys starts exactly those, and a single dead object is accepted as a list of one" do
+    backlog_item(key: "zimmer#1", precedence: 6000)
+    backlog_item(key: "zimmer#2", precedence: 5990)
+    backlog_item(key: "zimmer#3", precedence: 5980)
+
+    post pull_api_v1_work_backlog_items_path,
+      params: { keys: [ "zimmer#3" ], dead: { key: "zimmer#2", reason: "issue_has_open_pr" } },
+      headers: @headers, as: :json
+
+    assert_response :success
+    assert_equal [ "zimmer#3" ], body["started"].map { |s| s.dig("work_backlog_item", "key") }
+    assert_equal [ "zimmer#2" ], body["removed"].map { |r| r.dig("work_backlog_item", "key") }
+    assert_equal "api", WorkBacklogItem.find_by(key: "zimmer#2").removed_by
+    assert WorkBacklogItem.find_by(key: "zimmer#1").queued?
+  end
+
+  test "start_now with an acting session makes the priority session its child" do
+    backlog_item(key: "zimmer#1")
+    parent = sessions(:running)
+
+    post start_now_api_v1_work_backlog_item_path("zimmer#1"), params: { acting_session_id: parent.id }, headers: @headers, as: :json
+
+    assert_response :created
+    assert_equal parent.id, body.dig("session", "parent_session_id")
+    assert_equal "priority", body.dig("session", "scheduling_class")
+    assert_equal parent.id, body.dig("work_backlog_item", "started_by_session_id")
+  end
+
+  test "a key with a dot in it routes" do
+    backlog_item(key: "next.js#5", repo: "vercel/next.js", issue_url: "https://github.com/vercel/next.js/issues/5")
+
+    get api_v1_work_backlog_item_path("next.js#5"), headers: @headers
+
+    assert_response :success
+    assert_equal "next.js#5", body.dig("work_backlog_item", "key")
   end
 
   test "pull rejects a discretionary removal reason" do
@@ -203,6 +263,10 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
 
     patch pin_api_v1_work_backlog_item_path(item.id), params: { precedence: "top" }, headers: @headers, as: :json
     assert_response :unprocessable_entity
+
+    patch pin_api_v1_work_backlog_item_path(item.id), params: { precedence: 2**31 }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert_not item.reload.pinned
 
     item.remove!(reason: "dup", by: "human")
     patch pin_api_v1_work_backlog_item_path(item.id), params: { precedence: 1 }, headers: @headers, as: :json

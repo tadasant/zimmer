@@ -20,6 +20,12 @@ module WorkBacklog
   # RANK IS CARRIED FORWARD. The n-th item started gets a spot precedence of the
   # acting session's own plus (count − n + 1), so the top item runs first and the
   # spawned tree stays contiguous with its parent — the groomer's rule.
+  #
+  # RETRY SAFETY. `keys` is safe to retry after an error: a key that was already
+  # started fails cleanly as "not queued". `count` is not — a retry starts the
+  # NEXT N — which is why a post-commit callback raising after the items are
+  # already started is caught and the committed result returned (the same
+  # reasoning as WorkBacklog::Start), and why the tool description says so.
   class Pull
     MAX = 10
 
@@ -45,27 +51,40 @@ module WorkBacklog
         count = count.nil? ? nil : Integer(count)
         validate!(count, keys, dead)
 
+        result = nil
         Ranking.with_lock do
           removed = remove_dead(dead, acting_session: acting_session, removed_by: removed_by)
           candidates = keys.any? ? by_keys(keys) : top(count.to_i)
           started = candidates.each_with_index.map do |item, index|
-            result = Start.call(
+            start = Start.call(
               item: item,
               scheduling_class: SessionGenesis::SPOT,
               acting_session: acting_session,
               precedence: carried_precedence(acting_session, candidates.size, index + 1)
             )
-            Started.new(item: result.item, session: result.session)
+            Started.new(item: start.item, session: start.session)
           end
 
           # Every writer re-ranks, a pull of zero included: that is the groomer's
           # nightly chance to fix drift even on a night it pulls nothing.
           Ranking.rerank!
 
-          Result.new(started: started, removed: removed)
+          result = Result.new(started: started, removed: removed)
         end
+        result
       rescue ArgumentError, TypeError => e
         raise InvalidPull, e.message
+      rescue StandardError => e
+        raise unless result && committed?(result)
+
+        Rails.logger.warn("[WorkBacklog::Pull] #{result.started.size} item(s) started, but a post-commit " \
+                          "callback raised: #{e.class}: #{e.message}")
+        result
+      end
+
+      def committed?(result)
+        result.started.all? { |s| Start.committed?(s) } &&
+          result.removed.all? { |r| WorkBacklogItem.removed.exists?(id: r.item.id) }
       end
 
       private

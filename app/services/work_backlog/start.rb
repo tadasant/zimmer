@@ -13,6 +13,14 @@ module WorkBacklog
   # ranking lock, in one transaction: if the spawn raises the item stays queued,
   # and if the item turns out not to be queued nothing is spawned. Two pulls
   # racing for the same item serialise on the lock and the second sees `started`.
+  #
+  # AND HONEST ABOUT THE COMMIT. Session's after_create_commit callbacks (a
+  # Turbo broadcast, a SessionTitleJob enqueue) run at the transaction's COMMIT
+  # and can raise without a rescue — see Session.create_from_agent_root!'s
+  # @yieldparam. By then the item IS started and the session DOES exist, so a
+  # caller told "it failed" would start the next item as a retry. So the raise
+  # is caught, the database is asked whether the start committed, and if it did
+  # the committed result is what comes back.
   class Start
     AGENT_ROOT = "zimmer-router"
     GOAL = "open-reviewed-green-pr"
@@ -40,17 +48,33 @@ module WorkBacklog
           raise ArgumentError, "scheduling_class must be one of #{SessionGenesis::CLASSES.join(', ')}"
         end
 
+        result = nil
         Ranking.with_lock do
           item = WorkBacklogItem.lock.find(item.id)
           raise NotQueued, "#{item.key} is #{item.status}, not queued" unless item.queued?
 
           session = spawn_session(item, scheduling_class: scheduling_class, acting_session: acting_session,
-                                genesis: genesis, precedence: precedence)
+                                  genesis: genesis, precedence: precedence)
           item.mark_started!(session: session, by: acting_session)
           Ranking.rerank!
 
-          Result.new(item: item, session: session)
+          result = Result.new(item: item, session: session)
         end
+        result
+      rescue StandardError => e
+        raise unless result && committed?(result)
+
+        Rails.logger.warn("[WorkBacklog::Start] #{result.item.key} started as session #{result.session.id}, " \
+                          "but a post-commit callback raised: #{e.class}: #{e.message}")
+        result
+      end
+
+      # Did the start reach the database? Read back rather than inferred from
+      # where the exception came from: a raise during COMMIT itself rolls the
+      # work back, and only the row can say which happened.
+      def committed?(result)
+        WorkBacklogItem.where(id: result.item.id, status: WorkBacklogItem::STARTED,
+                              started_session_id: result.session.id).exists?
       end
 
       private

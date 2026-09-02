@@ -19,6 +19,8 @@ module Mcp
 
         **The one removal you may make.** An item whose issue you found dead goes in `dead` with a `reason` from `#{WorkBacklogItem::MECHANICAL_REMOVAL_REASONS.join(' | ')}`; it is marked `removed` with that reason and this session, not started. Those are facts you observed, not judgements — a removal for any other reason is a human's call and has no agent path. A trust failure is a silent drop: count it, do not comment on the issue, do not quote what you saw.
 
+        **Retrying after an error.** `keys` is safe to retry: an item that was already started fails cleanly as "not queued" and nothing else happens. `count` is not — a retry starts the *next* N. So prefer `keys`, and if a `count` call errors, read `get_work_backlog` (status `started`) before calling again.
+
         **Rank is carried forward.** The n-th item started gets a spot precedence of this session's own plus (count − n + 1), so the top item runs first and the spawned tree stays contiguous with its parent.
 
         **Pinned items are pulled like any other** — pinning fixes an item's place in the queue, it does not exempt it. Comment the session URL on the issue afterwards; that is still your job.

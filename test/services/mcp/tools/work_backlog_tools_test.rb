@@ -60,6 +60,10 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_equal sessions(:archived).id, history[:items].first[:started_session_id]
 
     assert_raises(Mcp::ToolError) { @read.call("status" => "done") }
+    assert_raises(Mcp::ToolError) { @read.call("limit" => 0) }
+    assert_raises(Mcp::ToolError) { @read.call("offset" => "abc") }
+    assert_raises(Mcp::ToolError) { @read.call("pinned" => "maybe") }
+    assert_equal WorkBacklog::Filters::MAX_LIMIT, WorkBacklog::Filters.new("limit" => 10_000).limit
   end
 
   # --- append ---------------------------------------------------------------
