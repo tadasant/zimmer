@@ -3014,7 +3014,17 @@ check at all for the first. That warning is also written once per session and ne
 session that was warned and is then resumed or unarchived — `resume` runs from `failed`,
 `unarchive_to_*` from `archived` — keeps a warning its later PR made obsolete.
 
-Narrowed in [#214](https://github.com/tadasant/zimmer/issues/214) and widened in
+A fork is read from `metadata["forked_at_message_index"]` onward, because everything before it is a
+copy of the source session's conversation and shows the *source* opening PRs. Two edges come with
+that. The fork point is a message index into the fork's own stored transcript, which holds only as
+long as that transcript stays a prefix-stable append — the same assumption `broadcast_message_count`
+makes, and one a runtime that reshaped its history on resume would break silently, in the too-tight
+direction. And the trim only governs what is written from here on: **a fork credited before this
+shipped keeps the list it was given**, because the hook adds URLs and never removes them. Such a
+fork stays in all three pollers' scope for the source's PRs until it is archived or failed.
+
+Narrowed in [#214](https://github.com/tadasant/zimmer/issues/214) and
+[#556](https://github.com/tadasant/zimmer/issues/556), widened in
 [#89](https://github.com/tadasant/zimmer/issues/89).
 
 ---
