@@ -96,6 +96,29 @@ class MockFileSystemAdapterTest < ActiveSupport::TestCase
     assert_includes matches, "/file2.txt"
   end
 
+  test "children derives a directory's immediate entries from the flat path set" do
+    @adapter.mkdir_p("/fake/dir/subdir")
+    @adapter.write("/fake/dir/file.txt", "a")
+    @adapter.write("/fake/dir/subdir/nested.txt", "b")
+    @adapter.write("/fake/dir/.hidden", "c")
+
+    assert_equal [ ".hidden", "file.txt", "subdir" ], @adapter.children("/fake/dir")
+    assert_equal [ "nested.txt" ], @adapter.children("/fake/dir/subdir")
+  end
+
+  test "children raises for a path that is not a directory" do
+    @adapter.write("/fake/file.txt", "content")
+
+    assert_raises(Errno::ENOTDIR) { @adapter.children("/fake/file.txt") }
+    assert_raises(Errno::ENOTDIR) { @adapter.children("/nonexistent") }
+  end
+
+  test "symlink? is always false — the mock has no links to model" do
+    @adapter.mkdir_p("/fake/dir")
+
+    assert_not @adapter.symlink?("/fake/dir")
+  end
+
   test "mtime returns time for written file" do
     path = "/fake/file.txt"
     before_write = Time.current

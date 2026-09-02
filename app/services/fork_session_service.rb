@@ -87,6 +87,9 @@ class ForkSessionService
   # @param copy_exclusions [Array<String>] fnmatch patterns, relative to the
   #   clone root, to leave out of the copied clone. Empty by default: a
   #   user-initiated fork is a working session and wants the tree it forked.
+  #   Whatever a caller passes is unioned with `NonRelocatableClonePaths`, which
+  #   every fork sheds — a directory that hard-codes the source clone's own path
+  #   is not a warm cache in a clone at a different path, it is a stale one.
   # @param scaffold_missing_clone [Boolean] when the source clone is gone, give
   #   the fork an empty working directory instead of failing. Off by default,
   #   and only for callers whose fork does not read the tree — see
@@ -425,17 +428,33 @@ class ForkSessionService
   def copy_clone_directory(source_clone_path, new_clone_path)
     attempt = 0
 
+    # A fork's clone is at a NEW path, so anything in the source tree that
+    # hard-codes the source's own path arrives broken — and, for a virtualenv,
+    # broken in the way that still runs (zimmer#671).
+    #
+    # Detected per attempt rather than once, because a retry re-enumerates a
+    # tree that has changed. That is safe for the retry accounting only because
+    # `detect` swallows its own SystemCallError: a source tree vanishing during
+    # the scan returns [] instead of raising an ENOENT the rescue below would
+    # read as a mid-copy vanish and spend an attempt on.
     begin
       attempt += 1
-      @logger.info("Copying clone directory",
+      non_relocatable = NonRelocatableClonePaths.detect(
+        source_clone_path, file_system: file_system, prune: copy_exclusions
+      )
+      exclusions = copy_exclusions | NonRelocatableClonePaths.to_patterns(non_relocatable)
+
+      log_context = {
         source: source_clone_path,
         destination: new_clone_path,
         attempt: attempt,
-        exclusions: copy_exclusions
-      )
+        exclusions: exclusions
+      }
+      log_context[:non_relocatable] = non_relocatable if non_relocatable.any?
+      @logger.info("Copying clone directory", **log_context)
 
       # Use file_system.cp_r for deep copy (allows mocking in tests)
-      file_system.cp_r(source_clone_path, new_clone_path, exclude: copy_exclusions)
+      file_system.cp_r(source_clone_path, new_clone_path, exclude: exclusions)
     rescue Errno::ENOENT => e
       delay = COPY_RETRY_DELAYS[attempt - 1]
       raise if delay.nil? || !retryable_copy_target?(source_clone_path, new_clone_path)

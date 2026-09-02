@@ -96,6 +96,31 @@ class RealFileSystemAdapterTest < ActiveSupport::TestCase
     assert_includes matches, File.join(@temp_dir, "subdir", "nested.txt")
   end
 
+  test "children lists a directory's immediate entries by name" do
+    @adapter.mkdir_p(File.join(@temp_dir, "subdir", "nested"))
+    @adapter.write(File.join(@temp_dir, "root.txt"), "a")
+    @adapter.write(File.join(@temp_dir, ".hidden"), "b")
+    @adapter.write(File.join(@temp_dir, "subdir", "nested", "deep.txt"), "c")
+
+    assert_equal [ ".hidden", "root.txt", "subdir" ], @adapter.children(@temp_dir).sort
+    assert_equal [ "nested" ], @adapter.children(File.join(@temp_dir, "subdir"))
+  end
+
+  test "children raises for a path that is not a readable directory" do
+    assert_raises(SystemCallError) { @adapter.children(File.join(@temp_dir, "nonexistent")) }
+  end
+
+  test "symlink? distinguishes a link from what it points at" do
+    target = File.join(@temp_dir, "target")
+    link = File.join(@temp_dir, "link")
+    @adapter.mkdir_p(target)
+    File.symlink(target, link)
+
+    assert @adapter.symlink?(link)
+    assert_not @adapter.symlink?(target)
+    assert_not @adapter.symlink?(File.join(@temp_dir, "nonexistent"))
+  end
+
   test "mtime returns modification time" do
     path = File.join(@temp_dir, "test.txt")
     before_write = Time.current - 1.second # Allow for timing precision

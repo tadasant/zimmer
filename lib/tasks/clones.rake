@@ -28,6 +28,7 @@ namespace :clones do
     dest_base = (ENV["DEST"].presence && File.expand_path(ENV["DEST"])) || ClonesDirectory.base
     dry_run = ENV["DRY_RUN"] == "true"
     remove_old = ENV["REMOVE_OLD"] == "true"
+    file_system = RealFileSystemAdapter.new
 
     FileUtils.mkdir_p(dest_base) unless dry_run
 
@@ -43,6 +44,28 @@ namespace :clones do
     errors = 0
 
     log = ->(msg) { puts "[clones:relocate]#{dry_run ? " [DRY_RUN]" : ""} #{msg}" }
+
+    # NonRelocatableClonePaths reports a scan it could not finish through a
+    # logger. Route that to this task's own output: a failed scan means the
+    # clone is copied whole, venv and all, and an operator watching a run has
+    # to be able to see that rather than find it in the Rails log later.
+    scan_logger = Struct.new(:sink) do
+      def warn(message) = sink.call(message)
+    end.new(log)
+
+    # The paths this clone cannot carry to a new directory, logged as they are
+    # found. Nothing is deleted and the source is only read — the exclusion
+    # shapes what gets WRITTEN to the destination, which is what makes it safe
+    # against the live sessions this task copies by design (zimmer#671).
+    non_relocatable_in = ->(clone_path, session) do
+      paths = NonRelocatableClonePaths.detect(clone_path, file_system: file_system, logger: scan_logger)
+      if paths.any?
+        log.call "session #{session.id}: leaving #{paths.size} non-relocatable path(s) out of the copy " \
+          "(#{paths.join(', ')}) — the new clone must rebuild them"
+      end
+      paths
+    end
+
     log.call "Destination base: #{dest_base}"
     log.call "Sessions with a clone_path: #{total}"
 
@@ -71,13 +94,17 @@ namespace :clones do
       begin
         if dry_run
           log.call "session #{session.id} (#{session.status}): would copy #{old_clone_path} -> #{new_clone_path} and rewrite #{path_keys.join(', ')}"
+          non_relocatable_in.call(old_clone_path, session)
           relocated += 1
           next
         end
 
         # Copy (never move) so a live session's cwd is never pulled out from under it.
+        # Scanned inside the guard, so a run over a destination that already
+        # exists neither pays for the walk nor reports paths it will not skip.
         unless Dir.exist?(new_clone_path)
-          FileUtils.cp_r(old_clone_path, new_clone_path)
+          non_relocatable = non_relocatable_in.call(old_clone_path, session)
+          file_system.cp_r(old_clone_path, new_clone_path, exclude: NonRelocatableClonePaths.to_patterns(non_relocatable))
         end
 
         # Rewrite every path-bearing metadata key in lockstep. Each value is

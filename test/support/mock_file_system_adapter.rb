@@ -62,6 +62,24 @@ class MockFileSystemAdapter < FileSystemAdapter
     (matching_files + matching_dirs.to_a).sort
   end
 
+  # The mock holds a flat set of paths rather than a tree, so a directory's
+  # immediate entries are derived: every path under it, reduced to its first
+  # remaining segment.
+  def children(path)
+    raise Errno::ENOTDIR, "Not a directory - #{path}" unless @directories.include?(path)
+
+    prefix = "#{path}/"
+    (@files.keys + @directories.to_a)
+      .select { |candidate| candidate.start_with?(prefix) }
+      .map { |candidate| candidate.delete_prefix(prefix).split("/").first }
+      .compact.uniq.sort
+  end
+
+  # The mock has no symlinks to model.
+  def symlink?(_path)
+    false
+  end
+
   def mtime(path)
     raise Errno::ENOENT, "No such file or directory - #{path}" unless exists?(path)
 
