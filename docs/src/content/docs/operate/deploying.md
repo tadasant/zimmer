@@ -548,7 +548,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
-| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) at every point it touches GHCR — the login, the base manifest read, and the build's pull and push |
+| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) at three of the four points it touches GHCR — the login, the base manifest read, and the app build's pull and push (the base build itself is still single-shot) |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image outside the normal release path |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
@@ -658,9 +658,11 @@ ERROR: no builder "builder-<some-other-jobs-uuid>" found
 ```
 
 The tell is that the UUID in the error is **not** the one the job's own "Set up Buildx"
-step printed. The shared `config.json` has the matching hazard: `docker/login-action`'s
-post step runs `docker logout ghcr.io`, which strips GHCR credentials out from under a
-concurrent job's push.
+step printed. The shared `config.json` has the matching hazard: a `docker logout ghcr.io`
+against it strips GHCR credentials out from under a concurrent job's push. In
+`build-base-image.yml` that logout is `docker/login-action`'s post step; in
+`release-image.yml` it is an explicit final step, and it is guarded — see
+[The login and the base resolve retry too](#the-login-and-the-base-resolve-retry-too).
 
 A per-job `DOCKER_CONFIG` under `$RUNNER_TEMP` gives each job its own current-builder
 file and its own credential store, which removes both races; the explicit `builder:`
@@ -807,9 +809,13 @@ because an unauthenticated build fails later and less legibly. Registry output i
 `::stop-commands::` before being echoed, since a daemon error line beginning with `::` would otherwise
 be read as a workflow command.
 
-Because the login is now a `run:` step rather than an action, there is no post step to log out. A
-`Log out of GHCR` step with `if: always()` replaces it. That is belt and braces: the credential lands
-in this job's private `$DOCKER_CONFIG` and holds a `GITHUB_TOKEN` that expires with the job.
+Because the login is a `run:` step rather than an action, there is no post step to log out. A final
+`Log out of GHCR` step with `if: always() && env.DOCKER_CONFIG != ''` replaces it. The logout itself is
+belt and braces — the credential lands in this job's private `$DOCKER_CONFIG` and holds a
+`GITHUB_TOKEN` that expires with the job — but the guard is not. `always()` also fires on the runs
+where `checkout` or the isolation step itself failed, and `DOCKER_CONFIG` is empty on exactly those, so
+an unguarded logout would write to the **shared** `~/.docker` above and strip a co-tenant job's GHCR
+credentials. A post step could not reach that state, because it runs only if its own step did.
 
 **`Resolve base image`** retries its `imagetools inspect` three times, 5 then 15 seconds apart. That
 read does not fail the job — it fails *closed* into `need_base=true`, which is worse in its own way: a
@@ -825,6 +831,11 @@ registry errors reads as a throttle rather than as a broken `Dockerfile.base`.
 `Build & push base image` is still single-shot. A throttle that survives the resolve's retries and
 then kills the base build fails the job before the app build's first attempt is ever reached. That
 path has not bitten yet; all the observed failures were the app build and the login.
+
+`build-base-image.yml` also still logs in with a plain `docker/login-action`, and that is the
+deliberate half of the same line. It runs monthly and on `workflow_dispatch`, so a failed login is
+already in front of a human who can press re-run; `release-image.yml` is the one that fires unattended
+on every push to `main`, where nobody is watching and the next push queues behind it.
 
 `ghcr_login_test.rb` drives the login script with `docker` stubbed on PATH and `sleep` stubbed out —
 succeed-first-time, fail-twice-then-succeed, never-succeed, empty token, and a forged `::error::` line

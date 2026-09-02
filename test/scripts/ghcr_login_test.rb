@@ -134,8 +134,40 @@ class GhcrLoginTest < ActiveSupport::TestCase
   # otherwise be interpreted as a workflow command by the runner.
   test "registry output is fenced before being echoed" do
     run_login(docker_body: "echo '::error::forged' >&2; exit 1") do |_code, out, _attempts|
-      assert_match(/::stop-commands::ghcr-login-\d+/, out)
-      assert_match(/::ghcr-login-\d+::/, out)
+      fence = out[/::stop-commands::(\S+)/, 1]
+      assert fence, "the untrusted registry text must be fenced"
+      assert_includes out, "::#{fence}::", "the fence must be closed, or every later line stays inert"
+      assert_operator fence.length, :>, "ghcr-login-".length + 6,
+        "the fence token is what stops the registry's own text from forging a workflow command, " \
+        "so it must not be short enough to guess"
+    end
+  end
+
+  # A registry error line beginning with `-n` or `-e` would be eaten as an option to `echo`
+  # rather than printed. The one line in this script that prints untrusted text is the one
+  # that must not do that.
+  test "registry output starting with an echo option is still printed verbatim" do
+    run_login(docker_body: "echo '-e trouble reaching the registry' >&2; exit 1") do |_code, out, _|
+      assert_includes out, "-e trouble reaching the registry"
+    end
+  end
+
+  # Both of these look like a working retry in the log and are not one: an empty list gives
+  # one attempt and no retry at all, and a non-numeric entry fails every `sleep` (errexit is
+  # off on purpose) so the attempts run back to back with no wait.
+  test "a backoff list with no values is refused rather than silently becoming one attempt" do
+    run_login(docker_body: "exit 1", env: { "LOGIN_BACKOFF_SECONDS" => "   " }) do |code, out, attempts|
+      assert_equal EXIT_FAILED, code
+      assert_equal 0, attempts
+      assert_match(/::error::LOGIN_BACKOFF_SECONDS/, out)
+    end
+  end
+
+  test "a non-numeric backoff is refused rather than silently becoming no backoff" do
+    run_login(docker_body: "exit 1", env: { "LOGIN_BACKOFF_SECONDS" => "90s 240" }) do |code, out, attempts|
+      assert_equal EXIT_FAILED, code
+      assert_equal 0, attempts
+      assert_match(/'90s' is not a whole number of seconds/, out)
     end
   end
 end

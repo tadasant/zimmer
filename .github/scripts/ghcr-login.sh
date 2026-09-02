@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Log in to a container registry, retrying a transient failure instead of failing the run.
 #
-# release-image.yml already treats registry I/O as flaky for the PUSH half -- three build
-# attempts with an escalating backoff between them -- but the login that precedes it was
-# single-shot, so one bad handshake against the same registry took the whole release down:
+# release-image.yml treats registry I/O as flaky for the PUSH half -- three build attempts
+# with an escalating backoff between them. A `docker/login-action` step in front of that is
+# single-shot, so one bad handshake against the same registry takes the whole release down:
 #
 #   Error response from daemon: Get "https://ghcr.io/v2/": Get "https://ghcr.io/token?...":
 #   net/http: TLS handshake timeout
 #
-# Nothing was wrong with the commit, the image, or the credentials. This closes that
+# Nothing was wrong with the commit, the image, or the credentials. This closes the
 # asymmetry: the same registry, the same class of transient failure, retried in both places.
 #
 # The retry is BLIND, for the reason await-ghcr.sh spells out: the GHCR trouble that keeps
@@ -30,11 +30,23 @@ REGISTRY="${REGISTRY:-ghcr.io}"
 # because a GHCR secondary rate limit is account-wide and has outlasted a single 90s wait,
 # and it is only ever paid on a run that is already failing.
 read -r -a BACKOFFS <<<"${LOGIN_BACKOFF_SECONDS:-90 240}"
+if [ "${#BACKOFFS[@]}" -eq 0 ]; then
+  echo "::error::LOGIN_BACKOFF_SECONDS is set but holds no values, which would leave this login with a single attempt and no retry at all. Unset it for the 90/240 default, or give it whitespace-separated seconds."
+  exit 1
+fi
+for backoff in "${BACKOFFS[@]}"; do
+  case "$backoff" in
+    *[!0-9]* | "")
+      echo "::error::LOGIN_BACKOFF_SECONDS entry '${backoff}' is not a whole number of seconds. It is passed straight to \`sleep\`, which would fail every backoff and turn this into three attempts back to back -- a retry in name only."
+      exit 1
+      ;;
+  esac
+done
 TOTAL=$(( ${#BACKOFFS[@]} + 1 ))
 
 # Registry output is untrusted text; a line starting with `::` would otherwise be parsed as
 # a workflow command. Fence it, the same way await-ghcr.sh does.
-FENCE="ghcr-login-$$"
+FENCE="ghcr-login-$$-${RANDOM}${RANDOM}${RANDOM}"
 
 attempt=1
 while :; do
@@ -48,7 +60,7 @@ while :; do
 
   echo "docker login to ${REGISTRY} failed on attempt ${attempt}/${TOTAL}:"
   echo "::stop-commands::${FENCE}"
-  echo "$output"
+  printf '%s\n' "$output"
   echo "::${FENCE}::"
 
   if [ "$attempt" -ge "$TOTAL" ]; then

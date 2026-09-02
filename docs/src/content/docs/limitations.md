@@ -134,8 +134,8 @@ from both the base and app packages between attempts and annotating which was re
 annotation only *reports*, nothing acts on it, and because both probes are reads they cannot clear a
 write-side throttle even when both come back green.
 
-The blindness now extends to the other two registry steps in the job, which used to have no retry at
-all. `Log in to GHCR` runs `.github/scripts/ghcr-login.sh` — the same `docker login` a
+The blindness extends to two more of the registry steps in the job — three of the four points it
+touches GHCR are retried, and `Build & push base image` is the one that is not. `Log in to GHCR` runs `.github/scripts/ghcr-login.sh` — the same `docker login` a
 `docker/login-action` step would run, three times, backing off 90s then 240s — because a single-shot
 login is a single point of failure in front of everything else: on 2026-09-02 one
 `net/http: TLS handshake timeout` reaching `ghcr.io/token` failed the release 48 seconds in and
