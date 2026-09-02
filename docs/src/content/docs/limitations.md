@@ -3357,11 +3357,15 @@ sniffed from its own bytes, which is dropped rather than guessed at, and any att
 follow-up** already owns — both kinds live in the same per-session directory, so a screenshot
 attached to a message somebody queued for later is not smuggled onto the turn before it.
 
-The session page's **Restart from scratch** button is a different door and still drops them.
-`SessionsController#restart_from_scratch` and MCP `action_session`'s `restart` clear `session_id` and
-call `AgentSessionJob.enqueue_new_session(session.id)` directly rather than going through
-`Sessions::StartNow`, so a session restarted by hand re-runs its prompt without the screenshot that
-came with it — tracked in [#746](https://github.com/tadasant/zimmer/issues/746).
+The session page's **Restart from scratch** button is a different door, and it carries them too.
+`SessionsController#restart_from_scratch`, `POST /api/v1/sessions/:id/restart` and MCP
+`action_session`'s `restart` clear `session_id` and build the replacement job themselves rather than
+going through `Sessions::StartNow`, so each reads the same `Sessions::FirstTurnAttachments` before it
+enqueues ([#746](https://github.com/tadasant/zimmer/issues/746)). Replaying is deliberate rather than
+incidental: a restart from scratch throws the conversation away and re-runs the session's *original*
+prompt, so the attachments that turn was created with are exactly what the replacement turn needs.
+The read never raises — this is a path taken only when something has already gone wrong, and a
+storage tree that cannot be read costs the attachments, never the restart.
 
 Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on
 the dashboard with a reason on it, a `waiting` one is on nobody's list. A session past

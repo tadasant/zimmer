@@ -809,7 +809,9 @@ them from the durable volume, where they sit keyed by session id, and says in th
 the turn is carrying. It leaves out anything a **queued follow-up** already owns: both live in the
 same per-session directory, and a screenshot attached to a message somebody queued for later belongs
 to that message, not to the turn before it. The other rows must *not* re-read storage — their job
-already carries its own copy.
+already carries its own copy. The reader itself is `Sessions::FirstTurnAttachments`, shared with the
+other door that builds a first turn from nothing: **Restart from scratch**, in the web UI, the REST
+API and MCP alike.
 
 A session **asleep on a wake-up it has not reached** is refused rather than started. The wake is that
 session's next event and it carries its own prompt; starting underneath it would race the two.

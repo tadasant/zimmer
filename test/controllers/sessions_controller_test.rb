@@ -4,6 +4,8 @@ require "automated_prompts"
 require "ostruct"
 
 class SessionsControllerTest < ActionDispatch::IntegrationTest
+  include AttachmentFixtures
+
   def setup
     # Stub Turbo Stream broadcasting to avoid missing partial errors in tests
     Log.any_instance.stubs(:broadcast_append_to_timeline)
@@ -13,6 +15,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   def teardown
     # Clean up all stubs to prevent leakage between tests
     Mocha::Mockery.instance.teardown
+    # Durable attachment storage outlives the test that wrote it.
+    cleanup_stored_attachments!
   end
 
   # Test index action
@@ -3214,6 +3218,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.logs.where("content LIKE ?", "%Restarting session from scratch%").exists?
     assert session.logs.where("content LIKE ?", "%full setup will be re-attempted%").exists?
 
+    # A session with nothing stored says nothing about what it carries.
+    assert_not session.logs.where("content LIKE ?", "%carrying%").exists?
+
     # Verify stale metadata was cleared
     assert_nil session.metadata["failure_reason"]
   end
@@ -3304,6 +3311,58 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     SpotSessionHold::METADATA_KEYS.each do |key|
       assert_nil session.metadata[key], "#{key} must not survive a restart — it is the backoff ladder"
     end
+  end
+
+  # --- restart from scratch carries the first turn's attachments ---------------
+  #
+  # AgentSessionJob receives images and files ONLY as job arguments, so a restart
+  # that enqueued bare re-ran the original prompt with the screenshot silently
+  # missing (#746). The bytes were on the durable volume the whole time.
+
+  test "restart from scratch enqueues the replacement turn carrying the stored attachments" do
+    session = Session.create!(
+      prompt: "here is the screenshot, fix this",
+      status: :failed,
+      git_root: "https://github.com/test/repo.git",
+      metadata: { "failure_reason" => "git_clone_failed" }
+    )
+    image = store_image_for(session)
+    file = store_file_for(session, filename: "notes.txt", content: "read me")
+
+    post restart_session_url(session)
+
+    assert_enqueued_with(
+      job: AgentSessionJob,
+      args: [
+        session.id, nil,
+        {
+          images: [ { path: image[:path], media_type: "image/png" } ],
+          files: [ { path: file[:path], original_filename: "notes.txt", size: "read me".bytesize } ]
+        }
+      ]
+    )
+    assert session.logs.where("content LIKE ?", "%carrying 1 image and 1 file%").exists?
+  end
+
+  # This path is taken when something has ALREADY gone wrong. A storage tree that
+  # cannot be read must cost the attachments, never the restart.
+  test "restart from scratch still restarts when the attachment storage cannot be read" do
+    session = Session.create!(
+      prompt: "here is the screenshot, fix this",
+      status: :failed,
+      git_root: "https://github.com/test/repo.git",
+      metadata: { "failure_reason" => "git_clone_failed" }
+    )
+    store_image_for(session)
+
+    ImageStorageService.stub(:stored_for, ->(*) { raise Errno::EACCES, "storage" }) do
+      assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+        post restart_session_url(session)
+      end
+    end
+
+    assert_redirected_to session_path(session)
+    assert_equal "running", session.reload.status
   end
 
   # The banner is the only place a person sees WHY a session is sitting in
