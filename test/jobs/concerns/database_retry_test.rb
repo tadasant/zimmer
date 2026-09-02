@@ -5,13 +5,12 @@ require "mocha/minitest"
 
 # Unit coverage for DatabaseRetry#with_db_retry.
 #
-# The behaviour under test is #708: a pool-exhaustion error must be retried
-# without reconnecting anything. `ActiveRecord::ConnectionTimeoutError` inherits
-# from `ActiveRecord::ConnectionNotEstablished`, so the old
-# `ActiveRecord::Base.connection.reconnect! if e.is_a?(ConnectionNotEstablished)`
-# fired on "the pool is full" — leasing a *sticky* connection out of an already
-# empty pool, blocking for another checkout_timeout, and raising from inside the
-# rescue so the remaining retries never ran.
+# The invariant under test is #708: a pool-exhaustion error is retried, and
+# nothing is reconnected. `ActiveRecord::ConnectionTimeoutError` inherits from
+# `ActiveRecord::ConnectionNotEstablished`, so a reconnect keyed on the parent
+# class fires on "the pool is full" — leasing a *sticky* connection out of an
+# already empty pool, blocking for another checkout_timeout, and raising from
+# inside the rescue so the remaining retries never run.
 class DatabaseRetryTest < ActiveSupport::TestCase
   # Minimal host exercising the concern in isolation, mirroring how
   # AgentSessionJob / LogBuffer include it. Overriding Kernel#sleep records the
@@ -33,9 +32,9 @@ class DatabaseRetryTest < ActiveSupport::TestCase
 
   setup { @host = Host.new }
 
-  test "ConnectionTimeoutError is what ConnectionNotEstablished used to catch" do
-    # The premise of the fix, asserted against the Active Record actually pinned
-    # in Gemfile.lock rather than taken on trust.
+  test "a pool-exhaustion error reaches the rescue as a ConnectionNotEstablished" do
+    # The premise the fix rests on, asserted against the Active Record actually
+    # pinned in Gemfile.lock rather than taken on trust.
     assert_kind_of ActiveRecord::ConnectionNotEstablished,
                    ActiveRecord::ConnectionTimeoutError.new("pool is full")
     assert_includes DatabaseRetry::RETRYABLE_EXCEPTIONS, ActiveRecord::ConnectionNotEstablished
@@ -75,6 +74,9 @@ class DatabaseRetryTest < ActiveSupport::TestCase
   end
 
   test "a genuinely broken connection is still retried" do
+    # Belt and braces: PG::ConnectionBad is not a ConnectionNotEstablished, so this
+    # shape never took the reconnect branch even before #708. The expectation is
+    # here so the whole retryable list is covered by the same rule.
     ActiveRecord::Base.expects(:connection).never
 
     attempts = 0
@@ -91,12 +93,13 @@ class DatabaseRetryTest < ActiveSupport::TestCase
   end
 
   test "Active Record heals a genuinely dead connection with no manual reconnect" do
-    # The risk this fix takes on: dropping the manual reconnect! must not quietly
-    # regress recovery from a genuinely lost connection. Prove it against a real
-    # Postgres session, in a pool of this test's own, with
-    # ActiveRecord::Base.connection forbidden — so any recovery observed here can
-    # only have come from the adapter itself (with_raw_connection -> verify! ->
-    # reconnect!), which is the guarantee that lets with_db_retry just retry.
+    # This one pins *upstream* behaviour, not ours, and is here because the whole
+    # case for not reconnecting by hand rests on it: recovery from a genuinely lost
+    # connection must not quietly regress. Expect to revisit it on a Rails upgrade.
+    #
+    # Proven against a real Postgres session with ActiveRecord::Base.connection
+    # forbidden — so any recovery observed here can only have come from the adapter
+    # itself (with_raw_connection -> verify! -> reconnect!).
     #
     # The adapter is built standalone rather than through a pool: the suite's
     # transactional fixtures pin every pool that gets established during a test,
@@ -125,6 +128,35 @@ class DatabaseRetryTest < ActiveSupport::TestCase
     ensure
       adapter.disconnect!
     end
+  end
+
+  test "a deadlock is retried without touching the connection" do
+    ActiveRecord::Base.expects(:connection).never
+
+    attempts = 0
+    result = @host.with_db_retry do
+      attempts += 1
+      raise ActiveRecord::Deadlocked, "deadlock detected" if attempts == 1
+
+      :ok
+    end
+
+    assert_equal :ok, result
+    assert_equal 2, attempts
+    assert_equal [ 0.5 ], @host.delays
+  end
+
+  test "max_attempts and base_delay overrides drive the budget and the backoff" do
+    attempts = 0
+    assert_raises(ActiveRecord::ConnectionTimeoutError) do
+      @host.with_db_retry(max_attempts: 4, base_delay: 0.1) do
+        attempts += 1
+        raise ActiveRecord::ConnectionTimeoutError, "all pooled connections were in use"
+      end
+    end
+
+    assert_equal 4, attempts
+    assert_equal [ 0.1, 0.2, 0.4 ], @host.delays
   end
 
   test "a non-retryable error is not retried" do

@@ -438,26 +438,38 @@ rows) — so saturating it would take thousands of broadcasts per second, and si
 produce single or double digits. If that estimate is ever wrong, the failure will be quiet. Raise
 `CABLE_DB_POOL` and `app_required_backends` together.
 
-### The database retry helpers do not catch the error a mid-flight connection death raises
+### The database retry helpers miss most mid-flight connection deaths, and hold a thread longer when the pool is full
 
 `DatabaseRetry` (`app/jobs/concerns/database_retry.rb`) and `ControllerDatabaseRetry`
 (`app/controllers/concerns/controller_database_retry.rb`) retry `PG::ConnectionBad`,
 `PG::UnableToSend`, `ActiveRecord::ConnectionNotEstablished` and `ActiveRecord::Deadlocked`. A
 connection that dies *while a statement is in flight* — a Postgres restart, a failover, an admin
-disconnect — does not raise any of those. Active Record translates it to
-`ActiveRecord::ConnectionFailed`, which descends from `QueryAborted` → `StatementInvalid`, not from
-`ConnectionNotEstablished`. So it is not on the list, and the block is not retried.
+disconnect — usually raises none of those. `PostgreSQLAdapter#translate_exception`
+(`postgresql_adapter.rb:818`) turns a libpq failure into `ActiveRecord::ConnectionFailed`, which
+descends from `QueryAborted` → `StatementInvalid`, not from `ConnectionNotEstablished`, so it is not
+on the list and the block is not retried. The translation keys on the libpq message: a
+`PG::ConnectionBad` whose message does *not* end in a newline, or one matching `connection is
+closed` / `no connection to the server`, becomes `ConnectionNotEstablished` instead and *is* retried.
+So whether a given death is retried depends on the wording libpq chose.
 
-It is mostly harmless today, because the adapter itself reconnects: the *next* statement on that
-connection verifies and reconnects under the adapter's own lock, so the caller after this one
-succeeds. What is lost is this helper's retry — the caller that hit the death still sees the error.
-Tracked in [#779](https://github.com/tadasant/zimmer/issues/779).
+It is mostly harmless, because the adapter itself reconnects: the *next* statement on that connection
+verifies and reconnects, so the caller after this one succeeds. What is lost is this helper's retry —
+the caller that hit the death still sees the error. Tracked in
+[#779](https://github.com/tadasant/zimmer/issues/779).
 
-The helpers deliberately do *not* reconnect by hand. They used to, on
-`ActiveRecord::ConnectionNotEstablished` — which `ActiveRecord::ConnectionTimeoutError` (the pool is
-full) inherits from, so the branch fired on exhaustion, leased a *sticky* connection out of an
-already empty pool, and on a GoodJob thread tore down the Postgres session holding the job's advisory
-lock ([#708](https://github.com/tadasant/zimmer/issues/708)).
+The helpers deliberately do *not* reconnect by hand
+([#708](https://github.com/tadasant/zimmer/issues/708)): `ActiveRecord::ConnectionTimeoutError` (the
+pool is full) inherits from `ActiveRecord::ConnectionNotEstablished` (this connection is broken), so a
+reconnect keyed on the parent class fires on exhaustion — leasing a *sticky* connection out of an
+already empty pool, and on a GoodJob thread tearing down the Postgres session holding the job's
+advisory lock.
+
+The cost of leaving the retry in place is time. Under exhaustion each attempt blocks for the pool's
+`checkout_timeout` (unset in `config/database.yml`, so the 5s default), and all three attempts now
+run: a caller can hold its Puma or GoodJob thread for roughly 16s (jobs, backoff `0.5s + 1s`) or 15s
+(controllers, `0.3s + 0.6s`) before giving up, against roughly 10s when the reconnect aborted the
+loop early. That is a thread held longer precisely when threads are scarce — accepted deliberately,
+because the alternative was permanently removing a connection from the pool.
 
 ### Staging cannot exercise the managed-database path
 
