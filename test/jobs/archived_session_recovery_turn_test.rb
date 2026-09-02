@@ -31,6 +31,15 @@ require "mocha/minitest"
 #
 # The assertion that matters throughout is `assert_no_enqueued_jobs only:
 # AgentSessionJob`: the job is the agent process, the clone and the quota spend.
+#
+# One thing this harness cannot prove, which is why the guard is built not to need
+# it: transactional fixtures wrap each test in a `joinable: false` transaction, so
+# every `ActiveRecord::Base.transaction` here becomes a savepoint rather than the
+# real outermost transaction it is in production. Nothing below therefore depends
+# on rollback semantics — `claim_system_recovery_turn!` decides both refusals
+# BEFORE it runs the caller's block, so a refused claim writes nothing in the
+# first place. `a refused claim with no surrounding transaction leaves the row
+# untouched` is the test that pins that.
 class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
   setup do
     @working_directory = Dir.mktmpdir("archived-recovery-turn")
@@ -159,6 +168,21 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
     assert @session.logs.any? { |log| log.content.include?("automatically continued") }
   end
 
+  # Both sweeps share SessionContinuation, but only one of them is exercised
+  # above — and the deployment sweep is the one that runs on every deploy, which
+  # is exactly when a human is most likely to be tidying the trash.
+  test "the deployment sweep refuses a session archived after it read it" do
+    stale = stale_session_archived_underneath
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      assert_equal false, DeploymentRecoveryJob.new.send(:continue_recovered_session, stale)
+    end
+
+    @session.reload
+    assert_equal "archived", @session.status
+    assert @session.logs.any? { |log| log.content.include?("it is in the trash") }
+  end
+
   # ---------------------------------------------------------------------------
   # SessionRecoveryService#auto_restart_session — the hung-process enqueuer
   # ---------------------------------------------------------------------------
@@ -251,6 +275,38 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
     assert_equal :archived, stale.claim_system_recovery_turn! { ran = true }
     assert_equal false, ran,
       "the stale-metadata clear must not touch a row the claim is about to refuse"
+  end
+
+  test "claim_system_recovery_turn! does not run its block for an unresumable session either" do
+    stale = Session.find(@session.id)
+    Session.where(id: @session.id).update_all(status: Session.statuses[:running])
+    ran = false
+
+    assert_equal :not_resumable, stale.claim_system_recovery_turn! { ran = true }
+    assert_equal false, ran,
+      "both refusals must be decided before the block, not only the archived one"
+  end
+
+  # The contract that lets both callers get away with a bare `next` instead of a
+  # rollback: a refused claim writes NOTHING, so there is nothing to undo. Called
+  # with no surrounding transaction on purpose — that is the shape in which a
+  # caller who forgot to roll back would silently commit the block's writes over a
+  # live turn, and the reason the refusal checks sit above the block rather than
+  # below it.
+  test "a refused claim with no surrounding transaction leaves the row untouched" do
+    Session.where(id: @session.id).update_all(running_job_id: "held-by-the-live-turn")
+    archived = Session.find(@session.id)
+    running = Session.find(@session.id)
+    Session.where(id: @session.id).update_all(status: Session.statuses[:archived])
+
+    assert_equal :archived, archived.claim_system_recovery_turn! { archived.update!(running_job_id: nil) }
+    assert_equal "held-by-the-live-turn", @session.reload.running_job_id
+
+    Session.where(id: @session.id).update_all(status: Session.statuses[:running])
+
+    assert_equal :not_resumable, running.claim_system_recovery_turn! { running.update!(running_job_id: nil) }
+    assert_equal "held-by-the-live-turn", @session.reload.running_job_id,
+      "a refusal must not commit the caller's stale-metadata clear over a live turn"
   end
 
   test "claim_system_recovery_turn! resumes a live session and reports the claim" do

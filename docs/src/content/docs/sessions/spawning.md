@@ -39,18 +39,31 @@ over the archived row. Session 6335 was archived at 07:35:34 and had a fresh age
 injected credentials and five connected MCP servers two seconds later
 ([#554](https://github.com/tadasant/zimmer/issues/554)).
 
-So there is a **selection-time** half too: `Session#claim_system_recovery_turn!`. Both enqueuers
-route through it, and it re-reads the row `FOR UPDATE` before deciding — inside the caller's
-transaction, so the lock is still held when the job is enqueued and no archive can land in between.
-It answers `:archived` (terminal — nothing is enqueued, nothing is written, and the refusal is
-logged on the session's timeline), `:not_resumable` (the session is already `running`; somebody
-else is driving it and a second agent process is its own defect), or `:claimed`. The enqueuers
-honour that answer: before, both enqueued a job regardless of what
-`resume_for_system_recovery!` returned.
+So there is a **selection-time** half too: `Session#claim_system_recovery_turn!`. It re-reads the
+row `FOR UPDATE` before deciding — inside the caller's transaction, so the lock is still held when
+the job is enqueued and no archive can land in between. It answers `:archived` (terminal),
+`:not_resumable` (the session is already `running`; somebody else is driving it, and a second agent
+process is its own defect) or `:claimed`, and the enqueuer starts a turn only on `:claimed`. Both
+refusals are decided *before* the caller's block runs, so a refused claim writes nothing at all —
+which is what lets a caller skip the enqueue without needing a rollback to be correct. The refusal
+is recorded on the session's own timeline, where "why did nothing happen to this session" is asked
+from.
 
 A refused claim leaves `paused_by` in place on purpose. It is the marker both sweeps select on, and
 an archived session is already invisible to them — so there is no loop to bound, and dropping it
 would sabotage the recovery still owed to the session if a human restores it from the trash.
+
+:::caution[Two selection-time enqueuers route through it, not every caller that resumes]
+`SessionContinuation#continue_recovered_session` (both sweeps) and
+`SessionRecoveryService#auto_restart_session` are the two #554 names, and they are the two that
+claim. Three other callers still resume from an unlocked read and still ignore what
+`resume_for_system_recovery!` returns: `HealthMonitorService#retry_failed_sessions` and
+`AgentSessionJob#auto_continue_after_interrupt`
+([#753](https://github.com/tadasant/zimmer/issues/753)), and `SpotSessionPause.resume!`, which
+locks and re-checks by hand instead. The queued-message branch above the guard
+(`continue_with_queued_user_message`) is unguarded too, but bounded: archiving strands pending
+messages, and `EnqueuedMessageProcessorService` takes its own lock and refuses an archived session.
+:::
 
 ## What gets spawned
 

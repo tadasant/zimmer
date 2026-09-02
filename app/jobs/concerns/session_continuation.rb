@@ -75,10 +75,12 @@ module SessionContinuation
       return true
     end
 
-    # The whole continue happens under the row lock this takes, including the
-    # enqueue: `find_each` handed us a session object read at the top of the
-    # sweep, and the row may have been archived since. See
-    # Session#claim_system_recovery_turn!.
+    # The transaction is here for the LOCK, not for a rollback. `find_each` handed
+    # us a session object read at the top of the sweep, and the row may have been
+    # archived since; claim_system_recovery_turn! re-reads it `FOR UPDATE`, and
+    # that lock is held until this block commits — so the enqueue below cannot
+    # straddle an archive. A refused claim writes nothing, so there is nothing to
+    # undo and `next` is the whole handling.
     outcome = nil
     ActiveRecord::Base.transaction do
       outcome = session.claim_system_recovery_turn! do
@@ -90,10 +92,7 @@ module SessionContinuation
         )
       end
 
-      # Nothing is enqueued for a refused claim, and nothing the claim wrote is
-      # kept: rolling back leaves the archived (or already-running) row exactly as
-      # the sweep found it, so the next reader sees no half-applied recovery.
-      raise ActiveRecord::Rollback unless outcome == :claimed
+      next unless outcome == :claimed
 
       # Enqueue a job with the automated recovery prompt, naming the sweep that sent it
       # so the agent (and whoever reads the transcript) can tell this apart from the
@@ -145,8 +144,9 @@ module SessionContinuation
       "[#{self.class.name}] Session #{session.id} not continued after #{continuation_source}: #{outcome}"
     )
     # A session log rather than only a Rails log: "why did nothing happen to this
-    # session" is asked from the session page.
-    session.logs.create(content: message, level: "info")
+    # session" is asked from the session page, and a log that silently failed to
+    # write would leave exactly the blank both sweeps' callers rescue around.
+    session.logs.create!(content: message, level: "info")
     false
   end
 
