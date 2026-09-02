@@ -82,6 +82,8 @@ class ZombieReaperJob < ApplicationJob
   LIVE_WAITER_STALE_AFTER = 300
 
   def perform
+    sweep_session_memory_cgroups
+
     scanner = ZombieChildScanner.new
     registry = ChildWaiterRegistry.instance
 
@@ -111,6 +113,19 @@ class ZombieReaperJob < ApplicationJob
   end
 
   private
+
+  # The other host-level leftover of an agent session's process tree: its memory cgroup
+  # (SessionMemoryCgroup). `rmdir` refuses while any pid is still inside, so a session
+  # cannot always tear its own down — and a worker killed mid-deploy never gets the
+  # chance. One empty cgroup is a directory and a few kernel structs, but they arrive one
+  # per session and nothing else would ever remove them.
+  #
+  # Runs before the zombie passes and outside their early returns, because "no zombies
+  # this tick" is the common case and is not a reason to skip this.
+  def sweep_session_memory_cgroups
+    removed = SessionMemoryCgroup.sweep!
+    Rails.logger.info "[ZombieReaperJob] Removed #{removed} empty session memory cgroup(s)" if removed.positive?
+  end
 
   def reap(candidates, registry)
     reaped = []

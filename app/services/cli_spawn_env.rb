@@ -231,6 +231,37 @@ module CliSpawnEnv
     env_vars
   end
 
+  # Wrap the runtime's argv so the process — and every tool subprocess it goes on to
+  # spawn — runs inside this session's own memory cgroup.
+  #
+  # This is the containment half of tadasant/zimmer#815: without it a session's runaway
+  # command spends the whole worker container's 10 GiB budget and the kernel picks a
+  # victim by size, which may be the Rails worker or another session's agent. With it,
+  # the runaway exhausts a bound of its own and the kill lands inside the cgroup that
+  # caused it. SessionMemoryCgroup carries the full reasoning, the sizing, and the
+  # reasons it can be unavailable.
+  #
+  # Called after the adapter has validated the command, so the wrapper is never what a
+  # validation sees. Best-effort in both directions: no session id, no cgroup support, a
+  # bound disabled by configuration, or a cgroup that could not be created all return the
+  # command untouched, and the session runs unbounded rather than not at all.
+  #
+  # Relies on the including adapter exposing `@zimmer_session_id`.
+  #
+  # @param command [Array<String>] the argv the adapter built
+  # @return [Array<String>] argv to hand Process.spawn
+  def apply_session_memory_cgroup(command)
+    cgroup = SessionMemoryCgroup.for(@zimmer_session_id)
+    return command if cgroup.nil? || !cgroup.prepare!
+
+    limit = SessionMemoryCgroup.limit_bytes
+    @logger.info "Session memory bound: #{limit.zero? ? 'none (disabled)' : "#{limit} bytes"} via #{cgroup.path}"
+    cgroup.enter_command(command)
+  rescue => e
+    @logger.warn "Failed to apply the session memory bound: #{e.message}"
+    command
+  end
+
   # Tell the MCP servers this agent starts where Zimmer's approval endpoint is, and
   # which session is asking.
   #

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "tmpdir"
 
 class PiRuntimeAdapterTest < ActiveSupport::TestCase
   WORKING_DIR = "/tmp/pi-adapter-test"
@@ -12,6 +13,30 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     @file_system = MockFileSystemAdapter.new
     @adapter.process_manager = @process_manager
     @adapter.file_system = @file_system
+  end
+
+  # #815: same as Codex and Claude — a runtime the wrapper misses runs unbounded.
+  test "spawn_process runs Pi inside the session's memory cgroup" do
+    @file_system.mkdir_p(WORKING_DIR)
+
+    with_delegated_cgroup_parent do |parent|
+      @adapter.zimmer_session_id = 5250
+      @adapter.send(:spawn_process, [ "pi", "--session-dir", WORKING_DIR ], working_dir: WORKING_DIR)
+
+      spawned = @process_manager.spawned_processes.first
+
+      assert_equal "/bin/sh", spawned[:command].first
+      assert_includes spawned[:command], File.join(parent, "session-5250", "cgroup.procs")
+      assert_equal [ "pi", "--session-dir", WORKING_DIR ], spawned[:command].last(3)
+    end
+  end
+
+  test "spawn_process leaves Pi's command alone where there is no cgroup to enter" do
+    @file_system.mkdir_p(WORKING_DIR)
+    @adapter.zimmer_session_id = 5251
+    @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+
+    assert_equal [ "pi" ], @process_manager.spawned_processes.first[:command]
   end
 
   test "binary_name and stderr log filename identify the Pi runtime" do

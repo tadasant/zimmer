@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "tmpdir"
+require "fileutils"
 
 # The privilege drop `bin/docker-entrypoint` performs when the container starts as root.
 #
@@ -65,8 +66,14 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
   #               user-namespace guard exits first.
   #
   # Pass `passwd: nil` to make the lookup find no uid 1000 at all.
+  #
+  # `cgroup_fs_root:` points the delegation block (which the entrypoint derives from
+  # ZIMMER_SESSION_CGROUP_ROOT's parent) at a directory the test controls. It defaults to
+  # one inside the stubs tmpdir that has no `cgroup.controllers`, so the block returns
+  # immediately -- which is both what a machine without cgroup v2 does and what keeps every
+  # other test in this file away from the runner's real /sys/fs/cgroup.
   def run_entrypoint(app_home:, env: {}, app_name: "rails", passwd: :present, sleep_succeeds_once: false,
-    find_emits: nil)
+    find_emits: nil, cgroup_fs_root: nil)
     Dir.mktmpdir do |stubs|
       write_stub stubs, "id", <<~SH
         #!/bin/bash
@@ -121,7 +128,11 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
 
       # `-e` explicitly: the shebang carries it, and `bash <script>` does not honour a
       # shebang, so without it this would exercise a shell the container never runs.
-      full_env = { "PATH" => "#{stubs}:#{ENV['PATH']}" }.merge(env)
+      cgroup_fs_root ||= FileUtils.mkdir_p(File.join(stubs, "cgroupfs")).first
+      full_env = {
+        "PATH" => "#{stubs}:#{ENV['PATH']}",
+        "ZIMMER_SESSION_CGROUP_ROOT" => File.join(cgroup_fs_root, "zimmer.sessions")
+      }.merge(env)
       output = IO.popen(full_env, [ "bash", "-e", ENTRYPOINT, "true" ], err: %i[child out], &:read)
       [ output, $?.exitstatus, File.exist?(stub_log) ? File.read(stub_log) : "" ]
     end
@@ -398,6 +409,140 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
       assert_equal 1, status, output
       assert_match(/not user-namespaced/, output)
       refute_match(/DROPPED/, output, "it started dockerd as real host root")
+    end
+  end
+
+  # --- per-session cgroup delegation (tadasant/zimmer#815) -------------------
+  #
+  # Only root can create a cgroup and enable a controller on it, so this setup has to
+  # happen in the entrypoint -- and if any step of it is wrong the app silently runs every
+  # session unbounded, which is exactly the state #815 was filed about. These tests run the
+  # block against a directory shaped like a cgroup v2 root; what they cannot cover is the
+  # kernel's own enforcement (CI has no writable cgroupfs), which is verified on staging.
+
+  # A directory that looks enough like a cgroup v2 root for the block to proceed.
+  def fake_cgroupfs(dir, controllers: "cpuset cpu io memory pids", subtree_control: "memory")
+    File.write(File.join(dir, "cgroup.controllers"), "#{controllers}\n")
+    File.write(File.join(dir, "cgroup.subtree_control"), "#{subtree_control}\n")
+    dir
+  end
+
+  test "the entrypoint delegates a session cgroup parent to uid 1000" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        output, status, stub_log = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+        parent = File.join(cgroupfs, "zimmer.sessions")
+
+        assert_equal 0, status, output
+        assert File.directory?(parent), "the delegated parent was not created: #{output}"
+        assert_match(/CHOWN-ARGV .*\b1000\b.*#{Regexp.escape(parent)}\b/, stub_log,
+          "without the chown, uid 1000 cannot create a session cgroup and every session " \
+          "runs unbounded")
+      end
+    end
+  end
+
+  # The `app` child is what makes the delegated parent the common ancestor of every later
+  # migration. Without it, uid 1000 can create session cgroups and then not move anything
+  # into them -- a bound that exists and never applies, which is worse than none because it
+  # looks like it works.
+  test "the entrypoint moves the app into a sibling under the delegated parent" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        output, status = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+        app_procs = File.join(cgroupfs, "zimmer.sessions", "app", "cgroup.procs")
+
+        assert_equal 0, status, output
+        assert File.exist?(app_procs), "the app cgroup was never populated: #{output}"
+        assert_match(/\A\d+\n?\z/, File.read(app_procs),
+          "cgroup.procs takes the pid of the process joining it")
+        assert_equal "+memory\n", File.read(File.join(cgroupfs, "zimmer.sessions", "cgroup.subtree_control")),
+          "without +memory on the parent, a session cgroup has no memory.max to set"
+      end
+    end
+  end
+
+  # Every deployment that is not the sysbox worker: read-only cgroupfs under plain runc, no
+  # cgroup v2 at all on a dev Mac. The bound is a guardrail, and a guardrail that refuses to
+  # boot the container is a worse outage than the one it prevents.
+  test "a container with no memory controller boots normally without a session cgroup" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs, controllers: "cpuset cpu io pids")
+        output, status = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+
+        assert_equal 0, status, output
+        assert_match(/DROPPED HOME=/, output, "the handover must still happen")
+        refute File.exist?(File.join(cgroupfs, "zimmer.sessions")),
+          "nothing should be created when the kernel cannot enforce a memory bound"
+      end
+    end
+  end
+
+  # A silent skip is the worst outcome available here: the app runs every session
+  # unbounded -- the exact state #815 is about -- with nothing in the boot log to say why.
+  test "the entrypoint says which step turned per-session memory bounds off" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs, controllers: "cpuset cpu io pids")
+        output, = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+
+        assert_match(/Per-session memory bounds are OFF: the memory controller is not available/, output)
+        assert_match(/run unbounded/, output, "the consequence has to be in the message, not just the cause")
+      end
+    end
+  end
+
+  # The one step that can fail on a real, populated cgroup root: cgroup v2 refuses to
+  # enable a controller in subtree_control while the cgroup holds processes directly. The
+  # happy-path tests never reach this branch, because their fixture already lists memory.
+  test "the entrypoint enables the memory controller when the root does not already offer it" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs, subtree_control: "")
+        output, status = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+
+        assert_equal 0, status, output
+        assert_equal "+memory\n", File.read(File.join(cgroupfs, "cgroup.subtree_control"))
+        assert File.directory?(File.join(cgroupfs, "zimmer.sessions", "app")), output
+      end
+    end
+  end
+
+  # The ordering that keeps a half-delegated state unreachable. The chown is what
+  # SessionMemoryCgroup.available? reads, so it must come last: a parent uid 1000 can
+  # create cgroups in but never migrate into is worse than no parent at all -- the app
+  # would wrap every spawn, litter a cgroup per session, and report zero usage forever.
+  test "the delegating chown happens only after the app is in its cgroup" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        # A file where the app cgroup's directory needs to be, so `mkdir -p .../app`
+        # fails and the move-in can never happen.
+        FileUtils.mkdir_p(File.join(cgroupfs, "zimmer.sessions"))
+        File.write(File.join(cgroupfs, "zimmer.sessions", "app"), "")
+
+        output, status, stub_log = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+
+        assert_equal 0, status, output
+        assert_match(/Per-session memory bounds are OFF/, output)
+        refute_match(/CHOWN-ARGV .*zimmer\.sessions/, stub_log,
+          "delegating a parent the app never got into leaves a bound that can never apply")
+      end
     end
   end
 end

@@ -230,6 +230,86 @@ it". Skipping a directory while writing the destination cannot touch the source.
 The fix is prospective. A clone that was relocated before it shipped still holds a stale environment;
 `rm -rf .venv && uv sync` is the repair, and the session doing the work is the one that notices.
 
+## Each session gets its own memory bound
+
+The worker container runs every agent session on the box, plus the Rails worker, plus the
+nested `dockerd`/`containerd`, in **one** cgroup under **one** `memory.max` — 10 GiB in
+production. Nothing partitioned that budget, so one session's runaway command could spend
+all of it and the kernel would then pick a victim by size rather than by blame. On
+2026-09-02 a session's own `bash` reached 6.5 GiB of anonymous RSS in a `… | head` pipeline
+and was OOM-killed at the container cap ([#815](https://github.com/tadasant/zimmer/issues/815)).
+Nothing else died that time, and that was luck: the same cgroup filling the same way can
+take `bundle` or the inner daemon instead, which is
+[#719](https://github.com/tadasant/zimmer/issues/719) and
+[#502](https://github.com/tadasant/zimmer/issues/502).
+
+So each session now runs in its own cgroup with its own `memory.max`
+(`SessionMemoryCgroup`). A runaway command exhausts **its own** budget, and the kernel's
+kill lands inside the cgroup that caused it. The container cap still exists and still
+protects the host; this is the layer underneath it.
+
+```mermaid
+flowchart TD
+  host["Worker container cgroup — memory.max 10g<br/>protects the host"]
+  host --> app["/zimmer.sessions/app<br/>Rails worker, dockerd, containerd"]
+  host --> s1["/zimmer.sessions/session-12398<br/>memory.max 4g"]
+  host --> s2["/zimmer.sessions/session-12401<br/>memory.max 4g"]
+  s1 --> a1["claude → MCP servers → tool subprocesses"]
+  s2 --> a2["claude → MCP servers → tool subprocesses"]
+```
+
+**How a process gets in.** cgroup v2 has no `Process.spawn` option for this, so the child
+puts itself in: the adapters wrap the runtime's argv in a two-line `sh` that writes its own
+pid to `cgroup.procs` and then `exec`s the real command. `exec` keeps the pid, so the
+process group, the recorded `process_pid` and every signal path are unchanged. Descendants
+inherit the cgroup — which is the whole point, because the runaway was a grandchild, not
+the agent.
+
+**The setup that needs root** is in `bin/docker-entrypoint`, which runs as root only in the
+[nested-Docker worker](/operate/nested-docker/). It creates `/sys/fs/cgroup/zimmer.sessions`,
+enables the memory controller on it, hands it to uid 1000, and moves the app into a
+`zimmer.sessions/app` sibling. That last step is load-bearing rather than tidy: migrating a
+process needs write access to the `cgroup.procs` of the **common ancestor** of source and
+destination, so with the app left where it starts, uid 1000 could create session cgroups and
+then not move anything into them.
+
+**Sizing.** `ZIMMER_SESSION_MEMORY_MAX_MB` — 4096 in production, 1024 on staging (whose
+worker cap is 2g, so a 4 GiB bound would never trip). It deliberately does *not* sum to the
+container cap: six sessions at 4 GiB is 24 GiB against 10g. It bounds **one** runaway, which
+is the failure that has actually happened; an admission-control budget would have to sit near
+1.5 GiB and would start killing sessions that work today. A healthy worker was measured at
+1.6 GiB of anonymous memory with three concurrent sessions — the Rails worker included — so
+4 GiB is roughly an order of magnitude of headroom. `0` disables the bound entirely — not by writing `max` into
+`memory.max` but by taking the whole mechanism out of the spawn path, since an operator reaching
+for the break-glass in an incident may well be reaching for it because of the wrapper. It is set at
+deploy time, never on the box.
+
+**What you see when it fires.** Three things, depending on what died:
+
+| What the kernel killed | What happens |
+| --- | --- |
+| A **tool subprocess** — the agent survives | `SessionMemoryWatch` (driven from the monitor loop, every 10s) notices `memory.events`' `oom_kill` counter move and writes a session log saying the limit was reached and that the agent's bare `Killed` / exit 137 is this, not a bug in its command. |
+| The **agent process** itself | `ProcessLifecycleManager#handle_signal_death` reads the same counter. A count that moved *since the last observation* is this death, so the session log names the bound instead of hedging "likely OOM", and the resume carries `AutomatedPrompts.memory_limit_recovery` — which tells the agent what the limit was and to stream large output rather than hold it, instead of nudging it to re-run the command that just died. |
+| Anything, seen from outside | The cgroup is named `session-<id>`, so the kernel's own `oom-kill:` line carries `oom_memcg=/zimmer.sessions/session-12398`. That is the attribution #815 could not establish: on a shared-cgroup worker there was no path from "a process was OOM-killed" to "this session did it". |
+
+There is deliberately **no `memory.high`** watermark. It would reclaim and throttle before
+the hard limit, which sounds gentler — but the memory at issue is anonymous and the worker
+has no swap, so there is nothing to reclaim, and all it would buy is a long allocator stall
+followed by the same kill. Early warning comes from polling `memory.current` instead: one
+log line when a session crosses 75% of its bound.
+
+`ZombieReaperJob` sweeps session cgroups, because `rmdir` refuses while any pid is still inside
+and a worker killed mid-deploy never gets to clean up after itself. It removes one only when it is
+empty **and** its session is archived or gone: a session between turns has an empty cgroup and is
+not finished with it, and sweeping that would reset the counters the next turn reads. The counters
+can restart anyway — a deploy takes every cgroup in the container with it — so the two readers key
+their "already reported" baseline to the cgroup's *incarnation* (its inode paired with its creation
+time; the inode alone is not enough, because a filesystem is free to hand the same one straight
+back). Without that, a session that OOMs, idles, and OOMs again loses the second report.
+
+Where this is **not** in force, and what it is not, is in
+[Limitations](/limitations/#a-sessions-memory-bound-needs-the-nested-docker-worker).
+
 ## The spawn environment
 
 Shared scrubbing (`CliSpawnEnv`):

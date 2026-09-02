@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "tmpdir"
 
 # These tests spawn REAL children and let them become REAL zombies. The bug this
 # job exists to avoid (#273) is a race between two waiters inside one process, and
@@ -225,6 +226,44 @@ class ZombieReaperJobTest < ActiveJob::TestCase
 
     assert_includes logged, [ :info, "[ZombieReaperJob] No zombies to reap" ]
     assert_empty logged.select { |level, message| level == :warn && message.include?("[ZombieReaperJob]") }
+  end
+
+  # === The other host-level leftover of a session's process tree (#815) ===
+
+  # A session cannot always tear down its own memory cgroup: `rmdir` refuses while any pid
+  # is still inside, and a worker killed mid-deploy never gets the chance. Nothing else
+  # would ever remove them, and they arrive one per session.
+  test "sweeps session memory cgroups that no longer hold a process" do
+    ZombieChildScanner.any_instance.stubs(:snapshot).returns(
+      ZombieChildScanner::Snapshot.new(pids: [ Process.pid ], zombie_child_pids: [])
+    )
+
+    with_delegated_cgroup_parent do |parent|
+      finished = File.join(parent, "session-900")
+      live = File.join(parent, "session-901")
+      FileUtils.mkdir_p(finished)
+      FileUtils.mkdir_p(live)
+      File.write(File.join(live, "cgroup.procs"), "4242\n")
+
+      ZombieReaperJob.perform_now
+
+      refute File.directory?(finished)
+      assert File.directory?(live), "a cgroup that still holds a process is a live session"
+    end
+  end
+
+  # The sweep runs before the zombie passes and outside their early returns: "no zombies
+  # this tick" is the common case, and it is not a reason to leave the cgroups behind.
+  test "sweeps even when the process table cannot be read" do
+    ZombieChildScanner.any_instance.stubs(:snapshot).returns(nil)
+
+    with_delegated_cgroup_parent do |parent|
+      FileUtils.mkdir_p(File.join(parent, "session-902"))
+
+      ZombieReaperJob.perform_now
+
+      refute File.directory?(File.join(parent, "session-902"))
+    end
   end
 
   private

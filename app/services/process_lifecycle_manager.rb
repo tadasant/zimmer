@@ -782,11 +782,16 @@ class ProcessLifecycleManager
   def handle_signal_death(status, working_dir)
     signal_desc = exit_status_description(status)
     retry_count = BUDGET.count_for(session)
+    # Where the session has its own memory cgroup, the kernel's own counter says whether
+    # memory was the cause, and how close to the bound the session got. Absent one, the
+    # hedge below is the honest answer — see #session_memory_kill.
+    memory_kill = session_memory_kill
+    cause_clause = memory_kill ? memory_kill[:clause] : "(likely OOM or external kill)"
 
     if BUDGET.exhausted?(session)
       add_log(
-        "Process killed by #{signal_desc} and signal-death resume limit reached " \
-        "(#{BUDGET.max} attempts) — failing session",
+        "Process killed by #{signal_desc} #{cause_clause} and signal-death resume limit " \
+        "reached (#{BUDGET.max} attempts) — failing session",
         level: "warning"
       )
       @logger.warn("Signal-death resume limit exhausted", signal: signal_desc, attempts: retry_count)
@@ -811,7 +816,7 @@ class ProcessLifecycleManager
     end
 
     add_log(
-      "Process killed by #{signal_desc} (likely OOM or external kill) — resuming session " \
+      "Process killed by #{signal_desc} #{cause_clause} — resuming session " \
       "(attempt #{next_attempt}/#{BUDGET.max})",
       level: "info"
     )
@@ -823,9 +828,65 @@ class ProcessLifecycleManager
     # failed_resume_recovery path, which restarts fresh from the best durable prompt.
     spawn_continuation(
       working_dir: working_dir,
-      prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+      prompt: memory_kill ? memory_kill[:prompt] : AutomatedPrompts::SYSTEM_RECOVERY,
       reason: "signal death (#{signal_desc})"
     )
+  end
+
+  # How long after an observed OOM kill a signal death is still attributed to it.
+  #
+  # SessionMemoryWatch polls every 10s, so there is a window in which it consumes the
+  # delta for the very kill that ended this process and the check below would find
+  # nothing left to see. This covers that window with room to spare, on the view that a
+  # signal death wrongly blamed on memory costs a log line and a recovery prompt that is
+  # sound advice regardless, while one wrongly NOT blamed on it costs the explanation.
+  MEMORY_KILL_ATTRIBUTION_WINDOW = 60.seconds
+
+  # Did this session's own memory bound kill the process, and what should we say?
+  #
+  # A signal death is SIGKILL either way, so the status alone cannot tell an OOM from an
+  # external kill — which is why this log line hedges with "likely OOM" wherever there is
+  # no per-session cgroup to consult. Where there is one, the kernel's own counter
+  # answers it.
+  #
+  # Two questions, because one is not enough. `unaccounted_oom_kills` catches the kill
+  # nothing has reported yet, and is keyed to the cgroup's incarnation so a counter that
+  # restarted under a live session does not read as "no new kills".
+  # `recently_oom_killed?` catches the kill SessionMemoryWatch consumed a few seconds
+  # before this process was noticed dead. Either one attributes the death to the bound.
+  #
+  # Best-effort — an unreadable cgroup means we say what we would have said anyway.
+  #
+  # @return [Hash{Symbol => String}, nil] :clause for the session log, :prompt for the
+  #   agent's own resume. nil when the bound did not do this.
+  def session_memory_kill
+    cgroup = SessionMemoryCgroup.for(session.id)
+    return nil if cgroup.nil?
+
+    stats = cgroup.stats
+    return nil if stats.oom_kills.nil?
+
+    unaccounted = cgroup.unaccounted_oom_kills(session).to_i
+    recent = cgroup.recently_oom_killed?(session, within: MEMORY_KILL_ATTRIBUTION_WINDOW)
+    return nil unless unaccounted.positive? || recent
+
+    with_db_retry { cgroup.record_oom_kills!(session, stats.oom_kills) } if unaccounted.positive?
+
+    limit = number_to_human_size(stats.limit_bytes)
+    peak = number_to_human_size(stats.peak_bytes)
+    {
+      clause: "(the session reached its #{limit} memory limit; peak #{peak})",
+      prompt: AutomatedPrompts.memory_limit_recovery(limit: limit, peak: peak)
+    }
+  rescue StandardError => e
+    @logger.warn("Could not read the session memory cgroup", error: e.message)
+    nil
+  end
+
+  def number_to_human_size(bytes)
+    return "unknown" if bytes.nil?
+
+    ActiveSupport::NumberHelper.number_to_human_size(bytes)
   end
 
   # Handle context length error with /compact retry

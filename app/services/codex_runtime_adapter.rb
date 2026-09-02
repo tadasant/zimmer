@@ -334,7 +334,7 @@ class CodexRuntimeAdapter
 
     pid = @process_manager.spawn(
       env_vars,
-      *command,
+      *apply_session_memory_cgroup(command),
       chdir: working_dir,
       pgroup: true,
       in: File::NULL,

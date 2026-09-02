@@ -23,6 +23,29 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     assert AutomatedPrompts.system_recovery?(AutomatedPrompts.system_recovery(reason: "a deploy"))
   end
 
+  # #815: the generic nudge is accurate and useless here — "a system event" invites the
+  # agent to re-run the exact command that just exhausted the session's memory bound.
+  test "memory_limit_recovery names the bound and what to do differently" do
+    prompt = AutomatedPrompts.memory_limit_recovery(limit: "4 GB", peak: "4 GB")
+
+    assert_includes prompt, "memory limit of 4 GB"
+    assert_includes prompt, "peak usage: 4 GB"
+    assert_includes prompt, "NOT USER INPUT"
+    assert_match(/nothing outside this session was affected/, prompt,
+      "an agent told only that it was killed will reasonably assume the box is broken")
+    assert_match(/same limit again/, prompt,
+      "the actionable part is 'do it differently', not 'you were killed'")
+  end
+
+  # It is not a SYSTEM_RECOVERY variant, and must not be mistaken for one: the paths that
+  # treat a recovery nudge specially (preserving scheduled wake-ups, say) are reasoning
+  # about a different kind of interruption.
+  test "system_recovery? does not claim the memory-limit prompt" do
+    assert_not AutomatedPrompts.system_recovery?(
+      AutomatedPrompts.memory_limit_recovery(limit: "4 GB", peak: "4 GB")
+    )
+  end
+
   test "system_recovery? rejects anything else" do
     assert_not AutomatedPrompts.system_recovery?(nil)
     assert_not AutomatedPrompts.system_recovery?(:symbol)
