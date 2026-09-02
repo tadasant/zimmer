@@ -805,6 +805,9 @@ class HealthMonitorService
       .order(Arel.sql("queue_name, COALESCE(scheduled_at, created_at) ASC, id ASC"))
 
     heads.map do |head|
+      # "Waiting since" is `scheduled_at` for a job that was future-dated: it only
+      # became backlog when its scheduled time arrived, and charging it for the hours
+      # it spent correctly parked would make every wake-up trigger look like a stall.
       # `created_at` is NOT NULL on `good_jobs`, so the fallback always resolves and
       # there is no undateable row to guard against. "Nothing is ready" is an empty
       # result here, which is why the caller reads a nil global age off `first`.
@@ -1126,11 +1129,12 @@ class HealthMonitorService
   #               exists for. Held to the original global numbers.
   #
   # `oldest_ready_age_seconds_by_queue` holds each lane's OLDEST ready row, so the
-  # minimum over it is the freshest any lane's head of line is — and a head only advances when a worker
-  # takes the job. New arrivals do not lower it. One lane still picking work up
-  # therefore keeps the worker branch quiet however deep the backlog is, which is the
-  # distinction the whole rule turns on. Lanes with nothing ready contribute no head
-  # and are absent, rather than counting as zero and silencing the branch.
+  # minimum over it is the freshest any lane's head of line is — and a head only
+  # advances when a worker takes the job. New arrivals do not lower it. One lane
+  # still picking work up therefore keeps the worker branch quiet however deep the
+  # backlog is, which is the distinction the whole rule turns on. Lanes with nothing
+  # ready contribute no head and are absent, rather than counting as zero and
+  # silencing the branch.
   def system_health_status(queue_stats)
     depth = queue_stats[:ready_count].to_i
 
