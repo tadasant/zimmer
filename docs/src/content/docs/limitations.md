@@ -2540,6 +2540,31 @@ exempt from `CleanupStaleTriggersJob` and from sibling-wake cleanup, because del
 the bug. One systemic fault — a catalog rename that strands every trigger's agent root — therefore
 parks every pending wake at once and leaves you a list to clear by hand.
 
+### An `ao_event`-only wake consumed by a resume is never reaped on a timer
+
+Deliberately resuming a session consumes every pending one-time wake aimed at it — both kinds.
+`SessionStateMachine#cancel_pending_one_time_wake_triggers` stamps `last_triggered_at` on a one-time
+`schedule` condition and on a session-scoped `ao_event` condition alike, and either stamp is
+permanent: the trigger can never fire again.
+
+`CleanupStaleTriggersJob` collects the consumed row, but only when the trigger carries a one-time
+schedule — its candidate query asks for a `schedule` condition with a `scheduled_at`. A wake built
+purely from session-scoped `ao_event` conditions, which is what
+`wake_me_up_when_session_changes_state` creates, is not a candidate, and it has no `scheduled_at` to
+lapse either. It survives as `enabled` with 0 sessions until its target session is archived, at
+which point the archived-target sweep takes it — unless it set `resuscitate_archived`, which is
+exempt from that sweep too.
+
+So in the recommended two-row wait — one `event_names` watcher plus a `wake_me_up_later` deadline
+backstop — a manual resume consumes both, the backstop clears within the hour, and the watcher stays
+in the list looking armed. `Trigger#dead_one_time_wake?` already answers correctly for that shape;
+it is the sweep's candidate set that does not reach it, and broadening that set would also newly
+collect the triggers `AoEventTriggerJob` preserves on purpose behind a dropped follow-up. Tracked in
+[#793](https://github.com/tadasant/zimmer/issues/793).
+
+Nothing is stranded by it: the rows are inert and no session waits on them. The cost is that
+`/triggers` and `search_triggers` overstate what is actually armed.
+
 ### While Slack is rate-limiting you, Slack triggers fire late
 
 `SlackTriggerPollerJob` is a `total_limit: 1` singleton, so while it runs it *is* Slack polling for

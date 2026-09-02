@@ -333,7 +333,41 @@ class TriggerTest < ActiveSupport::TestCase
   end
 
   test "dead_one_time_wake? is false for a trigger with no one-shot condition" do
-    assert_not @trigger.dead_one_time_wake?
+    # A recurring reuse trigger, consumed and having created nothing: it clears
+    # every clause except `one_time_reuse_trigger?`, so the predicate must key on
+    # that one and not fall through on the other two.
+    trigger = wake_trigger([
+      { condition_type: "schedule", configuration: { "unit" => "hours", "interval" => 1, "timezone" => "UTC" } }
+    ])
+    trigger.trigger_conditions.first.update!(last_triggered_at: Time.current)
+
+    assert_not trigger.reload.dead_one_time_wake?,
+      "a recurring schedule goes back into service; it is never dead"
+    assert_not @trigger.dead_one_time_wake?, "nor is a Slack trigger"
+  end
+
+  # The predicate answers for BOTH one-shot shapes, because
+  # cancel_pending_one_time_wake_triggers consumes both. CleanupStaleTriggersJob
+  # only asks it of triggers carrying a one-time schedule, so this shape answers
+  # true and is still not collected — tadasant/zimmer#793.
+  test "dead_one_time_wake? is true for a consumed session-scoped ao_event wake" do
+    watched = Session.create!(
+      prompt: "Watched",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      branch: "main",
+      status: :running
+    )
+    trigger = wake_trigger([
+      { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id } }
+    ])
+
+    assert_not trigger.dead_one_time_wake?, "an armed watcher is not dead"
+
+    trigger.trigger_conditions.first.update!(last_triggered_at: Time.current)
+
+    assert trigger.reload.dead_one_time_wake?,
+      "a consumed session-scoped ao_event is spent for good — AoEventTriggerJob skips it forever"
   end
 
   # A failed sibling is the record of a wake that TRIED and could not. Deleting

@@ -286,14 +286,18 @@ class Trigger < ApplicationRecord
   #   schedule sharing a trigger with a Slack or recurring condition leaves that
   #   trigger perfectly alive, and destroying it would delete an armed trigger.
   # - `sessions_created_count` keeps this to wakes that delivered nothing. A
-  #   trigger that spawned a session is ScheduleTriggerJob's to clean up behind
-  #   its own fire; if that cleanup fell over, the lapsed-schedule sweep still
-  #   collects the residue on the old `scheduled_at + 1 hour` terms.
+  #   trigger that spawned a session is the firing job's to clean up behind its
+  #   own fire, and this predicate is not the place to second-guess that.
   #
   # Status is deliberately NOT part of this. A `failed` trigger is a tombstone
   # the user clears, and both of CleanupStaleTriggersJob's sweeps exclude it
   # there rather than here, so this predicate stays a statement about whether
   # the wake is dead and not about whether anyone still wants to see it.
+  # True for both one-shot shapes — a one-time schedule and a session-scoped
+  # `ao_event` — because a resume consumes both. CleanupStaleTriggersJob only
+  # asks the question of triggers carrying a one-time schedule, so an
+  # `ao_event`-only wake answers true here and is still not collected; see
+  # https://github.com/tadasant/zimmer/issues/793.
   def dead_one_time_wake?
     one_time_reuse_trigger? && spent_one_shot_wake? && sessions_created_count.to_i.zero?
   end
