@@ -840,20 +840,26 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "at #{MOBILE_WIDTH}px (#{overlap})"
   end
 
-  # Same budget, the multi-PR variant -- the one that spent it. A session with
-  # several PRs used to render a link plus a dropdown chevron, and that pair (126px)
-  # next to the ⋮ / Trash / View group (180px) needed 314px of a 288px row, so the
-  # footer wrapped and the card grew a line (#607).
+  # Same budget, the multi-PR variant -- the one that spends it. A link plus a
+  # dropdown chevron costs 126px, and next to the ⋮ / Trash / View group's 180px
+  # that needs 314px of a 288px row, so the footer wrapped and the card grew a
+  # line (#607).
   #
-  # Measured at both widths the grid's `minmax(320px, 400px)` track can produce at
-  # the narrow end: the 343px a 375px phone lands on, and the 320px floor. The track
-  # is pinned rather than inferred from the viewport, because the same 320px column
-  # appears on a laptop whenever the window lands on the low edge of a column count.
+  # Measured at both widths the grid's `minmax(320px, 400px)` track produces at the
+  # narrow end. 343px is what a 375px phone lands on. 320px is the track's floor,
+  # and it is what a narrower phone gets: the track never goes below its 320px
+  # minimum, so a grid container under 320px still lays out a 320px card (and
+  # centres it, overflowing). Both are below `sm:`, so the card body is `px-4` and
+  # the row is the card less 32px.
   #
-  # The assertion is that the row is one line tall -- the row is exactly as tall as
-  # its tallest group -- rather than that two particular buttons overlap: a footer
-  # that wraps is a row twice its content's height, and that reads the same however
-  # the groups are later rearranged.
+  # The track is pinned rather than inferred from the viewport because Selenium
+  # sizes the window, not the viewport, and the arithmetic from one to the other is
+  # not this test's subject.
+  #
+  # The assertion is that the row is one line tall -- exactly as tall as its tallest
+  # group -- rather than that two particular buttons overlap: a footer that wraps is
+  # a row twice its content's height, and that reads the same however the groups are
+  # later rearranged.
   test "a session card's multi-PR button shares the footer's line with the action buttons at both narrow card widths" do
     urls = [ "https://github.com/owner/repo/pull/603", "https://github.com/owner/repo/pull/607" ]
     session = create_session(status: :needs_input)
