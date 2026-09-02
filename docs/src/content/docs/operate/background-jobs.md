@@ -577,6 +577,16 @@ The deploy that introduced the lane also ships a one-time post-deploy task which
 unclaimed rows for these three classes from `default` to `inference`. `PostDeployTaskJob` has priority
 -100 so an old default backlog cannot prevent the task that drains it from running.
 
+The lane rations threads; it does nothing about arrival. The `pause` and `fail` transitions are
+where `SessionTitleJob` and `SessionStatusSummaryJob` arrive from, and a session sleeping and waking
+on a 5–15 minute self-wake pauses once per wake. Each of those enqueues is therefore **coalesced per
+session** (`PendingSessionJob`): the transition skips the enqueue when a job of that class is still
+unfinished for the session, because both jobs read the session at run time and a second copy would
+only take one of the lane's two threads to find the work done. On 2026-09-02, with the host at load
+20–29 on 8 vCPUs and every database round-trip in the worker taking 1–2 seconds, the queue these jobs
+were on drained ~800 jobs an hour while ~45 such sessions had 100 title jobs and 90 summary jobs ready
+at once — more than four of each per session. Forced Regenerate runs bypass the check.
+
 ## Queue recovery mode
 
 The escape hatch for a queue that has run away from you. `QueueRecoveryMode` halts job **execution**
