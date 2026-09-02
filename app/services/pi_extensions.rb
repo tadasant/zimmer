@@ -47,6 +47,23 @@ module PiExtensions
   # `entrypoint` is relative to INSTALL_DIR/node_modules and is the file handed
   # to `pi -e`. `pending_publish` means the package is not on npm yet, so the
   # image does not install it and its absence is expected rather than broken.
+  #
+  # == Where an entrypoint comes from ==
+  #
+  # Read it out of the package's own `pi.extensions` manifest field
+  # (`npm view <pkg> pi.extensions`) rather than guessing it. Pi loads
+  # TypeScript extension sources directly, so a Pi package's entrypoint is a
+  # `.ts` file inside the published tarball, not a compiled `dist/index.js`.
+  # None of the three packages below ships a usable `dist/index.js`:
+  # `pi-mcp-adapter` has a `dist/` holding only its public-export subset, and
+  # the two `@tadasant` packages ship no `dist/` at all.
+  #
+  # A wrong entrypoint fails quietly, which is why it is worth checking against
+  # the manifest. `pi -e <missing path>` makes Pi refuse to start, so
+  # #resolved_paths filters to what is on disk — and a path that can never
+  # exist becomes a Pi session running with the extension silently absent
+  # rather than an error anyone sees. The base image's `test -f` smoke check
+  # and the Dockerfile parity test below are the guard against that.
   Extension = Struct.new(:package, :version, :entrypoint, :purpose, :pending_publish, keyword_init: true) do
     def pending_publish? = !!pending_publish
 
@@ -59,7 +76,7 @@ module PiExtensions
     Extension.new(
       package: "pi-mcp-adapter",
       version: "2.32.1",
-      entrypoint: File.join("pi-mcp-adapter", "dist", "index.js"),
+      entrypoint: File.join("pi-mcp-adapter", "index.ts"),
       purpose: "MCP servers (Pi has no native MCP support). Reads the .mcp.json " \
                "PiMcpConfigPostProcessor writes into the clone.",
       pending_publish: false
@@ -67,7 +84,7 @@ module PiExtensions
     Extension.new(
       package: "@tadasant/pi-hooks",
       version: "0.1.0",
-      entrypoint: File.join("@tadasant", "pi-hooks", "dist", "index.js"),
+      entrypoint: File.join("@tadasant", "pi-hooks", "extensions", "hooks.ts"),
       purpose: "Lifecycle hooks (Pi exposes lifecycle only through its TypeScript " \
                "extension API and has no hooks concept of its own).",
       pending_publish: true
@@ -75,7 +92,7 @@ module PiExtensions
     Extension.new(
       package: "@tadasant/pi-plugins",
       version: "0.1.0",
-      entrypoint: File.join("@tadasant", "pi-plugins", "dist", "index.js"),
+      entrypoint: File.join("@tadasant", "pi-plugins", "extensions", "plugins.ts"),
       purpose: "AIR Plugins — resolving a plugin manifest and activating the " \
                "skills, hooks and MCP servers it bundles. Requires pi-hooks and " \
                "pi-mcp-adapter to be loaded alongside it.",

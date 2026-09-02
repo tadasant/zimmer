@@ -41,6 +41,37 @@ class PiExtensionsTest < ActiveSupport::TestCase
     end
   end
 
+  # `npm install` succeeds as long as the tarball unpacked, so the image's only
+  # proof that an extension is actually loadable is the `test -f` on its
+  # entrypoint. That check is worth nothing if it names a different path than
+  # the one #resolved_paths hands to `pi -e`: the build goes green and every Pi
+  # session runs with the extension silently dropped.
+  #
+  # The prefix is the literal `/opt/pi-extensions` rather than INSTALL_DIR on
+  # purpose. INSTALL_DIR is what THIS process reads, and PI_EXTENSIONS_DIR can
+  # redirect it to somewhere a CI runner can write; the image's prefix is fixed
+  # by the Dockerfile's own `npm install --prefix`. Only `entrypoint` is shared
+  # between the two, so it is the only part worth asserting against.
+  test "the Dockerfile smoke-checks the entrypoint the registry declares" do
+    dockerfile = Rails.root.join("Dockerfile.base").read
+
+    PiExtensions.installable.each do |ext|
+      assert_includes dockerfile, "test -f /opt/pi-extensions/node_modules/#{ext.entrypoint}",
+        "Dockerfile.base must assert #{ext}'s real entrypoint after installing it"
+    end
+  end
+
+  # Pi loads TypeScript extension sources directly. A `dist/index.js` here is
+  # the signature of the entrypoint having been guessed rather than read out of
+  # the package's `pi.extensions` manifest field, and none of these packages
+  # ships one.
+  test "no entrypoint points at a compiled dist bundle" do
+    PiExtensions.all.each do |ext|
+      assert_not_includes ext.entrypoint, "dist/",
+        "#{ext}'s entrypoint must come from its package.json `pi.extensions` field"
+    end
+  end
+
   test "resolved_paths returns only entrypoints present on disk, in registry order" do
     present = PiExtensions.all.first
     @fs.write(present.path, "// extension")
