@@ -72,6 +72,20 @@ env:
     # NO trailing /0: production.rb builds the cache store as "#{ENV['REDIS_URL']}/0",
     # so a URL that already ends in /0 becomes redis://…:6379/0/0.
     REDIS_URL: redis://zimmer-redis:6379
+    # The commit identity every agent session gets, written into the container's
+    # global git config at boot by GitIdentityProvisioner. Without it the first
+    # `git commit` of every committing session exits 128 (#575).
+    #
+    # Deliberately NOT a value this repo carries: an identity is per-deployment, and
+    # a default baked in here would put Zimmer's guess in a self-hoster's git history.
+    # Both destinations read it from the deploy-time environment, which for production
+    # is supplied by the private companion repo that orchestrates the deploy. Empty is
+    # a supported state — the provisioner then writes nothing and says so at boot.
+    #
+    # In the clear because neither half is a secret: an author name and email are
+    # published in every commit they sign.
+    ZIMMER_GIT_USER_NAME: <%= ENV.fetch("ZIMMER_GIT_USER_NAME", "") %>
+    ZIMMER_GIT_USER_EMAIL: <%= ENV.fetch("ZIMMER_GIT_USER_EMAIL", "") %>
 
 aliases:
   console: app exec --interactive --reuse "bin/rails console"
