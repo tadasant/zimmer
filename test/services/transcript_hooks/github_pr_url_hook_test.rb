@@ -15,7 +15,7 @@ require "test_helper"
 #   assistant prose claiming creation          | yes (same repo)        | yes
 #   assistant prose merely referencing a PR    | no                     | no
 #   user message (incl. Zimmer notifications)  | no                     | no
-#   any of the above, before a fork's point    | no (the source did)    | no
+#   any of the above, at/before a fork's point | no (the source did)    | no
 #   any of the above, after a fork's point     | as above               | as above
 class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   setup do
