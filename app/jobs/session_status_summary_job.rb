@@ -8,15 +8,22 @@
 # Rendering the panel never enqueues — a page view of a stale summary shows the
 # cached text and the staleness count, and waits.
 #
-# Deliberately NOT deduped per session. A key on the session id would collapse an
-# operator's forced Regenerate into an automatic refresh that happens to be queued
-# for the same session — the operator presses the one control in the panel and
-# nothing happens, because the queued run is unforced and returns "current".
-# Mutual exclusion belongs where the expensive work is:
-# SessionStatusSummaryGenerator claims the summary record before it forks, so a
-# second run for the same session costs a SELECT and a locked read and starts
-# nothing. The concurrency control below is a different thing from dedup — it
-# rations worker threads, not sessions, and every enqueue still runs.
+# Deliberately NOT deduped per session at the queue level. A GoodJob key on the
+# session id would collapse an operator's forced Regenerate into an automatic
+# refresh that happens to be queued for the same session — the operator presses
+# the one control in the panel and nothing happens, because the queued run is
+# unforced and returns "current". Mutual exclusion belongs where the expensive
+# work is: SessionStatusSummaryGenerator claims the summary record before it
+# forks, so a second run for the same session costs a SELECT and a locked read
+# and starts nothing. The concurrency control below is a different thing from
+# dedup — it rations worker threads, not sessions.
+#
+# The AUTOMATIC trigger does coalesce, at its enqueue site rather than here:
+# SessionStateMachine#enqueue_status_summary_refresh skips the enqueue when any
+# SessionStatusSummaryJob for the session is queued and unclaimed (PendingSessionJob),
+# because that job reads the transcript line count when it claims the record and
+# so already covers the transition that would have enqueued another. Forced runs
+# never consult that check, so a queued automatic refresh cannot swallow one.
 class SessionStatusSummaryJob < ApplicationJob
   # A generation can block for HEADLESS_TIMEOUT. The inference queue has two
   # workers, so a burst waits here without consuming the default queue or
