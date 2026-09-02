@@ -384,10 +384,12 @@ deliver nothing.
 
 `CleanupStaleTriggersJob` skips failed triggers in both of its sweeps, and
 `Trigger#destroy_sibling_wakes!` skips them too. A parked trigger is lapsed by definition, so the
-lapsed-schedule heuristic matches every one of them; and in the triple-wake pattern below, a
-sibling that fires successfully later would otherwise delete the record of the one that tried and
-could not. Both would delete the evidence as a side effect, which is the silent loss the parking
-exists to prevent. Only you clear a failed trigger — which also means nothing bounds how many
+lapsed-schedule ground matches every one of them, and the consumed-wake ground matches a strict
+subset of those sooner — the one failure that does not re-arm is precisely the one that arrives
+with its schedule already spent. And in the triple-wake pattern below, a sibling that fires
+successfully later would otherwise delete the record of the one that tried and could not. All of
+them would delete the evidence as a side effect, which is the silent loss the parking exists to
+prevent. Only you clear a failed trigger — which also means nothing bounds how many
 accumulate, so a systemic fault leaves a list to clear by hand
 ([Limitations](/limitations/#a-failed-one-time-wake-does-not-retry-itself)).
 
@@ -1297,10 +1299,8 @@ Neither auto-deletes a one-time trigger on a suppressed fire.
 ## Wake-up semantics
 
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"
-and "wake me up when that other session changes state." Zimmer schedules the same one-time
-triggers on its own behalf — `AuthOutageParkService` uses one to retry a session parked because
-the login pool ran dry — and so does a human clicking **Pause Until** in the web UI. Two mechanisms
-make this reliable:
+and "wake me up when that other session changes state." A human clicking **Pause Until** in the web
+UI creates the same one-time shape. Four mechanisms make this reliable:
 
 **Auto-sleep.** `Trigger#sleep_target_session_if_applicable` runs on trigger creation. If the
 target session is `needs_input`, it sleeps immediately (`needs_input → waiting`). If it's
@@ -1329,6 +1329,41 @@ register a watcher after the transition already happened and then sleep forever.
 **Sibling cleanup.** After a successful one-time fire, `destroy_sibling_wakes!` deletes the other
 one-time wakes pointing at the same requester — they are moot, since the requester has already been
 resumed. Unless the follow-up was *dropped*, in which case siblings are preserved.
+
+**A resume consumes a pending wake, and the dead row is collected on sight.** Any deliberate resume
+of the target session — a user follow-up, a restart, `force_immediate`, the wake itself firing —
+runs `cancel_pending_one_time_wake_triggers`, which stamps `last_triggered_at` on every pending
+one-time wake aimed at that session so none of them fires later into live work. That stamp is
+permanent: `schedule_due?` is false forever afterwards, so the trigger never fires and never runs
+the auto-delete that normally removes a spent one-time trigger.
+
+What is left is a row that can never fire again, sitting in `/triggers` and in `search_triggers` as
+`enabled` with 0 sessions — indistinguishable from an armed wake. `Trigger#dead_one_time_wake?` is
+the predicate for it: every condition is a one-shot, every one of them is consumed, and the trigger
+created no session. `CleanupStaleTriggersJob` collects a trigger matching it on the next tick, so a
+consumed `wake_me_up_later` clears within the hour. The *lapsed* ground alone would not reach it for
+much longer — `scheduled_at` more than an hour in the past is a function of when the wake was
+scheduled rather than of when it died, so a wake set 12 hours out and consumed five minutes later
+would sit there for another thirteen hours.
+
+**The sweep reaches this only for a trigger carrying a one-time schedule.** Its candidate query asks
+for a `schedule` condition with a `scheduled_at`, so a wake built purely from session-scoped
+`ao_event` conditions — what `wake_me_up_when_session_changes_state` creates — is consumed by the
+same resume, satisfies `dead_one_time_wake?` just as squarely, and is still not collected. It has no
+`scheduled_at` to lapse either, so it survives until its target session is archived. In the
+recommended two-row pattern below, that means the deadline backstop is cleared and the watcher
+beside it is not
+([Limitations](/limitations/#an-ao_event-only-wake-consumed-by-a-resume-is-never-reaped-on-a-timer)).
+
+The predicate is deliberately narrow, because destroying an armed wake fails silently: the symptom
+is a session that simply never wakes up. A wake whose condition has *not* been consumed is never
+touched, however far out its `scheduled_at` is; nor is one whose trigger also carries a live
+condition (a recurring schedule, a Slack feed, an `ao_event` watcher that has not fired); nor is a
+`failed` trigger, which is a tombstone you clear.
+
+A **system-recovery** resume is the exception to all of it. It takes the preserve branch instead:
+the session did not choose to wake, so its wakes stay armed and unconsumed, and nothing collects
+them.
 
 **One trigger, several events.** A Trigger ORs its conditions, so
 `wake_me_up_when_session_changes_state` takes `event_names` (an array) and builds **one** trigger
