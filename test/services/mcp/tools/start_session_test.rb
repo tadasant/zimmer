@@ -180,6 +180,18 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_equal 701, Session.order(:id).last.precedence
   end
 
+  # start_session reads a null precedence as "say nothing", so a placement
+  # alongside one is the placement rather than the mutual-exclusion error.
+  test "place alongside an explicitly null precedence is the placement, not an error" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 300)
+
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT, "precedence" => nil)
+
+    assert_equal 305, Session.order(:id).last.precedence
+  end
+
   test "the place argument is advertised on the schema and says when to use it" do
     place = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :place)
 

@@ -101,9 +101,17 @@ module SessionPrecedence
 
     # Resolve a symbolic placement to a concrete precedence, against the queue as
     # it stands right now. Every surface that accepts a placement — the Ranked
-    # view's demote button, the session detail page's scheduling-class control,
-    # the Quick Router's spot opt-in, and the MCP tools — comes through here, so
-    # they cannot drift apart on what "the top of the queue" means.
+    # view's demote button, the Quick Router's spot opt-in, and the MCP tools —
+    # comes through here, so they cannot drift apart on what "the top of the
+    # queue" means. (They may still differ on *when* they offer a placement at
+    # all: the demote button only sends one on a demotion, while an MCP caller
+    # that names one means it whichever class it is moving the session to.)
+    #
+    # It is a read followed by a separate write, not a lock: two callers placing
+    # at the top at the same instant both read the same maximum and both land on
+    # the same value, where `ranked` breaks the tie on created_at. That is a far
+    # narrower window than a caller reading the top in one request and writing in
+    # another, and it is not zero.
     #
     # @param place [String] one of PLACES
     # @param scope [ActiveRecord::Relation, nil] the population to place within

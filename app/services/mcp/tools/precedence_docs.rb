@@ -15,8 +15,8 @@ module Mcp
     #      contiguous instead of the child sinking behind unrelated queued work.
     #   3. "Put this first" is a PLACEMENT, not a number to work out — the
     #      symbolic `place` argument, which the server resolves against the live
-    #      queue, rather than a read of the current top followed by a write a few
-    #      points above it, which another session can overtake in between.
+    #      queue in the same write, rather than a read of the current top
+    #      followed by a separate write a few points above it.
     module PrecedenceDocs
       # The shared core, embedded in every argument description below.
       SCALE = <<~TEXT.strip
@@ -29,7 +29,7 @@ module Mcp
       PLACE = <<~TEXT.strip
         Symbolic placement in the spot queue: the server works the number out for you, against the queue as it stands at the moment of the write. The only value is "top_of_spot", which puts the session at the HEAD of the spot queue — a few points above the highest-ranked spot session there is right now.
 
-        USE "top_of_spot" whenever what you mean is "this goes before the rest of the spot queue" and you do not care what number that works out to. It is one call, and it cannot be beaten by a session that lands above you mid-flight. Do NOT read the current top with quick_search_sessions and pass a number above it instead: that is two calls, and another session can land above your value between the read and the write, leaving your session second in the queue it was meant to head.
+        USE "top_of_spot" whenever what you mean is "this goes before the rest of the spot queue" and you do not care what number that works out to. Do NOT read the current top with quick_search_sessions and then pass a number above it: that is two round trips, and anything landing above your value in between leaves your session second in the queue it was meant to head. The symbolic form closes that window down to the one write — it is a read and a write on the server rather than a lock, so two callers placing at the top in the same instant still tie, and a tie is broken in favour of the older session.
 
         USE an absolute `precedence` integer instead whenever you mean a particular rank rather than the top: anything below the head of the queue, a value you want several sessions to share, a rank you will compare against later, or work that should stay with its lineage (for that, on start_session, name nothing at all — the default already puts a spawn one point above its parent). "top_of_spot" is a placement and not a number you can reason about afterwards; what it resolves to depends on what is queued at that instant.
 
@@ -51,7 +51,7 @@ module Mcp
 
         Moving one session does not move its children or its parent — read them with quick_search_sessions (which reports each session's precedence) and move the ones that should travel with it.
 
-        To put a session at the HEAD of the spot queue, do not work the number out: leave this argument off and pass `place: "top_of_spot"` instead. The server resolves it against the live queue in the same write, and against the queue MINUS this session, so re-placing a session that is already on top does not walk it upwards.
+        To put a session at the HEAD of the spot queue, do not work the number out: leave this argument off and pass `place: "top_of_spot"` instead. The server resolves it against the live queue in the same write, and measures the session against the queue MINUS itself, so re-placing a session that is already on top leaves its number alone rather than walking it up or down.
       TEXT
 
       ACTION_TRIGGER = <<~TEXT.strip
