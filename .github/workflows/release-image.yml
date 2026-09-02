@@ -70,12 +70,19 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Resolved image version: ${VERSION} (floor ${BASE}, +${OFFSET} commits)"
 
+      # A `docker/login-action` step is single-shot, and on 2026-09-02 that lost a release
+      # to `net/http: TLS handshake timeout` reaching ghcr.io/token — 48 seconds in, with
+      # every step after it skipped. The push half of this job already treats exactly that
+      # registry as flaky (three attempts, escalating backoff, below); the login did not.
+      # `.github/scripts/ghcr-login.sh` runs the same `docker login --password-stdin` the
+      # action would, with the same escalating 90s/240s backoff the build attempts use.
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          REGISTRY: ghcr.io
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          LOGIN_BACKOFF_SECONDS: "90 240"
+        run: .github/scripts/ghcr-login.sh
 
       # `docker buildx create --use` records the chosen builder in a single
       # current-builder file under $DOCKER_CONFIG, and build-push-action reads
@@ -107,12 +114,38 @@ jobs:
           BASE_IMAGE="ghcr.io/tadasant/zimmer-base:content-${BASE_KEY}"
           echo "image=${BASE_IMAGE}" >> "$GITHUB_OUTPUT"
 
-          if docker buildx imagetools inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+          # This read fails CLOSED into need_base=true, so a hiccup here does not fail the
+          # job — it escalates into a full base rebuild and push against a registry that
+          # may already be refusing the account. Retry it a couple of times first.
+          #
+          # Blind, like every other registry retry in this job, and for a sharper reason:
+          # the one error that would look like "genuinely absent" is a 404, and a 404 on a
+          # manifest is a shape the GHCR throttle has already worn (see await-ghcr.sh).
+          # Reading the error is exactly the mistake that has bitten this workflow.
+          #
+          # The backoffs are seconds rather than the 90s/240s the build attempts use
+          # because this step is not fatal and the wait is paid on the ordinary path too:
+          # a base declaration that genuinely changed is absent, so it exhausts the retries
+          # every time. 20 seconds is a rounding error against the base build that follows;
+          # 5.5 minutes on every base bump would not be.
+          present=false
+          for backoff in 5 15 stop; do
+            if docker buildx imagetools inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+              present=true
+              break
+            fi
+            [ "$backoff" = stop ] && break
+            echo "Manifest read for ${BASE_IMAGE} failed; retrying in ${backoff}s in case GHCR is hiccuping."
+            sleep "$backoff"
+          done
+
+          if [ "$present" = true ]; then
             echo "need_base=false" >> "$GITHUB_OUTPUT"
             echo "Exact base image ${BASE_IMAGE} exists; reusing it."
           else
             echo "need_base=true" >> "$GITHUB_OUTPUT"
             echo "Exact base image ${BASE_IMAGE} is missing; building it before the app image."
+            echo "::notice::Three manifest reads for ${BASE_IMAGE} came back empty, so this is being treated as a genuinely new base declaration. If the base build below also fails on registry errors, suspect a throttle rather than the Dockerfile."
           fi
 
       - name: Build & push base image
@@ -256,3 +289,14 @@ jobs:
             echo "::warning::repository_dispatch returned HTTP ${code}; prod will catch up on its schedule."
             cat /tmp/dispatch.out 2>/dev/null || true
           fi
+
+      # `docker/login-action` used to do this in its post step, and dropping the action
+      # for a retrying `docker login` would otherwise drop the cleanup with it. The
+      # credential is already job-scoped — it lands in the per-job $DOCKER_CONFIG above,
+      # holding a GITHUB_TOKEN that expires with the job — so this is belt and braces
+      # rather than the only thing standing between a co-tenant and the token. `always()`
+      # because the run that leaves credentials behind is the one that failed, and the
+      # `|| true` because a logout that cannot run must not be what fails the release.
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io || true
