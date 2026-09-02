@@ -143,9 +143,20 @@ transition, and it does nine things beyond changing status:
 5. `enqueue_debounced_needs_input_push_notification(marker)` — see below. Skipped for a recovery
    pause, for the same reason. Steps 4 and 5 are the pause's *announcement* and travel together.
 6. `enqueue_session_inference_if_needed` — LLM-generates a title and category if still pending.
+   Skipped when a `SessionTitleJob` for this session is already queued and not yet claimed: it
+   reads the transcript when it runs, so a second one behind it would only find the work done. The
+   job `Session` schedules two minutes after creation counts, so a session that comes to rest inside
+   those two minutes is titled when that job fires rather than at the pause.
 7. `enqueue_status_summary_refresh` — the **only** automatic trigger for the
    [Status summary](/sessions/status-summary/). The generator still refuses when the session has
-   not moved since the last one, so a transition that added no transcript costs nothing.
+   not moved since the last one, so a transition that added no transcript costs nothing. Skipped
+   the same way when a `SessionStatusSummaryJob` for this session is queued and not yet claimed —
+   see [one generation at a time](/sessions/status-summary/#one-generation-at-a-time).
+
+   Both checks are `PendingSessionJob`, a read on the job table. A job already running does not
+   count: it took its snapshot when it started, and the fresh enqueue is answered cheaply by its
+   claim. The checks exist because a session sleeping and waking on a short self-wake pauses once
+   per wake, and without them each pause stacks one more of each job behind the ones already waiting.
 8. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
    sleep was deferred to here; now it fires.
 9. `drain_enqueued_messages_after_pause` — if the session is coming to rest with a message still
