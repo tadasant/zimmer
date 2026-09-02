@@ -263,7 +263,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   # === Ready-backlog breakdown ===
   #
   # A ready count alone cannot tell a starved queue from a busy one, and Zimmer
-  # runs five queues with very different thread counts and job durations. Every
+  # runs six queues with very different thread counts and job durations. Every
   # triage of a backlog page opens with "deep with WHAT", and until this existed
   # the only answer was the GoodJob dashboard — which the agent sessions that
   # actually read these pages have no route to.
@@ -305,7 +305,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   # The cap keeps the alert readable; the remainder keeps it honest. The alert
   # asks its reader to tell "concentrated in one queue" from "spread across every
-  # queue", and five names with no total look identical whether they are the whole
+  # queue", and six names with no total look identical whether they are the whole
   # backlog or a tenth of it.
   test "ready_backlog_breakdown caps the entries but reports what it cut" do
     %w[a b c d e f g].each_with_index do |queue, i|

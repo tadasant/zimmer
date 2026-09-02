@@ -25,7 +25,7 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     QueueRecoveryMode.enter!(reason: "trigger stampede")
 
     paused = GoodJob.paused(:queues)
-    assert_equal %w[default pollers triggers], paused.sort
+    assert_equal %w[default inference pollers triggers], paused.sort
     refute_includes paused, "agents",
       "agents must keep running or recovery mode halts the investigation it exists to enable"
   end
@@ -192,6 +192,7 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     QueueRecoveryMode.enter!(reason: "x")
     GoodJob.stubs(:unpause).with(queue: "pollers").raises(ActiveRecord::StatementInvalid, "boom")
     GoodJob.stubs(:unpause).with(queue: "triggers").returns(true)
+    GoodJob.stubs(:unpause).with(queue: "inference").returns(true)
     GoodJob.stubs(:unpause).with(queue: "default").returns(true)
 
     alerts = capture_alerts { QueueRecoveryMode.exit! }
@@ -254,7 +255,7 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     travel_to Time.utc(2026, 8, 3, 12, 30, 0) do
       refute QueueRecoveryMode.expire_if_due!
       assert QueueRecoveryMode.active?
-      assert_equal 3, GoodJob.paused(:queues).size
+      assert_equal 4, GoodJob.paused(:queues).size
     end
   end
 

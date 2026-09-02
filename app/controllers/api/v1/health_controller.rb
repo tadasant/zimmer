@@ -30,7 +30,7 @@ class Api::V1::HealthController < Api::BaseController
   end
 
   # POST /api/v1/health/enter_queue_recovery_mode
-  # Halt the demand-side job queues (`pollers`, `triggers`, `default`) so a
+  # Halt the demand-side job queues (`pollers`, `triggers`, `inference`, `default`) so a
   # backlog can be investigated. `agents` keeps running, so sessions still start
   # and run. See QueueRecoveryMode.
   #

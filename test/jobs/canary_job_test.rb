@@ -10,7 +10,7 @@ require "test_helper"
 class CanaryJobTest < ActiveJob::TestCase
   # The queues the deploy gate fans the canary out across, and the negative priority
   # it uses so the canary jumps whatever backlog the cutover left behind.
-  GATE_QUEUES = %w[default pollers triggers agents].freeze
+  GATE_QUEUES = %w[default inference pollers triggers agents auth].freeze
   GATE_PRIORITY = -100
 
   test "performing the job does not raise, with or without a token" do

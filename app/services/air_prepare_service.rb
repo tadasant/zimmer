@@ -283,6 +283,14 @@ class AirPrepareService
         return if File.exist?(marker) && File.exist?(binary)
 
         install_air_cli!(marker)
+      rescue SystemCallError => e
+        # Filesystem and spawn failures are part of installation, not an
+        # exception class callers should have to know about. In particular,
+        # OverlayFS reports EXDEV when a directory from the image's lower layer
+        # is renamed into a writable-layer scratch directory. Let catalog
+        # callers convert this stable error type to CatalogError and serve their
+        # last-known-good snapshot instead of leaking a 500 from a view render.
+        raise AirPrepareError, "AIR CLI installation failed (#{e.class}: #{e.message})"
       end
     end
 
@@ -346,9 +354,13 @@ class AirPrepareService
     end
 
     # Move a verified staged install over the published one: every entry is
-    # renamed out, then every entry is renamed in. Exposure is the gap between
-    # those two loops rather than the length of an npm install, and no entry is
-    # ever half-copied, since a rename either happened or did not.
+    # retired, then every staged entry is renamed in. `FileUtils.mv` is
+    # deliberate for the outgoing move. In a container, a published directory
+    # baked into the image lives in OverlayFS's lower layer while `.retired`
+    # lives in the writable upper layer. `File.rename` reports EXDEV across that
+    # boundary even though both paths begin with `/opt/air-cli`; FileUtils falls
+    # back to copy-then-remove for exactly that case. The staged tree is wholly
+    # in the upper layer, so its final rename remains atomic.
     #
     # The staged set is checked first so the published tree is not dismantled
     # for a replacement that turns out to be incomplete — a swap that failed
@@ -365,15 +377,59 @@ class AirPrepareService
       FileUtils.rm_rf(retired)
       FileUtils.mkdir_p(retired)
 
-      INSTALLED_ENTRIES.each do |entry|
-        published = File.join(AIR_INSTALL_DIR, entry)
-        File.rename(published, File.join(retired, entry)) if entry_present?(published)
+      previously_published = INSTALLED_ENTRIES.select do |entry|
+        entry_present?(File.join(AIR_INSTALL_DIR, entry))
       end
-      INSTALLED_ENTRIES.each do |entry|
-        File.rename(File.join(staging, entry), File.join(AIR_INSTALL_DIR, entry))
+
+      begin
+        previously_published.each do |entry|
+          FileUtils.mv(File.join(AIR_INSTALL_DIR, entry), File.join(retired, entry))
+        end
+        INSTALLED_ENTRIES.each do |entry|
+          File.rename(File.join(staging, entry), File.join(AIR_INSTALL_DIR, entry))
+        end
+      rescue SystemCallError
+        rollback_staged_swap!(staging, retired, previously_published)
+        raise
       end
 
       FileUtils.rm_rf(staging)
+    end
+
+    # Restore the published set if any part of the swap fails. A marker is not
+    # written until after the swap, but leaving a mixed package.json/node_modules
+    # tree would still take down every uncached catalog read before the next
+    # installer attempt. Rollback is best-effort only in the pathological case
+    # where the filesystem also fails while restoring; the original exception
+    # remains the one the caller sees.
+    def rollback_staged_swap!(staging, retired, previously_published)
+      INSTALLED_ENTRIES.reverse_each do |entry|
+        published = File.join(AIR_INSTALL_DIR, entry)
+        staged = File.join(staging, entry)
+        old = File.join(retired, entry)
+
+        if entry_present?(staged) && entry_present?(published)
+          # Retirement failed during FileUtils.mv's EXDEV copy fallback. The
+          # original published tree is still authoritative; `old` is only a
+          # partial copy. Moving that directory back onto an existing directory
+          # would nest it (`published/node_modules`) and corrupt the install.
+          FileUtils.rm_rf(old)
+          next
+        end
+
+        # A missing staged entry means the new one was already published. Remove
+        # it before restoring the old entry so FileUtils.mv cannot nest the old
+        # directory inside an existing destination.
+        FileUtils.rm_rf(published) unless entry_present?(staged)
+        next unless previously_published.include?(entry) && entry_present?(old)
+
+        FileUtils.mv(old, published)
+      rescue SystemCallError => rollback_error
+        Rails.logger.error(
+          "[AirPrepareService] AIR swap rollback failed for #{entry}: " \
+          "#{rollback_error.class}: #{rollback_error.message}"
+        )
+      end
     end
 
     # File.exist? follows symlinks, so it answers false for a dangling one —

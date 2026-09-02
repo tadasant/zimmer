@@ -532,7 +532,7 @@ the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 
 `GET /health/queue_recovery_mode` · `POST /health/enter_queue_recovery_mode` (`reason`,
 `ttl_minutes`, clamped 5–240, default 60) · `POST /health/exit_queue_recovery_mode` — the job-queue
-escape hatch. Entering halts execution on `pollers`, `triggers` and `default` and leaves `agents`
+escape hatch. Entering halts execution on `pollers`, `triggers`, `inference` and `default` and leaves `agents`
 running, so a session started to investigate the backlog still runs. `GET /health` carries the same
 state under a top-level `queue_recovery_mode` key. These three are deliberately **not** behind the
 cooldown described below: an overloaded instance is exactly when the cache is least trustworthy, and

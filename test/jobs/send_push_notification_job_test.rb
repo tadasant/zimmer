@@ -21,8 +21,11 @@ class SendPushNotificationJobTest < ActiveJob::TestCase
 
   # === Basic job behavior ===
 
-  test "job is enqueued in default queue" do
-    assert_equal "default", SendPushNotificationJob.new.queue_name
+  test "only the notification type that runs inference uses the inference queue" do
+    assert_equal "inference", SendPushNotificationJob.new(@session.id, :needs_input).queue_name
+    assert_equal "default", SendPushNotificationJob.new(@session.id, :session_complete).queue_name
+    assert_equal "default", SendPushNotificationJob.new(@session.id, :session_failed).queue_name
+    assert_equal "default", SendPushNotificationJob.new(@session.id, :custom_message, "hello").queue_name
   end
 
   test "job discards on ActiveRecord::RecordNotFound" do

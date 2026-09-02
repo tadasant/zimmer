@@ -34,7 +34,7 @@ module Mcp
         - **cli_refresh**: Trigger a background refresh of CLI tool installations
         - **cli_clear_cache**: Clear npm/pip caches and reinstall MCP packages
         - **enter_queue_recovery_mode**: Halt background job execution on the demand-side
-          queues (`pollers`, `triggers`, `default`) so a runaway backlog can be investigated
+          queues (`pollers`, `triggers`, `inference`, `default`) so a runaway backlog can be investigated
           and cleaned up. The `agents` queue keeps running, so sessions still start and run.
           Accepts "reason" (free text, shown in the UI banner and the Slack alert) and
           "ttl_minutes" (auto-exit window, clamped, default #{(QueueRecoveryMode::DEFAULT_TTL / 60).to_i}).

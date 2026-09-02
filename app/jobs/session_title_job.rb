@@ -34,14 +34,10 @@
 #   an info-level timeline note and Rails log explaining why.
 class SessionTitleJob < ApplicationJob
   include DatabaseRetry
-  queue_as :default
-
-  # Titling blocks its worker thread for up to INFERENCE_TIMEOUT seconds inside
-  # HeadlessInferenceService, so it draws on the same bounded share of `default`
-  # as every other blocking-inference class rather than competing for the queue
-  # unbounded. Every new session enqueues one of these, so an outage that makes
-  # each call burn its whole timeout arrives here first.
-  include BlockingInferenceBounded
+  # A title can block for INFERENCE_TIMEOUT seconds. A dedicated scheduler is
+  # the backpressure: excess work stays queued once, instead of being claimed,
+  # rejected by a perform-limit advisory lock, and re-enqueued on every retry.
+  queue_as :inference
 
   # Don't retry if session is not found
   discard_on ActiveRecord::RecordNotFound

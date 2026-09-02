@@ -18,34 +18,19 @@
 # nothing. The concurrency control below is a different thing from dedup — it
 # rations worker threads, not sessions, and every enqueue still runs.
 class SessionStatusSummaryJob < ApplicationJob
-  queue_as :default
+  # A generation can block for HEADLESS_TIMEOUT. The inference queue has two
+  # workers, so a burst waits here without consuming the default queue or
+  # generating ConcurrencyExceeded retry rows.
+  queue_as :inference
 
   discard_on ActiveRecord::RecordNotFound
-
-  # A generation may block its worker thread for up to
-  # SessionStatusSummaryGenerator::HEADLESS_TIMEOUT seconds shelling out to
-  # `claude -p`, so this job is bounded against `default`'s thread count along
-  # with every other blocking-inference class.
-  #
-  # The bound is unconditional, and it has to be: the caller does not decide
-  # whether a generation blocks. SessionStatusSummaryGenerator takes the headless
-  # path on `headless || pool_exhausted?`, so ANY generation — including one
-  # enqueued as a fork by a `pause` transition or by an operator's Regenerate —
-  # turns into a blocking subprocess the moment the account pool runs dry. A
-  # bound that keyed off the `headless:` argument would describe the caller's
-  # intent rather than the work, and would stop binding during exactly the outage
-  # it was written for.
-  include BlockingInferenceBounded
 
   # Queue priority for a generation an operator asked for by hand — the panel's
   # Regenerate button, the REST endpoint, the MCP action.
   #
-  # Sharing one perform limit with the automatic refreshes and the title jobs
-  # means a forced run can lose the race for a slot, and a human is watching the
-  # panel for that one. GoodJob orders `priority ASC NULLS LAST` and admits the
-  # oldest claims first, so a lower number is claimed sooner and therefore takes
-  # the next free slot ahead of the unforced work. Negative rather than zero
-  # because the default is nil, which sorts last.
+  # Sharing one queue with the automatic refreshes and title jobs means a human
+  # request must get the next free inference worker. GoodJob orders `priority
+  # ASC NULLS LAST`, so a negative priority jumps ahead of automatic work.
   FORCED_PRIORITY = -10
 
   # @param headless [Boolean] write the blurb with one pool-independent

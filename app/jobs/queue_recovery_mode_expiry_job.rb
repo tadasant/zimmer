@@ -3,7 +3,7 @@
 # The TTL backstop for QueueRecoveryMode: lifts a halt whose window has elapsed,
 # so an operator who walked away cannot leave production frozen indefinitely.
 #
-# Queue placement is the whole point. `pollers`, `triggers` and `default` are
+# Queue placement is the whole point. `pollers`, `triggers`, `inference` and `default` are
 # exactly the queues recovery mode halts, so a job that lives on any of them would
 # be paused by the state it exists to clear — the deadlock version of a watchdog.
 # `agents` is the one queue recovery mode deliberately leaves running, so this runs

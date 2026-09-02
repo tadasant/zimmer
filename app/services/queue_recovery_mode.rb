@@ -5,7 +5,8 @@
 # WHAT IT IS
 # ----------
 # Queue recovery mode halts the *demand-side* GoodJob queues -- `pollers`,
-# `triggers` and `default` -- while deliberately leaving `agents` running, so an
+# `triggers`, `inference` and `default` -- while deliberately leaving `agents`
+# running, so an
 # operator (or an agent session they start for the purpose) can look at why the
 # instance got overwhelmed and clean up the cause before the backlog is allowed to
 # drain again.
@@ -63,7 +64,7 @@
 class QueueRecoveryMode
   # The queues a halt applies to: everything that creates or processes background
   # demand. `agents` is deliberately absent -- see the class comment.
-  HALTED_QUEUES = %w[pollers triggers default].freeze
+  HALTED_QUEUES = %w[pollers triggers inference default].freeze
 
   # The queues that keep running while the rest of the system is frozen.
   #

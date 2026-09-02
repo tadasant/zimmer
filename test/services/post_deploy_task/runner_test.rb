@@ -246,6 +246,7 @@ class PostDeployTask::RunnerTest < ActiveSupport::TestCase
   test "the job runs a pass inside its slice budget" do
     assert_equal 90.seconds, PostDeployTaskJob::SLICE_BUDGET
     assert_equal "default", PostDeployTaskJob.new.queue_name
+    assert_equal(-100, PostDeployTaskJob.new.priority)
     assert_equal 1, PostDeployTaskJob.good_job_concurrency_config[:total_limit]
 
     # The real registry — the tasks that actually ship — so this asserts the job

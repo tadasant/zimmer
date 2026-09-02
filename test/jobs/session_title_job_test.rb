@@ -33,9 +33,9 @@ class SessionTitleJobTest < ActiveJob::TestCase
     end
   end
 
-  test "should use default queue" do
+  test "should use the inference queue" do
     job = SessionTitleJob.new(@session.id)
-    assert_equal "default", job.queue_name
+    assert_equal "inference", job.queue_name
   end
 
   # === Title behavior ========================================================

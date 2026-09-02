@@ -24,6 +24,11 @@ class PostDeployTaskJob < ApplicationJob
 
   queue_as :default
 
+  # A post-deploy task may be the step that makes a new queue topology safe for
+  # rows written by the previous release. Put the runner ahead of ordinary
+  # default work so that an old backlog cannot prevent its own migration.
+  queue_with_priority(-100)
+
   # How long one pass may hold its worker thread. Well under the two-minute cron
   # interval, so a pass has finished and returned the thread before the next tick
   # and the singleton guard above has nothing to reject in normal running.
