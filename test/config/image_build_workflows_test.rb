@@ -6,11 +6,11 @@ require "yaml"
 # Every image-building job on the shared self-hosted runner must isolate its Docker
 # client state. All runner workers on that box execute as one OS user, so the default
 # ~/.docker is shared mutable state: `docker buildx create --use` writes a single
-# current-builder file that build-push-action later reads to pick a builder, and
-# docker/login-action's post step logs out of a single shared credential store. A job
-# that leaves either at the default builds on a co-tenant's buildkit container and
-# dies mid-build when that co-tenant's post step removes it ("graceful_stop" GOAWAY,
-# then `no builder "<other-jobs-uuid>" found`).
+# current-builder file that build-push-action later reads to pick a builder, and a
+# `docker logout` — docker/login-action's post step, or an explicit step — empties a
+# single shared credential store. A job that leaves either at the default builds on a
+# co-tenant's buildkit container and dies mid-build when that co-tenant's post step
+# removes it ("graceful_stop" GOAWAY, then `no builder "<other-jobs-uuid>" found`).
 #
 # This asserts the two guards structurally, across every workflow, so a newly added
 # image build inherits them instead of rediscovering the flake.
@@ -241,20 +241,53 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     resolve = steps.find { |s| s["id"] == "base" }
     assert resolve, "#{RELEASE_WORKFLOW}: expected the base resolve step to carry `id: base`"
 
-    run = resolve["run"].to_s
-    inspects = run.scan(/imagetools inspect/).length
-    assert_equal 1, inspects,
+    # Comments in this step discuss the retry at length, and every one of these assertions
+    # would pass on the prose alone. Match the code.
+    code = resolve["run"].to_s.lines.grep_v(/\A\s*#/).join
+
+    assert_equal 1, code.scan(/imagetools inspect/).length,
       "#{RELEASE_WORKFLOW}: the retry is expected to be a loop over one `imagetools inspect`, " \
       "not copies of it that can drift apart"
-    assert_match(/\bfor\b.*\n.*imagetools inspect/m, run,
-      "#{RELEASE_WORKFLOW}: the manifest read must sit inside a retry loop — a single-shot read " \
-      "turns a registry hiccup into a full base rebuild")
-    assert_match(/sleep /, run,
+
+    loop_body = code[/^\s*for\s+\w+\s+in\s+[^\n]*;\s*do\n(.*?)^\s*done$/m, 1]
+    assert loop_body,
+      "#{RELEASE_WORKFLOW}: the manifest read must sit inside a `for … do … done` retry loop — " \
+      "a single-shot read turns a registry hiccup into a full base rebuild and push against a " \
+      "registry that may already be refusing the account"
+    assert_match(/imagetools inspect/, loop_body,
+      "#{RELEASE_WORKFLOW}: the retry loop must be the thing wrapping the manifest read")
+    assert_match(/^\s*sleep /, loop_body,
       "#{RELEASE_WORKFLOW}: retrying a manifest read with no backoff just re-asks a registry " \
       "that is still refusing")
-    assert_includes run, "need_base=true",
+
+    assert_match(/^\s*echo "need_base=true" >> "\$GITHUB_OUTPUT"$/, code,
       "#{RELEASE_WORKFLOW}: an exhausted retry must still fall through to rebuilding the base, " \
-      "which is the behaviour that keeps a failed base build from being skipped later"
+      "which is the behaviour that keeps a failed base build from being skipped later")
+  end
+
+  # The retrying login is a `run:` step, so it has no post step — the logout that
+  # `docker/login-action` contributed has to be spelled out, and its `if:` has to keep it
+  # off the SHARED ~/.docker. `always()` alone fires on the runs where checkout or the
+  # isolation step failed, and DOCKER_CONFIG is empty on exactly those, so a bare
+  # `docker logout` would strip GHCR credentials out from under a concurrent job's push.
+  test "the release job logs out again, and cannot do it against the shared docker config" do
+    steps, = self.class.release_build_attempts
+
+    logout = steps.find { |s| s["run"].to_s.include?("docker logout") }
+    assert logout,
+      "#{RELEASE_WORKFLOW}: nothing logs out of GHCR. The retrying login has no post step, so " \
+      "deleting this leaves the credential behind rather than reverting to login-action's cleanup."
+    assert_equal steps.last, logout,
+      "#{RELEASE_WORKFLOW}: the logout must be the last step, or it pulls the credential out " \
+      "from under the steps that still need it"
+
+    condition = logout["if"].to_s
+    assert_includes condition, "always()",
+      "#{RELEASE_WORKFLOW}: the run that leaves a credential behind is the one that failed"
+    assert_match(/env\.DOCKER_CONFIG\s*!=\s*''/, condition,
+      "#{RELEASE_WORKFLOW}: `always()` also fires when the DOCKER_CONFIG isolation step never " \
+      "ran, and an unguarded `docker logout` then writes to the shared ~/.docker this job goes " \
+      "to such lengths to stay out of")
   end
 
   # The retry is blind by design, so the backoff steps carry the diagnosis: they probe
