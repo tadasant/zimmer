@@ -1,6 +1,6 @@
 require "test_helper"
 
-# The prompt half of #807: a recovery pause promises a sweep will continue the
+# The prompt half of the prod 12265/12267 stall: a recovery pause promises a sweep will continue the
 # session, and until this job existed the only thing keeping that promise was a
 # five-minute cron.
 class RecoveryContinuationJobTest < ActiveJob::TestCase

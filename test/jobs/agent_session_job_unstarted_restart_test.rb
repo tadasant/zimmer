@@ -3,7 +3,7 @@ require_relative "../support/mock_process_manager"
 require_relative "../support/mock_file_system_adapter"
 require_relative "../support/mock_claude_cli_adapter"
 
-# The #807 reproduction, at the level the bug actually happened: a monitoring job
+# The reproduction, at the level the bug actually happened: a monitoring job
 # told to re-attach to a pid that is gone.
 #
 # Production sessions 12265 and 12267 were caught by the same worker interruption on

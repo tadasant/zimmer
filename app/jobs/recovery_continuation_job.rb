@@ -3,7 +3,7 @@
 # Continue ONE session that a recovery path just parked, without waiting for a cron
 # to come round to it.
 #
-# ## Why this exists (zimmer#807)
+# ## Why this exists
 #
 # A recovery pause (`paused_by: "recovery"`) is a promise: the session says nothing
 # to watchers and sends no push, because a sweep is going to continue it. Until now
