@@ -275,6 +275,67 @@ class TriggerTest < ActiveSupport::TestCase
       "a recurring trigger really does go back into service when re-enabled"
   end
 
+  # === Tests for dead_one_time_wake? ===
+
+  def wake_trigger(conditions_attributes, sessions_created_count: 0)
+    requester = Session.create!(
+      prompt: "Requester",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      branch: "main",
+      status: :waiting
+    )
+    Trigger.create!(
+      name: "Wake",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "wake up",
+      reuse_session: true,
+      last_session_id: requester.id,
+      sessions_created_count: sessions_created_count,
+      trigger_conditions_attributes: conditions_attributes
+    )
+  end
+
+  test "dead_one_time_wake? is true once a pending one-time schedule wake is consumed" do
+    trigger = wake_trigger([
+      { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } }
+    ])
+
+    assert_not trigger.dead_one_time_wake?, "an armed wake is not dead"
+
+    trigger.trigger_conditions.first.update!(last_triggered_at: Time.current)
+
+    assert trigger.reload.dead_one_time_wake?,
+      "a consumed one-time schedule can never fire again, whatever its scheduled_at says"
+  end
+
+  test "dead_one_time_wake? is false when the trigger also carries a live condition" do
+    trigger = wake_trigger([
+      { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } },
+      { condition_type: "schedule", configuration: { "unit" => "hours", "interval" => 1, "timezone" => "UTC" } }
+    ])
+    trigger.trigger_conditions.detect(&:one_time_schedule?).update!(last_triggered_at: Time.current)
+
+    assert_not trigger.reload.dead_one_time_wake?,
+      "the recurring condition keeps the trigger legitimate"
+  end
+
+  test "dead_one_time_wake? is false when the wake created a session" do
+    trigger = wake_trigger(
+      [ { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } } ],
+      sessions_created_count: 1
+    )
+    trigger.trigger_conditions.first.update!(last_triggered_at: Time.current)
+
+    assert_not trigger.reload.dead_one_time_wake?,
+      "a wake that spawned a session is the firing job's residue, not a consumed wake"
+  end
+
+  test "dead_one_time_wake? is false for a trigger with no one-shot condition" do
+    assert_not @trigger.dead_one_time_wake?
+  end
+
   # A failed sibling is the record of a wake that TRIED and could not. Deleting
   # it as a side effect of a later sibling firing successfully is the same silent
   # loss the parking exists to prevent.

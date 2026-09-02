@@ -190,6 +190,205 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     assert Trigger.exists?(future.id)
   end
 
+  # === A wake consumed by a resume is dead on arrival (issue #546) ===
+  #
+  # SessionStateMachine#cancel_pending_one_time_wake_triggers consumes a pending
+  # one-time wake on any deliberate resume by stamping last_triggered_at. That
+  # closes #schedule_due? forever, so ScheduleTriggerJob never fires it and never
+  # runs its own auto-delete — and the lapsed-schedule ground below is keyed on
+  # the wake's ORIGINAL scheduled_at, so a wake set 12 hours out and consumed
+  # five minutes later used to sit in the list, `enabled` and apparently armed,
+  # for ~13 hours.
+
+  test "destroys a one-time wake consumed by a resume even though its scheduled_at is far in the future" do
+    requester = make_session(status: :waiting)
+
+    consumed = Trigger.create!(
+      name: "Wake me in 12 hours",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    consumed.trigger_conditions.first.update!(last_triggered_at: Time.current)
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert_not Trigger.exists?(consumed.id),
+      "a consumed one-time wake can never fire again and must not linger until scheduled_at + 1h"
+  end
+
+  test "destroys a one-time wake the session's own resume consumed" do
+    requester = make_session(status: :waiting)
+
+    wake = Trigger.create!(
+      name: "Wake me in 12 hours",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    # The real consuming write, driven end to end rather than stamped by hand.
+    requester.send(:cancel_pending_one_time_wake_triggers)
+    assert_not_nil wake.trigger_conditions.first.reload.last_triggered_at,
+      "guard: the resume should have consumed the condition"
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert_not Trigger.exists?(wake.id), "the resume that consumed the wake left a dead row behind"
+  end
+
+  test "destroys a consumed wake whose sibling ao_event condition is consumed too" do
+    requester = make_session(status: :waiting)
+    watched = make_session(status: :running)
+
+    combined = Trigger.create!(
+      name: "Watcher plus deadline backstop",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go {{event}}",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } },
+        { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id } }
+      ]
+    )
+    combined.trigger_conditions.each { |c| c.update!(last_triggered_at: Time.current) }
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert_not Trigger.exists?(combined.id), "every one-shot on the trigger is spent — nothing can fire it"
+  end
+
+  test "preserves a consumed one-time schedule whose ao_event sibling is still armed" do
+    requester = make_session(status: :waiting)
+    watched = make_session(status: :running)
+
+    half_spent = Trigger.create!(
+      name: "Watcher plus deadline backstop",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go {{event}}",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } },
+        { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id } }
+      ]
+    )
+    half_spent.trigger_conditions.detect(&:one_time_schedule?).update!(last_triggered_at: Time.current)
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(half_spent.id), "the unconsumed ao_event watcher can still fire this trigger"
+  end
+
+  test "preserves a failed trigger whose consumed schedule is still in the future" do
+    # The one failure that does not re-arm: a raise from the cleanup BEHIND a
+    # successful fire parks the trigger with its schedule already consumed. The
+    # `failed` tombstone must survive the new consumed-wake ground exactly as it
+    # survives the lapsed-schedule one.
+    requester = make_session(status: :waiting)
+
+    failed = Trigger.create!(
+      name: "Failed after a successful fire",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    failed.trigger_conditions.first.update!(last_triggered_at: Time.current)
+    failed.mark_failed(StandardError.new("sibling cleanup blew up"))
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(failed.id), "only the user clears a failed trigger"
+    assert_equal "failed", failed.reload.status
+  end
+
+  test "preserves an armed one-time wake with a future scheduled_at" do
+    # The predicate must key on the condition being CONSUMED, not on the trigger
+    # merely looking like a wake. Destroying this row is the silent failure the
+    # narrow predicate exists to avoid: the session simply never wakes up.
+    requester = make_session(status: :waiting)
+
+    armed = Trigger.create!(
+      name: "Armed wake, 12 hours out",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(armed.id), "an unconsumed wake is still going to fire"
+    assert_nil armed.trigger_conditions.first.reload.last_triggered_at
+  end
+
+  test "preserves a consumed wake that mixes in a live recurring schedule" do
+    requester = make_session(status: :waiting)
+
+    mixed = Trigger.create!(
+      name: "Consumed one-time plus recurring",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } },
+        { condition_type: "schedule", configuration: { "unit" => "hours", "interval" => 1, "timezone" => "UTC" } }
+      ]
+    )
+    mixed.trigger_conditions.detect(&:one_time_schedule?).update!(last_triggered_at: Time.current)
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(mixed.id), "the recurring condition keeps firing; the trigger is not dead"
+  end
+
+  test "preserves a consumed one-time schedule on a trigger that created a session" do
+    requester = make_session(status: :waiting)
+
+    delivered = Trigger.create!(
+      name: "Fired and spawned",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      sessions_created_count: 1,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 12.hours.from_now.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    delivered.trigger_conditions.first.update!(last_triggered_at: Time.current)
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(delivered.id),
+      "a wake that spawned a session is the firing job's residue — it falls to the lapsed-schedule ground on the old terms"
+  end
+
   test "does not destroy triggers whose one-time schedule lapsed under the threshold" do
     requester = make_session(status: :waiting)
 
