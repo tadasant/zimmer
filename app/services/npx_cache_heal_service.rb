@@ -99,7 +99,7 @@ class NpxCacheHealService
   # only contains stderr from its own npx invocation, so co-location implies the
   # marker really is about that cache; the worst case if it isn't is a bounded,
   # safe reinstall of the named `_npx/<hash>` tree (never out-of-clone deletion,
-  # never data loss — see safe_to_remove?).
+  # never data loss — see NpxCacheLayout.within_clone_cache?).
   EXTRACTION_FAILURE_MARKERS = /
     TAR_ENTRY_ERROR |
     ENOTEMPTY
@@ -133,7 +133,8 @@ class NpxCacheHealService
 
         paths = corrupt_cache_paths(error, working_directory)
         paths.each do |path|
-          next unless safe_to_remove?(path)
+          # Never outside this clone's own npm cache, whatever the error text said.
+          next unless NpxCacheLayout.within_clone_cache?(path)
           next unless File.exist?(path)
 
           FileUtils.rm_rf(path)
@@ -177,10 +178,11 @@ class NpxCacheHealService
     # 3. Last resort: when the error references `_npx` but no hash at all can be
     #    parsed out, every `_npx` directory under the clone's `.npm-cache`.
     #
-    # Both fallbacks glob rather than assuming one fixed location, because a server
-    # that shares an npx package with another gets its own cache root under
-    # `.npm-cache/isolated/<server>/` (NpxCacheIsolator) and its `_npx` therefore
-    # does not sit directly under `.npm-cache`.
+    # Both fallbacks ask NpxCacheLayout for the clone's roots rather than assuming
+    # one fixed location, because a server that shares an npx package with another
+    # gets its own cache root under `.npm-cache/isolated/<server>/`
+    # (NpxCacheIsolator) and its `_npx` therefore does not sit directly under
+    # `.npm-cache`.
     def corrupt_cache_paths(error, working_directory)
       text = error.to_s
 
@@ -189,49 +191,10 @@ class NpxCacheHealService
 
       hashes = text.scan(NPX_HASH_TOKEN_PATTERN).flatten.uniq
       if hashes.any? && working_directory.present?
-        return hashes.flat_map { |hash| npx_dirs(working_directory, hash) }.uniq
+        return hashes.flat_map { |hash| NpxCacheLayout.npx_dirs(working_directory, hash) }.uniq
       end
 
-      npx_dirs(working_directory)
-    end
-
-    # Every `_npx` cache directory in the clone — the shared one directly under
-    # `.npm-cache` and any isolated per-server roots beneath it. Restricted to one
-    # `isolated/<server>/` level of nesting so the glob stays bounded on a large cache.
-    #
-    # @param hash [String, nil] when given, the specific `_npx/<hash>` tree
-    def npx_dirs(working_directory, hash = nil)
-      return [] if working_directory.blank?
-
-      leaf = hash ? File.join("_npx", hash) : "_npx"
-      cache_root = File.join(working_directory, ".npm-cache")
-
-      [ File.join(cache_root, leaf), File.join(cache_root, "*", "*", leaf) ]
-        .flat_map { |pattern| pattern.include?("*") ? Dir.glob(pattern) : [ pattern ] }
-        .uniq
-    end
-
-    # Guard against deleting anything outside a Zimmer clone's npm cache. Only paths
-    # that live under ~/.zimmer/clones AND carry both a `.npm-cache` and an `_npx`
-    # segment are eligible.
-    #
-    # The two segments are checked independently rather than as one adjacent
-    # `.npm-cache/_npx` string: a server isolated by NpxCacheIsolator keeps its
-    # cache at `.npm-cache/isolated/<server>/_npx/<hash>`, which is just as much
-    # this clone's npm cache and just as safe to evict.
-    def safe_to_remove?(path)
-      return false if path.blank?
-
-      expanded = File.expand_path(path)
-      # Reuse CacheClearService's clones-base definition so the security-relevant
-      # path has a single source of truth (it's a lambda so it honors Dir.home at
-      # call time, which lets tests redirect HOME).
-      clones_base = File.expand_path(CacheClearService::CLONES_BASE_DIR.call)
-      separator = File::SEPARATOR
-
-      expanded.start_with?(clones_base + separator) &&
-        expanded.include?("#{separator}.npm-cache#{separator}") &&
-        (expanded.include?("#{separator}_npx#{separator}") || expanded.end_with?("#{separator}_npx"))
+      NpxCacheLayout.npx_dirs(working_directory)
     end
   end
 end
