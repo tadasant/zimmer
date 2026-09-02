@@ -13,7 +13,10 @@
 <% when :number %>
   <span class="tabular-nums text-gray-900"><%= field.value %></span>
 <% when :url %>
-  <%= link_to field.value, field.value, class: "text-indigo-600 hover:text-indigo-800 break-all", target: "_blank", rel: "noopener noreferrer" %>
+  <%# The stripped value, because that is what `classify_string` matched against —
+      linking the raw one would put leading whitespace inside the href. %>
+  <% url = field.value.to_s.strip %>
+  <%= link_to url, url, class: "text-indigo-600 hover:text-indigo-800 break-all", target: "_blank", rel: "noopener noreferrer" %>
 <% when :text %>
   <span class="text-gray-900 break-words"><%= field.value %></span>
 <% when :prose %>

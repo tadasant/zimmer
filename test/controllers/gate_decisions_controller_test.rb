@@ -90,32 +90,99 @@ class GateDecisionsControllerTest < ActionDispatch::IntegrationTest
     assert_match "must be an ISO date", response.body
   end
 
-  test "paging keeps the filters it is paging through" do
-    get gate_decisions_path(decision: "hold", page: 2)
+  test "paging walks the whole filtered set exactly once, and keeps its filters" do
+    # An off-by-one in the offset arithmetic silently skips or repeats a row, and
+    # on a ledger whose purpose is auditing that is the worst kind of bug: the
+    # page still renders, and nothing says a decision went missing. So this
+    # asserts the two pages PARTITION the set rather than that a link exists.
+    per_page = GateDecisionsController::PER_PAGE
+    extra = 3
+    ids = (1..(per_page + extra)).map do |n|
+      create_decision(decision: "hold", decided_at: Date.new(2026, 8, 1) + n,
+                      artifact_url: "https://github.com/tadasant/zimmer/pull/9#{n}").id
+    end
+    ids << @hold.id
 
+    get gate_decisions_path(decision: "hold")
     assert_response :success
+    first_page = rendered_decision_ids
+    assert_equal per_page, first_page.size
+    assert_select "a", text: /Next/
+    assert_match "#{ids.size} decisions", response.body
+
+    get gate_decisions_path(decision: "hold", page: 2)
+    assert_response :success
+    second_page = rendered_decision_ids
+    assert_equal ids.size - per_page, second_page.size
+    assert_select "a", text: /Next/, count: 0
     assert_select "a", text: /Previous/ do |links|
       assert_match "decision=hold", links.first["href"]
     end
+
+    assert_empty first_page & second_page, "a decision appears on both pages"
+    assert_equal ids.sort, (first_page + second_page).sort, "the two pages are not the whole set"
+  end
+
+  test "the ledger distinguishes an empty filter result from an empty ledger" do
+    get gate_decisions_path(surface: "a-surface-nobody-has-rated")
+    assert_match "No gate decisions match these filters", response.body
+    assert_no_match "ImportGateDecisionLedgers", response.body
+
+    GateDecisionFeedback.delete_all
+    # `delete_all`, not `destroy_all`: GateDecision refuses to be destroyed, which
+    # is the property under test everywhere else in this file.
+    GateDecision.delete_all
+
+    get gate_decisions_path
+    assert_match "ImportGateDecisionLedgers", response.body
   end
 
   test "the detail page renders every key the gate wrote, in order, without a field list" do
-    @hold.update_columns(payload: @hold.payload.merge(
-      "a_key_invented_next_month" => { "nested" => [ "one", "two" ] }
-    ))
+    odd = create_decision(payload: {
+      "reason" => "Held. " + ("Because of the thing. " * 40),
+      "ratings" => { "implementation_risk" => "large" },
+      "a_key_invented_next_month" => { "nested" => [ "one", "two" ] },
+      "a_shape_with_no_drawing" => { "a" => { "b" => { "c" => { "d" => { "e" => "past the cap" } } } } }
+    })
 
-    get gate_decision_path(@hold)
+    get gate_decision_path(odd)
 
     assert_response :success
     # THE REGRESSION THIS GUARDS. A view built from a hardcoded list of field
-    # names goes wrong by omission, silently, the first time a gate adds a key.
-    assert_select "section#entry-a-key-invented-next-month" do
-      assert_select "h2", "A key invented next month"
-      assert_select "span", "one"
-      assert_select "span", "two"
+    # names goes wrong by omission, silently, the first time a gate adds a key —
+    # so assert the SET of sections, not that a few expected ones are present.
+    #
+    # Sorted, because the ORDER is Postgres's and not ours: `payload` is jsonb,
+    # which normalizes an object to shortest-key-first then bytewise on the way
+    # in. Asserting the literal order here would be asserting jsonb's collation.
+    headings = css_select("section[id^=entry-] > h2").map(&:text)
+    assert_equal [ "A key invented next month", "A shape with no drawing", "Ratings", "Reason" ],
+      headings.sort
+    assert_select "section h2", text: "A key invented next month" do |nodes|
+      assert_match "one", nodes.first.parent.text
+      assert_match "two", nodes.first.parent.text
     end
-    assert_select "section#entry-reason h2", "Reason"
-    assert_select "section#entry-ratings h2", "Ratings"
+    # And the shape it has no drawing for still shows its content, as JSON.
+    assert_select "pre", /past the cap/
+  end
+
+  test "two payload keys that slugify alike get distinct anchors" do
+    # `parameterize` maps "Reason"/"reason" and "a_b"/"a-b" together, and a key
+    # with no ASCII letters to the empty string. A duplicate id would send every
+    # jump link in "The reasoning" to whichever section came first.
+    long = "x" * 400
+    odd = create_decision(payload: { "reason" => long, "Reason" => long, "理由" => long, "説明" => long })
+
+    get gate_decision_path(odd)
+
+    assert_response :success
+    ids = css_select("section[id^=entry-]").map { |node| node["id"] }
+    assert_equal 4, ids.size
+    assert_equal ids.uniq, ids, "two sections share an id: #{ids.inspect}"
+    # Every jump link points at a section that exists.
+    css_select("aside a[href^='#entry-']").each do |link|
+      assert_includes ids, link["href"].delete_prefix("#")
+    end
   end
 
   test "the detail page skims the short fields and lists the long ones separately" do
@@ -125,8 +192,9 @@ class GateDecisionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "The reasoning"
     # `ratings` skims (four words); `reason` does not (many paragraphs). Neither
     # is named anywhere in the view.
-    assert_select "aside a[href=?]", "#entry-reason"
-    assert_select "aside a[href=?]", "#entry-ratings", false
+    jump_links = css_select("aside a[href^='#entry-']").map { |a| a["href"] }
+    assert jump_links.any? { |href| href.end_with?("-reason") }, "no jump link to the prose field"
+    assert jump_links.none? { |href| href.end_with?("-ratings") }, "ratings should skim, not be a jump link"
   end
 
   test "the detail page shows the other ratings of the same artifact" do
@@ -151,6 +219,20 @@ class GateDecisionsControllerTest < ActionDispatch::IntegrationTest
     # surface authenticates nobody (#371, #220).
     assert_no_match(/verified human/i, response.body)
     assert_match "authenticates nobody", response.body
+  end
+
+  test "a note posted from the detail page lands back on the detail page" do
+    # GateDecisionFeedbacksController redirects back to the referrer; before this
+    # page existed the fallback was the dashboard, and nothing exercised the
+    # referrer branch.
+    post gate_decision_feedbacks_path(@hold),
+      params: { verdict: "should-have-merged", note: "The CI failure was unrelated." },
+      headers: { "HTTP_REFERER" => gate_decision_url(@hold) }
+
+    assert_redirected_to gate_decision_url(@hold)
+    follow_redirect!
+    assert_match "The CI failure was unrelated.", response.body
+    assert_equal "should-have-merged", @hold.feedbacks.sole.verdict
   end
 
   test "feedback already on a decision is shown with its channel" do
@@ -204,16 +286,14 @@ class GateDecisionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
-  test "the empty ledger says where the rows come from instead of nothing" do
-    GateDecisionFeedback.delete_all
-    GateDecision.delete_all
-
-    get gate_decisions_path
-
-    assert_match "ImportGateDecisionLedgers", response.body
-  end
-
   private
+
+  # The decision ids the ledger actually rendered, read off the row links.
+  def rendered_decision_ids
+    css_select("tbody a[href^='/gate_decisions/']")
+      .map { |a| a["href"][%r{/gate_decisions/(\d+)}, 1].to_i }
+      .uniq
+  end
 
   def create_decision(**overrides)
     GateDecision.create!({

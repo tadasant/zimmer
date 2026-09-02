@@ -40,7 +40,7 @@
         </div>
         <div class="min-w-0">
           <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Producing session</dt>
-          <dd class="min-w-0"><%= gate_decision_url_link(@decision.producing_session_url) %></dd>
+          <dd class="min-w-0"><%= gate_decision_url_link(@decision.producing_session_url, target: "_blank", rel: "noopener noreferrer") %></dd>
         </div>
         <div class="min-w-0">
           <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Recorded</dt>
@@ -65,7 +65,7 @@
           see that a later row un-held it. %>
       <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
         <h2 class="text-sm font-medium text-amber-900 mb-1">
-          This artifact was rated <%= @related.size + 1 %> times
+          This artifact was rated <%= @related_count + 1 %> times
         </h2>
         <ul class="text-sm text-amber-900 space-y-1">
           <% @related.each do |other| %>
@@ -76,6 +76,11 @@
             </li>
           <% end %>
         </ul>
+        <% if @related_count > @related.size %>
+          <p class="text-xs text-amber-800 mt-1">
+            Showing the <%= @related.size %> most recent of <%= @related_count %>.
+          </p>
+        <% end %>
       </div>
     <% end %>
 
@@ -129,8 +134,11 @@
       </aside>
 
       <%# THE ENTRY, WHOLE. `glance` above may pick; this never omits — every key
-          the gate wrote, in the order it wrote it, whether or not this renderer
-          has seen it before. %>
+          the gate wrote, whether or not this renderer has seen it before.
+
+          The order is Postgres's: `payload` is jsonb, which normalizes objects to
+          shortest-key-first then bytewise, so authoring order was never stored and
+          cannot be recovered. Stable, just not the gate's. %>
       <div class="lg:col-span-2 space-y-3">
         <% if @payload.any? %>
           <% @payload.fields.each do |field| %>

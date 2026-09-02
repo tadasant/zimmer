@@ -116,13 +116,20 @@ The same filters are on `GET /api/v1/gate_decisions`; see [the REST API](/extend
 ## Browsing it
 
 `/gate_decisions` is the Gate Decisions tab in the web UI, and it is the surface a person reads the
-ledger through rather than a gate. The list filters on the indexed columns — gate, surface, decision,
-a `decided_at` window, a substring search over the artifact URL, full text over the whole entry, and
-"has a human note" — through **the same `GateDecisions::Filters` object** the REST index and
+ledger through rather than a gate. The list filters on gate, surface, decision, a `decided_at`
+window, a substring search over the artifact URL, full text over the whole entry, and "has a human
+note" — through **the same `GateDecisions::Filters` object** the REST index and
 `search_gate_decisions` use, so a question asked on the page and the same question asked by a gate
 cannot come back with different answers. A filter the ledger cannot honour — an unknown gate, an
 unparseable date, which takes a hand-edited URL to produce — says so on the page and shows the ledger
 unfiltered, because "no precedent" is the wrong thing for anyone to conclude from a typo.
+
+Two of those filters are sequential scans and will stay that way: a leading-wildcard `ILIKE` cannot
+use the btree index on `artifact_url`, and the full-text filter is `payload::text ILIKE`, which the
+GIN index on `payload` cannot serve either. At ~1,500 rows and ~13 MB Postgres does both in tens of
+milliseconds, which is the same trade `GateDecision.matching_text` documents — substring matching is
+what a reader searching for `air_prepare_service.rb` or `#722` actually means, and a word-stemmed
+index would be faster at answering a different question.
 
 **The detail page renders the entry generically, and that is the design.** There is no list of field
 names anywhere in the view. `GateDecisions::PayloadView` classifies each value by its **shape** —
@@ -138,7 +145,12 @@ axes, the flags — are lifted into an at-a-glance aside that stays put while th
 scrolls in the main column. `ratings` and `justifications` are the worked example: same keys, same
 nesting, but one holds four words and the other four paragraphs, so one skims and the other does not,
 and no rule naming either of them was needed to get that right. The aside may pick; the entry view
-below it never omits — every key the gate wrote, in the order it wrote it.
+below it never omits — every key the gate wrote.
+
+The order those keys appear in is Postgres's rather than the gate's: `payload` is `jsonb`, which
+normalizes an object on the way in, so keys come back shortest-first then bytewise no matter how the
+gate wrote them. Authoring order was never stored and cannot be recovered. The order is stable — the
+same entry always renders the same way — which is what a reader comparing two ratings needs.
 
 Because rows are append-only, a re-rate is a *new* row and the earlier reading is still live in the
 table. The detail page says so: every other rating of the same artifact is linked from the top, so
