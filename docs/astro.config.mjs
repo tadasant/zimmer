@@ -130,6 +130,7 @@ export default defineConfig({
             { label: "Background jobs", slug: "operate/background-jobs" },
             { label: "Observability", slug: "operate/observability" },
             { label: "Token spend", slug: "operate/costs" },
+            { label: "The gate decision ledger", slug: "operate/gate-decisions" },
             { label: "Testing philosophy", slug: "operate/testing" },
           ],
         },

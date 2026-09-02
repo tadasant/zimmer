@@ -325,6 +325,37 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_includes self_session.url, "tool_groups=self_session"
     assert_equal "${ZIMMER_PROD_API_KEY}", self_session.headers["X-API-Key"]
   end
+
+  # A typo in a catalog entry's tool_groups is silent: Mcp::Registry drops the
+  # unknown group with a log line, and the entry serves an empty tool list. That
+  # got easier to write the day "a valid group" and "a group you get by default"
+  # stopped being the same set, so pin every zimmer* entry's scoping to the
+  # registry rather than to a hand-written list of the ones we remembered.
+  test "every zimmer catalog entry scopes to tool groups the registry knows" do
+    scoped = ServersConfig.all.select { |server| server.name.start_with?("zimmer") }
+
+    assert_operator scoped.size, :>=, 4, "expected the zimmer* entries to be in the catalog"
+
+    scoped.each do |server|
+      query = URI.parse(server.url.to_s).query
+      groups = Rack::Utils.parse_query(query.to_s)["tool_groups"].to_s.split(",").map(&:strip).reject(&:empty?)
+
+      groups.each do |group|
+        assert_includes Mcp::Registry::VALID_GROUPS, group,
+                        "#{server.name} scopes to '#{group}', which Mcp::Registry would silently drop"
+      end
+    end
+  end
+
+  test "zimmer-gate-decisions is the only catalog entry that reaches the opt-in ledger group" do
+    reaching = ServersConfig.all.select do |server|
+      groups = Rack::Utils.parse_query(URI.parse(server.url.to_s).query.to_s)["tool_groups"].to_s.split(",").map(&:strip)
+      Mcp::Registry.tools_for(groups.presence || Mcp::Registry::BASE_GROUPS)
+        .map(&:tool_name).include?("record_gate_decision")
+    end
+
+    assert_equal [ "zimmer-gate-decisions" ], reaching.map(&:name)
+  end
   test "required_variables spans env, headers, url and args" do
     server = ServersConfig::Server.new("composite", {
       "type" => "streamable-http",

@@ -672,6 +672,32 @@ curl -X POST "$BASE_URL/outcome_analyses" \
                 "meta": {}, "children": []}}'
 ```
 
+## Gate decisions
+
+The read/append surface of the [gate decision ledger](/operate/gate-decisions/) — every rating the
+PR-merge and issue-work gates have made. Mirrors the `search_gate_decisions` and
+`record_gate_decision` MCP tools, through the same filter object, so the two surfaces cannot answer
+the same question differently.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /gate_decisions` | Newest first, summaries only. Filters: `gate`, `surface`, `decision`, `artifact_url`, `query` (full text over the entry), `with_human_feedback`, `from`, `to`, plus `page`/`per_page` |
+| `GET /gate_decisions/:id` | One decision **with** its `payload` and its human feedback |
+| `POST /gate_decisions` | Record one. Body: `gate`, `surface`, `entry` (the decision in the gate's own schema), optional `writing_session_id` |
+
+There is **no update, no destroy, and no feedback action here** — and the absence is the feature.
+Decisions are append-only, so a correction is another `POST` on the same artifact. `human_feedback`
+is dropped from `entry` if you send it: the only way to write one is
+`POST /gate_decisions/:id/feedbacks` in the browser, because the API key this namespace
+authenticates is shared by the whole agent fleet and so establishes a caller but not a person. A
+filter it cannot honour — an unknown `gate`, an unparseable date — is a `422` rather than an empty
+result set, since "no precedent" is the wrong thing for a gate to conclude from a typo.
+
+```bash
+curl "$BASE_URL/gate_decisions?gate=pr_merge&surface=zimmer&decision=hold&per_page=10" \
+  -H "X-API-Key: $API_KEY"
+```
+
 ## The rest
 
 | Resource | Endpoints |

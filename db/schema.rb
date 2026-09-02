@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_02_041936) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_02_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -191,6 +191,41 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_041936) do
     t.datetime "updated_at", null: false
     t.index ["session_id", "status"], name: "index_enqueued_messages_on_session_id_and_status"
     t.unique_constraint ["session_id", "position"], deferrable: :deferred, name: "index_enqueued_messages_on_session_id_and_position"
+  end
+
+  create_table "gate_decision_feedbacks", force: :cascade do |t|
+    t.string "author"
+    t.string "channel", default: "web_ui", null: false
+    t.datetime "created_at", null: false
+    t.bigint "gate_decision_id", null: false
+    t.text "note"
+    t.jsonb "payload", default: {}, null: false
+    t.date "received_at"
+    t.datetime "updated_at", null: false
+    t.string "verdict", null: false
+    t.index ["gate_decision_id", "received_at"], name: "index_gate_decision_feedbacks_on_decision_and_received"
+    t.index ["gate_decision_id"], name: "index_gate_decision_feedbacks_on_gate_decision_id"
+  end
+
+  create_table "gate_decisions", force: :cascade do |t|
+    t.string "artifact_url"
+    t.datetime "created_at", null: false
+    t.date "decided_at"
+    t.string "decision"
+    t.string "gate", null: false
+    t.jsonb "payload", default: {}, null: false
+    t.string "producing_session_url"
+    t.string "recorded_via", default: "api", null: false
+    t.string "source_key"
+    t.string "surface", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "writing_session_id"
+    t.index ["artifact_url"], name: "index_gate_decisions_on_artifact_url"
+    t.index ["gate", "decision"], name: "index_gate_decisions_on_gate_and_decision"
+    t.index ["gate", "surface", "decided_at", "id"], name: "index_gate_decisions_on_gate_surface_recency", order: { decided_at: :desc, id: :desc }
+    t.index ["payload"], name: "index_gate_decisions_on_payload", using: :gin
+    t.index ["source_key"], name: "index_gate_decisions_on_source_key", unique: true
+    t.index ["writing_session_id"], name: "index_gate_decisions_on_writing_session_id"
   end
 
   create_table "good_job_batches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -793,6 +828,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_041936) do
   add_foreign_key "claude_account_quota_snapshots", "claude_accounts", on_delete: :nullify
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
+  add_foreign_key "gate_decision_feedbacks", "gate_decisions"
+  add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade

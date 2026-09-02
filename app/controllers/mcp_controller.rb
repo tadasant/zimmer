@@ -4,7 +4,7 @@ require "mcp"
 
 # Zimmer's native MCP endpoint (streamable HTTP transport).
 #
-#   POST /mcp                                    → the full tool surface
+#   POST /mcp                                    → the default surface: every base group
 #   POST /mcp?tool_groups=sessions               → session orchestration only
 #   POST /mcp?tool_groups=self_session           → the self-management subset
 #   POST /mcp?tool_groups=sessions&allowed_agent_roots=zimmer
@@ -75,7 +75,8 @@ class McpController < Api::BaseController
 
   def instructions
     "Zimmer's native MCP server. Tools operate on this Zimmer instance's sessions, " \
-      "notifications, triggers, and system health. Enabled tool groups: #{mcp_context.tool_groups.join(', ')}."
+      "notifications, triggers, system health, and the agent gates' decision ledger. " \
+      "Enabled tool groups: #{mcp_context.tool_groups.join(', ')}."
   end
 
   # Scoping is read from the query string, never from `params` — Rails merges a

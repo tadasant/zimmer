@@ -102,12 +102,32 @@ class McpControllerTest < ActionDispatch::IntegrationTest
 
   # --- Tool listing and scoping ---
 
-  test "tools/list returns the full surface by default" do
+  test "tools/list returns the base-group surface by default" do
     tools = rpc("tools/list")["result"]["tools"].map { |t| t["name"] }
-    assert_equal Mcp::Registry::ALL_TOOLS.size, tools.size
+    assert_equal Mcp::Registry.tools_for(Mcp::Registry::BASE_GROUPS).size, tools.size
     assert_includes tools, "start_session"
     assert_includes tools, "action_health"
     assert_includes tools, "wake_me_up_later"
+  end
+
+  # Least privilege over the endpoint every session's `zimmer` entry points at:
+  # an opt-in group has to be named in the URL before its tools exist for that
+  # connection. The gate decision ledger is the one that matters — a session
+  # holding the full server must not be able to write the gates' own ratings.
+  test "tools/list omits opt-in groups until the connection names one" do
+    unscoped = rpc("tools/list")["result"]["tools"].map { |t| t["name"] }
+
+    refute_includes unscoped, "record_gate_decision"
+    refute_includes unscoped, "search_gate_decisions"
+    refute_includes unscoped, "get_gate_decision_feedback"
+
+    scoped = rpc("tools/list", path: "/mcp?tool_groups=gate_decisions")["result"]["tools"].map { |t| t["name"] }
+
+    assert_equal %w[search_gate_decisions get_gate_decision_feedback record_gate_decision].sort, scoped.sort
+
+    readonly = rpc("tools/list", path: "/mcp?tool_groups=gate_decisions_readonly")["result"]["tools"].map { |t| t["name"] }
+
+    assert_equal %w[search_gate_decisions get_gate_decision_feedback].sort, readonly.sort
   end
 
   test "tools/list is scoped by tool_groups" do

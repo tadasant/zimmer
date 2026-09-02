@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 23 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 26 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -76,15 +76,19 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The full surface — all 23 tools |
+| `/mcp` | The default surface — 23 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 7 tools a session needs to run itself |
+| `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
-The groups are `sessions`, `notifications`, `triggers`, `health` (each with a `_readonly` variant),
-plus the composite `self_session`. Omitting `tool_groups` enables all four base groups. An unknown
-group is dropped with a warning rather than failing the connection.
+The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions` is an
+**opt-in** group, and `self_session` is a composite. Each domain group, opt-in included, has a
+`_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
+opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
+not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
+the connection.
 
 `self_session` is the important one. It is **auto-injected into every session** (see below) and
 carries `get_session`, `get_session_provenance`, `get_configs`, `send_push_notification`,
@@ -164,7 +168,7 @@ production.
 
 ## The tool surface
 
-23 tools, four domains.
+26 tools, five domains — 23 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -172,6 +176,7 @@ production.
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |
+| `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 
 `quick_search_sessions` matches session titles plus the `metadata` and `custom_metadata` JSON by
 default, and `search_contents: true` widens it to the **transcript** — this is the MCP route to
@@ -199,6 +204,21 @@ important reading of the message record is the empty one: a caller asking "did a
 this?" must be able to tell "no human turns" from "I forgot the flag." Entries are marked `here` (a
 human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). See
 [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
+
+`gate_decisions` is a group of its own rather than three more tools in `sessions`, and it is opt-in
+rather than base. Folded into `sessions`, every session carrying `zimmer-sessions` would be handed
+the ability to write gate ratings; left in the base set, so would every session holding the full
+`zimmer` server — and a ledger every session has a pen for is not evidence of anything. The group is
+meant for the two gate roots, whose scoped `zimmer-gate-decisions` server is the one catalog entry
+that names it; those roots live in a deployment's own catalog rather than in Zimmer's, so nothing in
+Zimmer's own catalog reaches the group. Like every tool group this is a **scoping** boundary rather
+than an authorization one — it decides what a session is offered, not what a shared API key can
+reach. Nothing in this group or any other can write `human_feedback`: the key is scrubbed
+recursively out of every entry, `record_gate_decision` says so in its receipt, and the only write
+path is the browser. See the [gate decision ledger](/operate/gate-decisions/).
+`search_gate_decisions` is the read that replaces loading a 3.4 MB JSON file to calibrate one
+rating, and its description is as much of the feature as its code, since a gate that does not know
+it can ask for "the last 10 holds on this surface" will go on reading everything.
 
 `get_session_provenance` returns those same two sections on their own, for one `session_id`. Zimmer
 injects neither into a session's turns, so this is the tool a session calls to read its own
@@ -467,8 +487,10 @@ as a JSON-RPC error, which the model never sees.
 2. Call the models and services directly. If the logic already exists behind a service object, call
    it — the MCP layer validates arguments, calls, and formats; it does not own business logic.
 3. Register it in `Mcp::Registry::ALL_TOOLS` with its domain group and whether it is a write
-   operation. Add `composite_groups: %w[self_session]` if a session should be able to use it on
-   itself, and a `composite_overrides` entry if it needs a narrower variant in that group (see
-   `action_session`).
+   operation. If the group is new, decide whether it belongs in `BASE_GROUPS` (every unscoped
+   connection gets it) or `OPT_IN_GROUPS` (a connection has to name it) — the second is for a group
+   whose write tools should not ride along on `/mcp`. Add `composite_groups: %w[self_session]` if a
+   session should be able to use it on itself, and a `composite_overrides` entry if it needs a
+   narrower variant in that group (see `action_session`).
 4. Test it under `test/services/mcp/tools/`, and let `test/controllers/mcp_controller_test.rb` cover
    the wire shape.
