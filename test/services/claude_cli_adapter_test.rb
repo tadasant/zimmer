@@ -876,6 +876,47 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal command, spawned[:command]
   end
 
+  # #815: the runtime and every tool subprocess it goes on to spawn have to land in the
+  # session's own memory cgroup, or one runaway command spends the whole worker container's
+  # budget and the kernel picks its victim by size rather than by blame.
+  test "spawn_process runs the runtime inside the session's memory cgroup" do
+    with_delegated_cgroup_parent do |parent|
+      @adapter.zimmer_session_id = 4242
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+      spawned = @mock_process_manager.spawned_processes.first
+      procs = File.join(parent, "session-4242", "cgroup.procs")
+
+      assert_equal "/bin/sh", spawned[:command].first
+      assert_includes spawned[:command], procs
+      assert_equal [ "claude", "test" ], spawned[:command].last(2),
+        "the real argv has to survive the wrapper intact"
+      assert File.exist?(File.join(parent, "session-4242", "memory.max")),
+        "the bound has to be written before anything can enter the cgroup"
+    end
+  end
+
+  test "spawn_process_with_stdin runs the runtime inside the session's memory cgroup" do
+    with_delegated_cgroup_parent do |parent|
+      @adapter.zimmer_session_id = 4243
+      @adapter.send(:spawn_process_with_stdin, [ "claude", "test" ], working_dir: @test_dir, stdin_content: "{}")
+
+      spawned = @mock_process_manager.spawned_processes.first
+
+      assert_equal "/bin/sh", spawned[:command].first
+      assert_includes spawned[:command], File.join(parent, "session-4243", "cgroup.procs")
+    end
+  end
+
+  # The web role, plain runc, a dev machine, CI. Unbounded is what every deployment did
+  # before this existed, so it must stay a clean pass-through rather than an error.
+  test "spawn_process leaves the command alone where there is no cgroup to enter" do
+    @adapter.zimmer_session_id = 4244
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    assert_equal [ "claude", "test" ], @mock_process_manager.spawned_processes.first[:command]
+  end
+
   test "spawn_process returns hash with pid and stderr_log_path" do
     command = [ "claude", "test" ]
 

@@ -109,6 +109,25 @@ Its root IS host root, so starting dockerd here would hand every agent
 session root on the host.
 ```
 
+### Sysbox is also what makes per-session memory bounds possible
+
+A second thing rides on the container having its own cgroup namespace: `/sys/fs/cgroup` is
+**writable** inside it. Under plain runc it is read-only, so the same container cannot create
+a cgroup at all.
+
+The entrypoint uses that window, while it is still root, to delegate a subtree to uid 1000 —
+`/sys/fs/cgroup/zimmer.sessions`, with the memory controller enabled and the app moved into a
+`zimmer.sessions/app` sibling. The app then gives each agent session its own cgroup and its own
+`memory.max`, so a runaway command exhausts its own budget instead of the worker container's
+([#815](https://github.com/tadasant/zimmer/issues/815)). It is the same nesting bargain as
+`dockerd`: possible only because the container's root is not the host's.
+
+Like the dockerd block, it is contained in the `id -u = 0` branch, so `web` never runs it — and
+unlike the dockerd block it never refuses to start. Every step tolerates failure, because an
+unbounded session is exactly what every deployment had before, and a guardrail that blocks the
+boot is a worse outage than the one it prevents. The mechanism is in
+[Each session gets its own memory bound](/sessions/spawning/#each-session-gets-its-own-memory-bound).
+
 ### The environment has to be dropped too, not just the credentials
 
 `setpriv` changes credentials and nothing else, so whatever `HOME` the container started

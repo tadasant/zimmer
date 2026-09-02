@@ -1571,6 +1571,9 @@ class AgentSessionJob < ApplicationJob
       # genuinely broken MCP server would ping-pong paused -> running forever instead of
       # failing loudly.
       monitoring_started_at = Time.current
+      # Watches this session's own memory cgroup. Constructed once so its
+      # "already warned" state spans the whole loop rather than the tick.
+      memory_watch = SessionMemoryWatch.new(session)
       last_retry_attempt_at = RetryBudget.all.index_with do |budget|
         last_attempt = budget.last_attempt_at(session)
         last_attempt && [ last_attempt, monitoring_started_at ].max
@@ -2071,6 +2074,12 @@ class AgentSessionJob < ApplicationJob
         # This should rarely trigger now that we're in the same job,
         # but keep it as a safety mechanism
         check_and_update_status_if_turn_completed(session, process_pid, log_buffer)
+
+        # 6a. Report anything the session's own memory bound has done to it. Self-
+        # throttling to every 10 seconds, and a no-op where per-session cgroups are
+        # unavailable. This is the only thing that tells a session its TOOL SUBPROCESS
+        # was OOM-killed — the agent survives that, so no exit path ever sees it.
+        memory_watch.check(log_buffer)
 
         # 7. Periodic flush every 10 seconds (time-based, not iteration-based)
         if (Time.current - last_flush_time) >= 10

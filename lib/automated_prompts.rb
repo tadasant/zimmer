@@ -64,6 +64,35 @@ module AutomatedPrompts
     prompt.is_a?(String) && prompt.start_with?(SYSTEM_RECOVERY)
   end
 
+  # Prompt sent when the kernel killed the agent process because the session reached
+  # its own memory limit (SessionMemoryCgroup).
+  #
+  # SYSTEM_RECOVERY would resume the session accurately but blindly: "a system event"
+  # invites the agent to retry the exact command that just died, and it will die again.
+  # This says what the limit was, what it means, and what to do differently — which is
+  # the "error the agent can see and react to" that tadasant/zimmer#815 asked for, as
+  # opposed to a bare `Killed` and exit 137.
+  MEMORY_LIMIT_RECOVERY_TEMPLATE = <<~PROMPT.strip
+    [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
+
+    This session was killed by the kernel because it reached its memory limit of %{limit} (peak usage: %{peak}). Zimmer gives every session its own memory bound so that one runaway command cannot take down the other sessions on the box — so this was your session's own limit, not a machine-wide failure, and nothing outside this session was affected.
+
+    Zimmer has resumed you. Before you pick up where you left off, consider what was allocating: the usual cause is a command that holds a large result in memory rather than streaming it — a command substitution over a big output, reading a large file into a variable, an unbounded glob, or a pipeline whose left side produces far more than the right side consumes.
+
+    If you were running something like that, do it a different way: write to a file and read it back in pieces, pipe into `head`/`grep`/`awk` so the data is never held whole, or narrow the input. Re-running the same command unchanged will hit the same limit again.
+
+    If you were in the middle of a task and nothing you were doing looks memory-hungry, continue where you left off.
+  PROMPT
+
+  # Build the memory-limit recovery nudge.
+  #
+  # @param limit [String] human-readable bound, e.g. "4 GB"
+  # @param peak [String] human-readable high-water mark for the session
+  # @return [String]
+  def self.memory_limit_recovery(limit:, peak:)
+    format(MEMORY_LIMIT_RECOVERY_TEMPLATE, limit: limit, peak: peak)
+  end
+
   # Prompt sent when the merge conflict poller detects that a session's PR
   # has merge conflicts with the base branch.
   #
