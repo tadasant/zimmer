@@ -760,39 +760,81 @@ future-dated rows, so a locked row dated in the future is counted once, as claim
 otherwise, so a wake-up trigger enqueued yesterday starts accruing wait when it comes due rather
 than looking like a day-old stall the moment it becomes runnable.
 
-### The page says which queue, and of what
+### The page says which queue, of what, and how old there
 
-A ready count on its own is not triageable. Zimmer runs six queues with very different shapes — an
-`agents` thread is held for the entire life of a session, while `default` and `pollers` turn jobs
+A ready count on its own is not triageable. Zimmer runs seven queues with very different shapes — an
+`agents` thread is held for the entire life of a session, `inference` and `maintenance` run two
+threads each against jobs that block for a minute or more, while `default` and `pollers` turn jobs
 over in milliseconds — so the same number is equally consistent with "one queue is starved" and
 "everything is busy", and those want opposite responses. Worse, the healthy-looking signals stay
 healthy in the starved case: the other queues keep draining, and `processing_rate_per_hour` is a
 *trailing* hour, so it lags a stall by many minutes.
 
-So the alert body carries two more lines, from `HealthMonitorService#ready_backlog_breakdown`:
+So the alert body carries three more lines, from `HealthMonitorService#ready_backlog_breakdown`:
 
 ```
 • Ready by queue: agents 231, default 18, pollers 2
 • Ready by job class: AgentSessionJob 231, SessionTitleJob 12, HeartbeatSweepJob 6, other (3 more) 10
+• Oldest ready by queue: agents 41m, default 18s, pollers 4s
 ```
 
-Both are taken over the same population as `ready_count` and both add up to it, biggest first with
-ties broken by name, capped at `READY_BREAKDOWN_LIMIT` (5) entries each. Whatever the cap cuts comes
-back as an `other (N more)` remainder rather than vanishing — five job classes with no total look the same
-whether they are the whole backlog or a tenth of it, and telling those apart is the entire question
-below. A row with no `job_class` is counted under `(unknown)`. Read them this way:
+The first two are taken over the same population as `ready_count` and both add up to it, biggest
+first with ties broken by name, capped at `READY_BREAKDOWN_LIMIT` (5) entries each. Whatever the cap
+cuts comes back as an `other (N more)` remainder rather than vanishing — five job classes with no
+total look the same whether they are the whole backlog or a tenth of it, and telling those apart is
+the entire question below. A row with no `job_class` is counted under `(unknown)`.
 
-- **Concentrated in one queue** — that queue is starving. Its threads are all held, or blocked on a
-  long external wait.
-- **Spread across every queue** — the worker itself: down, restarting, or starved of database
+The ages line is deliberately **not** capped. A remainder entry is what keeps a capped count honest,
+and there is no equivalent for an age — `other 12m` means nothing — so a cap would leave a lane's
+absence meaning either "no ready work there" or "cut by the cap", which is exactly the distinction
+the line exists to support. Its length is bounded by the number of distinct queue names anyway.
+
+#### Read the head-of-line ages first
+
+`oldest_ready_age_seconds` is a single number over **every queue at once**, and it is what both
+backlog alerts fire on: this deployment's own `critical` gate above, and the Grafana rule over
+`zimmer_good_job_oldest_ready_age_seconds` (`Zimmer GoodJob queue is not draining`, threshold 900s).
+Once the lanes were sized apart it stopped being interpretable on its own. Two threads in front of
+jobs that block for `SessionStatusSummaryGenerator::HEADLESS_TIMEOUT` (90s) hold their head of line
+for tens of minutes on a routine burst — with a healthy worker, a flat backlog depth, and every
+other lane turning over in seconds. Taken as a maximum that is indistinguishable from a wedge.
+
+`Oldest ready by queue` is each queue's *own* longest-waiting ready row, oldest queue first, and the
+first bullet names the lane and job class behind the global figure:
+
+```
+• Ready (waiting on a worker): 47, oldest waiting 27m (inference / SessionStatusSummaryJob)
+```
+
+- **One old queue beside fresh ones** — that queue is starving. Its threads are all held, or blocked
+  on a long external wait. On a narrow lane this may be the design working as intended rather than a
+  fault; compare against the lane's thread count in the table above.
+- **Every queue old at once** — the worker itself: down, restarting, or starved of database
   round-trips.
+- **Deep in one queue but its head is fresh** — busy, not starved. The lane is turning work over.
 
-This is deliberately *not* folded into `queue_statistics`, which runs on every `/health` render;
-these are two extra grouped scans of `good_jobs` and are only worth paying for when something is
-about to page. And if they raise — plausible, since the database may be the thing going wrong — the
-lines read `unavailable` and the page still goes out. A depth number that reaches a human beats a
-richer one that raises on the way. `unavailable` and `none` are deliberately different words: a
-query that never answered and a queue that read as empty are different facts about an incident.
+The ages come from one `DISTINCT ON (queue_name)` query — one row per queue, each queue's exact
+oldest, cost bounded by the number of distinct queue names rather than by backlog depth. That shape
+matters more than it looks. The obvious alternative, reading the N oldest ready rows and keeping the
+first sighting of each queue, breaks in the case the page most needs: a single lane holding more than
+N ready rows fills the whole window, every other lane disappears from the line, and the reader sees
+one old lane with nothing to compare it against — which reads as "one lane starving" precisely when
+the truth may be "everything is old". Each age is dated the same way `oldest_ready_age_seconds` is,
+from `scheduled_at` when there was one and `created_at` otherwise.
+
+The first bullet's age and its `(lane / job class)` come from the same read, so the sentence cannot
+name one row's age beside another row's lane — `queue_statistics` and `ready_backlog_breakdown` are
+separate queries against a moving table, and whatever drains between them would otherwise show up
+there. `queue_statistics` stays the fallback when the breakdown cannot be read, and stays what the
+`critical` gate thresholds on.
+
+This is all deliberately *not* folded into `queue_statistics`, which runs on every `/health` render;
+these are extra scans of `good_jobs` and are only worth paying for when something is about to page.
+And if they raise — plausible, since the database may be the thing going wrong — the lines read
+`unavailable`, the first bullet keeps its age and drops the lane, and the page still goes out. A
+depth number that reaches a human beats a richer one that raises on the way. `unavailable` and
+`none` are deliberately different words: a query that never answered and a queue that read as empty
+are different facts about an incident.
 
 The breakdown has to be *in* the page rather than a pointer to the GoodJob dashboard at `/jobs`,
 because the reader most likely to be reading it cannot open that dashboard: an agent triage session

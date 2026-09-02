@@ -167,7 +167,33 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     assert_includes details, "Ready by job class: PlaceholderJob 105, AgentSessionJob 40"
   end
 
-  # The breakdown is two extra grouped scans of `good_jobs` at exactly the moment
+  # The head-of-line age is the number this page and the Grafana `not draining`
+  # rule both fire on, and across every queue at once it cannot tell a starved lane
+  # from a wedged worker. `make_queue_critical` fills `default` with rows waiting
+  # QUEUE_STALL_CRITICAL_AGE + 1m; the `agents` rows below are older, so they own
+  # the head of line and the page must say so.
+  test "the alert body names the lane behind the head-of-line age, and each lane's own" do
+    make_queue_critical
+    insert_jobs(40) do
+      { queue_name: "agents", job_class: "AgentSessionJob",
+        created_at: 40.minutes.ago, updated_at: 40.minutes.ago, scheduled_at: 40.minutes.ago }
+    end
+
+    SystemHealthMonitorJob.perform_now # streak -> 1
+
+    details = ""
+    AlertService.expects(:raise_alert).once.with do |_title, opts|
+      details = opts[:details].to_s
+      true
+    end
+    SystemHealthMonitorJob.perform_now
+
+    assert_includes details, "(agents / AgentSessionJob)",
+                    "the first bullet must answer 'old where', not only 'old'"
+    assert_match(/Oldest ready by queue: agents 40m, default 11m/, details)
+  end
+
+  # The breakdown is three extra scans of `good_jobs` at exactly the moment
   # the database may be the thing going wrong. A depth number that reaches a human
   # beats a richer one that raises on the way, so the detail degrades and the page
   # still goes out.
@@ -188,6 +214,9 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     assert_includes details, "Ready (waiting on a worker): 105"
     assert_includes details, "Ready by queue: unavailable"
     assert_includes details, "Ready by job class: unavailable"
+    assert_includes details, "Oldest ready by queue: unavailable"
+    refute_includes details, "( / )",
+                    "with no breakdown to read, the first bullet keeps the age and drops the lane"
   end
 
   test "does not alert on a deep queue that is still draining" do
