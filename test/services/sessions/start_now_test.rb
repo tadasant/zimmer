@@ -28,19 +28,7 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
     })
   end
 
-  # A stored attachment, written through the same service the upload paths use —
-  # the point of the fix is that what is on disk is enough to rebuild the turn.
-  def store_image(session)
-    (@storages ||= []) << ImageStorageService.new(session_id: session.id)
-    @storages.last.store(data: Base64.strict_encode64(minimal_png), filename: "shot.png")
-  end
-
-  def store_file(session, filename:, content:)
-    (@storages ||= []) << FileStorageService.new(session_id: session.id)
-    @storages.last.store(data: content, filename: filename)
-  end
-
-  teardown { @storages&.each(&:cleanup!) }
+  teardown { cleanup_stored_attachments! }
 
   # The arguments of the one AgentSessionJob this start enqueued.
   def enqueued_agent_session_args
@@ -164,7 +152,7 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
 
   test "a first turn is enqueued carrying the images the session was created with" do
     session = waiting_session
-    stored = store_image(session)
+    stored = store_image_for(session)
 
     Sessions::StartNow.call(session)
 
@@ -175,7 +163,7 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
 
   test "a first turn is enqueued carrying the files the session was created with" do
     session = waiting_session
-    stored = store_file(session, filename: "notes.txt", content: "read me")
+    stored = store_file_for(session, filename: "notes.txt", content: "read me")
 
     Sessions::StartNow.call(session)
 
@@ -203,8 +191,8 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
   # "everything on disk" is not the same set as "what the first turn carried".
   test "an attachment a queued follow-up owns is not smuggled onto the first turn" do
     session = waiting_session
-    first_turn = store_image(session)
-    follow_up = store_image(session)
+    first_turn = store_image_for(session)
+    follow_up = store_image_for(session)
     session.enqueued_messages.create!(
       content: "and now this one", position: 1,
       images: [ { "path" => follow_up[:path], "media_type" => "image/png" } ]
@@ -220,7 +208,7 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
   # is a wrong one. An unreadable queue therefore falls back to the former.
   test "an unreadable message queue falls back to a turn with no attachments" do
     session = waiting_session
-    store_image(session)
+    store_image_for(session)
 
     session.stub(:enqueued_messages, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
       Sessions::StartNow.call(session)
@@ -232,8 +220,8 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
 
   test "the session's log names what the first turn is carrying" do
     session = waiting_session
-    store_image(session)
-    store_file(session, filename: "notes.txt", content: "read me")
+    store_image_for(session)
+    store_file_for(session, filename: "notes.txt", content: "read me")
 
     result = Sessions::StartNow.call(session)
 
@@ -245,7 +233,7 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
   # Re-reading storage for them would attach a second copy.
   test "a pulled-forward turn is not given a second copy of the attachments" do
     session = held_session
-    store_image(session)
+    store_image_for(session)
     job = queued_turn(session, scheduled_at: 40.minutes.from_now)
 
     result = nil
@@ -267,7 +255,7 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
       SpotSessionPause::PAUSED_COUNT => 1,
       "paused_by" => SpotSessionPause::PAUSED_BY
     })
-    store_image(session)
+    store_image_for(session)
 
     result = Sessions::StartNow.call(session)
 

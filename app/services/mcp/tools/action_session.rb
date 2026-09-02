@@ -462,14 +462,25 @@ module Mcp
           *SpotSessionHold::METADATA_KEYS
         )
 
+        # The replacement turn IS the original first turn — same prompt, new
+        # clone, new session_id — so it carries the attachments that turn was
+        # created with (Sessions::FirstTurnAttachments, which never raises, so the
+        # fleet sweep's restart cannot start failing on an unreadable volume).
+        # Replaying all of them is deliberate: this path is reached only for a
+        # pre-prompt failure with setup incomplete, and a restart from scratch
+        # discards the conversation any earlier delivery went to.
+        images, files = Sessions::FirstTurnAttachments.for(session)
+        carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
+
         ActiveRecord::Base.transaction do
           session.logs.create!(
-            content: "Restarting session from scratch: re-running full setup pipeline (git clone, MCP config, process spawn)",
+            content: "Restarting session from scratch: re-running full setup pipeline " \
+                     "(git clone, MCP config, process spawn)#{carrying}",
             level: "info"
           )
           session.update!(running_job_id: nil, session_id: nil, metadata: cleaned_metadata)
           session.resume! if session.may_resume?
-          AgentSessionJob.enqueue_new_session(session.id)
+          AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
           session.logs.create!(
             content: "Session resumed - status changed to running, full setup will be re-attempted",
             level: "info"

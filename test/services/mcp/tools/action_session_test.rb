@@ -6,10 +6,14 @@ require "tmpdir"
 
 class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
+  include AttachmentFixtures
 
   setup do
     @tool = Mcp::Tools::ActionSession.new(context: Mcp::Context.new(tool_groups: "sessions"))
   end
+
+  # Durable attachment storage outlives the test that wrote it.
+  teardown { cleanup_stored_attachments! }
 
   test "change_scheduling_class moves one session without touching its genesis" do
     session = sessions(:needs_input)
@@ -1018,5 +1022,58 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     self_properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h[:properties].keys.map(&:to_s)
     assert_not_includes self_properties, "halt"
     assert_includes Mcp::Tools::ActionSession.input_schema.to_h[:properties].keys.map(&:to_s), "halt"
+  end
+
+  # --- restart from scratch ---------------------------------------------------
+  #
+  # `restart` re-runs the whole setup pipeline when setup never completed, and it
+  # is the start path the fleet-maintenance skill drives after a quota recovery.
+  # AgentSessionJob receives images and files ONLY as job arguments, so enqueuing
+  # bare re-ran the original prompt with the screenshot silently missing (#746).
+
+  def failed_before_setup_session
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "here is the screenshot, fix this",
+      status: :failed, metadata: { "failure_reason" => "git_clone_failed" }
+    )
+  end
+
+  test "restart from scratch enqueues the replacement turn carrying the stored attachments" do
+    session = failed_before_setup_session
+    image = store_image_for(session)
+    file = store_file_for(session, filename: "notes.txt", content: "read me")
+
+    output = @tool.call("action" => "restart", "session_id" => session.id)
+
+    assert_includes output, "Session restarted from scratch"
+    assert_enqueued_with(
+      job: AgentSessionJob,
+      args: [
+        session.id, nil,
+        {
+          images: [ { path: image[:path], media_type: "image/png" } ],
+          files: [ { path: file[:path], original_filename: "notes.txt", size: "read me".bytesize } ]
+        }
+      ]
+    )
+    assert session.logs.where("content LIKE ?", "%carrying 1 image and 1 file%").exists?
+  end
+
+  # This path is taken when something has ALREADY gone wrong, and the fleet sweep
+  # drives it unattended. A storage tree that cannot be read must cost the
+  # attachments, never the restart.
+  test "restart from scratch still restarts when the attachment storage cannot be read" do
+    session = failed_before_setup_session
+    store_image_for(session)
+
+    output = nil
+    ImageStorageService.stub(:stored_for, ->(*) { raise Errno::EACCES, "storage" }) do
+      assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+        output = @tool.call("action" => "restart", "session_id" => session.id)
+      end
+    end
+
+    assert_includes output, "Session restarted from scratch"
+    assert_equal "running", session.reload.status
   end
 end
