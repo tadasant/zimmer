@@ -283,6 +283,22 @@ registry, and `PiRuntimeAdapter` passes each entrypoint with `pi -e <path>` from
 does — that file is a cross-vendor convention, not a Claude private format, which
 is why the JSON format hooks live in the shared `McpJsonConfigFormat` module.
 
+**An extension's entrypoint is a TypeScript source file, and it comes from the
+package.** Pi loads `.ts` extensions directly, so a Pi package's entrypoint is a
+file inside the published tarball — `pi-mcp-adapter/index.ts`, not a compiled
+`dist/index.js`. The authoritative value is the package's own `pi.extensions`
+manifest field (`npm view <pkg> pi.extensions`); read it from there when adding
+an entry to the registry rather than assuming a build layout.
+
+Getting that path wrong is silent, which is why two checks guard it.
+`PiExtensions#resolved_paths` only passes `-e` for entrypoints that exist —
+necessary, because `pi -e <missing path>` makes Pi refuse to start altogether —
+so a path that can never exist yields a working Pi session with the extension
+simply absent. `Dockerfile.base` therefore follows each `npm install` with a
+`test -f` on the entrypoint (`npm install` reports success as soon as the tarball
+unpacks, and says nothing about layout), and `pi_extensions_test.rb` asserts that
+the path the Dockerfile checks is the path the registry resolves.
+
 **Transcript hooks need a per-runtime parser.** `TranscriptHooks::ToolCallParser.for`
 dispatches on the runtime, and Pi's shape (`toolCall` content blocks whose
 `arguments` are a real Hash, plus a `toolResult` message stating `isError`
