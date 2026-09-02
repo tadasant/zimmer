@@ -125,19 +125,25 @@ class SystemHealthMonitorJob < ApplicationJob
       "GoodJob backlog is critical.",
       "",
       "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
-        "oldest waiting #{HealthMonitorService.format_wait(stats[:oldest_ready_age_seconds])}",
+        "oldest waiting #{HealthMonitorService.format_wait(stats[:oldest_ready_age_seconds])}" \
+        "#{head_of_line_suffix(breakdown[:head_of_line])}",
       "• Ready by queue: #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
       "• Ready by job class: #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
+      "• Oldest ready by queue: #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}",
       "• Not backlog: #{stats[:claimed_count]} claimed (executing now), " \
         "#{stats[:scheduled_count]} scheduled (future-dated)",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
       "",
-      "A backlog concentrated in ONE queue is that queue starving: its threads are " \
-        "all held (an `agents` thread lasts as long as its session) or blocked on a " \
-        "long external wait, and the other queues will still look healthy — including " \
-        "the processing rate, which is a trailing hour and lags a stall by many minutes. " \
-        "A backlog spread across every queue is the worker itself: down, restarting, or " \
+      "Read the head-of-line ages first, because that is the number this page and " \
+        "the Grafana `not draining` rule both fire on, and taken across all queues " \
+        "at once it cannot tell the two causes apart. ONE old queue beside fresh " \
+        "ones is that queue starving: its threads are all held (an `agents` thread " \
+        "lasts as long as its session, and `inference` and `maintenance` run two " \
+        "threads against jobs that block for a minute or more) or blocked on a long " \
+        "external wait, and every other queue will still look healthy — including " \
+        "the processing rate, which is a trailing hour and lags a stall by many " \
+        "minutes. EVERY queue old at once is the worker itself: down, restarting, or " \
         "starved of database round-trips."
     ].join("\n")
   end
@@ -155,6 +161,16 @@ class SystemHealthMonitorJob < ApplicationJob
     HealthMonitorService.new.ready_backlog_breakdown
   rescue StandardError => e
     Rails.logger.warn("[SystemHealthMonitorJob] Could not read the backlog breakdown: #{e.message}")
-    { by_queue: nil, by_job_class: nil }
+    { by_queue: nil, by_job_class: nil, oldest_by_queue: nil, head_of_line: nil }
+  end
+
+  # Names the lane and the job class behind the age the line just quoted, so the
+  # first bullet answers "old where" and not only "old". Empty when the breakdown
+  # could not be read — the age itself comes from `queue_statistics` and is still
+  # worth printing on its own.
+  def head_of_line_suffix(head)
+    return "" if head.blank?
+
+    " (#{head[:queue]} / #{head[:job_class]})"
   end
 end

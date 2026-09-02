@@ -57,11 +57,16 @@ module Mcp
 
       private
 
-      # What the backlog is MADE OF, not just how deep it is.
+      # What the backlog is MADE OF, and WHERE it is old — not just how deep.
       #
       # `system_health` below already carries `ready_count`, and a bare count
-      # cannot tell a starved queue from a busy one — Zimmer's six queues have
-      # very different thread counts and job durations. The Slack backlog page
+      # cannot tell a starved queue from a busy one — Zimmer's seven queues have
+      # very different thread counts and job durations. It also carries
+      # `oldest_ready_age_seconds`, which is the number the Grafana `GoodJob queue
+      # is not draining` rule fires on, taken across every queue at once; the
+      # per-queue ages are what turn that page into an answer, because a two-thread
+      # lane in front of jobs that block for a minute holds its head of line for
+      # tens of minutes with a perfectly healthy worker. The Slack backlog page
       # carries the same split, and this is the tool an agent triaging that page
       # actually has: the GoodJob dashboard needs a browser session on the
       # production host, which an agent session does not have. Without it the
@@ -83,7 +88,8 @@ module Mcp
 
         [
           "- **Ready backlog by queue:** #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
-          "- **Ready backlog by job class:** #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}"
+          "- **Ready backlog by job class:** #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
+          "- **Oldest ready by queue:** #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}"
         ]
       rescue StandardError => e
         Rails.logger.warn("[GetSystemHealth] Could not read the backlog breakdown: #{e.message}")

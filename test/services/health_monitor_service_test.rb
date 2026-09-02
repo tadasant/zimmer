@@ -352,7 +352,114 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   end
 
   test "ready_backlog_breakdown is empty when nothing is waiting" do
-    assert_equal({ by_queue: {}, by_job_class: {} }, HealthMonitorService.new.ready_backlog_breakdown)
+    assert_equal({ by_queue: {}, by_job_class: {}, oldest_by_queue: {}, head_of_line: nil },
+                 HealthMonitorService.new.ready_backlog_breakdown)
+  end
+
+  # === Head-of-line age, per queue ===
+  #
+  # `oldest_ready_age_seconds` is one number over every queue at once, and it is
+  # what BOTH backlog alerts fire on — this service's `critical` gate and the
+  # Grafana rule over `zimmer_good_job_oldest_ready_age_seconds`. Once the lanes
+  # were sized apart, two threads in front of jobs that block for a minute hold a
+  # head of line for tens of minutes with a healthy worker, and that reads exactly
+  # like a wedge if the maximum is all you have. These tests pin the split that
+  # tells them apart.
+
+  test "ready_backlog_breakdown reports each queue's own head-of-line age, oldest queue first" do
+    insert_good_jobs(1) { { queue_name: "inference", job_class: "SessionTitleJob", scheduled_at: 30.minutes.ago } }
+    insert_good_jobs(1) { { queue_name: "inference", job_class: "SessionTitleJob", scheduled_at: 1.minute.ago } }
+    insert_good_jobs(1) { { queue_name: "maintenance", job_class: "EmptyTrashJob", scheduled_at: 10.minutes.ago } }
+    insert_good_jobs(1) { { queue_name: "pollers", job_class: "CanaryJob", scheduled_at: 5.seconds.ago } }
+
+    ages = HealthMonitorService.new.ready_backlog_breakdown[:oldest_by_queue]
+
+    assert_equal [ "inference", "maintenance", "pollers" ], ages.keys,
+                 "the lane holding the backlog must read first"
+    assert_in_delta 1800, ages["inference"], 5
+    assert_in_delta 600, ages["maintenance"], 5
+    assert_in_delta 5, ages["pollers"], 5
+  end
+
+  # The whole point of the split: one old lane beside fresh ones is that lane
+  # starving, and the global maximum alone cannot say which lane it was.
+  test "ready_backlog_breakdown names the queue and job class behind the global oldest age" do
+    insert_good_jobs(1) { { queue_name: "pollers", job_class: "CanaryJob", scheduled_at: 1.minute.ago } }
+    insert_good_jobs(1) do
+      { queue_name: "inference", job_class: "SessionStatusSummaryJob", scheduled_at: 25.minutes.ago }
+    end
+
+    service = HealthMonitorService.new
+    head = service.ready_backlog_breakdown[:head_of_line]
+
+    assert_equal "inference", head[:queue]
+    assert_equal "SessionStatusSummaryJob", head[:job_class]
+    assert_in_delta service.system_health[:queue_stats][:oldest_ready_age_seconds], head[:age_seconds], 5,
+                    "the head of line must be the same row the alerts threshold on"
+  end
+
+  # Scheduled and claimed rows are not backlog, so they cannot own a head of line
+  # either — the same population rule `ready_count` and the count breakdowns obey.
+  test "ready_backlog_breakdown takes head-of-line ages over ready work only" do
+    insert_good_jobs(1) { { queue_name: "agents", scheduled_at: 2.hours.from_now } }
+    insert_good_jobs(1) do
+      { queue_name: "agents", locked_by_id: SecureRandom.uuid, locked_at: Time.current, scheduled_at: 3.hours.ago }
+    end
+    insert_good_jobs(1) { { queue_name: "default", scheduled_at: 4.minutes.ago } }
+
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+
+    assert_equal [ "default" ], breakdown[:oldest_by_queue].keys
+    assert_equal "default", breakdown[:head_of_line][:queue]
+  end
+
+  # A future-dated row only became backlog when its scheduled time arrived, so it
+  # is charged from `scheduled_at` — charging it for the hours it spent correctly
+  # parked would make every wake-up trigger read as a stall. A row with no
+  # `scheduled_at` at all was ready when it was created.
+  test "ready_backlog_breakdown charges a head of line from scheduled_at, falling back to created_at" do
+    insert_good_jobs(1) do
+      { queue_name: "triggers", created_at: 6.hours.ago, updated_at: 6.hours.ago, scheduled_at: 2.minutes.ago }
+    end
+    insert_good_jobs(1) do
+      { queue_name: "auth", created_at: 20.minutes.ago, updated_at: 20.minutes.ago, scheduled_at: nil }
+    end
+
+    ages = HealthMonitorService.new.ready_backlog_breakdown[:oldest_by_queue]
+
+    assert_in_delta 120, ages["triggers"], 5, "a woken trigger is not charged for the wait it was parked for"
+    assert_in_delta 1200, ages["auth"], 5
+    assert_equal [ "auth", "triggers" ], ages.keys
+  end
+
+  test "ready_backlog_breakdown labels a head of line with no queue or job class instead of dropping it" do
+    insert_good_jobs(1) { { queue_name: nil, job_class: nil, scheduled_at: 8.minutes.ago } }
+
+    head = HealthMonitorService.new.ready_backlog_breakdown[:head_of_line]
+
+    assert_equal HealthMonitorService::UNKNOWN_LABEL, head[:queue]
+    assert_equal HealthMonitorService::UNKNOWN_LABEL, head[:job_class]
+  end
+
+  # The age breakdown obeys the same cap as the counts, and the cap costs nothing
+  # here: the entries are already oldest-first, so whatever it cuts is newer than
+  # everything it kept and cannot be the lane holding the backlog.
+  test "ready_backlog_breakdown caps the head-of-line ages at the oldest queues" do
+    %w[a b c d e f g].each_with_index do |queue, i|
+      insert_good_jobs(1) { { queue_name: queue, scheduled_at: (60 - i).minutes.ago } }
+    end
+
+    ages = HealthMonitorService.new.ready_backlog_breakdown[:oldest_by_queue]
+
+    assert_equal HealthMonitorService::READY_BREAKDOWN_LIMIT, ages.size
+    assert_equal [ "a", "b", "c", "d", "e" ], ages.keys
+  end
+
+  test "format_ages tells a failed read apart from an empty one" do
+    assert_equal "unavailable", HealthMonitorService.format_ages(nil)
+    assert_equal "none", HealthMonitorService.format_ages({})
+    assert_equal "inference 25m, pollers 4s",
+                 HealthMonitorService.format_ages({ "inference" => 1500, "pollers" => 4 })
   end
 
   # Three distinct answers, because they are three different facts about an
