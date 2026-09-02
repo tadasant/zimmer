@@ -3,6 +3,50 @@ require "mocha/minitest"
 require "ostruct" # OpenStruct is used to build mock agent roots; not autoloaded when this file runs in isolation
 
 class SessionTest < ActiveSupport::TestCase
+  # --- what the clone reapers ask before they delete anything (zimmer#808) ---
+
+  test "status_label normalizes every form a pluck can hand back" do
+    assert_equal "running", Session.status_label("running")
+    assert_equal "running", Session.status_label(:running)
+    assert_equal "running", Session.status_label(Session.statuses[:running])
+    # A numeric string is the hazard in disguise: it would fall through every
+    # NON_REAPABLE_STATUSES check and read as terminal.
+    assert_equal "running", Session.status_label(Session.statuses[:running].to_s)
+    assert_nil Session.status_label(nil)
+  end
+
+  test "live_status? is true for exactly the non-reapable statuses" do
+    Session::NON_REAPABLE_STATUSES.each { |status| assert Session.live_status?(status), status }
+    assert_not Session.live_status?("archived")
+    assert_not Session.live_status?("failed")
+    assert_not Session.live_status?(Session.statuses[:archived])
+    assert_not Session.live_status?(nil)
+  end
+
+  test "reap_protected? covers live sessions and sessions being unarchived" do
+    live = sessions(:running)
+    archived = sessions(:archived)
+
+    assert Session.reap_protected?(live.id)
+    assert_not Session.reap_protected?(archived.id)
+
+    archived.update!(metadata: (archived.metadata || {}).merge(
+      Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601
+    ))
+    assert Session.reap_protected?(archived.id),
+           "an unarchive is `archived` for its whole duration; status alone cannot see it"
+
+    archived.update!(metadata: (archived.metadata || {}).merge(
+      Session::UNARCHIVE_IN_FLIGHT_KEY => (Session::UNARCHIVE_GRACE_PERIOD + 1.hour).ago.utc.iso8601
+    ))
+    assert_not Session.reap_protected?(archived.id),
+               "a crashed unarchive must not pin a clone forever"
+  end
+
+  test "reap_protected? is false for a session that does not exist" do
+    assert_not Session.reap_protected?(0)
+  end
+
   # Test character limit constants
   test "PROMPT_MAX_LENGTH constant should be 500000" do
     assert_equal 500_000, Session::PROMPT_MAX_LENGTH

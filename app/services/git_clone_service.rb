@@ -145,14 +145,14 @@ class GitCloneService
 
       # Verify subdirectory exists if specified
       if subdirectory.present? && !file_system.directory?(working_directory)
-        cleanup_clone(clone_path)
+        discard_failed_clone(clone_path)
         raise GitError, "Subdirectory '#{subdirectory}' not found in repository"
       end
 
       { clone_path: clone_path, working_directory: working_directory }
     rescue StandardError => e
       # Clean up on failure
-      cleanup_clone(clone_path) if clone_path && file_system.directory?(clone_path)
+      discard_failed_clone(clone_path)
       # Preserve the transient signal through the wrapper so callers can decide
       # whether a longer-horizon retry is warranted. run_git_clone_with_retry
       # raises TransientGitError once its own retries are exhausted; a bare
@@ -173,21 +173,55 @@ class GitCloneService
     # clone aside before deleting it, so an interrupted delete can never leave a
     # half-tree wearing the clone's name (#412).
     #
+    # Guarded, too: CloneReaper re-asks the database who owns this directory at
+    # the instant of deletion and refuses if a session that is live — or being
+    # unarchived — still does. Every scheduled reaper reaches the filesystem
+    # through here, so that check covers all of them at once (#808).
+    #
+    # This is the *reaper's* door. The rollback paths in this class use
+    # #discard_failed_clone instead: they are disposing of a directory they just
+    # created and no session references, so there is nothing for the guard to
+    # protect, and failing closed there would strand a partial tree that makes
+    # the next `git clone` fail permanently.
+    #
     # @param path [String] the path to the clone
-    # @return [void]
-    def cleanup_clone(path)
+    # @param reason [String] what asked for the deletion, for the refusal log
+    # @return [Symbol, nil] CloneReaper's outcome, or nil when there was no path
+    def cleanup_clone(path, reason: "GitCloneService")
       return unless path && file_system.directory?(path)
 
-      AtomicCloneRemoval.remove(path, file_system: file_system)
+      CloneReaper.reap(path, reason: reason, file_system: file_system)
     rescue StandardError => e
       # Logged, not retried: a failure can only be raised once the clone has been
       # renamed out of the way, so the path the caller cares about is already gone
       # and a second attempt at it would be a no-op. What is left is a tombstone,
       # which the hourly clone sweeps reap.
+      #
+      # Reported as a refusal, because that is what it is from the caller's point
+      # of view: this method did not confirm the clone is gone, and a caller that
+      # reads anything else writes "clone deleted" into a session log about a
+      # directory that may still be there.
       logger.error("Failed to cleanup clone", path: path, error: e.message)
+      :refused
     end
 
     private
+
+    # Dispose of a clone directory this class just created and is rolling back.
+    #
+    # Deliberately NOT through CloneReaper: the path is not in any session's
+    # `clone_path` yet, so the ownership question has no answer worth asking —
+    # while a guard that fails closed on a database blip would leave a partial
+    # tree here, and `git clone` into a non-empty directory fails with an error
+    # #transient_clone_error? does not recognise, turning a retryable failure
+    # into a permanent one. Atomic all the same (#412).
+    def discard_failed_clone(path)
+      return unless path && file_system.directory?(path)
+
+      AtomicCloneRemoval.remove(path, file_system: file_system)
+    rescue StandardError => e
+      logger.error("Failed to discard a failed clone", path: path, error: e.message)
+    end
 
     # Translate the guard's refusal into a GitError subclass so it flows through
     # the callers' existing rescue paths (AgentSessionJob fails the session and
@@ -224,7 +258,7 @@ class GitCloneService
               error: e.message,
               sleep_seconds: delay
             )
-            cleanup_clone(clone_path) if file_system.directory?(clone_path)
+            discard_failed_clone(clone_path)
             sleeper.call(delay)
             next
           end

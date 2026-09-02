@@ -36,6 +36,22 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
     assert_not_includes orphans, @recent_dir, "Recent directory should not be identified as orphan"
   end
 
+  # zimmer#808. `find_orphan_directories` builds its ownership snapshot before the
+  # loop, and each removal costs a Docker Compose teardown bounded at 120s plus a
+  # recursive delete. Blinding the snapshot leaves only the guard that asks at the
+  # instant of deletion.
+  test "refuses to remove a clone a live session owns even when the orphan snapshot missed it" do
+    session = sessions(:running)
+    session.update!(metadata: { "clone_path" => @orphan_dir })
+
+    job = OrphanCloneFilesystemCleanupJob.new
+    job.stubs(:find_orphan_directories).returns([ @orphan_dir ])
+
+    job.perform
+
+    assert File.directory?(@orphan_dir), "a live session's clone must survive the orphan sweep"
+  end
+
   test "does not remove directories tracked by sessions" do
     session = sessions(:running)
     session.update!(metadata: { "clone_path" => @orphan_dir })

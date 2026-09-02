@@ -146,16 +146,85 @@ class StaleCloneCleanupJob < ApplicationJob
       .where("metadata->>'clone_path' IS NOT NULL")
   end
 
+  # Whether `session` is still a session this job may reap, asked of the database
+  # right now rather than taken from the status the candidate scope matched.
+  #
+  # Two things move under this job. The scopes above are plucked at the top of
+  # the run and then worked through one directory at a time, each costing a
+  # recursive delete of a whole working tree — so a session unarchived, or a
+  # failed one resumed, inside that gap is live by the time its turn comes up.
+  # And an unarchive is `archived` for its whole duration, which makes a session
+  # that is having a *new* clone built for it right now look exactly like one
+  # whose old clone was abandoned. `Session.reap_protected?` answers both (#808).
+  #
+  # Fails closed: a question we cannot answer is answered "protected". This
+  # method guards the whole of #cleanup_session_clone regardless of how the
+  # caller got here, so it does not assume the caller re-read the row.
+  def reapable_now?(session)
+    return true unless Session.reap_protected?(session.id)
+
+    Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it is live, or being unarchived, " \
+      "as of now — this run picked it as a stale-clone candidate on a status that has since changed"
+    false
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.error "[StaleCloneCleanupJob] Could not re-check the status of session #{session.id} " \
+      "(#{e.class}: #{e.message}); leaving its resources alone"
+    false
+  end
+
   # Returns true if any resources were actually cleaned up on disk.
   def cleanup_session_clone(session)
+    return false unless reapable_now?(session)
+
     cleaned_anything = false
 
     clone_path = session.metadata&.dig("clone_path")
     if clone_path.present? && File.directory?(clone_path)
-      GitCloneService.cleanup_clone(clone_path)
+      if GitCloneService.cleanup_clone(clone_path, reason: "StaleCloneCleanupJob stale-clone scope") == :refused
+        return false
+      end
+
       Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale clone for session #{session.id}: #{clone_path}"
       cleaned_anything = true
     end
+
+    # Asked again, because deleting the clone above is the slow part of this
+    # method and everything below it is unrecoverable — no remote to re-fetch it
+    # from, and nothing for unarchive to restore it out of. A session that woke
+    # up in between keeps its durable state; the clone is already gone, so the
+    # log at the bottom of this method still has something to record.
+    if reapable_now?(session)
+      cleaned_anything = cleanup_durable_state(session) || cleaned_anything
+
+      # Inside the gate, not after it. Preserved artifacts are the git bundle and
+      # patch of this session's uncommitted work — the thing UnarchiveSessionService
+      # restores from, and the last copy of it once the clone above is gone.
+      artifact_service = CloneArtifactService.new
+      if artifact_service.cleanup_artifacts(session.id)
+        Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale artifacts for session #{session.id}"
+        cleaned_anything = true
+      end
+    end
+
+    return false unless cleaned_anything
+
+    with_db_retry do
+      session.logs.create!(
+        content: "Stale resources cleaned up by periodic job",
+        level: "info"
+      )
+    end
+
+    true
+  end
+
+  # The per-session state that lives on the durable volume next to the clone.
+  # Split out so the caller can re-check liveness immediately before it, rather
+  # than inheriting a status read from before the clone delete.
+  #
+  # @return [Boolean] whether anything was removed
+  def cleanup_durable_state(session)
+    cleaned_anything = false
 
     # Reclaim the durable per-session scratch directory alongside the clone.
     # Unlike the trash path, this job only sees sessions that are genuinely
@@ -186,22 +255,7 @@ class StaleCloneCleanupJob < ApplicationJob
       cleaned_anything = true
     end
 
-    artifact_service = CloneArtifactService.new
-    if artifact_service.cleanup_artifacts(session.id)
-      Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale artifacts for session #{session.id}"
-      cleaned_anything = true
-    end
-
-    return false unless cleaned_anything
-
-    with_db_retry do
-      session.logs.create!(
-        content: "Stale resources cleaned up by periodic job",
-        level: "info"
-      )
-    end
-
-    true
+    cleaned_anything
   end
 
   # Filesystem-level sweep: finds clone directories not referenced by any active
@@ -278,7 +332,11 @@ class StaleCloneCleanupJob < ApplicationJob
         mtime = File.mtime(full_path)
         next if mtime > cutoff
 
-        GitCloneService.cleanup_clone(full_path)
+        # The ownership snapshot above was taken before this loop started, and the
+        # loop deletes whole working trees one at a time. CloneReaper asks again
+        # at the instant of deletion (#808).
+        next if GitCloneService.cleanup_clone(full_path, reason: "StaleCloneCleanupJob orphan sweep") == :refused
+
         Rails.logger.info "[StaleCloneCleanupJob] Swept orphaned clone directory: #{full_path} (mtime: #{mtime.iso8601})"
         cleaned += 1
       rescue => e
