@@ -11,7 +11,12 @@ require "open3"
 #   - AirPrepareService (runs `air prepare`, which itself shells out to
 #     `git clone` for the catalog repo)
 #
-# Both run synchronously inside AgentSessionJob *before* the session transitions
+# and by one that is neither on that path nor network-bound:
+#   - GitIdentityProvisioner (writes the commit identity into ~/.gitconfig at
+#     boot), which uses the watchdog only so that a `git config` wedged on its own
+#     lock cannot hold up the boot
+#
+# The first two run synchronously inside AgentSessionJob *before* the session transitions
 # to `running`, so a stalled clone — e.g. a half-open HTTPS connection during
 # fetch-pack that never sends a TCP reset — would block the calling thread and
 # wedge the session in `waiting` forever with no output and no recovery (the

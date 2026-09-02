@@ -84,8 +84,16 @@ env:
     #
     # In the clear because neither half is a secret: an author name and email are
     # published in every commit they sign.
-    ZIMMER_GIT_USER_NAME: <%= ENV.fetch("ZIMMER_GIT_USER_NAME", "") %>
-    ZIMMER_GIT_USER_EMAIL: <%= ENV.fetch("ZIMMER_GIT_USER_EMAIL", "") %>
+    #
+    # `.to_json`, and not the bare interpolation every other value here uses.
+    # Kamal validates `env.clear` as a hash of strings, and an unset
+    # variable renders to nothing — which YAML reads as `nil`, not `""`, so every
+    # kamal command (deploy included) dies with "env/clear/ZIMMER_GIT_USER_NAME:
+    # should be a string" on precisely the unconfigured deployment this is supposed
+    # to degrade gracefully for. JSON-encoding emits `""` for that case, and quotes
+    # a name containing a `"` rather than ending the scalar early.
+    ZIMMER_GIT_USER_NAME: <%= ENV.fetch("ZIMMER_GIT_USER_NAME", "").to_json %>
+    ZIMMER_GIT_USER_EMAIL: <%= ENV.fetch("ZIMMER_GIT_USER_EMAIL", "").to_json %>
 
 aliases:
   console: app exec --interactive --reuse "bin/rails console"

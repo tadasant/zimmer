@@ -351,6 +351,15 @@ Three details are load-bearing:
   history and is not. That is the [limitation this
   leaves](/limitations/#a-deployment-that-configures-no-git-identity-still-cannot-commit).
 
+Worth being explicit about what this settles rather than solves: **every agent commit is authored as
+whatever identity you configure, with nothing in `git log` distinguishing it from a commit the human
+typed.** Configuring the operator's own name and email — which is what the observed norm already was,
+198 of the last 200 commits — makes that uniform and deliberate instead of rediscovered per session,
+but it does not make agent authorship legible. A deployment that wants that separation should give
+the sessions their own identity here; the mechanism does not care which you pick. Attribution *of a
+push* is a different and still-open problem — every session shares one GitHub token
+([#214](https://github.com/tadasant/zimmer/issues/214)).
+
 ## Where secrets end up that they shouldn't
 
 :::caution[The Tailscale auth key is in the droplet's `user_data`]
