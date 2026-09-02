@@ -250,6 +250,16 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "raises CatalogError when AIR CLI installation leaks a filesystem error" do
+    AirPrepareService.stub(:ensure_air_installed!, ->(*) { raise Errno::EXDEV, "overlay swap" }) do
+      error = assert_raises(AirCatalogService::CatalogError) do
+        AirCatalogService.entries_for(:skills)
+      end
+      assert_match(/AIR CLI installation failed/, error.message)
+      assert_match(/Errno::EXDEV/, error.message)
+    end
+  end
+
   test "raises CatalogError, not Errno::ENOENT, when the air binary is not there to spawn" do
     # A binary that exits non-zero comes back as a failed status; a binary that
     # is missing raises out of the spawn itself as a SystemCallError, which no

@@ -140,7 +140,14 @@ module ConnectionBudget
       pollers: int_env("GOOD_JOB_POLLERS_THREADS", 3),
       triggers: int_env("GOOD_JOB_TRIGGERS_THREADS", 2),
       auth: int_env("GOOD_JOB_AUTH_THREADS", 2),
-      default: int_env("GOOD_JOB_DEFAULT_THREADS", 4)
+      # Blocking one-shot inference used to share `default` and reject work
+      # above a GoodJob perform limit. A burst then became a retry storm: every
+      # rejected job wrote another future-scheduled row and came back to fight
+      # for the same advisory lock. Give the blocking work a real lane instead.
+      # The two lanes still total four threads, so this changes scheduling
+      # without increasing the database connection promise.
+      inference: int_env("GOOD_JOB_INFERENCE_THREADS", 2),
+      default: int_env("GOOD_JOB_DEFAULT_THREADS", 2)
     }
   end
 

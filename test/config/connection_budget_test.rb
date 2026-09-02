@@ -25,7 +25,8 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
   KNOBS = %w[
     RAILS_ENV RAILS_MAX_THREADS DB_POOL CABLE_DB_POOL
     GOOD_JOB_AGENTS_THREADS GOOD_JOB_POLLERS_THREADS
-    GOOD_JOB_TRIGGERS_THREADS GOOD_JOB_AUTH_THREADS GOOD_JOB_DEFAULT_THREADS
+    GOOD_JOB_TRIGGERS_THREADS GOOD_JOB_AUTH_THREADS GOOD_JOB_INFERENCE_THREADS
+    GOOD_JOB_DEFAULT_THREADS
   ].freeze
 
   # ConnectionBudget reads the process's shape from ENV and $PROGRAM_NAME, because that
@@ -105,8 +106,25 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
   test "the queue string GoodJob is configured with is the one the budget counted" do
     as_worker("GOOD_JOB_AGENTS_THREADS" => 20) do
       assert_includes ConnectionBudget.good_job_queues, "agents:20"
-      assert_equal 20 + 3 + 2 + 2 + 4, ConnectionBudget.good_job_scheduler_threads
+      assert_equal 20 + 3 + 2 + 2 + 2 + 2, ConnectionBudget.good_job_scheduler_threads
     end
+  end
+
+  test "the inference lane replaces half of default without adding database connections" do
+    as_worker do
+      threads = ConnectionBudget.good_job_queue_threads
+
+      assert_equal 2, threads.fetch(:inference)
+      assert_equal 2, threads.fetch(:default)
+      assert_includes ConnectionBudget.good_job_queues, "inference:2"
+      assert_equal 27, ConnectionBudget.good_job_scheduler_threads
+    end
+
+    baseline = as_worker { ConnectionBudget.required_backends }
+    rebalanced = as_worker("GOOD_JOB_INFERENCE_THREADS" => 1, "GOOD_JOB_DEFAULT_THREADS" => 3) do
+      ConnectionBudget.required_backends
+    end
+    assert_equal baseline, rebalanced
   end
 
   test "the auth lane is declared, sized, and knob-configured like every other lane" do

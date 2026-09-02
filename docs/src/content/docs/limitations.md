@@ -525,16 +525,16 @@ Two initializers enqueue onto `default` as soon as the worker comes up: `post_de
 schedules `CacheClearJob` at +10s, which chains `McpPackageReinstallJob` — an `npx` install of every
 catalog MCP package — whenever it actually cleared the npx cache; and `deployment_recovery` schedules
 `DeploymentRecoveryJob` at +30s, which auto-continues every session the deploy just orphaned.
-`default` has 4 scheduler threads (`ConnectionBudget.good_job_queue_threads`) shared by ~30 job
+`default` has 2 scheduler threads (`ConnectionBudget.good_job_queue_threads`) shared by ~30
+non-inference job
 classes, so for the first minutes of every deploy part of the queue is committed to boot work — and
 that is exactly the window in which a post-cutover check is most likely to look at `default` and
 conclude it is wedged.
 
-Be careful how much this explains. These jobs run at most two at a time, so they cannot by
-themselves account for all four threads being unavailable; a `default` queue that completes *nothing*
-for minutes needs a further cause, and the candidates are the ones below — a worker wedged on jobs it
-has already claimed, or threads held by jobs blocking on a slow external API. Boot work narrows the
-margin rather than being the whole story.
+These two jobs can occupy both default threads, so a post-cutover delay in that lane is expected
+while they run. Blocking title, status-summary, and needs-input notification inference cannot add to
+it: those jobs have their own two-thread `inference` lane. A `default` queue that completes nothing
+after the bounded boot jobs finish still points to a wedged worker or a different slow external call.
 
 `McpPackageReinstallJob` is bounded (`PREINSTALL_TIMEOUT_SECONDS`, 900) so a stalled npm cannot hold
 its thread until the next restart. The contention itself is not fixed: the jobs still share `default`

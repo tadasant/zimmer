@@ -27,13 +27,12 @@
 #   the wait, the counter will have advanced and the job no-ops. This prevents
 #   spurious notifications for brief between-turn transitions.
 class SendPushNotificationJob < ApplicationJob
-  queue_as :default
-
-  # The notification blurb is a blocking inference call (SUMMARY_TIMEOUT), and
-  # `pause` enqueues one of these alongside a status-summary refresh for the same
-  # session — so during an outage this class arrives at the same rate as the
-  # summaries and must draw on the same bounded share of `default`.
-  include BlockingInferenceBounded
+  # Only `needs_input` builds an AI blurb; the other notification types are
+  # deterministic and should not wait behind inference. ActiveJob evaluates
+  # this block from the serialized arguments at enqueue time.
+  queue_as do
+    arguments.second.to_s == "needs_input" ? :inference : :default
+  end
 
   # Don't retry if session is not found
   discard_on ActiveRecord::RecordNotFound

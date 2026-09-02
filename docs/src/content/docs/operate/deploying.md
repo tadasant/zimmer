@@ -914,8 +914,9 @@ Two things follow from this that did not used to be true:
 `/up/deep` proves the web process can reach its backing services. It says nothing about whether the
 `worker` container is claiming jobs — and on 2026-08-13 a deploy passed every automated check while
 production processed zero background jobs for ten hours. The post-deploy drain gate closes that hole:
-it enqueues a canary onto `default`, `pollers`, `triggers` and `agents` at negative priority, and
-fails the deploy if the worker does not claim and finish each one inside a bounded timeout.
+it enqueues a canary onto all six scheduler lanes at negative priority. `default`, `inference`,
+`pollers` and `triggers` are gated; `agents` and `auth` are advisory because their threads can
+legitimately be held for an entire agent turn or interactive login.
 
 The job it enqueues is `app/jobs/canary_job.rb` — a no-op that logs its token and returns. Everything
 about it is a constraint rather than a feature:
@@ -934,14 +935,14 @@ about it is a constraint rather than a feature:
   deploy. Renaming or deleting `CanaryJob` reinstates exactly that.
 
 One thing the gate still cannot see:
-[queue recovery mode](/operate/background-jobs/#queue-recovery-mode) pauses `default`, `pollers` and
-`triggers` via `GoodJob.pause`, and that pause is persisted in `good_job_settings`, so it survives a
-deploy. A cutover that lands while recovery mode is active fails the drain check on three of its four
-queues with a perfectly healthy worker. The gate is the piece that has to learn to read
+[queue recovery mode](/operate/background-jobs/#queue-recovery-mode) pauses `default`, `inference`,
+`pollers` and `triggers` via `GoodJob.pause`, and that pause is persisted in `good_job_settings`, so it
+survives a deploy. A cutover that lands while recovery mode is active fails the drain check on all
+four gated queues with a perfectly healthy worker. The gate is the piece that has to learn to read
 `GoodJob.paused(:queues)` and skip rather than fail; nothing in this repo can do it for it.
 
 `test/jobs/canary_job_test.rb` holds each of those lines, including a round trip through a real
-GoodJob row on all four queues.
+GoodJob row on all six queues.
 
 ### The worker watchdog is converged on every deploy
 

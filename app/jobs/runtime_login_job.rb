@@ -23,15 +23,15 @@ class RuntimeLoginJob < ApplicationJob
   # Runs on the dedicated `auth` queue rather than `default`. A human is watching
   # the /quotas login panel say "Starting the login CLI and waiting for a
   # verification link..." for exactly as long as this job sits unstarted, and on
-  # `default` it sat behind four threads shared with ~30 other job classes --
+  # `default` it sat behind a small thread pool shared with ~30 other job classes --
   # fifteen of them cron'd as often as every 30 seconds, several of them (bundle
-  # install, npm installs, transcript archiving, LLM title/summary calls) running
+  # install, npm installs, transcript archiving) running
   # for minutes. Worse, this job used to starve ITSELF: it pins its thread for as
   # long as the login CLI is open, up to MAX_DURATION, so two earlier logins took
   # half of `default` with them.
   #
   # GoodJob `priority` is not a substitute. Priority orders the queue at dequeue
-  # time; it does not preempt a running job. When all four threads are already
+  # time; it does not preempt a running job. When all threads are already
   # inside multi-minute work, the highest-priority job in the system still waits
   # for one to finish. Only a scheduler of its own gives an interactive login a
   # thread it cannot be denied.
