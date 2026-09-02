@@ -36,6 +36,22 @@ Rotating the deploy key is rare; changing the domain is rarer. But neither is a 
 
 Tracked in [#121](https://github.com/tadasant/zimmer/issues/121).
 
+### A deployment that configures no git identity still cannot commit
+
+`GitIdentityProvisioner` writes `user.name` / `user.email` into `~/.gitconfig` at boot from
+`ZIMMER_GIT_USER_NAME` / `ZIMMER_GIT_USER_EMAIL` ([provisioning](/operate/provisioning/#the-git-identity-an-agent-session-commits-with)).
+Set neither, or only one, and it writes nothing: a session in that deployment still meets
+`Author identity unknown` on its first commit, exactly as it did before that class existed.
+
+**No issue tracks this, deliberately** — it is a design choice, not a defect awaiting a fix.
+
+That is the deliberate half of the fix, not an oversight. The alternative is a default identity baked
+into the repo, which would put Zimmer's guess — `Zimmer Agent <zimmer@localhost>` — into a
+self-hoster's git history, silently and irreversibly. A missing identity fails loudly at commit time
+and the session can recover; a wrong one is in the history forever. So the failure mode is preserved
+on purpose for a deployment that has not said who it is, and the boot log says so in one line naming
+both variables.
+
 ### The DigitalOcean metrics agent reaches only a droplet Terraform creates, never one that exists
 
 `digitalocean_droplet.zimmer` sets `monitoring = true`, so a droplet this module creates boots with
