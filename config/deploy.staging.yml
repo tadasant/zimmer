@@ -112,6 +112,12 @@ env:
     # runs as root, and the entrypoint's dockerd block is inside the `id -u = 0`
     # branch. web reads it as uid 1000 and skips the whole thing.
     ZIMMER_NESTED_DOCKER: "<%= nested_docker ? "1" : "0" %>"
+    # Per-session memory bound, in MB (SessionMemoryCgroup) -- production's mechanism,
+    # sized for staging's 2g worker rather than copied from its 4096. A bound at or above
+    # the container cap is not a bound: the container would OOM first and the per-session
+    # cgroup would never trip, so staging would ship the code without ever exercising it.
+    # 1024 leaves room for the Rails worker under the 2g cap and still bounds a session.
+    ZIMMER_SESSION_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSION_MEMORY_MAX_MB", "1024") %>"
     # Canonical external host: the custom domain (Caddy terminates TLS on :443 in
     # front of kamal-proxy). Without this, McpOauthService falls back to
     # localhost:3000 and every OAuth callback breaks.

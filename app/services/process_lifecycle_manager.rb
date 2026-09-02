@@ -782,11 +782,16 @@ class ProcessLifecycleManager
   def handle_signal_death(status, working_dir)
     signal_desc = exit_status_description(status)
     retry_count = BUDGET.count_for(session)
+    # "likely OOM" used to be the best this could say. Where the session has its own
+    # memory cgroup, the kernel's own counter says whether it was, and how close to the
+    # bound the session got — see #session_memory_kill.
+    memory_kill = session_memory_kill
+    cause_clause = memory_kill ? memory_kill[:clause] : "(likely OOM or external kill)"
 
     if BUDGET.exhausted?(session)
       add_log(
-        "Process killed by #{signal_desc} and signal-death resume limit reached " \
-        "(#{BUDGET.max} attempts) — failing session",
+        "Process killed by #{signal_desc} #{cause_clause} and signal-death resume limit " \
+        "reached (#{BUDGET.max} attempts) — failing session",
         level: "warning"
       )
       @logger.warn("Signal-death resume limit exhausted", signal: signal_desc, attempts: retry_count)
@@ -811,7 +816,7 @@ class ProcessLifecycleManager
     end
 
     add_log(
-      "Process killed by #{signal_desc} (likely OOM or external kill) — resuming session " \
+      "Process killed by #{signal_desc} #{cause_clause} — resuming session " \
       "(attempt #{next_attempt}/#{BUDGET.max})",
       level: "info"
     )
@@ -823,9 +828,53 @@ class ProcessLifecycleManager
     # failed_resume_recovery path, which restarts fresh from the best durable prompt.
     spawn_continuation(
       working_dir: working_dir,
-      prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+      prompt: memory_kill ? memory_kill[:prompt] : AutomatedPrompts::SYSTEM_RECOVERY,
       reason: "signal death (#{signal_desc})"
     )
+  end
+
+  # Did this session's own memory bound kill the process, and what should we say?
+  #
+  # A signal death is SIGKILL either way, so the status cannot tell an OOM from an
+  # external kill — which is why the log line here has always hedged with "likely OOM".
+  # A session with its own cgroup (SessionMemoryCgroup) has the kernel's own counter,
+  # and the answer is a delta rather than an absolute: SessionMemoryWatch records every
+  # OOM kill it observes while the session runs, so a count that has moved SINCE the
+  # last observation is this death, while an unmoved count is a subprocess the watch
+  # already reported and this death is something else.
+  #
+  # Best-effort — an unreadable cgroup means we say what we have always said.
+  #
+  # @return [Hash{Symbol => String}, nil] :clause for the session log, :prompt for the
+  #   agent's own resume. nil when the bound did not do this.
+  def session_memory_kill
+    cgroup = SessionMemoryCgroup.for(session.id)
+    return nil if cgroup.nil?
+
+    stats = cgroup.stats
+    observed = stats.oom_kills
+    return nil if observed.nil?
+    return nil if observed <= session.metadata[SessionMemoryWatch::OOM_KILL_COUNT_KEY].to_i
+
+    with_db_retry do
+      session.merge_metadata!(SessionMemoryWatch::OOM_KILL_COUNT_KEY => observed)
+    end
+
+    limit = number_to_human_size(stats.limit_bytes)
+    peak = number_to_human_size(stats.peak_bytes)
+    {
+      clause: "(the session reached its #{limit} memory limit; peak #{peak})",
+      prompt: AutomatedPrompts.memory_limit_recovery(limit: limit, peak: peak)
+    }
+  rescue StandardError => e
+    @logger.warn("Could not read the session memory cgroup", error: e.message)
+    nil
+  end
+
+  def number_to_human_size(bytes)
+    return "unknown" if bytes.nil?
+
+    ActiveSupport::NumberHelper.number_to_human_size(bytes)
   end
 
   # Handle context length error with /compact retry

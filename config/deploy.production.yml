@@ -107,6 +107,14 @@ servers:
       # So this does NOT fix #449; it bounds its blast radius. Until that leak is
       # understood, sustained heavy load still ends in a worker restart that interrupts the
       # sessions on it. What changes is that the rest of the droplet stays up.
+      #
+      # One thing above IS now solved rather than accepted. "Jobs whose peak allocation is
+      # a function of the data they touch" still is; "agent sessions" is not. #815 caught a
+      # session's own `bash` at 6.5 GiB of anonymous RSS against this cap, so
+      # ZIMMER_SESSION_MEMORY_MAX_MB (below) now gives each session its own cgroup and its
+      # own bound underneath this one. This cap is still what protects the HOST, and is
+      # still sized on the numbers above; the per-session bound is what stops one session
+      # from being the reason this cap is ever reached.
       memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer
@@ -130,6 +138,23 @@ env:
     # above). The entrypoint reads it to decide whether to start an inner dockerd,
     # and refuses if the container turns out not to be user-namespaced.
     ZIMMER_NESTED_DOCKER: "<%= ENV.fetch("ZIMMER_NESTED_DOCKER", "0") %>"
+    # Per-session memory bound, in MB (SessionMemoryCgroup). Each agent session gets its
+    # own cgroup with this memory.max, so a runaway command exhausts its own budget and
+    # the kernel's kill lands inside the session that caused it -- rather than inside the
+    # 10g cap this role shares with the Rails worker, the inner dockerd and every other
+    # session (#815).
+    #
+    # 4096 does NOT sum to the container cap and is not meant to: six sessions at 4 GiB is
+    # 24 GiB against 10g. It bounds ONE runaway, which is the failure that has actually
+    # happened; an admission-control budget would have to sit near 1.5 GiB and would start
+    # killing sessions that work today. It sits roughly an order of magnitude above the
+    # measured per-session cost (1.6 GiB anon TOTAL at 3 concurrent sessions, worker
+    # included) and well under the 6.5 GiB runaway it exists to catch. `memory.peak` is now
+    # recorded per session, so the number can be tightened on evidence.
+    #
+    # Set it here rather than on the box: 0 disables the bound entirely, which is the
+    # break-glass an incident might need, and it ships as a deploy like everything else.
+    ZIMMER_SESSION_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSION_MEMORY_MAX_MB", "4096") %>"
     APP_HOST: zimmer.tadasant.com
     # Read the catalog from the mounted production catalog (delivered by
     # artifacts-sync-prod). production.rb falls back to the in-image catalog when this
