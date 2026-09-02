@@ -1,8 +1,7 @@
 require "test_helper"
 
-# The prompt half of the prod 12265/12267 stall: a recovery pause promises a sweep will continue the
-# session, and until this job existed the only thing keeping that promise was a
-# five-minute cron.
+# The prompt half of the prod 12265/12267 stall: a recovery pause promises a sweep
+# will continue the session, and a five-minute cron alone keeps that promise slowly.
 class RecoveryContinuationJobTest < ActiveJob::TestCase
   setup do
     @clone_path = Dir.mktmpdir("recovery_continuation_job_test")
