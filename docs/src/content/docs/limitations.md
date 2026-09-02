@@ -4041,6 +4041,57 @@ predates the INFO/ERROR split and the split neither causes it nor fixes it. Clos
 positive marker for "a re-clone is in flight" rather than a wider exemption — widening the
 exemption to "any session without the key" would swallow the defect the ERROR exists to catch.
 
+## Nothing prunes the transcripts the old Claude auth probe left behind
+
+`CliStatusService` used to check Claude Code's auth with `claude whoami`. `whoami` is not a
+subcommand and `claude`'s usage line is `claude [options] [command] [prompt]`, so the CLI took
+the word as a *prompt* and answered it with a full agent turn — every two minutes, on cron,
+for months ([#536](https://github.com/tadasant/zimmer/issues/536)). The check no longer makes
+a model call, so the bleeding has stopped.
+
+The debris has not been cleaned up. Each of those runs left a JSONL transcript under
+`~/.claude/projects/-rails/`, and tens of thousands of them are still on the `claude_home`
+volume. Nothing in Zimmer prunes that directory — `StaleCloneCleanupJob` sweeps clones and
+per-session config dirs, not the shared projects tree — and deleting them by hand would need a
+shell on the production box, which is exactly the ops shape
+[the deploy is supposed to replace](/operate/deploying/). They are inert: `TokenUsageBackfill`
+has already ingested them, so they cost disk rather than money or correctness.
+
+## `claude auth status` cannot see the credential Zimmer's containers use
+
+The obvious replacement for the probe above was `claude auth status` — a real subcommand, and
+the direct analog of the `gh auth status` and `codex login status` in the same hash. It is the
+wrong check here. Verified against CLI 2.1.258, it reports only credentials it finds in the
+*environment*: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. Pointed at a
+`~/.claude/.credentials.json` holding a complete `claudeAiOauth` pair — the store the `web` and
+`worker` containers authenticate from — it prints `Not logged in` and exits 1. It also exits 0
+for an `ANTHROPIC_API_KEY` that is pure nonsense, because presence is all it checks.
+
+So the CLI has no invocation that answers "is Zimmer's stored Claude credential usable", and
+the check reads `ClaudeCredentialHealth` in-process instead. That is the better answer anyway —
+it follows the credential into the DB under
+[session-scoped credentials](#session-scoped-credentials-leave-the-shared-file-behind-on-purpose),
+where no file exists to inspect — but it does mean the Claude Code tile is reporting on
+Zimmer's own credential store rather than on what the binary would do if you ran it. Two
+consequences worth stating plainly, because the tile does not state them:
+
+**The tile reports presence, not liveness.** `ClaudeCredentialHealth` bottoms out in
+`ClaudeAccount.complete_claude_oauth?`, which asks whether an access token and a refresh token
+are both there and non-empty. It does not ask Anthropic. A revoked or spent pair sitting on disk
+reads as *Authenticated*. `claude whoami` did make a real call, so it was — incidentally, and at
+about \$615/mo — the only liveness signal this tile ever had. What catches a dead credential now
+is the account pool's own refresh sweep and the auth-outage park, both of which run against the
+vendor; the tile is a configuration check, like the three beside it.
+
+**Under session-scoped credentials it reports on one account, not on the pool.**
+`ClaudeCredentialHealth#database_status` keys off `ClaudeAccount.current_account`, because that
+is the row a spawning session is actually handed a token out of. So a deployment with the setting
+on can show *Not Authenticated* while a perfectly healthy pool sits behind it — no row is current
+yet on a fresh worker, or the current row's stored pair is incomplete and
+`AccountRotationService` would rotate past it on the next spawn. The setting is off by default, and
+the same narrowing is already what the `/health` Agent Authentication card reports, so the two
+surfaces agree; `/quotas` is the page that shows the whole pool.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

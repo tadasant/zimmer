@@ -15,6 +15,16 @@ class CliStatusServiceTest < ActiveSupport::TestCase
     Rails.cache = @original_cache
   end
 
+  # Deliberately public: `test "..."` is `define_method`, so it inherits the
+  # enclosing default visibility, and minitest only collects PUBLIC `test_*`
+  # methods. A `private` section anywhere in this class turns every test written
+  # below it into a method that is defined, never run, and never reported.
+  def credential_status(state)
+    ClaudeCredentialHealth::Status.new(
+      state: state, detail: "stubbed #{state}", owner_email: "operator@example.com", checked_at: Time.current
+    )
+  end
+
   # ==========================================================================
   # Class Constants
   # ==========================================================================
@@ -220,5 +230,134 @@ class CliStatusServiceTest < ActiveSupport::TestCase
   test "codex check_version invokes codex --version" do
     config = CliStatusService::CLI_TOOLS[:codex]
     assert_equal "codex --version", config[:check_version]
+  end
+
+  # ==========================================================================
+  # No auth check may reach a billable path (#536)
+  #
+  # `claude whoami` was the auth check for months. `whoami` is not a Claude Code
+  # subcommand, and `claude`'s usage line is `claude [options] [command]
+  # [prompt]` — so the CLI took the word as a PROMPT and answered it with a full
+  # agent turn, every two minutes on cron. `check_auth` only read the exit
+  # status, so a successful inference call read as "authenticated".
+  #
+  # These are the guards against that shape coming back, for Claude Code and for
+  # every sibling entry in the same hash.
+  # ==========================================================================
+
+  # Every subcommand `claude --help` lists, verified against CLI 2.1.258. Any
+  # other first argument is a prompt, and a prompt costs money.
+  CLAUDE_SUBCOMMANDS = %w[
+    agents attach auth auto-mode doctor gateway import install logs mcp plugin
+    plugins project respawn rm setup-token stop kill ultrareview update upgrade
+  ].freeze
+
+  # `gh`, `codex` and `fly` were checked directly: each rejects an unrecognized
+  # subcommand with an error rather than taking it as a prompt, so their exposure
+  # is smaller than Claude Code's. `pi` is an agent CLI and was not available to
+  # check, which is the reason its entry is narrow rather than generous — an
+  # allowlist that only names the subcommand actually in use is safe either way.
+  NON_INFERENCE_SUBCOMMANDS = {
+    "claude" => CLAUDE_SUBCOMMANDS,
+    "gh" => %w[auth],
+    "codex" => %w[login],
+    "pi" => %w[auth],
+    "fly" => %w[auth],
+    "flyctl" => %w[auth]
+  }.freeze
+
+  # Covers every entry that CARRIES a shell auth check, not only the ones that run
+  # one: `pi` and `fly` are `auth_method: :env_var`, so `check_tool` answers from
+  # ENV and their `check_auth` string is inert until somebody flips them to
+  # `:oauth`. That flip is exactly when an unnoticed bare prompt would go live.
+  test "no shell auth check hands a bare prompt to its CLI" do
+    CliStatusService::CLI_TOOLS.each do |tool_name, config|
+      check = config[:check_auth]
+      next if check.blank? || check.respond_to?(:call)
+
+      # "fly auth whoami || flyctl auth whoami" is two commands, both of which count.
+      check.split("||").each do |command|
+        binary, subcommand, = command.strip.split
+        allowed = NON_INFERENCE_SUBCOMMANDS[binary]
+
+        assert allowed,
+          "#{tool_name} auth check invokes unknown binary #{binary.inspect}; add it to " \
+          "NON_INFERENCE_SUBCOMMANDS with the subcommands that make no model call"
+        assert_includes allowed, subcommand,
+          "#{tool_name} auth check #{command.strip.inspect} does not name a real subcommand of " \
+          "#{binary}. For an agent CLI that means the argument is billed as a PROMPT (see #536)"
+      end
+    end
+  end
+
+  test "the Claude Code auth check is a callable and never shells out" do
+    check = CliStatusService::CLI_TOOLS[:claude][:check_auth]
+
+    assert check.respond_to?(:call),
+      "The Claude Code auth check must not be a shell command: no `claude` invocation can answer " \
+      "\"is Zimmer's stored credential usable\" — `claude auth status` only reads the environment " \
+      "and reports Not logged in against ~/.claude/.credentials.json (#536)"
+    refute_kind_of String, check
+  end
+
+  test "the Claude Code auth check reports authenticated when the credential is ok" do
+    ClaudeCredentialHealth.stub(:status, credential_status(:ok)) do
+      assert_equal true, CliStatusService::CLI_TOOLS[:claude][:check_auth].call
+    end
+  end
+
+  test "the Claude Code auth check reports unauthenticated for every unusable credential state" do
+    %i[absent mcp_only corrupt].each do |state|
+      ClaudeCredentialHealth.stub(:status, credential_status(state)) do
+        assert_equal false, CliStatusService::CLI_TOOLS[:claude][:check_auth].call,
+          "credential state #{state} must not report as authenticated"
+      end
+    end
+  end
+
+  test "checking Claude Code auth makes no subprocess call at all" do
+    service = CliStatusService.new
+    spawned = []
+
+    ClaudeCredentialHealth.stub(:status, credential_status(:ok)) do
+      service.stub(:check_command, ->(command) { spawned << command; true }) do
+        service.stub(:get_version, ->(command) { spawned << command; "2.1.258" }) do
+          status = service.send(:check_tool, :claude)
+          assert status[:authenticated]
+        end
+      end
+    end
+
+    # `which claude` and `claude --version` are the only commands that may run,
+    # and neither reaches inference.
+    assert_equal [ "which claude", "claude --version" ], spawned
+  end
+
+  test "a raising auth check reports unauthenticated instead of failing the refresh" do
+    service = CliStatusService.new
+    assert_equal false, service.send(:check_auth, -> { raise "boom" })
+  end
+
+  test "check_auth still reads the exit status of a shell command" do
+    service = CliStatusService.new
+    assert_equal true, service.send(:check_auth, "true")
+    assert_equal false, service.send(:check_auth, "false")
+  end
+
+  # A callable in CLI_TOOLS is only safe because the report is built from an
+  # explicit key list rather than from the config hash. If someone ever copies
+  # `check_auth` through, `Rails.cache.write` blows up under Marshal and the JSON
+  # surfaces (Api::V1::ClisController, get_system_health) blow up with it.
+  test "the status report carries no callable into the cache or a JSON response" do
+    [ CliStatusService.new.full_status_report, CliStatusService.loading_placeholder ].each do |report|
+      report[:tools].each do |tool_name, status|
+        status.each_value do |value|
+          refute_respond_to value, :call, "#{tool_name} leaked a callable into the report"
+        end
+      end
+
+      assert_nothing_raised { Marshal.dump(report) }
+      assert_nothing_raised { JSON.generate(report.as_json) }
+    end
   end
 end

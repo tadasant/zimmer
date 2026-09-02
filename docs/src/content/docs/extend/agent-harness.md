@@ -256,7 +256,11 @@ backwards and a session's real history is thrown away; leave it unimplemented an
 10. Auth provider → `RuntimeAuthProvider.for` and `RUNTIMES`. Login driver →
     `RuntimeLoginDriver.for`.
 11. `Dockerfile.base` — pin the CLI and the matching `@pulsemcp/air-adapter-<runtime>`. Add to
-    `CliStatusService::CLI_TOOLS`. If the runtime needs vendor extensions to reach MCP/hooks
+    `CliStatusService::CLI_TOOLS` — and note the contract on `check_auth`: it is either a Ruby
+    callable, or a shell command whose argv names a **real subcommand** of the binary. An agent
+    CLI typically takes a bare positional prompt, so an argv that matches no subcommand is billed
+    as inference on a two-minute cron
+    ([#536](https://github.com/tadasant/zimmer/issues/536)). If the runtime needs vendor extensions to reach MCP/hooks
     (Pi does), pin those too and declare them in a registry the Dockerfile is asserted against —
     see `PiExtensions`.
 12. Add the adapter to `RuntimeCliAdapterContractTest::ADAPTERS` and write a mock in `test/support/`.

@@ -588,7 +588,7 @@ class AccountRotationService
   # filesystem credentials, so they aren't lost when write_config! overwrites
   # the file with a different account's config. Looks up the owner by the
   # ~/.claude.json identity rather than DB is_current?, because the two can
-  # disagree (manual `claude /login`, cross-container switches). Skips the
+  # disagree (manual `claude auth login`, cross-container switches). Skips the
   # capture entirely when the filesystem identity matches the incoming
   # account or when there is no filesystem identity to capture from.
   def capture_outgoing_filesystem_tokens(except:)

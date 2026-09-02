@@ -62,7 +62,7 @@ Zimmer is reachable only over your tailnet. The droplet joins it at boot and the
 
 Zimmer runs coding agents, so it needs at least one agent harness logged in. Without this, sessions spawn but no agent runs.
 
-- An **Anthropic account** for Claude Code, and/or an **OpenAI account** for Codex. Like the GitHub login above, this is an OAuth flow you run inside the container after the first deploy (`claude /login` / `codex login`, [step 10](#stand-it-up)). Both persist across deploys: Claude's credentials on the `claude_home` volume, Codex's on `codex_home` (which also carries its rollout transcripts and thread store). See [agent harness credentials](/auth/harness/).
+- An **Anthropic account** for Claude Code, and/or an **OpenAI account** for Codex. Like the GitHub login above, this is an OAuth flow you run inside the container after the first deploy (`claude auth login` / `codex login`, [step 10](#stand-it-up)). Both persist across deploys: Claude's credentials on the `claude_home` volume, Codex's on `codex_home` (which also carries its rollout transcripts and thread store). See [agent harness credentials](/auth/harness/).
 
 ### Effectively required: a Cloudflare zone for HTTPS
 
@@ -128,10 +128,10 @@ With the prerequisites in hand, the rest is mechanical. Do it yourself, or hand 
                                                      # docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
 
     gh auth login          # GitHub — the sole source of git auth
-    claude /login          # and/or: codex login
+    claude auth login      # and/or: codex login
     ```
 
-    This is **once, not per deploy**: `gh`'s token lands in `~/.config/gh`, Claude's in `~/.claude`, and Codex's in `~/.codex` — all durable named volumes (`gh_config`, `claude_home`, `codex_home`) shared by `web` and `worker` and re-attached across Kamal container swaps. Confirm with `gh auth status` and `claude whoami`; the UI surfaces the same state (`CliStatusService` refreshes it every two minutes).
+    This is **once, not per deploy**: `gh`'s token lands in `~/.config/gh`, Claude's in `~/.claude`, and Codex's in `~/.codex` — all durable named volumes (`gh_config`, `claude_home`, `codex_home`) shared by `web` and `worker` and re-attached across Kamal container swaps. Confirm with `gh auth status`, and read the Claude Code tile on the UI's CLI status page for the rest (`CliStatusService` refreshes it every two minutes). Do **not** reach for `claude whoami` — `whoami` is not a subcommand, so the CLI bills the word as a prompt and answers it with a whole agent turn.
 
     :::caution[Skip this and every session fails]
     Without `gh auth login`, the first thing a session does — clone the repo — fails, and the agent never starts. Without a harness login, the session spawns but no agent runs. Neither failure shows up in the deploy's `/up` health check.
@@ -214,7 +214,7 @@ Then do the following, pausing to confirm with me at each step that produces ext
 
    bin/kamal app exec -i --reuse -d staging bash
    gh auth login          # GitHub: the sole source of git auth
-   claude /login          # and/or: codex login
+   claude auth login      # and/or: codex login
 
    Explain that the gh, claude, and codex tokens persist on the gh_config, claude_home, and codex_home volumes, so all three logins are one-time and not per-deploy. Until I do the gh login, every session fails at the clone step even though /up is green. Do not call the setup complete until I confirm 'gh auth status' succeeds inside the container.
 

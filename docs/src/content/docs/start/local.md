@@ -71,7 +71,7 @@ Everything in `.env.example` is commented out except `RAILS_ENV=development`. Th
 | `GOOD_JOB_AGENTS_THREADS` | Worker concurrency: how many agent sessions run at once. It also moves the database pool that has to serve them — see [the connection budget](/operate/deploying/#the-database-connection-budget) |
 | `GOOD_JOB_MAINTENANCE_THREADS` | Worker concurrency for blocking package, archive, and filesystem maintenance. It also moves the database pool. |
 
-`gh` and the agent CLIs authenticate via OAuth (`gh auth login`, `claude /login`), not env vars.
+`gh` and the agent CLIs authenticate via OAuth (`gh auth login`, `claude auth login`), not env vars.
 
 ## First run: the catalog
 

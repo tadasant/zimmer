@@ -13,9 +13,18 @@ require "open3"
 #   (volume-mounted from the host). A credential helper baked into Dockerfile.base
 #   delegates git auth to `gh auth git-credential`, which honours both.
 # - fly: Uses FLY_IO_API_TOKEN environment variable (no interactive login needed)
-# - claude: Uses OAuth authentication (requires manual `claude /login` step)
+# - claude: Uses OAuth authentication (`claude auth login`, or the Authenticate
+#   button on the accounts page). Its check is a Ruby callable rather than a
+#   shell command — see the `claude` entry below for why.
 # - codex: Uses OAuth authentication (requires manual `codex login` step);
 #   credentials are stored in auth.json under CODEX_HOME (/home/rails/.codex)
+#
+# An auth check must never be able to reach a billable path. `check_auth` is
+# therefore either a Ruby callable returning a boolean, or a shell command whose
+# argv is a REAL subcommand of the binary it invokes. That second condition is
+# not pedantry: `claude`'s usage line is `claude [options] [command] [prompt]`,
+# so any argv that is not a subcommand is a *prompt*, and the CLI answers it with
+# a full agent turn. `cli_status_service_test.rb` asserts both properties.
 #
 # Performance optimization:
 # - CLI status checks are performed by CliStatusRefreshJob (runs every 2 minutes)
@@ -62,7 +71,30 @@ class CliStatusService
     claude: {
       name: "Claude Code",
       check_installed: "which claude",
-      check_auth: "claude whoami",
+      # No `claude` invocation can answer this one, so it does not shell out.
+      #
+      # Two facts about the CLI, both verified against 2.1.258. First, `whoami`
+      # is not a subcommand and `claude` takes a bare positional prompt, so that
+      # argv is billed as an inference turn (#536) — which is what the
+      # `check_auth` contract in the header exists to keep out. Second,
+      # `claude auth status` IS a real subcommand and still cannot answer it: it
+      # reports only credentials it finds in the ENVIRONMENT
+      # (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY), so against
+      # ~/.claude/.credentials.json — the store the web and worker containers
+      # authenticate from — it prints "Not logged in" and exits 1 with a
+      # complete token pair sitting on disk.
+      #
+      # ClaudeCredentialHealth is the authority Zimmer already trusts for this
+      # question — the same read the /health Agent Authentication card and
+      # RefreshRuntimeAuthTokensJob use — and it follows the credential wherever
+      # it lives: the shared file, or the current account's row under
+      # session-scoped credentials.
+      #
+      # Like every other entry here, this reports whether a credential is
+      # PRESENT and complete, not whether the vendor still honours it. A spent
+      # pair reads as authenticated; the auth-outage park and the account pool's
+      # own refresh sweep are what catch that. See limitations.md.
+      check_auth: -> { ClaudeCredentialHealth.status.ok? },
       check_version: "claude --version",
       auth_method: :oauth,
       install_instructions: <<~INSTRUCTIONS,
@@ -77,8 +109,9 @@ class CliStatusService
         ssh root@zimmer.example.com
         docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
 
-        # Then run the OAuth login flow:
-        claude /login
+        # Then run the OAuth login flow (the same argv ClaudeLoginDriver drives
+        # for the Authenticate button on the accounts page):
+        claude auth login
       INSTRUCTIONS
     },
     codex: {
@@ -265,9 +298,26 @@ class CliStatusService
     system(command, out: File::NULL, err: File::NULL)
   end
 
-  def check_auth(command)
-    # Run the auth check command and see if it succeeds
-    result = system(command, out: File::NULL, err: File::NULL)
+  # A `check_auth` is either a Ruby callable returning a boolean — used when no
+  # shell probe can answer the question without reaching a billable path — or a
+  # shell command whose exit status is the answer.
+  #
+  # A callable that raises reports "not authenticated" rather than taking the
+  # whole refresh down with it, which is the failure mode `system` already had.
+  # It goes to Sentry as well as the log, because the visible symptom is a tile
+  # stuck on "Not Authenticated" and nobody can reach a shell to grep for why.
+  def check_auth(check)
+    if check.respond_to?(:call)
+      begin
+        return !!check.call
+      rescue => e
+        Rails.logger.warn "[CliStatusService] Auth check raised: #{e.class}: #{e.message}"
+        ErrorReporter.report_exception(e, context: { component: "CliStatusService" })
+        return false
+      end
+    end
+
+    result = system(check, out: File::NULL, err: File::NULL)
     result == true
   end
 
