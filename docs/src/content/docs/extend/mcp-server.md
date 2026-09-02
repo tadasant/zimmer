@@ -184,6 +184,14 @@ filters to continue from exactly where it stopped. An empty result that says "sc
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
 hundreds of megabytes and up to ten minutes stale.
 
+Two defaults matter when the question is "has some session already done this?". `show_archived`
+is off, and a session that finished its work has archived itself, so a default search finds only
+the sessions still working an artifact — pass `show_archived: true`. And the `Prompt` line on each
+result is the first 100 characters of the prompt: a leading prefix, not the part that matched, so
+an issue URL named after the opening sentences is not visible there. `query` reaches
+`custom_metadata` but not the `prompt` column, so match on the artifact's URL with `query` rather
+than by reading previews, and call `get_session` for the whole prompt.
+
 `get_session` always includes a `### Session Hierarchy` section (the spawn tree this session belongs
 to — an edge means "spawned", not "most recently talked to") and a `### Human Messages` section (the
 messages Zimmer knows a named human authored anywhere in that tree, with author, channel, timestamp,

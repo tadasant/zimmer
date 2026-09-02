@@ -30,7 +30,8 @@ module Mcp
 
         **Use cases:**
         - Find a specific session by ID (set id parameter)
-        - Search sessions by title keyword (set query parameter)
+        - Search sessions by title keyword, or by an artifact named in their metadata (set query parameter)
+        - Check whether a session already worked an issue or PR before starting one: `query` the artifact's URL, with `show_archived: true` — a session that finished the work has archived itself, so without that flag you see only the sessions still working it
         - Find the session that discussed something, by a phrase from the conversation (query + search_contents: true)
         - List all sessions with an optional status filter (one status, or an array to match any)
         - Monitor sessions that need human attention (status: "needs_input")
@@ -40,7 +41,9 @@ module Mcp
         still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
         a pause outranks precedence and scheduling class. Skip it and take the next candidate.
 
-        **Returns:** A list of matching sessions with their status, configuration, and metadata.
+        **`show_archived` defaults to false, and that default hides finished work.** Agents archive themselves when they run to completion, so the sessions that already did a piece of work are archived, and a default search finds only the ones still doing it. Pass `show_archived: true` (or name `archived` in `status`) whenever the question is whether something has already been done.
+
+        **Returns:** A list of matching sessions with their status, configuration, and metadata. The `Prompt` line on each result is a preview, not the prompt: its first 100 characters, then `...`. That is a leading prefix — not a summary, and not the part that matched — so an issue URL a prompt names after its opening sentences is cut off and does not appear here. Its absence from a preview says nothing about the session: match on the artifact with `query`, not by eye, and call `get_session` for the whole prompt.
 
         **Session statuses:**
         - waiting: Session created, waiting to start
@@ -60,7 +63,7 @@ module Mcp
           query: {
             type: "string",
             maxLength: MAX_QUERY_LENGTH,
-            description: "Search query to find sessions. Substring match (case-insensitive) against the session title and the metadata/custom_metadata JSON; add search_contents: true to match transcript text too. Leave empty to list all sessions."
+            description: "Search query to find sessions. Substring match (case-insensitive) against the session title and the metadata/custom_metadata JSON — an issue or PR URL matches wherever that JSON carries it, which is the exact way to find every session that worked an artifact. Does not read the prompt column; a prompt is reachable only through search_contents: true, via the transcript, once the agent has started. Add search_contents: true to match transcript text too. Leave empty to list all sessions."
           },
           search_contents: {
             type: "boolean",
@@ -98,7 +101,7 @@ module Mcp
           },
           show_archived: {
             type: "boolean",
-            description: "Include archived sessions in results. Default: false"
+            description: "Include archived sessions in results. Default: false — and that default excludes finished work: a session that completed its task has archived itself, so a default search for an issue or PR returns only the sessions still working it, never the ones that already did. Pass true whenever you are checking whether something has already been done. Naming \"archived\" in status also includes them."
           },
           page: {
             type: "number",
