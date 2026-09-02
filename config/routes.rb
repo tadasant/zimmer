@@ -16,6 +16,14 @@ Rails.application.routes.draw do
     resources :claude_account_quota_snapshots
     resources :elicitations
     resources :enqueued_messages
+    # Read-only, both of them. A GateDecision is append-only — it refuses update
+    # and destroy — because a ledger that can be edited after the fact is not
+    # evidence of anything; a correction is a new row recorded through the API or
+    # the MCP tool. Feedback additionally has no create: its whole value is that
+    # a machine did not write it, so the author is resolved from the
+    # authenticated human at the web-UI boundary rather than typed into a form.
+    resources :gate_decisions, only: [ :index, :show ]
+    resources :gate_decision_feedbacks, only: [ :index, :show ]
     # Read-only: both tables are derived, and both are re-derived on a cron —
     # BurnRateRecomputeJob every 20 minutes, QuotaCapacityCalibrationJob every 15.
     # A hand-edited rate or capacity would be overwritten on the next run, and in
