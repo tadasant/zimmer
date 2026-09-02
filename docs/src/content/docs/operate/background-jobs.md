@@ -615,7 +615,8 @@ stampeding trigger, and archive runaway sessions — with nothing new arriving b
 
 :::caution[Not session recovery]
 "Recovery" elsewhere in Zimmer means recovering *sessions* after a deploy or a crash
-(`DeploymentRecoveryJob`, `CleanupOrphanedSessionsJob`, `metadata["paused_by"] = "recovery"`). Queue
+(`DeploymentRecoveryJob`, `CleanupOrphanedSessionsJob`, `RecoveryContinuationJob`,
+`metadata["paused_by"] = "recovery"`). Queue
 recovery mode is unrelated and never touches session state. The noun is qualified everywhere —
 class, column, route, MCP action, UI copy — so the two do not read as the same thing.
 :::
@@ -864,7 +865,7 @@ about to reap.
 
 ## Retry and recovery machinery
 
-| Service | What it handles |
+| Service or job | What it handles |
 | --- | --- |
 | `SigtermRetryService` | Deploys and OOM kills. `MAX_RETRIES = 3` |
 | `ApiErrorRetryService` | Vendor API errors; classifies quota vs transient |
@@ -873,11 +874,13 @@ about to reap.
 | `SessionRecoveryService` | Hung processes. Explicitly "best-effort" |
 | `NpxCacheHealService` | A corrupted `_npx` cache — detected by regexing npm's stderr |
 | `GlobalRateLimitTracker` | SIGTERM/529 pressure counter driving adaptive backoff |
+| `Sessions::RestartUnstartedTurn` | A process gone before the runtime wrote a line. Replays the session's own prompt instead of parking an empty session; budget shared with `ProcessLifecycleManager#handle_empty_turn` |
+| `RecoveryContinuationJob` | The 30-second continuation the code that parks a session asks for directly, so a recovery pause does not wait on the five-minute cron |
 
 ### A recovery sweep does not resume a trashed session
 
-The two sweeps above and `SessionRecoveryService`'s hung-process auto-restart each decide from a
-session object read minutes earlier, and a human can click Trash in the gap. Resuming from that
+The two sweeps above, `RecoveryContinuationJob`, and `SessionRecoveryService`'s hung-process
+auto-restart each decide from a session object read minutes earlier, and a human can click Trash in the gap. Resuming from that
 stale read writes `running` over an archived row and starts a real agent against a clone whose
 trash-cleanup clock has already begun.
 
