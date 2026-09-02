@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "tmpdir"
 require "mocha/minitest"
 
 class CodexRuntimeAdapterTest < ActiveSupport::TestCase
@@ -27,6 +28,29 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   # just declared: the recovery paths that spawn Codex are the same ones that
   # spawned Claude with a nil working dir in #183, and a nil chdir otherwise dies
   # inside Process.spawn naming no argument (#187).
+  # #815: every runtime has to land in the session's own memory cgroup, not just Claude.
+  # A runtime the wrapper misses is a session that can still spend the whole worker's
+  # memory budget, which is the entire failure this bounds.
+  test "spawn_process runs Codex inside the session's memory cgroup" do
+    with_delegated_cgroup_parent do |parent|
+      @adapter.zimmer_session_id = 5150
+      @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: @test_dir)
+
+      spawned = @mock_process_manager.spawned_processes.first
+
+      assert_equal "/bin/sh", spawned[:command].first
+      assert_includes spawned[:command], File.join(parent, "session-5150", "cgroup.procs")
+      assert_equal [ "codex", "exec" ], spawned[:command].last(2)
+    end
+  end
+
+  test "spawn_process leaves Codex's command alone where there is no cgroup to enter" do
+    @adapter.zimmer_session_id = 5151
+    @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: @test_dir)
+
+    assert_equal [ "codex", "exec" ], @mock_process_manager.spawned_processes.first[:command]
+  end
+
   test "spawn_process refuses a nil working directory with an actionable error" do
     error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
       @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: nil)

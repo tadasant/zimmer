@@ -242,9 +242,9 @@ module CliSpawnEnv
   # reasons it can be unavailable.
   #
   # Called after the adapter has validated the command, so the wrapper is never what a
-  # validation sees. Best-effort in both directions: no session id, no cgroup support,
-  # or a cgroup that could not be created all return the command untouched, which is
-  # exactly the behaviour every deployment had before this existed.
+  # validation sees. Best-effort in both directions: no session id, no cgroup support, a
+  # bound disabled by configuration, or a cgroup that could not be created all return the
+  # command untouched, and the session runs unbounded rather than not at all.
   #
   # Relies on the including adapter exposing `@zimmer_session_id`.
   #

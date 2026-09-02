@@ -148,34 +148,57 @@ if [ "$(id -u)" = "0" ]; then
   # construction -- that is the cgroup whose subtree_control has to offer the memory
   # controller for a child to be able to carry a memory.max.
   zimmer_cgroup_root="${ZIMMER_SESSION_CGROUP_ROOT:-/sys/fs/cgroup/zimmer.sessions}"
+  # Says which step gave up, and gives up. Silence here would be the worst of the
+  # options: the app would run every session unbounded -- the exact state #815 is
+  # about -- with nothing in the boot log to say why.
+  zimmer_cgroup_skip() {
+    echo "Per-session memory bounds are OFF: $1." >&2
+    echo "Sessions will run unbounded, as they did before tadasant/zimmer#815. This is" >&2
+    echo "expected without sysbox (a read-only /sys/fs/cgroup) -- see" >&2
+    echo "docs/operate/nested-docker.md." >&2
+    return 1
+  }
+
   zimmer_delegate_cgroups() {
     local fs_root
     fs_root="$(dirname "$zimmer_cgroup_root")"
-    [ -d "$fs_root" ] || return 0
+    [ -d "$fs_root" ] || { zimmer_cgroup_skip "no $fs_root"; return; }
 
     # The memory controller has to be available to the container at all, and
     # enabled for the root's children, before a child can carry a memory.max.
-    grep -qw memory "$fs_root/cgroup.controllers" 2>/dev/null || return 0
+    grep -qw memory "$fs_root/cgroup.controllers" 2>/dev/null ||
+      { zimmer_cgroup_skip "the memory controller is not available in this container"; return; }
     if ! grep -qw memory "$fs_root/cgroup.subtree_control" 2>/dev/null; then
-      echo "+memory" > "$fs_root/cgroup.subtree_control" 2>/dev/null || return 0
+      echo "+memory" > "$fs_root/cgroup.subtree_control" 2>/dev/null ||
+        { zimmer_cgroup_skip "could not enable the memory controller on $fs_root"; return; }
     fi
 
-    mkdir -p "$zimmer_cgroup_root/app" 2>/dev/null || return 0
-    echo "+memory" > "$zimmer_cgroup_root/cgroup.subtree_control" 2>/dev/null || return 0
+    mkdir -p "$zimmer_cgroup_root/app" 2>/dev/null ||
+      { zimmer_cgroup_skip "could not create $zimmer_cgroup_root (is /sys/fs/cgroup read-only?)"; return; }
+    echo "+memory" > "$zimmer_cgroup_root/cgroup.subtree_control" 2>/dev/null ||
+      { zimmer_cgroup_skip "could not enable the memory controller on $zimmer_cgroup_root"; return; }
 
-    # The three files cgroup v2 says to hand over with the directory. Ownership of
-    # the directory is what permits mkdir; ownership of cgroup.procs is what permits
-    # the migration.
+    # Move this shell in BEFORE handing the parent over, because the chown is what
+    # SessionMemoryCgroup.available? reads. Chowning first and failing here would
+    # leave uid 1000 able to CREATE session cgroups but unable to move anything into
+    # one -- the common ancestor would still be the root-owned container cgroup. The
+    # app would then wrap every spawn, litter a cgroup per session, and report zero
+    # usage forever. That state is worse than off, so it must not be reachable.
+    #
+    # `exec setpriv` below keeps this pid and children inherit the cgroup, so the
+    # whole app lands in $zimmer_cgroup_root/app -- which is what makes the delegated
+    # parent the common ancestor for every later session migration.
+    echo $$ > "$zimmer_cgroup_root/app/cgroup.procs" 2>/dev/null ||
+      { zimmer_cgroup_skip "could not move the app into $zimmer_cgroup_root/app"; return; }
+
+    # Only now the three files cgroup v2 says to hand over with the directory.
+    # Ownership of the directory is what permits mkdir; ownership of cgroup.procs is
+    # what permits the migration.
     chown 1000 "$zimmer_cgroup_root" \
                 "$zimmer_cgroup_root/cgroup.procs" \
                 "$zimmer_cgroup_root/cgroup.subtree_control" \
-                "$zimmer_cgroup_root/cgroup.threads" 2>/dev/null || return 0
-
-    # Move this shell in last. `exec setpriv` below keeps the pid, and children
-    # inherit the cgroup, so the whole app lands in $zimmer_cgroup_root/app -- which
-    # is what makes the delegated parent the common ancestor for every later
-    # session migration.
-    echo $$ > "$zimmer_cgroup_root/app/cgroup.procs" 2>/dev/null || return 0
+                "$zimmer_cgroup_root/cgroup.threads" 2>/dev/null ||
+      { zimmer_cgroup_skip "could not delegate $zimmer_cgroup_root to uid 1000"; return; }
 
     echo "Per-session memory bounds are available (delegated $zimmer_cgroup_root to uid 1000)." >&2
   }

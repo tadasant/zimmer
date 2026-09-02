@@ -47,6 +47,15 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
     File.write(File.join(@cgroup.path, "memory.current"), current.to_s) if current
     File.write(File.join(@cgroup.path, "memory.peak"), peak.to_s) if peak
     File.write(File.join(@cgroup.path, "memory.events"), "oom_kill #{oom_kills}\n") if oom_kills
+    # A process in the cgroup, so the "running unbounded" check stays quiet unless a
+    # test is about it.
+    File.write(@cgroup.procs_path, "4242\n")
+  end
+
+  # Tick a watch a second time without waiting out the interval.
+  def tick_again(watch)
+    watch.instance_variable_set(:@last_checked_at, 1.hour.ago)
+    watch.check(@buffer)
   end
 
   test "reports an OOM kill in the session's own cgroup, and says what it means" do
@@ -80,7 +89,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
 
     SessionMemoryWatch.new(@session).check(@buffer)
 
-    assert_equal 2, @session.reload.metadata[SessionMemoryWatch::OOM_KILL_COUNT_KEY]
+    assert_equal 2, @session.reload.metadata[SessionMemoryCgroup::OOM_KILL_COUNT_KEY]
   end
 
   test "a later kill is reported even though an earlier one was already seen" do
@@ -91,7 +100,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
     SessionMemoryWatch.new(@session.reload).check(@buffer)
 
     assert_equal 2, @buffer.entries.count { |e| e[:content].include?("memory limit") }
-    assert_equal 2, @session.reload.metadata[SessionMemoryWatch::OOM_KILL_COUNT_KEY]
+    assert_equal 2, @session.reload.metadata[SessionMemoryCgroup::OOM_KILL_COUNT_KEY]
   end
 
   test "says nothing while the session is nowhere near its bound" do
@@ -111,8 +120,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
 
     watch.check(@buffer)
     @session.reload
-    watch.instance_variable_set(:@last_checked_at, nil) # let it tick again immediately
-    watch.check(@buffer)
+    tick_again(watch)
 
     assert_equal 1, @buffer.entries.count { |e| e[:content].include?("of its") }
     assert_match(/3\.5 GB/, @buffer.contents)
@@ -143,6 +151,59 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
 
     refute_predicate watch, :active?
     assert_nothing_raised { watch.check(@buffer) }
+    assert_empty @buffer.entries
+  end
+
+  # THE BUG A REVIEW CAUGHT. `memory.events` restarts at zero whenever the cgroup is
+  # recreated — by a deploy, or by the reaper's sweep after an archive — while the count
+  # recorded on the session lives in Postgres and survives. Comparing the two by value
+  # alone makes the new counter's first kill invisible, which is exactly the repeat-runaway
+  # case (#719's four kills an hour) worth hearing about.
+  test "reports a kill in a cgroup that was recreated under the session" do
+    write_cgroup(oom_kills: 1)
+    SessionMemoryWatch.new(@session).check(@buffer)
+
+    assert_equal 1, @session.reload.metadata[SessionMemoryCgroup::OOM_KILL_COUNT_KEY]
+
+    # Same count, different cgroup: a fresh incarnation whose single kill is news.
+    recreate_session_cgroup(@session.id, oom_kills: 1)
+    File.write(@cgroup.procs_path, "4242\n")
+    SessionMemoryWatch.new(@session.reload).check(@buffer)
+
+    assert_equal 2, @buffer.entries.count { |e| e[:content].include?("memory limit") },
+      "a recreated cgroup's counter restarts at zero, so its first kill is unreported"
+  end
+
+  # An empty cgroup while the session is supposed to be running in it means the `sh`
+  # wrapper could not migrate, so the bound is not in force and every other reading here
+  # is a zero that means nothing. The wrapper says so on the runtime's stderr log, but
+  # that only reaches the session log when a turn fails.
+  test "says so when the session never entered its cgroup and is running unbounded" do
+    write_cgroup(oom_kills: 0)
+    File.write(@cgroup.procs_path, "")
+    watch = SessionMemoryWatch.new(@session)
+
+    watch.check(@buffer)
+
+    assert_empty @buffer.entries, "the first tick races the wrapper and must not cry wolf"
+
+    tick_again(watch)
+
+    assert_equal 1, @buffer.entries.count { |e| e[:content].include?("NOT in force") }
+
+    tick_again(watch)
+
+    assert_equal 1, @buffer.entries.count { |e| e[:content].include?("NOT in force") },
+      "once per job, not once per tick"
+  end
+
+  test "stays quiet about the bound while the session is actually in its cgroup" do
+    write_cgroup(oom_kills: 0)
+    watch = SessionMemoryWatch.new(@session)
+
+    watch.check(@buffer)
+    tick_again(watch)
+
     assert_empty @buffer.entries
   end
 

@@ -782,9 +782,9 @@ class ProcessLifecycleManager
   def handle_signal_death(status, working_dir)
     signal_desc = exit_status_description(status)
     retry_count = BUDGET.count_for(session)
-    # "likely OOM" used to be the best this could say. Where the session has its own
-    # memory cgroup, the kernel's own counter says whether it was, and how close to the
-    # bound the session got — see #session_memory_kill.
+    # Where the session has its own memory cgroup, the kernel's own counter says whether
+    # memory was the cause, and how close to the bound the session got. Absent one, the
+    # hedge below is the honest answer — see #session_memory_kill.
     memory_kill = session_memory_kill
     cause_clause = memory_kill ? memory_kill[:clause] : "(likely OOM or external kill)"
 
@@ -833,17 +833,29 @@ class ProcessLifecycleManager
     )
   end
 
+  # How long after an observed OOM kill a signal death is still attributed to it.
+  #
+  # SessionMemoryWatch polls every 10s, so there is a window in which it consumes the
+  # delta for the very kill that ended this process and the check below would find
+  # nothing left to see. This covers that window with room to spare, on the view that a
+  # signal death wrongly blamed on memory costs a log line and a recovery prompt that is
+  # sound advice regardless, while one wrongly NOT blamed on it costs the explanation.
+  MEMORY_KILL_ATTRIBUTION_WINDOW = 60.seconds
+
   # Did this session's own memory bound kill the process, and what should we say?
   #
-  # A signal death is SIGKILL either way, so the status cannot tell an OOM from an
-  # external kill — which is why the log line here has always hedged with "likely OOM".
-  # A session with its own cgroup (SessionMemoryCgroup) has the kernel's own counter,
-  # and the answer is a delta rather than an absolute: SessionMemoryWatch records every
-  # OOM kill it observes while the session runs, so a count that has moved SINCE the
-  # last observation is this death, while an unmoved count is a subprocess the watch
-  # already reported and this death is something else.
+  # A signal death is SIGKILL either way, so the status alone cannot tell an OOM from an
+  # external kill — which is why this log line hedges with "likely OOM" wherever there is
+  # no per-session cgroup to consult. Where there is one, the kernel's own counter
+  # answers it.
   #
-  # Best-effort — an unreadable cgroup means we say what we have always said.
+  # Two questions, because one is not enough. `unaccounted_oom_kills` catches the kill
+  # nothing has reported yet, and is keyed to the cgroup's incarnation so a counter that
+  # restarted under a live session does not read as "no new kills".
+  # `recently_oom_killed?` catches the kill SessionMemoryWatch consumed a few seconds
+  # before this process was noticed dead. Either one attributes the death to the bound.
+  #
+  # Best-effort — an unreadable cgroup means we say what we would have said anyway.
   #
   # @return [Hash{Symbol => String}, nil] :clause for the session log, :prompt for the
   #   agent's own resume. nil when the bound did not do this.
@@ -852,13 +864,13 @@ class ProcessLifecycleManager
     return nil if cgroup.nil?
 
     stats = cgroup.stats
-    observed = stats.oom_kills
-    return nil if observed.nil?
-    return nil if observed <= session.metadata[SessionMemoryWatch::OOM_KILL_COUNT_KEY].to_i
+    return nil if stats.oom_kills.nil?
 
-    with_db_retry do
-      session.merge_metadata!(SessionMemoryWatch::OOM_KILL_COUNT_KEY => observed)
-    end
+    unaccounted = cgroup.unaccounted_oom_kills(session).to_i
+    recent = cgroup.recently_oom_killed?(session, within: MEMORY_KILL_ATTRIBUTION_WINDOW)
+    return nil unless unaccounted.positive? || recent
+
+    with_db_retry { cgroup.record_oom_kills!(session, stats.oom_kills) } if unaccounted.positive?
 
     limit = number_to_human_size(stats.limit_bytes)
     peak = number_to_human_size(stats.peak_bytes)

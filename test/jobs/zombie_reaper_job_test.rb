@@ -268,18 +268,6 @@ class ZombieReaperJobTest < ActiveJob::TestCase
 
   private
 
-  def with_delegated_cgroup_parent
-    original = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
-    Dir.mktmpdir("cgroupfs") do |tmp|
-      parent = File.join(tmp, "zimmer.sessions")
-      FileUtils.mkdir_p(parent)
-      ENV["ZIMMER_SESSION_CGROUP_ROOT"] = parent
-      yield parent
-    end
-  ensure
-    original.nil? ? ENV.delete("ZIMMER_SESSION_CGROUP_ROOT") : ENV["ZIMMER_SESSION_CGROUP_ROOT"] = original
-  end
-
   # Spawn a child that exits immediately, then wait for it to actually become
   # defunct. With `manager`, the spawn goes through SystemProcessManager so the
   # pid is claimed in ChildWaiterRegistry exactly the way a real session's is.

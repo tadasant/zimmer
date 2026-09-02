@@ -211,6 +211,7 @@ module ActiveSupport
     include BroadcastHelpers
     include LogCaptureHelpers
     include McpOauthTestHelpers
+    include SessionMemoryCgroupHelpers
 
     # The sessions dashboard shows `needs_input` only until the user filters. A
     # test that is about something else — pagination, card chrome, category
