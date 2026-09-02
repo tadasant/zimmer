@@ -642,6 +642,35 @@ curl -X POST "$BASE_URL/categories/reorder" \
   -d '{"ids": [5, "uncategorized", 3, 8]}'
 ```
 
+## Work backlog
+
+The [work backlog](/operate/work-backlog/): the ranked queue of issues the issue work gate has
+cleared and nobody has started. `index`, `create` and `pull` mirror the `get_work_backlog`,
+`append_work_backlog_item` and `pull_work_backlog_items` MCP tools through the same filter, append
+and pull objects, so the two surfaces cannot disagree. The four member actions after `show` are the
+**human-only** operations and deliberately have no MCP counterpart.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /work_backlog_items` | The queue in rank order, each item with its whole-queue `position`, plus `counts` and the ranking bands. Filters: `status` (default `queued`; `all` for history), `surface`, `repo`, `scope_direction`, `kind`, `estimated_cost`, `pinned`, `key`, `added_by`, plus `page`/`per_page` |
+| `GET /work_backlog_items/:id` | One item. `:id` is the row id or the item's key (`zimmer#498`) — the queued row for that key, else the latest |
+| `POST /work_backlog_items` | Append one. Body: `key`, `issue_url`, `repo`, `surface`, `title`, `kind`, `scope_direction`, `estimated_cost`, plus `ratings`, `gate_verdict`, `gate_session`, `decided_at`, `notes`, optional `added_by` (default `human`) and `acting_session_id`. A human may hand-place on create with `pinned: true` and a `precedence`, and may add an issueless item with a `prompt`. Idempotent on `key` among queued items: `201` with `created: true`, or `200` with the existing item and `created: false` |
+| `POST /work_backlog_items/pull` | The groomer's pull. Body: `count` (top N) or `keys` (specific queued items, in order), `dead` (`[{key, reason}]` with a mechanical reason), `acting_session_id`. Spawns a `spot` `zimmer-router` session per item and marks it `started` |
+| `POST /work_backlog_items/:id/start_now` | Spawn a **`priority`** session for a queued item right now. The "promote" button's server half |
+| `PATCH /work_backlog_items/:id/pin` | Body: `precedence`. Hand-place the item and pin it there |
+| `PATCH /work_backlog_items/:id/unpin` | Release the pin; the item is re-ranked into its cost band |
+| `POST /work_backlog_items/:id/remove` | Body: `reason` (free text), optional `removed_by` (default `human`). Off the queue; the row stays as history |
+
+A filter or an enum outside the vocabulary is a `422` rather than an empty result — an empty queue
+must never be a typo. `pin`, `unpin`, `remove` and `start_now` are `422` on an item that is not
+queued.
+
+```bash
+curl "$BASE_URL/work_backlog_items?estimated_cost=small&per_page=5" -H "X-API-Key: $API_KEY"
+
+curl -X POST "$BASE_URL/work_backlog_items/zimmer%23498/start_now" -H "X-API-Key: $API_KEY"
+```
+
 ## Outcome analyses
 
 The write half of the [Outcomes view](/sessions/outcomes/): a Transcript Segment tree saved against
