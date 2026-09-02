@@ -1149,11 +1149,38 @@ after the accounts are restored, and asks one question: can the pool serve a req
 there an account that is neither `quota_exceeded` nor waiting on a human to re-authenticate. It
 reads the durable column (`accounts.available`), which is the same thing the wake sweep it feeds
 reads, and deliberately not the evidence-based predicate a PARK stops on — see [One predicate for
-"is the pool drained"](#one-predicate-for-is-the-pool-drained). It is deliberately **not** the spot
-gate's question: `SpotGateService`
-answers "is utilization under the operator's targets and is a slot free", and firing on that would
-also fire when a fleet slot opened, which is not a quota recovery. The fleet session reads the gate
-for itself before starting anything.
+"is the pool drained"](#one-predicate-for-is-the-pool-drained).
+
+That rising edge is **necessary but not sufficient**. Before firing, the monitor asks
+`SpotGateService` whether a quota window is holding spot work, because starting spot work is the
+entire job of the session this event spawns. An `at_utilization_limit` hold means there is nothing to
+hand out, so the event is **deferred**: the stored level stays `false` and the next sweep asks both
+questions again. Nothing is spent and nothing is lost — the hold lifts on a window rolling over or on
+the fleet's burn falling, neither of which needs this event to happen first. Parked **priority**
+sessions are unaffected either way, because the same sweep resumes them directly and the gate never
+holds them.
+
+`fleet_at_cap` is deliberately **not** a deferral reason, though it zeroes the woken session's
+headroom just as effectively. A window's hold moves on the window's clock, slower than this
+fifteen-minute sweep, so observing it once is good evidence it will still be there in a minute. Cap
+contention moves on a session's clock, much faster — a slot frees whenever anything finishes — so a
+fleet habitually at its cap would show `fleet_at_cap` to every sweep while ordinary held spot
+sessions took the freed slots on their own ten-minute ladder, and the outage-parked sessions, whose
+only wake path this is, would starve behind them. It is also the honest scope: this event is the
+quota pool recovering, and cap contention is not a quota condition.
+
+The two readings drift apart because they measure different things, which is the whole defect
+([#611](https://github.com/tadasant/zimmer/issues/611)). An account goes back to `available` when
+Anthropic's own window clears; the gate compares the pool's spend against the operator's reserve and
+pacing curve. A pool whose accounts are all unflagged while its weekly spot budget is spent reads
+available and held at the same instant — which fired 27 fleet sessions in ten hours on 2026-08-22,
+every one of them reading `HELD / at_utilization_limit`, waking nobody, and spending a `priority`
+slot against the very window whose utilization was holding the gate.
+
+The check **fails open** in both layers: `SpotGateService` already allows a session on any condition
+it cannot evaluate, and a raise on the way to asking is treated the same way. A spurious fire costs
+one session, which then re-reads the gate for itself; a suppressed one costs every parked session its
+only wake path.
 
 A fire that delivers **no session** — nothing listening, every fire raised, every one burst-suppressed
 — puts the edge back (`QuotaAvailabilityMonitor.rearm!`), so the next sweep fires again rather than

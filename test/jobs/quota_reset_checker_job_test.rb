@@ -359,11 +359,92 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert_equal "waiting", parked.reload.status
   end
 
-  def create_parked_session(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+  # ===========================================================================
+  # The sweep's own `quota_available` edge, against the spot gate (#611)
+  #
+  # The 2026-08-22T18:12:59Z shape, end to end: sessions park on quota carrying a
+  # pool recovery ~32 hours out, the sweep restores the accounts whose own
+  # Anthropic windows have rolled over, and the pool's aggregate spend is still
+  # far past the share spot work is allowed to touch. `accounts.available` rises
+  # while the gate reads HELD, and the edge used to fire on that — spawning a
+  # priority fleet session that woke nobody, 27 times in ten hours.
+  # ===========================================================================
+
+  test "a sweep that restores an account into a held pool does not fire the wake" do
+    hold_the_spot_gate
+    parked = create_parked_session(scheduling_class: "spot")
+    assert parked.metadata["auth_outage_pool_recovers_at"].present?,
+      "the park must record the future recovery the edge used to contradict"
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+
+    SystemEventTriggerJob.expects(:perform_later).never
+
+    QuotaResetCheckerJob.perform_now
+
+    assert claude_accounts(:exceeded).reload.active?, "the account's own window did clear"
+    assert SpotGateService.evaluate.held?, "...while the pool's spend still holds every spot session"
+    assert_equal "waiting", parked.reload.status
+    assert_equal false, AppSetting.current.reload.quota_pool_available,
+      "the edge is deferred to the next sweep, not spent"
+  end
+
+  # The deferral must not strand the population that is not gated at all:
+  # priority parks are resumed directly by this sweep, in the same pass.
+  test "a held spot gate does not hold back the priority sessions the sweep resumes itself" do
+    hold_the_spot_gate
+    parked = create_parked_session(scheduling_class: "priority")
+
+    SystemEventTriggerJob.expects(:perform_later).never
+
+    QuotaResetCheckerJob.perform_now
+
+    assert_equal "running", parked.reload.status
+    assert_nil parked.reload.metadata["auth_outage_reason"]
+  end
+
+  # The two readings the incident had in disagreement. Every account carries a
+  # reading whose own windows are clear enough to leave it in rotation — the
+  # `exceeded` fixture is restored by this very sweep — while the pool's average
+  # spend is past the share spot work is allowed to touch, so the gate holds. One
+  # account stays genuinely spent, which is what gives the park a future
+  # `auth_outage_pool_recovers_at` to record.
+  def hold_the_spot_gate
+    Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_reserve_five_hour_pct: 20,
+                                spot_reserve_weekly_pct: 20,
+                                spot_max_concurrent_sessions: 10)
+
+    ClaudeAccountQuotaSnapshot.delete_all
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).find_each do |account|
+      account.quota_snapshots.create!(
+        utilization_5h: 0.89, utilization_7d: 0.93,
+        reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+        active_session_count: 1, trigger: "usage_sample"
+      )
+    end
+
+    spent = ClaudeAccount.create!(
+      email: "weekly-spent@example.com", runtime: ClaudeAuthProvider::RUNTIME,
+      status: :quota_exceeded, oauth_config: { "credentials_json" => { "claudeAiOauth" => {} } }
+    )
+    spent.quota_snapshots.create!(
+      utilization_5h: 1.0, utilization_7d: 1.0,
+      reset_5h: 3.hours.from_now, reset_7d: 32.hours.from_now,
+      active_session_count: 0, trigger: "usage_sample"
+    )
+
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, error_message: "Connection refused")
+    )
+  end
+
+  def create_parked_session(reason: AuthOutageParkService::QUOTA_EXHAUSTED, scheduling_class: nil)
     session = Session.create!(
       prompt: "Parked by an auth outage",
       agent_runtime: "claude_code",
       status: :needs_input,
+      scheduling_class: scheduling_class,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
       execution_provider: "local_filesystem",
