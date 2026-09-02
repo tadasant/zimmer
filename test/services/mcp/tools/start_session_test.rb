@@ -120,6 +120,86 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_match(/slightly higher/i, description)
   end
 
+  # --- place ---------------------------------------------------------------------
+
+  test "place top_of_spot spawns the session above the current top of the queue" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 400)
+
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    spawned = Session.order(:id).last
+    assert_equal 400 + SessionPrecedence::SLOT_GAP, spawned.precedence
+    assert_operator spawned.precedence, :>, 400, "the spawn heads the queue it was placed into"
+  end
+
+  # The whole reason the placement is symbolic: it reads the queue at the moment
+  # of the write, so a top that has since been archived does not inflate the
+  # scale the way a value an agent read earlier and passed back would.
+  test "place top_of_spot resolves against the live queue, not a stale top" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 90_000, status: :archived)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 20)
+
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    assert_equal 20 + SessionPrecedence::SLOT_GAP, Session.order(:id).last.precedence
+  end
+
+  test "place and precedence together are a tool error" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+        "place" => SessionPrecedence::PLACE_TOP_OF_SPOT, "precedence" => 50)
+    end
+
+    assert_match(/mutually exclusive/, error.message)
+    assert_equal 0, Session.where(title: "Go").count, "and nothing was created"
+  end
+
+  test "an unknown place is a tool error" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go", "place" => "bottom_of_spot")
+    end
+
+    assert_match(/Unknown place/, error.message)
+  end
+
+  # The default that must survive the new argument: omitting both still lands a
+  # spawn one point above its parent.
+  test "omitting both place and precedence leaves the lineage bump alone" do
+    parent = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", precedence: 700)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 9_000)
+
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+      "parent_session_id" => parent.id)
+
+    assert_equal 701, Session.order(:id).last.precedence
+  end
+
+  # start_session reads a null precedence as "say nothing", so a placement
+  # alongside one is the placement rather than the mutual-exclusion error.
+  test "place alongside an explicitly null precedence is the placement, not an error" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 300)
+
+    @tool.call("agent_root" => "zimmer", "prompt" => "Go", "title" => "Go",
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT, "precedence" => nil)
+
+    assert_equal 305, Session.order(:id).last.precedence
+  end
+
+  test "the place argument is advertised on the schema and says when to use it" do
+    place = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :place)
+
+    assert_equal [ SessionPrecedence::PLACE_TOP_OF_SPOT ], place[:enum]
+    assert_match(/head of the spot queue/i, place[:description])
+    assert_match(/mutually exclusive/i, place[:description])
+  end
+
   test "creates a clone-only session when no prompt is given" do
     result = @tool.call("agent_root" => "zimmer", "title" => "Clone only")
 

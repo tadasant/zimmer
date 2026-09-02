@@ -46,6 +46,18 @@ module SessionPrecedence
   # so the next thing to land there still has room between them.
   SLOT_GAP = 5
 
+  # A symbolic placement a caller can ask for instead of naming a number, so the
+  # server works out the value against the queue as it stands at the moment of
+  # the write. The point is not brevity: a caller that reads the current top and
+  # then writes a value a few points above it can be overtaken between the two,
+  # and lands second in the queue it meant to head.
+  PLACE_TOP_OF_SPOT = "top_of_spot"
+
+  # Every placement the surfaces accept. One today; the list is what the HTML
+  # controller, the MCP tools and their schemas all validate against, so a second
+  # one is added here rather than in four places.
+  PLACES = [ PLACE_TOP_OF_SPOT ].freeze
+
   # Bounds. Postgres `integer` is 32-bit, and the reorder maths adds and averages
   # values, so the accepted range is kept an order of magnitude clear of the
   # column's own limit. Nothing legitimate needs a billion.
@@ -85,6 +97,31 @@ module SessionPrecedence
       return DEFAULT + SLOT_GAP if top.nil?
 
       clamp_precedence(top + SLOT_GAP)
+    end
+
+    # Resolve a symbolic placement to a concrete precedence, against the queue as
+    # it stands right now. Every surface that accepts a placement — the Ranked
+    # view's demote button, the Quick Router's spot opt-in, and the MCP tools —
+    # comes through here, so they cannot drift apart on what "the top of the
+    # queue" means. (They may still differ on *when* they offer a placement at
+    # all: the demote button only sends one on a demotion, while an MCP caller
+    # that names one means it whichever class it is moving the session to.)
+    #
+    # It is a read followed by a separate write, not a lock: two callers placing
+    # at the top at the same instant both read the same maximum and both land on
+    # the same value, where `ranked` breaks the tie on created_at. That is a far
+    # narrower window than a caller reading the top in one request and writing in
+    # another, and it is not zero.
+    #
+    # @param place [String] one of PLACES
+    # @param scope [ActiveRecord::Relation, nil] the population to place within
+    # @raise [ArgumentError] if the placement is not one this knows
+    # @return [Integer]
+    def precedence_for_place(place, scope = nil)
+      case place.to_s
+      when PLACE_TOP_OF_SPOT then precedence_above_top_spot(scope)
+      else raise ArgumentError, "Unknown precedence placement: #{place.inspect}. Valid: #{PLACES.join(', ')}"
+      end
     end
 
     # Hold a computed value inside the accepted range. The reorder maths can run

@@ -304,6 +304,12 @@ session that halted itself would kill the process waiting for the reply. Pass `"
 the UI's behaviour when you are driving somebody else's running session. The `self_session` variant
 does not expose the option, and strips it from the arguments if it is passed anyway.
 
+`start_session` and `action_session` also take the web UI's *symbolic* queue placement, not just the
+integer behind it: `place: "top_of_spot"` is the same server-side resolution the Ranked view's
+**Demote to spot** button and the Quick Router's **Run as spot** checkbox perform, mutually exclusive
+with `precedence`. It narrows the placement to one request rather than locking the queue. See [Placing something at the head of the
+queue](/sessions/spot-and-priority/#placing-something-at-the-head-of-the-queue).
+
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`, `change_hooks`,
 `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,

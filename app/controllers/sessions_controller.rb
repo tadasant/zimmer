@@ -2716,8 +2716,10 @@ class SessionsController < ApplicationController
     # is not urgent enough to be priority is still, almost always, the spot work
     # you care most about — and leaving it on whatever rank it happened to carry
     # (usually 0, the bottom) would bury it behind the entire queue.
-    if params[:place].to_s == "top_of_spot" && klass == SessionGenesis::SPOT
-      attrs[:precedence] = Session.precedence_above_top_spot(Session.where.not(id: @session.id))
+    if params[:place].to_s == SessionPrecedence::PLACE_TOP_OF_SPOT && klass == SessionGenesis::SPOT
+      attrs[:precedence] = Session.precedence_for_place(
+        SessionPrecedence::PLACE_TOP_OF_SPOT, Session.where.not(id: @session.id)
+      )
     elsif params.key?(:precedence)
       attrs[:precedence] = params[:precedence]
     end
@@ -4871,7 +4873,7 @@ class SessionsController < ApplicationController
   def quick_router_precedence(scheduling_class)
     return nil unless scheduling_class == SessionGenesis::SPOT
 
-    Session.precedence_above_top_spot
+    Session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
   end
 
   # Stage uploaded images/files into the temp session dir. Raises a concrete

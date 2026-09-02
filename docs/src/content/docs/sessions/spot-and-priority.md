@@ -669,7 +669,65 @@ actually decides what gets done.
   job runs before unrelated work queued beneath it and a tree of work stays contiguous. Name a value
   only when you mean to move the work relative to everything else in the queue.
 - **A trigger can predefine one**, alongside the class it already carries, so a feed is ranked once
-  rather than one spawned session at a time.
+  rather than one spawned session at a time. A trigger takes an absolute number only — the value is
+  stamped on every session it ever spawns, and a standing instruction to jump the whole queue is not
+  a rank.
+- **"Put this first" is a placement, not a number.** Where a surface offers it, a symbolic
+  `top_of_spot` stands in for the integer and the server resolves it against the live queue as part
+  of the same write. The Ranked view's demote button, the Quick Router and the two MCP session tools
+  offer it; a trigger and the REST API take an integer only — see [Placing something at the head of
+  the queue](#placing-something-at-the-head-of-the-queue).
+
+### Placing something at the head of the queue
+
+"Work on this before the rest of the spot queue" is the one placement common enough to be worth
+naming, and it is the one nobody should be computing by hand. `Session.precedence_above_top_spot`
+answers it: a few points (`SLOT_GAP`) above the highest-ranked **non-archived spot** session there is
+right now. Reading the *live* maximum rather than a stored high-water mark is the whole point — a
+queue whose top has since been archived does not keep inflating the scale.
+
+`Session.precedence_for_place("top_of_spot")` is the single door onto it, and every surface that
+offers the placement comes through it:
+
+| Surface | How it asks |
+| --- | --- |
+| Ranked view, **Demote to spot** | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
+| Quick Router, **Run as spot** | resolved server-side on submit; the checkbox copy says so |
+| MCP `start_session`, `action_session` (`change_precedence` / `change_scheduling_class`) | `place: "top_of_spot"` |
+
+Two surfaces that rank a session do **not** offer it, and that is deliberate. The session detail
+page's scheduling-class control posts only the class — its Precedence field beside it is the integer,
+and a demotion there keeps whatever rank the session carried. A **trigger** takes an integer only: the
+value is stamped on every session it ever spawns, so a placement resolved once at edit time would be
+a stale number by the first spawn, and one resolved at every fire would be a standing queue-jump
+rather than a rank. The [REST API](/extend/rest-api/) takes an integer only as well.
+
+On MCP the argument is **mutually exclusive with `precedence`** — they are two answers to the same
+question, and passing both is an error rather than a silent winner. Passing neither leaves the
+ordinary behaviour untouched: a spawn still lands one point above its parent, and a demotion still
+keeps whatever rank the session already carried.
+
+Where the surface is placing a session that already exists, the resolution both **excludes that
+session** from the measure and **floors the result at the rank it already holds**. The first stops
+"put this at the head" from walking the top row `SLOT_GAP` higher on every call; the second stops it
+overshooting the other way, since a session on top at 1000 with a runner-up at 10 would otherwise be
+rewritten down to 15 — still the head of the spot queue, but now beneath a priority session carrying
+500 that would outrank it on a later demotion. Together they make re-placing a session that is
+already first a no-op.
+
+:::note[Why a symbolic form rather than a documented recipe]
+The MCP tools used to tell an agent to read the current top with `quick_search_sessions` and pass a
+value a few points above it. That is two round trips, and it is racy: another session can land above
+the computed value between the read and the write, leaving the session that was meant to go first
+sitting second. It also hands the agent a number it has to re-derive — including the archived
+exclusion — instead of asking the server the question it already knows how to answer.
+
+The symbolic form narrows that window to a single request; it does not lock the queue. The
+resolution is a `MAX` read and then a separate `UPDATE`, so two callers placing at the top in the
+same instant read the same maximum and write the same value, and `ranked` breaks the tie on
+`created_at` — the older session goes first. That is the honest claim, and it is the one the tool
+descriptions make.
+:::
 
 ### A pause outranks precedence
 
@@ -945,6 +1003,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
 | Stop a *running* session's turn while parking it | **Pause Until** does it unconditionally | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
 | Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and ⋮ menu | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
+| Put a session at the head of the spot queue | **Demote to spot** in the Ranked view's ⋮ menu; **Run as spot** on a Quick Router submission | `action_session` and `start_session` (`place: "top_of_spot"`) |
 | Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
 | Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |
 | Read a session's rank | Ranked view, session detail page | `get_session`, `quick_search_sessions` |
