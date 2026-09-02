@@ -1337,6 +1337,17 @@ Two rules follow, and both are pinned by tests:
   exceptions is one nobody can check. The session-hierarchy links to other sessions carry the drawer
   url as well, so clicking one swaps the drawer in place; on the full page, where no drawer exists,
   they fall back to an ordinary navigation.
+- **The log-level filter re-fetches the frame's own address.** Changing the log level is a server
+  round trip — the server filters timeline items before paginating them — so the detail body has to
+  be re-rendered with a `filter` param. `log_level_filter_controller` resolves *which* address to
+  re-fetch from `closest("turbo-frame")`: inside the drawer that is the frame's `src`, and on the
+  full page, where there is no frame, it falls back to `window.location`. It used to always use
+  `window.location`, which in the drawer is the **dashboard** — so opening the drawer with a
+  non-default level saved in `localStorage` navigated the dashboard to `/?filter=<level>`, a param
+  that means nothing there, and dismissed the drawer along with the reader's place
+  ([#666](https://github.com/tadasant/zimmer/issues/666)). What the frame now navigates to is
+  `/sessions/:id/drawer?filter=<level>` — a drawer url, so the rule above still holds, and no
+  anchor points at it so the prefetch cache still cannot be seeded for it.
 - **A redirect the frame follows lands on the drawer url.** A frame follows a 302 with its own
   `Turbo-Frame` header still attached, so `#follow_up`'s "queued instead" branch and `#refresh` —
   the two that redirect rather than answering with a Turbo Stream — pick their target through
@@ -1347,7 +1358,9 @@ Two rules follow, and both are pinned by tests:
 assert the invariants directly: each URL returns the same body whatever the `Turbo-Frame` header
 says, no link on the dashboard points at a drawer path, and — asserted over the whole rendered
 drawer body, so a link added later is caught without anyone remembering the rule — every same-origin
-link inside the drawer escapes to `_top`. Opening `/sessions/:id/drawer` by hand is not a supported
+link inside the drawer escapes to `_top`. `test/system/session_drawer_log_filter_test.rb` drives the
+log-level filter in both contexts and asserts the dashboard's URL is untouched when the drawer
+re-filters. Opening `/sessions/:id/drawer` by hand is not a supported
 way to read a session — it answers with a bare frame and no chrome — it is the drawer's own address.
 
 ### The reopen backfill
