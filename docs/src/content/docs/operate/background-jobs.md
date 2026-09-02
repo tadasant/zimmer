@@ -459,27 +459,31 @@ duplicate on the next poll rather than a notification that silently never arrive
 
 ## Queues
 
-Most jobs run on `default`. Three are deliberately isolated:
+Most jobs run on `default`. Four kinds of work are deliberately isolated:
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
 - **`:auth`** — `RuntimeLoginJob` and `CleanupRuntimeLoginAttemptsJob`. The `triggers` argument with
   a human added: someone is watching the /quotas login panel spin for exactly as long as the job sits
-  unstarted. `default` is four threads shared with around thirty job classes, fifteen of them cron'd
+  unstarted. `default` is two threads shared with around thirty job classes, fifteen of them cron'd
   as often as every 30 seconds and several running for minutes (bundle install, npm installs,
-  transcript archiving, LLM title and summary calls) — and `RuntimeLoginJob` used to starve *itself*
+  transcript archiving, and package installs) — and `RuntimeLoginJob` used to starve *itself*
   there, because it holds its thread for as long as the login CLI is open, up to
   `RuntimeLoginJob::MAX_DURATION` (12 minutes). Two earlier logins took half of `default` with them.
   `RuntimeLoginJob::DISPATCH_LATENCY_WARN_THRESHOLD` is 15s, much tighter than the trigger lane's:
   a wake delivered a minute late is late, a login started a minute late has already lost the human.
 
   GoodJob `priority` is not a substitute for a lane. Priority orders the queue at dequeue time; it
-  does not preempt a running job. When all four `default` threads are already inside multi-minute
+  does not preempt a running job. When all `default` threads are already inside multi-minute
   work, the highest-priority job in the system still waits for one to finish.
 
   Periodic auth work — `RefreshRuntimeAuthTokensJob`, `RefreshMcpOauthTokensJob` — deliberately stays
   on `default`. Nobody is waiting on it, and it is exactly the bulk character this lane exists to
   escape.
+- **`:inference`** — `SessionTitleJob`, `SessionStatusSummaryJob`, and the `needs_input` shape of
+  `SendPushNotificationJob`. These shell out to a runtime CLI for 15–90 seconds. The lane has two
+  threads; excess work remains one queued row per request and drains as a worker becomes free.
+  Deterministic notification types stay on `default` because they do no inference.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubCommentPollerJob`, `GitHubPullRequestPollerJob`, `GitHubMergeConflictPollerJob`,
@@ -541,60 +545,42 @@ key would block that chain behind the cron copy. `test/jobs/recurring_sweep_conc
 walks the production cron table and fails if an argument-less `default` sweep is left unguarded, so
 the next one added cannot quietly reopen the gap.
 
-### Bounding blocking inference
+### Blocking inference waits in a lane; it does not retry for admission
 
-`default` also carries every job that makes a **blocking one-shot inference call**:
-`SendPushNotificationJob` (15s timeout), `SessionTitleJob` (30s) and `SessionStatusSummaryJob` (90s).
-Each one shells out to the runtime CLI and holds its worker thread until the answer lands or the
-timeout expires, and `default` has four threads (`ConnectionBudget::GOOD_JOB_DEFAULT_THREADS`) shared
-with three dozen other job classes.
+Every job that makes a **blocking one-shot inference call** uses `inference`:
+`SendPushNotificationJob`'s `needs_input` shape (15s timeout), `SessionTitleJob` (30s), and
+`SessionStatusSummaryJob` (90s). Each holds its worker thread until the runtime CLI answers or the
+timeout expires. Two scheduler threads are the bound, and the database-backed queue is the waiting
+room.
 
-`BlockingInferenceBounded` gives them **one shared `perform_limit`** across all of them, so at most
-half of `default`'s threads can be inside an inference call at once and the rest of the queue always
-has somewhere to run. The key is shared rather than per-class on purpose: the resource being rationed
-is the queue's thread count, and a per-class limit of two would let two classes take all four.
+That distinction matters during a burst. The previous design left these jobs on `default`, put a
+shared GoodJob `perform_limit` of two around them, and handled `ConcurrencyExceededError` by retrying
+forever on a capped, jittered delay. It preserved two default threads, but every losing attempt wrote
+a replacement scheduled row and returned to contend for the same advisory lock. A burst of failed
+sessions produced hundreds of title, summary, and notification retries even though only two were
+ready at once: the throttle converted pressure into database and scheduler churn rather than simply
+holding the line.
 
-This binds hardest during an account-quota outage, which is when inference is least likely to answer
-and most likely to burn its whole timeout — and simultaneously when the most work arrives, because
-every parked session takes a `pause` transition and `pause` enqueues *both* a status-summary refresh
-and a push notification, each of which makes its own blocking call. Arrival peaks exactly when
-service is worst.
+The dedicated lane has the same capacity the old perform limit had, and `default` was reduced from
+four threads to two when its two inference slots moved out. Total worker threads and the Postgres
+connection budget remain unchanged. Excess inference work is claimed only when a lane worker is
+available, so each request has one row, executes once, and drains in queue order.
 
-`PERFORM_LIMIT` is derived from the queue's thread count rather than written as a literal, so raising
-or lowering `GOOD_JOB_DEFAULT_THREADS` moves the bound with it instead of silently erasing the
-half-the-queue guarantee.
+This binds hardest during an account-quota outage, when inference is least likely to answer and most
+likely to burn its timeout — exactly when every parked session enqueues both a status-summary refresh
+and a push notification. The default queue keeps its own workers throughout. A status summary an
+operator requested through **Regenerate** retains `FORCED_PRIORITY`, so it takes the next inference
+slot ahead of automatic titles and refreshes; priority is useful *inside* a lane even though it is not
+a substitute for one.
 
-One thing does get to jump the queue: a generation an operator asked for by hand — the panel's
-**Regenerate** button, the REST endpoint, the MCP action — is enqueued at
-`SessionStatusSummaryJob::FORCED_PRIORITY`. Sharing one limit means a forced run can lose the race
-for a slot, and a human is watching the panel for that one. GoodJob orders `priority ASC NULLS LAST`
-and admits the oldest claims first, so a lower number takes the next free slot ahead of the unforced
-refreshes and titles.
-
-The bound is on `perform`, not `enqueue`. These jobs carry a session id and are not interchangeable,
-so refusing an enqueue would drop that session's work rather than delay it. GoodJob answers an
-exceeded `perform_limit` with `ConcurrencyExceededError` and reschedules the job — so the surplus
-waits in `scheduled`, future-dated and out of the ready backlog, instead of holding a thread. Titles
-and summaries land late during an outage, which is the right trade: they are best-effort, and
-`StatusSummaryBackstopJob` repairs a generation that never landed.
-
-`BlockingInferenceBounded` replaces GoodJob's backoff for that error with a quadratic ramp capped at
-`MAX_RETRY_INTERVAL` (60s), jittered. GoodJob's own curve is `(attempt ** 4) + 2` seconds and uncapped — about
-10 minutes by the fifth attempt and over an hour by the eighth. That curve suits a job contending
-with itself, but a slot here frees every time an inference call returns, so uncapped it would leave a
-session's summary waiting an hour after the queue had drained, and would put the same delay on an
-operator's forced **Regenerate** — a button press, with a human watching the panel. Attempts stay
-unbounded; only the interval is capped.
-
-The jitter is not decoration. ActiveJob applies its configured `retry_jitter` to the
-`:polynomially_longer` and Duration forms of `wait:` but **not** to a Proc, so a Proc that does not
-jitter itself silently loses it — and every job bounced off the same slot would come back in lockstep,
-each taking `pg_advisory_xact_lock` on the one shared key, during exactly the outage this is for.
+The deploy that introduced the lane also ships a one-time post-deploy task which moves unfinished,
+unclaimed rows for these three classes from `default` to `inference`. `PostDeployTaskJob` has priority
+-100 so an old default backlog cannot prevent the task that drains it from running.
 
 ## Queue recovery mode
 
 The escape hatch for a queue that has run away from you. `QueueRecoveryMode` halts job **execution**
-on the demand-side queues — `pollers`, `triggers` and `default` — and deliberately leaves `agents`
+on the demand-side queues — `pollers`, `triggers`, `inference` and `default` — and deliberately leaves `agents`
 and `auth` running.
 
 That asymmetry is the whole design. Pausing every queue would also pause `agents`, which is where
@@ -756,7 +742,7 @@ than looking like a day-old stall the moment it becomes runnable.
 
 ### The page says which queue, and of what
 
-A ready count on its own is not triageable. Zimmer runs five queues with very different shapes — an
+A ready count on its own is not triageable. Zimmer runs six queues with very different shapes — an
 `agents` thread is held for the entire life of a session, while `default` and `pollers` turn jobs
 over in milliseconds — so the same number is equally consistent with "one queue is starved" and
 "everything is busy", and those want opposite responses. Worse, the healthy-looking signals stay

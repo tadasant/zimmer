@@ -914,7 +914,7 @@ Two things follow from this that did not used to be true:
 `/up/deep` proves the web process can reach its backing services. It says nothing about whether the
 `worker` container is claiming jobs — and on 2026-08-13 a deploy passed every automated check while
 production processed zero background jobs for ten hours. The post-deploy drain gate closes that hole:
-it enqueues a canary onto `default`, `pollers`, `triggers` and `agents` at negative priority, and
+it enqueues a canary onto `default`, `inference`, `pollers`, `triggers` and `agents` at negative priority, and
 fails the deploy if the worker does not claim and finish each one inside a bounded timeout.
 
 The job it enqueues is `app/jobs/canary_job.rb` — a no-op that logs its token and returns. Everything

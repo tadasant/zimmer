@@ -472,7 +472,7 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
   #
   # A UI-driven login is the one background job with a human watching a spinner
   # for its whole queue wait, and it pins its thread for up to MAX_DURATION once
-  # it starts. On the shared `default` queue -- four threads, ~30 job classes,
+  # it starts. On the shared `default` queue -- a small thread pool, ~30 job classes,
   # fifteen of them cron'd -- it queued behind periodic and multi-minute work, and
   # behind earlier logins. It runs on the dedicated `auth` lane instead.
 

@@ -204,6 +204,39 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "in the install directory forever"
   end
 
+  test "a reinstall crosses an OverlayFS lower-to-upper layer boundary" do
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
+    live_node_modules = File.join(@tmp_air_dir, "node_modules")
+    retired_node_modules = File.join(
+      @tmp_air_dir, AirPrepareService::RETIRED_DIR_NAME, "node_modules"
+    )
+    original_rename = File.method(:rename)
+    crossed_overlay_boundary = false
+
+    stub_air_subprocess(proc { |*args, **opts|
+      cmd_args = args.is_a?(Array) ? args : [ args ]
+      create_fake_air_binary(npm_install_prefix(cmd_args), "9.9.9-new") if cmd_args.any? { |a| a.to_s.include?("npm") }
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      File.stub(:rename, ->(source, destination) {
+        if source == live_node_modules && destination == retired_node_modules
+          crossed_overlay_boundary = true
+          raise Errno::EXDEV, "simulated lower-to-upper OverlayFS move"
+        end
+
+        original_rename.call(source, destination)
+      }) do
+        AirPrepareService.ensure_air_installed!
+      end
+    end
+
+    assert crossed_overlay_boundary, "the test must exercise FileUtils.mv's EXDEV fallback"
+    assert_includes File.read(File.join(live_node_modules, ".bin", "air")), "9.9.9-new"
+    assert File.exist?(File.join(retired_node_modules, ".bin", "air")),
+      "the lower-layer tree is copied into .retired before the published path is replaced"
+    assert File.exist?(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
+  end
+
   test "a failed install leaves the previous working tree untouched" do
     live_binary = File.join(@tmp_air_dir, "node_modules", ".bin", "air")
     File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))

@@ -4,7 +4,7 @@
 #
 # The production deploy gate (`scripts/verify-job-drain-remote.sh` in
 # `tadasant/tadasant-internal`) enqueues one of these onto every GoodJob queue —
-# `default`, `pollers`, `triggers`, `agents` — at negative priority right after a
+# `default`, `inference`, `pollers`, `triggers`, `agents` — at negative priority right after a
 # cutover, and fails the deploy if the worker does not claim and finish them within
 # a bounded timeout. It exists because the 2026-08-13 deploy passed every automated
 # check while production processed zero background jobs for ten hours.

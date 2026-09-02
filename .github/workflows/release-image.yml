@@ -90,33 +90,27 @@ jobs:
         id: buildx
         uses: docker/setup-buildx-action@v3
 
-      # The app image builds FROM ghcr.io/tadasant/zimmer-base:latest. Rebuild it
-      # first when Dockerfile.base changed in this push, and bootstrap it if it
-      # does not exist yet, so the app image is built on the base image declared
-      # by the same commit.
-      - name: Check for base image
+      # Resolve the base from the CONTENT it declares, not from whether the one
+      # push currently being handled changed Dockerfile.base. The old diff-only
+      # check had a hole: a base build could fail, then the next push saw no new
+      # Dockerfile.base diff and built the app from stale :latest. A content tag
+      # is absent until this exact declaration built successfully, so no later
+      # commit can skip over a failed base build.
+      - name: Resolve base image
         id: base
         run: |
           set -euo pipefail
-          BASE_CHANGED=false
-          BEFORE="${{ github.event.before }}"
-          if [ "$BEFORE" != "0000000000000000000000000000000000000000" ] &&
-             git rev-parse --verify "$BEFORE^{commit}" >/dev/null 2>&1 &&
-             git diff --name-only "$BEFORE" "${{ github.sha }}" -- Dockerfile.base | grep -q .; then
-            BASE_CHANGED=true
-          fi
+          BASE_KEY=$(sha256sum Dockerfile.base Gemfile Gemfile.lock mcp.json bin/preinstall-mcp-packages |
+            sha256sum | cut -c1-20)
+          BASE_IMAGE="ghcr.io/tadasant/zimmer-base:content-${BASE_KEY}"
+          echo "image=${BASE_IMAGE}" >> "$GITHUB_OUTPUT"
 
-          if docker buildx imagetools inspect ghcr.io/tadasant/zimmer-base:latest >/dev/null 2>&1; then
-            if [ "$BASE_CHANGED" = true ]; then
-              echo "need_base=true" >> "$GITHUB_OUTPUT"
-              echo "Dockerfile.base changed; rebuilding base image before app image."
-            else
-              echo "need_base=false" >> "$GITHUB_OUTPUT"
-              echo "Base image present and Dockerfile.base unchanged; reusing it."
-            fi
+          if docker buildx imagetools inspect "$BASE_IMAGE" >/dev/null 2>&1; then
+            echo "need_base=false" >> "$GITHUB_OUTPUT"
+            echo "Exact base image ${BASE_IMAGE} exists; reusing it."
           else
             echo "need_base=true" >> "$GITHUB_OUTPUT"
-            echo "Base image missing; bootstrapping it from Dockerfile.base."
+            echo "Exact base image ${BASE_IMAGE} is missing; building it before the app image."
           fi
 
       - name: Build & push base image
@@ -127,7 +121,9 @@ jobs:
           context: .
           file: Dockerfile.base
           push: true
-          tags: ghcr.io/tadasant/zimmer-base:latest
+          tags: |
+            ${{ steps.base.outputs.image }}
+            ghcr.io/tadasant/zimmer-base:latest
           cache-from: type=gha,scope=base
           cache-to: type=gha,mode=max,scope=base
 
@@ -165,9 +161,10 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           pull: true
-          # Uses the Zimmer base image (Node/Playwright/gh/gems), ensured to exist by
-          # the bootstrap step above. The Dockerfile defaults BASE_IMAGE to
-          # ghcr.io/tadasant/zimmer-base:latest.
+          # Pin the app build to the exact successfully-built base declaration.
+          # Never fall back to mutable :latest after a failed base build.
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.image }}
           push: true
           tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
@@ -196,6 +193,8 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           pull: true
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.image }}
           push: true
           tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
@@ -216,6 +215,8 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           pull: true
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.image }}
           push: true
           tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha

@@ -452,6 +452,11 @@ class AirCatalogService
       AirPrepareService.ensure_air_installed!
     rescue AirPrepareService::AirPrepareError => e
       raise CatalogError, "AIR CLI installation failed: #{e.message}"
+    rescue SystemCallError => e
+      # Belt-and-braces for a future install operation that has not yet been
+      # normalized by AirPrepareService. Catalog availability must degrade to a
+      # snapshot, never depend on the exact Errno subclass an installer leaked.
+      raise CatalogError, "AIR CLI installation failed (#{e.class}: #{e.message})"
     end
 
     def air_binary
