@@ -765,10 +765,24 @@ is either of:
   `QUEUE_LANE_CRITICAL_THRESHOLDS`. Checked first, so the page names the lane instead of describing
   one queue in fleet-wide terms that fit it badly.
 - **A stalled worker** — at least `WORKER_STALL_MIN_LANES` (2) lanes have a head of line older than
-  `QUEUE_STALL_CRITICAL_AGE` (10 minutes), and **their combined depth** is ≥
-  `QUEUE_DEPTH_CRITICAL_THRESHOLD` (100), even though no one of them is past its own bar. A head of
-  line only advances when a worker takes the job, so a lane past that floor has picked up nothing in
-  the window whatever has arrived behind it.
+  **their own** `stall_age`, and **their combined depth** is ≥ `QUEUE_DEPTH_CRITICAL_THRESHOLD`
+  (100), even though no one of them is past its own *depth* bar. A head of line only advances when a
+  worker takes the job, so a lane past its own age has picked up nothing in that window whatever has
+  arrived behind it.
+
+  Each lane is judged against **its own** tolerance here, not against the flat 10-minute
+  `QUEUE_STALL_CRITICAL_AGE`. Selecting on the flat floor reintroduces the queue-blind bug one branch
+  over: `inference` at 57m and `maintenance` at 56m are both inside the envelope the table above
+  calls healthy, and `agents` sits past ten minutes as a matter of routine because eight threads are
+  each held for a whole session — so the 2026-09-02 firing re-fires unchanged the moment `agents`
+  reads 12m instead of the 4m it happened to show, and two lanes well inside their own limits sum
+  past the global bar. A lane's depth is evidence of a stall only once that lane is past the age its
+  own thread count and job durations can explain.
+
+  What that leaves is the shape a wedge actually has. The lanes that cross a ten-minute bar quickly
+  are the fast ones — `default`, `pollers`, `triggers`, which turn jobs over in milliseconds and hold
+  no override — so a worker that has stopped picking anything up shows up as those going stale
+  together, while a slow lane joins only once it is past its own much longer tolerance.
 
   The depth summed is the **stalled lanes' own**, not `ready_count`: a lane that is draining is not
   part of the backlog this branch describes, and counting it would be back to ANDing one lane's depth
@@ -780,7 +794,14 @@ is either of:
 
 Both branches are strict narrowings of the old queue-blind rule — every per-lane depth threshold is
 at least 100, every per-lane stall age at least 10 minutes, and the cross-lane branch sums a *subset*
-of `ready_count` — so this can only remove firings, never add one.
+of `ready_count` over a *subset* of the lanes — so this can only remove firings, never add one.
+
+The page also throttles the two shapes separately. `SystemHealthMonitorJob` qualifies its
+`ALERT_DEDUP_KEY` with the status's `code` (`backlog_lane:<queue>` or `backlog_cross_lane`), because
+they are different incidents wanting different responses: on one shared key a starved-`inference`
+page at 10:00 would silence a cross-lane stall at 10:15 for the rest of `AlertService::DEDUP_WINDOW`.
+Within a shape the key is still stable, so a lane that stays starved for hours pages once an hour
+rather than once a tick.
 
 A stall confined to a single lane is left to the starved-lane branch, judged on that lane's own
 terms, which is the point of the overrides: an `agents` lane 150 deep and three hours old with every

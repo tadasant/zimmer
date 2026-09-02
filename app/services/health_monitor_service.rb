@@ -157,7 +157,12 @@ class HealthMonitorService
   end
 
   # Structured result for health status
-  HealthStatus = Struct.new(:status, :message, keyword_init: true) do
+  # `code` is optional and nil for every status that does not need one. It exists so
+  # SystemHealthMonitorJob can throttle the two critical backlog shapes separately:
+  # they are different incidents with different responses, and collapsing them onto
+  # one dedup key means a starved-lane page silences a worker-wide stall for the
+  # rest of AlertService::DEDUP_WINDOW.
+  HealthStatus = Struct.new(:status, :message, :code, keyword_init: true) do
     def healthy?
       status == :healthy
     end
@@ -1154,6 +1159,7 @@ class HealthMonitorService
     if starved
       return HealthStatus.new(
         status: :critical,
+        code: "backlog_lane:#{starved[:queue]}",
         message: "Queue backlog critical: the #{starved[:queue]} lane has #{starved[:depth]} jobs ready, " \
                  "oldest waiting #{format_wait(starved[:age_seconds])}"
       )
@@ -1163,6 +1169,7 @@ class HealthMonitorService
     if stalled
       return HealthStatus.new(
         status: :critical,
+        code: "backlog_cross_lane",
         message: "Queue backlog critical: #{stalled[:depth]} jobs ready across " \
                  "#{stalled[:lanes]} stalled lanes, oldest waiting " \
                  "#{format_wait(queue_stats[:oldest_ready_age_seconds])}; " \
@@ -1203,10 +1210,27 @@ class HealthMonitorService
     nil
   end
 
-  # The backlog held by the lanes that have picked up nothing in
-  # QUEUE_STALL_CRITICAL_AGE, when there are enough such lanes for that to mean the
-  # worker and their combined depth is past the original global threshold. Nil
-  # otherwise.
+  # The backlog held by the lanes that have picked up nothing in longer than THEIR
+  # OWN tolerance, when there are enough such lanes for that to mean the worker and
+  # their combined depth is past the original global threshold. Nil otherwise.
+  #
+  # Each lane is judged against its own `stall_age`, not against the flat
+  # QUEUE_STALL_CRITICAL_AGE. Selecting on the flat floor here would reintroduce the
+  # very bug this gate exists to fix, one branch over: `inference` at 57m and
+  # `maintenance` at 56m are both inside the envelope the threshold table calls
+  # healthy, and `agents` sits past ten minutes as a matter of routine because eight
+  # threads are each held for a whole session — so the 2026-09-02 firing re-fires
+  # unchanged the moment `agents` reads 12m instead of the 4m it happened to show,
+  # and two lanes well inside their own limits sum past the global bar. A lane's
+  # depth is evidence of a stall only once that lane is past the age its own thread
+  # count and job durations can explain.
+  #
+  # What that leaves is the shape a wedge actually has. The lanes that cross a
+  # ten-minute bar quickly are the fast ones — `default`, `pollers`, `triggers`,
+  # which turn jobs over in milliseconds and hold no override — so a worker that has
+  # stopped picking anything up shows up here as those going stale together, while a
+  # slow lane joins only once it is past its own much longer tolerance. That is the
+  # discrimination the whole gate is for, applied consistently to both branches.
   #
   # The depth summed is the STALLED lanes' own, not `ready_count`: a lane that is
   # draining is not part of the backlog this branch is describing, and counting it
@@ -1223,7 +1247,7 @@ class HealthMonitorService
     depths = queue_stats[:ready_count_by_queue] || {}
     ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
 
-    stalled = ages.select { |_queue, age| age >= QUEUE_STALL_CRITICAL_AGE }
+    stalled = ages.select { |queue, age| age >= lane_critical_thresholds(queue)[:stall_age] }
     return nil if stalled.size < WORKER_STALL_MIN_LANES
 
     depth = stalled.sum { |queue, _age| depths[queue].to_i }

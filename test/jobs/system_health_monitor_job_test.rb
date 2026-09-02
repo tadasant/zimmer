@@ -56,6 +56,31 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     GoodJob::Job.insert_all(rows) if rows.any?
   end
 
+  def enqueue_lane_jobs(queue, count, waiting_for:)
+    enqueued_at = waiting_for.ago
+    rows = Array.new(count) do
+      { queue_name: queue, job_class: "PlaceholderJob", created_at: enqueued_at,
+        updated_at: enqueued_at, scheduled_at: enqueued_at }
+    end
+    GoodJob::Job.insert_all(rows)
+  end
+
+  # Runs the block's backlog through two consecutive critical checks (the
+  # hysteresis) and hands back the dedup key the page went out under, leaving the
+  # table and the streak clean for the next scenario.
+  def dedup_key_for
+    GoodJob::Job.delete_all
+    Rails.cache.delete(SystemHealthMonitorJob::STREAK_CACHE_KEY)
+    yield
+
+    captured = nil
+    AlertService.stubs(:raise_alert).with { |_title, opts| captured = opts[:dedup_key]; true }
+    2.times { SystemHealthMonitorJob.perform_now }
+    AlertService.unstub(:raise_alert)
+
+    captured
+  end
+
   def make_queue_critical
     enqueue_ready_jobs(HealthMonitorService::QUEUE_DEPTH_CRITICAL_THRESHOLD + 5)
   end
@@ -95,10 +120,43 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     AlertService.expects(:raise_alert).once.with do |title, opts|
       title == "Queue backlog critical" &&
         opts[:source] == "SystemHealthMonitorJob" &&
-        opts[:dedup_key] == SystemHealthMonitorJob::ALERT_DEDUP_KEY &&
+        opts[:dedup_key] == "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:backlog_lane:default" &&
         opts[:details].to_s.include?("Ready (waiting on a worker):")
     end
     SystemHealthMonitorJob.perform_now
+  end
+
+  # The two critical shapes are different incidents with different responses, so
+  # they must not share a throttle: on one key, whichever fires first silences the
+  # other for the whole of AlertService::DEDUP_WINDOW. A starved-`inference` page at
+  # 10:00 swallowing a cross-lane stall at 10:15 is the failure this pins.
+  test "a starved lane and a cross-lane stall throttle on separate dedup keys" do
+    lane_key = dedup_key_for do
+      enqueue_lane_jobs("inference", 160, waiting_for: 70.minutes)
+    end
+
+    cross_lane_key = dedup_key_for do
+      enqueue_lane_jobs("default", 60, waiting_for: 30.minutes)
+      enqueue_lane_jobs("pollers", 30, waiting_for: 30.minutes)
+      enqueue_lane_jobs("triggers", 25, waiting_for: 30.minutes)
+    end
+
+    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:backlog_lane:inference", lane_key
+    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:backlog_cross_lane", cross_lane_key
+    refute_equal lane_key, cross_lane_key
+  end
+
+  # Two lanes starving at once are two problems, so they page separately too.
+  test "two starved lanes throttle on separate dedup keys" do
+    inference_key = dedup_key_for do
+      enqueue_lane_jobs("inference", 160, waiting_for: 70.minutes)
+    end
+
+    maintenance_key = dedup_key_for do
+      enqueue_lane_jobs("maintenance", 120, waiting_for: 70.minutes)
+    end
+
+    refute_equal inference_key, maintenance_key
   end
 
   test "a healthy check between criticals resets the streak (no premature alert)" do
