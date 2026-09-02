@@ -168,6 +168,13 @@ directory name is the only evidence of what produced them.
 | `…headless-inference…` | `adhoc_token_usages` | `session_title` |
 | anything else | `adhoc_token_usages` | `unknown` |
 
+`cli_status_probe` is a closed source: it exists because `CliStatusService` checked Claude
+Code's auth with `claude whoami`, and `whoami` is not a subcommand — so the CLI read the
+word as a *prompt* and answered it with a full agent turn, every two minutes on cron
+([#536](https://github.com/tadasant/zimmer/issues/536)). The check now reads
+`ClaudeCredentialHealth` in-process and makes no model call, so no new rows carry this
+label. The historical ones stay: spend that happened is still spend.
+
 Linking a row back to a `Session` uses two strategies, because neither covers the corpus
 alone: the transcript filename is `<session_id>.jsonl` for a main transcript, and the clone
 directory (created per session) covers `agent-*.jsonl` subagent files and resumed sessions

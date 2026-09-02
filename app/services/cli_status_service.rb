@@ -13,9 +13,18 @@ require "open3"
 #   (volume-mounted from the host). A credential helper baked into Dockerfile.base
 #   delegates git auth to `gh auth git-credential`, which honours both.
 # - fly: Uses FLY_IO_API_TOKEN environment variable (no interactive login needed)
-# - claude: Uses OAuth authentication (requires manual `claude /login` step)
+# - claude: Uses OAuth authentication (`claude auth login`, or the Authenticate
+#   button on the accounts page). Its check is a Ruby callable rather than a
+#   shell command — see the `claude` entry below for why.
 # - codex: Uses OAuth authentication (requires manual `codex login` step);
 #   credentials are stored in auth.json under CODEX_HOME (/home/rails/.codex)
+#
+# An auth check must never be able to reach a billable path. `check_auth` is
+# therefore either a Ruby callable returning a boolean, or a shell command whose
+# argv is a REAL subcommand of the binary it invokes. That second condition is
+# not pedantry: `claude`'s usage line is `claude [options] [command] [prompt]`,
+# so any argv that is not a subcommand is a *prompt*, and the CLI answers it with
+# a full agent turn. `cli_status_service_test.rb` asserts both properties.
 #
 # Performance optimization:
 # - CLI status checks are performed by CliStatusRefreshJob (runs every 2 minutes)
@@ -62,7 +71,27 @@ class CliStatusService
     claude: {
       name: "Claude Code",
       check_installed: "which claude",
-      check_auth: "claude whoami",
+      # There is no shell probe to run here, so this one does not shell out.
+      #
+      # `claude whoami` used to be the check. `whoami` is not a subcommand, so
+      # the CLI took it as a PROMPT and answered it with a full agent turn —
+      # CLAUDE.md loaded, Bash tool called, prose written — every 2 minutes on
+      # cron, burning the pooled quota that gates spot scheduling (#536).
+      #
+      # `claude auth status` is a real subcommand, and it is still the wrong
+      # check: verified against CLI 2.1.258, it reports only credentials it
+      # finds in the ENVIRONMENT (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY).
+      # Pointed at ~/.claude/.credentials.json — the store Zimmer's web and
+      # worker containers actually authenticate from — it prints "Not logged in"
+      # and exits 1 even with a complete token pair on disk. It would have
+      # flipped this tile to "not authenticated" in production, and it reports 0
+      # for a bogus ANTHROPIC_API_KEY, which is the same silent-failure shape.
+      #
+      # ClaudeCredentialHealth is the authority Zimmer already trusts for this
+      # question — the same read the health dashboard and the token-refresh
+      # sweep use, and it follows the credential wherever it lives (the shared
+      # file, or the DB under session-scoped credentials).
+      check_auth: -> { ClaudeCredentialHealth.status.ok? },
       check_version: "claude --version",
       auth_method: :oauth,
       install_instructions: <<~INSTRUCTIONS,
@@ -77,8 +106,9 @@ class CliStatusService
         ssh root@zimmer.example.com
         docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
 
-        # Then run the OAuth login flow:
-        claude /login
+        # Then run the OAuth login flow (the same argv ClaudeLoginDriver drives
+        # for the Authenticate button on the accounts page):
+        claude auth login
       INSTRUCTIONS
     },
     codex: {
@@ -265,9 +295,23 @@ class CliStatusService
     system(command, out: File::NULL, err: File::NULL)
   end
 
-  def check_auth(command)
-    # Run the auth check command and see if it succeeds
-    result = system(command, out: File::NULL, err: File::NULL)
+  # A `check_auth` is either a Ruby callable returning a boolean — used when no
+  # shell probe can answer the question without reaching a billable path — or a
+  # shell command whose exit status is the answer.
+  #
+  # A callable that raises reports "not authenticated" rather than taking the
+  # whole refresh down with it, which is the failure mode `system` already had.
+  def check_auth(check)
+    if check.respond_to?(:call)
+      begin
+        return check.call == true
+      rescue => e
+        Rails.logger.warn "[CliStatusService] Auth check raised: #{e.class}: #{e.message}"
+        return false
+      end
+    end
+
+    result = system(check, out: File::NULL, err: File::NULL)
     result == true
   end
 
