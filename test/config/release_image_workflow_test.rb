@@ -8,7 +8,8 @@ class ReleaseImageWorkflowTest < ActiveSupport::TestCase
   test "release workflow pins the app to a content-addressed base image" do
     workflow = RELEASE_WORKFLOW.read
 
-    assert_includes workflow, "sha256sum Dockerfile.base Gemfile Gemfile.lock mcp.json bin/preinstall-mcp-packages"
+    assert_includes workflow,
+      "git ls-tree HEAD -- Dockerfile.base Gemfile Gemfile.lock mcp.json bin/preinstall-mcp-packages"
     assert_includes workflow, "zimmer-base:content-${BASE_KEY}"
     assert_includes workflow, 'imagetools inspect "$BASE_IMAGE"'
     assert_not_includes workflow, "git diff --name-only",

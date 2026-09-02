@@ -100,7 +100,9 @@ jobs:
         id: base
         run: |
           set -euo pipefail
-          BASE_KEY=$(sha256sum Dockerfile.base Gemfile Gemfile.lock mcp.json bin/preinstall-mcp-packages |
+          # ls-tree covers each input's path, executable mode, and blob content.
+          # The preinstall script's mode affects whether Dockerfile.base can run it.
+          BASE_KEY=$(git ls-tree HEAD -- Dockerfile.base Gemfile Gemfile.lock mcp.json bin/preinstall-mcp-packages |
             sha256sum | cut -c1-20)
           BASE_IMAGE="ghcr.io/tadasant/zimmer-base:content-${BASE_KEY}"
           echo "image=${BASE_IMAGE}" >> "$GITHUB_OUTPUT"
