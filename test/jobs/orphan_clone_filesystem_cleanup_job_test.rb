@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
   setup do
@@ -60,6 +61,30 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
     orphans = job.send(:find_orphan_directories, @clones_base)
 
     assert_not_includes orphans, @orphan_dir, "Tracked directory should not be identified as orphan"
+  end
+
+  test "a clone saved only by its basename is flagged as clone_path drift" do
+    # The stored path is under a different base, so only the basename identifies
+    # it. The directory is safe either way; the point is that nothing else in the
+    # pipeline would notice the drift (#671). StaleCloneCleanupJob's removed
+    # sweep carried this tripwire; it lives here now.
+    sessions(:running).update!(
+      metadata: { "clone_path" => File.join("/some/relocated/base", File.basename(@orphan_dir)) }
+    )
+
+    job = OrphanCloneFilesystemCleanupJob.new
+    job.expects(:flag_path_drift).once
+
+    assert_not_includes job.send(:find_orphan_directories, @clones_base), @orphan_dir
+  end
+
+  test "a tracked clone whose stored path matches exactly is silent — drift is the only thing worth saying" do
+    sessions(:running).update!(metadata: { "clone_path" => @orphan_dir })
+
+    Rails.logger.expects(:warn).with(regexp_matches(/matched by basename, not by path/)).never
+
+    job = OrphanCloneFilesystemCleanupJob.new
+    assert_not_includes job.send(:find_orphan_directories, @clones_base), @orphan_dir
   end
 
   test "cleanup_orphan removes directory and calls docker cleanup" do

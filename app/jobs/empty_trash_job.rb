@@ -63,11 +63,25 @@ class EmptyTrashJob < ApplicationJob
       return false
     end
 
-    status = Session.status_label(Session.unscoped.where(id: session.id).pick(:status))
-    return true if status == "archived"
+    status, trash_after = Session.unscoped.where(id: session.id).pick(:status, :trash_after)
+    status = Session.status_label(status)
 
-    Rails.logger.warn "[EmptyTrashJob] Skipping session #{session.id}: it is #{status || "gone"} now, not " \
-      "archived, so its retention no longer applies"
+    unless status == "archived"
+      Rails.logger.warn "[EmptyTrashJob] Skipping session #{session.id}: it is #{status || "gone"} now, not " \
+        "archived, so its retention no longer applies"
+      return false
+    end
+
+    # The deadline itself, not just the status. An unarchive followed by a
+    # re-archive leaves the row `archived` with a FRESH deadline — which passes
+    # a status-only check while being exactly the mid-undo-window state this job
+    # exists to wait out. Everything below the clone (scratch, the Claude config
+    # dir, prompt attachments, the preserved artifacts) has no remote to come
+    # back from, so reaping it early is not recoverable.
+    return true if trash_after.present? && trash_after <= Time.current
+
+    Rails.logger.warn "[EmptyTrashJob] Skipping session #{session.id}: its trash deadline is now " \
+      "#{trash_after&.iso8601 || "unset"}, so the retention that selected it has not expired"
     false
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error "[EmptyTrashJob] Could not re-check the status of session #{session.id} " \

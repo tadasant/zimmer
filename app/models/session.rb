@@ -260,7 +260,8 @@ class Session < ApplicationRecord
   #
   # @return [Set<String>]
   def self.live_clone_paths
-    where(status: NON_REAPABLE_STATUSES)
+    unscoped
+      .where(status: NON_REAPABLE_STATUSES)
       .where("metadata->>'clone_path' IS NOT NULL")
       .pluck(Arel.sql("metadata->>'clone_path'"))
       .compact

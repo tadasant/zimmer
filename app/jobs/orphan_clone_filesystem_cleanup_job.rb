@@ -231,12 +231,18 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
 
     # Get all clone paths tracked by ANY session (orphans are directories with no
     # owning session row at all).
-    tracked_paths = Session
+    # `unscoped` deliberately: this set decides deletions, so it must see every
+    # row the table has. A default scope added later for soft-delete or tenancy
+    # would otherwise hide a session and make its clone look orphaned. Keyed by
+    # globally-unique basename, and carrying the stored path so a near-miss can
+    # be told apart from a clean match below.
+    tracked = Session.unscoped
       .where("metadata->>'clone_path' IS NOT NULL")
-      .pluck(Arel.sql("metadata->>'clone_path'"))
-      .compact
-      .map { |p| File.basename(p) }
-      .to_set
+      .pluck(:id, Arel.sql("metadata->>'clone_path'"))
+      .each_with_object({}) do |(id, path), map|
+        next if path.blank?
+        map[File.basename(path)] ||= [ id, File.expand_path(path) ]
+      end
 
     # Hard, age-independent guard: never touch a clone owned by a live
     # (non-terminal) session, regardless of age. Belt-and-suspenders alongside
@@ -250,7 +256,10 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
       # whose delete was interrupted. Either way it belongs to reap_tombstones,
       # not to a sweep that reasons about session ownership and age.
       next if AtomicCloneRemoval.tombstone?(entry)
-      next if tracked_paths.include?(entry)
+      if (owner = tracked[entry])
+        flag_path_drift(owner, full_path)
+        next
+      end
       next if live_paths.include?(File.expand_path(full_path))
 
       # Stat once and carry the mtime through to the sort: a second stat is a
@@ -264,6 +273,21 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
       # Removed underneath us by another reaper. Not ours to report on.
       next
     end.sort_by(&:last).map(&:first) # oldest first
+  end
+
+  # A directory saved from the sweep by its basename while its owner's stored
+  # `clone_path` points somewhere else is the signature of clone_path
+  # canonicalization drift — a symlinked clones base, or a relocation that
+  # rewrote the directory but not the metadata (#671). The basename guard makes
+  # it harmless, and that is exactly why it needs saying out loud: nothing else
+  # would ever notice.
+  def flag_path_drift(owner, full_path)
+    owner_id, stored_path = owner
+    return if stored_path == File.expand_path(full_path)
+
+    Rails.logger.warn "[OrphanCloneFilesystemCleanupJob] #{full_path} is owned by session #{owner_id}, " \
+      "whose stored clone_path is #{stored_path} — matched by basename, not by path. " \
+      "The directory is safe; investigate clone_path canonicalization."
   end
 
   def cleanup_orphan(dir_path)
