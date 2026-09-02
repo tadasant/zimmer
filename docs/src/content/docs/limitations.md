@@ -1953,6 +1953,19 @@ Two ways that bias costs something:
 Both cost disk, and disk is reclaimed by the next sweep. The alternative failure is a running agent's
 uncommitted work, which exists nowhere else.
 
+That bias is also why the failed-clone rollback paths (`GitCloneService#discard_failed_clone`,
+`ForkSessionService#discard_partial_clone`) deliberately do **not** go through the guard. They
+dispose of a directory the caller just created and no session references, so there is nothing to
+protect — and a refusal there would leave a partial tree that makes the next `git clone` fail with
+"destination path already exists", which is not classified as transient, turning a retryable clone
+failure into a permanent session failure.
+
+An unarchive is protected by a **time-bounded marker**, not by its status: `unarchive_started_at` is
+honoured for `Session::UNARCHIVE_GRACE_PERIOD` (30 minutes). An unarchive that somehow outran that —
+a `git clone` riding out the full timeout plus every retry, behind a very slow artifact replay — is
+back to being reapable while it is still running. The bound is the price of not letting an unarchive
+that crashes between the stamp and the `ensure` pin a clone on disk forever.
+
 ### A clone delete that cannot rename falls back to a non-atomic in-place delete
 
 Clone deletion goes through `AtomicCloneRemoval`: the clone is renamed to a sibling

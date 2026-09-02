@@ -81,6 +81,49 @@ class UnarchiveSessionService
     validation_error = validate_inputs
     return Result.new(success?: false, error: validation_error) if validation_error
 
+    # Everything below runs while the row still says `archived` — the status
+    # transition is the last step, after the clone, the artifact replay and
+    # `air prepare`. For that window an unarchiving session is indistinguishable
+    # from an abandoned one with a stale clone, and the hourly reapers delete the
+    # clone this method is in the middle of building (zimmer#808). The stamp is
+    # what tells them apart; see Session::UNARCHIVE_IN_FLIGHT_KEY.
+    mark_unarchive_in_flight!
+
+    begin
+      unarchive_with_clone
+    ensure
+      clear_unarchive_in_flight!
+    end
+  end
+
+  private
+
+  # Marks this session as being unarchived right now, so no reaper treats its
+  # clone, scratch directory or preserved artifacts as abandoned. Best-effort:
+  # failing to stamp must not fail the unarchive, and the grace period bounds a
+  # stamp that is never cleared.
+  def mark_unarchive_in_flight!
+    session.update_column(
+      :metadata,
+      (session.metadata || {}).merge(Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601)
+    )
+  rescue StandardError => e
+    @logger.warn("Could not mark the unarchive in flight", error: e.message)
+  end
+
+  # Drops the stamp once the unarchive is over, however it ended. On success the
+  # session is out of `archived` and protected by its status; on failure it is
+  # archived with nothing in flight, which is the truth.
+  def clear_unarchive_in_flight!
+    session.reload
+    return if session.metadata&.dig(Session::UNARCHIVE_IN_FLIGHT_KEY).blank?
+
+    session.update_column(:metadata, session.metadata.except(Session::UNARCHIVE_IN_FLIGHT_KEY))
+  rescue StandardError => e
+    @logger.warn("Could not clear the unarchive-in-flight marker", error: e.message)
+  end
+
+  def unarchive_with_clone
     # Check if clone and working directory both exist (quick unarchive within undo window)
     # Must check BOTH paths because for sessions with subdirectories, they differ:
     # - clone_path: /home/rails/.zimmer/clones/repo-main-12345-abcd
@@ -127,8 +170,6 @@ class UnarchiveSessionService
     @logger.error("Failed to unarchive session", error: e.message, backtrace: e.backtrace&.first(5))
     Result.new(success?: false, error: "Failed to unarchive session: #{e.message}")
   end
-
-  private
 
   def validate_inputs
     # Session must be archived

@@ -51,6 +51,39 @@ class CloneReaperTest < ActiveSupport::TestCase
     end
   end
 
+  test "refuses to delete the clone of a session that is being unarchived" do
+    # An unarchive is `archived` for its whole duration — status alone cannot tell
+    # a session having a new clone built for it from an abandoned one (zimmer#808).
+    session = sessions(:archived)
+    session.update!(metadata: {
+      "clone_path" => @clone_path,
+      Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601
+    })
+
+    assert_equal :refused, CloneReaper.reap(@clone_path, reason: "test")
+    assert File.directory?(@clone_path)
+
+    log = session.reload.logs.where(level: "warning").last
+    assert_includes log.content, "being unarchived"
+  end
+
+  test "an unarchive marker older than the grace period stops protecting the clone" do
+    sessions(:archived).update!(metadata: {
+      "clone_path" => @clone_path,
+      Session::UNARCHIVE_IN_FLIGHT_KEY => (Session::UNARCHIVE_GRACE_PERIOD + 1.hour).ago.utc.iso8601
+    })
+
+    assert_equal :removed, CloneReaper.reap(@clone_path, reason: "test")
+  end
+
+  test "a refusal logs at error, which is the surface that pages" do
+    sessions(:running).update!(metadata: { "clone_path" => @clone_path })
+    Rails.logger.stubs(:error)
+    Rails.logger.expects(:error).with { |message| message.to_s.include?("[CloneReaper] Refused to delete") }.once
+
+    assert_equal :refused, CloneReaper.reap(@clone_path, reason: "test")
+  end
+
   test "refuses when the owning session woke up after the caller's snapshot" do
     # Exactly the zimmer#808 shape: the sweep decided this clone was reapable
     # while its session was archived, and the session was unarchived before the
@@ -82,6 +115,14 @@ class CloneReaperTest < ActiveSupport::TestCase
 
     assert_equal :refused, CloneReaper.reap(@clone_path, reason: "test")
     assert File.directory?(@clone_path), "an unanswerable question is answered 'live'"
+  end
+
+  test "disposes of a clone path that is a plain file rather than skipping it" do
+    file_path = File.join(@clones_base, "zimmer-main-1788364605-0badf00d")
+    File.write(file_path, "not a directory")
+
+    assert_equal :removed, CloneReaper.reap(file_path, reason: "test")
+    assert_not File.exist?(file_path)
   end
 
   test "removal is atomic — the clone is renamed aside, never stripped in place" do

@@ -76,6 +76,42 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     end
   end
 
+  # zimmer#808's other half, and the one no status check catches: an unarchive is
+  # `archived` for its whole duration — UnarchiveSessionService transitions the
+  # status only after the clone, the artifact replay and `air prepare` — so a
+  # session having a NEW clone built for it matches this job's archived scope
+  # exactly.
+  test "does not reap the clone of a session that is being unarchived right now" do
+    @session.update_columns(
+      metadata: @session.metadata.merge(Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601)
+    )
+
+    StaleCloneCleanupJob.perform_now
+
+    assert File.directory?(@clone_path), "the clone an unarchive just built must survive"
+  end
+
+  test "an unarchive marker older than the grace period stops protecting the clone" do
+    @session.update_columns(
+      metadata: @session.metadata.merge(
+        Session::UNARCHIVE_IN_FLIGHT_KEY => (Session::UNARCHIVE_GRACE_PERIOD + 1.hour).ago.utc.iso8601
+      )
+    )
+
+    StaleCloneCleanupJob.perform_now
+
+    assert_not File.directory?(@clone_path), "a crashed unarchive must not pin a clone forever"
+  end
+
+  test "preserved artifacts are not deleted for a session that woke up mid-cleanup" do
+    job = StaleCloneCleanupJob.new
+    candidate = Session.find(@session.id)
+    job.stubs(:reapable_now?).returns(true).then.returns(false)
+    CloneArtifactService.any_instance.expects(:cleanup_artifacts).never
+
+    job.send(:cleanup_session_clone, candidate)
+  end
+
   # The headline regression: every snapshot guard the orphan sweep builds before
   # its loop is deliberately blinded here, so what is left is the one guard that
   # asks at the instant of deletion.

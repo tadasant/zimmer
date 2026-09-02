@@ -281,30 +281,63 @@ and every guard that would have saved it was evaluated before it woke. Three ses
 clones that afternoon ([#808](https://github.com/tadasant/zimmer/issues/808),
 [#811](https://github.com/tadasant/zimmer/issues/811)).
 
-`CloneReaper` is the last guard, and the only one with no gap after it. It asks the database who owns
-the directory **at the moment of deletion** and refuses if a live session still does:
+### The unarchive window, which no status check could see
+
+There is a second way the snapshot lies, and it needs no congestion at all: **an unarchive is
+`archived` for its whole duration.** `UnarchiveSessionService` re-clones from the remote, replays the
+preserved artifacts onto the new tree and runs `air prepare` — and only then transitions the status.
+For that window the row reads: `archived`, no trash deadline, `archived_at` days old, and a
+`clone_path` pointing at a directory. That is *exactly* what `StaleCloneCleanupJob`'s archived scope
+selects, and there is no clone-age check on the DB-driven scopes.
+
+So the hourly sweep deletes the clone the unarchive has just built, along with the preserved
+artifacts it was restored from — while the unarchive, still running, keeps writing `.mcp.json` and
+the transcript into the path that was renamed out from under it. A clone directory holding nothing
+but Zimmer's own runtime scaffolding is what that leaves, which is what was found on disk.
+
+`Session.reap_protected` is what tells the two apart. `UnarchiveSessionService` stamps
+`unarchive_started_at` on the row before it does any work and drops it in an `ensure`, and the scope
+treats a session carrying a fresh stamp as live whatever its status says. The stamp is honoured for
+`UNARCHIVE_GRACE_PERIOD` (30 minutes) and no longer — an unarchive is bounded by
+`GIT_CLONE_TIMEOUT_SECONDS` plus retries, an artifact replay and an `air prepare`, and one that
+crashes between the stamp and the clear must not pin a clone on disk forever.
+
+### The guard
+
+`CloneReaper` is the last guard. It asks the database who owns the directory **at the moment of
+deletion** and refuses if a session that is live — or being unarchived — still does:
 
 - Ownership is matched on the expanded path **or** the basename. Clone names carry a timestamp and a
   random suffix, so a basename is a globally unique handle that survives a stored `clone_path` which
   cannot be reconciled with the path being swept — a symlinked or relocated clones base.
 - The lookup is `unscoped`: this query decides deletions, so a default scope added later for
-  soft-delete or tenancy must not be able to hide a live row from it.
-- It **fails closed**. A question that cannot be answered is answered "live". Leaking a stale clone
-  costs disk the next sweep reclaims; deleting a live one costs work that exists nowhere else.
+  soft-delete or tenancy must not be able to hide a protected row from it.
+- It **fails closed**. A question that cannot be answered is answered "protected". Leaking a stale
+  clone costs disk the next sweep reclaims; deleting a live one costs work that exists nowhere else.
 - A refusal logs at `.error` and writes a durable warning to the session. A refusal is never routine
   — it means a reaper's snapshot went stale and this guard caught it — so it is worth a page.
 
+The gap after it is the microseconds between the `SELECT` and the `rename(2)`, rather than the
+minutes a sweep leaves. That is the honest claim: it is the smallest gap available, not none.
+
 `GitCloneService.cleanup_clone` routes through it, which covers `DeferredCloneCleanupJob`,
 `EmptyTrashJob` and both of `StaleCloneCleanupJob`'s sweeps at once;
-`OrphanCloneFilesystemCleanupJob` calls it directly. The paths that dispose of a clone directory the
-caller itself just created and is rolling back — a failed `git clone`, a fork's partial destination —
-still call `AtomicCloneRemoval.remove`: they delete a directory no session references yet, so there
-is nothing there for the guard to protect.
+`OrphanCloneFilesystemCleanupJob` calls it directly.
+
+The paths that dispose of a clone directory the caller itself just created and is rolling back go
+through `GitCloneService#discard_failed_clone` and `ForkSessionService#discard_partial_clone`
+instead, straight to `AtomicCloneRemoval`. Two reasons, and the second is the load-bearing one: the
+directory is in no session's `clone_path` yet, so the guard has nothing to protect — and failing
+closed on a momentary database blip would leave a partial tree at the path, after which `git clone`
+into it dies with "destination path already exists and is not an empty directory", which
+`transient_clone_error?` does not classify as transient. A retryable clone failure would become a
+permanent session failure.
 
 Alongside it, the two jobs that also delete **unrecoverable** per-session state — the scratch
-directory, the Claude config directory, prompt attachments, none of which has a remote to come back
-from — re-read the owning session's status immediately before doing so, rather than inheriting the
-one their scope matched.
+directory, the Claude config directory, prompt attachments and preserved artifacts, none of which has
+a remote to come back from — ask `Session.reap_protected?` immediately before doing so, rather than
+inheriting the status their scope matched. `CloneReaper` cannot cover those: they are keyed by
+session, not by path.
 
 ## Noticing when a live session has lost its working tree
 
@@ -314,20 +347,26 @@ git tree and `.git` gone. Nothing told anyone. The only signal that reached a hu
 `ForkSessionService` errors from sessions that happened to be forking off the victims at the time.
 
 `LiveCloneIntegrityJob` runs hourly at :40 and closes that. It walks every live session's
-`clone_path` and reports, in **one `.error` line** naming the sessions:
+`clone_path` and reports, in **one `.error` line** naming the sessions, only what has no benign
+explanation — a detector that cries wolf is a detector somebody mutes:
 
-- a clone directory that has **lost its git tree**, for any live status — there is no benign way for
-  a tracked working tree to disappear from underneath a live session. The line names what is still in
-  the directory, because a tree holding only Zimmer's own scaffolding is the #808 signature;
-- a clone root that is **gone entirely**, but only for a `running` session, whose agent process has
-  that directory as its cwd right now. `waiting` and `needs_input` sessions legitimately sit on a
-  deleted clone between an archive and the resume that re-clones it, and a backed-up queue can hold
-  them there for a while;
+- a clone directory that **exists but has lost its git tree**. There is no benign way for a tracked
+  working tree to disappear from underneath a live session, and this is the exact state found on
+  disk. The line names what is still in the directory, because a tree holding only Zimmer's own
+  scaffolding is the #808 signature;
 - a clone that has lost the session's **agent root subdirectory**, which is fatal on its own —
   `air prepare` writes `<clone>/<subdirectory>/.mcp.json` and dies with `ENOENT`.
 
+A clone root that is **gone entirely** is deliberately not reported, for any status. A session
+legitimately sits on a deleted clone between an archive and the resume that re-clones it, and
+`Session#deliver_follow_up!` flips a session to `running` *before* it enqueues the job whose recreate
+path rebuilds the clone — so on exactly the congested afternoon this job exists for, `running` with
+no clone root is a normal state that lasts minutes. It is not silent either way: that session fails
+with "clone directory not found", which is already an error somebody sees.
+
 A fork whose clone was scaffolded empty on purpose (`clone_scaffolded`) is exempt from the git-tree
-check. A healthy hour writes only an `INFO` line, which is below the
+check, but not from the subdirectory check — `ForkSessionService` creates that directory explicitly.
+A healthy hour writes only an `INFO` line, which is below the
 [export threshold](/operate/observability/).
 
 This is deliberately not `MangledCloneReportJob`'s job. That one counts what the *archive-side*
