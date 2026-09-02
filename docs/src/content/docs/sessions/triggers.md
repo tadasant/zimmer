@@ -593,7 +593,7 @@ least room for it — so four questions all have to answer no:
 | Any session `running`? | Every runtime and class. A running Codex session occupies the deployment as much as a Claude one |
 | Any **spot** session `waiting`? | Work already held and not started. An idle-looking fleet with a backed-up spot queue is blocked, not out of things to do — handing it more would deepen a queue |
 | Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Not scoped to spot: an outage parks priority sessions too, and `QuotaResetCheckerJob` resumes those on its own schedule |
-| Can the account pool serve anything? | The level `QuotaAvailabilityMonitor` persists. An empty pool makes a quiet fleet a symptom rather than an opportunity |
+| Can the account pool serve anything? | The level `QuotaAvailabilityMonitor` persists. An empty pool makes a quiet fleet a symptom rather than an opportunity. The level reads `false` while a recovery is *unannounced* as well as while the pool is down — a deferred `quota_available` edge, or one `rearm!` put back — so a fleet held at its spot budget also reads as "cannot serve" here, and idle-time work stays unspawned until the gate opens |
 
 The `running` check is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
 `DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and

@@ -64,7 +64,10 @@
 #
 # Holding the level at `false` through a deferral is the same move `rearm!`
 # already makes for a fire that delivered nothing: the column records whether the
-# recovery has been ANNOUNCED, not merely whether the pool is up.
+# recovery has been ANNOUNCED, not merely whether the pool is up. FleetIdleMonitor
+# reads that column too, so a deferral also holds `no_sessions_in_progress` off
+# for as long as the gate holds — which is the right answer: a fleet at its spot
+# budget is one to stop handing discretionary work to, not one to fill.
 #
 # == Fail quiet
 #
