@@ -221,17 +221,18 @@ Steps 4 and 5 are the pause's **announcement**: the settled `session_needs_input
 | --- | --- | --- |
 | The agent's turn ended | **yes** | The session is at rest waiting on a human. This is what the transition is for, and it is the hot path. |
 | A human hit Pause (`paused_by: "user"`), an interrupt, an API/MCP/web pause | **yes** | Also at rest, and a watcher wants to know the session stopped. |
-| Zimmer recovering its own interrupted process (`paused_by: "recovery"`) | **no** | The session is not waiting on anybody. It is on its way back to `running` under a sweep that owes it a restart. |
+| Zimmer recovering its own interrupted process (`paused_by: "recovery"`) | **no** | The session is not waiting on anybody. It is on its way back to `running` under a continuation that owes it a restart. |
+| Zimmer giving up on a session that never wrote a line (`unstarted_turn_restart_abandoned`) | **yes** | Writes no recovery marker, because no sweep can restart it. See [A session that never wrote a line](#a-session-that-never-wrote-a-line-is-restarted-not-parked). |
 | A status-summary fork | **no** | Zimmer's own bookkeeping, harvested rather than queued. Skips steps 3–7, not just the announcement. |
 | Parked on an auth or quota outage (`AuthOutageParkService`) | **yes** | Deliberately writes *no* recovery marker, precisely so it is not swept back into an exhausted pool. A parked session is a real stop and is announced as one. |
 
-The settle window above does not cover the recovery case, and the arithmetic is why the carve-out exists. The boundaries the window suppresses leave `needs_input` within microseconds (a self-wake) or ten seconds (a queued-message drain). A recovery pause does not: nothing moves the session until `CleanupOrphanedSessionsJob`'s five-minute cron reaches it, so at settle time it is still sitting in `needs_input` and `resting_in_needs_input?` — status and nothing else, by design — says yes. It would fire.
+The settle window above does not cover the recovery case, and the arithmetic is why the carve-out exists. The boundaries the window suppresses leave `needs_input` within microseconds (a self-wake) or ten seconds (a queued-message drain). A recovery pause does not: the fastest thing that moves the session is `RecoveryContinuationJob`'s 30-second delay, and behind that `CleanupOrphanedSessionsJob`'s five-minute cron, so at settle time it is still sitting in `needs_input` and `resting_in_needs_input?` — status and nothing else, by design — says yes. It would fire.
 
 So the marker is read at the source instead. Every recovery path writes `metadata["paused_by"] = "recovery"` immediately before `pause!` — `AgentSessionJob`'s dead-process branch and its `GoodJob::InterruptError` handler, and `SessionRecoveryService#transition_to_needs_input` — and `SessionStateMachine#recovery_pause?` reads it in the `pause` callback. **The state transition still happens.** The session really is in `needs_input`, really is in the homepage action queue, and the timeline still says so. Only the two outward signals are withheld.
 
 That matters because a fired one-time wake destroys its siblings. The pattern [`wake_me_up_when_session_changes_state`](/sessions/triggers/) documents for watching a child is a wake set plus a `wake_me_up_later` deadline, so a single spurious `session_needs_input` costs the watcher the whole set — including the backstop that was supposed to catch a genuinely hung child.
 
-**The suppression is a deferral, not a deletion, and that is what makes it safe.** `CleanupOrphanedSessionsJob` (every five minutes) and `DeploymentRecoveryJob` (once at boot) both select on `paused_by = 'recovery'` and auto-continue what they find. `SessionContinuation` bounds that at `MAX_CONTINUE_ATTEMPTS` — roughly an hour — and when it gives up it drops the marker, writes an `error`-level "will not be retried again" line, **and makes the announcement the pause skipped**, via `Session#announce_deferred_needs_input!`. So a recovery-paused session that is never continued still wakes its watchers and still pushes, exactly once, at the moment it stopped being Zimmer's problem and became a human's.
+**The suppression is a deferral, not a deletion, and that is what makes it safe.** `RecoveryContinuationJob` (asked for by the parking code itself, on a 30-second delay), `CleanupOrphanedSessionsJob` (every five minutes) and `DeploymentRecoveryJob` (once at boot) all select on `paused_by = 'recovery'` and auto-continue what they find. `SessionContinuation` bounds that at `MAX_CONTINUE_ATTEMPTS` — roughly an hour — and when it gives up it drops the marker, writes an `error`-level "will not be retried again" line, **and makes the announcement the pause skipped**, via `Session#announce_deferred_needs_input!`. So a recovery-paused session that is never continued still wakes its watchers and still pushes, exactly once, at the moment it stopped being Zimmer's problem and became a human's.
 
 Which is why the carve-out asks whether a sweep is actually coming, not merely whether the marker is set. A session parked in a **frozen category** is excluded from every query in both sweeps (`Session.not_in_frozen_category`), so there is no deferral to make — nothing continues it, and `SessionContinuation` never runs to announce it later either. That pause is announced at the time, like any other stop. `AgentSessionJob`'s recovery-pause writers do not check the category, because they run inside the session's own job rather than in a bulk recovery flow; `SessionRecoveryService` bails on a frozen category before it ever pauses.
 
@@ -468,6 +469,66 @@ first case it has a session id and a clone, so it takes the ordinary recovery pa
 `running → needs_input`, so it stays in `waiting` carrying `paused_by: "recovery"` — which is swept,
 because both continuation queries match `[:needs_input, :waiting]` on that marker and `resume`
 accepts `waiting`.
+
+#### A session that never wrote a line is restarted, not parked
+
+`AgentSessionJob`'s `resume_monitoring` path has exactly one plan: re-attach to the pid recorded in
+`metadata["process_pid"]`. When that pid is dead there is nothing to monitor, and the question that
+decides what to do next is **whether there is a conversation to come back to.**
+
+`metadata["runtime_started"]` does not answer it. That flag is written the moment Zimmer records a
+spawned pid, before the runtime has produced a line, so a process killed in its first seconds leaves
+it `true` over a conversation that was never persisted. `RuntimeConversationPresence` answers it
+properly, and asks **both** transcript stores — Zimmer's polled copy and the runtime's own file — so a
+merely lagging poller can never be enough to conclude that nothing was written.
+
+| The runtime wrote… | What happens |
+| --- | --- |
+| a conversation | Park with `paused_by: "recovery"`, as before. The session is mid-turn; a resume picks up where it left off. |
+| nothing | `Sessions::RestartUnstartedTurn` replays the session's own prompt into a fresh spawn. Nothing was consumed and no partial work exists, so the stored prompt is exactly what should run. |
+| nothing, `MAX_RESTARTS` times | Come to rest in `needs_input` with `failure_reason: "unstarted_turn_not_recoverable"`, `metadata["unstarted_turn_restart_abandoned"]` naming the reason, and **no** recovery marker — no sweep can do anything a third restart would not. The pause announces itself. |
+
+This is the same judgement [`ProcessLifecycleManager#handle_empty_turn`](/sessions/spawning/) makes
+when a process exits under a live monitor, arriving from the other direction: there the turn ended in
+front of us, here it ended while nobody was watching. They share both the budget and the
+`empty_turn_recovery_count` key deliberately — it is one event seen from two vantage points, and a
+session that has already burned its restarts in-process does not get a second allowance because the
+next failure happened to be a worker interruption.
+
+The restart takes a **new runtime session id** (or, for a runtime that mints its own, drops the
+stored one) and turns `runtime_started` off, so the replacement spawn builds `--session-id` rather
+than `--resume`. Re-asserting the old id would hit the #519 trap: a transcript holding only the
+runtime's own bookkeeping is simultaneously too present to create against ("already in use") and too
+empty to resume ("no conversation found").
+
+The behaviour this replaced: on 2026-09-02 a worker interruption caught production sessions 12265 and
+12267 at once. 12265 had made tool calls and resumed harmlessly. 12267 had produced nothing — zero assistant
+turns, zero tool calls — and sat in the homepage action queue with a completely empty transcript,
+indistinguishable from a session asking a question, for nine and a half minutes, until an unrelated
+orphan sweep reached it.
+
+#### The recovery pause asks for its own continuation
+
+A recovery pause is a promise that a sweep will continue the session, and with only
+`CleanupOrphanedSessionsJob`'s five-minute cron to keep it the wait is whatever is left of that
+cron's period. The two mechanisms can also cancel out: the nudge `AgentSessionJob` enqueues after a
+worker interruption is dropped when a recovery job is already queued ("Skipping job - session already
+has a running job"), and when that recovery job then fails to adopt its dead pid it re-enqueues
+nothing at all — leaving the session with no pending work of any kind.
+
+So the dead-process branch asks for the continuation itself. `RecoveryContinuationJob` is scheduled
+with a 30-second delay and delegates to the very same `SessionContinuation` the sweeps use, so there
+is one implementation of "continue a recovery-paused session" and one attempt budget. Every guard the
+sweeps apply is re-asked of the row at delivery time — still `paused_by: "recovery"`, still
+`needs_input` or `waiting`, not in a frozen category — because all three can change inside the delay
+window, and `Session#claim_system_recovery_turn!` re-reads the row `FOR UPDATE` so a cron tick
+landing at the same moment cannot produce two turns. The cron stays the backstop rather than the
+mechanism.
+
+**This covers one of the six writers of `paused_by: "recovery"`, deliberately.** It is scheduled by
+`AgentSessionJob`'s dead-process branch — the one the nine-and-a-half-minute stall came through.
+`SessionRecoveryService#transition_to_needs_input`, `AgentSessionJob`'s `InterruptError` and
+MCP-retry parks, and the two sweeps' own re-parks still rely on the cron.
 
 #### Auto-continue gives up
 

@@ -814,14 +814,61 @@ class AgentSessionJob < ApplicationJob
             @broadcast_service.session_status(session)
             return
           end
+          # Re-attaching was this job's ONLY plan, and the pid it was sent for is gone.
+          # Before parking, ask whether there is anything to come back to: a session
+          # whose runtime never wrote a line has no conversation to resume, so parking
+          # it leaves a completely empty session sitting in the human action queue
+          # looking exactly like one that asked a question. Restart it instead
+          # (prod session 12267 sat there for nine and a half minutes).
+          restart = Sessions::RestartUnstartedTurn.call(
+            session,
+            working_directory: working_directory,
+            file_system: @file_system,
+            log_buffer: log_buffer
+          )
+          if restart.restarted?
+            log_buffer.flush
+            @broadcast_service.session_status(session.reload)
+            return
+          end
+
           # Mark as recovery-initiated pause so CleanupOrphanedSessionsJob and
           # DeploymentRecoveryJob can auto-continue this session. Without this marker,
           # the session gets stuck at needs_input because no recovery path picks it up.
+          #
+          # NOT when the restart budget is spent. That session has already been given
+          # every restart it is going to get and neither sweep can do anything a third
+          # one would not; leaving the marker on would hand it to twelve doomed
+          # auto-continue attempts and then abandon it anyway. It comes to rest with
+          # RestartUnstartedTurn::ABANDONED_KEY recording why, and announces the
+          # `needs_input` the recovery carve-out would otherwise have swallowed.
+          if restart.abandoned?
+            session.update!(
+              running_job_id: nil,
+              metadata: (session.metadata || {}).merge("failure_reason" => "unstarted_turn_not_recoverable")
+            )
+            # No `announce_deferred_needs_input!` here, and the absent marker is why:
+            # `announcement_deferred_to_recovery_sweep?` reads `paused_by`, so without
+            # it the `pause` callback makes the announcement itself. Adding a second
+            # one would bump the transition counter again and fan out a duplicate wake
+            # and push — and would override the one case the callback withholds
+            # deliberately, a status-summary fork, which is Zimmer's own bookkeeping
+            # and must never page anyone.
+            session.pause! if session.may_pause?
+            @broadcast_service.session_status(session)
+            return
+          end
+
           session.update!(
             running_job_id: nil,
             metadata: (session.metadata || {}).merge("paused_by" => "recovery")
           )
           session.pause! if session.may_pause?
+          # A recovery pause promises a sweep will continue this session. Ask for that
+          # continuation directly, on a short delay, rather than leaving the promise to
+          # CleanupOrphanedSessionsJob's five-minute cron — which is the dead air
+          # between the failed recovery and the rescue. The cron stays the backstop.
+          RecoveryContinuationJob.schedule_for(session)
           # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
           @broadcast_service.session_status(session)
           return
