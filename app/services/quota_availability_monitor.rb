@@ -64,10 +64,13 @@
 #
 # Holding the level at `false` through a deferral is the same move `rearm!`
 # already makes for a fire that delivered nothing: the column records whether the
-# recovery has been ANNOUNCED, not merely whether the pool is up. FleetIdleMonitor
-# reads that column too, so a deferral also holds `no_sessions_in_progress` off
-# for as long as the gate holds — which is the right answer: a fleet at its spot
-# budget is one to stop handing discretionary work to, not one to fill.
+# recovery has been ANNOUNCED, not merely whether the pool is up. That is why
+# FleetIdleMonitor no longer reads it — see #pool_available? there, which asks
+# the pool directly, because a recovery this monitor has not got round to
+# announcing is not an outage.
+#
+# The hold that defers is the WINDOW's (`at_utilization_limit`), never the fleet
+# cap; #spot_gate_hold has the reasoning.
 #
 # == Fail quiet
 #
@@ -240,15 +243,25 @@ class QuotaAvailabilityMonitor
       false
     end
 
-    # The gate decision when it is REFUSING spot work, or nil when spot work may
-    # start — which is the only answer that lets the event fire.
+    # The gate decision when a WINDOW is refusing spot work, or nil when the
+    # event may fire.
     #
-    # Any held reason counts, not just `at_utilization_limit`. The fleet session
-    # this event spawns computes its own headroom as
-    # `max(concurrency_ceiling - running, 0)` and forces it to zero on a held
-    # decision, so `fleet_at_cap` leaves it with exactly as little to do as a
-    # spent budget does. Both clear on their own, and both are re-asked fifteen
-    # minutes later.
+    # Deliberately `at_utilization_limit` alone, and not every held decision. The
+    # fleet session forces its headroom to zero on any hold, so `fleet_at_cap`
+    # looks like an equally good reason to defer — and it is not, because the two
+    # holds run on different clocks. A window's hold moves on the window's clock,
+    # which is slower than this fifteen-minute sweep: observing it once is good
+    # evidence it will still be there in a minute. Cap contention moves on a
+    # session's clock, which is far FASTER than the sweep — a slot frees whenever
+    # anything finishes. A fleet that habitually runs at its cap would show
+    # `fleet_at_cap` to every sweep while ordinary held spot sessions took the
+    # freed slots on their own ten-minute ladder (SpotGateService::RETRY_DELAY),
+    # and the outage-parked sessions, whose ONLY wake path is this event, would
+    # starve behind them. Firing into a full fleet costs one session; never
+    # firing costs the whole parked population.
+    #
+    # It is also the honest scope: this event is the quota pool recovering, and
+    # cap contention is not a quota condition at all.
     #
     # Fails OPEN, in both layers: SpotGateService already allows the session on
     # any condition it cannot evaluate, and a raise on the way to asking is
@@ -258,7 +271,10 @@ class QuotaAvailabilityMonitor
     # session while a suppressed one is not.
     def spot_gate_hold
       decision = SpotGateService.evaluate
-      decision.allowed? ? nil : decision
+      return nil unless decision.held?
+      return nil unless decision.reason == SpotGateService::UTILIZATION_REASON
+
+      decision
     rescue => e
       Rails.logger.info "[QuotaAvailabilityMonitor] Could not read the spot gate: #{e.message}"
       nil

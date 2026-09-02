@@ -1236,14 +1236,21 @@ whole spot wake into one event, and the sharp edges are all about that concentra
 - **`auth_outage_pool_recovers_at` is an estimate, not a schedule.** It is derived from
   `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d` for a quota park, shown in the banner, and read
   by nothing.
-- **A held spot gate defers the wake for as long as it holds.** The edge fires only when the pool has
-  recovered *and* `SpotGateService` has room for a spot session, because starting spot work is all
-  the fleet session can do — see [When the pool runs
+- **A window at its utilization limit defers the wake for as long as it holds.** The edge fires only
+  when the pool has recovered *and* no quota window is holding spot work at `at_utilization_limit`,
+  because starting spot work is all the fleet session can do — see [When the pool runs
   dry](/auth/harness/#when-the-pool-runs-dry). The deferral is re-asked every fifteen minutes and
-  costs no edge, but a weekly window whose spot budget is spent holds the gate for days, and every
-  parked spot session waits out that whole stretch. That is the correct outcome — none of them could
-  have started — and it is still a wake that does not happen. Parked *priority* sessions are not
-  affected: the same sweep resumes them directly.
+  costs no edge, but a weekly window whose spot budget is spent holds for days, and every parked spot
+  session waits out that whole stretch. That is the correct outcome — none of them could have
+  started — and it is still a wake that does not happen. Parked *priority* sessions are not affected:
+  the same sweep resumes them directly.
+- **The deferral is a spot-shaped precondition on an event anyone can listen to.** `quota_available`
+  is a user-configurable `system_event`, and the check is applied when the event is *fired*, not per
+  listener. An operator trigger that listens on it to do **priority** work is therefore deferred by
+  the spot gate too, even though nothing would have held that work — the event's contract is now "the
+  pool recovered and spot work can run", and there is no way for a trigger to opt out of the second
+  half. The shipped `fleet-maintenance` wake is the only listener on this deployment, so today this
+  costs nothing.
 
 ### The idle-fleet event is sampled, latched and floored, and each of the three has an edge
 

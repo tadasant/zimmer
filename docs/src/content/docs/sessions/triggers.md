@@ -570,13 +570,25 @@ spot thresholds and the concurrency ceiling — which `waiting` sessions start. 
 [When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
 
 Two things have to be true for it to fire: the account pool has to cross from serving nothing to
-serving something, **and** the spot gate has to have room for a spot session. The pool's edge alone
-is not enough — an account is `available` again once Anthropic's own window clears, while the gate
-measures the pool's spend against the operator's reserve and pacing curve, so the two can disagree
-for days at a time. A rising edge observed against a held gate is **deferred**, not spent: the stored
-level stays `false` and the next fifteen-minute sweep asks again, so the event fires as soon as the
-gate opens rather than never. Parked **priority** sessions never wait on any of this —
-`QuotaResetCheckerJob` resumes them directly, ungated.
+serving something, **and** the spot gate must not be holding spot work at a window's
+`at_utilization_limit`. The pool's edge alone is not enough — an account is `available` again once
+Anthropic's own window clears, while the gate measures the pool's spend against the operator's
+reserve and pacing curve, so the two can disagree for days at a time. A rising edge observed against
+a window-held gate is **deferred**, not spent: the stored level stays `false` and the next
+fifteen-minute sweep asks again, so the event fires as soon as the hold lifts rather than never.
+
+A **full fleet** (`fleet_at_cap`) is deliberately not a reason to defer, even though it leaves the
+woken session just as little to hand out. The two holds run on different clocks: a window's moves on
+the window's clock, slower than the fifteen-minute sweep, while cap contention moves on a session's,
+much faster — so a fleet habitually at its cap would show `fleet_at_cap` to every sweep while
+ordinary held spot sessions took the freed slots on their own ten-minute ladder, starving the
+outage-parked sessions whose only wake path this is. Firing into a full fleet costs one session;
+never firing costs the whole parked population.
+
+Parked **priority** sessions never wait on any of this — `QuotaResetCheckerJob` resumes them
+directly, ungated. But the precondition applies to the *event*, not just to the shipped trigger: an
+operator trigger listening on `quota_available` to do priority work is deferred by the spot gate too,
+even though nothing would have held that work.
 
 #### `no_sessions_in_progress`
 
@@ -593,7 +605,7 @@ least room for it — so four questions all have to answer no:
 | Any session `running`? | Every runtime and class. A running Codex session occupies the deployment as much as a Claude one |
 | Any **spot** session `waiting`? | Work already held and not started. An idle-looking fleet with a backed-up spot queue is blocked, not out of things to do — handing it more would deepen a queue |
 | Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Not scoped to spot: an outage parks priority sessions too, and `QuotaResetCheckerJob` resumes those on its own schedule |
-| Can the account pool serve anything? | The level `QuotaAvailabilityMonitor` persists. An empty pool makes a quiet fleet a symptom rather than an opportunity. The level reads `false` while a recovery is *unannounced* as well as while the pool is down — a deferred `quota_available` edge, or one `rearm!` put back — so a fleet held at its spot budget also reads as "cannot serve" here, and idle-time work stays unspawned until the gate opens |
+| Can the account pool serve anything? | Asked of the pool directly, via `QuotaAvailabilityMonitor.pool_available?`. An empty pool makes a quiet fleet a symptom rather than an opportunity. Deliberately **not** `AppSetting#quota_pool_available`: that column is an *announcement latch*, held at `false` through a recovery whose event has not fired yet, and a recovery deferred at the spot gate says nothing about whether the pool can serve |
 
 The `running` check is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
 `DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and
