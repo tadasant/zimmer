@@ -48,33 +48,62 @@ class NonRelocatableClonePaths
   # called `venv` is kept, and an environment under any name is found.
   VIRTUALENV_MARKER = "pyvenv.cfg"
 
+  # Where a virtualenv keeps the console scripts that carry the absolute shebang
+  # — POSIX and Windows layouts. Requiring one alongside the marker is what
+  # separates an environment from a repository that merely *tracks* a
+  # `pyvenv.cfg` as a fixture: the fixture has nothing to relocate, and dropping
+  # a tracked directory from the copy would read as a deletion to
+  # `CloneArtifactService`.
+  VIRTUALENV_SCRIPT_DIRECTORIES = %w[bin Scripts].freeze
+
+  # Never descended into, whatever the caller excludes — the three trees that
+  # dominate a clone's directory count and cannot hold a Python environment
+  # worth relocating. Skipping them is most of what keeps this scan cheap
+  # enough to run before a copy that has not started yet. Written as the same
+  # fnmatch patterns a caller's exclusions use, so both go through one test.
+  ALWAYS_PRUNED = [ "**/.git", "**/node_modules", "vendor/bundle" ].freeze
+
   # fnmatch metacharacters, escaped so a detected path is matched literally.
   # `copy_pruned` matches without FNM_NOESCAPE, so a backslash escape is honored.
   FNMATCH_METACHARACTERS = /([*?\[\]{}\\])/
+
+  # The flags `RealFileSystemAdapter#copy_pruned` matches its exclusions with.
+  # Restated here so a caller's patterns are tested against a candidate exactly
+  # as the copy will test them.
+  FNMATCH_FLAGS = File::FNM_PATHNAME | File::FNM_DOTMATCH
 
   class << self
     # The non-relocatable directories inside a clone.
     #
     # @param clone_path [String] the root of the clone about to be copied
     # @param file_system [FileSystemAdapter, nil] defaults to the real one
+    # @param prune [Array<String>] the caller's own copy exclusions, as fnmatch
+    #   patterns relative to the clone root. A directory the copy will not write
+    #   is not walked either — the walk is the cost, so filtering its results
+    #   would save nothing.
+    # @param logger [#warn] where a scan that could not finish is reported.
+    #   `clones:relocate` passes one that writes to the task's own output; a
+    #   failure nobody sees is a venv silently copied.
     # @return [Array<String>] paths relative to the clone root, sorted and
-    #   unique. Never includes the clone root itself.
-    def detect(clone_path, file_system: nil)
+    #   unique. Never includes the clone root itself — the walk only ever
+    #   considers a root's descendants.
+    def detect(clone_path, file_system: nil, prune: [], logger: Rails.logger)
       return [] if clone_path.blank?
 
       fs = file_system || RealFileSystemAdapter.new
       root = File.expand_path(clone_path)
       return [] unless fs.directory?(root)
 
-      virtualenv_roots(fs, root)
-        .filter_map { |dir| relative_to(dir, root) }
-        .uniq
-        .sort
-    rescue StandardError => e
-      # Detection is a refinement of a copy that has to happen either way. A tree
-      # this cannot read is copied whole — the pre-existing behaviour — rather
-      # than failing the fork or the relocation outright.
-      Rails.logger.warn("[NonRelocatableClonePaths] Could not scan #{clone_path}: #{e.message}")
+      found = []
+      scan(fs, root, nil, ALWAYS_PRUNED | Array(prune), found)
+      found.sort
+    rescue SystemCallError, IOError => e
+      # A tree this cannot read is copied whole — the pre-existing behaviour —
+      # rather than failing the fork or the relocation outright. Deliberately
+      # narrow: an ArgumentError or NoMethodError here is a bug in this class,
+      # and swallowing it would restore exactly the silent staleness the class
+      # exists to prevent, so it is left to raise.
+      logger.warn("[NonRelocatableClonePaths] Could not scan #{clone_path}: #{e.message}")
       []
     end
 
@@ -90,26 +119,50 @@ class NonRelocatableClonePaths
 
     private
 
-    # Every directory under the clone that holds a `pyvenv.cfg`.
+    # Walks the clone one directory at a time rather than globbing it, so the
+    # scan can stop descending: at the dependency and history trees above, at
+    # anything the caller is already excluding from the copy, and at a
+    # virtualenv itself — nothing inside one is separately interesting, and
+    # stopping there is also what keeps a nested marker from being reported
+    # twice.
     #
-    # FNM_DOTMATCH is load-bearing: without it `**/` never descends into a
-    # hidden directory, and the environment is called `.venv` far more often
-    # than anything else, so both `.venv/pyvenv.cfg` and
-    # `packages/api/.venv/pyvenv.cfg` would be invisible.
-    def virtualenv_roots(fs, root)
-      fs.glob(File.join(root, "**", VIRTUALENV_MARKER), flags: File::FNM_DOTMATCH)
-        .map { |marker| File.dirname(marker) }
+    # Symlinked directories are not followed, which matches what the copy does
+    # with them (`copy_pruned` hands a symlink to `FileUtils.copy_entry`, which
+    # copies the link rather than the tree behind it) and makes a symlink loop
+    # impossible.
+    #
+    # `directory?` is asked first because most entries in a clone are files, and
+    # for a file it is the only question that has to be answered at all.
+    def scan(fs, root, relative, prune, found)
+      directory = relative ? File.join(root, relative) : root
+
+      fs.children(directory).each do |name|
+        child = relative ? File.join(relative, name) : name
+        path = File.join(root, child)
+
+        next unless fs.directory?(path)
+        next if fs.symlink?(path)
+        next if excluded?(child, prune)
+
+        if virtualenv?(fs, path)
+          found << child
+          next
+        end
+
+        scan(fs, root, child, prune, found)
+      end
     end
 
-    # nil for anything that is not strictly below the root — including the root
-    # itself, which a `pyvenv.cfg` written directly into the clone would
-    # otherwise name. Excluding "" would prune the entire copy.
-    def relative_to(dir, root)
-      expanded = File.expand_path(dir)
-      return nil unless expanded.start_with?("#{root}#{File::SEPARATOR}")
+    # A `pyvenv.cfg` plus the script directory whose contents carry the absolute
+    # shebang. Both, because only the pair is evidence of something to relocate.
+    def virtualenv?(fs, path)
+      return false unless fs.exists?(File.join(path, VIRTUALENV_MARKER))
 
-      relative = expanded.delete_prefix("#{root}#{File::SEPARATOR}")
-      relative.presence
+      VIRTUALENV_SCRIPT_DIRECTORIES.any? { |dir| fs.directory?(File.join(path, dir)) }
+    end
+
+    def excluded?(relative, prune)
+      prune.any? { |pattern| File.fnmatch?(pattern, relative, FNMATCH_FLAGS) }
     end
   end
 end

@@ -1108,11 +1108,20 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   # zimmer#671: a fork's clone is at a new path, and a virtualenv is not
   # relocatable — its console scripts open with `#!<SOURCE-CLONE>/.venv/bin/python`.
   # Copied, they run the SOURCE session's sources from inside the fork, silently.
+  # A virtualenv as the mock has to model one: the marker plus the script
+  # directory whose contents carry the absolute shebang.
+  def create_virtualenv(relative_path)
+    venv = File.join(@clone_path, relative_path)
+    @mock_fs.mkdir_p(File.join(venv, "bin"))
+    @mock_fs.write(File.join(venv, "pyvenv.cfg"), "home = /usr/bin\n")
+    @mock_fs.write(File.join(venv, "bin", "pytest"), "#!#{venv}/bin/python\n")
+    venv
+  end
+
   test "a fork sheds a virtualenv rather than inheriting one that points at the source clone" do
     @mock_fs.write(File.join(@clone_path, "src/app.py"), "print('hi')")
-    @mock_fs.write(File.join(@clone_path, ".venv/pyvenv.cfg"), "home = /usr/bin\n")
-    @mock_fs.write(File.join(@clone_path, ".venv/bin/pytest"), "#!#{@clone_path}/.venv/bin/python\n")
-    @mock_fs.write(File.join(@clone_path, "packages/api/.venv/pyvenv.cfg"), "home = /usr/bin\n")
+    create_virtualenv(".venv")
+    create_virtualenv("packages/api/.venv")
 
     result = ForkSessionService.call(
       source_session: @source_session,
@@ -1146,6 +1155,33 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
 
     assert result.success?
     assert @mock_fs.exists?(File.join(result.forked_session.metadata["clone_path"], "venv/README.md"))
+  end
+
+  # The only caller that passes copy_exclusions is SessionStatusSummaryGenerator.
+  # Its patterns and the detected ones have to survive being unioned — and the
+  # excluded trees must not be walked looking for a marker either.
+  test "caller exclusions and a detected virtualenv are both applied" do
+    @mock_fs.write(File.join(@clone_path, "Gemfile"), "source 'https://rubygems.org'")
+    @mock_fs.write(File.join(@clone_path, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"), "gem")
+    @mock_fs.write(File.join(@clone_path, "docs/node_modules/astro/package.json"), "{}")
+    create_virtualenv(".venv")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES
+    )
+
+    assert result.success?
+    new_clone = result.forked_session.metadata["clone_path"]
+
+    assert @mock_fs.exists?(File.join(new_clone, "Gemfile"))
+    assert_not @mock_fs.exists?(File.join(new_clone, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md")),
+      "the caller's exclusions still apply"
+    assert_not @mock_fs.exists?(File.join(new_clone, "docs/node_modules/astro/package.json"))
+    assert_not @mock_fs.exists?(File.join(new_clone, ".venv/bin/pytest")),
+      "and the detected virtualenv is shed alongside them"
   end
 
   # --- Scaffolding a clone that is no longer there ---------------------------
