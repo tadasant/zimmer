@@ -17,6 +17,26 @@ module WorkBacklog
 
     KEYS = %w[status surface repo scope_direction kind estimated_cost pinned key added_by].freeze
 
+    # ActiveModel's Boolean cast reads any non-blank string that is not a known
+    # false word as true ("maybe" => true), which is the wrong answer for a flag
+    # that decides whether a human hand-placed an item. This is the strict read.
+    TRUE_WORDS = %w[true t 1 yes y on].freeze
+    FALSE_WORDS = %w[false f 0 no n off].freeze
+
+    # @return [true, false, nil, :invalid] nil for absent/blank, :invalid for
+    #   anything that is not clearly one or the other
+    def self.strict_bool(value)
+      return value if value == true || value == false
+      return nil if value.nil?
+
+      word = value.to_s.strip.downcase
+      return nil if word.empty?
+      return true if TRUE_WORDS.include?(word)
+      return false if FALSE_WORDS.include?(word)
+
+      :invalid
+    end
+
     attr_reader :status, :surface, :repo, :scope_direction, :kind, :estimated_cost, :pinned, :key,
                 :added_by, :limit, :offset
 
@@ -88,10 +108,8 @@ module WorkBacklog
     end
 
     def parse_bool(value)
-      return nil if value.nil? || value.to_s.strip.empty?
-
-      cast = ActiveModel::Type::Boolean.new.cast(value)
-      raise InvalidFilter, "pinned must be true or false (got #{value.inspect})" if cast.nil?
+      cast = self.class.strict_bool(value)
+      raise InvalidFilter, "pinned must be true or false (got #{value.inspect})" if cast == :invalid
 
       cast
     end
