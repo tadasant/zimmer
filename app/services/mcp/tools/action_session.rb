@@ -464,20 +464,18 @@ module Mcp
 
         # The replacement turn IS the original first turn — same prompt, new
         # clone, new session_id — so it carries the attachments that turn was
-        # created with. AgentSessionJob takes them only as job arguments, so
-        # enqueuing bare re-ran the prompt with the screenshot silently missing
-        # (#746). Everything on the volume is replayed deliberately: this path is
-        # reached only for a pre-prompt failure with setup incomplete, and a
-        # restart from scratch discards the conversation any earlier delivery went
-        # to. Read outside the transaction; the read never raises, so the fleet
-        # sweep's restart cannot start failing on an unreadable volume.
+        # created with (Sessions::FirstTurnAttachments, which never raises, so the
+        # fleet sweep's restart cannot start failing on an unreadable volume).
+        # Replaying all of them is deliberate: this path is reached only for a
+        # pre-prompt failure with setup incomplete, and a restart from scratch
+        # discards the conversation any earlier delivery went to.
         images, files = Sessions::FirstTurnAttachments.for(session)
-        carrying = Sessions::FirstTurnAttachments.phrase(images, files)
+        carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
 
         ActiveRecord::Base.transaction do
           session.logs.create!(
-            content: "Restarting session from scratch: re-running full setup pipeline (git clone, MCP config, process spawn)" \
-                     "#{carrying ? ", carrying #{carrying}" : ""}",
+            content: "Restarting session from scratch: re-running full setup pipeline " \
+                     "(git clone, MCP config, process spawn)#{carrying}",
             level: "info"
           )
           session.update!(running_job_id: nil, session_id: nil, metadata: cleaned_metadata)

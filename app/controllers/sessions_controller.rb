@@ -4102,25 +4102,20 @@ class SessionsController < ApplicationController
     end
 
     # The replacement turn IS the original first turn — same prompt, new clone,
-    # new session_id — so it needs the attachments that turn was created with.
-    # AgentSessionJob takes them only as job arguments, so enqueuing bare re-ran
-    # the prompt with the screenshot silently missing (#746).
-    #
-    # Everything on the volume is replayed, deliberately: this path is reached
-    # only for a pre-prompt failure with setup incomplete, so nothing was
-    # delivered to an agent — and where an earlier attempt did get as far as
-    # delivering, restart_from_scratch has just discarded the conversation that
-    # received it. Re-delivering to a turn that no longer exists is not
-    # over-delivery. Read before the transaction so a slow or unreadable volume
-    # cannot poison it; the read never raises.
+    # new session_id — so it carries the attachments that turn was created with
+    # (Sessions::FirstTurnAttachments, which never raises). Replaying all of them
+    # is deliberate: this path is reached only for a pre-prompt failure with setup
+    # incomplete, so nothing was delivered to an agent — and a restart from
+    # scratch has just discarded the conversation any earlier delivery went to.
+    # Read outside the transaction so a slow volume cannot hold it open.
     images, files = Sessions::FirstTurnAttachments.for(session)
-    carrying = Sessions::FirstTurnAttachments.phrase(images, files)
+    carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
 
     result = with_db_retry do
       ActiveRecord::Base.transaction do
         session.logs.create!(
-          content: "Restarting session from scratch: re-running full setup pipeline (git clone, MCP config, process spawn)" \
-                   "#{carrying ? ", carrying #{carrying}" : ""}",
+          content: "Restarting session from scratch: re-running full setup pipeline " \
+                   "(git clone, MCP config, process spawn)#{carrying}",
           level: "info"
         )
 

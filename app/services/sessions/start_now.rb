@@ -70,11 +70,11 @@ module Sessions
   # The one branch that builds a job out of nothing — a session that has never run
   # and has nothing queued — re-reads the session's images and files off the
   # durable volume (Sessions::FirstTurnAttachments) and puts them on the job.
-  # AgentSessionJob reads attachments
-  # ONLY out of its job arguments, so enqueuing without them started a session
-  # whose prompt was "here is the screenshot, fix this" with the prompt and
-  # without the screenshot (#739). The other two branches move a job that already
-  # carries its own, and must not re-read: that would attach a second copy.
+  # AgentSessionJob reads attachments ONLY out of its job arguments, so enqueuing
+  # without them started a session whose prompt was "here is the screenshot, fix
+  # this" with the prompt and without the screenshot (#739). The other two
+  # branches move a job that already carries its own, and must not re-read: that
+  # would attach a second copy.
   #
   # The narrow duplicate-job gap named above rides along with it. A session that
   # takes this branch while a hold job is mid-execution can end up with two turns,
@@ -209,8 +209,7 @@ module Sessions
 
     # What the session's log says the turn is carrying.
     def attachment_phrase(images, files)
-      carried = Sessions::FirstTurnAttachments.phrase(images, files)
-      carried ? ", carrying #{carried}" : ""
+      Sessions::FirstTurnAttachments.carrying_clause(images, files)
     end
 
     def resume_from_the_queue

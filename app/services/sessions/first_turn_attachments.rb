@@ -5,8 +5,8 @@ module Sessions
   # durable volume.
   #
   # AgentSessionJob receives attachments ONLY as job arguments and never re-reads
-  # them from disk, so every path that builds a first-turn job out of nothing has
-  # to rebuild that metadata itself. Enqueuing without it started a session whose
+  # them from disk, so a path that builds a first-turn job out of nothing has to
+  # rebuild that metadata itself. Enqueuing without it started a session whose
   # prompt was "here is the screenshot, fix this" with the prompt and without the
   # screenshot — first from the Ranked view's Start entry and the stalled-session
   # sweep (#739), then from Restart from scratch (#746). The bytes were on the
@@ -59,18 +59,18 @@ module Sessions
       [ [], [] ]
     end
 
-    # What the turn is carrying, for a log line a human reads. nil when it
-    # carries nothing: a first turn with no attachments is the ordinary case, and
-    # saying so every time would bury the times it does.
+    # What the turn is carrying, ready to append to a log line a human reads.
+    # Empty when it carries nothing: a first turn with no attachments is the
+    # ordinary case, and saying so every time would bury the times it does.
     #
-    # @return [String, nil] e.g. "1 image and 2 files"
-    def self.phrase(images, files)
+    # @return [String] e.g. ", carrying 1 image and 2 files"
+    def self.carrying_clause(images, files)
       carried = []
       carried << "#{images.size} #{"image".pluralize(images.size)}" if images.any?
       carried << "#{files.size} #{"file".pluralize(files.size)}" if files.any?
-      return nil if carried.empty?
+      return "" if carried.empty?
 
-      carried.to_sentence
+      ", carrying #{carried.to_sentence}"
     end
 
     # Attachment paths that belong to a QUEUED message rather than to the first
