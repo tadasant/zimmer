@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The last guard before a clone's bytes go. Everything here is about the gap
 # between a sweep's ownership snapshot and the moment it actually deletes
