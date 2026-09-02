@@ -13,6 +13,18 @@ module DatabaseRetry
 
   # Retry database operations with exponential backoff when encountering lock/connection errors
   #
+  # Recovery is Active Record's job, not ours: the adapter verifies a connection it
+  # is not confident about and reconnects it on the thread that owns it
+  # (`with_raw_connection` → `verify!` → `reconnect!`), so re-running the block is
+  # all this helper has to do.
+  #
+  # Reconnecting by hand would be actively harmful. `ActiveRecord::ConnectionTimeoutError`
+  # (the pool is full) inherits from `ActiveRecord::ConnectionNotEstablished` (this
+  # connection is broken), so a reconnect keyed on the parent class fires on
+  # exhaustion: `ActiveRecord::Base.connection` leases a *sticky* connection out of
+  # an already empty pool, and on a GoodJob thread it tears down the Postgres
+  # session holding that job's advisory lock. See #708.
+  #
   # @param max_attempts [Integer] Maximum number of retry attempts (default: 3)
   # @param base_delay [Float] Base delay in seconds for exponential backoff (default: 0.5)
   # @yield The database operation to retry
@@ -27,7 +39,6 @@ module DatabaseRetry
         delay = base_delay * (2 ** (attempts - 1)) # Exponential backoff: 0.5s, 1s, 2s
         Rails.logger.warn "Database error, retrying in #{delay}s (attempt #{attempts}/#{max_attempts}) - #{e.message}"
         sleep delay
-        ActiveRecord::Base.connection.reconnect! if e.is_a?(ActiveRecord::ConnectionNotEstablished)
         retry
       else
         Rails.logger.error "Database error after #{max_attempts} attempts, giving up - #{e.message}"
