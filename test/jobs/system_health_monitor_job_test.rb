@@ -193,7 +193,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     assert_match(/Oldest ready by queue: agents 40m, default 11m/, details)
   end
 
-  # The breakdown is two extra grouped scans of `good_jobs` at exactly the moment
+  # The breakdown is three extra scans of `good_jobs` at exactly the moment
   # the database may be the thing going wrong. A depth number that reaches a human
   # beats a richer one that raises on the way, so the detail degrades and the page
   # still goes out.

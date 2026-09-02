@@ -246,14 +246,14 @@ curated `self_session` set does not include it. See
 [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
 
 `get_system_health` also names the backlogged queues and job classes whenever ready work is waiting,
-plus each queue's own head-of-line age, carrying the same split as the `Queue backlog critical` Slack
-page. This is the parity that matters for triage: the GoodJob dashboard at `/jobs` needs a browser
-session on the production host, which an agent session does not have. The ages are what let an agent
-triaging `Zimmer GoodJob queue is not draining` tell one starved lane from a wedged worker —
-`oldest_ready_age_seconds` in the JSON body is a maximum across every queue at once, and a two-thread
-lane in front of minute-long jobs reads exactly like a wedge through it. It is silent when nothing is
-waiting, and says so explicitly when the read itself fails rather than dropping the whole health
-report. See
+plus each queue's own head-of-line age and the single longest-waiting job's lane and class, carrying
+the same split as the `Queue backlog critical` Slack page. This is the parity that matters for
+triage: the GoodJob dashboard at `/jobs` needs a browser session on the production host, which an
+agent session does not have. The ages are what let an agent triaging `Zimmer GoodJob queue is not
+draining` tell one starved lane from a wedged worker — `oldest_ready_age_seconds` in the JSON body is
+a maximum across every queue at once, and a two-thread lane in front of minute-long jobs reads
+exactly like a wedge through it. It is silent when nothing is waiting, and says so explicitly when
+the read itself fails rather than dropping the whole health report. See
 [The page says which queue, of what, and how old there](/operate/background-jobs/#the-page-says-which-queue-of-what-and-how-old-there).
 
 `action_health` also carries `backfill_token_usage`: queue a sweep of every transcript on disk into

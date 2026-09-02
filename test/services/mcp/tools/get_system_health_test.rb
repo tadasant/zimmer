@@ -74,7 +74,11 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
         head_of_line: { queue: "inference", job_class: "SessionStatusSummaryJob", age_seconds: 1640 } }
     )
 
-    assert_includes @tool.call({}), "- **Oldest ready by queue:** inference 27m, maintenance 21m, pollers 4s"
+    result = @tool.call({})
+
+    assert_includes result, "- **Oldest ready by queue:** inference 27m, maintenance 21m, pollers 4s"
+    assert_includes result, "- **Head of line:** inference / SessionStatusSummaryJob, waiting 27m",
+                    "the agent reader has no route to /jobs, so the page must name the job class too"
   end
 
   # A breakdown of an empty queue is a line of noise on every healthy call. A
@@ -86,6 +90,8 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
 
     refute_includes result, "Ready backlog by queue"
     refute_includes result, "Ready backlog by job class"
+    refute_includes result, "Oldest ready by queue"
+    refute_includes result, "Head of line"
   end
 
   test "a breakdown that cannot be read is reported, not raised, and keeps the report" do
