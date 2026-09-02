@@ -19,10 +19,15 @@
 #     path is GateDecisionFeedbacksController, an ApplicationController descendant
 #     — the browser. Api::BaseController (and McpController with it) authenticates
 #     an API key the whole agent fleet shares, so it establishes a caller but not a
-#     person. This is the one guarantee here that does not depend on a caller
-#     staying inside the tools it was offered: the `gate_decisions` tool group
-#     scopes what a session is handed, whereas an API key cannot cross this
-#     boundary at all.
+#     person, and that key cannot cross this boundary at all.
+#
+#     That is narrower than "human-only", and the difference matters when you are
+#     weighing one of these rows. ApplicationController performs no authentication;
+#     the perimeter is the tailnet and agent sessions run inside it. So what is
+#     ruled out is a write over the shared API key — the surfaces a session is
+#     handed — not an agent that goes looking for the browser route. The real
+#     guarantee needs the agent-login primitive that does not exist yet (#371,
+#     #220); until it does, `web_ui` means "came in through the browser surface".
 #   * `author` is resolved at that boundary from `User.admin`, never read from
 #     the request body. Same rule as HumanMessage, for the same reason.
 #   * Rows are append-only. A note cannot be edited into saying something else,

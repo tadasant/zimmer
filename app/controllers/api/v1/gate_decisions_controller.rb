@@ -11,10 +11,11 @@
 # machine did not write it. Api::BaseController authenticates an API key that the
 # whole agent fleet shares: it establishes a caller, but not a person. So the
 # write path for feedback is GateDecisionFeedbacksController — an
-# ApplicationController descendant, i.e. the browser, where Zimmer's single
-# circle of trust means the request was typed by a human. That is the same rule,
-# drawn at the same boundary, that HumanMessageCapture draws for what a human
-# said to a session.
+# ApplicationController descendant, i.e. the browser surface, which no API key
+# reaches. That is the same rule, drawn at the same boundary, that
+# HumanMessageCapture draws for what a human said to a session — and it is a
+# narrower claim than "a human typed it", for the reason set out in
+# GateDecisionFeedback.
 #
 # There is also no update and no destroy, on either surface. A GateDecision is
 # append-only; a correction is a new row.

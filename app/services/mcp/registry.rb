@@ -7,23 +7,37 @@ module Mcp
   # are registered for it. This is how one endpoint serves the several scoped
   # variants Zimmer relies on:
   #
-  #   (no groups)   → all base groups: the full surface
-  #   sessions      → spawn/inspect/act on other sessions
-  #   gate_decisions → read and append the agent gates' decision ledger
-  #   self_session  → the curated set auto-injected into every session, so a
-  #                   session can manage itself (notes/title/heartbeat/archive),
-  #                   notify its user, and schedule its own wake-ups
+  #   (no groups)    → all base groups: the default surface
+  #   sessions       → spawn/inspect/act on other sessions
+  #   gate_decisions → read and append the agent gates' decision ledger.
+  #                    OPT-IN: addressable, but never part of "no groups"
+  #   self_session   → the curated set auto-injected into every session, so a
+  #                    session can manage itself (notes/title/heartbeat/archive),
+  #                    notify its user, and schedule its own wake-ups
   #
-  # Every domain group has a `_readonly` variant that drops write tools.
+  # Every domain group — base or opt-in — has a `_readonly` variant that drops
+  # write tools.
   #
   # A tool can belong to a composite group (self_session) in addition to its
   # domain group, and can register a *different class* when it comes in through
   # that composite group — that is how action_session narrows from the full
   # action list to the self-management subset in the self_session variant.
   module Registry
-    BASE_GROUPS = %w[sessions notifications triggers health gate_decisions].freeze
+    # The groups a connection gets when it asks for nothing. "The full surface"
+    # means these.
+    BASE_GROUPS = %w[sessions notifications triggers health].freeze
+
+    # Domain groups a connection has to name to get. Valid and addressable —
+    # they behave exactly like a base group once requested, `_readonly` variant
+    # included — but deliberately outside the default-everything set, the way
+    # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
+    # connection carrying its write tools outweighs the convenience.
+    OPT_IN_GROUPS = %w[gate_decisions].freeze
+
     COMPOSITE_GROUPS = %w[self_session].freeze
-    VALID_GROUPS = (BASE_GROUPS + BASE_GROUPS.map { |g| "#{g}_readonly" } + COMPOSITE_GROUPS).freeze
+
+    DOMAIN_GROUPS = (BASE_GROUPS + OPT_IN_GROUPS).freeze
+    VALID_GROUPS = (DOMAIN_GROUPS + DOMAIN_GROUPS.map { |g| "#{g}_readonly" } + COMPOSITE_GROUPS).freeze
 
     Definition = Struct.new(:klass, :group, :write, :composite_groups, :composite_overrides, keyword_init: true) do
       def write? = write
@@ -89,12 +103,17 @@ module Mcp
 
       # Gate decisions — the pr-merge-gate / issue-work-gate ledger.
       #
-      # A GROUP OF ITS OWN. Folded into `sessions` these would be offered to every
-      # session carrying `zimmer-sessions`, which is most of them, and a ledger
-      # every session is handed a pen for is not evidence of anything. A
-      # connection scoped to `gate_decisions` gets the write;
+      # AN OPT-IN GROUP OF ITS OWN (see OPT_IN_GROUPS). Folded into `sessions`
+      # these would be offered to every session carrying `zimmer-sessions`, which
+      # is most of them, and a ledger every session is handed a pen for is not
+      # evidence of anything. Left in BASE_GROUPS it would be worse still: the
+      # unscoped `/mcp` surface — the `zimmer` catalog entry, injected into roots
+      # with `default_subagent_roots` — would carry the write, which is the
+      # broadest reach in the deployment rather than the narrowest. So a
+      # connection has to name `gate_decisions` to get the write;
       # `gate_decisions_readonly` — free, from the generated readonly variant —
-      # gets the two reads and not the write.
+      # gets the two reads and not the write. The two gate roots' scoped servers
+      # are the only connections that ask.
       #
       # BE PRECISE ABOUT WHAT THAT BUYS. Tool groups are a SCOPING boundary, not an
       # authorization one: the API key is shared by the whole fleet and is written
@@ -108,11 +127,6 @@ module Mcp
       # feedback. That table has one writer, the browser controller, and it is not
       # reachable from this endpoint at all — see GateDecisionFeedback.
       #
-      # `gate_decisions` is a base group, so the unscoped `/mcp` surface (the
-      # `zimmer` catalog entry, injected into roots with `default_subagent_roots`)
-      # carries the write too. That is what "no tool_groups means every base group"
-      # has always meant; the scoping that matters is that `sessions` and
-      # `self_session` do not reach it.
       Definition.new(klass: "Mcp::Tools::SearchGateDecisions", group: "gate_decisions", write: false),
       Definition.new(klass: "Mcp::Tools::GetGateDecisionFeedback", group: "gate_decisions", write: false),
       Definition.new(klass: "Mcp::Tools::RecordGateDecision", group: "gate_decisions", write: true)
@@ -120,8 +134,10 @@ module Mcp
 
     module_function
 
-    # Parse a comma-separated group list. Blank means "all base groups" (the full
-    # read+write surface), matching the decoupled server's TOOL_GROUPS default.
+    # Parse a comma-separated group list. Blank means "all base groups", matching
+    # the decoupled server's TOOL_GROUPS default — which is every domain group
+    # except the opt-in ones, so an unscoped connection never silently acquires a
+    # group whose whole point is that you have to ask for it.
     # Unknown groups are dropped with a warning rather than failing the request.
     def parse_groups(value)
       groups = case value

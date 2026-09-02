@@ -22,9 +22,10 @@
 # visible and the audit trail cannot be edited into agreement with itself.
 #
 # `human_feedback` is not a column here at all. It lives in GateDecisionFeedback,
-# reachable only from an authenticated human boundary, because a note saying "the
-# human said this rating was wrong" is worth exactly as much as the guarantee
-# that a machine did not write it.
+# reachable only from the browser surface — not from any API key or MCP tool —
+# because a note saying "the human said this rating was wrong" is worth exactly as
+# much as the guarantee that a machine did not write it. What that boundary does
+# and does not guarantee is spelled out on GateDecisionFeedback itself.
 class GateDecision < ApplicationRecord
   PR_MERGE = "pr_merge"
   ISSUE_WORK = "issue_work"

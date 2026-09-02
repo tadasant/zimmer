@@ -6,7 +6,25 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   test "no groups means every base group (the full read+write surface)" do
     assert_equal Mcp::Registry::BASE_GROUPS, Mcp::Registry.parse_groups(nil)
     assert_equal Mcp::Registry::BASE_GROUPS, Mcp::Registry.parse_groups("")
-    assert_equal Mcp::Registry::ALL_TOOLS.size, Mcp::Registry.tools_for(Mcp::Registry.parse_groups(nil)).size
+
+    default_surface = Mcp::Registry.tools_for(Mcp::Registry.parse_groups(nil))
+    opt_in = Mcp::Registry::ALL_TOOLS.count { |d| Mcp::Registry::OPT_IN_GROUPS.include?(d.group) }
+
+    assert_operator opt_in, :>, 0, "no opt-in tools left — this test proves nothing"
+    assert_equal Mcp::Registry::ALL_TOOLS.size - opt_in, default_surface.size
+  end
+
+  # The point of an opt-in group: valid and addressable, never handed out by
+  # default. `gate_decisions` is the first one, and the reason is least privilege
+  # — the unscoped `/mcp` surface is the broadest reach in the deployment, so a
+  # write to the gates' own calibration memory must not ride along on it.
+  test "an opt-in group is valid and addressable but outside the default set" do
+    Mcp::Registry::OPT_IN_GROUPS.each do |group|
+      assert_includes Mcp::Registry::VALID_GROUPS, group
+      assert_includes Mcp::Registry::VALID_GROUPS, "#{group}_readonly"
+      assert_not_includes Mcp::Registry::BASE_GROUPS, group
+      assert_equal [ group ], Mcp::Registry.parse_groups(group)
+    end
   end
 
   test "unknown groups are dropped, known ones kept" do
@@ -50,8 +68,25 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   end
 
   # The gate decision ledger's whole trustworthiness rests on this group being
-  # separate. Folded into `sessions`, every session carrying `zimmer-sessions`
-  # could write gate ratings — and a ledger anything can write is not evidence.
+  # separate AND opt-in. Folded into `sessions`, every session carrying
+  # `zimmer-sessions` could write gate ratings; left in BASE_GROUPS, every
+  # session holding the full `zimmer` server could — and a ledger anything can
+  # write is not evidence.
+  test "the unscoped surface does not carry the ledger tools, and naming the group does" do
+    unscoped = Mcp::Registry.tools_for(Mcp::Registry.parse_groups(nil)).map(&:tool_name)
+
+    assert_not_includes unscoped, "record_gate_decision"
+    assert_not_includes unscoped, "search_gate_decisions"
+    assert_not_includes unscoped, "get_gate_decision_feedback"
+    assert_includes unscoped, "start_session", "the rest of the default surface is unchanged"
+
+    named = Mcp::Registry.tools_for(Mcp::Registry.parse_groups("gate_decisions")).map(&:tool_name)
+
+    assert_includes named, "record_gate_decision"
+    assert_includes named, "search_gate_decisions"
+    assert_includes named, "get_gate_decision_feedback"
+  end
+
   test "the gate_decisions group carries the ledger tools and nothing else does" do
     assert_equal %w[search_gate_decisions get_gate_decision_feedback record_gate_decision].sort,
                  Mcp::Registry.tools_for([ "gate_decisions" ]).map(&:tool_name).sort
@@ -61,7 +96,8 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     ledger_tools = %w[search_gate_decisions get_gate_decision_feedback record_gate_decision]
 
     [ [ "sessions" ], [ "self_session" ], [ "sessions", "self_session" ],
-      [ "health" ], [ "triggers" ], [ "notifications" ] ].each do |groups|
+      [ "health" ], [ "triggers" ], [ "notifications" ],
+      Mcp::Registry.parse_groups(nil) ].each do |groups|
       names = Mcp::Registry.tools_for(groups).map(&:tool_name)
       assert_empty names & ledger_tools,
                    "#{groups.join(',')} must not reach the gate decision ledger, but reaches #{(names & ledger_tools).join(', ')}"

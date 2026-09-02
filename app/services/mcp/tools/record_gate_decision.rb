@@ -7,13 +7,14 @@ module Mcp
     #
     # THIS TOOL IS IN ITS OWN GROUP, AND THAT IS DELIBERATE.
     #
-    # `gate_decisions` is a base group of its own rather than a few more tools in
-    # `sessions`, because otherwise every session carrying `zimmer-sessions` — which
-    # is most of them — would be handed the ability to write gate ratings. A
-    # connection scoped to `gate_decisions` gets this tool; one scoped to
-    # `gate_decisions_readonly` gets the two reads and not this. That is a scoping
-    # boundary rather than an authorization one — see Mcp::Registry for what it
-    # does and does not buy.
+    # `gate_decisions` is an OPT-IN group of its own rather than a few more tools
+    # in `sessions`, because otherwise every session carrying `zimmer-sessions` —
+    # which is most of them — would be handed the ability to write gate ratings;
+    # and it is outside BASE_GROUPS so that the unscoped `/mcp` surface does not
+    # carry it either. A connection has to name `gate_decisions` to get this tool;
+    # one scoped to `gate_decisions_readonly` gets the two reads and not this.
+    # That is a scoping boundary rather than an authorization one — see
+    # Mcp::Registry for what it does and does not buy.
     #
     # TWO THINGS THIS TOOL WILL NOT LET A CALLER DO.
     #
@@ -24,8 +25,9 @@ module Mcp
     #
     # And it will not write `human_feedback`. That key is dropped from the entry,
     # always, on every path — it is not a payload field in this schema. Feedback
-    # is GateDecisionFeedback, written only from the browser, because its entire
-    # value is that a machine did not write it.
+    # is GateDecisionFeedback, reachable only from the browser surface, because its
+    # entire value is that a machine did not write it. That boundary is narrower
+    # than "human-only" — see GateDecisionFeedback for why.
     class RecordGateDecision < Tool
       tool_name "record_gate_decision"
 
@@ -36,7 +38,7 @@ module Mcp
 
         **The entry is yours.** Pass whatever your gate's schema says a decision is, as `entry`. It is stored verbatim and returned verbatim. A handful of stable fields (`pr`/`issue`, `decided_at`, `decision`, `producing_session`/`spawned_session`) are also promoted to indexed columns so `search_gate_decisions` can filter on them — but nothing is dropped, nothing is renamed, and a key your gate adds next week needs no change here.
 
-        **`human_feedback` is not writable, by any machine, ever.** If you pass it, it is silently dropped. That field records a human overruling a gate, and it is only worth what the guarantee that a machine did not write it is worth. A human adds one from Zimmer's web UI. Read them with `search_gate_decisions { with_human_feedback: true }` or `get_gate_decision_feedback`.
+        **`human_feedback` is not writable from this tool, or any other, ever.** If you pass it, it is silently dropped. That field records a human overruling a gate, and it is only worth what the guarantee that a machine did not write it is worth. It is added from Zimmer's web UI, which is the one surface no agent tool and no API key reaches. Read them with `search_gate_decisions { with_human_feedback: true }` or `get_gate_decision_feedback`.
 
         **Rows are append-only.** There is no edit and no delete, here or anywhere. A re-rate or a correction is a NEW call on the same artifact — say so in the entry (`"decision": "correction"`, and cite the earlier decision's id in your reasoning) so both readings stay visible.
 

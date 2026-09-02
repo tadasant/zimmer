@@ -2,10 +2,11 @@
 
 require "test_helper"
 
-# The human boundary. Everything here is about one property: this is the ONLY
-# way a `human_feedback` row comes into existence on a live system, the author
+# The browser boundary. Everything here is about one property: this is the ONLY
+# way a `web_ui` feedback row comes into existence on a live system, the author
 # is resolved from the boundary rather than from the request, and the row cannot
-# be edited or removed afterwards.
+# be edited or removed afterwards. The boundary is browser-vs-API-key, not
+# human-vs-agent — see GateDecisionFeedback.
 class GateDecisionFeedbacksControllerTest < ActionDispatch::IntegrationTest
   setup do
     @decision = GateDecision.create!(

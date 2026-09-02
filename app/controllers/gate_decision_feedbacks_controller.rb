@@ -11,13 +11,21 @@
 # puts it plainly: a ledger-shaped write carrying an invented `human_feedback`
 # note "would sail through a structural check and never be seen by a human."
 #
-# So the write is drawn at the only boundary in Zimmer that establishes a person.
-# This is an ApplicationController descendant — the browser — where the
-# deployment's single circle of trust means the request was typed by
-# `User.admin`. Api::BaseController (and McpController with it) authenticates an
-# API key shared by the whole agent fleet: it establishes a caller, not a human,
-# so it has no feedback-append action and no MCP tool writes here. Same rule,
-# same boundary, same reason as WebUiHumanMessageCapture.
+# So the write is drawn at the browser surface, away from the surfaces an agent is
+# handed. This is an ApplicationController descendant. Api::BaseController (and
+# McpController with it) authenticates an API key shared by the whole agent fleet:
+# it establishes a caller, not a human, so it has no feedback-append action and no
+# MCP tool writes here. Same rule, same boundary, same reason as
+# WebUiHumanMessageCapture.
+#
+# BE HONEST ABOUT THE STRENGTH OF THAT. ApplicationController performs no
+# authentication at all — the perimeter is the tailnet, and agent sessions run
+# inside it. This boundary rules out a write over the shared API key, on the REST
+# and MCP surfaces a session is actually offered; it does not rule out an agent
+# that goes looking for this route. "Human-only" needs a way to tell a person from
+# an agent at the web surface, which is the agent-login primitive Zimmer does not
+# have yet (#371, #220). Until then `web_ui` means "came in through the browser
+# surface", which is weaker, and the channel should be read that way.
 #
 # The author is resolved from that boundary, never read from the request body.
 # There is no update and no destroy: a note cannot be edited into saying

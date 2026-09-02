@@ -60,12 +60,23 @@ and never be seen by a human."* A direct database write removes that last look. 
   real. `record_gate_decision` says in its receipt when it dropped one.
 - **The REST API has no feedback action at all.** `Api::BaseController` authenticates an API key the
   whole agent fleet shares — that establishes a caller, not a person.
-- **The write path is the browser**, `POST /gate_decisions/:id/feedbacks`, served by an
+- **The write path is the browser only**, `POST /gate_decisions/:id/feedbacks`, served by an
   `ApplicationController` descendant. The author is resolved there from `User.admin`, never read
   from the request body — the same rule, at the same boundary, that
   [human messages](/sessions/hierarchy-and-human-messages/) follow.
 - **Notes are append-only too**, so one cannot be edited into saying something else or deleted to
   make a gate look better than it was.
+
+**Be precise about what "the browser" buys, because it is less than "human-only".**
+`ApplicationController` performs no authentication — Zimmer's perimeter is the tailnet, and agent
+sessions run *inside* that perimeter, on the same droplet. So what this boundary rules out is a
+write over the shared API key, on the REST or MCP surfaces an agent is actually handed; it does not
+rule out an agent that goes looking for the browser route and posts a form to it. A genuine
+human-only guarantee needs a way to tell a person from an agent at the web surface — the agent-login
+primitive Zimmer does not have yet ([#371](https://github.com/tadasant/zimmer/issues/371),
+[#220](https://github.com/tadasant/zimmer/issues/220)). Until it exists, `web_ui` means "came in
+through the browser surface", which is weaker than "a human typed it", and the ledger should be read
+that way.
 
 Rows backfilled from the old JSON files carry the `imported` channel rather than `web_ui`, and their
 `author` is null when the source did not record one. A plausible-looking author invented by an
@@ -73,7 +84,7 @@ importer is exactly the forgery the table exists to prevent.
 
 ## Reading it
 
-Three MCP tools, in a **tool group of their own** (`gate_decisions`), served at `POST /mcp`:
+Three MCP tools, in an **opt-in tool group of their own** (`gate_decisions`), served at `POST /mcp`:
 
 | Tool | What it is for |
 | --- | --- |
@@ -81,11 +92,15 @@ Three MCP tools, in a **tool group of their own** (`gate_decisions`), served at 
 | `get_gate_decision_feedback` | Every note a human left, and nothing else — roughly eight across ~1,500 decisions |
 | `record_gate_decision` | Write one rating. The only write tool in the group |
 
-The group matters as much as the tools. Folded into `sessions`, every session carrying
-`zimmer-sessions` would be handed the ability to write gate ratings, and a ledger every session has
-a pen for is not evidence of anything. `gate_decisions_readonly` — generated automatically, like
-every base group's readonly variant — carries the two reads and not the write. The catalog server
-that scopes to it is `zimmer-gate-decisions`.
+The group matters as much as the tools, and so does its being **opt-in**. Folded into `sessions`,
+every session carrying `zimmer-sessions` would be handed the ability to write gate ratings; left in
+the base set, so would every session holding the unscoped `zimmer` server, since omitting
+`tool_groups` means "every base group". A ledger every session has a pen for is not evidence of
+anything. So `gate_decisions` sits outside the base set: it is valid and addressable, but a
+connection has to name it, and the connections that do are the two gate roots'.
+`gate_decisions_readonly` — generated automatically, like every domain group's readonly variant —
+carries the two reads and not the write. The catalog server that scopes to the full group is
+`zimmer-gate-decisions`.
 
 Be precise about what that buys, though: **tool groups are a scoping boundary, not an authorization
 one.** The API key is shared by the whole fleet and is written into every session's own MCP config,
