@@ -20,8 +20,9 @@
 # — it inserts only rows that do not exist, so the second tick and every tick
 # after it is one indexed anti-join that writes nothing.
 #
-# QUEUE PLACEMENT — `default`, like TokenUsageBackfillJob and for the same
-# reason: bulk work does not belong on the `pollers` threads.
+# QUEUE PLACEMENT — `default`; unlike the long-running TokenUsageBackfillJob,
+# this short indexed anti-join does not need the blocking-maintenance lane. Bulk
+# work still does not belong on the latency-sensitive `pollers` threads.
 class ExperimentalFlagBackfillJob < ApplicationJob
   queue_as :default
 

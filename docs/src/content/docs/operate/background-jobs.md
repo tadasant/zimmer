@@ -72,7 +72,7 @@ From `config.good_job.cron`:
 | 5m | `StatusSummaryBackstopJob` | Re-run a Status-summary generation that never landed, for a session already at rest — capped at 5 repairs a sweep, each session examined at most once per 30 minutes, and stood down entirely while the runtime's login pool is exhausted. See [The Status summary](/sessions/status-summary/#the-repair-sweep-behind-it). |
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` under `~/.zimmer/transcript_archives` — the `zimmer_data` volume both roles mount, **not** `Rails.root/storage`. Cron runs in the `worker` container and every reader of the archive is an HTTP route in `web`, so a path on the container layer would be invisible to the reader and wiped by each deploy ([#714](https://github.com/tadasant/zimmer/issues/714)). Override with `AGENT_TRANSCRIPT_ARCHIVE_DIR`, onto a path both roles share. Reads one session at a time and archives at most `MAX_SESSIONS_PER_RUN` per tick, checkpointing the slice it finished — loading every changed session at once is what OOM-killed the production worker every ten minutes ([#719](https://github.com/tadasant/zimmer/issues/719)). A run with a backlog logs `deferred to the next tick` at WARN |
 | 10m | `TokenUsageIngestionJob` | Sweep recent transcripts into the token-spend ledger. Scans only files touched in the last two hours; the lookback overlaps the interval generously because ingestion is idempotent on `request_id`, so a missed run closes itself on the next pass. History that predates the job is swept once by `TokenUsageBackfillJob`. See [Token spend](/operate/costs/). |
-| 5m | `TokenUsageBackfillJob` | Sweep the WHOLE transcript corpus into the ledger, once, in two-minute slices against a `token_usage_backfills` run that records the cursor. Starts itself on the first tick after a deploy when no sweep has ever finished, and costs one indexed lookup per tick forever after. Runs on `default`, not `pollers`: it holds its thread for minutes and must not delay the latency-sensitive pollers. See [Token spend](/operate/costs/). |
+| 5m | `TokenUsageBackfillJob` | Sweep the WHOLE transcript corpus into the ledger, once, in two-minute slices against a `token_usage_backfills` run that records the cursor. Starts itself on the first tick after a deploy when no sweep has ever finished, and costs one indexed lookup per tick forever after. Runs on `maintenance`, not `pollers` or `default`: it holds its thread for minutes and must not delay latency-sensitive pollers or control work. See [Token spend](/operate/costs/). |
 | 2m | `PostDeployTaskJob` | Run the one-time post-deploy tasks in `db/post_deploy/` — the `after_party`-shaped mechanism for an ops step that has to ship with the deploy. Each task is claimed with a conditional `UPDATE` on its `post_deploy_task_runs` row, worked inside a 90-second budget, and never worked again once it succeeds; a task too slow for one slice returns `CONTINUE` and resumes from its cursor. Runs on `default`, not `pollers`, because a task can hold its thread for the whole budget. See [Deploying](/operate/deploying/#one-time-post-deploy-tasks). |
 | 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -459,7 +459,12 @@ duplicate on the next poll rather than a notification that silently never arrive
 
 ## Queues
 
-Most jobs run on `default`. Four kinds of work are deliberately isolated:
+Most short jobs run on `default`. Six kinds of work are deliberately isolated:
+
+- **`:agents`** — `AgentSessionJob`, capped at eight concurrent turns. A turn may own a nested
+  dev stack; production measured one at roughly 700 MB, so the previous sixteen-slot scheduler
+  could not fit its admitted work under the worker's 10 GiB cgroup. Excess turns stay as durable
+  queued rows and start as slots finish.
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
@@ -484,6 +489,11 @@ Most jobs run on `default`. Four kinds of work are deliberately isolated:
   `SendPushNotificationJob`. These shell out to a runtime CLI for 15–90 seconds. The lane has two
   threads; excess work remains one queued row per request and drains as a worker becomes free.
   Deterministic notification types stay on `default` because they do no inference.
+- **`:maintenance`** — package and bundle installs, deploy recovery, transcript archiving, token
+  backfill, Docker cleanup, and clone/trash filesystem sweeps. These operations are bounded but may
+  run for minutes or scale with the data they inspect. Two workers let that backlog drain without
+  occupying both `default` threads; rows inherited from an older image are moved by a deploy-time
+  migration and a converging post-deploy task.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubCommentPollerJob`, `GitHubPullRequestPollerJob`, `GitHubMergeConflictPollerJob`,
@@ -617,7 +627,7 @@ failure mode:
 
 | Path | Where it runs | What kills it |
 | --- | --- | --- |
-| `QueueRecoveryModeExpiryJob` (1m cron) | the `agents` queue — the one queue the mode does not pause | all 16 `agents` threads busy with long sessions, which is exactly the runaway-session incident |
+| `QueueRecoveryModeExpiryJob` (1m cron) | the `agents` queue — the one queue the mode does not pause | all eight `agents` threads busy with long sessions; queued sessions start as slots become free |
 | `ApplicationController#reconcile_queue_recovery_mode` | the web process, throttled to one check per 30s | no web traffic at all |
 
 On top of both, `QueueRecoveryMode.status` computes `active` from the clock, so no surface can report

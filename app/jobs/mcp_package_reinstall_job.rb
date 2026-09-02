@@ -9,7 +9,7 @@
 # The job is triggered by CacheClearService.clear_all_and_reinstall
 # after clearing the npm cache.
 class McpPackageReinstallJob < ApplicationJob
-  queue_as :default
+  queue_as :maintenance
 
   # Wall-clock bound on the preinstall script.
   #

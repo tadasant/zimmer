@@ -126,9 +126,9 @@ mid-chunk, a recurring sweep overlapping the backfill, and a full re-scan all co
 else. The cursor only advances on a committed chunk, so an interrupted run resumes rather than
 restarting.
 
-`TokenUsageBackfillJob` runs on the `default` queue, deliberately not `pollers`: it holds its
-thread for minutes, and `pollers` has three threads shared by the latency-sensitive singleton
-pollers.
+`TokenUsageBackfillJob` runs on the `maintenance` queue, deliberately not `pollers` or `default`:
+it holds its thread for minutes, while those queues carry latency-sensitive pollers and control
+work respectively.
 
 ### How complete is the page?
 

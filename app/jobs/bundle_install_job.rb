@@ -10,7 +10,7 @@
 class BundleInstallJob < ApplicationJob
   include DatabaseRetry
 
-  queue_as :default
+  queue_as :maintenance
 
   # Don't retry - if it fails, Rails commands just won't work
   # The user can manually run bundle install if needed

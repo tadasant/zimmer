@@ -39,7 +39,7 @@
 #     StaleCloneCleanupJob (ORPHAN_AGE_THRESHOLD, 1 hour).
 #
 class OrphanCloneFilesystemCleanupJob < ApplicationJob
-  queue_as :default
+  queue_as :maintenance
   include SingletonSweep
 
   # Only clean clones older than 48 hours to avoid racing with active sessions

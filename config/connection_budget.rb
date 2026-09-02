@@ -136,7 +136,12 @@ module ConnectionBudget
   # app_required_backends in infra/terraform/main.tf moves with it.
   def good_job_queue_threads
     {
-      agents: int_env("GOOD_JOB_AGENTS_THREADS", 16),
+      # AgentSessionJob may own a nested dev stack. Production measured one at
+      # roughly 700 MB; sixteen stacks cannot fit under the worker's 10 GiB
+      # cgroup alongside Rails and GoodJob. Eight keeps the admission decision
+      # in the scheduler: excess sessions remain durable queued rows instead of
+      # pushing the whole worker into memory reclaim and stopping every lane.
+      agents: int_env("GOOD_JOB_AGENTS_THREADS", 8),
       pollers: int_env("GOOD_JOB_POLLERS_THREADS", 3),
       triggers: int_env("GOOD_JOB_TRIGGERS_THREADS", 2),
       auth: int_env("GOOD_JOB_AUTH_THREADS", 2),
@@ -147,11 +152,15 @@ module ConnectionBudget
       # The two lanes still total four threads, so this changes scheduling
       # without increasing the database connection promise.
       inference: int_env("GOOD_JOB_INFERENCE_THREADS", 2),
+      # Filesystem scans, package installs, transcript archiving and deploy
+      # recovery can each hold a thread for minutes. Keep them off `default` so
+      # ordinary callbacks and control work continue while maintenance drains.
+      maintenance: int_env("GOOD_JOB_MAINTENANCE_THREADS", 2),
       default: int_env("GOOD_JOB_DEFAULT_THREADS", 2)
     }
   end
 
-  # The `agents:16;pollers:3;...` string GoodJob wants.
+  # The `agents:8;pollers:3;...` string GoodJob wants.
   def good_job_queues
     good_job_queue_threads.map { |queue, threads| "#{queue}:#{threads}" }.join(";")
   end

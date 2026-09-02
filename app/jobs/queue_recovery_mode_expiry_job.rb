@@ -12,7 +12,7 @@
 # therefore a database connection, which ConnectionBudget budgets and Terraform
 # enforces against the cluster's plan.
 #
-# `agents` can still starve: sixteen long-running sessions occupy every thread, and
+# `agents` can still starve: eight long-running sessions occupy every thread, and
 # that is precisely the runaway-session incident recovery mode exists for. So this
 # is not the only backstop — ApplicationController#reconcile_queue_recovery_mode
 # performs the same check from the web process, which needs no worker thread. The

@@ -519,36 +519,6 @@ the gate; they only happen after a spawn that did.
 Fixed in [#122](https://github.com/tadasant/zimmer/issues/122), which added the readiness gate. The
 escape hatch above is what that fix deliberately left open.
 
-### Every worker boot lands its own maintenance work on the shared `default` queue
-
-Two initializers enqueue onto `default` as soon as the worker comes up: `post_deploy_cache_clear`
-schedules `CacheClearJob` at +10s, which chains `McpPackageReinstallJob` — an `npx` install of every
-catalog MCP package — whenever it actually cleared the npx cache; and `deployment_recovery` schedules
-`DeploymentRecoveryJob` at +30s, which auto-continues every session the deploy just orphaned.
-`default` has 2 scheduler threads (`ConnectionBudget.good_job_queue_threads`) shared by ~30
-non-inference job
-classes, so for the first minutes of every deploy part of the queue is committed to boot work — and
-that is exactly the window in which a post-cutover check is most likely to look at `default` and
-conclude it is wedged.
-
-These two jobs can occupy both default threads, so a post-cutover delay in that lane is expected
-while they run. Blocking title, status-summary, and needs-input notification inference cannot add to
-it: those jobs have their own two-thread `inference` lane. A `default` queue that completes nothing
-after the bounded boot jobs finish still points to a wedged worker or a different slow external call.
-
-`McpPackageReinstallJob` is bounded (`PREINSTALL_TIMEOUT_SECONDS`, 900) so a stalled npm cannot hold
-its thread until the next restart. The contention itself is not fixed: the jobs still share `default`
-with ordinary work, and a slow database stretches the window further. Giving boot-time maintenance
-its own queue would fix it properly, but every added scheduler thread is an added Postgres backend,
-and the database's connection ceiling is a plan property Terraform will not raise for you (above) —
-so it is a deliberate change rather than a tuning tweak. Tracked in
-[#533](https://github.com/tadasant/zimmer/issues/533).
-
-The `auth` lane spent some of the room that change would need. It is two threads, which is four
-backends after the deploy-cutover doubling, taking `ConnectionBudget.required_backends` from 91 to 95
-against the 97 a `db-s-2vcpu-4gb` cluster serves. That leaves one more worker thread of headroom in
-the whole system; anything larger needs a cluster resize first.
-
 ### The tailnet reaper still no-ops without credentials — it just says so now
 
 `scripts/tailnet-reap-node.sh` skips cleanup when `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` are
