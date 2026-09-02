@@ -1,0 +1,71 @@
+<%# One payload value, drawn from its SHAPE and never from its key name — see
+    GateDecisions::PayloadView for why a key-driven renderer would go quietly
+    wrong. Recursive: `object` and `list` render this partial again for each
+    child, which is what lets an entry nest without this file knowing it will.
+
+    Locals: field (GateDecisions::PayloadView::Field) %>
+<% case field.kind %>
+<% when :blank %>
+  <span class="text-gray-300">—</span>
+<% when :boolean %>
+  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold <%=
+    field.value ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600' %>"><%= field.value ? "yes" : "no" %></span>
+<% when :number %>
+  <span class="tabular-nums text-gray-900"><%= field.value %></span>
+<% when :url %>
+  <%= link_to field.value, field.value, class: "text-indigo-600 hover:text-indigo-800 break-all", target: "_blank", rel: "noopener noreferrer" %>
+<% when :text %>
+  <span class="text-gray-900 break-words"><%= field.value %></span>
+<% when :prose %>
+  <%# The substance of the entry. Rendered as markdown because the gates write
+      markdown — backticks, bold, lists, links — and `markdown` escapes HTML and
+      restricts link schemes, so a payload string cannot inject anything. %>
+  <%# `wrap-anywhere` here rather than on each descendant, because
+      `overflow-wrap` inherits: gate prose is full of file paths, branch names and
+      bare URLs — in backticks, in links and in plain sentences alike — and
+      neither `.prose` nor `.prose .inline-code` sets a wrapping rule, so one
+      `app/services/gate_decisions/payload_view.rb` sets the width of the whole
+      page on a phone. `pre` opts back out: a fenced code block should scroll
+      rather than reflow, or its indentation stops meaning anything.
+
+      Scoped to this partial rather than fixed in the shared stylesheet, which
+      would change every markdown surface in the app — filed as its own issue. %>
+  <div class="text-sm leading-relaxed wrap-anywhere [&_pre]:wrap-normal [&_pre]:overflow-x-auto">
+    <%= render "shared/enhanced_markdown", content: field.value.to_s, variant: "default" %>
+  </div>
+<% when :chips %>
+  <div class="flex flex-wrap gap-1">
+    <% field.value.each do |item| %>
+      <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[11px] font-medium break-words"><%= item.to_s %></span>
+    <% end %>
+  </div>
+<% when :object %>
+  <dl class="divide-y divide-gray-100 border border-gray-200 rounded-md overflow-hidden">
+    <% field.children.each do |child| %>
+      <%# Label beside the value only near the surface. The side-by-side row spends
+          a fixed 12rem on the label, and nesting spends it again at every level —
+          so by the third one the value is a sliver in an otherwise empty card.
+          Deeper than that the label stacks above its value, which costs a line and
+          keeps the full width. Prose always stacks: a paragraph in a 12rem-indented
+          column is unreadable at any depth. %>
+      <% stacked = child.prose? || child.depth >= 2 %>
+      <div class="<%= stacked ? 'px-3 py-2 bg-white' : 'px-3 py-1.5 bg-white sm:flex sm:gap-3' %>">
+        <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide <%= stacked ? 'mb-1' : 'sm:w-48 sm:shrink-0 sm:pt-0.5' %>"><%= child.label %></dt>
+        <dd class="text-sm min-w-0 flex-1"><%= render "gate_decisions/field_value", field: child %></dd>
+      </div>
+    <% end %>
+  </dl>
+<% when :list %>
+  <div class="space-y-2">
+    <% field.children.each do |child| %>
+      <div class="border border-gray-200 rounded-md p-2 bg-white">
+        <%= render "gate_decisions/field_value", field: child %>
+      </div>
+    <% end %>
+  </div>
+<% else %>
+  <%# The graceful-degradation branch: a shape this renderer has no drawing for,
+      or one nested past the depth cap, comes out as legible JSON rather than as
+      an exception or a blank. %>
+  <pre class="text-xs bg-gray-50 border border-gray-200 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words text-gray-700"><%= JSON.pretty_generate(field.value) %></pre>
+<% end %>

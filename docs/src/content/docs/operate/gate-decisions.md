@@ -113,6 +113,42 @@ boundary above: no API key reaches `POST /gate_decisions/:id/feedbacks` at all.
 
 The same filters are on `GET /api/v1/gate_decisions`; see [the REST API](/extend/rest-api/).
 
+## Browsing it
+
+`/gate_decisions` is the Gate Decisions tab in the web UI, and it is the surface a person reads the
+ledger through rather than a gate. The list filters on the indexed columns — gate, surface, decision,
+a `decided_at` window, a substring search over the artifact URL, full text over the whole entry, and
+"has a human note" — through **the same `GateDecisions::Filters` object** the REST index and
+`search_gate_decisions` use, so a question asked on the page and the same question asked by a gate
+cannot come back with different answers. A filter the ledger cannot honour — an unknown gate, an
+unparseable date, which takes a hand-edited URL to produce — says so on the page and shows the ledger
+unfiltered, because "no precedent" is the wrong thing for anyone to conclude from a typo.
+
+**The detail page renders the entry generically, and that is the design.** There is no list of field
+names anywhere in the view. `GateDecisions::PayloadView` classifies each value by its **shape** —
+boolean, number, short string, URL, paragraph, list of scalars, list of objects, nested object — and
+the shape decides how it is drawn; anything nested past the depth cap degrades to pretty-printed JSON
+rather than to a blank. That matters because the gates' schemas move: across 318 PR-gate zimmer
+entries there are 34 distinct keys, four of which arrived in the last few weeks. A view built from a
+field list would go wrong by **omission**, silently, the first time a gate added a key — the page
+would still look complete and nobody auditing a hold would know a section was missing.
+
+The same classification decides the layout. Fields that render short — the verdict, the ratings, the
+axes, the flags — are lifted into an at-a-glance aside that stays put while the long-form prose
+scrolls in the main column. `ratings` and `justifications` are the worked example: same keys, same
+nesting, but one holds four words and the other four paragraphs, so one skims and the other does not,
+and no rule naming either of them was needed to get that right. The aside may pick; the entry view
+below it never omits — every key the gate wrote, in the order it wrote it.
+
+Because rows are append-only, a re-rate is a *new* row and the earlier reading is still live in the
+table. The detail page says so: every other rating of the same artifact is linked from the top, so
+someone reading a hold finds out that a later row un-held it.
+
+The feedback form lives here too, posting to `POST /gate_decisions/:id/feedbacks` — the browser-only
+write path above, with the honest limits of that boundary stated in the form's own copy rather than
+implied away. Nothing on the page claims a note is verified-human, because Zimmer's browser surface
+authenticates nobody.
+
 ## The backfill
 
 The historical entries are imported by a [one-time post-deploy
