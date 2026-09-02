@@ -169,7 +169,16 @@ class DeferredCloneCleanupJob < ApplicationJob
       false
     end
 
-    GitCloneService.cleanup_clone(clone_path)
+    # CloneReaper asks who owns this directory one last time, after the Compose
+    # teardown above. The `archived?` re-read a few lines up covers this session;
+    # the guard covers the case where the path is owned by a *different*, live
+    # session (#808).
+    if GitCloneService.cleanup_clone(clone_path, reason: "DeferredCloneCleanupJob") == :refused
+      Rails.logger.warn "[DeferredCloneCleanupJob] Clone for session #{session_id} was not deleted: a live " \
+        "session still owns #{clone_path}"
+      return
+    end
+
     Rails.logger.info "[DeferredCloneCleanupJob] Cleaned up clone for session #{session_id}: #{clone_path}"
 
     cleanup_message = if artifacts_preserved

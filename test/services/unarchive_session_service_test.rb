@@ -46,6 +46,43 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     AirPrepareService.any_instance.stubs(:prepare!)
   end
 
+  # zimmer#808: an unarchive is `archived` for its whole duration — the status
+  # transition is the last step, after the clone, the artifact replay and
+  # `air prepare` — so for that window the row is indistinguishable from an
+  # abandoned archive with a stale clone, and the hourly reapers delete the clone
+  # this service is in the middle of building.
+  test "marks the session reap-protected for the duration of the unarchive" do
+    @mock_fs.mkdir_p(@clone_path)
+
+    # Sampled from inside the run, at the transcript write — a real step that
+    # happens before the status transition.
+    protected_during_run = nil
+    session_id = @session.id
+    @mock_fs.define_singleton_method(:write) do |path, content, **options|
+      protected_during_run = Session.reap_protected?(session_id)
+      super(path, content, **options)
+    end
+
+    result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+    assert result.success?
+    assert protected_during_run, "the session must be reap-protected while the unarchive runs"
+    assert_nil @session.reload.metadata[Session::UNARCHIVE_IN_FLIGHT_KEY],
+               "the marker must be dropped once the unarchive is over"
+  end
+
+  test "drops the reap-protection marker even when the unarchive fails" do
+    # No clone on disk and a clone that cannot be recreated: the slow path fails.
+    GitCloneService.stub :create_clone, ->(*, **) { raise GitCloneService::GitError, "no remote" } do
+      result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+      assert_not result.success?
+    end
+
+    assert_nil @session.reload.metadata[Session::UNARCHIVE_IN_FLIGHT_KEY],
+               "a failed unarchive must not pin the session's clone on disk"
+  end
+
   test "quick unarchive when clone still exists" do
     # Clone still exists
     @mock_fs.mkdir_p(@clone_path)

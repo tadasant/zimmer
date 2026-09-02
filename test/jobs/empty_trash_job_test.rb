@@ -48,6 +48,48 @@ class EmptyTrashJobTest < ActiveJob::TestCase
     assert_nil @session.trash_after
   end
 
+  # zimmer#808. `find_each` loads a batch and then works through it one Docker
+  # teardown and one recursive delete at a time; an unarchive inside that gap
+  # puts the session back to work on this very clone.
+  test "does not reap a session unarchived after this run's batch was loaded" do
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    batched = Session.find(@session.id) # what find_each is holding: archived, expired
+
+    @session.update_columns(status: Session.statuses[:running], trash_after: nil)
+
+    assert_not EmptyTrashJob.new.send(:cleanup_session, batched)
+    assert File.directory?(@clone_path), "a live session's clone must survive the trash sweep"
+    assert Dir.exist?(scratch_path), "scratch has no remote to come back from; it must survive"
+  end
+
+  test "leaves durable state alone when a session wakes up after its clone is deleted" do
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    batched = Session.find(@session.id)
+
+    # Trash when the clone delete starts, live by the time the unrecoverable half
+    # of the cleanup would run. The clone goes; nothing that lacks a remote does.
+    job = EmptyTrashJob.new
+    job.stubs(:still_trash?).returns(true).then.returns(false)
+
+    job.send(:cleanup_session, batched)
+
+    assert Dir.exist?(scratch_path), "scratch has no remote to come back from; it must survive"
+  end
+
+  # zimmer#808's other half: an unarchive is `archived` for its whole duration, so
+  # a session having a NEW clone built for it still matches this job's scope.
+  test "does not reap a session that is being unarchived right now" do
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    @session.update_columns(
+      metadata: @session.metadata.merge(Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601)
+    )
+
+    EmptyTrashJob.perform_now
+
+    assert File.directory?(@clone_path), "the clone an unarchive just built must survive"
+    assert Dir.exist?(scratch_path)
+  end
+
   test "cleans up artifacts for expired trashed session" do
     # Remove clone to isolate artifact cleanup behavior
     FileUtils.rm_rf(@clone_path)
@@ -202,8 +244,8 @@ class EmptyTrashJobTest < ActiveJob::TestCase
     )
 
     # Make the first session's cleanup fail by raising from GitCloneService
-    GitCloneService.expects(:cleanup_clone).with(@clone_path).raises(StandardError, "disk error")
-    GitCloneService.expects(:cleanup_clone).with(second_clone_path).once
+    GitCloneService.expects(:cleanup_clone).with(@clone_path, reason: "EmptyTrashJob").raises(StandardError, "disk error")
+    GitCloneService.expects(:cleanup_clone).with(second_clone_path, reason: "EmptyTrashJob").once
 
     assert_nothing_raised do
       EmptyTrashJob.perform_now
