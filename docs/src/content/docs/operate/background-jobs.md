@@ -826,6 +826,21 @@ about to reap.
 | `NpxCacheHealService` | A corrupted `_npx` cache — detected by regexing npm's stderr |
 | `GlobalRateLimitTracker` | SIGTERM/529 pressure counter driving adaptive backoff |
 
+### A recovery sweep does not resume a trashed session
+
+The two sweeps above and `SessionRecoveryService`'s hung-process auto-restart each decide from a
+session object read minutes earlier, and a human can click Trash in the gap. Resuming from that
+stale read writes `running` over an archived row and starts a real agent against a clone whose
+trash-cleanup clock has already begun.
+
+All three go through `Session#claim_system_recovery_turn!`: a `FOR UPDATE` re-read inside the
+caller's transaction, refusing an `archived` row (and an already-`running` one) before anything is
+enqueued, with the refusal recorded on the session's own timeline. The lock is held until the
+caller commits, so the enqueue cannot straddle an archive. See
+[Spawning and monitoring](/sessions/spawning/) for the delivery-time guard this pairs with, for the
+callers that do **not** route through it yet, and for
+[#554](https://github.com/tadasant/zimmer/issues/554).
+
 :::caution[`GlobalRateLimitTracker` is only global with Redis]
 Its own header admits the read-modify-write is not atomic, and that with a `memory_store` cache
 each worker tracks independently. It needs Redis to be truly global. Zimmer *does* use Redis for the
