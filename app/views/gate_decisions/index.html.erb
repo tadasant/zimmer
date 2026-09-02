@@ -1,0 +1,117 @@
+<% content_for :title, "Gate Decisions" %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-[100rem] mx-auto px-3 sm:px-6 py-6">
+    <div class="flex items-center min-w-0 mb-4">
+      <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-3 shrink-0" do %>
+        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+        </svg>
+      <% end %>
+      <h1 class="text-2xl font-bold text-gray-900 truncate">Gate Decisions</h1>
+    </div>
+
+    <p class="text-sm text-gray-600 mb-4">
+      Every rating the PR-merge and issue-work gates have made, newest first. Rows are append-only and written by
+      the gates — a correction is a new decision on the same artifact, never an edit, so an artifact can carry
+      several ratings and the newest is the current reading.
+    </p>
+
+    <%= render "filters", filters: @filters, surface_options: @surface_options, decision_options: @decision_options %>
+
+    <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-2 sm:px-3 py-2 text-left font-medium">Decided</th>
+              <th class="px-3 py-2 text-left font-medium hidden sm:table-cell">Gate</th>
+              <th class="px-3 py-2 text-left font-medium hidden md:table-cell">Surface</th>
+              <th class="px-2 sm:px-3 py-2 text-left font-medium">Artifact</th>
+              <th class="px-2 sm:px-3 py-2 text-left font-medium">Decision</th>
+              <th class="px-3 py-2 text-left font-medium hidden lg:table-cell">Note</th>
+              <%# The Read button is redundant on a phone — the title in the Artifact
+                  column is already the link — and at 375px it lands past the right
+                  edge of the scroll container. Hidden below sm: rather than left
+                  somewhere a thumb has to scroll sideways to reach. %>
+              <th class="px-2 sm:px-3 py-2 text-right font-medium hidden sm:table-cell"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% @decisions.each do |decision| %>
+              <tr class="hover:bg-gray-50 align-top">
+                <td class="px-2 sm:px-3 py-2 text-gray-500 whitespace-nowrap tabular-nums text-xs"><%= decision.decided_at&.to_fs(:iso8601) || "—" %></td>
+                <td class="px-3 py-2 hidden sm:table-cell"><%= render "gate_pill", gate: decision.gate %></td>
+                <td class="px-3 py-2 text-gray-600 whitespace-nowrap hidden md:table-cell"><%= decision.surface %></td>
+                <td class="px-2 sm:px-3 py-2 min-w-0">
+                  <%# The artifact is the row's identity, so the title reads first and
+                      the URL sits under it — a bare PR number is not something anyone
+                      recognizes at a glance. %>
+                  <%# `wrap-anywhere`, not `break-words`. Inside a table only
+                      `overflow-wrap: anywhere` reduces the cell's MIN-CONTENT width;
+                      `break-word` reflows the text but leaves the column sized to the
+                      longest token, so one unbreakable title (a test name, a branch)
+                      widens the table past its scroll container. %>
+                  <%= link_to gate_decision_path(decision), class: "text-gray-900 font-medium hover:text-indigo-700 line-clamp-2 wrap-anywhere" do %>
+                    <%= decision.title.presence || decision.artifact_url.presence || "Decision ##{decision.id}" %>
+                  <% end %>
+                  <% if decision.artifact_url.present? %>
+                    <%# Only ever an href when it IS an http(s) URL — the column is
+                        promoted out of gate prose, not out of a validated field.
+                        See GateDecisionsHelper. %>
+                    <% if decision.artifact_url.match?(GateDecisionsHelper::SAFE_URL) %>
+                      <%= link_to decision.artifact_url.sub(%r{\Ahttps?://(www\.)?github\.com/}, ""), decision.artifact_url,
+                          target: "_blank", rel: "noopener noreferrer",
+                          class: "text-xs text-indigo-600 hover:text-indigo-800 break-all" %>
+                    <% else %>
+                      <span class="text-xs text-gray-500 break-all"><%= decision.artifact_url %></span>
+                    <% end %>
+                  <% end %>
+                </td>
+                <td class="px-2 sm:px-3 py-2 whitespace-nowrap"><%= render "decision_pill", decision: decision.decision %></td>
+                <td class="px-3 py-2 hidden lg:table-cell whitespace-nowrap">
+                  <% if decision.feedbacks.any? %>
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-900 text-[11px] font-semibold"
+                          title="A human left a note on this rating">
+                      <%= decision.feedbacks.size %> human <%= "note".pluralize(decision.feedbacks.size) %>
+                    </span>
+                  <% else %>
+                    <span class="text-gray-300">—</span>
+                  <% end %>
+                </td>
+                <td class="px-2 sm:px-3 py-2 text-right whitespace-nowrap hidden sm:table-cell">
+                  <%= link_to "Read", gate_decision_path(decision), class: "text-xs px-2 py-1 border border-gray-300 rounded hover:bg-gray-50 text-gray-700" %>
+                </td>
+              </tr>
+            <% end %>
+            <% if @decisions.empty? %>
+              <tr><td colspan="7" class="px-3 py-10 text-center text-sm text-gray-500">
+                <% if GateDecision.exists? %>
+                  No gate decisions match these filters.
+                <% else %>
+                  No gate decisions have been recorded yet. The historical ledgers arrive with the
+                  <code class="text-xs">ImportGateDecisionLedgers</code> post-deploy task; after that the gates append here as they rate.
+                <% end %>
+              </td></tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="flex items-center justify-between mt-3 text-sm">
+      <div>
+        <% if @page > 1 %>
+          <%= link_to "← Previous", gate_decisions_path(@filters_query_params.merge(page: @page - 1)), class: "px-3 py-1.5 border border-gray-300 rounded-md bg-white hover:bg-gray-50" %>
+        <% end %>
+      </div>
+      <span class="text-xs text-gray-500">
+        <%= number_with_delimiter(@total) %> <%= "decision".pluralize(@total) %> · page <%= @page %>
+      </span>
+      <div>
+        <% if @has_next_page %>
+          <%= link_to "Next →", gate_decisions_path(@filters_query_params.merge(page: @page + 1)), class: "px-3 py-1.5 border border-gray-300 rounded-md bg-white hover:bg-gray-50" %>
+        <% end %>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,152 @@
+<% content_for :title, "Gate decision ##{@decision.id}" %>
+<%# One rating, whole.
+
+    The question this page is laid out to answer is "why did the gate hold that
+    PR?", and the answer to that is prose — 11.5 KB of it on the average entry.
+    So the long-form fields get the main column at a readable measure, and
+    everything that skims (the verdict, the ratings, the axes, the flags) is
+    lifted into an aside that stays put while the prose scrolls. Which fields
+    land where is decided by GateDecisions::PayloadView from the SHAPE of each
+    value, never from its name: `ratings` and `justifications` carry the same
+    keys and the same nesting, and one skims because it holds four words while
+    the other does not because it holds four paragraphs. %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-[100rem] mx-auto px-3 sm:px-6 py-6">
+    <div class="flex items-center min-w-0 mb-4">
+      <%= link_to gate_decisions_path(@return_params), class: "text-gray-500 hover:text-gray-700 mr-3 shrink-0" do %>
+        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+        </svg>
+      <% end %>
+      <h1 class="text-xl sm:text-2xl font-bold text-gray-900 min-w-0 break-words">
+        <%= @decision.title.presence || "Gate decision ##{@decision.id}" %>
+      </h1>
+    </div>
+
+    <%# The verdict card. Everything on it is a promoted COLUMN, not a payload
+        key — so it stays right whatever the gates do to their schemas next. %>
+    <div class="bg-white border border-gray-200 rounded-lg p-3 sm:p-4 mb-4">
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        <%= render "gate_pill", gate: @decision.gate %>
+        <%= render "decision_pill", decision: @decision.decision %>
+        <span class="text-sm text-gray-600"><%= @decision.surface %></span>
+        <span class="text-sm text-gray-400">·</span>
+        <span class="text-sm text-gray-600 tabular-nums"><%= @decision.decided_at&.to_fs(:iso8601) || "date not recorded" %></span>
+      </div>
+      <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div class="min-w-0">
+          <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Artifact</dt>
+          <dd class="min-w-0"><%= gate_decision_url_link(@decision.artifact_url, target: "_blank", rel: "noopener noreferrer") %></dd>
+        </div>
+        <div class="min-w-0">
+          <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Producing session</dt>
+          <dd class="min-w-0"><%= gate_decision_url_link(@decision.producing_session_url) %></dd>
+        </div>
+        <div class="min-w-0">
+          <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Recorded</dt>
+          <dd class="text-gray-700">
+            via <span class="font-medium"><%= @decision.recorded_via %></span>
+            on <span class="tabular-nums"><%= @decision.created_at.strftime("%Y-%m-%d %H:%M") %></span>
+            <% if @decision.writing_session_id.present? %>
+              by <%= link_to "session ##{@decision.writing_session_id}", session_path(@decision.writing_session_id), class: "text-indigo-600 hover:text-indigo-800" %>
+            <% end %>
+          </dd>
+        </div>
+        <div class="min-w-0">
+          <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Ledger row</dt>
+          <dd class="text-gray-700">#<%= @decision.id %> — append-only; a correction is a new decision, never an edit</dd>
+        </div>
+      </dl>
+    </div>
+
+    <% if @related.any? %>
+      <%# Rows are append-only, so an earlier rating of this artifact is still in
+          the table and still says what it said. Someone reading a hold needs to
+          see that a later row un-held it. %>
+      <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+        <h2 class="text-sm font-medium text-amber-900 mb-1">
+          This artifact was rated <%= @related.size + 1 %> times
+        </h2>
+        <ul class="text-sm text-amber-900 space-y-1">
+          <% @related.each do |other| %>
+            <li class="flex flex-wrap items-center gap-2">
+              <span class="tabular-nums text-xs"><%= other.decided_at&.to_fs(:iso8601) %></span>
+              <%= render "decision_pill", decision: other.decision %>
+              <%= link_to "decision ##{other.id}", gate_decision_path(other), class: "text-indigo-700 hover:text-indigo-900 underline" %>
+            </li>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+      <%# THE SKIMMABLE ASIDE. Sticky on a wide screen so the ratings stay
+          alongside whichever paragraph is being read. %>
+      <aside class="lg:col-span-1 lg:sticky lg:top-4 space-y-4">
+        <% if @payload.glance.any? %>
+          <div class="bg-white border border-gray-200 rounded-lg p-3">
+            <h2 class="text-sm font-semibold text-gray-900 mb-2">At a glance</h2>
+            <dl class="space-y-2">
+              <% @payload.glance.each do |field| %>
+                <div>
+                  <dt class="text-[11px] font-medium text-gray-500 uppercase tracking-wide"><%= field.label %></dt>
+                  <dd class="text-sm mt-0.5"><%= render "field_value", field: field %></dd>
+                </div>
+              <% end %>
+            </dl>
+          </div>
+        <% end %>
+
+        <% if @payload.prose_fields.any? %>
+          <div class="bg-white border border-gray-200 rounded-lg p-3">
+            <h2 class="text-sm font-semibold text-gray-900 mb-2">The reasoning</h2>
+            <ul class="space-y-1">
+              <% @payload.prose_fields.each do |field| %>
+                <li>
+                  <a href="#<%= field.anchor %>" class="text-sm text-indigo-600 hover:text-indigo-800">
+                    <%= field.label %>
+                    <span class="text-[11px] text-gray-400 tabular-nums">(<%= number_with_delimiter(field.value.to_s.length) %> chars)</span>
+                  </a>
+                </li>
+              <% end %>
+            </ul>
+          </div>
+        <% end %>
+
+        <div class="bg-white border border-gray-200 rounded-lg p-3">
+          <h2 class="text-sm font-semibold text-gray-900 mb-1">Human notes</h2>
+          <p class="text-sm text-gray-600">
+            <% if @feedbacks.any? %>
+              <a href="#human-feedback" class="text-indigo-600 hover:text-indigo-800">
+                <%= @feedbacks.size %> <%= "note".pluralize(@feedbacks.size) %> on this rating
+              </a>
+            <% else %>
+              None on this rating.
+              <a href="#human-feedback" class="text-indigo-600 hover:text-indigo-800">Add one</a>.
+            <% end %>
+          </p>
+        </div>
+      </aside>
+
+      <%# THE ENTRY, WHOLE. `glance` above may pick; this never omits — every key
+          the gate wrote, in the order it wrote it, whether or not this renderer
+          has seen it before. %>
+      <div class="lg:col-span-2 space-y-3">
+        <% if @payload.any? %>
+          <% @payload.fields.each do |field| %>
+            <section id="<%= field.anchor %>" class="bg-white border border-gray-200 rounded-lg p-3 sm:p-4 scroll-mt-4">
+              <h2 class="text-sm font-semibold text-gray-900 mb-2"><%= field.label %></h2>
+              <div class="max-w-none"><%= render "field_value", field: field %></div>
+            </section>
+          <% end %>
+        <% else %>
+          <div class="bg-white border border-gray-200 rounded-lg p-6 text-center text-sm text-gray-500">
+            This decision carries no entry body — only the columns above.
+          </div>
+        <% end %>
+
+        <%= render "feedback", decision: @decision, feedbacks: @feedbacks %>
+      </div>
+    </div>
+  </div>
+</div>

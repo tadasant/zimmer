@@ -101,6 +101,17 @@ class GateDecision < ApplicationRecord
     where("gate_decisions.payload::text ILIKE :q", q: "%#{sanitize_sql_like(query.to_s)}%")
   end
 
+  # Substring search over the artifact URL alone, which is the question a person
+  # typing "781" or "/issues/" into a filter box is asking. Distinct from
+  # `for_artifact`, which matches one exact URL and is what a gate re-rating a
+  # specific PR wants; a caller that means "this PR" must not be handed every PR
+  # whose number contains theirs.
+  def self.matching_artifact_url(query)
+    return all if query.blank?
+
+    where("gate_decisions.artifact_url ILIKE :q", q: "%#{sanitize_sql_like(query.to_s)}%")
+  end
+
   def self.normalize_gate(value)
     key = value.to_s.strip.downcase.tr("-", "_")
     key = PR_MERGE if %w[pr pr_merge_gate pr_gate].include?(key)

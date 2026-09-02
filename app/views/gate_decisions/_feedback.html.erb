@@ -1,0 +1,71 @@
+<%# Human feedback: the notes already on this rating, and the form to add one.
+    Posts to GateDecisionFeedbacksController, which is the only write path there
+    is — no REST action and no MCP tool reaches it.
+
+    BE HONEST IN THE COPY. Zimmer's browser surface authenticates nobody: the
+    perimeter is the tailnet and agent sessions run inside it. What this form
+    rules out is a write over the shared API key, on the surfaces a session is
+    handed — not an agent that goes looking for this route. So nothing here says
+    "verified human"; the note below says what the channel actually means, and
+    the honest guarantee is the one under it: whatever gets written cannot later
+    be edited or deleted. %>
+<section id="human-feedback" class="bg-white border border-gray-200 rounded-lg p-3 sm:p-4 scroll-mt-4">
+  <h2 class="text-sm font-semibold text-gray-900 mb-1">Human feedback</h2>
+  <p class="text-xs text-gray-500 mb-3">
+    Where a gate finds out it got one wrong — the highest-signal thing in this ledger, and rare.
+    Notes are append-only: once recorded, one cannot be edited or deleted.
+  </p>
+
+  <% if feedbacks.any? %>
+    <ul class="space-y-2 mb-4">
+      <% feedbacks.each do |feedback| %>
+        <li class="border border-gray-200 rounded-md p-3 bg-yellow-50/60">
+          <div class="flex flex-wrap items-center gap-2 mb-1">
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-900 text-[11px] font-semibold"><%= feedback.verdict %></span>
+            <span class="text-sm text-gray-700"><%= feedback.display_name.presence || "author not recorded" %></span>
+            <span class="text-xs text-gray-500 tabular-nums"><%= feedback.received_at&.to_fs(:iso8601) %></span>
+            <%# The channel is not decoration. `imported` rows were transcribed
+                from the JSON ledgers, where the authorship recorded is whatever
+                the source recorded — often nothing. %>
+            <span class="text-[11px] text-gray-500 border border-gray-200 rounded px-1"
+                  title="<%= feedback.channel == GateDecisionFeedback::WEB_UI ? "Came in through Zimmer's browser surface" : "Transcribed from the JSON ledger by the one-time import" %>"><%= feedback.channel %></span>
+          </div>
+          <% if feedback.note.present? %>
+            <div class="text-sm text-gray-800 wrap-anywhere [&_pre]:wrap-normal [&_pre]:overflow-x-auto"><%= render "shared/enhanced_markdown", content: feedback.note, variant: "default" %></div>
+          <% end %>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+
+  <%= form_with url: gate_decision_feedbacks_path(decision), method: :post, data: { turbo: false },
+      class: "border-t border-gray-100 pt-3" do %>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
+      <div class="sm:col-span-2">
+        <label for="verdict" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Verdict <span class="text-gray-400">(required)</span></label>
+        <%= text_field_tag :verdict, nil, required: true, placeholder: "should-have-held",
+            class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+      </div>
+      <div>
+        <label for="received_at" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Said on</label>
+        <%= date_field_tag :received_at, Date.current, class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+      </div>
+    </div>
+    <div class="mb-2">
+      <label for="note" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Note</label>
+      <%= text_area_tag :note, nil, rows: 4, maxlength: GateDecisionFeedback::MAX_NOTE_LENGTH,
+          placeholder: "What the gate got wrong, and what it should have weighed instead.",
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div class="flex flex-wrap items-center gap-3">
+      <%= submit_tag "Record note", class: "px-3 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 cursor-pointer" %>
+      <p class="text-xs text-gray-500 flex-1 min-w-[16rem]">
+        Attributed to the configured admin user, resolved here and never read from the form.
+        The <code>web_ui</code> channel records that a note came in through the browser surface, which is
+        not the same as a guarantee that a person typed it — Zimmer's web UI authenticates nobody yet
+        (<a href="https://github.com/tadasant/zimmer/issues/371" class="text-indigo-600 hover:text-indigo-800" target="_blank" rel="noopener noreferrer">#371</a>,
+        <a href="https://github.com/tadasant/zimmer/issues/220" class="text-indigo-600 hover:text-indigo-800" target="_blank" rel="noopener noreferrer">#220</a>).
+      </p>
+    </div>
+  <% end %>
+</section>

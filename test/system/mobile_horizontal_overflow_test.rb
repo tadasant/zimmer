@@ -689,6 +689,88 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert unanalyzed.reload.archived?
   end
 
+  # The Gate Decisions detail page is the longest thing Zimmer renders: 8-12 KB of
+  # long-form prose per entry, thick with file paths, branch names and bare URLs
+  # in backticks — every one an unbreakable token, and `.prose .inline-code` sets
+  # no wrapping rule of its own. The ledger beside it is a table whose last column
+  # is an action button, which is the original report's exact shape.
+  test "the gate decision ledger and a long entry do not overflow horizontally on a phone" do
+    decision = GateDecision.create!(
+      gate: GateDecision::PR_MERGE, surface: "zimmer", recorded_via: GateDecision::IMPORT,
+      artifact_url: "https://github.com/tadasant/zimmer/pull/781",
+      decided_at: Date.current, decision: "hold",
+      payload: {
+        "title" => LONG_TOKEN_TITLE,
+        "ratings" => { "implementation_risk" => "large" },
+        "reason" => "Held. `app/services/gate_decisions/payload_view.rb` and " \
+                    "`test/system/mobile_horizontal_overflow_test.rb` both changed, and " \
+                    "https://github.com/tadasant/zimmer/actions/runs/00000000000/job/00000000000 " \
+                    "is the run. " + ("Prose that has to wrap on a phone. " * 30)
+      }
+    )
+    decision.feedbacks.create!(
+      verdict: "should-have-merged", note: "See `app/controllers/gate_decisions_controller.rb`.",
+      author: users(:tadasant).key, channel: GateDecisionFeedback::WEB_UI, received_at: Date.current
+    )
+
+    visit gate_decisions_path
+    assert_selector "h1", text: "Gate Decisions"
+    assert_no_horizontal_overflow("gate decisions ledger")
+    # The Read button is the LAST column, and it only stays reachable because it
+    # collapses below sm:. If it comes back at phone width it goes off the right
+    # edge behind a sideways scroll inside the table — the original report.
+    assert_no_selector "a", text: "Read", exact_text: true
+    assert_no_selector "th", text: /surface/i
+
+    visit gate_decisions_path(decision: "hold", artifact_query: "781")
+    assert_no_horizontal_overflow("gate decisions ledger with filters applied")
+
+    visit gate_decision_path(decision)
+    assert_selector "h2", text: "At a glance"
+    assert_no_horizontal_overflow("gate decision detail")
+    # Probe 1 cannot see an element clipped by an ancestor, and the prose sits
+    # inside several. The long tokens are the whole risk here, so check per-element.
+    past_edge = elements_past_right_edge("#entry-reason")
+    assert_empty past_edge,
+      "gate prose ends past the #{MOBILE_WIDTH}px viewport:\n  #{past_edge.join("\n  ")}"
+    past_edge = elements_past_right_edge("#human-feedback")
+    assert_empty past_edge,
+      "the feedback section ends past the #{MOBILE_WIDTH}px viewport:\n  #{past_edge.join("\n  ")}"
+
+    page.save_screenshot("tmp/screenshots/proof-gate-decision-detail-375.png")
+  end
+
+  # A nested entry indents by a FIXED label column at every level, so four levels
+  # of nesting spend it four times and the value at the bottom is a sliver in an
+  # otherwise empty card. Geometry, not classes: the rule is "the deepest value
+  # still gets most of the width", and any layout that keeps that is fine.
+  test "a deeply nested entry does not indent its value into a sliver" do
+    decision = GateDecision.create!(
+      gate: GateDecision::PR_MERGE, surface: "zimmer", recorded_via: GateDecision::API,
+      artifact_url: "https://github.com/tadasant/zimmer/pull/99999",
+      decided_at: Date.current, decision: "hold",
+      payload: { "deep" => { "a" => { "b" => { "c" => { "d" => "the value at the bottom" } } } } }
+    )
+    page.driver.browser.manage.window.resize_to(1400, 900)
+
+    visit gate_decision_path(decision)
+    assert_selector "section#entry-deep"
+
+    section_width = evaluate_script(<<~JS)
+      document.querySelector("#entry-deep").getBoundingClientRect().width
+    JS
+    value_width = evaluate_script(<<~JS)
+      (function () {
+        const el = Array.from(document.querySelectorAll("#entry-deep dd"))
+          .find((d) => d.textContent.includes("the value at the bottom") && d.querySelectorAll("dd").length === 0);
+        return el ? el.getBoundingClientRect().width : 0;
+      })()
+    JS
+
+    assert_operator value_width, :>, section_width * 0.5,
+      "the deepest value gets #{value_width.round}px of a #{section_width.round}px card — nesting is eating the width"
+  end
+
   # A root Segment with one failed and one successful child — the shape the ledger
   # and the flamegraph both have to render.
   def outcome_tree
@@ -854,7 +936,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # this test's long-token fixture on it.
     [ root_path(every_status_params), new_session_path, settings_path, triggers_path, trigger_path(trigger),
       quotas_path, health_dashboard_path, clis_path, connectors_path,
-      notifications_path, outcomes_path, outcomes_stats_path ].each do |path|
+      notifications_path, outcomes_path, outcomes_stats_path, gate_decisions_path ].each do |path|
       visit path
       doc_overflow, = overflow_report
       assert doc_overflow <= 0, "#{path} scrolls sideways at 1400px (#{doc_overflow}px too wide)"

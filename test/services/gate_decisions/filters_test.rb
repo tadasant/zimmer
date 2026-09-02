@@ -32,6 +32,25 @@ class GateDecisions::FiltersTest < ActiveSupport::TestCase
     assert_equal [ held.id ], GateDecisions::Filters.new("artifact_url" => held.artifact_url).scope.pluck(:id)
   end
 
+  test "artifact_query is a substring over the URL, and artifact_url stays exact beside it" do
+    # The two are deliberately separate keys. A gate asking "has THIS pull
+    # request been rated before" must not be handed every PR whose number
+    # contains its own; a person typing into a filter box means the opposite.
+    pr = decision(artifact_url: "https://github.com/tadasant/zimmer/pull/781")
+    decision(artifact_url: "https://github.com/tadasant/zimmer/issues/7810")
+
+    assert_equal [ pr.id ], GateDecisions::Filters.new("artifact_query" => "pull/781").scope.pluck(:id)
+    assert_equal 2, GateDecisions::Filters.new("artifact_query" => "781").scope.count
+    assert_equal [ pr.id ], GateDecisions::Filters.new("artifact_url" => pr.artifact_url).scope.pluck(:id)
+    assert_equal "artifact_url~781", GateDecisions::Filters.new("artifact_query" => "781").describe
+  end
+
+  test "artifact_query treats a LIKE wildcard as a literal" do
+    decision(artifact_url: "https://github.com/tadasant/zimmer/pull/781")
+
+    assert_empty GateDecisions::Filters.new("artifact_query" => "pull/%81").scope.pluck(:id)
+  end
+
   test "a date window is inclusive at both ends" do
     inside = decision(decided_at: Date.new(2026, 8, 1))
     also_inside = decision(decided_at: Date.new(2026, 8, 31))
