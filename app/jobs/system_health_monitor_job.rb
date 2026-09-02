@@ -57,9 +57,17 @@ class SystemHealthMonitorJob < ApplicationJob
   STREAK_CACHE_KEY = "system_health_monitor:consecutive_critical_queue"
   STREAK_TTL = 1.hour
 
-  # Stable dedup key so every backlog-critical alert collapses onto one throttled
-  # entry (one page per AlertService::DEDUP_WINDOW), rather than a fresh page each
-  # time the depth number changes.
+  # Stable dedup key so a backlog-critical alert collapses onto one throttled entry
+  # (one page per AlertService::DEDUP_WINDOW), rather than a fresh page each time the
+  # depth number changes.
+  #
+  # Qualified by the status's `code`, so the two critical shapes throttle
+  # SEPARATELY. They are different incidents wanting different responses — one lane
+  # starving is not the worker going quiet across several — and on one shared key the
+  # first to fire silences the other for the rest of the window. A starved-`inference`
+  # page at 10:00 must not swallow a cross-lane stall at 10:15. Within a shape the key
+  # is still stable, including per lane, so a lane that stays starved for hours pages
+  # once an hour and not once a tick.
   ALERT_DEDUP_KEY = "system_health_queue_backlog_critical"
 
   def perform
@@ -102,8 +110,15 @@ class SystemHealthMonitorJob < ApplicationJob
       "Queue backlog critical",
       details: build_details(system_health),
       source: "SystemHealthMonitorJob",
-      dedup_key: ALERT_DEDUP_KEY
+      dedup_key: alert_dedup_key(system_health[:status])
     )
+  end
+
+  # Falls back to the bare key for a critical status carrying no code, so a future
+  # backlog shape that forgets one throttles like the old single-key behaviour rather
+  # than paging every tick.
+  def alert_dedup_key(status)
+    [ ALERT_DEDUP_KEY, status.code.presence ].compact.join(":")
   end
 
   # Compact, actionable alert body: how deep, what the depth is made of, whether
@@ -138,8 +153,12 @@ class SystemHealthMonitorJob < ApplicationJob
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
       "",
-      "The line above already says which of the two shapes this is, because the gate " \
-        "decides per lane rather than on one age across all of them. ONE old queue " \
+      "The line above names either one starved lane or a stall spread across several, " \
+        "because the gate decides per lane rather than on one age across all of them. " \
+        "It does not settle the question on its own: a worker that has stopped " \
+        "entirely leaves its deepest lane over that lane's own bar too, and the " \
+        "starved-lane wording is what you get. Read these ages before you act on it. " \
+        "ONE old queue " \
         "beside fresh ones is that queue starving: its threads are all held (an " \
         "`agents` thread lasts as long as its session, and `inference` and " \
         "`maintenance` run two threads against jobs that block for a minute or " \

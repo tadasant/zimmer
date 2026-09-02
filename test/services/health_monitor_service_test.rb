@@ -598,15 +598,24 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       "a busy lane's depth must not be ANDed with a different lane's head-of-line age"
   end
 
-  test "every lane old at once is critical, because that is the worker" do
+  # The fast lanes going stale together is what a wedged worker looks like: they
+  # turn jobs over in milliseconds and hold no override, so a head of line older
+  # than ten minutes there cannot be anything but "nothing is being picked up".
+  # `inference` and `agents` are 30m old in the same snapshot and are deliberately
+  # NOT counted — 30m is well inside what two threads against a blocking call, and
+  # eight threads held for whole sessions, already explain.
+  test "the fast lanes stalling together is critical, because that is the worker" do
     enqueue_lane("default", 60, head_waiting_for: 30.minutes)
-    enqueue_lane("inference", 30, head_waiting_for: 30.minutes)
+    enqueue_lane("pollers", 30, head_waiting_for: 30.minutes)
+    enqueue_lane("triggers", 25, head_waiting_for: 30.minutes)
+    enqueue_lane("inference", 40, head_waiting_for: 30.minutes)
     enqueue_lane("agents", 20, head_waiting_for: 30.minutes)
 
     status = @service.system_health[:status]
 
     assert status.critical?
-    assert_includes status.message, "110 jobs ready across 3 stalled lanes"
+    assert_includes status.message, "115 jobs ready across 3 stalled lanes",
+      "only the lanes past their OWN tolerance are the backlog this branch describes"
     assert_includes status.message, "none of them has picked up work in 30m"
   end
 
@@ -641,6 +650,30 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal 155, health[:queue_depth]
     refute health[:status].critical?,
       "95 ready is sitting still; the other 60 are moving, and only the first is the backlog"
+  end
+
+  # The flat 10-minute floor decides which lanes are sitting still, but it is a
+  # `default`-shaped number and says nothing about a slow lane's health. Both lanes
+  # here are inside their own documented-healthy envelope — `agents` 150 deep is
+  # under its 4h tolerance at 3h, `inference` 20 deep is nowhere near its 150 — and
+  # selecting them on the flat floor alone would sum them past the global bar.
+  test "two slow lanes inside their own envelopes are not critical" do
+    enqueue_lane("agents", 150, head_waiting_for: 3.hours)
+    enqueue_lane("inference", 20, head_waiting_for: 30.minutes)
+
+    refute @service.system_health[:status].critical?
+  end
+
+  # The 2026-09-02 firing again, with `agents` at a routine 12m instead of the 4m it
+  # happened to show. Nothing about the fleet is different, so nothing about the
+  # verdict may be either — the margin must come from the lanes' own tolerances, not
+  # from one lane being incidentally fresh.
+  test "the motivating firing stays non-critical when agents is merely slow" do
+    enqueue_lane("inference", 68, head_waiting_for: 57.minutes)
+    enqueue_lane("maintenance", 23, head_waiting_for: 56.minutes)
+    enqueue_lane("agents", 18, head_waiting_for: 12.minutes)
+
+    refute @service.system_health[:status].critical?
   end
 
   test "one lane still picking work up keeps the worker-wide branch quiet" do
