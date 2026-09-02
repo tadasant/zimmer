@@ -29,6 +29,29 @@ would leave a live agent nobody is watching. Unarchiving is unaffected — every
 leaves `archived` before it enqueues anything, so an unarchived session's follow-up reads as a
 live session here.
 
+That guard is the **delivery-time** half of the answer, and it cannot be the whole one. It reads
+the row this job loaded, and by the time the job runs the row can already say `running` — because
+a recovery sweep put it there. Every sweep decides from a session object it read earlier
+(`CleanupOrphanedSessionsJob` and `DeploymentRecoveryJob` iterate `paused_by = 'recovery'`;
+`SessionRecoveryService` has been holding its session since before it started killing a hung pid),
+so a session archived in the meantime still looked resumable and `resume!` wrote `running` straight
+over the archived row. Session 6335 was archived at 07:35:34 and had a fresh agent process,
+injected credentials and five connected MCP servers two seconds later
+([#554](https://github.com/tadasant/zimmer/issues/554)).
+
+So there is a **selection-time** half too: `Session#claim_system_recovery_turn!`. Both enqueuers
+route through it, and it re-reads the row `FOR UPDATE` before deciding — inside the caller's
+transaction, so the lock is still held when the job is enqueued and no archive can land in between.
+It answers `:archived` (terminal — nothing is enqueued, nothing is written, and the refusal is
+logged on the session's timeline), `:not_resumable` (the session is already `running`; somebody
+else is driving it and a second agent process is its own defect), or `:claimed`. The enqueuers
+honour that answer: before, both enqueued a job regardless of what
+`resume_for_system_recovery!` returned.
+
+A refused claim leaves `paused_by` in place on purpose. It is the marker both sweeps select on, and
+an archived session is already invisible to them — so there is no loop to bound, and dropping it
+would sabotage the recovery still owed to the session if a human restores it from the trash.
+
 ## What gets spawned
 
 **Claude Code:**

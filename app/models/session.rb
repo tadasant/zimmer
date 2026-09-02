@@ -1019,6 +1019,71 @@ class Session < ApplicationRecord
     self.system_recovery_resume = false
   end
 
+  # Claim a turn for an automated recovery sweep — under a row lock, against the
+  # row as it actually stands.
+  #
+  # THE RACE THIS CLOSES (#554). Every recovery sweep works from a session object
+  # it read minutes earlier: `find_each` over `paused_by = 'recovery'`, or the
+  # service object a hung-process recovery has been carrying since it started
+  # killing a pid. `may_resume?` answers from THAT in-memory status, so a session
+  # archived in between still looks resumable — and `resume!` writes
+  # `status: running` straight over the archived row. Session 6335 was archived at
+  # 07:35:34 and had a fresh agent process, OAuth credentials and five MCP servers
+  # two seconds later.
+  #
+  # AgentSessionJob's delivery-time archived guard cannot see this one, and that is
+  # the point of having both: by the time that job runs the row genuinely says
+  # `running`, because this write is what made it say so. The guard has to be here,
+  # at selection time, where the decision is actually taken.
+  #
+  # The lock is the whole mechanism. `lock!` re-reads the row `FOR UPDATE`, so the
+  # status this decides on is the committed one and no archive can land between the
+  # decision and the caller's enqueue — the lock is held to the end of the caller's
+  # transaction, which is where the job is enqueued from. A caller that is NOT
+  # already in a transaction gets the one opened here, and holds the row only for
+  # the length of this method; such a caller has no atomicity to offer and this
+  # method cannot invent it.
+  #
+  # `archived?` is checked separately from `may_resume?` even though `may_resume?`
+  # is already false for an archived session, because the two refusals mean
+  # different things to the caller and belong in different words on the session's
+  # timeline: `:archived` is terminal and nothing will ever make this turn a good
+  # idea, while `:not_resumable` means the session is already `running` — somebody
+  # else got there first, and re-enqueueing would be the two-processes-on-one-
+  # session defect (#400).
+  #
+  # It does NOT refuse an UNARCHIVED session. Every unarchive path leaves
+  # `archived` before anything is enqueued, so by the time a sweep or a follow-up
+  # reaches this the row reads `needs_input` or `waiting`, exactly as it should.
+  #
+  # @yield [] runs under the lock, after the refusal check and before the resume —
+  #   for the stale-metadata clearing every caller does, which has to happen before
+  #   `resume!`'s callbacks write metadata of their own
+  # @return [Symbol] :claimed when the session was resumed and the caller may
+  #   enqueue a turn, :archived when the row is in the trash, :not_resumable when
+  #   the state machine refused the resume
+  def claim_system_recovery_turn!
+    transaction do
+      # `reload` before `lock!`, not `with_lock` alone. AASM persists its
+      # transitions through `update_all` (skip_validation_on_save), which does not
+      # clear dirty tracking, and `lock!` refuses a record carrying unpersisted
+      # changes — so a caller that transitioned this session earlier in its own
+      # run would blow up on the guard instead of being answered by it.
+      # EnqueuedMessageProcessorService reloads before its own `lock!` for exactly
+      # this reason.
+      reload
+      lock!
+
+      next :archived if archived?
+
+      yield if block_given?
+
+      next :not_resumable unless resume_for_system_recovery!
+
+      :claimed
+    end
+  end
+
   # Deliver a follow-up prompt to an idle (waiting / needs_input) session.
   #
   # Drop the stale per-turn state, transition to running, stamp the prompt where the

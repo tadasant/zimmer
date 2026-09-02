@@ -368,17 +368,28 @@ class SessionRecoveryService
       return
     end
 
+    # Everything below happens under the row lock claim_system_recovery_turn! takes,
+    # including the enqueue. This service has been carrying its `session` object
+    # since before it started killing a pid — terminating a process, polling a
+    # transcript and draining the message queue all take time, and a human can
+    # archive the session in any of it. See Session#claim_system_recovery_turn!.
+    outcome = nil
     with_db_retry do
       ActiveRecord::Base.transaction do
         add_log("Auto-restarting session after hung process termination", level: "info")
 
-        # Clear stale retry metadata before restarting.
-        # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-        session.update!(
-          running_job_id: nil,
-          metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-        )
-        session.resume_for_system_recovery!
+        outcome = session.claim_system_recovery_turn! do
+          # Clear stale retry metadata before restarting.
+          # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
+          session.update!(
+            running_job_id: nil,
+            metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+          )
+        end
+
+        # Nothing is enqueued for a refused claim, and nothing the claim wrote is
+        # kept — the row is left exactly as it was found.
+        raise ActiveRecord::Rollback unless outcome == :claimed
 
         AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
 
@@ -386,11 +397,41 @@ class SessionRecoveryService
       end
     end
 
+    unless outcome == :claimed
+      return refuse_auto_restart(outcome, process_pid)
+    end
+
     @logger.info("Auto-restarted session after hung process termination", process_pid: process_pid)
   rescue => e
     # If auto-restart fails, leave session at needs_input for manual intervention
     add_log("Failed to auto-restart session: #{e.message}", level: "error")
     @logger.error("Failed to auto-restart after hung process", process_pid: process_pid, error: e.message)
+  end
+
+  # Say why the auto-restart did not happen, and stop.
+  #
+  # An archived session is terminal: the hung process is already dead, the trash
+  # cleanup clock on its clone is already running, and starting an agent against
+  # it is exactly the defect (#554). A session that is `running` is being driven
+  # by somebody else, and a second agent process on one session is its own defect
+  # (#400). Neither retries — the session is left where it is, which for the
+  # archived case is the trash and for the running case is somebody else's turn.
+  #
+  # @param outcome [Symbol] :archived or :not_resumable
+  # @param process_pid [Integer, nil] the hung pid this recovery was about
+  # @return [nil]
+  def refuse_auto_restart(outcome, process_pid)
+    message =
+      if outcome == :archived
+        "Not auto-restarting after hung process: this session is in the trash. An archived " \
+        "session takes no turn, so no agent was started."
+      else
+        "Not auto-restarting after hung process: this session is #{session.status} and cannot be " \
+        "resumed. Something else is already driving it, so no second agent was started."
+      end
+    add_log(message, level: "info")
+    @logger.info("Skipped auto-restart", process_pid: process_pid, reason: outcome.to_s)
+    nil
   end
 
   # Add log entry to session
