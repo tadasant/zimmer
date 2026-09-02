@@ -49,11 +49,15 @@ class RuntimeRegistryTest < ActiveSupport::TestCase
   end
 
   test "registered_runtimes lists the known runtimes" do
-    assert_equal %w[claude_code codex], RuntimeRegistry.registered_runtimes
+    assert_equal %w[claude_code codex pi], RuntimeRegistry.registered_runtimes
   end
 
   test "label_for returns a human-friendly label for claude_code" do
     assert_equal "Claude Code", RuntimeRegistry.label_for("claude_code")
+  end
+
+  test "label_for returns a human-friendly label for pi" do
+    assert_equal "Pi", RuntimeRegistry.label_for("pi")
   end
 
   test "label_for returns a human-friendly label for codex" do

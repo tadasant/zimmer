@@ -23,27 +23,61 @@ Core code never says "Claude." It asks `RuntimeRegistry.for(runtime)`.
 
 ## What ships
 
-| Slot | `claude_code` | `codex` |
-| --- | --- | --- |
-| `air_adapter_name` | `"claude"` | `"codex"` |
-| `cli_adapter_class` | `ClaudeCliAdapter` | `CodexRuntimeAdapter` |
-| `retry_strategy_class` | `ClaudeRetryStrategy` | `CodexRetryStrategy` |
-| `transcript_source_class` | `ClaudeTranscriptSource` | `CodexTranscriptSource` |
-| `transcript_normalizer_class` | `ClaudeTranscriptNormalizer` | `CodexTranscriptNormalizer` |
-| `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` |
-| `config_post_processor_class` | `ClaudeMcpConfigPostProcessor` | `CodexConfigTomlPostProcessor` |
-| `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` |
-| `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | `nil` |
-| `auth_provider_class` | `nil` | `nil` |
-| `config_preparer_class` | `nil` | `nil` |
+| Slot | `claude_code` | `codex` | `pi` |
+| --- | --- | --- | --- |
+| `air_adapter_name` | `"claude"` | `"codex"` | `"pi"` |
+| `cli_adapter_class` | `ClaudeCliAdapter` | `CodexRuntimeAdapter` | `PiRuntimeAdapter` |
+| `retry_strategy_class` | `ClaudeRetryStrategy` | `CodexRetryStrategy` | `PiRetryStrategy` |
+| `transcript_source_class` | `ClaudeTranscriptSource` | `CodexTranscriptSource` | `PiTranscriptSource` |
+| `transcript_normalizer_class` | `ClaudeTranscriptNormalizer` | `CodexTranscriptNormalizer` | `PiTranscriptNormalizer` |
+| `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` | `nil` |
+| `config_post_processor_class` | `ClaudeMcpConfigPostProcessor` | `CodexConfigTomlPostProcessor` | `PiMcpConfigPostProcessor` |
+| `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` | `nil` |
+| `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | `nil` | `PiRuntimePromptContribution` |
+| `auth_provider_class` | `nil` | `nil` | `nil` |
+| `config_preparer_class` | `nil` | `nil` | `nil` |
+
+Claude and Codex share a shape: their AIR adapter writes the config, and the
+runtime supplies MCP, hooks and plugins itself. Pi does neither, which is what
+makes it the interesting third column — see
+[Pi is the runtime that supplies nothing](#pi-is-the-runtime-that-supplies-nothing).
 
 :::note[Three slots are dead weight]
 `auth_provider_class` is `nil` for both runtimes even though both classes exist — auth resolves
 through `RuntimeAuthProvider.for` instead. `prompt_contribution_class` is `nil` for Codex even though
 `CodexRuntimePromptContribution` exists; it resolves through `RuntimePromptContribution.for`.
-`config_preparer_class` is `nil` everywhere and nothing reads it.
+`config_preparer_class` is `nil` everywhere and nothing reads it. Pi fills its
+`prompt_contribution_class` slot anyway — leaving it `nil` while the class exists
+is exactly the inconsistency being tracked — but it still resolves through
+`RuntimePromptContribution.for` like the others.
 Tracked in [#97](https://github.com/tadasant/zimmer/issues/97).
 :::
+
+Two `pi` slots are `nil` for reasons of their own rather than by that convention:
+
+- **`mcp_status_detector_class`** — Pi writes no per-server MCP log files, so
+  Claude's log poller has nothing to read, and unlike Codex it records no
+  `mcp__<server>__<tool>` calls to mine either: the `pi-mcp-adapter` extension
+  routes every server through one `mcp` proxy tool, so a transcript shows `mcp`
+  being called and never names the server behind it. There is no per-server
+  signal to detect — but the slot holds `NullMcpStatusDetector`, **not `nil`**.
+  `TranscriptPollerService#initialize` calls `.new` on this slot with no nil
+  check, so a `nil` here raises `NoMethodError` on every poll of every session on
+  the runtime, before any MCP-specific guard can run. That is the general rule:
+  **a slot some caller dereferences must never be `nil`** — a runtime with
+  nothing real to put there supplies a null object.
+  `test/contracts/runtime_bundle_slot_contract_test.rb` enforces this for every
+  registered runtime and every unconditionally-dereferenced slot.
+- **`mcp_credential_writer_class`** — Pi keeps MCP OAuth tokens inside the
+  `pi-mcp-adapter` extension's own state, which Zimmer does not write. This slot
+  *may* be `nil` because both its callers are guarded:
+  `RuntimeRegistry.mcp_credential_writer_classes` compacts the list (the caller
+  instantiates every class it returns, on the credential-retire path — i.e. while
+  a credential is already failing), and `McpOauthCredentialInjector` asks
+  `#credential_store?` first. That second guard is load-bearing rather than
+  defensive: `McpOauthController#reinject_and_resume` calls injection and the
+  resume service inside one `rescue`, so a raise from injection would skip the
+  resume and leave a session parked on an OAuth gate permanently un-resumable.
 
 ## The three registries that bypass the bundle
 
@@ -222,8 +256,66 @@ backwards and a session's real history is thrown away; leave it unimplemented an
 10. Auth provider → `RuntimeAuthProvider.for` and `RUNTIMES`. Login driver →
     `RuntimeLoginDriver.for`.
 11. `Dockerfile.base` — pin the CLI and the matching `@pulsemcp/air-adapter-<runtime>`. Add to
-    `CliStatusService::CLI_TOOLS`.
+    `CliStatusService::CLI_TOOLS`. If the runtime needs vendor extensions to reach MCP/hooks
+    (Pi does), pin those too and declare them in a registry the Dockerfile is asserted against —
+    see `PiExtensions`.
 12. Add the adapter to `RuntimeCliAdapterContractTest::ADAPTERS` and write a mock in `test/support/`.
+
+## Pi is the runtime that supplies nothing
+
+Claude Code and Codex both arrive with MCP, hooks and plugins built in, so
+Zimmer's job for them is to write config files into a shape the runtime already
+understands. Pi ships a skills mechanism and nothing else. Three consequences are
+worth knowing before you read `PiRuntimeAdapter`.
+
+**`air prepare pi` writes no MCP config.** `@pulsemcp/air-adapter-pi` is
+deliberately skills-only — it injects `.pi/skills/` and records `mcpServers: []`
+and `hooks: []` in its manifest. So `PiMcpConfigPostProcessor` is the only
+config post-processor that *writes* the server table rather than adjusting one:
+it seeds `.mcp.json` from `ServersConfig` before the shared injection/retarget
+pipeline runs. Without that seeding a Pi session would start with none of the
+servers it was configured with, and the failure would surface only at the first
+tool call.
+
+**MCP, hooks and plugins arrive as Pi extensions.** `PiExtensions` is the
+registry, and `PiRuntimeAdapter` passes each entrypoint with `pi -e <path>` from
+`/opt/pi-extensions`. `pi-mcp-adapter` reads the same `.mcp.json` Claude Code
+does — that file is a cross-vendor convention, not a Claude private format, which
+is why the JSON format hooks live in the shared `McpJsonConfigFormat` module.
+
+**Transcript hooks need a per-runtime parser.** `TranscriptHooks::ToolCallParser.for`
+dispatches on the runtime, and Pi's shape (`toolCall` content blocks whose
+`arguments` are a real Hash, plus a `toolResult` message stating `isError`
+inline) matches neither Claude's nor Codex's. Falling through to the Claude
+parser would find nothing and make every hook a silent no-op, so
+`TranscriptHooks::PiToolCallParser` exists and the dispatcher now warns on an
+unrecognized runtime instead of quietly defaulting.
+
+**Pi's MCP tools are not individually callable.** `pi-mcp-adapter` exposes one
+`mcp` proxy tool that the agent searches and calls through, so a dozen servers
+cost ~200 tokens instead of thousands. `PiRuntimePromptContribution` tells the
+agent this, because one that expects `mcp__server__tool` to exist will otherwise
+conclude its servers are missing.
+
+### Where Pi is easier than Codex
+
+Pi accepts `--session-id`, so **Zimmer's session id is Pi's session id**. Two
+things follow that Codex cannot have:
+
+- `mints_own_session_id?` is `false` — there is no runtime-generated id to
+  capture, and no window before the capture during which the transcript cannot be
+  identified.
+- `resume_transcript_path` is a real path. Pi resolves `--session-id` against the
+  id *inside* a session file rather than its filename, so Zimmer restores a
+  stored transcript to one deterministic path and Pi continues appending to its
+  leaf. Codex, whose rollouts are date-partitioned, UUID-named and possibly
+  Zstandard-compressed, returns `nil` here.
+
+`PiRuntimeAdapter` also passes `--session-dir` pointing inside the clone, so each
+session's transcripts live in its own working directory. That removes by
+construction the collision `CodexTranscriptSource#fallback_transcript` exists to
+defend against, where two concurrent sessions sharing one rollout tree can read
+each other's conversations.
 
 ## What the existing runtimes get wrong
 
@@ -253,3 +345,17 @@ Other known gaps:
 - `Zimmer::ExtensionRegistry.spawn_env_contributions` is Claude-only — extension env contributions are
   unreachable from Codex, despite the hook receiving a `runtime` context.
 - `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
+
+`PiRetryStrategy` classifies even less than Codex's does — `context_length_error?`,
+`api_error_for_retry?` and `auth_recovery_needed?` all return `false`, and unlike
+Codex there is no failed-resume pattern to match either (Pi's `--session-id`
+*creates* a missing session rather than failing, so the condition cannot arise).
+Every one of those surfaces as an ordinary non-zero exit that is reported rather
+than hidden, and `classifies_exits?` is `false` so the expected shape of a Pi
+failure does not become a standing page. It is still a gap, not a neutral
+default. `PiAuthProvider` pools no accounts — Pi resolves a provider API key from
+the session environment per request — so there is nothing for the auth-recovery
+path to rotate *to*, which is why the missing classifier costs Pi less than it
+costs Codex. Pi is deliberately absent from `RuntimeAuthProvider::RUNTIMES` and
+from `RuntimeLoginDriver.for`: it has no tokens to refresh and no interactive
+login flow.

@@ -26,7 +26,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # Pre-create the version marker AND a working fake binary so ensure_air_installed!
     # is a no-op — tests exercise the air prepare command, not the npm install bootstrap.
     @tmp_air_dir = Dir.mktmpdir("air-cli-test")
-    FileUtils.touch(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    FileUtils.touch(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
     create_fake_air_binary(@tmp_air_dir)
     @original_air_dir = AirPrepareService::AIR_INSTALL_DIR
     AirPrepareService.send(:remove_const, :AIR_INSTALL_DIR)
@@ -70,7 +70,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert install_called, "npm install should be called when binary is missing"
   end
 
-  test "install_air_cli! installs the codex adapter alongside the claude adapter and pins every package to AIR_CLI_VERSION" do
+  test "install_air_cli! installs every runtime adapter alongside the claude adapter and pins every package to AIR_CLI_VERSION" do
     # Force a reinstall by removing the fake binary so the install path runs.
     File.delete(File.join(@tmp_air_dir, "node_modules", ".bin", "air"))
 
@@ -95,6 +95,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "@pulsemcp/air-cli@#{version}",
       "@pulsemcp/air-adapter-claude@#{version}",
       "@pulsemcp/air-adapter-codex@#{version}",
+      "@pulsemcp/air-adapter-pi@#{version}",
       "@pulsemcp/air-secrets-env@#{version}",
       "@pulsemcp/air-provider-github@#{version}"
     ]
@@ -105,8 +106,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
     # Every @pulsemcp/air-* package must be pinned to the same version (lockstep).
     air_packages = install_cmd.select { |a| a.to_s.start_with?("@pulsemcp/air-") }
-    assert_equal 5, air_packages.length,
-      "expected exactly the 5 pinned AIR packages, got: #{air_packages.inspect}"
+    assert_equal expected_packages.length, air_packages.length,
+      "expected exactly the #{expected_packages.length} pinned AIR packages, got: #{air_packages.inspect}"
     air_packages.each do |pkg|
       assert pkg.end_with?("@#{version}"),
         "#{pkg} must be pinned to AIR_CLI_VERSION (#{version}) — AIR packages move in lockstep"
@@ -137,7 +138,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # older version, so ensure_air_installed! reinstalls — the case a version
     # bump or a changed package set produces.
     create_fake_air_binary(@tmp_air_dir, "0.0.1-old")
-    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
     stale_marker = File.join(@tmp_air_dir, ".air-version-0.0.1-old")
     FileUtils.touch(stale_marker)
 
@@ -173,7 +174,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes File.read(File.join(@tmp_air_dir, "package-lock.json")), "9.9.9-new",
       "package-lock.json must be swapped alongside node_modules"
 
-    assert File.exist?(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}")),
+    assert File.exist?(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename)),
       "a completed install must leave its marker behind"
     assert_not File.exist?(stale_marker),
       "the marker describing the tree that was just replaced must not survive it — the fast path " \
@@ -185,7 +186,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   end
 
   test "a second reinstall reclaims the tree the previous one retired" do
-    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
     retired = File.join(@tmp_air_dir, AirPrepareService::RETIRED_DIR_NAME)
     FileUtils.mkdir_p(File.join(retired, "node_modules"))
     File.write(File.join(retired, "node_modules", "leftover.txt"), "from the install before last")
@@ -205,7 +206,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "a failed install leaves the previous working tree untouched" do
     live_binary = File.join(@tmp_air_dir, "node_modules", ".bin", "air")
-    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
 
     stub_air_subprocess(proc { |*args, **opts|
       cmd_args = args.is_a?(Array) ? args : [ args ]

@@ -40,6 +40,8 @@ class RuntimePromptContribution
       ClaudeRuntimePromptContribution.new
     when "codex", "codex_cli"
       CodexRuntimePromptContribution.new
+    when "pi"
+      PiRuntimePromptContribution.new
     else
       new
     end

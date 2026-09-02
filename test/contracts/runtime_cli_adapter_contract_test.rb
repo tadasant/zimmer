@@ -20,7 +20,11 @@ class RuntimeCliAdapterContractTest < ActiveSupport::TestCase
   # adapters (e.g. PtyClaudeCliAdapter, swapped in by the pty_transport extension)
   # are contract-tested from their own extension test dir so the coverage is deleted
   # along with the extension — see test/extensions/pty_transport/.
-  ADAPTERS = [ ClaudeCliAdapter, MockClaudeCliAdapter, CodexRuntimeAdapter, MockCodexRuntimeAdapter ].freeze
+  ADAPTERS = [
+    ClaudeCliAdapter, MockClaudeCliAdapter,
+    CodexRuntimeAdapter, MockCodexRuntimeAdapter,
+    PiRuntimeAdapter, MockPiRuntimeAdapter
+  ].freeze
 
   ADAPTERS.each do |klass|
     test "#{klass} honors the full runtime CLI adapter contract" do
@@ -70,11 +74,32 @@ class RuntimeCliAdapterContractTest < ActiveSupport::TestCase
     assert_equal File.join("/tmp/contract-test", "codex_stderr.log"), result[:stderr_log_path]
   end
 
+  # MockPiRuntimeAdapter is likewise invokable directly; verify its return shape
+  # and that it tails the Pi (not Claude or Codex) stderr log.
+  test "MockPiRuntimeAdapter#execute returns a pid and pi stderr_log_path" do
+    result = MockPiRuntimeAdapter.new.execute(
+      prompt: "hello",
+      session_id: SecureRandom.uuid,
+      working_dir: "/tmp/contract-test"
+    )
+    assert_kind_of Integer, result[:pid]
+    assert_equal File.join("/tmp/contract-test", "pi_stderr.log"), result[:stderr_log_path]
+  end
+
+  test "MockPiRuntimeAdapter#resume returns a pid and pi stderr_log_path" do
+    result = MockPiRuntimeAdapter.new.resume(
+      session_id: SecureRandom.uuid,
+      working_dir: "/tmp/contract-test"
+    )
+    assert_kind_of Integer, result[:pid]
+    assert_equal File.join("/tmp/contract-test", "pi_stderr.log"), result[:stderr_log_path]
+  end
+
   # The guard must be WIRED INTO the spawn entrypoints, not merely defined. The
   # doubles are the ones that can be invoked directly here; the real adapters'
   # wiring is asserted in their own tests (claude_cli_adapter_test,
   # codex_runtime_adapter_test).
-  [ MockClaudeCliAdapter, MockCodexRuntimeAdapter ].each do |klass|
+  [ MockClaudeCliAdapter, MockCodexRuntimeAdapter, MockPiRuntimeAdapter ].each do |klass|
     test "#{klass}#execute refuses a nil working directory" do
       error = assert_raises(StandardError) do
         klass.new.execute(prompt: "hello", session_id: SecureRandom.uuid, working_dir: nil)
