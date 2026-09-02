@@ -13,12 +13,14 @@ module Mcp
     # Mcp::Tools::SelfSessionActionSession subclasses this to expose only the
     # self-management subset; the action bodies below are the single copy.
     class ActionSession < Tool
+      include PrecedenceArgument
+
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
       ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "bulk_archive"'
 
-      SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" leaves the session wherever its existing rank puts it, which is usually the bottom — pass both when you mean it to be worked on soon.'
+      SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
       FORCE_DESC = 'Optional for the "archive" and "bulk_archive" actions. Archiving a session discards any message still queued for it — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Set this to true ONLY when you have read those messages and are deliberately throwing them away. It is not the recommended path: the usual reason a message is sitting in the queue is that it arrived while the session was working and the session has not seen it yet, in which case the right move is to NOT archive, let the turn end, and let the message be delivered as the next turn. On "bulk_archive" it applies to every session in the batch, not one of them.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
@@ -44,6 +46,8 @@ module Mcp
       ACTING_SESSION_ID_DESC = 'Optional for "follow_up" and "archive". On "archive" it is provenance and nothing else: the archived session\'s timeline names you as the actor, so a human reading it later can tell an agent archiving that session from a human clicking Trash. Set it whenever an agent session drives an archive — including archiving yourself. On "follow_up", if you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value records no edge, and an undeclared archive is logged as exactly that.'
 
       PRECEDENCE_DESC = PrecedenceDocs::ACTION_SESSION
+
+      PLACE_DESC = PrecedenceDocs::PLACE
 
       HALT_DESC = 'Optional for "pause_into_spot_queue": stop the target session\'s turn where it stands instead of letting it finish. Terminates the agent process — work already written to disk survives, the tool call in flight does not. This is what a human clicking "Pause Until" in the web UI gets. Do NOT set it on your own session: you would be killing the process that is waiting for this call to return.'
 
@@ -118,8 +122,8 @@ module Mcp
         - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected.
         - **change_goal**: Update the goal for a session (requires "goal" parameter; empty string clears it)
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
-        - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived). Optionally takes "precedence" to place it in the spot queue in the same call — which is what a demotion usually wants, since a demoted session otherwise keeps whatever rank it already had.
-        - **change_precedence**: Set where this session sits in the spot queue (requires "precedence"). Higher is handled sooner, on an absolute scale — 100000 comes before 50.
+        - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived). Optionally takes "precedence" (an absolute rank) or "place" (a symbolic one, e.g. "top_of_spot") to place it in the spot queue in the same call — which is what a demotion usually wants, since a demoted session otherwise keeps whatever rank it already had. "place": "top_of_spot" is what the web UI's Demote to spot button does.
+        - **change_precedence**: Set where this session sits in the spot queue (requires "precedence" or "place"). Higher is handled sooner, on an absolute scale — 100000 comes before 50. Pass "place": "top_of_spot" instead of a number to put the session at the head of the queue, worked out server-side against the live queue.
         - **change_category**: Assign the session's organizational category (requires "category_id"; null moves it to Uncategorized)
         - **toggle_push_notifications**: Toggle push notifications on a session
         - **set_heartbeat**: Toggle a session's heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When enabled and the session sits in needs_input, a recurring nudge prompts it to keep working toward its goal; set "enabled" to false to stop the nudges.
@@ -169,6 +173,7 @@ module Mcp
             description: SCHEDULING_CLASS_DESC
           },
           precedence: { type: "integer", description: PRECEDENCE_DESC },
+          place: { type: "string", enum: SessionPrecedence::PLACES, description: PLACE_DESC },
           category_id: { type: [ "number", "null" ], description: CATEGORY_ID_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
@@ -769,7 +774,7 @@ module Mcp
         previous_precedence = session.precedence
 
         attrs = { scheduling_class: klass.presence }
-        attrs[:precedence] = precedence_arg(args) if args.key?("precedence")
+        attrs[:precedence] = resolved_precedence(args, exclude: session) if precedence_named?(args)
         session.update!(attrs)
 
         if previous != session.priority_class
@@ -805,12 +810,14 @@ module Mcp
       # priority included: the value is carried on the row either way, and a
       # priority session that is later demoted lands on the rank it is holding.
       def change_precedence(session, args)
-        unless args.key?("precedence")
-          raise ToolError, "The \"precedence\" parameter is required for the \"change_precedence\" action."
+        unless precedence_named?(args)
+          raise ToolError, "The \"precedence\" parameter is required for the \"change_precedence\" action. " \
+                           "Pass an absolute integer, or \"place\": \"#{SessionPrecedence::PLACE_TOP_OF_SPOT}\" " \
+                           "to put this session at the head of the spot queue."
         end
 
         previous = session.precedence
-        session.update!(precedence: precedence_arg(args))
+        session.update!(precedence: resolved_precedence(args, exclude: session))
 
         if previous != session.precedence
           session.logs.create!(content: "Precedence set via MCP to #{session.precedence} (was #{previous})", level: "info")
@@ -826,20 +833,6 @@ module Mcp
           ("- Note: this session is priority, so precedence does not affect when it starts — " \
            "it applies if the session is later demoted to spot." if session.priority?)
         ].compact.join("\n")
-      end
-
-      def precedence_arg(args)
-        value = args["precedence"]
-        unless value.is_a?(Integer) || value.to_s.match?(/\A-?\d+\z/)
-          raise ToolError, "precedence must be an integer (got #{value.inspect})"
-        end
-
-        value = value.to_i
-        unless value.between?(SessionPrecedence::MIN, SessionPrecedence::MAX)
-          raise ToolError, "precedence must be between #{SessionPrecedence::MIN} and #{SessionPrecedence::MAX}"
-        end
-
-        value
       end
 
       def change_auto_compact_window(session, args)
