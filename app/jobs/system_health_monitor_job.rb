@@ -125,7 +125,7 @@ class SystemHealthMonitorJob < ApplicationJob
       "GoodJob backlog is critical.",
       "",
       "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
-        "oldest waiting #{HealthMonitorService.format_wait(stats[:oldest_ready_age_seconds])}" \
+        "oldest waiting #{head_of_line_age(stats, breakdown[:head_of_line])}" \
         "#{head_of_line_suffix(breakdown[:head_of_line])}",
       "• Ready by queue: #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
       "• Ready by job class: #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
@@ -149,7 +149,7 @@ class SystemHealthMonitorJob < ApplicationJob
   end
 
   # Never let the diagnostic detail be the reason the page does not go out. The
-  # breakdown is two extra grouped scans of `good_jobs` at exactly the moment the
+  # breakdown is three extra scans of `good_jobs` at exactly the moment the
   # database may be the thing going wrong, and a depth number that reaches a human
   # beats a richer one that raises on the way.
   #
@@ -164,9 +164,23 @@ class SystemHealthMonitorJob < ApplicationJob
     { by_queue: nil, by_job_class: nil, oldest_by_queue: nil, head_of_line: nil }
   end
 
+  # The age and the lane are quoted from the SAME read when there is one.
+  #
+  # `queue_statistics` and `ready_backlog_breakdown` are separate queries against a
+  # moving table, so their answers can differ by whatever drained between them: the
+  # row `queue_statistics` measured may already be claimed when the breakdown runs,
+  # leaving the bullet quoting one row's age next to another row's lane. Taking
+  # both from `head_of_line` keeps the sentence internally true. `queue_statistics`
+  # remains the fallback — and remains what the `critical` gate thresholds on,
+  # which this does not touch.
+  def head_of_line_age(stats, head)
+    seconds = head.present? ? head[:age_seconds] : stats[:oldest_ready_age_seconds]
+    HealthMonitorService.format_wait(seconds)
+  end
+
   # Names the lane and the job class behind the age the line just quoted, so the
   # first bullet answers "old where" and not only "old". Empty when the breakdown
-  # could not be read — the age itself comes from `queue_statistics` and is still
+  # could not be read — the age still comes through from `queue_statistics` and is
   # worth printing on its own.
   def head_of_line_suffix(head)
     return "" if head.blank?

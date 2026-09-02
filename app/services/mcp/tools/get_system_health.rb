@@ -79,7 +79,7 @@ module Mcp
       #
       # Silent when nothing is waiting — a breakdown of an empty queue is a line
       # of noise on every healthy call. But NOT silent when the read fails: these
-      # are two grouped scans of `good_jobs`, and the caller most likely to hit a
+      # are three scans of `good_jobs`, and the caller most likely to hit a
       # database that cannot serve them is the one triaging a database that is
       # struggling. Saying so beats raising and losing the whole health report.
       def ready_backlog_lines
@@ -89,11 +89,26 @@ module Mcp
         [
           "- **Ready backlog by queue:** #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
           "- **Ready backlog by job class:** #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
-          "- **Oldest ready by queue:** #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}"
+          "- **Oldest ready by queue:** #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}",
+          *head_of_line_line(breakdown[:head_of_line])
         ]
       rescue StandardError => e
         Rails.logger.warn("[GetSystemHealth] Could not read the backlog breakdown: #{e.message}")
         [ "- **Ready backlog breakdown:** unavailable (#{e.class})" ]
+      end
+
+      # The single row the alerts fire on, named. The Slack page renders the same
+      # lane and job class inline on its first bullet; this is the half of that
+      # parity the ages line cannot carry, and it is the more useful half here —
+      # the reader is an agent with no route to /jobs, so the job class is the only
+      # way it learns WHAT is waiting rather than merely where.
+      def head_of_line_line(head)
+        return [] if head.blank?
+
+        [
+          "- **Head of line:** #{head[:queue]} / #{head[:job_class]}, " \
+            "waiting #{HealthMonitorService.format_wait(head[:age_seconds])}"
+        ]
       end
 
       # Stated up front, and stated in BOTH directions. A pending queue depth means

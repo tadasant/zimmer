@@ -441,18 +441,55 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal HealthMonitorService::UNKNOWN_LABEL, head[:job_class]
   end
 
-  # The age breakdown obeys the same cap as the counts, and the cap costs nothing
-  # here: the entries are already oldest-first, so whatever it cuts is newer than
-  # everything it kept and cannot be the lane holding the backlog.
-  test "ready_backlog_breakdown caps the head-of-line ages at the oldest queues" do
+  # The counts are capped and the ages deliberately are not. An `other (N more)`
+  # remainder keeps a capped COUNT honest; there is no such thing for an age, so a
+  # cap would make a missing lane mean either "nothing waiting there" or "cut",
+  # and telling those apart is the entire comparison the line exists for.
+  test "ready_backlog_breakdown does not cap the head-of-line ages" do
     %w[a b c d e f g].each_with_index do |queue, i|
       insert_good_jobs(1) { { queue_name: queue, scheduled_at: (60 - i).minutes.ago } }
     end
 
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+
+    assert_equal %w[a b c d e f g], breakdown[:oldest_by_queue].keys
+    assert_equal HealthMonitorService::READY_BREAKDOWN_LIMIT + 1, breakdown[:by_queue].size,
+                 "the COUNT breakdown is still capped, with its remainder entry"
+  end
+
+  # The regression the per-queue scan exists to avoid. Reading the N oldest ready
+  # rows and keeping the first sighting of each queue looks equivalent until one
+  # lane holds more than N of them: it fills the window, every other lane vanishes
+  # from the line, and the reader sees a single old lane — which is the "one lane
+  # starving" signal — in the case where they most need the comparison.
+  test "a lane deep enough to fill a scan window does not hide the other lanes' ages" do
+    insert_good_jobs(400) { { queue_name: "agents", scheduled_at: 90.minutes.ago } }
+    insert_good_jobs(1) { { queue_name: "pollers", scheduled_at: 30.seconds.ago } }
+    insert_good_jobs(1) { { queue_name: "default", scheduled_at: 2.minutes.ago } }
+
     ages = HealthMonitorService.new.ready_backlog_breakdown[:oldest_by_queue]
 
-    assert_equal HealthMonitorService::READY_BREAKDOWN_LIMIT, ages.size
-    assert_equal [ "a", "b", "c", "d", "e" ], ages.keys
+    assert_equal [ "agents", "default", "pollers" ], ages.keys
+    assert_in_delta 5400, ages["agents"], 5
+    assert_in_delta 120, ages["default"], 5
+    assert_in_delta 30, ages["pollers"], 5
+  end
+
+  # One row per queue, and it must be that queue's OLDEST — not whichever row the
+  # scan reached first. A lane whose head reported the age of a job enqueued
+  # seconds ago would read as healthy with its real backlog waiting behind it.
+  test "each queue's entry is that queue's oldest row, not an arbitrary one" do
+    insert_good_jobs(1) { { queue_name: "inference", job_class: "SessionTitleJob", scheduled_at: 1.minute.ago } }
+    insert_good_jobs(1) do
+      { queue_name: "inference", job_class: "SessionStatusSummaryJob", scheduled_at: 12.minutes.ago }
+    end
+    insert_good_jobs(1) { { queue_name: "inference", job_class: "SessionTitleJob", scheduled_at: 4.minutes.ago } }
+
+    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+
+    assert_equal 1, breakdown[:oldest_by_queue].size, "one entry per queue, not one per row"
+    assert_in_delta 720, breakdown[:oldest_by_queue]["inference"], 5
+    assert_equal "SessionStatusSummaryJob", breakdown[:head_of_line][:job_class]
   end
 
   test "format_ages tells a failed read apart from an empty one" do

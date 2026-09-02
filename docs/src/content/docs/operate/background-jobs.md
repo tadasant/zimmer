@@ -784,6 +784,11 @@ cuts comes back as an `other (N more)` remainder rather than vanishing — five 
 total look the same whether they are the whole backlog or a tenth of it, and telling those apart is
 the entire question below. A row with no `job_class` is counted under `(unknown)`.
 
+The ages line is deliberately **not** capped. A remainder entry is what keeps a capped count honest,
+and there is no equivalent for an age — `other 12m` means nothing — so a cap would leave a lane's
+absence meaning either "no ready work there" or "cut by the cap", which is exactly the distinction
+the line exists to support. Its length is bounded by the number of distinct queue names anyway.
+
 #### Read the head-of-line ages first
 
 `oldest_ready_age_seconds` is a single number over **every queue at once**, and it is what both
@@ -808,12 +813,20 @@ first bullet names the lane and job class behind the global figure:
   round-trips.
 - **Deep in one queue but its head is fresh** — busy, not starved. The lane is turning work over.
 
-The ages are read by a single oldest-first scan bounded at `HEAD_OF_LINE_SCAN_LIMIT` (2000) rows.
-The bound does not distort the answer: every queue represented inside the window gets its exact head
-of line, and a queue that only appears past it has its whole backlog newer than the window and so
-cannot be the lane holding anything back. Each age is dated the same way `oldest_ready_age_seconds`
-is, from `scheduled_at` when there was one and `created_at` otherwise, and the global head of line
-is by construction the same row the alerts threshold on.
+The ages come from one `DISTINCT ON (queue_name)` query — one row per queue, each queue's exact
+oldest, cost bounded by the number of distinct queue names rather than by backlog depth. That shape
+matters more than it looks. The obvious alternative, reading the N oldest ready rows and keeping the
+first sighting of each queue, breaks in the case the page most needs: a single lane holding more than
+N ready rows fills the whole window, every other lane disappears from the line, and the reader sees
+one old lane with nothing to compare it against — which reads as "one lane starving" precisely when
+the truth may be "everything is old". Each age is dated the same way `oldest_ready_age_seconds` is,
+from `scheduled_at` when there was one and `created_at` otherwise.
+
+The first bullet's age and its `(lane / job class)` come from the same read, so the sentence cannot
+name one row's age beside another row's lane — `queue_statistics` and `ready_backlog_breakdown` are
+separate queries against a moving table, and whatever drains between them would otherwise show up
+there. `queue_statistics` stays the fallback when the breakdown cannot be read, and stays what the
+`critical` gate thresholds on.
 
 This is all deliberately *not* folded into `queue_statistics`, which runs on every `/health` render;
 these are extra scans of `good_jobs` and are only worth paying for when something is about to page.
