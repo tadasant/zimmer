@@ -57,31 +57,36 @@ module NpxCacheLayout
     File.join(shared_cache_dir(working_directory), ISOLATED_SUBDIR, sanitize_server_name(server_name))
   end
 
-  # A filesystem-safe directory name for a server. `.` and `..` are rejected
-  # rather than sanitized: both resolve back to a shared parent, which would put
-  # the server on the very cache isolation exists to keep it off. Every other
-  # name collapses to a plain segment inside the clone.
+  # A filesystem-safe directory name for a server. Every name collapses to a
+  # plain, visible segment inside the clone.
+  #
+  # A leading `.` is stripped rather than kept, for the same reason `.` and `..`
+  # become "unnamed": a name that is only dots resolves back to a shared parent,
+  # which would put the server on the very cache isolation exists to keep it off,
+  # and a dot-prefixed directory is one the constructor could write and no
+  # ordinary sweep would ever list. Both are ways of building a root nothing can
+  # find again, which is the failure this module exists to prevent.
   def sanitize_server_name(server_name)
-    sanitized = server_name.to_s.gsub(/[^A-Za-z0-9._-]/, "_")
-    return "unnamed" if sanitized.blank? || sanitized.delete(".").empty?
+    sanitized = server_name.to_s.gsub(/[^A-Za-z0-9._-]/, "_").sub(/\A\.+/, "")
+    return "unnamed" if sanitized.blank?
 
     sanitized
   end
 
   # Every `_npx` root in the clone: the shared one directly under `.npm-cache`,
   # and each per-server root beneath it. Restricted to one level of nesting so
-  # the glob stays bounded on a large cache.
+  # the walk stays bounded on a large cache.
   #
-  # The nested pattern is `<cache>/*/*/_npx` rather than
-  # `<cache>/#{ISOLATED_SUBDIR}/*/_npx` deliberately: discovery is one notch wider
-  # than construction, so a root left by an earlier layout — or by a mechanism
-  # that lands beside this one — is still found rather than silently skipped.
-  # Nothing is *acted on* because it was discovered; callers containment-check
-  # each root with #within_clone_cache? before touching it.
+  # Discovery is one notch wider than construction — any `<cache>/<a>/<b>/_npx`,
+  # not only `<cache>/isolated/<server>/_npx` — so a root left by an earlier
+  # layout, or by a mechanism that lands beside this one, is still found rather
+  # than silently skipped. Nothing is *acted on* because it was discovered:
+  # callers containment-check each root before touching it, and a caller that
+  # resolves symlinks must use #resolved_within_clone_cache? to do it.
   #
   # The shared root is returned whether or not it exists (callers either skip a
-  # missing directory or are asking for a path to remove); the nested roots come
-  # from a glob, so those necessarily do.
+  # missing directory or are asking for a path to remove); a nested root is
+  # returned only if it does.
   #
   # @param working_directory [String, nil] the session's clone working directory
   # @param hash [String, nil] when given, the specific `_npx/<hash>` tree
@@ -92,9 +97,34 @@ module NpxCacheLayout
     leaf = hash ? File.join(NPX_DIRNAME, hash) : NPX_DIRNAME
     cache_root = shared_cache_dir(working_directory)
 
-    [ File.join(cache_root, leaf), File.join(cache_root, "*", "*", leaf) ]
-      .flat_map { |pattern| pattern.include?("*") ? Dir.glob(pattern) : [ pattern ] }
-      .uniq
+    ([ File.join(cache_root, leaf) ] + nested_npx_dirs(cache_root, leaf)).uniq
+  end
+
+  # The `_npx` roots one level down, sorted so a sweep and its log lines are
+  # deterministic.
+  #
+  # Read with `Dir.children` rather than `Dir.glob` because both of the glob's
+  # own conventions are wrong here. A clone path is not a pattern — `git
+  # check-ref-format` accepts `{` in a branch name, and GitCloneService puts the
+  # branch in the path, so one brace would turn the whole interpolated pattern
+  # into a brace expansion that matches nothing. And a glob skips dot-prefixed
+  # entries, which would hide a root this module's own constructor could have
+  # written. Enumeration has neither problem.
+  def nested_npx_dirs(cache_root, leaf)
+    children(cache_root).sort.flat_map do |parent|
+      children(File.join(cache_root, parent)).sort.filter_map do |child|
+        path = File.join(cache_root, parent, child, leaf)
+        path if File.exist?(path)
+      end
+    end
+  end
+
+  # The entries of a directory that may not exist (no cache yet, a race with
+  # CacheClearService) or may not be one.
+  def children(dir)
+    Dir.children(dir)
+  rescue SystemCallError
+    []
   end
 
   # Whether a path is inside some Zimmer clone's npm cache, and therefore
@@ -108,17 +138,54 @@ module NpxCacheLayout
   #
   # Callers apply this per root, so one root that escapes the clones directory is
   # skipped on its own rather than disqualifying the others.
+  #
+  # It answers about the path as written. `File.expand_path` does not follow
+  # symlinks, so a caller that resolves the path before acting on it must ask
+  # #resolved_within_clone_cache? about the resolved answer as well.
   def within_clone_cache?(path)
+    inside_clone_cache?(path, clones_base)
+  end
+
+  # The same question asked of a path that has already been symlink-resolved.
+  #
+  # Discovery enumerates directories, and a directory can be a symlink to
+  # anywhere on the host. Such a root passes #within_clone_cache? — the path as
+  # written really is inside the clone — and then resolves somewhere else
+  # entirely, taking everything a caller does relative to the resolved root with
+  # it. Comparing against the *resolved* clones base closes that.
+  #
+  # Both sides are resolved on purpose. A deployment whose HOME or
+  # AGENT_CLONES_DIR is itself a symlink resolves every clone path out of the
+  # nominal base, and checking a resolved path against an unresolved base would
+  # reject all of them — turning a guard into a silent no-op, which is the
+  # failure mode hardest to tell apart from the bug it exists to fix.
+  def resolved_within_clone_cache?(path)
+    inside_clone_cache?(path, resolved_clones_base)
+  end
+
+  # Reuse CacheClearService's clones-base definition so the security-relevant
+  # path has a single source of truth (it's a lambda so it honors Dir.home at
+  # call time, which lets tests redirect HOME).
+  def clones_base
+    File.expand_path(CacheClearService::CLONES_BASE_DIR.call)
+  end
+
+  # The clones base with its symlinks resolved, or the literal base when it does
+  # not exist yet — in which case nothing resolves inside it either.
+  def resolved_clones_base
+    base = clones_base
+    File.realpath(base)
+  rescue SystemCallError
+    base
+  end
+
+  def inside_clone_cache?(path, base)
     return false if path.blank?
 
     expanded = File.expand_path(path)
-    # Reuse CacheClearService's clones-base definition so the security-relevant
-    # path has a single source of truth (it's a lambda so it honors Dir.home at
-    # call time, which lets tests redirect HOME).
-    clones_base = File.expand_path(CacheClearService::CLONES_BASE_DIR.call)
     separator = File::SEPARATOR
 
-    expanded.start_with?(clones_base + separator) &&
+    expanded.start_with?(base + separator) &&
       expanded.include?("#{separator}#{CACHE_DIRNAME}#{separator}") &&
       (expanded.include?("#{separator}#{NPX_DIRNAME}#{separator}") ||
         expanded.end_with?("#{separator}#{NPX_DIRNAME}"))

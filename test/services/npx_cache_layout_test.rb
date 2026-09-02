@@ -58,6 +58,14 @@ class NpxCacheLayoutTest < ActiveSupport::TestCase
     assert_equal "unnamed", NpxCacheLayout.sanitize_server_name(nil)
   end
 
+  # A dot-prefixed root is a root the constructor can write and a sweep can miss,
+  # which is the construct/discover asymmetry this module exists to close.
+  test "strips a leading dot so a server never gets a hidden root" do
+    assert_equal "hidden-server", NpxCacheLayout.sanitize_server_name(".hidden-server")
+    assert_equal "/clone/.npm-cache/isolated/hidden-server",
+      NpxCacheLayout.isolated_cache_dir("/clone", ".hidden-server")
+  end
+
   # --------------------------------------------------------------------------
   # Discovery — the half NpxBinExecutableGuard and NpxCacheHealService share
   # --------------------------------------------------------------------------
@@ -94,6 +102,25 @@ class NpxCacheLayoutTest < ActiveSupport::TestCase
     assert_equal 2, dirs.size
   end
 
+  # Discovery has to find every root construction can produce, including the two
+  # shapes a glob would silently drop.
+  test "lists an isolated root whose directory name starts with a dot" do
+    hidden = File.join(@working_directory, ".npm-cache", "isolated", ".hidden-server", "_npx")
+    FileUtils.mkdir_p(hidden)
+
+    assert_includes NpxCacheLayout.npx_dirs(@working_directory), hidden
+  end
+
+  test "lists isolated roots in a clone path that contains a glob metacharacter" do
+    # `git check-ref-format --branch 'foo{bar'` succeeds, and GitCloneService puts
+    # the branch name in the clone path.
+    working_directory = File.join(@temp_dir, ".zimmer", "clones", "zimmer-foo{bar-123", "app")
+    isolated = File.join(working_directory, ".npm-cache", "isolated", "1password-tadas-rw", "_npx")
+    FileUtils.mkdir_p(isolated)
+
+    assert_includes NpxCacheLayout.npx_dirs(working_directory), isolated
+  end
+
   test "lists nothing for a blank working directory" do
     assert_empty NpxCacheLayout.npx_dirs(nil)
     assert_empty NpxCacheLayout.npx_dirs("")
@@ -126,5 +153,34 @@ class NpxCacheLayoutTest < ActiveSupport::TestCase
   test "refuses a blank path" do
     assert_not NpxCacheLayout.within_clone_cache?(nil)
     assert_not NpxCacheLayout.within_clone_cache?("")
+  end
+
+  # A directory under `.npm-cache` can be a symlink to anywhere on the host: the
+  # path as written is inside the clone, the path it resolves to is not.
+  test "the resolved check refuses a root that only looks like it is in the clone" do
+    outside = File.join(@temp_dir, "outside-cache", "_npx")
+    FileUtils.mkdir_p(outside)
+    smuggler = File.join(@working_directory, ".npm-cache", "smuggler")
+    FileUtils.mkdir_p(smuggler)
+    File.symlink(File.dirname(outside), File.join(smuggler, "link"))
+
+    written = File.join(smuggler, "link", "_npx")
+    assert NpxCacheLayout.within_clone_cache?(written), "the path as written is inside the clone"
+    assert_not NpxCacheLayout.resolved_within_clone_cache?(File.realpath(written))
+  end
+
+  # The counterpart: resolving both sides is what keeps a deployment whose HOME is
+  # a symlink from failing every check and turning its callers into no-ops.
+  test "the resolved check accepts a clone reached through a symlinked home" do
+    real_home = File.join(@temp_dir, "real-home")
+    FileUtils.mkdir_p(real_home)
+    linked_home = File.join(@temp_dir, "linked-home")
+    File.symlink(real_home, linked_home)
+    ENV["HOME"] = linked_home
+
+    npx_dir = File.join(real_home, ".zimmer", "clones", "clone-a", ".npm-cache", "_npx")
+    FileUtils.mkdir_p(npx_dir)
+
+    assert NpxCacheLayout.resolved_within_clone_cache?(File.realpath(npx_dir))
   end
 end

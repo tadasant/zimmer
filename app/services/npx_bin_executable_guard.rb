@@ -32,7 +32,7 @@
 # roots — the shared one and each isolated per-server root NpxCacheLayout knows about
 # — resolve each shim to its target, and add the execute bits to any target that has
 # none. Cheap and idempotent — a healthy tree is a handful of `stat` calls, and a
-# clone with no `_npx` cache yet (every first launch) is a couple of failed globs.
+# clone with no `_npx` cache yet (every first launch) is one failed directory read.
 #
 # Walking every root is not incidental. A server that shares an npx package with
 # another server in the same config is given a cache root of its own
@@ -61,13 +61,16 @@ class NpxBinExecutableGuard
     # @param logger [Logger] where to record repairs
     # @return [Array<String>] the target paths that were made executable
     def repair!(working_directory:, logger: Rails.logger)
-      npx_cache_dirs(working_directory).flat_map { |npx_dir| repair_root(npx_dir, logger) }
+      repaired = []
+      npx_cache_dirs(working_directory).each { |npx_dir| repaired.concat(repair_root(npx_dir, logger)) }
+      repaired
     rescue => e
       # Never let a best-effort repair block a spawn: the worst case without it is
       # the pre-existing failure mode, and the worst case with a raise here is a
-      # session that cannot start at all.
+      # session that cannot start at all. Whatever earlier roots already repaired
+      # is reported rather than dropped — those chmods happened.
       logger.error("[NpxBinExecutableGuard] Error repairing npx bin permissions: #{e.message}")
-      []
+      repaired
     end
 
     private
@@ -85,6 +88,18 @@ class NpxBinExecutableGuard
       # containment check and turn the guard into a silent no-op — the symptom of
       # which is indistinguishable from the bug it exists to fix.
       root = File.realpath(npx_dir)
+
+      # Resolving is what makes the root authoritative for every target below it,
+      # so the root has to survive its own containment check once resolved: a
+      # directory anywhere under `.npm-cache` can be a symlink off the clone, and
+      # unresolved it looks like an ordinary cache root.
+      unless NpxCacheLayout.resolved_within_clone_cache?(root)
+        logger.warn(
+          "[NpxBinExecutableGuard] Refusing to walk #{npx_dir}: it resolves to #{root}, " \
+          "outside the clone's own npm cache"
+        )
+        return []
+      end
 
       repaired = shim_paths(root).filter_map { |shim| repair_shim(shim, root, logger) }
 
@@ -162,8 +177,9 @@ class NpxBinExecutableGuard
     # Both the layout and the safety check come from NpxCacheLayout, which
     # NpxCacheHealService also reads, so the two services cannot drift about which
     # directories exist or which of them are in bounds. Containment is applied per
-    # root: one root that escapes the clones directory is dropped on its own
-    # rather than disqualifying its siblings.
+    # root, here on the path as written and again on its resolved form in
+    # #repair_root, so a root that escapes either way is dropped on its own rather
+    # than disqualifying its siblings.
     def npx_cache_dirs(working_directory)
       NpxCacheLayout.npx_dirs(working_directory).select { |dir| NpxCacheLayout.within_clone_cache?(dir) }
     end
