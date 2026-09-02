@@ -173,12 +173,20 @@ class GitCloneService
     # clone aside before deleting it, so an interrupted delete can never leave a
     # half-tree wearing the clone's name (#412).
     #
+    # Guarded, too: CloneReaper re-asks the database who owns this directory at
+    # the instant of deletion and refuses if a live session still does. Every
+    # scheduled reaper reaches the filesystem through here, so that check covers
+    # all of them at once (#808). The failed-clone rollback paths in this class
+    # also come through here and are unaffected — a clone that failed is not in
+    # any session's `clone_path` yet, so it has no owner to protect.
+    #
     # @param path [String] the path to the clone
-    # @return [void]
-    def cleanup_clone(path)
+    # @param reason [String] what asked for the deletion, for the refusal log
+    # @return [Symbol, nil] CloneReaper's outcome, or nil when there was no path
+    def cleanup_clone(path, reason: "GitCloneService")
       return unless path && file_system.directory?(path)
 
-      AtomicCloneRemoval.remove(path, file_system: file_system)
+      CloneReaper.reap(path, reason: reason, file_system: file_system)
     rescue StandardError => e
       # Logged, not retried: a failure can only be raised once the clone has been
       # renamed out of the way, so the path the caller cares about is already gone

@@ -370,6 +370,12 @@ module CronSchedule
       description: "Probe the primary DNS resolver's public egress; drive the network-degraded banner",
       environments: %i[production]
     },
+    live_clone_integrity: {
+      cron: "40 * * * *", # Every hour at minute 40 (offset from the clone sweeps at :00)
+      class: "LiveCloneIntegrityJob",
+      description: "Report live sessions whose clone directory has been deleted or stripped underneath them",
+      environments: %i[production staging]
+    },
     mangled_clone_report: {
       cron: "0 8 * * *", # Daily at 08:00 UTC (offset from cert_expiry_monitor at 07:00)
       class: "MangledCloneReportJob",

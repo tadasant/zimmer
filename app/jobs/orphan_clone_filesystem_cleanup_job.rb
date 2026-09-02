@@ -101,8 +101,7 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     cleaned = 0
 
     orphans.first(BATCH_LIMIT).each do |dir_path|
-      cleanup_orphan(dir_path)
-      cleaned += 1
+      cleaned += 1 unless cleanup_orphan(dir_path) == :refused
     rescue StandardError => e
       Rails.logger.error "[OrphanCloneFilesystemCleanupJob] Failed to clean #{File.basename(dir_path)}: #{e.class} - #{e.message}"
     end
@@ -159,8 +158,7 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
       end
 
       begin
-        cleanup_orphan(dir_path)
-        cleaned += 1
+        cleaned += 1 unless cleanup_orphan(dir_path) == :refused
       rescue StandardError => e
         Rails.logger.error "[OrphanCloneFilesystemCleanupJob] Failed to clean #{File.basename(dir_path)}: #{e.class} - #{e.message}"
         next
@@ -273,8 +271,13 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     DockerComposeCleanupService.cleanup(dir_path)
 
     # Rename aside, then delete: an interrupted sweep must not leave a half-tree
-    # wearing a clone's name (#412).
-    AtomicCloneRemoval.remove(dir_path)
+    # wearing a clone's name (#412). Through CloneReaper, which re-asks who owns
+    # this directory now rather than trusting the orphan snapshot taken before
+    # the teardown above — which is bounded at 120s per directory (#808).
+    outcome = CloneReaper.reap(dir_path, reason: "OrphanCloneFilesystemCleanupJob")
+    return outcome if outcome == :refused
+
     Rails.logger.info "[OrphanCloneFilesystemCleanupJob] Removed orphan clone: #{File.basename(dir_path)}"
+    outcome
   end
 end

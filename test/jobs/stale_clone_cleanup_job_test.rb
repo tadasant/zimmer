@@ -43,6 +43,55 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     assert_equal "info", log.level
   end
 
+  # zimmer#808. The candidate scopes are plucked at the top of a run and worked
+  # through one clone at a time; a session unarchived — or a failed one resumed —
+  # inside that gap is live by the time its turn comes up.
+  test "does not reap a session that woke up after the candidate scope picked it" do
+    job = StaleCloneCleanupJob.new
+    candidate = Session.find(@session.id) # what the loop is holding: archived, stale
+
+    @session.update_columns(status: Session.statuses[:running])
+
+    assert_not job.send(:cleanup_session_clone, candidate)
+    assert File.directory?(@clone_path), "a live session's clone must survive the sweep"
+  end
+
+  test "leaves durable state alone when a session wakes up after its clone is deleted" do
+    original = ENV["AGENT_SCRATCH_DIR"]
+    Dir.mktmpdir("stale-scratch-race") do |scratch_base|
+      ENV["AGENT_SCRATCH_DIR"] = scratch_base
+      scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+      candidate = Session.find(@session.id)
+
+      # Archived when the clone delete starts, running by the time the
+      # unrecoverable half of the cleanup would run.
+      job = StaleCloneCleanupJob.new
+      job.stubs(:reapable_now?).returns(true).then.returns(false)
+
+      job.send(:cleanup_session_clone, candidate)
+
+      assert Dir.exist?(scratch_path), "scratch has no remote to come back from; it must survive"
+    ensure
+      original.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = original
+    end
+  end
+
+  # The headline regression: every snapshot guard the orphan sweep builds before
+  # its loop is deliberately blinded here, so what is left is the one guard that
+  # asks at the instant of deletion.
+  test "the orphan sweep still refuses a live session's clone with its snapshot guards blinded" do
+    @session.update_columns(status: Session.statuses[:running])
+    FileUtils.touch(@clone_path, mtime: (StaleCloneCleanupJob::ORPHAN_AGE_THRESHOLD + 1.hour).ago)
+
+    Session.stubs(:live_clone_paths).returns(Set.new)
+    StaleCloneCleanupJob.any_instance.stubs(:active_session_clone_paths).returns(Set.new)
+    StaleCloneCleanupJob.any_instance.stubs(:referenced_clone_owners_by_basename).returns({})
+
+    StaleCloneCleanupJob.perform_now
+
+    assert File.directory?(@clone_path), "a live session's clone must survive the orphan sweep"
+  end
+
   test "reclaims the durable per-session scratch dir alongside the stale clone" do
     original = ENV["AGENT_SCRATCH_DIR"]
     Dir.mktmpdir("stale-scratch") do |scratch_base|

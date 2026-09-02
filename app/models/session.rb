@@ -268,6 +268,31 @@ class Session < ApplicationRecord
       .to_set
   end
 
+  # The status label for a value read straight out of a `pluck`/`pick`.
+  #
+  # Rails casts an enum column to its label on `pluck`, so this is normally the
+  # identity. It exists because the callers are the clone reapers asking "is this
+  # session live *right now*", and there the two failure directions are not
+  # symmetric: reading a live session as terminal deletes a running agent's
+  # uncommitted work. So the integer form is normalized too, rather than trusted
+  # to stay cast.
+  #
+  # @param raw [String, Symbol, Integer, nil]
+  # @return [String, nil]
+  def self.status_label(raw)
+    return nil if raw.nil?
+
+    raw.is_a?(Integer) ? statuses.key(raw) : raw.to_s
+  end
+
+  # Whether a raw status value names a live (non-reapable) session.
+  #
+  # @param raw [String, Symbol, Integer, nil]
+  # @return [Boolean]
+  def self.live_status?(raw)
+    NON_REAPABLE_STATUSES.include?(status_label(raw))
+  end
+
   # Sessions burning Claude Code quota right now — the number the spot gate
   # checks its fleet cap against, and the number recorded on every quota
   # snapshot so a reading can be attributed to the fleet that produced it.

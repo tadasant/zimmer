@@ -43,7 +43,32 @@ class EmptyTrashJob < ApplicationJob
 
   private
 
+  # Whether `session` is still trash, asked of the database right now rather than
+  # taken from the batch this run loaded.
+  #
+  # `find_each` batches a thousand rows at a time and each session here costs a
+  # Docker Compose teardown plus a recursive delete of a whole working tree, so
+  # the status that put a session in the batch can be minutes old by the time its
+  # turn comes up. An unarchive inside that window puts the session back to work
+  # on this clone — and unlike the clone, the scratch directory, Claude config
+  # and prompt attachments deleted below have no remote to come back from (#808).
+  # Fails closed.
+  def still_trash?(session)
+    status = Session.status_label(Session.unscoped.where(id: session.id).pick(:status))
+    return true if status == "archived"
+
+    Rails.logger.warn "[EmptyTrashJob] Skipping session #{session.id}: it is #{status || "gone"} now, not " \
+      "archived, so its retention no longer applies"
+    false
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.error "[EmptyTrashJob] Could not re-check the status of session #{session.id} " \
+      "(#{e.class}: #{e.message}); leaving its resources alone"
+    false
+  end
+
   def cleanup_session(session)
+    return false unless still_trash?(session)
+
     cleaned_anything = false
     cleanup_details = []
 
@@ -55,8 +80,10 @@ class EmptyTrashJob < ApplicationJob
     end
 
     # The retention window is over, so the state that archive held on to for a
-    # possible unarchive can go.
-    removed = cleanup_durable_session_storage(session.id)
+    # possible unarchive can go. Re-checked immediately beforehand: this is the
+    # unrecoverable half of the cleanup, and `cleanup_artifacts` above walks the
+    # filesystem.
+    removed = still_trash?(session) ? cleanup_durable_session_storage(session.id) : []
     if removed.any?
       cleaned_anything = true
       cleanup_details.concat(removed)
@@ -72,10 +99,13 @@ class EmptyTrashJob < ApplicationJob
         false
       end
 
-      GitCloneService.cleanup_clone(clone_path)
-      cleaned_anything = true
-      cleanup_details << "clone deleted"
-      cleanup_details << "Docker resources removed" if docker_cleaned
+      # Through CloneReaper, which asks who owns this directory *after* the
+      # teardown above — bounded at 120s — rather than before it (#808).
+      if GitCloneService.cleanup_clone(clone_path, reason: "EmptyTrashJob") != :refused
+        cleaned_anything = true
+        cleanup_details << "clone deleted"
+        cleanup_details << "Docker resources removed" if docker_cleaned
+      end
     end
 
     # Clear trash_after and artifacts_path from metadata

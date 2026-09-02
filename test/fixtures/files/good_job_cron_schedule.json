@@ -225,6 +225,11 @@
       "class": "EgressHealthCheckJob",
       "description": "Probe the primary DNS resolver's public egress; drive the network-degraded banner"
     },
+    "live_clone_integrity": {
+      "cron": "40 * * * *",
+      "class": "LiveCloneIntegrityJob",
+      "description": "Report live sessions whose clone directory has been deleted or stripped underneath them"
+    },
     "mangled_clone_report": {
       "cron": "0 8 * * *",
       "class": "MangledCloneReportJob",
@@ -446,6 +451,11 @@
       "cron": "*/2 * * * *",
       "class": "SystemHealthMonitorJob",
       "description": "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    },
+    "live_clone_integrity": {
+      "cron": "40 * * * *",
+      "class": "LiveCloneIntegrityJob",
+      "description": "Report live sessions whose clone directory has been deleted or stripped underneath them"
     },
     "mangled_clone_report": {
       "cron": "0 8 * * *",
