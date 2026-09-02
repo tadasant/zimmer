@@ -601,6 +601,33 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     end
   end
 
+  # A runtime whose bundle has no mcp_credential_writer_class (Pi keeps MCP OAuth
+  # tokens inside the pi-mcp-adapter extension's own state) must DEGRADE, not
+  # raise. McpOauthController#reinject_and_resume calls injection and the resume
+  # service inside one `rescue`, so a raise here would skip the resume and leave
+  # a session parked on an OAuth gate permanently un-resumable.
+  test "inject_credentials! is a no-op for a runtime with no Zimmer-written credential store" do
+    credential = mcp_oauth_credentials(:notion)
+    credential.update!(expires_at: 1.hour.from_now)
+
+    mock_session = Object.new
+    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+    mock_session.define_singleton_method(:id) { 4242 }
+    mock_session.define_singleton_method(:agent_runtime) { "pi" }
+    mock_session.define_singleton_method(:runtime) { RuntimeRegistry.for("pi") }
+
+    server_config = mock_server_config(
+      name: "notion", type: "streamable-http", url: "https://mcp.notion.com/mcp"
+    )
+
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? server_config : nil }) do
+      injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
+
+      assert_nil injector.inject_credentials!
+      assert_equal [], injector.clear_runtime_needs_auth_cache([ "notion" ])
+    end
+  end
+
   test "inject_credentials! clears the runtime needs-auth cache for the injected servers" do
     credential = mcp_oauth_credentials(:notion)
 

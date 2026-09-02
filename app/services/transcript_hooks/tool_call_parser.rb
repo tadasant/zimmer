@@ -26,12 +26,34 @@
 #     are read straight from the rollout rather than from normalized events.
 #     Assistant prose is a response_item `message` payload with role "assistant"
 #     and `output_text` content blocks (plus the UI-side `agent_message` event).
+#   - Pi: a `message` entry whose AgentMessage carries a `toolCall` content block
+#     (arguments are a real Hash, not a JSON string) and a separate `toolResult`
+#     message stating `isError` inline — so there is no exit-code correlation
+#     pass as there is for Codex. See TranscriptHooks::PiToolCallParser.
 class TranscriptHooks::ToolCallParser
   # @param session [Session] the session whose runtime selects the shape
   # @param parsed_transcript [Array<Hash>] JSONL transcript lines, already parsed
   # @return [TranscriptHooks::ToolCallParser] the parser for the session's runtime
+  # Explicit per-runtime dispatch, with Claude Code as the DEFAULT rather than
+  # the fallback for anything unrecognized. The distinction matters: a runtime
+  # whose shape shares nothing with Claude's (Pi's does not) would find nothing
+  # in a Claude parser and every hook would become a silent no-op — no error, no
+  # log, just a hook that never fires. An unknown runtime is therefore named in
+  # a warning, so a fourth runtime added without a parser is noisy instead.
   def self.for(session:, parsed_transcript:)
-    klass = session.agent_runtime == "codex" ? TranscriptHooks::CodexToolCallParser : TranscriptHooks::ClaudeToolCallParser
+    klass =
+      case session.agent_runtime
+      when "codex" then TranscriptHooks::CodexToolCallParser
+      when "pi" then TranscriptHooks::PiToolCallParser
+      when nil, "", "claude_code" then TranscriptHooks::ClaudeToolCallParser
+      else
+        Rails.logger.warn(
+          "[TranscriptHooks::ToolCallParser] No parser for runtime " \
+          "#{session.agent_runtime.inspect}; falling back to the Claude shape, which " \
+          "will most likely match nothing."
+        )
+        TranscriptHooks::ClaudeToolCallParser
+      end
     klass.new(parsed_transcript)
   end
 

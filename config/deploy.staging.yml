@@ -29,14 +29,17 @@ servers:
       # Durable named volumes shared by web + worker so both see the same clones,
       # runtime credentials, and gh auth. They survive Kamal container swaps (the
       # whole point of a persistent host) -- state is no longer lost on every deploy.
-      # Both runtime homes are here: ~/.claude for Claude Code, CODEX_HOME
+      # Every runtime home is here: ~/.claude for Claude Code, CODEX_HOME
       # (~/.codex) for Codex rollouts, auth.json, and the thread store. A runtime
       # home left on the container layer is destroyed by each deploy, and the next
       # `resume` then fails with "no rollout found" and restarts from zero.
+      # PI_CODING_AGENT_DIR (~/.pi/agent) holds Pi's credential and provider state;
+      # its transcripts live in the session clone under zimmer_data instead.
       volume:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
         - codex_home:/home/rails/.codex
+        - pi_home:/home/rails/.pi/agent
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
   worker:
@@ -83,6 +86,7 @@ servers:
         - zimmer_data:/home/rails/.zimmer
         - claude_home:/home/rails/.claude
         - codex_home:/home/rails/.codex
+        - pi_home:/home/rails/.pi/agent
         - gh_config:/home/rails/.config/gh
         - claude_local:/home/rails/.local
 

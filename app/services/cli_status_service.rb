@@ -103,6 +103,39 @@ class CliStatusService
         codex login
       INSTRUCTIONS
     },
+    pi: {
+      name: "Pi Coding Agent",
+      check_installed: "which pi",
+      # Pi has no `login status` subcommand. `pi auth check` is the equivalent
+      # question — it answers whether a provider credential resolves, from the
+      # environment or from auth.json — and it requires an explicit --provider.
+      # Verified against pi 0.84.4: prints `ready` and exits 0 when the key
+      # resolves, `not_ready` and exits 1 when it does not. Anthropic is the
+      # provider behind Pi's default model (see ModelCatalog).
+      check_auth: "pi auth check --provider anthropic",
+      check_version: "pi --version",
+      # Pi resolves a provider credential per request from the session
+      # environment rather than from a Zimmer-managed account pool, so this is an
+      # env-var tool, not an OAuth one. See PiAuthProvider.
+      auth_method: :env_var,
+      env_var_name: "ANTHROPIC_API_KEY",
+      install_instructions: <<~INSTRUCTIONS,
+        # Pre-installed in Docker image (npm i -g @earendil-works/pi-coding-agent)
+        # If missing, rebuild the Docker image
+      INSTRUCTIONS
+      auth_instructions: <<~INSTRUCTIONS
+        # Pi authenticates from a provider API key in the session environment —
+        # there is no interactive login step and no account pool to rotate.
+        # Put the key in the Parameter Store so it reaches sessions through
+        # SecretsLoader and survives a container rebuild:
+        #
+        #   ANTHROPIC_API_KEY  (for the anthropic/* models in ModelCatalog)
+        #   OPENAI_API_KEY     (for the openai/* models)
+        #
+        # Pi extension status (MCP / hooks / plugins) is reported separately —
+        # see PiExtensions.status_summary.
+      INSTRUCTIONS
+    },
     fly: {
       name: "Fly.io CLI",
       check_installed: "which fly || which flyctl",

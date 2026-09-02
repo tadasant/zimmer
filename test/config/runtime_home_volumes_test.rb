@@ -39,9 +39,22 @@ class RuntimeHomeVolumesTest < ActiveSupport::TestCase
   # `CODEX_HOME` at runtime and the image's `ENV` line is what actually sets that
   # value in production. Reading it here means a change to the image path fails this
   # test instead of silently unmounting the volume.
+  # Pi's is read out of the image for the same reason Codex's is: `PiHome.path`
+  # resolves it from `PI_CODING_AGENT_DIR` at runtime, and the image's `ENV` line
+  # is what sets that value in production.
+  #
+  # Pi is worth a note, because it is the one runtime whose CONVERSATION does not
+  # live in its home: PiRuntimeAdapter passes `--session-dir` pointing inside the
+  # session's own clone, so a Pi transcript is durable by virtue of the clone
+  # volume rather than this one. What lives here is Pi's credential and provider
+  # state — `auth.json`, `models.json`, `settings.json`. Losing that on every
+  # deploy is a milder failure than losing a conversation, but it is still one
+  # nobody would see until a session could not authenticate, so the home is
+  # mounted on the same terms as the other two.
   RUNTIME_HOMES = {
     "claude_code" => "/home/rails/.claude",
-    "codex" => :codex_home_from_image
+    "codex" => :codex_home_from_image,
+    "pi" => :pi_home_from_image
   }.freeze
 
   test "every registered runtime has a home directory declared in this test's table" do
@@ -49,6 +62,12 @@ class RuntimeHomeVolumesTest < ActiveSupport::TestCase
       "RUNTIME_HOMES must name a home directory for every runtime in RuntimeRegistry. " \
       "A runtime whose home is not listed here is not covered by the durability " \
       "assertions below, and its conversations would be destroyed on every deploy."
+  end
+
+  test "the image declares PI_CODING_AGENT_DIR so the deploy files have a path to mount" do
+    assert_equal "/home/rails/.pi/agent", pi_home_from_image,
+      "Dockerfile.base must set ENV PI_CODING_AGENT_DIR. Without it the Pi CLI falls back " \
+      "to ~/.pi/agent by its own default and the mount below would target the wrong path."
   end
 
   test "the image declares CODEX_HOME so the deploy files have a path to mount" do
@@ -117,6 +136,10 @@ class RuntimeHomeVolumesTest < ActiveSupport::TestCase
 
   def codex_home_from_image
     Rails.root.join("Dockerfile.base").read[/^ENV\s+CODEX_HOME="?([^"\s]+)"?/, 1]
+  end
+
+  def pi_home_from_image
+    Rails.root.join("Dockerfile.base").read[/^ENV\s+PI_CODING_AGENT_DIR="?([^"\s]+)"?/, 1]
   end
 
   # Kamal volume entries are `source:container_path[:opts]` strings.

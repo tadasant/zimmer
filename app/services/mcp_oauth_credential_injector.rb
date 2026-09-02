@@ -112,6 +112,11 @@ class McpOauthCredentialInjector
     credentials = collect_credentials
     return nil if credentials.empty?
 
+    # Asked only once there is something to write, so a runtime with no store
+    # keeps the same cheap early-outs as every other one and the "no store" log
+    # line means what it says.
+    return nil unless credential_store?
+
     path = credential_writer.write!(working_directory: working_directory, credentials: credentials)
 
     # A token we just wrote stays invisible while the runtime's "needs auth" memo
@@ -130,6 +135,8 @@ class McpOauthCredentialInjector
   # @param server_names [Array<String>]
   # @return [Array<String>] the names actually cleared
   def clear_runtime_needs_auth_cache(server_names)
+    return [] unless credential_store?
+
     credential_writer.clear_needs_auth_cache(server_names)
   rescue => e
     Rails.logger.warn "[McpOauthCredentialInjector] Failed to clear needs-auth cache: #{e.message}"
@@ -304,8 +311,44 @@ class McpOauthCredentialInjector
   # credentials: the session's own CLAUDE_CONFIG_DIR is what the CLI reads its
   # mcpOAuth map from, and where it writes a token it rotated mid-session back
   # to. Every other runtime's `.for_session` is `.new`.
+  # The runtime's credential writer, or nil for a runtime that has no store
+  # Zimmer writes. Memoized through `defined?` rather than `||=` so a legitimate
+  # nil is cached once instead of re-resolved on every call.
   def credential_writer
-    @credential_writer ||= session.runtime.mcp_credential_writer_class.for_session(session)
+    return @credential_writer if defined?(@credential_writer)
+
+    writer_class = session.runtime.mcp_credential_writer_class
+    @credential_writer = writer_class&.for_session(session)
+  end
+
+  # Whether this session's runtime has a credential store Zimmer writes at all.
+  #
+  # Pi does not: its MCP support comes from the pi-mcp-adapter extension, which
+  # keeps OAuth tokens in its own state rather than in a host-global file Zimmer
+  # owns, so `mcp_credential_writer_class` is nil for it.
+  #
+  # Asked through #credential_writer rather than re-derived from
+  # `session.runtime`, so exactly one place knows how the writer is obtained and
+  # a caller that substitutes a writer gets a consistent answer.
+  #
+  # Answering this at all, rather than letting the nil surface as a
+  # NoMethodError, is what keeps the *callers* correct.
+  # McpOauthController#reinject_and_resume calls `inject_credentials!` and then
+  # `McpOauthResumeService` inside one `rescue`, so a raise here would skip the
+  # resume — and a session parked on an OAuth gate would never be released by
+  # the Authorize click, which is a permanent wedge rather than a degraded
+  # feature.
+  #
+  # Logged at info, not warn: for a runtime with no store this is the designed
+  # behavior on every injection, and a warn on every spawn is noise.
+  def credential_store?
+    return true if credential_writer
+
+    Rails.logger.info(
+      "[McpOauthCredentialInjector] Runtime #{session.agent_runtime} has no " \
+      "Zimmer-written MCP credential store; skipping injection for session #{session.id}"
+    )
+    false
   end
 
   # Collects all active credentials for the session's MCP servers as

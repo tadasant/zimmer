@@ -48,6 +48,26 @@ class ModelCatalog
       { id: "gpt-5.4-mini", label: "gpt-5.4-mini (fast, retires from ChatGPT sign-in August 31, 2026)", requires_oauth: false },
       { id: "gpt-5.3-codex", label: "gpt-5.3-codex (deprecated)", requires_oauth: false },
       { id: "gpt-5.2-codex", label: "gpt-5.2-codex (deprecated)", requires_oauth: false }
+    ],
+    # Pi model ids are provider-qualified (`provider/id`), which is the form Pi's
+    # `--model` flag accepts directly — so no separate `--provider` flag is needed
+    # and the id a user picks is passed through verbatim.
+    #
+    # Every id below is present in the model catalog bundled with the pinned Pi
+    # CLI (see Dockerfile.base), which is the authority for what `--model`
+    # resolves. Refresh discipline: re-check against `pi --list-models` when the
+    # pinned Pi version is bumped, and mark a retired model deprecated in its
+    # label rather than deleting it, so sessions pinned to it keep validating.
+    #
+    # Pi resolves the provider credential per request from the session
+    # environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...), so nothing here
+    # requires an interactive login and `requires_oauth` is uniformly false.
+    "pi" => [
+      { id: "anthropic/claude-opus-4-6", label: "claude-opus-4-6 (default)", default: true, requires_oauth: false },
+      { id: "anthropic/claude-sonnet-4-6", label: "claude-sonnet-4-6", requires_oauth: false },
+      { id: "anthropic/claude-haiku-4-5", label: "claude-haiku-4-5 (fast)", requires_oauth: false },
+      { id: "openai/gpt-5.6-terra", label: "gpt-5.6-terra", requires_oauth: false },
+      { id: "openai/gpt-5.4-mini", label: "gpt-5.4-mini (fast)", requires_oauth: false }
     ]
   }.freeze
 
