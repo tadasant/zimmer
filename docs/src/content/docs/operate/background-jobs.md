@@ -332,6 +332,14 @@ while the worker is alive, so tini can never collect it. Any child Zimmer spawns
 on is this job's problem, permanently.
 :::
 
+The same job sweeps the other host-level leftover of a session's process tree: its
+[memory cgroup](/sessions/spawning/#each-session-gets-its-own-memory-bound). `rmdir` refuses while
+any pid is still inside, so a session cannot always tear its own down and a worker killed
+mid-deploy never gets the chance — and they arrive one per session. The sweep runs first, before
+the two zombie passes and outside their early returns, because "no zombies this tick" is the
+common case and is not a reason to leave the cgroups behind. Emptiness is the whole test: a
+cgroup holding a live process is a live session, whatever the database thinks.
+
 ## What the PR comment poller acts on
 
 `GithubCommentPollerJob` records every new comment on a tracked PR in the session's

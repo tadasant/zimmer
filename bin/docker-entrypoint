@@ -110,6 +110,78 @@ if [ "$(id -u)" = "0" ]; then
   fi
 
   # ---------------------------------------------------------------------------
+  # Delegate a cgroup subtree to uid 1000, so each agent session can be given its
+  # own memory.max.
+  #
+  # The problem this solves is in app/services/session_memory_cgroup.rb: every
+  # session on the box shares this container's single 10 GiB cap with the Rails
+  # worker and the inner dockerd, so one session's runaway command can spend the
+  # whole budget and the kernel then picks a victim by oom_score rather than by
+  # blame (tadasant/zimmer#815).
+  #
+  # Only root can create a cgroup and enable a controller on it, and only this
+  # script is root here -- which is why the setup lives in the entrypoint and the
+  # per-session part lives in the app.
+  #
+  # The shape is cgroup v2's documented delegation model, and the `app` child is
+  # load-bearing rather than tidiness. Migrating a process needs write access to
+  # the cgroup.procs of the COMMON ANCESTOR of source and destination. With the
+  # app left where it starts, that ancestor is the container's cgroup root, which
+  # is root-owned -- so uid 1000 could create session cgroups and then not move
+  # anything into them. Putting the app in a sibling under the delegated parent
+  # makes the common ancestor the delegated parent itself, which uid 1000 owns.
+  # The alternative was chowning the container's root cgroup.procs, which widens
+  # uid 1000's reach over every cgroup in the container to buy the same thing.
+  #
+  # Every step tolerates failure. This needs a writable cgroup2 filesystem, which
+  # the worker has only because sysbox gives it its own cgroup namespace; under
+  # plain runc /sys/fs/cgroup is read-only. A container without it runs sessions
+  # exactly as it did before -- unbounded -- and SessionMemoryCgroup.available?
+  # reports false rather than erroring on the spawn path.
+  #
+  # Runs AFTER the dockerd block on purpose: dockerd stays in the cgroup it was
+  # started in, so the inner daemon and the containers it manages are not caught
+  # up in a subtree meant for session processes.
+  # ---------------------------------------------------------------------------
+  # One variable, read here and by SessionMemoryCgroup, so the entrypoint cannot delegate
+  # a directory the app then does not look in. The cgroup filesystem root is its parent by
+  # construction -- that is the cgroup whose subtree_control has to offer the memory
+  # controller for a child to be able to carry a memory.max.
+  zimmer_cgroup_root="${ZIMMER_SESSION_CGROUP_ROOT:-/sys/fs/cgroup/zimmer.sessions}"
+  zimmer_delegate_cgroups() {
+    local fs_root
+    fs_root="$(dirname "$zimmer_cgroup_root")"
+    [ -d "$fs_root" ] || return 0
+
+    # The memory controller has to be available to the container at all, and
+    # enabled for the root's children, before a child can carry a memory.max.
+    grep -qw memory "$fs_root/cgroup.controllers" 2>/dev/null || return 0
+    if ! grep -qw memory "$fs_root/cgroup.subtree_control" 2>/dev/null; then
+      echo "+memory" > "$fs_root/cgroup.subtree_control" 2>/dev/null || return 0
+    fi
+
+    mkdir -p "$zimmer_cgroup_root/app" 2>/dev/null || return 0
+    echo "+memory" > "$zimmer_cgroup_root/cgroup.subtree_control" 2>/dev/null || return 0
+
+    # The three files cgroup v2 says to hand over with the directory. Ownership of
+    # the directory is what permits mkdir; ownership of cgroup.procs is what permits
+    # the migration.
+    chown 1000 "$zimmer_cgroup_root" \
+                "$zimmer_cgroup_root/cgroup.procs" \
+                "$zimmer_cgroup_root/cgroup.subtree_control" \
+                "$zimmer_cgroup_root/cgroup.threads" 2>/dev/null || return 0
+
+    # Move this shell in last. `exec setpriv` below keeps the pid, and children
+    # inherit the cgroup, so the whole app lands in $zimmer_cgroup_root/app -- which
+    # is what makes the delegated parent the common ancestor for every later
+    # session migration.
+    echo $$ > "$zimmer_cgroup_root/app/cgroup.procs" 2>/dev/null || return 0
+
+    echo "Per-session memory bounds are available (delegated $zimmer_cgroup_root to uid 1000)." >&2
+  }
+  zimmer_delegate_cgroups || true
+
+  # ---------------------------------------------------------------------------
   # Reclaim root-owned files in the volumes the app uses at uid 1000.
   #
   # Dropping THIS process to 1000 does not make the container safe for the app,

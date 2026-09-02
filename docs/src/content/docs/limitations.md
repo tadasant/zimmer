@@ -3672,6 +3672,54 @@ Production remains off by default and owes its own staging-proven rollout — se
 
 ---
 
+## A session's memory bound needs the nested-Docker worker
+
+Every agent session runs in its own cgroup with its own `memory.max`
+([Each session gets its own memory bound](/sessions/spawning/#each-session-gets-its-own-memory-bound)),
+which needs a **writable cgroup2 filesystem**. The worker has one only because sysbox gives
+it its own cgroup namespace: under plain runc `/sys/fs/cgroup` is read-only, and on a dev Mac
+there is no cgroupfs at all. Nested Docker is also off by default
+(`ZIMMER_NESTED_DOCKER` defaults to `0` in `config/deploy.production.yml`), so a deployment
+that has not turned it on gets no bound.
+
+Where the bound is unavailable, `SessionMemoryCgroup.available?` is false and every caller
+no-ops: sessions spawn exactly as they did before, unbounded, and one runaway command can
+still spend the whole container budget. That is deliberate — a failed bound must never be the
+thing that stops a session from running — but it means the protection is silently absent
+rather than loudly missing. The entrypoint logs one line when it *does* delegate the subtree;
+nothing warns when it does not.
+
+Three further gaps in what the bound covers, all by design:
+
+- **It is not a sandbox.** An agent runs as the same uid that owns the delegated subtree, so
+  it can move itself out of its own cgroup. This is a guardrail against a runaway command, not
+  a boundary against a hostile one — Zimmer has no such boundary anywhere.
+- **Inner Docker containers escape it.** A container an agent starts through the nested
+  `dockerd` is placed in a cgroup by that daemon, which lives outside `zimmer.sessions`. Its
+  memory is charged to the worker container, not to the session that asked for it.
+- **CI cannot test the enforcement**, only the plumbing — same reason as
+  [CI cannot test the nested-Docker path](/limitations/#ci-cannot-test-the-nested-docker-path-only-the-shape-of-it).
+  The kernel half is verified on staging.
+
+### 🔴 A contained session kill still looks like an incident to the fleet alert
+
+The success case of a per-session bound is a kernel `oom-kill:` line. The fleet's
+`fleet_cgroup_oom_kill` alert counts those lines unfiltered, so a session whose runaway command
+was killed *inside its own cgroup* — harming nothing, needing no human — pages `#alerts` at
+critical exactly like the uncontained container-cap kill the alert was built for.
+
+Measured on staging: two contained kills left the worker container's `memory.current` unchanged
+(1.259 GB before, 1.259 GB after) and its `memory.events.local` `oom_kill` at 0, while its
+*hierarchical* `memory.events` counted both and the kernel emitted a line for each.
+
+The distinction is in the line itself, which is why the cgroups are named after the session:
+`oom_memcg=/zimmer.sessions/session-12398` is contained, `oom_memcg=/system.slice/docker-….scope`
+is not. The filter belongs to the alert rule, which lives in the `obs` stack rather than in this
+repo, so it is not fixed here — tracked in a private repo. Until it is, expect a page the first
+time a production session hits its bound.
+
+---
+
 ## `kamal app exec --reuse` runs as root on a nested-Docker worker
 
 `--reuse` is a bare `docker exec` into the running container, so it does not run the image

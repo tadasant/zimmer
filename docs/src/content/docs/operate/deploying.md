@@ -144,6 +144,26 @@ Both roles mount the same durable named volumes, so state survives a deploy and 
 - `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
 - The `worker` role additionally mounts `/var/run/docker.sock`, which `DockerCleanupJob` needs.
 
+### Two memory caps, and what each one protects
+
+The `worker` role carries a container `memory:` cap — 10g in production, 2g on staging — and it
+protects the **host**. Uncapped, an overshoot in the only role that runs arbitrary work is a
+global out-of-memory event: the kernel takes victims across every cgroup, sshd and Caddy lose
+their working set, and the droplet stops answering. The cap relocates that kill into one cgroup,
+at a moment the config chose. Both numbers are derived from their own droplet and are not
+transferable between them; the reasoning is written out in the deploy files themselves.
+
+Underneath it, `ZIMMER_SESSION_MEMORY_MAX_MB` gives **each agent session** its own cgroup and its
+own `memory.max` — 4096 in production, 1024 on staging. That one protects the worker's own cgroup
+from a single session inside it, which the container cap cannot: one runaway command used to be
+able to spend the whole budget and let the kernel pick a victim by size rather than by blame
+([#815](https://github.com/tadasant/zimmer/issues/815)). Setting it to `0` disables the bound,
+which is the break-glass; changing it is a deploy, never a shell. The mechanism, the sizing
+argument, and what a session sees when it fires are in
+[Each session gets its own memory bound](/sessions/spawning/#each-session-gets-its-own-memory-bound);
+the deployments that get no bound at all are in
+[Limitations](/limitations/#a-sessions-memory-bound-needs-the-nested-docker-worker).
+
 ## Ops actions ship with the deploy
 
 **Nothing Zimmer needs done in production requires a shell on the box.** A feature is not finished

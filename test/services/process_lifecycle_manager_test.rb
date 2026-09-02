@@ -1,5 +1,6 @@
 require "test_helper"
 require "mocha/minitest"
+require "tmpdir"
 
 class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   setup do
@@ -2203,6 +2204,27 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
   private
 
+  # Stand in for the session's memory cgroup: a directory of ordinary files, pointed at by
+  # ZIMMER_SESSION_CGROUP_ROOT, so the manager reads what a kernel would have written.
+  def with_session_cgroup(oom_kills:, limit: 4 * 1024 * 1024 * 1024, peak: nil)
+    original = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
+    Dir.mktmpdir("cgroupfs") do |tmp|
+      parent = File.join(tmp, "zimmer.sessions")
+      FileUtils.mkdir_p(parent)
+      ENV["ZIMMER_SESSION_CGROUP_ROOT"] = parent
+
+      cgroup = File.join(parent, "session-#{@session.id}")
+      FileUtils.mkdir_p(cgroup)
+      File.write(File.join(cgroup, "memory.max"), limit.to_s)
+      File.write(File.join(cgroup, "memory.events"), "oom_kill #{oom_kills}\n")
+      File.write(File.join(cgroup, "memory.peak"), peak.to_s) if peak
+
+      yield
+    end
+  ensure
+    original.nil? ? ENV.delete("ZIMMER_SESSION_CGROUP_ROOT") : ENV["ZIMMER_SESSION_CGROUP_ROOT"] = original
+  end
+
   # Helper to calculate the transcript directory for the test session
   def calculate_test_transcript_dir
     home_dir = File.expand_path("~")
@@ -2474,6 +2496,60 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     # Tracked the attempt for the bounded retry budget.
     assert_equal 1, @session.reload.metadata["signal_death_retry_count"]
     assert @session.metadata["last_signal_death_at"].present?
+  end
+
+  # #815: a SIGKILL is a SIGKILL either way, so this used to be able to say only "likely
+  # OOM". With a per-session cgroup the kernel's own counter says whether it was, and the
+  # agent gets told what to do differently instead of being nudged to re-run the command
+  # that just died.
+  test "handle_exit names the session's memory bound when that is what killed it" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    with_session_cgroup(oom_kills: 1, limit: 4 * 1024 * 1024 * 1024, peak: 4 * 1024 * 1024 * 1024) do
+      manager = create_manager
+      manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+      decision = manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+      assert_equal :continue, decision.action
+      resume = @mock_cli_adapter.resumed_sessions.last
+      assert_match(/reached its memory limit/, resume[:prompt])
+      refute_equal AutomatedPrompts::SYSTEM_RECOVERY, resume[:prompt],
+        "the generic nudge invites the agent to re-run the command that just OOMed"
+      @log_buffer.flush
+      assert_match(/memory limit/, @session.logs.reload.map(&:content).join("\n"))
+    end
+  end
+
+  # The other half: a subprocess OOM the watch already reported is not this death. Without
+  # the delta, every later signal death for the rest of the session would be blamed on a
+  # kill that happened once, hours ago.
+  test "handle_exit does not blame the memory bound for a kill already accounted for" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+    @session.update!(metadata: @session.metadata.merge(SessionMemoryWatch::OOM_KILL_COUNT_KEY => 1))
+
+    with_session_cgroup(oom_kills: 1) do
+      manager = create_manager
+      manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+      manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+      assert_equal AutomatedPrompts::SYSTEM_RECOVERY, @mock_cli_adapter.resumed_sessions.last[:prompt]
+    end
+  end
+
+  # Every deployment without a writable cgroup2 filesystem. The hedge is what this said
+  # before per-session cgroups existed, and it stays exactly right there.
+  test "handle_exit keeps its old hedge where there is no per-session cgroup to read" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+    manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+    assert_equal AutomatedPrompts::SYSTEM_RECOVERY, @mock_cli_adapter.resumed_sessions.last[:prompt]
+    @log_buffer.flush
+    assert_match(/likely OOM or external kill/, @session.logs.reload.map(&:content).join("\n"))
   end
 
   test "handle_exit increments the signal-death retry counter across successive kills" do
