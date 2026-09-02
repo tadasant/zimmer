@@ -174,4 +174,171 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
 
     assert_equal true, AppSetting.current.reload.quota_pool_available
   end
+
+  # ===========================================================================
+  # The spot gate decides whether the recovery is worth announcing (#611)
+  #
+  # The pool's `status` column and the spot gate answer different questions and
+  # can disagree for days: an account goes back to `available` when Anthropic's
+  # own window clears, while the gate compares the pool's spend against the
+  # operator's reserve and pacing curve. On 2026-08-22 that disagreement fired
+  # the "the pool has capacity again" edge 27 times in ten hours, every one of
+  # them spawning a `priority` fleet session that read `HELD` and woke nobody.
+  # ===========================================================================
+
+  # The gate averages every account's latest snapshot and counts every running
+  # session, so a fixture reading or a fixture session in `running` would decide
+  # these tests instead of the seeds below.
+  def enable_spot_gating(reserve_pct: 20, max_concurrent: 10)
+    Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
+    AppSetting.editable.update!(spot_gating_enabled: true,
+                                spot_reserve_five_hour_pct: reserve_pct,
+                                spot_reserve_weekly_pct: reserve_pct,
+                                spot_max_concurrent_sessions: max_concurrent)
+  end
+
+  def seed_reading(account, utilization_5h:, utilization_7d:)
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: account,
+      utilization_5h: utilization_5h, utilization_7d: utilization_7d,
+      reset_5h: 2.hours.from_now, reset_7d: 2.days.from_now,
+      active_session_count: 1, trigger: "usage_sample"
+    )
+  end
+
+  # The reproduction, in the shape the 2026-08-22T18:12:59Z report describes: the
+  # per-account quota flag has cleared, so `accounts.available` reads true and the
+  # pool edge rises — while the pool's aggregate utilization is still far past the
+  # share spot work is allowed to touch, so the gate the woken session reads is
+  # HELD. Before the gate check this fired, and the fleet session it spawned woke
+  # nothing.
+  test "the edge does not fire while the spot gate is holding spot work" do
+    enable_spot_gating
+    exceeded = account(:quota_exceeded)
+    seed_reading(exceeded, utilization_5h: 0.89, utilization_7d: 0.93)
+    QuotaAvailabilityMonitor.check!
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+
+    # What QuotaResetCheckerJob does when Anthropic's own window clears: the
+    # per-account label goes, the aggregate utilization does not.
+    exceeded.update!(status: :active)
+    assert SpotGateService.evaluate.held?, "the fixture must reproduce a held gate"
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_not QuotaAvailabilityMonitor.check!
+    end
+    assert_equal false, AppSetting.current.reload.quota_pool_available,
+      "the edge is DEFERRED, not spent — the next sweep has to be able to fire it"
+  end
+
+  # The recurrence rate is the cost: `check!` runs every fifteen minutes, and
+  # every pass through an over-target window used to be another priority session
+  # that read HELD and woke nobody.
+  test "a pool held by the gate does not fire once per sweep" do
+    enable_spot_gating
+    held = account(:quota_exceeded)
+    seed_reading(held, utilization_5h: 0.89, utilization_7d: 0.93)
+    QuotaAvailabilityMonitor.check!
+    held.update!(status: :active)
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      4.times { |pass| assert_not QuotaAvailabilityMonitor.check!, "sweep #{pass + 1} must not fire" }
+    end
+  end
+
+  # The regression the deferral must not become: an edge that can never fire
+  # again leaves every parked session asleep forever, which is worse than the
+  # noise it replaced. The same pool, once the gate opens, fires on the very
+  # next sweep.
+  test "the deferred edge fires as soon as the gate opens" do
+    enable_spot_gating
+    recovering = account(:quota_exceeded)
+    reading = seed_reading(recovering, utilization_5h: 0.89, utilization_7d: 0.93)
+    QuotaAvailabilityMonitor.check!
+    recovering.update!(status: :active)
+    assert_not QuotaAvailabilityMonitor.check!
+
+    # The window rolls over: the same pool, now inside the share spot work owns.
+    reading.update!(utilization_5h: 0.10, utilization_7d: 0.10)
+    assert SpotGateService.evaluate.allowed?, "the fixture must reproduce an open gate"
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.check!
+    end
+    assert_equal true, AppSetting.current.reload.quota_pool_available
+  end
+
+  # A genuine recovery with the gate consulted and open still fires, which is the
+  # whole point of the event.
+  test "a real recovery fires while the gate has room" do
+    enable_spot_gating
+    exceeded = account(:quota_exceeded)
+    seed_reading(exceeded, utilization_5h: 0.10, utilization_7d: 0.10)
+    QuotaAvailabilityMonitor.check!
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+
+    exceeded.update!(status: :active)
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.check!
+    end
+  end
+
+  # A slot-starved fleet leaves the woken session exactly as little to hand out
+  # as a spent budget does: it computes its headroom as ceiling minus running and
+  # forces it to zero on any held decision.
+  test "the edge does not fire while every fleet slot is taken" do
+    enable_spot_gating(max_concurrent: 1)
+    exceeded = account(:quota_exceeded)
+    seed_reading(exceeded, utilization_5h: 0.10, utilization_7d: 0.10)
+    QuotaAvailabilityMonitor.check!
+    exceeded.update!(status: :active)
+    Session.create!(prompt: "occupying the only slot", agent_runtime: "claude_code", status: :running,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem", session_id: SecureRandom.uuid)
+
+    assert_equal SpotGateService::FLEET_CAP_REASON, SpotGateService.evaluate.reason
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_not QuotaAvailabilityMonitor.check!
+    end
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+  end
+
+  # Fail OPEN. A gate that cannot be read must not become an outage of the only
+  # wake path a parked spot session has — the fleet session re-reads the gate for
+  # itself, so a spurious fire costs one session while a suppressed one costs
+  # every parked session indefinitely.
+  test "a spot gate that cannot be read fires the edge anyway" do
+    exceeded = account(:quota_exceeded)
+    QuotaAvailabilityMonitor.check!
+    exceeded.update!(status: :active)
+
+    SpotGateService.stub(:evaluate, ->(*) { raise "gate is down" }) do
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+        assert QuotaAvailabilityMonitor.check!
+      end
+    end
+  end
+
+  # request_wake! fires the same event, to be answered by the same fleet session,
+  # so it asks the same question. Its caller sweeps every fifteen minutes and
+  # asks again, so a deferral costs one sweep and no edge.
+  test "request_wake! defers while the gate is holding and fires once it opens" do
+    enable_spot_gating
+    held = account(:active)
+    reading = seed_reading(held, utilization_5h: 0.89, utilization_7d: 0.93)
+    QuotaAvailabilityMonitor.record_unavailable!
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_not QuotaAvailabilityMonitor.request_wake!(reason: "1 parked spot session")
+    end
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+
+    reading.update!(utilization_5h: 0.10, utilization_7d: 0.10)
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked spot session")
+    end
+  end
 end

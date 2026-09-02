@@ -1149,11 +1149,28 @@ after the accounts are restored, and asks one question: can the pool serve a req
 there an account that is neither `quota_exceeded` nor waiting on a human to re-authenticate. It
 reads the durable column (`accounts.available`), which is the same thing the wake sweep it feeds
 reads, and deliberately not the evidence-based predicate a PARK stops on — see [One predicate for
-"is the pool drained"](#one-predicate-for-is-the-pool-drained). It is deliberately **not** the spot
-gate's question: `SpotGateService`
-answers "is utilization under the operator's targets and is a slot free", and firing on that would
-also fire when a fleet slot opened, which is not a quota recovery. The fleet session reads the gate
-for itself before starting anything.
+"is the pool drained"](#one-predicate-for-is-the-pool-drained).
+
+That rising edge is **necessary but not sufficient**. Before firing, the monitor asks
+`SpotGateService` whether any spot session could start right now, because starting spot work is the
+entire job of the session this event spawns. A held gate means the answer is no, so the event is
+**deferred**: the stored level stays `false` and the next sweep asks both questions again. Nothing is
+spent and nothing is lost — the gate opens on a window rolling over, on the fleet's burn falling, or
+on a slot freeing, none of which needs this event to happen first. Parked **priority** sessions are
+unaffected either way, because the same sweep resumes them directly and the gate never holds them.
+
+The two readings drift apart because they measure different things, which is the whole defect
+([#611](https://github.com/tadasant/zimmer/issues/611)). An account goes back to `available` when
+Anthropic's own window clears; the gate compares the pool's spend against the operator's reserve and
+pacing curve. A pool whose accounts are all unflagged while its weekly spot budget is spent reads
+available and held at the same instant — which fired 27 fleet sessions in ten hours on 2026-08-22,
+every one of them reading `HELD / at_utilization_limit`, waking nobody, and spending a `priority`
+slot against the very window whose utilization was holding the gate.
+
+The check **fails open** in both layers: `SpotGateService` already allows a session on any condition
+it cannot evaluate, and a raise on the way to asking is treated the same way. A spurious fire costs
+one session, which then re-reads the gate for itself; a suppressed one costs every parked session its
+only wake path.
 
 A fire that delivers **no session** — nothing listening, every fire raised, every one burst-suppressed
 — puts the edge back (`QuotaAvailabilityMonitor.rearm!`), so the next sweep fires again rather than

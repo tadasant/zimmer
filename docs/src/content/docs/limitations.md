@@ -1236,6 +1236,14 @@ whole spot wake into one event, and the sharp edges are all about that concentra
 - **`auth_outage_pool_recovers_at` is an estimate, not a schedule.** It is derived from
   `ClaudeAccountQuotaSnapshot#reset_5h` / `reset_7d` for a quota park, shown in the banner, and read
   by nothing.
+- **A held spot gate defers the wake for as long as it holds.** The edge fires only when the pool has
+  recovered *and* `SpotGateService` has room for a spot session, because starting spot work is all
+  the fleet session can do — see [When the pool runs
+  dry](/auth/harness/#when-the-pool-runs-dry). The deferral is re-asked every fifteen minutes and
+  costs no edge, but a weekly window whose spot budget is spent holds the gate for days, and every
+  parked spot session waits out that whole stretch. That is the correct outcome — none of them could
+  have started — and it is still a wake that does not happen. Parked *priority* sessions are not
+  affected: the same sweep resumes them directly.
 
 ### The idle-fleet event is sampled, latched and floored, and each of the three has an edge
 

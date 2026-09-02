@@ -31,12 +31,40 @@
 # this in the same tick, so the level it records is never more than that tick
 # stale.
 #
-# It is deliberately NOT the spot gate's question. SpotGateService asks whether
-# utilization is under the operator's targets and whether a fleet slot is free, and
-# that policy is unchanged by any of this: the fleet-maintenance session the event
-# spawns reads the gate for itself before starting anything. Firing on the gate's
-# own answer instead would also make the event fire on a fleet slot opening, which
-# is not a quota recovery.
+# The gate is a SEPARATE question, and it is asked second rather than instead.
+# SpotGateService decides whether any spot session may start right now, and the
+# session this event spawns exists to start spot work — so a rising edge observed
+# while the gate holds announces a recovery nothing can act on. #611 is what that
+# costs: 27 fleet sessions in ten hours, every one reading `HELD /
+# at_utilization_limit` and waking nobody, each spending a `priority` slot against
+# the very window whose utilization was holding the gate.
+#
+# The two readings drift apart because they measure different things. `accounts`
+# go back to `available` when Anthropic's own windows clear (QuotaResetCheckerJob
+# restores them on ClaudeAccountQuotaSnapshot#windows_clear?), while the gate
+# compares the pool's spend against the OPERATOR's reserve and pacing curve. A
+# pool whose accounts are all unflagged but whose weekly spot budget is spent
+# reads available and held at the same instant, every fifteen minutes, for days.
+#
+# So the pool's rising edge is necessary and the gate's assent is sufficient:
+#
+#   pool NOT available          -> nothing to announce
+#   pool available, gate HELD   -> DEFER. The level stays `false`, so the very
+#                                  next sweep re-asks. Nothing is spent and
+#                                  nothing is lost.
+#   pool available, gate allows -> fire.
+#
+# Deferring rather than spending is what keeps this from becoming the opposite
+# bug — an edge that can never fire again, leaving parked sessions asleep
+# forever. `check!` runs every fifteen minutes and re-tests both halves; the gate
+# opens on a window rolling over, on the fleet's burn falling, or on a slot
+# freeing, none of which needs this event to happen first. And it strands no
+# PRIORITY work: those parks are resumed directly by
+# AuthOutageParkService.wake_parked_sessions!, in the same pass, ungated.
+#
+# Holding the level at `false` through a deferral is the same move `rearm!`
+# already makes for a fire that delivered nothing: the column records whether the
+# recovery has been ANNOUNCED, not merely whether the pool is up.
 #
 # == Fail quiet
 #
@@ -75,6 +103,15 @@ class QuotaAvailabilityMonitor
       unless available
         record_level!(setting, false)
         logger.info("Account pool has nothing left to serve — parked sessions wait for the recovery event")
+        return false
+      end
+
+      # The pool can serve again — but can anything the wake would start actually
+      # run? A deferral leaves the level `false`, so this is re-asked on the next
+      # sweep rather than being spent on a session with nothing to hand out.
+      if (hold = spot_gate_hold)
+        logger.info("Account pool has capacity again, but spot work is held — deferring #{EVENT_NAME}",
+          gate_reason: hold.reason, gate_detail: hold.detail)
         return false
       end
 
@@ -177,6 +214,18 @@ class QuotaAvailabilityMonitor
         return false
       end
 
+      # Same gate as `check!`, for the same reason: this fires the same event, to
+      # be answered by the same fleet session, which can start nothing while spot
+      # work is held. The sweep that asks runs every fifteen minutes and asks
+      # again, so a deferral here costs one sweep and no edge.
+      if (hold = spot_gate_hold)
+        Rails.logger.info(
+          "[QuotaAvailabilityMonitor] Not firing #{EVENT_NAME}#{" (#{reason})" if reason}: " \
+          "spot work is held (#{hold.reason})"
+        )
+        return false
+      end
+
       Rails.logger.info "[QuotaAvailabilityMonitor] Firing #{EVENT_NAME}#{" (#{reason})" if reason}"
       ActiveRecord::Base.transaction do
         record_level!(setting, true)
@@ -186,6 +235,30 @@ class QuotaAvailabilityMonitor
     rescue => e
       Rails.logger.info "[QuotaAvailabilityMonitor] Could not request a wake: #{e.message}"
       false
+    end
+
+    # The gate decision when it is REFUSING spot work, or nil when spot work may
+    # start — which is the only answer that lets the event fire.
+    #
+    # Any held reason counts, not just `at_utilization_limit`. The fleet session
+    # this event spawns computes its own headroom as
+    # `max(concurrency_ceiling - running, 0)` and forces it to zero on a held
+    # decision, so `fleet_at_cap` leaves it with exactly as little to do as a
+    # spent budget does. Both clear on their own, and both are re-asked fifteen
+    # minutes later.
+    #
+    # Fails OPEN, in both layers: SpotGateService already allows the session on
+    # any condition it cannot evaluate, and a raise on the way to asking is
+    # treated the same way here. A monitoring gap must not become an outage of
+    # every parked session's only wake path — the fleet session re-reads the gate
+    # for itself before it starts anything, so a spurious fire is bounded by one
+    # session while a suppressed one is not.
+    def spot_gate_hold
+      decision = SpotGateService.evaluate
+      decision.allowed? ? nil : decision
+    rescue => e
+      Rails.logger.info "[QuotaAvailabilityMonitor] Could not read the spot gate: #{e.message}"
+      nil
     end
 
     def record_level!(setting, available)

@@ -569,6 +569,15 @@ session running the `awaken-waiting-sessions` skill, which decides — in preced
 spot thresholds and the concurrency ceiling — which `waiting` sessions start. See
 [When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
 
+Two things have to be true for it to fire: the account pool has to cross from serving nothing to
+serving something, **and** the spot gate has to have room for a spot session. The pool's edge alone
+is not enough — an account is `available` again once Anthropic's own window clears, while the gate
+measures the pool's spend against the operator's reserve and pacing curve, so the two can disagree
+for days at a time. A rising edge observed against a held gate is **deferred**, not spent: the stored
+level stays `false` and the next fifteen-minute sweep asks again, so the event fires as soon as the
+gate opens rather than never. Parked **priority** sessions never wait on any of this —
+`QuotaResetCheckerJob` resumes them directly, ungated.
+
 #### `no_sessions_in_progress`
 
 Fires when the deployment has had **nothing to do** for `FleetIdleMonitor::IDLE_THRESHOLD` — five
