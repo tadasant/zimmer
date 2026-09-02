@@ -4027,6 +4027,47 @@ class SessionTest < ActiveSupport::TestCase
       "a heartbeat must not be resurrected by SIGTERM recovery after its moment has passed"
   end
 
+  # === inherited_transcript_message_count =====================================
+  #
+  # The fork point, read as a count rather than an index. GithubPrUrlHook drops
+  # this many messages off the head of the transcript before looking for evidence
+  # that the session opened a PR, so an off-by-one here either leaks the source's
+  # last message into the fork's evidence or discards the fork's first (#556).
+
+  test "inherited_transcript_message_count is zero for a session that was never forked" do
+    assert_equal 0, sessions(:running).inherited_transcript_message_count
+  end
+
+  test "inherited_transcript_message_count is one past the inclusive fork index" do
+    session = sessions(:running)
+    session.update!(metadata: session.metadata.to_h.merge("forked_at_message_index" => 4))
+
+    assert_equal 5, session.inherited_transcript_message_count
+  end
+
+  test "inherited_transcript_message_count counts the single message a fork at index 0 copied" do
+    session = sessions(:running)
+    session.update!(metadata: session.metadata.to_h.merge("forked_at_message_index" => 0))
+
+    assert_equal 1, session.inherited_transcript_message_count
+  end
+
+  test "inherited_transcript_message_count is zero for a fork point it cannot read" do
+    # A fork with no recorded index, and a value of the wrong shape, both fall the
+    # same way: a boundary the reader cannot locate must not be guessed at as
+    # "everything is inherited", which is the reading that discards a session's
+    # own evidence.
+    session = sessions(:running)
+    session.update!(metadata: session.metadata.to_h.merge("forked_from_session_id" => 42))
+    assert_equal 0, session.inherited_transcript_message_count
+
+    session.update!(metadata: session.metadata.to_h.merge("forked_at_message_index" => "4"))
+    assert_equal 0, session.inherited_transcript_message_count
+
+    session.update!(metadata: session.metadata.to_h.merge("forked_at_message_index" => -1))
+    assert_equal 0, session.inherited_transcript_message_count
+  end
+
   test "deliver_follow_up! forwards images and files to the job" do
     session = sessions(:needs_input)
     captured = nil

@@ -15,6 +15,8 @@ require "test_helper"
 #   assistant prose claiming creation          | yes (same repo)        | yes
 #   assistant prose merely referencing a PR    | no                     | no
 #   user message (incl. Zimmer notifications)  | no                     | no
+#   any of the above, before a fork's point    | no (the source did)    | no
+#   any of the above, after a fork's point     | as above               | as above
 class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   setup do
     @session = sessions(:running)
@@ -997,19 +999,159 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/owner/repo/pull/1" ], tracked_urls
   end
 
-  test "the guard keys on the summary-fork marker, so an ordinary fork is unaffected" do
-    # Deliberately the same source-copied `gh pr create` the tests above feed a
-    # summary fork, so what this pins is narrow and worth stating plainly: a
-    # user-initiated fork goes on being credited with everything in its copied
-    # transcript, including PRs the SOURCE opened. That is unchanged behaviour and
-    # is not fixed here — a user fork is a live session, so nothing is stranded,
-    # but both sessions do match `with_github_prs` and both receive that PR's
-    # comments. Tracked separately in issue #556.
+  # === User forks (only what they opened after the fork point) =================
+
+  # A user-initiated fork has the same copied transcript as a summary fork, but
+  # it is a live working session that may go on to open pull requests of its own
+  # — so the guard cannot be "record nothing". The fork point is the line: at or
+  # before `forked_at_message_index` the messages are the source's, after it they
+  # are the fork's (#556).
+
+  # `forked_at_message_index` is INCLUSIVE and 0-based, so a fork carrying `n`
+  # copied messages records `n - 1`. Mirrors ForkSessionService, which slices
+  # `parsed[0..message_index]`.
+  def make_user_fork(inherited_message_count:, source_id: 42)
+    @session.update!(metadata: @session.metadata.to_h.merge(
+      "forked_from_session_id" => source_id,
+      "forked_at_message_index" => inherited_message_count - 1
+    ))
+    assert_not @session.status_summary_fork?, "the fixture must be a user fork, not a summary fork"
+    assert_equal inherited_message_count, @session.inherited_transcript_message_count
+  end
+
+  test "records nothing for a user fork whose only gh pr create is the source's" do
+    # Deliberately the same source-copied `gh pr create` the summary-fork tests
+    # above feed: two messages, both inherited, both from before the fork point.
+    make_user_fork(inherited_message_count: 2)
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_nil tracked_urls
+  end
+
+  test "records nothing for a user fork on the source's re-created or claimed evidence either" do
+    make_user_fork(inherited_message_count: 3)
+
+    run_hook(
+      claude_pr_create("a pull request for branch feat already exists:\n" \
+                       "https://github.com/owner/repo/pull/7", is_error: true),
+      claude_assistant_text("Opened PR: https://github.com/owner/repo/pull/8")
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "records the PR a user fork opens itself after the fork point" do
+    # This is the half a blanket fork guard would break: the source's PR is in
+    # the copied prefix, the fork's own is in what it wrote next, and only the
+    # second is the fork's provenance.
+    make_user_fork(inherited_message_count: 2)
+
+    run_hook(
+      claude_pr_create("https://github.com/owner/repo/pull/123", id: "toolu_source"),
+      claude_pr_create("https://github.com/owner/repo/pull/456", id: "toolu_fork")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/456" ], tracked_urls
+  end
+
+  test "records a user fork's own prose claim made after the fork point" do
+    make_user_fork(inherited_message_count: 1)
+
+    run_hook(
+      claude_user_text("continue from here"),
+      claude_assistant_text("Opened PR: https://github.com/owner/repo/pull/456")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/456" ], tracked_urls
+  end
+
+  test "a user fork that opens its own PR still reaches the GitHub pollers" do
+    # The other direction of the consequence the summary-fork tests pin. Too
+    # broad a guard would silently switch off the PR, comment and merge-conflict
+    # pollers for a session that really did open the PR (#89).
+    make_user_fork(inherited_message_count: 2)
+
+    run_hook(
+      claude_pr_create("https://github.com/owner/repo/pull/123", id: "toolu_source"),
+      claude_pr_create("https://github.com/owner/repo/pull/456", id: "toolu_fork")
+    )
+
+    assert Session.with_github_prs.exists?(id: @session.id)
+  end
+
+  test "an uncredited user fork stays out of the GitHub pollers' scope" do
+    make_user_fork(inherited_message_count: 2)
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_not Session.with_github_prs.exists?(id: @session.id)
+  end
+
+  test "an inherited create whose result lands past the fork point is not evidence" do
+    # The fork point is any message index the user picks, so it can fall between a
+    # `gh pr create` and its result. The command is then the source's, and a
+    # result is only ever read through the command that produced it — so the
+    # orphaned result vouches for nothing. Conservative on purpose: the half of
+    # the round trip that says which repo was targeted is the half that is gone.
+    make_user_fork(inherited_message_count: 1)
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_nil tracked_urls
+  end
+
+  test "codex: records nothing for a user fork whose gh pr create is the source's" do
+    # The prefix is dropped before the runtime parser ever sees the transcript,
+    # so this holds for both shapes. Pinned because the two parsers read entirely
+    # different line types and only one of them was exercised above.
+    @session.update!(agent_runtime: "codex")
+    make_user_fork(inherited_message_count: 3)
+
+    run_hook(
+      codex_shell_call(call_id: "call_1", command: [ "bash", "-lc", "gh pr create --fill" ]),
+      codex_exec_end(call_id: "call_1", exit_code: 0),
+      codex_output(call_id: "call_1", output: "https://github.com/owner/repo/pull/123")
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "codex: records the PR a user fork opens itself after the fork point" do
+    @session.update!(agent_runtime: "codex")
+    make_user_fork(inherited_message_count: 3)
+
+    run_hook(
+      codex_shell_call(call_id: "call_1", command: [ "bash", "-lc", "gh pr create --fill" ]),
+      codex_exec_end(call_id: "call_1", exit_code: 0),
+      codex_output(call_id: "call_1", output: "https://github.com/owner/repo/pull/123"),
+      codex_shell_call(call_id: "call_2", command: [ "bash", "-lc", "gh pr create --fill" ]),
+      codex_exec_end(call_id: "call_2", exit_code: 0),
+      codex_output(call_id: "call_2", output: "https://github.com/owner/repo/pull/456")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/456" ], tracked_urls
+  end
+
+  test "a fork with no recorded fork point is read exactly as an unforked session" do
+    # Nothing writes `forked_from_session_id` without `forked_at_message_index`
+    # today — ForkSessionService sets both in the same hash. This pins which way
+    # the reader falls if that ever stops being true: a boundary it cannot locate
+    # is not an excuse to discard the session's own evidence, which is the
+    # failure mode (#89) that costs more than the duplicate routing.
     @session.update!(metadata: @session.metadata.to_h.merge("forked_from_session_id" => 42))
 
     run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
 
     assert_equal [ "https://github.com/owner/repo/pull/123" ], tracked_urls
+  end
+
+  test "a fork carrying more copied messages than its transcript holds records nothing" do
+    make_user_fork(inherited_message_count: 50)
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/123")
+
+    assert_nil tracked_urls
   end
 
   # === The missing-PR warning (#89) ===========================================

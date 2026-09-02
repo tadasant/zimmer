@@ -93,7 +93,7 @@ running into the URL ("I've opened `<url>`"), or a verb, a PR noun and then the 
 draft PR at `<url>`"). Only inflected verbs count: "open" is an adjective as often as a verb, and
 "the open PR: `<url>`" is how prose refers to *someone else's* PR.
 
-Three things are deliberately **not** evidence:
+Four things are deliberately **not** evidence:
 
 - **A same-repo URL sitting in an unrelated tool result.** Matching on the repo alone is how a
   session that merely ran `gh pr view` — a merge gate, a reviewer, anything reading the repo's PR
@@ -105,6 +105,18 @@ Three things are deliberately **not** evidence:
 - **A URL in a user message.** Zimmer's own trigger prompts carry PR URLs ("comments on your PR
   `<url>`"), so adopting them would let one misrouted notification bootstrap a permanent wrong
   association.
+- **Anything in the part of a fork's transcript the fork did not write.** `ForkSessionService` gives
+  a fork a *copy* of the source session's conversation up to the fork point, so the source's own
+  `gh pr create` is sitting in the fork's transcript as Created evidence from the moment the fork
+  exists. The hook reads only the messages **after** `metadata["forked_at_message_index"]`, which is
+  the boundary between what the source wrote and what the fork wrote
+  ([#556](https://github.com/tadasant/zimmer/issues/556)).
+
+  This is a trim, not a skip, and the difference is the point. A user fork is a live working session
+  that may go on to open pull requests of its own; those still count, and the three pollers still
+  reach it for them. A fork whose metadata records no fork point is read exactly like an unforked
+  session — a boundary the hook cannot locate is not a reason to discard a session's own evidence,
+  because that direction is the [#89](https://github.com/tadasant/zimmer/issues/89) failure below.
 
 One session is skipped outright, whatever its transcript shows: a
 [status-summary fork](/sessions/status-summary/#generation-runs-on-a-fork). Its transcript is a copy
@@ -116,6 +128,12 @@ merged, you may archive" onto it; the harvest job then archives the fork, which 
 without consulting the archive guard, and the strand alert is skipped only when a caller *forced*
 past that guard having been shown the message. A sweep discarding a notice nobody read is exactly the
 case the alert is for. The hook records nothing for such a fork.
+
+The fork-point trim above would have been enough to prevent that page on its own — a summary fork is
+forked at the source's *last* message, so the source's whole conversation, `gh pr create` included,
+is prefix. The outright guard is kept because it says the stronger thing: a session Zimmer created to
+write a blurb opens nothing ever, so not even the one turn it writes itself counts — and it holds
+without depending on the fork point having been recorded.
 
 Both runtimes are handled. Claude Code and Codex write different transcript shapes, so finding shell
 invocations, their results, whether a result failed, and the agent's own prose is dispatched on
