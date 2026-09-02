@@ -63,7 +63,7 @@ module Mcp
       # cannot tell a starved queue from a busy one — Zimmer's seven queues have
       # very different thread counts and job durations. It also carries
       # `oldest_ready_age_seconds`, which is the number the Grafana `GoodJob queue
-      # is not draining` rule fires on, taken across every queue at once; the
+      # is not draining` rule reads, taken across every queue at once; the
       # per-queue ages are what turn that page into an answer, because a two-thread
       # lane in front of jobs that block for a minute holds its head of line for
       # tens of minutes with a perfectly healthy worker. The Slack backlog page

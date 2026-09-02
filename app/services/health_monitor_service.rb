@@ -617,8 +617,9 @@ class HealthMonitorService
   # maximum across all of them. Per-queue ages separate the two on sight — one old
   # lane beside six fresh ones is that lane starving; every lane old at once is the
   # worker. `system_health_status` now thresholds on that distinction rather than
-  # only printing it; the Grafana rule over
-  # `zimmer_good_job_oldest_ready_age_seconds` still reads the single global number.
+  # only printing it. The Grafana rule over `zimmer_good_job_oldest_ready_age_seconds`
+  # still reads the single global number, but no longer pages on it alone —
+  # tadasant-internal#2260 gated it on throughput as well, for the same reason.
   #
   # `oldest_by_queue` is the one breakdown here that is NOT capped. The counts can
   # be, because `top_counts` hands back an `other (N more)` remainder and the

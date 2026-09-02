@@ -166,7 +166,8 @@ class SystemHealthMonitorJob < ApplicationJob
         "look healthy — including the processing rate, which is a trailing hour and " \
         "lags a stall by many minutes. EVERY queue old at once is the worker itself: " \
         "down, restarting, or starved of database round-trips. The Grafana `not " \
-        "draining` rule still fires on the single global age and cannot tell them apart."
+        "draining` rule reads that same global age, and is gated on throughput so a " \
+        "healthy fleet behind a slow lane does not page twice."
     ].join("\n")
   end
 
