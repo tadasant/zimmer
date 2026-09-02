@@ -191,7 +191,8 @@ Rails.application.routes.draw do
       # tools; `start_now`, `pin`, `unpin` and `remove` are the human-only
       # operations and deliberately have NO MCP counterpart. :id on the member
       # routes is the row id or the item's key ("zimmer#498").
-      resources :work_backlog_items, only: [ :index, :show, :create ] do
+      # The id constraint lets a key with a dot in it ("next.js#5") route.
+      resources :work_backlog_items, only: [ :index, :show, :create ], constraints: { id: %r{[^/]+} } do
         collection do
           post :pull
         end

@@ -177,6 +177,59 @@ class WorkBacklog::PullTest < ActiveSupport::TestCase
     assert_raises(ArgumentError) { WorkBacklog::Start.call(item: item, scheduling_class: "urgent") }
   end
 
+  test "a long issue title is budgeted into a session title the Session model accepts" do
+    item = backlog_item(key: "zimmer#401", title: "N" * 178)
+
+    result = WorkBacklog::Start.call(item: item, scheduling_class: SessionGenesis::SPOT)
+
+    session = result.session.reload
+    assert session.valid?, session.errors.full_messages.join(", ")
+    assert_operator session.title.length, :<=, WorkBacklogItem::SESSION_TITLE_MAX
+    assert session.title.start_with?("Implement zimmer#401 (")
+    assert session.title.end_with?("…)")
+  end
+
+  test "a post-commit callback raising after the start committed returns the committed result" do
+    item = backlog_item(key: "zimmer#1")
+    real = WorkBacklog::Ranking.method(:with_lock)
+    exploding = lambda do |&block|
+      value = real.call(&block)
+      raise "Turbo broadcast blew up after COMMIT"
+    end
+
+    result = WorkBacklog::Ranking.stub(:with_lock, exploding) do
+      WorkBacklog::Start.call(item: item, scheduling_class: SessionGenesis::SPOT)
+    end
+
+    assert result.item.reload.started?
+    assert_equal result.session.id, result.item.started_session_id
+  end
+
+  test "a raise before the start committed still propagates" do
+    item = backlog_item(key: "zimmer#1")
+    exploding = ->(&_block) { raise "died before COMMIT" }
+
+    WorkBacklog::Ranking.stub(:with_lock, exploding) do
+      assert_raises(RuntimeError) { WorkBacklog::Start.call(item: item, scheduling_class: SessionGenesis::SPOT) }
+    end
+
+    assert item.reload.queued?
+  end
+
+  test "a pull whose post-commit callback raises returns the committed pull" do
+    backlog_item(key: "zimmer#1")
+    real = WorkBacklog::Ranking.method(:with_lock)
+    exploding = lambda do |&block|
+      value = real.call(&block)
+      raise "SessionTitleJob enqueue blew up after COMMIT"
+    end
+
+    result = WorkBacklog::Ranking.stub(:with_lock, exploding) { WorkBacklog::Pull.call(count: 1) }
+
+    assert_equal [ "zimmer#1" ], result.started.map { |s| s.item.key }
+    assert WorkBacklogItem.find_by(key: "zimmer#1").started?
+  end
+
   test "an issueless item is started from its verbatim prompt" do
     item = backlog_item(key: "manual-x", issue_url: nil, added_by: "human", payload: { "prompt" => "The verbatim ask." })
 

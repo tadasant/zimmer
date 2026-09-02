@@ -55,8 +55,11 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
   # Append one. Body: key, issue_url, repo, surface, title, kind, scope_direction,
   # estimated_cost, plus ratings / gate_verdict / gate_session / decided_at /
   # notes / prompt (issueless items only), added_by (defaults to "human"),
-  # acting_session_id (self-declared, provenance only), and — for a human
-  # hand-placing the item on create — pinned: true with a precedence.
+  # writing_session_id (self-declared, provenance only — `acting_session_id` is
+  # accepted as an alias so the pull and start actions' name works here too),
+  # and — for a human hand-placing the item on create — pinned: true with a
+  # precedence. Any other key rides along into `payload`, exactly as it does
+  # over MCP.
   #
   # Idempotent on key among queued items: an existing queued item comes back
   # with 200 and `created: false`.
@@ -64,7 +67,7 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
     result = WorkBacklog::Append.call(
       item_params.merge("added_by" => params[:added_by].presence || "human"),
       added_via: WorkBacklogItem::API,
-      writing_session: acting_session,
+      writing_session: writing_session,
       placement: params.permit(:pinned, :precedence).to_h
     )
 
@@ -167,26 +170,33 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
 
   private
 
-  ITEM_KEYS = %i[key issue_url repo surface title kind scope_direction estimated_cost gate_verdict
-                 gate_session decided_at notes prompt].freeze
+  # Everything in the body that is not the item: Rails' own keys, the wrapper
+  # ParamsWrapper adds, and the placement / provenance fields handled separately.
+  CONTROL_KEYS = %w[controller action format id work_backlog_item pinned precedence
+                    acting_session_id writing_session_id added_by added_via status].freeze
 
-  # Named explicitly rather than handed the whole params object; `ratings` is a
-  # nested object, permitted whole and stored verbatim in `payload`.
+  # `to_unsafe_h`, for the same reason the gate-decisions controller uses it on
+  # `entry`: nothing here is mass-assigned. WorkBacklog::Append reads the column
+  # keys one at a time and stores the remainder as opaque jsonb, so an unknown
+  # key the gate adds next week lands in `payload` here exactly as it does over
+  # MCP, rather than being silently dropped by a permit list.
   def item_params
-    permitted = params.permit(*ITEM_KEYS, ratings: {}).to_h
-    permitted["ratings"] = permitted["ratings"].to_h if permitted.key?("ratings")
-    permitted
+    params.to_unsafe_h.except(*CONTROL_KEYS)
   end
 
   def filter_params
     params.permit(*WorkBacklog::Filters::KEYS).to_h
   end
 
+  # A list of `{key, reason}`; a single object is accepted as a list of one
+  # rather than being exploded into its pairs by `Array()`.
   def dead_param
     raw = params[:dead]
     return [] if raw.blank?
 
-    Array(raw.respond_to?(:to_unsafe_h) ? raw.to_unsafe_h : raw).map { |d| d.respond_to?(:to_unsafe_h) ? d.to_unsafe_h : d }
+    raw = raw.to_unsafe_h if raw.respond_to?(:to_unsafe_h)
+    raw = [ raw ] if raw.is_a?(Hash)
+    Array(raw).map { |d| d.respond_to?(:to_unsafe_h) ? d.to_unsafe_h : d }
   end
 
   # SELF-DECLARED, unlike on the MCP surface. An HTTP request carries no session
@@ -194,7 +204,18 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
   # is a claim the caller makes, exactly like elsewhere in this API. Provenance,
   # never authorization. A stale id is dropped rather than failing the write.
   def acting_session
-    identifier = params[:acting_session_id].to_s
+    find_session(params[:acting_session_id])
+  end
+
+  # The same field under the gate-decisions controller's name, so an API
+  # consumer moving between the two "mirror" endpoints is not surprised; the
+  # pull/start name is accepted too.
+  def writing_session
+    find_session(params[:writing_session_id].presence || params[:acting_session_id])
+  end
+
+  def find_session(identifier)
+    identifier = identifier.to_s
     return nil if identifier.blank?
 
     identifier.match?(/\A\d+\z/) ? Session.find_by(id: identifier.to_i) : Session.find_by(slug: identifier)

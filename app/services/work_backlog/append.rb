@@ -83,7 +83,8 @@ module WorkBacklog
       private
 
       def build(attributes, key:, added_via:, writing_session:)
-        column_attrs = attributes.slice(*ATTRIBUTE_KEYS).compact
+        # The columns the caller may set, minus the ones assigned explicitly below.
+        column_attrs = attributes.slice(*ATTRIBUTE_KEYS).compact.except("key", "issue_url", "decided_at", "added_by")
         payload = attributes.except(*ATTRIBUTE_KEYS, "precedence", "pinned", "added_via", "status",
                                     "writing_session_id", "acting_session_id")
 
@@ -105,7 +106,11 @@ module WorkBacklog
       # placed by the band rules.
       def assign_precedence!(item, placement)
         placement = placement.to_h.deep_stringify_keys
-        if ActiveModel::Type::Boolean.new.cast(placement["pinned"]) == true
+        raw = placement["pinned"]
+        pinned = raw.nil? || raw.to_s.strip.empty? ? false : ActiveModel::Type::Boolean.new.cast(raw)
+        raise InvalidItem, "pinned must be true or false (got #{raw.inspect})" if pinned.nil?
+
+        if pinned
           raise InvalidItem, "a pinned item needs an explicit precedence" if placement["precedence"].blank?
 
           item.precedence = Integer(placement["precedence"])

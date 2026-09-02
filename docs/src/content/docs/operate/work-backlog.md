@@ -14,8 +14,8 @@ that every append and every pull rewrote through its own auto-merged pull reques
 groomer in one call.
 
 ```
-issue work gate ──append──►  work_backlog_items  ──pull 0–3/day──►  implementing sessions
-   (priority)                  (this table)           (04:00 groomer)        (spot)
+issue work gate ──append──►  work_backlog_items  ──pull a few/day──►  implementing sessions
+   (priority)                  (this table)           (04:00 groomer)          (spot)
                                      │
                           human: "start now" ──────────────────────►  priority session
 ```
@@ -63,11 +63,12 @@ ordinary append renumbers nothing. An unpinned item sits in a band chosen by its
 | `medium` | 2000–3999 | 3000 |
 | `large` | 500–1999 | 1000 |
 
-An append lands 10 below the lowest unpinned peer of the same cost (first-in, first-out within a
-band), clamped at the floor. A band that reaches its floor is re-spaced — its unpinned items
-spread evenly across `[floor, base]`, order preserved — and the append retried. A band that
-cannot be re-spaced past its floor raises rather than crossing into the band below, because
-crossing would silently rank cheap work below expensive work.
+An append lands 10 below the lowest unpinned peer of the same cost that sits inside the band
+(first-in, first-out within a band). When the next slot would be at or below the floor, the band is
+re-spaced first — its unpinned items spread evenly across `[floor, base]`, order preserved — and
+the append goes below the re-spaced lowest. A band that a re-space cannot make room in raises,
+before any row moves, rather than crossing into the band below, because crossing would silently
+rank cheap work below expensive work. That gives a band roughly 495 items.
 
 **A pinned item is never touched by an agent.** `pinned: true` is how a human hand-moves an item
 and has it stay moved: it can sit anywhere on the scale, including below a floor, and it is
@@ -113,7 +114,10 @@ issueless item's verbatim `prompt`), titled `Implement zimmer#498 (…)`, and ta
 
 A **pull** starts each item at `spot` class, as a child of the pulling session, with the rank
 carried forward: the n-th item pulled gets the puller's precedence plus `(count − n + 1)`, so the
-top item runs first and the tree stays contiguous. A **start now** starts one item at `priority`
+top item runs first and the tree stays contiguous. The server bounds a pull at 10 items; how many
+to pull on a given night — three, against a WIP ceiling of ten — is the groomer's policy, not the
+server's. A pull by `keys` is safe to retry after an error; a pull by `count` is not, and the tool
+says so. A **start now** starts one item at `priority`
 class — the human's lever over the spot queue, which is why it has no MCP path.
 `counts.in_flight` on the read surfaces is the number of started items whose session is still
 alive: the number the groomer's WIP ceiling counts, which is sessions this backlog produced and

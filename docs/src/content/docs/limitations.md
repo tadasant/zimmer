@@ -2880,6 +2880,22 @@ no goal field at all, so nothing in the shipped UI ever sends the key. The only 
 edits a goal alongside a message is the enqueued-message editor. A hand-crafted POST to the HTML
 route is the one caller that can tell the two rules apart.
 
+### The work backlog's "mechanical" and "human" claims are asserted, not verified
+
+The [work backlog](/operate/work-backlog/) draws a line between what an agent may do to the queue
+(append, pull, remove an item whose issue it found dead) and what only a human may (pin, hand-place,
+remove by judgement, start an item as a `priority` session). The line is enforced by *absence* —
+the human operations have no MCP tool — and by *vocabulary*: a pull may only remove an item with a
+reason from a fixed list of observed facts (`issue_closed`, `issue_has_open_pr`,
+`session_already_working`, `trust_failed`). Nothing on the server checks the fact. A connection
+that carries `work_backlog` can remove any queued item by asserting `trust_failed`; the record
+says which session did it, and that is the whole audit. Likewise `POST /api/v1/work_backlog_items`
+defaults `added_by` to `human` and accepts any value, because the API key it authenticates is
+shared by the fleet and establishes a caller, not a person — so the model's rule that an
+issueless item needs a human behind it is one string away for any REST caller. The same
+agent-login primitive the gate ledger's feedback boundary is waiting on ([#371](https://github.com/tadasant/zimmer/issues/371),
+[#220](https://github.com/tadasant/zimmer/issues/220)) is what would make either claim verifiable.
+
 ---
 
 ## Hardcoded values that shouldn't be

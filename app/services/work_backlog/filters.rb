@@ -32,8 +32,8 @@ module WorkBacklog
       @pinned = parse_bool(source["pinned"])
       @key = source["key"].presence&.to_s&.strip
       @added_by = source["added_by"].presence&.to_s&.strip
-      @limit = clamp(source["limit"], DEFAULT_LIMIT, MAX_LIMIT)
-      @offset = [ source["offset"].to_i, 0 ].max
+      @limit = parse_int(source["limit"], "limit", default: DEFAULT_LIMIT, min: 1, max: MAX_LIMIT)
+      @offset = parse_int(source["offset"], "offset", default: 0, min: 0)
     end
 
     # The filtered relation in rank order. Deliberately does NOT apply
@@ -96,12 +96,15 @@ module WorkBacklog
       cast
     end
 
-    def clamp(value, default, max)
-      return default if value.blank?
+    def parse_int(value, name, default:, min:, max: nil)
+      return default if value.nil? || value.to_s.strip.empty?
 
-      Integer(value).clamp(1, max)
+      int = Integer(value)
+      raise InvalidFilter, "#{name} must be at least #{min} (got #{int})" if int < min
+
+      max ? [ int, max ].min : int
     rescue ArgumentError, TypeError
-      raise InvalidFilter, "limit must be an integer (got #{value.inspect})"
+      raise InvalidFilter, "#{name} must be an integer (got #{value.inspect})"
     end
   end
 end

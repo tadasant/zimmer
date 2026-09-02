@@ -131,6 +131,18 @@ class WorkBacklog::RankingTest < ActiveSupport::TestCase
     assert_equal 0, Ranking.rerank!, "a second pass finds nothing to move"
   end
 
+  test "rerank is best-effort: a drifted item whose band is full is left where it is" do
+    drifted = backlog_item(cost: "small", precedence: 100)
+    fine = backlog_item(cost: "medium", precedence: 100)
+    boom = ->(cost, **) { cost == "small" ? raise(Ranking::BandFull, "full") : Ranking::Placement.new(precedence: 3000, respaced: false) }
+
+    moved = Ranking.stub(:place, boom) { Ranking.rerank!(logger: Logger.new(nil)) }
+
+    assert_equal 1, moved
+    assert_equal 100, drifted.reload.precedence
+    assert_equal 3000, fine.reload.precedence
+  end
+
   test "rerank ignores items that are no longer queued" do
     started = backlog_item(cost: "small", precedence: 1)
     started.mark_started!(session: sessions(:running), by: nil)

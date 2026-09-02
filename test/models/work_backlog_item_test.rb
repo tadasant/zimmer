@@ -82,6 +82,26 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert_equal "https://github.com/tadasant/zimmer/issues/42\n\nApproach it via the poller.", item.session_prompt
   end
 
+  test "precedence must fit a Postgres integer" do
+    item = backlog_item
+    item.precedence = 2**31
+    assert_not item.valid?
+    item.precedence = -(2**31) - 1
+    assert_not item.valid?
+    item.precedence = 2**31 - 1
+    assert item.valid?
+  end
+
+  test "session title never exceeds what Session accepts, and keeps its prefix" do
+    long = backlog_item(key: "zimmer#12345", title: "T" * 300)
+    assert_equal WorkBacklogItem::SESSION_TITLE_MAX, long.session_title.length
+    assert long.session_title.start_with?("Implement zimmer#12345 (")
+    assert long.session_title.end_with?("…)")
+
+    short = backlog_item(key: "zimmer#1", title: "Short")
+    assert_equal "Implement zimmer#1 (Short)", short.session_title
+  end
+
   test "session title is what the groomer wrote" do
     item = backlog_item(key: "zimmer#42", title: "Fix the thing")
     assert_equal "Implement zimmer#42 (Fix the thing)", item.session_title
