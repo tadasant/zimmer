@@ -1912,10 +1912,18 @@ module SessionStateMachine
   # and the category. Also catches sessions created without a prompt (e.g.
   # clone-only sessions that later received one), where the after_create_commit
   # callback skipped enqueuing because the prompt was blank at creation time.
+  #
+  # Coalesced per session: a SessionTitleJob already queued or running for this
+  # session reads the transcript when it runs, so a second one behind it would
+  # only find the work done. A session that stays uncategorized (the inference
+  # answered NONE) re-enqueues on every pause for as long as that holds, and
+  # without this check a session sleeping and waking on a short self-wake
+  # stacks one title job per wake — see PendingSessionJob.
   def enqueue_session_inference_if_needed
     title_pending = metadata&.dig("auto_generated_title") == true
     category_pending = category_id.blank? && prompt.present? && Category.where(is_frozen: false).exists?
     return unless title_pending || category_pending
+    return if PendingSessionJob.queued?(SessionTitleJob, id)
 
     SessionTitleJob.perform_later(id)
   rescue => e
@@ -1939,8 +1947,17 @@ module SessionStateMachine
   #
   # The generator itself still refuses when the session has not moved since the
   # last summary, so a transition that adds no transcript costs nothing.
+  #
+  # Coalesced per session at this site only: a SessionStatusSummaryJob already
+  # queued for this session — automatic or forced — computes the line count it
+  # summarizes when it claims the record, so it will cover this transition's
+  # transcript too, and a second copy would only claim an `inference` thread to
+  # return "Summary is current". The forced surfaces (Regenerate in the panel,
+  # REST, MCP) do not pass through here and are never coalesced — see
+  # SessionStatusSummaryJob for why a queue-level dedup key would be wrong.
   def enqueue_status_summary_refresh
     return if transcript.blank?
+    return if PendingSessionJob.queued?(SessionStatusSummaryJob, id)
 
     SessionStatusSummaryJob.perform_later(id)
   rescue => e

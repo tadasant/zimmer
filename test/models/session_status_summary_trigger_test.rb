@@ -39,6 +39,65 @@ class SessionStatusSummaryTriggerTest < ActiveSupport::TestCase
     end
   end
 
+  # The automatic trigger coalesces per session. A queued summary job computes
+  # the line count it summarizes when it claims the record, so it already covers
+  # this transition's transcript; a second one behind it would take an `inference`
+  # thread to return "Summary is current". 90 of those were ready on 2026-09-02.
+  test "pausing does not enqueue a second summary refresh while one is still queued" do
+    GoodJob::Job.create!(
+      job_class: "SessionStatusSummaryJob", queue_name: "inference", scheduled_at: 1.minute.from_now,
+      serialized_params: { "job_class" => "SessionStatusSummaryJob", "arguments" => [ @session.id ] }
+    )
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      @session.pause!
+    end
+  end
+
+  # A forced Regenerate that is still queued will regenerate from the current
+  # transcript when it runs, so it stands in for the automatic refresh too.
+  test "a queued forced regenerate also covers the automatic refresh" do
+    GoodJob::Job.create!(
+      job_class: "SessionStatusSummaryJob", queue_name: "inference", scheduled_at: Time.current,
+      priority: SessionStatusSummaryJob::FORCED_PRIORITY,
+      serialized_params: {
+        "job_class" => "SessionStatusSummaryJob",
+        "arguments" => [ @session.id, { "force" => true, "_aj_ruby2_keywords" => [ "force" ] } ]
+      }
+    )
+
+    assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
+      @session.pause!
+    end
+  end
+
+  test "pausing enqueues a summary refresh again once the earlier one has finished" do
+    GoodJob::Job.create!(
+      job_class: "SessionStatusSummaryJob", queue_name: "inference", scheduled_at: 2.minutes.ago,
+      finished_at: 1.minute.ago,
+      serialized_params: { "job_class" => "SessionStatusSummaryJob", "arguments" => [ @session.id ] }
+    )
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id ]) do
+      @session.pause!
+    end
+  end
+
+  # The coalescing lives at the automatic enqueue site, not on the job, so the
+  # forced surfaces are untouched: a queued automatic refresh must never swallow
+  # the operator's Regenerate.
+  test "a forced regenerate still enqueues while an automatic refresh is queued" do
+    GoodJob::Job.create!(
+      job_class: "SessionStatusSummaryJob", queue_name: "inference", scheduled_at: 1.minute.from_now,
+      serialized_params: { "job_class" => "SessionStatusSummaryJob", "arguments" => [ @session.id ] }
+    )
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { force: true } ]) do
+      SessionStatusSummaryJob.set(priority: SessionStatusSummaryJob::FORCED_PRIORITY)
+                             .perform_later(@session.id, force: true)
+    end
+  end
+
   test "a session with no transcript does not enqueue a summary refresh" do
     @session.update_column(:transcript, nil)
 

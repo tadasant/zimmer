@@ -217,6 +217,16 @@ key on the session id would collapse an operator's forced Regenerate into an unf
 refresh that happened to be queued for the same session — the operator presses the only control in the
 panel and nothing happens. The exclusion belongs where the expensive work is.
 
+The **automatic** trigger does coalesce, at its own enqueue site. The `pause` and `fail` transitions
+skip the enqueue when a `SessionStatusSummaryJob` for the session — automatic or forced — is still
+unfinished (`PendingSessionJob`), because a queued job reads the transcript line count when it claims
+the record and so already covers the transition that would have enqueued another; the second copy
+would only take one of the `inference` lane's two threads to return "Summary is current". A session sleeping and waking on a
+short self-wake pauses once per wake, and on 2026-09-02 a tranche of ~45 such sessions had 90 summary
+jobs and 100 title jobs ready on a queue draining ~800 jobs an hour. The forced surfaces never consult
+this check, so a queued automatic refresh cannot swallow a Regenerate. The check is a read, not a lock:
+two transitions landing in the same instant can still enqueue twice.
+
 Summary forks are Zimmer's own bookkeeping, not the operator's work, so they stay out of every list
 an operator reads: the dashboard (the server-rendered grid, the Turbo Stream that pushes new cards
 into it — the marker is stamped at create time, before that broadcast fires — and the
