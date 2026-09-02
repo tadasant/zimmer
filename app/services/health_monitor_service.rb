@@ -728,6 +728,15 @@ class HealthMonitorService
     # lane's depth against another lane's age. Uncapped, unlike the alert body's
     # breakdown: a lane the cap cut would read as having no depth at all, and the
     # gate would stop seeing the very queue that is starving.
+    #
+    # This costs the /health render one query net: the `DISTINCT ON` head read and
+    # the grouped count, less the single-row `pick` the global age no longer needs.
+    # That is a real reversal of `ready_backlog_breakdown`'s decision to keep these
+    # scans off the render path, and it is the price of a gate that can tell a
+    # starved lane from a stalled worker — the conjunction cannot be evaluated per
+    # lane without per-lane numbers. Both reads are bounded by the number of
+    # distinct queue names rather than by backlog depth, and both are served by the
+    # partial `(queue_name, scheduled_at)` index.
     heads = head_of_line_by_queue(ready_jobs)
 
     {
@@ -1247,7 +1256,15 @@ class HealthMonitorService
     depths = queue_stats[:ready_count_by_queue] || {}
     ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
 
-    stalled = ages.select { |queue, age| age >= lane_critical_thresholds(queue)[:stall_age] }
+    # `depths.key?` and not just the age test: the two halves are separate queries
+    # against a moving table, so a lane can drain away between them and leave an age
+    # behind with no rows under it. Such a lane adds nothing to the summed depth
+    # either way, but counting it toward the lane tally would let an already-empty
+    # queue help clear the two-lane bar. `starved_lane` guards the mirror of this
+    # with its `next if age.nil?`.
+    stalled = ages.select do |queue, age|
+      depths.key?(queue) && age >= lane_critical_thresholds(queue)[:stall_age]
+    end
     return nil if stalled.size < WORKER_STALL_MIN_LANES
 
     depth = stalled.sum { |queue, _age| depths[queue].to_i }
