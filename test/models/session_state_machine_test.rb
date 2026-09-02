@@ -1640,10 +1640,10 @@ class SessionStateMachineTest < ActiveSupport::TestCase
   end
 
   # A session sleeping and waking on a short self-wake pauses once per wake,
-  # and every pause with the title or category still pending used to enqueue a
-  # fresh SessionTitleJob behind the one already waiting — 100 of them were
-  # ready on 2026-09-02 for ~45 such sessions. The queued one reads the
-  # transcript when it runs, so the second is pure queue load.
+  # and without this check every pause with the title or category still pending
+  # enqueues a fresh SessionTitleJob behind the one already waiting — 100 of
+  # them were ready on 2026-09-02 for ~45 such sessions. The queued one reads
+  # the transcript when it runs, so the second is pure queue load.
   test "pause does not enqueue a second SessionTitleJob while one is still queued for the session" do
     session = sessions(:waiting)
     session.update!(status: :running, metadata: { "auto_generated_title" => true })
@@ -1654,6 +1654,21 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     assert_no_enqueued_jobs(only: SessionTitleJob) do
       session.pause!
+    end
+  end
+
+  # `fail` runs the same two enqueue helpers as `pause`, so a failed session
+  # whose title job is already waiting is coalesced the same way.
+  test "fail does not enqueue a second SessionTitleJob while one is still queued for the session" do
+    session = sessions(:waiting)
+    session.update!(status: :running, metadata: { "auto_generated_title" => true })
+    GoodJob::Job.create!(
+      job_class: "SessionTitleJob", queue_name: "inference", scheduled_at: 1.minute.from_now,
+      serialized_params: { "job_class" => "SessionTitleJob", "arguments" => [ session.id ] }
+    )
+
+    assert_no_enqueued_jobs(only: SessionTitleJob) do
+      session.fail!
     end
   end
 
