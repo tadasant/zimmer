@@ -237,6 +237,69 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert File.exist?(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
   end
 
+  test "a retirement copy failure preserves the published tree without nesting the partial copy" do
+    create_fake_air_binary(@tmp_air_dir, "0.0.1-old")
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
+    live_node_modules = File.join(@tmp_air_dir, "node_modules")
+    retired_node_modules = File.join(
+      @tmp_air_dir, AirPrepareService::RETIRED_DIR_NAME, "node_modules"
+    )
+    original_mv = FileUtils.method(:mv)
+
+    stub_air_subprocess(proc { |*args, **opts|
+      cmd_args = args.is_a?(Array) ? args : [ args ]
+      create_fake_air_binary(npm_install_prefix(cmd_args), "9.9.9-new") if cmd_args.any? { |a| a.to_s.include?("npm") }
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      FileUtils.stub(:mv, ->(source, destination, **options) {
+        if source == live_node_modules && destination == retired_node_modules
+          FileUtils.mkdir_p(retired_node_modules)
+          File.write(File.join(retired_node_modules, "partial-copy"), "incomplete")
+          raise Errno::ENOSPC, "simulated failure during EXDEV copy fallback"
+        end
+
+        original_mv.call(source, destination, **options)
+      }) do
+        assert_raises(AirPrepareService::AirPrepareError) { AirPrepareService.ensure_air_installed! }
+      end
+    end
+
+    assert_includes File.read(File.join(live_node_modules, ".bin", "air")), "0.0.1-old"
+    assert_not File.exist?(File.join(live_node_modules, "node_modules")),
+      "rollback must not nest a partial retired directory inside the still-published tree"
+    assert_not File.exist?(retired_node_modules),
+      "the failed retirement destination is only a partial copy and must be discarded"
+  end
+
+  test "a mid-publish failure restores every old entry and removes the partially published tree" do
+    create_fake_air_binary(@tmp_air_dir, "0.0.1-old")
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
+    staging = File.join(@tmp_air_dir, AirPrepareService::STAGING_DIR_NAME)
+    staged_package = File.join(staging, "package.json")
+    live_package = File.join(@tmp_air_dir, "package.json")
+    original_rename = File.method(:rename)
+
+    stub_air_subprocess(proc { |*args, **opts|
+      cmd_args = args.is_a?(Array) ? args : [ args ]
+      create_fake_air_binary(npm_install_prefix(cmd_args), "9.9.9-new") if cmd_args.any? { |a| a.to_s.include?("npm") }
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }) do
+      File.stub(:rename, ->(source, destination) {
+        raise Errno::EIO, "simulated publish failure" if source == staged_package && destination == live_package
+
+        original_rename.call(source, destination)
+      }) do
+        assert_raises(AirPrepareService::AirPrepareError) { AirPrepareService.ensure_air_installed! }
+      end
+    end
+
+    assert_includes File.read(File.join(@tmp_air_dir, "node_modules", ".bin", "air")), "0.0.1-old"
+    assert_includes File.read(live_package), "0.0.1-old"
+    assert_includes File.read(File.join(@tmp_air_dir, "package-lock.json")), "0.0.1-old"
+    assert_not File.exist?(File.join(@tmp_air_dir, "node_modules", "node_modules")),
+      "restoring a directory must replace the failed publish, never nest under it"
+  end
+
   test "a failed install leaves the previous working tree untouched" do
     live_binary = File.join(@tmp_air_dir, "node_modules", ".bin", "air")
     File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))

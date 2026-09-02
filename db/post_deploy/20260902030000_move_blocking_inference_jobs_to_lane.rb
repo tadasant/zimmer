@@ -14,9 +14,10 @@ class MoveBlockingInferenceJobsToLane < PostDeployTask
   def up
     # Never move a row a scheduler has claimed or begun performing. Its advisory
     # lock belongs to that scheduler and changing the queue underneath it buys
-    # nothing. A retried replacement is a fresh unperformed row and does match.
-    movable = GoodJob::Job
-      .where(finished_at: nil, performed_at: nil, locked_by_id: nil)
+    # nothing. Once it finishes or releases the lock for a retry, a later slice
+    # either ignores the finished row or moves the now-safe unfinished row.
+    targets = GoodJob::Job
+      .where(finished_at: nil)
       .where(
         "job_class IN (:always) OR (job_class = :push AND " \
           "COALESCE(serialized_params->'arguments'->1->>'value', " \
@@ -25,10 +26,15 @@ class MoveBlockingInferenceJobsToLane < PostDeployTask
         push: "SendPushNotificationJob"
       )
       .where.not(queue_name: "inference")
+    movable = targets.where(locked_by_id: nil)
 
     moved = movable.update_all(queue_name: "inference", updated_at: Time.current)
     checkpoint!(moved_jobs: stats.fetch("moved_jobs", 0) + moved)
     logger.info("[MoveBlockingInferenceJobsToLane] moved #{moved} unfinished jobs to inference")
-    nil
+
+    # A claimed row may outlive this slice. Do not permanently mark the one-time
+    # task complete while any target is still on an old queue: the cron runner
+    # will revisit it until each row either finishes or becomes safe to move.
+    targets.exists? ? CONTINUE : nil
   end
 end

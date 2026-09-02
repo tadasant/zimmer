@@ -408,7 +408,18 @@ class AirPrepareService
         staged = File.join(staging, entry)
         old = File.join(retired, entry)
 
-        # A missing staged entry means the new one was already published.
+        if entry_present?(staged) && entry_present?(published)
+          # Retirement failed during FileUtils.mv's EXDEV copy fallback. The
+          # original published tree is still authoritative; `old` is only a
+          # partial copy. Moving that directory back onto an existing directory
+          # would nest it (`published/node_modules`) and corrupt the install.
+          FileUtils.rm_rf(old)
+          next
+        end
+
+        # A missing staged entry means the new one was already published. Remove
+        # it before restoring the old entry so FileUtils.mv cannot nest the old
+        # directory inside an existing destination.
         FileUtils.rm_rf(published) unless entry_present?(staged)
         next unless previously_published.include?(entry) && entry_present?(old)
 

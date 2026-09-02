@@ -4,9 +4,9 @@
 #
 # The production deploy gate (`scripts/verify-job-drain-remote.sh` in
 # `tadasant/tadasant-internal`) enqueues one of these onto every GoodJob queue —
-# `default`, `inference`, `pollers`, `triggers`, `agents` — at negative priority right after a
-# cutover, and fails the deploy if the worker does not claim and finish them within
-# a bounded timeout. It exists because the 2026-08-13 deploy passed every automated
+# `default`, `inference`, `pollers`, `triggers`, `agents`, `auth` — at negative priority right
+# after a cutover. The first four are gated; the long-held `agents` and `auth` lanes
+# are advisory. It exists because the 2026-08-13 deploy passed every automated
 # check while production processed zero background jobs for ten hours.
 #
 # Rules for anyone tempted to improve this file:

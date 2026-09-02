@@ -21,7 +21,7 @@ class MoveBlockingInferenceJobsToLaneTest < ActiveSupport::TestCase
   def run_task
     run = PostDeployTaskRun.ledger_for(@entry)
     run.claim!(owner: "test")
-    @task_class.new(run: run).up
+    @outcome = @task_class.new(run: run).up
     run.reload
   end
 
@@ -37,13 +37,31 @@ class MoveBlockingInferenceJobsToLaneTest < ActiveSupport::TestCase
 
     run = run_task
 
-    assert_equal %w[inference inference inference], [ title, summary, push ].map { |row| row.reload.queue_name }
+    assert_equal %w[inference inference inference inference],
+      [ title, summary, push, performed ].map { |row| row.reload.queue_name }
     assert_equal "default", ordinary.reload.queue_name
     assert_equal "default", deterministic_push.reload.queue_name
     assert_equal "default", claimed.reload.queue_name
-    assert_equal "default", performed.reload.queue_name
     assert_equal "default", finished.reload.queue_name
-    assert_equal 3, run.stats["moved_jobs"]
+    assert_equal 4, run.stats["moved_jobs"]
+    assert_equal PostDeployTask::CONTINUE, @outcome,
+      "the task must remain due while a matching row is still claimed on the old queue"
+  end
+
+  test "revisits a claimed row until it finishes or becomes safe to move" do
+    claimed = job(job_class: "SessionTitleJob", locked_by_id: SecureRandom.uuid, locked_at: Time.current)
+
+    first = run_task
+    assert_equal PostDeployTask::CONTINUE, @outcome
+    assert_equal "default", claimed.reload.queue_name
+
+    first.finish_continue!
+    claimed.update!(locked_by_id: nil, locked_at: nil)
+    second = run_task
+
+    assert_nil @outcome
+    assert_equal "inference", claimed.reload.queue_name
+    assert_equal 1, second.stats["moved_jobs"]
   end
 
   test "is idempotent" do
