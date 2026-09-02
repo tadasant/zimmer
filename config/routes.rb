@@ -16,6 +16,14 @@ Rails.application.routes.draw do
     resources :claude_account_quota_snapshots
     resources :elicitations
     resources :enqueued_messages
+    # Read-only, both of them. A GateDecision is append-only — it refuses update
+    # and destroy — because a ledger that can be edited after the fact is not
+    # evidence of anything; a correction is a new row recorded through the API or
+    # the MCP tool. Feedback additionally has no create: its whole value is that
+    # a machine did not write it, so the author is resolved from the
+    # authenticated human at the web-UI boundary rather than typed into a form.
+    resources :gate_decisions, only: [ :index, :show ]
+    resources :gate_decision_feedbacks, only: [ :index, :show ]
     # Read-only: both tables are derived, and both are re-derived on a cron —
     # BurnRateRecomputeJob every 20 minutes, QuotaCapacityCalibrationJob every 15.
     # A hand-edited rate or capacity would be overwritten on the next run, and in
@@ -164,6 +172,16 @@ Rails.application.routes.draw do
         end
       end
 
+      # The gate decision ledger: what `pr-merge-gate` and `issue-work-gate` rated,
+      # and why. Read and append only — a GateDecision is immutable once written,
+      # so there is no update and no destroy here or anywhere else.
+      #
+      # No feedback-append action on purpose: `human_feedback` is writable only
+      # from the browser (GateDecisionFeedbacksController), because the API key
+      # this namespace authenticates is shared by the whole agent fleet and so
+      # establishes a caller but not a person.
+      resources :gate_decisions, only: [ :index, :show, :create ]
+
       # Outcome analyses of archived session transcripts (the Outcomes view).
       # `create` is the REST half of the `save_outcome_analysis` MCP tool; :id on
       # the member routes is the ANALYZED SESSION's id or slug, not the analysis
@@ -302,6 +320,14 @@ Rails.application.routes.draw do
   post "outcomes/:id/analyze", to: "outcomes#analyze", as: :analyze_outcome
   # Last in the group so it cannot shadow "stats" as a session identifier.
   get "outcomes/:id", to: "outcomes#show", as: :outcome
+
+  # Human feedback on a gate decision. Browser-only, and that is the security
+  # property: this is an ApplicationController descendant, so the request came
+  # from the one human who can reach the web UI. No API and no MCP route reaches
+  # it. See GateDecisionFeedbacksController.
+  resources :gate_decisions, only: [] do
+    resources :feedbacks, only: [ :create ], controller: "gate_decision_feedbacks"
+  end
 
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the
