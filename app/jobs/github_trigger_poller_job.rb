@@ -27,6 +27,16 @@
 #   is absorbed into that baseline. `seen_items` being ABSENT is what marks a condition
 #   as un-baselined — a condition whose repos simply have nothing labelled has a
 #   present-but-empty set, and must not be baselined a second time.
+# - **Adding a repo or a label baselines only that addition.** The companion
+#   `baseline_scope` records the repos/target/labels the seen-set was built against, so a
+#   widened condition can tell an item that is new to it (its repo was just added — that
+#   part of the scope is having its first tick, and is absorbed) from an item that is a
+#   real event in a repo it was already watching (fires). Dropping the whole seen-set on
+#   any scope edit, which is what this used to do, absorbed both — #647, where a PR
+#   labelled a minute after a `repos` edit was recorded as seen and never got a session.
+#   A `target` flip is the one change the seen-set cannot survive: a repo numbers issues
+#   and PRs from one sequence, so the keys stop denoting the same items and everything is
+#   re-baselined.
 # - **Re-labelling fires again.** Removing the label drops the key; adding it back makes
 #   the key new. That is the honest reading of "the label was added" — it happened twice.
 #   A key is not dropped on the FIRST tick it is missing, though: GitHub's search index is
@@ -92,6 +102,12 @@ class GithubTriggerPollerJob < ApplicationJob
   # roughly three minutes of sustained absence — well beyond observed index blips, yet short
   # enough that a real remove-then-re-add of the label still fires again promptly.
   REMOVAL_GRACE_TICKS = 3
+
+  # How many seen-set keys the baseline-reset alert lists by name. They are there for a
+  # human to check by hand, and a Slack block has a hard size limit, so the list is
+  # bounded and says when it was cut rather than being truncated mid-key by Slack. The
+  # count in the alert's sentence is always the true one.
+  MAX_ALERTED_KEYS = 25
 
   # Liveness heartbeat. Each sweep that processes at least one condition successfully
   # stamps this Rails.cache (Redis) key with the current time; GithubTriggerHealthCheckJob
@@ -364,22 +380,38 @@ class GithubTriggerPollerJob < ApplicationJob
     end
     current_keys = candidates.keys.to_set
 
-    unless condition.github_baselined?
-      write_state(condition, scope, { "seen_items" => current_keys.to_a.sort, "seen_missing_counts" => {} })
-      Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} " \
-                        "with #{current_keys.size} already-labelled item(s); firing none"
+    if !condition.github_baselined? || condition.github_baseline_retargeted?
+      baseline_everything(condition, scope, current_keys)
       return
     end
 
     seen = condition.github_seen_items.to_set
     missing_counts = condition.github_seen_missing_counts
 
+    # Items that are in the result set only because the condition's scope just grew.
+    # A repo (or a label) added to a live condition has never been baselined, so what it
+    # already carries is pre-existing state rather than events — absorbing it is the same
+    # rule as "the first tick fires nothing", applied to the part of the scope that is
+    # having its first tick. Everything OUTSIDE the newly-added part still fires, which
+    # is what #647 lost when the whole seen-set was dropped on any scope edit.
+    absorbed = Set.new
+    candidates.each do |key, (item, label)|
+      next if seen.include?(key)
+      absorbed << key unless condition.github_baseline_covers?(repo_of(item), label)
+    end
+
+    if absorbed.any?
+      Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} watches more than its " \
+                        "baseline covers; absorbing #{absorbed.size} already-labelled item(s) from the " \
+                        "newly-watched scope without firing"
+    end
+
     # Keys we already knew about AND that still carry the label. These are confirmed
     # present, so any miss streak they were carrying is cleared below.
     retained = current_keys & seen
     fired = Set.new
 
-    (current_keys - seen).sort.each do |key|
+    (current_keys - seen - absorbed).sort.each do |key|
       item, label = candidates[key]
       next unless fire(condition, item, event: "label added: #{label}")
 
@@ -410,13 +442,74 @@ class GithubTriggerPollerJob < ApplicationJob
       next_missing[key] = misses
     end
 
-    # Keys that failed to produce a session are in neither retained, fired, nor grace_retained,
-    # so the next tick sees them as new again and retries.
+    # Keys that failed to produce a session are in neither retained, fired, grace_retained
+    # nor absorbed, so the next tick sees them as new again and retries.
     write_state(
       condition, scope,
-      { "seen_items" => (retained + fired + grace_retained).to_a.sort, "seen_missing_counts" => next_missing },
+      {
+        "seen_items" => (retained + fired + grace_retained + absorbed).to_a.sort,
+        "seen_missing_counts" => next_missing,
+        "baseline_scope" => condition.github_scope_snapshot
+      },
       fired: fired.any?
     )
+  end
+
+  # Record the whole current result set as the baseline and fire nothing.
+  #
+  # Two conditions arrive here. The FIRST tick of a condition, which is the designed
+  # behavior: a PR that already carried the label when the trigger was created is history,
+  # not an event. And a condition whose `target` flipped between PRs and issues, where the
+  # seen-set's keys no longer denote the same items.
+  #
+  # There is a third way in, and it is the one worth an alert: a condition that has polled
+  # before and has come back with NO seen-set at all. Editing the condition is no longer a
+  # route to that (#647 — an edit now keeps the seen-set), so what is left is a hand-edited
+  # row or a bug, and the cost is exactly #647's: any item labelled since the set was lost
+  # is absorbed here rather than fired, permanently and with nothing to say so.
+  #
+  # It absorbs rather than fires on purpose. Firing for everything currently labelled at a
+  # fresh baseline is the opposite failure and the worse one here: on the merge gate — the
+  # condition #647 was observed on, and the one mechanism authorized to merge without human
+  # sign-off — it would spawn a gate session per already-labelled PR, against PRs long since
+  # handled. Absorbing costs at most the items labelled since the set was lost; firing costs
+  # a session per open labelled PR in every watched repo. So the reset stays conservative
+  # and stops being SILENT instead: it alerts, naming what it swallowed, which is what makes
+  # the manual remedy (`action_trigger` `invoke`) reachable.
+  def baseline_everything(condition, scope, current_keys)
+    lost_baseline = !condition.github_baselined? && condition.last_polled_at.present?
+
+    write_state(
+      condition, scope,
+      {
+        "seen_items" => current_keys.to_a.sort,
+        "seen_missing_counts" => {},
+        "baseline_scope" => condition.github_scope_snapshot
+      }
+    )
+
+    Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} " \
+                      "with #{current_keys.size} already-labelled item(s); firing none"
+    return unless lost_baseline && current_keys.any?
+
+    AlertService.raise_alert(
+      "GitHub trigger baseline was reset",
+      details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
+               "(ID: #{condition.trigger_id}) had already polled but came back with no seen-set, so it " \
+               "has been re-baselined against the #{current_keys.size} item(s) currently labelled: " \
+               "#{listed_keys(current_keys)}. Any of them that gained the label after the " \
+               "seen-set was lost has been absorbed as already-seen and will NOT get a session. Check " \
+               "them for a missing session and use action_trigger `invoke` for any that never fired.",
+      source: "GithubTriggerPollerJob",
+      dedup_key: "github_trigger_baseline_reset_#{condition.id}"
+    )
+  end
+
+  def listed_keys(keys)
+    listed = keys.to_a.sort
+    return listed.join(", ") if listed.size <= MAX_ALERTED_KEYS
+
+    "#{listed.first(MAX_ALERTED_KEYS).join(', ')} (+#{listed.size - MAX_ALERTED_KEYS} more)"
   end
 
   # Persist ONE fired key, on its own, immediately after its session was created.

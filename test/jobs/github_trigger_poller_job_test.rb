@@ -604,6 +604,158 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_nothing_raised { GithubTriggerPollerJob.perform_now }
   end
 
+  # ── github_label: editing a live condition (#647) ─────────────────────────
+  #
+  # The incident: a `repos` edit on the merge gate's condition dropped the seen-set, and
+  # the next tick recorded every currently-labelled PR as seen while firing for none of
+  # them. A PR labelled a minute after the edit was absorbed and never got a session —
+  # permanently, because it was now in the seen-set. These cover both directions of the
+  # fix: the events in the repos that were already watched still fire, and the ones in
+  # the newly-watched repo still do not stampede.
+
+  test "a PR labelled after a repos edit still fires" do
+    # Tick 1 establishes the baseline and what it covers.
+    stub_search(label: [ item(number: 7, labels: [ "ready to merge" ]) ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    # The edit, in the shape it was sent: the whole configuration read back and returned
+    # with one key changed, poller state included verbatim.
+    @label_condition.update!(configuration: @label_condition.reload.configuration.merge(
+      "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ]
+    ))
+    assert @label_condition.reload.github_baselined?,
+           "an edit must not cost a live condition its seen-set"
+
+    # A minute later, a PR in the repo that was already being watched gains the label.
+    labelled = [
+      item(number: 7, labels: [ "ready to merge" ]),
+      item(number: 9, labels: [ "ready to merge" ])
+    ]
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_includes @label_condition.reload.github_seen_items, "tadasant/zimmer#9:ready to merge"
+  end
+
+  test "adding a repo baselines the PRs already labelled in it instead of stampeding sessions" do
+    stub_search(label: []) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+
+    @label_condition.update!(configuration: @label_condition.reload.configuration.merge(
+      "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ]
+    ))
+
+    # Three PRs that have carried the label in the new repo for weeks. Firing for them is
+    # the opposite failure — on the merge gate, three gate sessions against PRs long since
+    # handled — so they are absorbed, exactly as the condition's first tick absorbs them.
+    already_labelled = (1..3).map do |n|
+      item(number: n, labels: [ "ready to merge" ], repo: "tadasant/zimmer-catalog")
+    end
+    stub_search(label: already_labelled) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal already_labelled.map { |i| "tadasant/zimmer-catalog##{i['number']}:ready to merge" }.sort,
+                 @label_condition.reload.github_seen_items
+
+    # And the new repo is a first-class citizen from the next tick on.
+    stub_search(label: already_labelled + [ item(number: 4, labels: [ "ready to merge" ], repo: "tadasant/zimmer-catalog") ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  test "adding a label baselines what already carries it while the original label keeps firing" do
+    stub_search(label: []) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+
+    @label_condition.update!(configuration: @label_condition.reload.configuration.merge(
+      "labels" => [ "ready to merge", "needs review" ]
+    ))
+
+    labelled = [
+      item(number: 11, labels: [ "needs review" ]),
+      item(number: 12, labels: [ "ready to merge" ])
+    ]
+    stub_search(label: labelled) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal [ "tadasant/zimmer#11:needs review", "tadasant/zimmer#12:ready to merge" ],
+                 @label_condition.reload.github_seen_items
+    # #12 is the one that fired: "ready to merge" was already being watched.
+    assert_equal "https://github.com/tadasant/zimmer/pull/12", Session.order(:id).last.prompt[/https:\S+/]
+  end
+
+  test "flipping the target re-baselines the whole seen-set and fires nothing" do
+    stub_search(label: [ item(number: 7, labels: [ "ready to merge" ]) ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    @label_condition.update!(configuration: @label_condition.reload.configuration.merge("target" => "issue"))
+
+    # A repo numbers its issues and its PRs from one sequence, so #7 now means a different
+    # item. The seen-set cannot be carried across that, and nothing fires on the tick that
+    # rebuilds it.
+    stub_search(label: [ item(number: 7, labels: [ "ready to merge" ], pr: false) ]) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
+    assert_equal "issue", @label_condition.github_baseline_scope["target"]
+  end
+
+  # Editing a condition is no longer a route to a lost seen-set, so one that has polled
+  # before and comes back without it is an anomaly. It is still re-baselined
+  # conservatively — the flood is the worse failure — but it stops being SILENT, which is
+  # what makes the manual remedy (the trigger's `invoke`) reachable.
+  test "a seen-set lost from a condition that has already polled alerts instead of absorbing in silence" do
+    stub_search(label: []) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+    assert_not_nil @label_condition.reload.last_polled_at
+
+    @label_condition.update_column(:configuration, @label_condition.configuration.except("seen_items"))
+
+    AlertService.expects(:raise_alert).with do |title, options|
+      title == "GitHub trigger baseline was reset" &&
+        options[:details].include?("tadasant/zimmer#3:ready to merge") &&
+        options[:dedup_key] == "github_trigger_baseline_reset_#{@label_condition.id}"
+    end
+
+    stub_search(label: [ item(number: 3, labels: [ "ready to merge" ]) ]) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal [ "tadasant/zimmer#3:ready to merge" ], @label_condition.reload.github_seen_items
+  end
+
+  test "a first-ever baseline is silent — there is nothing to have lost" do
+    un_baseline!(@label_condition)
+    AlertService.expects(:raise_alert).never
+
+    stub_search(label: [ item(number: 3, labels: [ "ready to merge" ]) ]) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  # A condition baselined before `baseline_scope` was recorded has none, and the deploy
+  # that introduces the key must not make its whole result set look newly in scope.
+  test "a seen-set with no recorded baseline scope keeps firing, and gets one stamped" do
+    assert_nil @label_condition.github_baseline_scope
+
+    stub_search(label: [ item(number: 7, labels: [ "ready to merge" ]) ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal({ "repos" => [ "tadasant/zimmer" ], "target" => "pull_request",
+                   "labels" => [ "ready to merge" ] },
+                 @label_condition.reload.github_baseline_scope)
+  end
+
   # ── github_issue: excluding issues by label ───────────────────────────────
 
   test "the issue query carries no negation when nothing is excluded" do
@@ -663,6 +815,29 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   end
 
   # ── github_issue: created_at cursor ───────────────────────────────────────
+
+  # The github_issue half of #647. Its state is one global cursor with no per-repo
+  # dimension, so a widened scope still re-baselines it — carrying the cursor across a
+  # newly-added repo would back-fire every issue that repo has opened since it, which on a
+  # quiet trigger is months. What the fix changes is WHEN: the cursor restarts at the edit
+  # rather than at the next tick, so nothing opened in between falls through the gap.
+  test "an issue opened between a repos edit and the next tick still fires" do
+    edited_at = Time.utc(2026, 7, 13, 10, 0, 0)
+
+    travel_to edited_at do
+      @issue_condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+    assert_equal "2026-07-13T10:00:00Z", @issue_condition.reload.github_last_issue_at
+
+    opened_in_the_gap = item(number: 77, pr: false, created_at: "2026-07-13T10:00:30Z")
+    travel_to edited_at + 1.minute do
+      stub_search(issue: [ opened_in_the_gap ]) do
+        assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+      end
+    end
+
+    assert_equal "2026-07-13T10:00:30Z", @issue_condition.reload.github_last_issue_at
+  end
 
   test "first poll of a new-issue condition baselines the cursor and fires nothing" do
     @issue_condition.update_column(
@@ -884,8 +1059,10 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     @label_condition.reload
     assert_equal [ "tadasant/zimmer", "tadasant/other" ].sort, @label_condition.github_repos.sort,
                  "the user's edit must survive the poller's write"
-    assert_not @label_condition.github_baselined?,
-               "the re-baseline requested by the edit must not be undone by the in-flight tick"
+    assert_equal [], @label_condition.github_seen_items,
+                 "state computed against the old scope must be dropped, not written over the edit"
+    assert_nil @label_condition.github_baseline_scope,
+               "and nothing may claim a baseline the discarded tick did not take"
   end
 
   test "a template that names only Slack-shared variables still gets a GitHub context block" do

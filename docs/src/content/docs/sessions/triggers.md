@@ -703,11 +703,22 @@ nothing else has fired past it since, and does nothing once something has. Open 
 you want the gate.
 :::
 
-Editing `exclude_labels` does **not** re-baseline the condition — unlike `repos`, `labels` and
-`target`, which do. Re-baselining exists to stop a *widened* watch from stampeding sessions for
-everything already matching; an exclusion only ever narrows, and a `github_issue` condition's state
-is a time cursor, so a narrowing cannot make an old issue look new. Throwing the cursor away on
-every edit would instead skip the issues opened between the edit and the next tick.
+Editing `exclude_labels` does **not** re-baseline the condition — unlike `repos`, which does. An
+exclusion only ever narrows, and a `github_issue` condition's state is a time cursor, so a
+narrowing cannot make an old issue look new. Adding a repo is the widening case, and re-baselining
+is what stops it stampeding a session for every issue that repo has already opened: the cursor
+advances only when an issue *fires*, so on a quiet trigger it can be months behind the clock.
+
+The re-baseline happens **at the moment of the edit**, not at the next tick: `last_issue_at`
+restarts at "now" as the edit is saved. Nothing back-fires, and nothing opened in the up-to-a-minute
+gap before the next poll falls through the crack between the two.
+
+:::note[Why the two GitHub types re-baseline differently]
+A `github_label` condition keeps a per-item seen-set, so it can record *what its baseline covers*
+and absorb only the newly-watched part of a widened scope (see below). A `github_issue` condition's
+entire state is one global timestamp with no per-repo dimension to hold a partial baseline in, so it
+has only the blunt instrument. Giving it the same precision would mean per-repo cursors.
+:::
 
 ### What a GitHub-triggered session receives
 
@@ -737,6 +748,23 @@ window** (`GithubTriggerPollerJob::REMOVAL_GRACE_TICKS` consecutive misses — r
 the one-minute cadence, tracked in the companion `seen_missing_counts`) before it is accepted as
 genuinely unlabelled. A real removal simply takes that long to register.
 
+The seen-set carries a companion, `baseline_scope`: the repos, target and labels it was built
+against. It exists to answer the one question the set alone cannot — *is this item new, or has it
+been sitting there labelled since before its repo was watched?* Adding a repo to a live condition
+therefore baselines only that repo; the condition keeps firing for the repos it was already
+watching. Before that was recorded, any edit to `repos` or `labels` dropped the whole seen-set, and
+the next tick absorbed everything currently labelled — including PRs labelled in the minutes since
+the edit, in repos that had been watched all along. Those never got a session and never would, since
+they were now in the seen-set
+([#647](https://github.com/tadasant/zimmer/issues/647)).
+
+A condition that has polled before and comes back with **no** seen-set at all is now an anomaly
+rather than a routine consequence of editing it. It is still re-baselined conservatively — firing a
+session for every currently-labelled PR would be the worse failure, since on the merge gate that
+means a gate session per already-handled PR — but it **alerts** rather than doing it silently, naming
+the items it absorbed so they can be checked and, if one never fired, replayed with the trigger's
+`invoke`.
+
 The semantics that follow — all of them covered by tests:
 
 | Situation | What happens |
@@ -749,7 +777,8 @@ The semantics that follow — all of them covered by tests:
 | Two watched labels added to one item | Two events, so two sessions. Keys are per `(item, label)`. |
 | A tick is skipped (deploy, rate limit) | Harmless. The seen-set is state, not a cursor, so the next tick still sees the label. Misses are only counted on a real poll, so downtime never expires a key's grace early. |
 | PR is closed or merged while labelled | Drops out of the `is:open` search; after the grace window it leaves the seen-set. If it is reopened still labelled, it fires again. |
-| You add a repo or a label to the condition | The condition **re-baselines**. Items already labelled in the newly-watched scope are absorbed, not stampeded into sessions. |
+| You add a repo or a label to the condition | Only the **addition** is baselined. Items already labelled in the newly-watched repo or under the newly-watched label are absorbed rather than stampeded into sessions; labels added in the repos it was already watching still fire as normal. |
+| You change the condition's `target` (PRs ↔ issues) | Full re-baseline, firing nothing. A repo numbers its issues and its PRs from one sequence, so the seen-set's keys stop denoting the same items. |
 | A `reuse_session` trigger *drops* the follow-up (target session busy) | Not counted as a fire. The item stays unseen and is retried next tick, rather than the event being silently consumed. |
 | Session creation fails **before** a session exists | The item is not recorded, so the next tick retries it. |
 | Session creation fails **after** the session row exists | Counted as a fire. A session exists for that label; re-firing would spawn a second one. See below. |
