@@ -131,6 +131,17 @@ class EmptyTrashJob < ApplicationJob
       end
     end
 
+    # Only clear the deadline if it is still the one that selected this session.
+    # A re-archive landing during the cleanup above (which walks the filesystem)
+    # restarts the four-day window, and wiping the fresh deadline would drop the
+    # row into StaleCloneCleanupJob's archived-and-untrashed scope to be reaped
+    # unpreserved an hour later — the exact outcome the re-read exists to prevent.
+    unless still_trash?(session)
+      Rails.logger.warn "[EmptyTrashJob] Session #{session.id} stopped being an expired trash candidate " \
+        "mid-cleanup; leaving its trash deadline in place"
+      return cleaned_anything
+    end
+
     # Clear trash_after and artifacts_path from metadata
     with_db_retry do
       if session.metadata&.dig("artifacts_path").present?

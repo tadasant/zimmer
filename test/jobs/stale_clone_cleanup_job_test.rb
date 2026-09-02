@@ -450,6 +450,23 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(@clone_path, "keep.txt")), "and not partially deleted either"
   end
 
+  test "a failed session carrying a trash deadline is still reapable" do
+    # The failed scope does not filter on trash_after, so gating on it globally
+    # would strand this row forever — EmptyTrashJob only looks at `archived`, so
+    # nothing else would ever collect it. Reachable via an unarchive-to-failed
+    # whose swallowed clear_trash_expiry raised.
+    @session.update!(
+      status: :failed,
+      archived_at: nil,
+      trash_after: 4.days.from_now,
+      updated_at: (StaleCloneCleanupJob::FAILED_SESSION_STALE_THRESHOLD + 1.hour).ago
+    )
+
+    assert StaleCloneCleanupJob.new.send(:cleanup_session_clone, @session)
+
+    assert_not File.directory?(@clone_path)
+  end
+
   test "still reaps a session that is genuinely still a stale candidate" do
     assert StaleCloneCleanupJob.new.send(:cleanup_session_clone, @session)
 

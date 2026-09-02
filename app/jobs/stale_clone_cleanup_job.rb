@@ -159,13 +159,20 @@ class StaleCloneCleanupJob < ApplicationJob
   # whose old clone was abandoned. `Session.reap_protected?` answers both (#808).
   #
   # A trash deadline is the third way the answer goes stale, and it does not need
-  # a live session at all. All three of this job's candidate scopes require
-  # `trash_after` to be nil — a session with one belongs to EmptyTrashJob, which
-  # waits for the deadline and preserves artifacts first. An unarchive followed
-  # by a re-archive restarts that deadline, leaving a row that is `archived`,
-  # not `reap_protected`, and squarely mid-undo-window. Re-reading only the
-  # status waves it through and this job reaps it an hour later, unpreserved and
-  # without tearing Docker down.
+  # a live session at all. Both *archived* scopes require `trash_after` to be nil
+  # — an archived session with one belongs to EmptyTrashJob, which waits for the
+  # deadline and preserves artifacts first — and an unarchive followed by a
+  # re-archive restarts that deadline, leaving a row that is `archived`, not
+  # `reap_protected`, and squarely mid-undo-window. Re-reading only the status
+  # waves it through and this job reaps it an hour later, unpreserved and without
+  # tearing Docker down.
+  #
+  # Deliberately scoped to `archived`. The failed scope does NOT filter on
+  # `trash_after`, so gating on it globally would strand a `failed` row that
+  # carries one — and nothing would ever collect it, because EmptyTrashJob only
+  # looks at `archived`. That row shape is reachable: `clear_trash_expiry` is a
+  # swallowed state-machine side effect, so an unarchive-to-failed whose clear
+  # raised leaves exactly it.
   #
   # Fails closed: a question we cannot answer is answered "protected". This
   # method guards the whole of #cleanup_session_clone regardless of how the
@@ -177,11 +184,12 @@ class StaleCloneCleanupJob < ApplicationJob
       return false
     end
 
-    trash_after = Session.unscoped.where(id: session.id).pick(:trash_after)
+    status, trash_after = Session.unscoped.where(id: session.id).pick(:status, :trash_after)
+    return true unless Session.status_label(status) == "archived"
     return true if trash_after.nil?
 
-    Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it now carries a trash deadline " \
-      "of #{trash_after.iso8601}, so it belongs to EmptyTrashJob and its undo window is still open"
+    Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it is archived and now carries a " \
+      "trash deadline of #{trash_after.iso8601}, so it belongs to EmptyTrashJob and its undo window is still open"
     false
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error "[StaleCloneCleanupJob] Could not re-check the status of session #{session.id} " \

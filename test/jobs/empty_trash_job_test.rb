@@ -90,27 +90,45 @@ class EmptyTrashJobTest < ActiveJob::TestCase
     assert Dir.exist?(scratch_path)
   end
 
-  test "does not reap a session re-archived into a fresh trash window" do
+  test "a session re-archived into a fresh trash window is no longer expired trash" do
     # An unarchive followed by a re-archive restarts the four-day deadline. The
-    # row is `archived`, not `reap_protected`, and squarely mid-undo-window — so
-    # a status-only re-read waves it through and everything below the clone
+    # row is `archived`, not `reap_protected`, and squarely mid-undo-window — so a
+    # status-only re-read waves it through and everything below the clone
     # (scratch, config, attachments, artifacts) goes with it, none of which has a
-    # remote to come back from.
-    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    # remote to come back from. Driven through #still_trash? directly, because
+    # the outer scope would exclude the row before the re-read ever ran — the
+    # window this closes is the row changing *after* the scope selected it.
     @session.update_columns(trash_after: 4.days.from_now)
 
-    EmptyTrashJob.perform_now
-
-    assert File.directory?(@clone_path), "a restarted undo window must keep the clone"
-    assert Dir.exist?(scratch_path), "and the scratch directory it cannot rebuild"
+    assert_not EmptyTrashJob.new.send(:still_trash?, @session)
   end
 
-  test "does not reap a session whose trash deadline was cleared entirely" do
+  test "a session whose trash deadline was cleared entirely is no longer expired trash" do
     @session.update_columns(trash_after: nil)
 
-    EmptyTrashJob.perform_now
+    assert_not EmptyTrashJob.new.send(:still_trash?, @session)
+  end
 
-    assert File.directory?(@clone_path)
+  test "a session whose deadline really has passed is still expired trash" do
+    assert EmptyTrashJob.new.send(:still_trash?, @session)
+  end
+
+  test "a deadline restarted mid-cleanup is not cleared, so the undo window survives" do
+    # The row is expired trash when the run starts and re-archived by the time the
+    # clone delete is done. Clearing the fresh deadline anyway would drop it into
+    # StaleCloneCleanupJob's archived-and-untrashed scope, to be reaped
+    # unpreserved an hour later.
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    @session.update_columns(trash_after: 4.days.from_now)
+    # Expired trash when the run starts; re-archived by the time the clone delete
+    # is done. `still_trash?` is asked once at each end of #cleanup_session.
+    job = EmptyTrashJob.new
+    job.stubs(:still_trash?).returns(true).then.returns(false)
+
+    job.send(:cleanup_session, @session)
+
+    assert_not_nil @session.reload.trash_after, "the restarted deadline must survive"
+    assert Dir.exist?(scratch_path)
   end
 
   test "cleans up artifacts for expired trashed session" do

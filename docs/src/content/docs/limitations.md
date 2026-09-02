@@ -2316,12 +2316,13 @@ pressure is the exception: `CloneDiskGuard` calls the same job's `reclaim_space`
 each clone, which lowers the age bar to `PRESSURE_AGE_THRESHOLD = 2.hours` and stops as soon as the
 volume has room. See [the second gear](/operate/background-jobs/#clone-pruning-has-a-second-urgent-gear).
 
-That is now the *only* orphan sweep over the clones base. `StaleCloneCleanupJob` used to run a
-second one on a one-hour bar, which collected orphans sooner — and also meant the pressure path
-could never find a candidate, because the short bar had already taken them
-([#709](https://github.com/tadasant/zimmer/issues/709)). Dropping it trades a faster reclaim for one
-owner of the question, which is the trade
-[#808](https://github.com/tadasant/zimmer/issues/808) made unavoidable.
+That is the *only* orphan sweep over the clones base. A second one on a shorter bar collects
+orphans sooner — and is also why the pressure path could never find a candidate, because the short
+bar had already taken them ([#709](https://github.com/tadasant/zimmer/issues/709)). One owner of the
+question is the trade [#808](https://github.com/tadasant/zimmer/issues/808) made unavoidable, and it
+has a throughput cost worth stating: six-hourly at `BATCH_LIMIT = 20` is a ceiling of **80 orphan
+directories a day**. A box with a real backlog — the 2026-09-02 incident left 48 clones — drains
+over days rather than hours, unless disk pressure opens the urgent gear.
 
 What that does **not** reclaim is anything with an owning session row — a tracked `clone_path` is
 never a pruning candidate, whatever the session's status and whatever the disk pressure. So a host
