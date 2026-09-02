@@ -4041,7 +4041,25 @@ the check reads `ClaudeCredentialHealth` in-process instead. That is the better 
 it follows the credential into the DB under
 [session-scoped credentials](#session-scoped-credentials-leave-the-shared-file-behind-on-purpose),
 where no file exists to inspect — but it does mean the Claude Code tile is reporting on
-Zimmer's own credential store rather than on what the binary would do if you ran it.
+Zimmer's own credential store rather than on what the binary would do if you ran it. Two
+consequences worth stating plainly, because the tile does not state them:
+
+**The tile reports presence, not liveness.** `ClaudeCredentialHealth` bottoms out in
+`ClaudeAccount.complete_claude_oauth?`, which asks whether an access token and a refresh token
+are both there and non-empty. It does not ask Anthropic. A revoked or spent pair sitting on disk
+reads as *Authenticated*. `claude whoami` did make a real call, so it was — incidentally, and at
+about \$615/mo — the only liveness signal this tile ever had. What catches a dead credential now
+is the account pool's own refresh sweep and the auth-outage park, both of which run against the
+vendor; the tile is a configuration check, like the three beside it.
+
+**Under session-scoped credentials it reports on one account, not on the pool.**
+`ClaudeCredentialHealth#database_status` keys off `ClaudeAccount.current_account`, because that
+is the row a spawning session is actually handed a token out of. So a deployment with the setting
+on can show *Not Authenticated* while a perfectly healthy pool sits behind it — no row is current
+yet on a fresh worker, or the current row's stored pair is incomplete and
+`AccountRotationService` would rotate past it on the next spawn. The setting is off by default, and
+the same narrowing is already what the `/health` Agent Authentication card reports, so the two
+surfaces agree; `/quotas` is the page that shows the whole pool.
 
 ## Open questions
 

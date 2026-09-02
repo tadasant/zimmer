@@ -15,6 +15,16 @@ class CliStatusServiceTest < ActiveSupport::TestCase
     Rails.cache = @original_cache
   end
 
+  # Deliberately public: `test "..."` is `define_method`, so it inherits the
+  # enclosing default visibility, and minitest only collects PUBLIC `test_*`
+  # methods. A `private` section anywhere in this class turns every test written
+  # below it into a method that is defined, never run, and never reported.
+  def credential_status(state)
+    ClaudeCredentialHealth::Status.new(
+      state: state, detail: "stubbed #{state}", owner_email: "operator@example.com", checked_at: Time.current
+    )
+  end
+
   # ==========================================================================
   # Class Constants
   # ==========================================================================
@@ -256,6 +266,10 @@ class CliStatusServiceTest < ActiveSupport::TestCase
     "flyctl" => %w[auth]
   }.freeze
 
+  # Covers every entry that CARRIES a shell auth check, not only the ones that run
+  # one: `pi` and `fly` are `auth_method: :env_var`, so `check_tool` answers from
+  # ENV and their `check_auth` string is inert until somebody flips them to
+  # `:oauth`. That flip is exactly when an unnoticed bare prompt would go live.
   test "no shell auth check hands a bare prompt to its CLI" do
     CliStatusService::CLI_TOOLS.each do |tool_name, config|
       check = config[:check_auth]
@@ -324,11 +338,26 @@ class CliStatusServiceTest < ActiveSupport::TestCase
     assert_equal false, service.send(:check_auth, -> { raise "boom" })
   end
 
-  private
+  test "check_auth still reads the exit status of a shell command" do
+    service = CliStatusService.new
+    assert_equal true, service.send(:check_auth, "true")
+    assert_equal false, service.send(:check_auth, "false")
+  end
 
-  def credential_status(state)
-    ClaudeCredentialHealth::Status.new(
-      state: state, detail: "stubbed #{state}", owner_email: "operator@example.com", checked_at: Time.current
-    )
+  # A callable in CLI_TOOLS is only safe because the report is built from an
+  # explicit key list rather than from the config hash. If someone ever copies
+  # `check_auth` through, `Rails.cache.write` blows up under Marshal and the JSON
+  # surfaces (Api::V1::ClisController, get_system_health) blow up with it.
+  test "the status report carries no callable into the cache or a JSON response" do
+    [ CliStatusService.new.full_status_report, CliStatusService.loading_placeholder ].each do |report|
+      report[:tools].each do |tool_name, status|
+        status.each_value do |value|
+          refute_respond_to value, :call, "#{tool_name} leaked a callable into the report"
+        end
+      end
+
+      assert_nothing_raised { Marshal.dump(report) }
+      assert_nothing_raised { JSON.generate(report.as_json) }
+    end
   end
 end

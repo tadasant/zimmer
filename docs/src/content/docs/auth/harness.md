@@ -386,7 +386,9 @@ two "no subscription tokens here" states are what a fresh worker legitimately lo
 That state now has all three of the things the 2026-08-22 corruption had none of:
 
 - **a surface** — the *Agent Authentication* card on `/health`, critical while the file is corrupt,
-  and folded into the dashboard's overall status.
+  and folded into the dashboard's overall status. `CliStatusService` reads the same classification
+  for the Claude Code tile on the CLI status page, because no `claude` invocation can answer
+  "is the stored credential usable" — see [Limitations](/limitations/).
 - **a repair** — `ClaudeCredentialHealth.self_heal!` runs on every
   `RefreshRuntimeAuthTokensJob` sweep and rewrites a corrupt file from the owning account's stored
   credentials. A corrupt file has no tokens to lose, so the write cannot destroy anything. It
