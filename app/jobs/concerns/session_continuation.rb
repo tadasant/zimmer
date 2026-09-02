@@ -75,15 +75,25 @@ module SessionContinuation
       return true
     end
 
+    # The whole continue happens under the row lock this takes, including the
+    # enqueue: `find_each` handed us a session object read at the top of the
+    # sweep, and the row may have been archived since. See
+    # Session#claim_system_recovery_turn!.
+    outcome = nil
     ActiveRecord::Base.transaction do
-      # Clear stale retry metadata before resuming.
-      # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-      session.update!(
-        running_job_id: nil,
-        metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-      )
+      outcome = session.claim_system_recovery_turn! do
+        # Clear stale retry metadata before resuming.
+        # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
+        session.update!(
+          running_job_id: nil,
+          metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+        )
+      end
 
-      session.resume_for_system_recovery!
+      # Nothing is enqueued for a refused claim, and nothing the claim wrote is
+      # kept: rolling back leaves the archived (or already-running) row exactly as
+      # the sweep found it, so the next reader sees no half-applied recovery.
+      raise ActiveRecord::Rollback unless outcome == :claimed
 
       # Enqueue a job with the automated recovery prompt, naming the sweep that sent it
       # so the agent (and whoever reads the transcript) can tell this apart from the
@@ -99,8 +109,45 @@ module SessionContinuation
       )
     end
 
+    return refuse_recovery_turn(session, outcome) unless outcome == :claimed
+
     Rails.logger.info "[#{self.class.name}] Session #{session.id} recovered and continued"
     true
+  end
+
+  # Say why a recovery turn was refused, on the session's own timeline, and tell
+  # the sweep it did not continue this session.
+  #
+  # Deliberately NOT routed through abandon_or_retry_continue: that counts attempts
+  # against a budget and eventually drops `paused_by` so the sweeps stop selecting
+  # the session. Neither refusal here wants that. An archived session is already
+  # invisible to both sweeps (they select on `needs_input` / `waiting` / `failed`),
+  # so there is no loop to bound — and burning the budget, or dropping `paused_by`,
+  # would sabotage the recovery that is owed to the session if it is later
+  # unarchived. A `running` session is being driven by somebody else right now, and
+  # will pause on its own.
+  #
+  # @param session [Session] the session whose claim was refused
+  # @param outcome [Symbol] :archived or :not_resumable, from
+  #   Session#claim_system_recovery_turn!
+  # @return [Boolean] always false — the session was not continued
+  def refuse_recovery_turn(session, outcome)
+    message =
+      if outcome == :archived
+        "Not continuing this session after #{continuation_source}: it is in the trash. " \
+        "An archived session takes no turn, so no agent was started and no prompt was delivered."
+      else
+        "Not continuing this session after #{continuation_source}: it is #{session.status} and " \
+        "cannot be resumed. Something else is already driving it, so no second agent was started."
+      end
+
+    Rails.logger.info(
+      "[#{self.class.name}] Session #{session.id} not continued after #{continuation_source}: #{outcome}"
+    )
+    # A session log rather than only a Rails log: "why did nothing happen to this
+    # session" is asked from the session page.
+    session.logs.create(content: message, level: "info")
+    false
   end
 
   # Deliver the user's next pending enqueued message instead of the automated
