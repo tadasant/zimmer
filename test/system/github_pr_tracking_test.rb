@@ -155,7 +155,8 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     second = "https://github.com/owner/repo/pull/123"
     @session.update!(custom_metadata: {
       "github_pull_request_urls" => [ first, second ],
-      "github_pull_request_statuses" => { first => "merged", second => "open" }
+      "github_pull_request_statuses" => { first => "merged", second => "open" },
+      "github_pull_request_ci_statuses" => { second => "pass" }
     })
 
     visit root_path(every_status_params)
@@ -177,14 +178,19 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
         trigger.find("span.sr-only", visible: :all).text(:all).strip
       assert_equal "View all PRs (2) — most recent #123 (Open)", trigger[:title]
 
-      # The glyph still describes the newest PR, the way the header's primary
-      # button does: open, so green.
+      # The glyph and the CI dot still describe the newest PR, the way the header's
+      # primary button does: open, so green; CI passing, so a green dot.
       assert_includes trigger.find("svg", match: :first)[:class], "text-green-600"
+      assert trigger.has_selector?("span.rounded-full.bg-green-500", visible: :all),
+        "the newest PR's CI status is not on the card's collapsed control"
 
-      # Every PR is still one click away, newest first.
+      # The trigger says it opens something, and every PR is still one click away.
+      assert_equal "true", trigger[:"aria-haspopup"]
+      assert_equal "false", trigger[:"aria-expanded"]
       trigger.click
       assert_selector "[role='menuitem'][href='#{second}']"
       assert_selector "[role='menuitem'][href='#{first}']"
+      assert_equal "true", trigger[:"aria-expanded"]
     end
   end
 
