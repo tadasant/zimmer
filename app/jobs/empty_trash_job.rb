@@ -20,7 +20,7 @@
 class EmptyTrashJob < ApplicationJob
   include DatabaseRetry
   include DurableSessionStorage
-  queue_as :default
+  queue_as :maintenance
   include SingletonSweep
 
   def perform

@@ -940,13 +940,13 @@ about it is a constraint rather than a feature:
 
 One thing the gate still cannot see:
 [queue recovery mode](/operate/background-jobs/#queue-recovery-mode) pauses `default`, `inference`,
-`pollers` and `triggers` via `GoodJob.pause`, and that pause is persisted in `good_job_settings`, so it
+`maintenance`, `pollers` and `triggers` via `GoodJob.pause`, and that pause is persisted in `good_job_settings`, so it
 survives a deploy. A cutover that lands while recovery mode is active fails the drain check on all
 four gated queues with a perfectly healthy worker. The gate is the piece that has to learn to read
 `GoodJob.paused(:queues)` and skip rather than fail; nothing in this repo can do it for it.
 
 `test/jobs/canary_job_test.rb` holds each of those lines, including a round trip through a real
-GoodJob row on all six queues.
+GoodJob row on all seven queues.
 
 ### The worker watchdog is converged on every deploy
 

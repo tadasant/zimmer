@@ -23,7 +23,7 @@ require "open3"
 # and images not currently in use.
 #
 class DockerCleanupJob < ApplicationJob
-  queue_as :default
+  queue_as :maintenance
   include SingletonSweep
 
   # Dev-server Compose stacks older than this are considered stale.

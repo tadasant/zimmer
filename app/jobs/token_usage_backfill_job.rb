@@ -21,7 +21,7 @@
 # a multi-minute scan there would delay trigger firing for as long as the
 # backfill lasts. `default` is where the periodic bulk work already lives.
 class TokenUsageBackfillJob < ApplicationJob
-  queue_as :default
+  queue_as :maintenance
 
   # How long one slice may hold its worker thread. Well under the five-minute
   # cron so a slice is finished and the thread returned before the next tick.

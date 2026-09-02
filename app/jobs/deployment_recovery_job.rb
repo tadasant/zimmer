@@ -24,7 +24,7 @@
 # and automatically continues those deployment-orphaned sessions.
 class DeploymentRecoveryJob < ApplicationJob
   include SessionContinuation
-  queue_as :default
+  queue_as :maintenance
 
   # Limit how many sessions we recover at once to avoid overwhelming the system
   RECOVERY_LIMIT = 50

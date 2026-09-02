@@ -304,16 +304,13 @@ What production still needs:
 2. **The switch.** `ZIMMER_NESTED_DOCKER=1` in production's deploy environment, plus the
    preflight and post-deploy assertions that `Deploy staging` carries, ported to
    production's deploy workflow.
-3. **A bound on how many sessions may hold a dev stack at once.** This is the item the cap
-   makes load-bearing rather than optional, because the droplet is not being resized.
-   Measured on staging: one `.agent-containers` stack sits around 700 MB anon and fits;
-   a *second* concurrent stack produced a cgroup OOM kill at `anon-rss:1244540kB`.
-   Production permits sixteen concurrent agent sessions (`GOOD_JOB_AGENTS_THREADS`), and
-   sixteen stacks do not fit inside `10g` alongside the worker's own residency. Nothing
-   bounds this today — `spot_max_concurrent_sessions` caps *sessions*, holds only spot
-   ones, and is inert unless spot gating is on. Until something bounds stacks
-   specifically, arming the switch means the cap is what stops the overshoot, by killing
-   the worker and every session on it.
+3. **A bound on how many sessions may hold a dev stack at once.** This is load-bearing
+   because the droplet is not being resized. Measured on staging: one `.agent-containers`
+   stack sits around 700 MB anon and fits; a *second* concurrent stack produced a cgroup
+   OOM kill at `anon-rss:1244540kB`. Production therefore runs eight `agents` scheduler
+   threads (`GOOD_JOB_AGENTS_THREADS`), rather than admitting sixteen stacks that cannot
+   fit inside `10g` alongside the worker's own residency. More sessions remain durable
+   queued jobs and start as one of those eight slots becomes free.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the
