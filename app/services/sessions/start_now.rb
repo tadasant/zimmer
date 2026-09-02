@@ -69,7 +69,8 @@ module Sessions
   #
   # The one branch that builds a job out of nothing — a session that has never run
   # and has nothing queued — re-reads the session's images and files off the
-  # durable volume and puts them on the job. AgentSessionJob reads attachments
+  # durable volume (Sessions::FirstTurnAttachments) and puts them on the job.
+  # AgentSessionJob reads attachments
   # ONLY out of its job arguments, so enqueuing without them started a session
   # whose prompt was "here is the screenshot, fix this" with the prompt and
   # without the screenshot (#739). The other two branches move a job that already
@@ -195,64 +196,21 @@ module Sessions
     # `images:`/`files:` arguments — so re-reading storage for them would attach a
     # second copy of what is already on the turn.
     #
-    # Enqueuing without them was a silent correctness loss rather than a missing
-    # feature (#739): the bytes are still on the durable volume, keyed by session
-    # id, and AgentSessionJob reads attachments ONLY out of its job arguments. A
-    # session whose prompt was "here is the screenshot, fix this" started with the
-    # prompt, without the screenshot, and with nothing saying an attachment had
-    # ever been meant to be there.
-    #
-    # What is read is "everything on disk, minus what the queue owns" rather than
-    # a recorded list of the first turn's own attachments — nothing records one.
-    # The two coincide because this branch is reached only when `session_id` is
-    # blank, which is what "has never run" means everywhere in recovery, so no
-    # earlier turn can have consumed any of it.
+    # What Sessions::FirstTurnAttachments reads is "everything on disk, minus what
+    # the queue owns" rather than a recorded list of the first turn's own
+    # attachments — nothing records one. The two coincide here because this branch
+    # is reached only when `session_id` is blank, which is what "has never run"
+    # means everywhere in recovery, so no earlier turn can have consumed any of it.
     #
     # @return [Array(Array<Hash>, Array<Hash>)] images, files
     def first_turn_attachments
-      claimed = paths_claimed_by_the_queue
-      # An unreadable queue degrades this to the old attachment-free start rather
-      # than risking the duplicate: a turn short an attachment is a worse turn, a
-      # turn carrying somebody else's is a wrong one.
-      return [ [], [] ] if claimed.nil?
-
-      [
-        ImageStorageService.stored_for(session.id),
-        FileStorageService.stored_for(session.id)
-      ].map { |attachments| attachments.reject { |entry| claimed.include?(entry[:path]) } }
+      Sessions::FirstTurnAttachments.for(session)
     end
 
-    # Attachment paths that belong to a QUEUED message rather than to the first
-    # turn.
-    #
-    # Both live in the same per-session storage directory — a follow-up composed
-    # while the session sat unstarted uploads through the same service — so
-    # "everything on disk" is not the same set as "what the first turn carried".
-    # An EnqueuedMessage records the paths it owns, and delivering them twice
-    # would put a screenshot the human queued for later onto the turn before it.
-    #
-    # @return [Set<String>, nil] nil when the queue could not be read, which is
-    #   NOT the same answer as "nothing is queued"
-    def paths_claimed_by_the_queue
-      session.enqueued_messages
-             .flat_map { |message| Array(message.images) + Array(message.files) }
-             .filter_map { |entry| entry["path"] || entry[:path] if entry.is_a?(Hash) }
-             .to_set
-    rescue ActiveRecord::ActiveRecordError => e
-      Rails.logger.warn("[Sessions::StartNow] Could not read session #{session.id}'s queued messages: #{e.message}")
-      nil
-    end
-
-    # What the session's log says the turn is carrying. Silence when it carries
-    # nothing: a first turn with no attachments is the ordinary case, and saying
-    # so every time would bury the times it does.
+    # What the session's log says the turn is carrying.
     def attachment_phrase(images, files)
-      carried = []
-      carried << "#{images.size} #{"image".pluralize(images.size)}" if images.any?
-      carried << "#{files.size} #{"file".pluralize(files.size)}" if files.any?
-      return "" if carried.empty?
-
-      ", carrying #{carried.to_sentence}"
+      carried = Sessions::FirstTurnAttachments.phrase(images, files)
+      carried ? ", carrying #{carried}" : ""
     end
 
     def resume_from_the_queue

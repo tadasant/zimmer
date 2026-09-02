@@ -4101,10 +4101,26 @@ class SessionsController < ApplicationController
       return [ false, error_message ]
     end
 
+    # The replacement turn IS the original first turn — same prompt, new clone,
+    # new session_id — so it needs the attachments that turn was created with.
+    # AgentSessionJob takes them only as job arguments, so enqueuing bare re-ran
+    # the prompt with the screenshot silently missing (#746).
+    #
+    # Everything on the volume is replayed, deliberately: this path is reached
+    # only for a pre-prompt failure with setup incomplete, so nothing was
+    # delivered to an agent — and where an earlier attempt did get as far as
+    # delivering, restart_from_scratch has just discarded the conversation that
+    # received it. Re-delivering to a turn that no longer exists is not
+    # over-delivery. Read before the transaction so a slow or unreadable volume
+    # cannot poison it; the read never raises.
+    images, files = Sessions::FirstTurnAttachments.for(session)
+    carrying = Sessions::FirstTurnAttachments.phrase(images, files)
+
     result = with_db_retry do
       ActiveRecord::Base.transaction do
         session.logs.create!(
-          content: "Restarting session from scratch: re-running full setup pipeline (git clone, MCP config, process spawn)",
+          content: "Restarting session from scratch: re-running full setup pipeline (git clone, MCP config, process spawn)" \
+                   "#{carrying ? ", carrying #{carrying}" : ""}",
           level: "info"
         )
 
@@ -4127,7 +4143,7 @@ class SessionsController < ApplicationController
 
         # Enqueue as a new session (not a follow-up) to trigger the full setup
         # pipeline: git clone, MCP configuration, skill injection, process spawn.
-        AgentSessionJob.enqueue_new_session(session.id)
+        AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
 
         session.logs.create!(
           content: "Session resumed - status changed to running, full setup will be re-attempted",

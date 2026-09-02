@@ -1206,9 +1206,21 @@ class Api::V1::SessionsController < Api::BaseController
       *SpotSessionHold::METADATA_KEYS
     )
 
+    # The replacement turn IS the original first turn — same prompt, new clone,
+    # new session_id — so it carries the attachments that turn was created with.
+    # AgentSessionJob takes them only as job arguments, so enqueuing bare re-ran
+    # the prompt with the screenshot silently missing (#746). Everything on the
+    # volume is replayed deliberately: this path is reached only for a pre-prompt
+    # failure with setup incomplete, and a restart from scratch discards the
+    # conversation any earlier delivery went to. Read outside the transaction; the
+    # read never raises.
+    images, files = Sessions::FirstTurnAttachments.for(session)
+    carrying = Sessions::FirstTurnAttachments.phrase(images, files)
+
     ActiveRecord::Base.transaction do
       session.logs.create!(
-        content: "Restarting session from scratch: re-running full setup pipeline (git clone, MCP config, process spawn)",
+        content: "Restarting session from scratch: re-running full setup pipeline (git clone, MCP config, process spawn)" \
+                 "#{carrying ? ", carrying #{carrying}" : ""}",
         level: "info"
       )
 
@@ -1218,7 +1230,7 @@ class Api::V1::SessionsController < Api::BaseController
         metadata: cleaned_metadata
       )
       session.resume! if session.may_resume?
-      AgentSessionJob.enqueue_new_session(session.id)
+      AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
 
       session.logs.create!(
         content: "Session resumed - status changed to running, full setup will be re-attempted",

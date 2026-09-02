@@ -4,6 +4,8 @@ require "automated_prompts"
 require "ostruct"
 
 class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
+  include AttachmentFixtures
+
   setup do
     @valid_api_key = "test_api_key_12345"
     @headers = { "X-API-Key" => @valid_api_key }
@@ -12,6 +14,8 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
   teardown do
     ENV.delete("API_KEYS")
+    # Durable attachment storage outlives the test that wrote it.
+    cleanup_stored_attachments!
   end
 
   # Authentication tests
@@ -1562,6 +1566,48 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil session.session_id
     assert_nil session.metadata["failure_reason"]
     assert_nil session.metadata["clone_path"]
+  end
+
+  # AgentSessionJob receives images and files ONLY as job arguments, so a restart
+  # that enqueued bare re-ran the original prompt with the screenshot silently
+  # missing (#746). The bytes were on the durable volume the whole time.
+  test "should restart from scratch carrying the attachments the first turn was created with" do
+    session = Session.create!(
+      prompt: "here is the screenshot, fix this",
+      status: :failed,
+      git_root: "https://github.com/test/repo.git",
+      metadata: { "failure_reason" => "git_clone_failed" }
+    )
+    image = store_image_for(session)
+
+    post restart_api_v1_session_path(session.id), headers: @headers
+
+    assert_response :success
+    assert_enqueued_with(
+      job: AgentSessionJob,
+      args: [ session.id, nil, { images: [ { path: image[:path], media_type: "image/png" } ] } ]
+    )
+  end
+
+  # This path is taken when something has ALREADY gone wrong. A storage tree that
+  # cannot be read must cost the attachments, never the restart.
+  test "should still restart from scratch when the attachment storage cannot be read" do
+    session = Session.create!(
+      prompt: "here is the screenshot, fix this",
+      status: :failed,
+      git_root: "https://github.com/test/repo.git",
+      metadata: { "failure_reason" => "git_clone_failed" }
+    )
+    store_image_for(session)
+
+    ImageStorageService.stub(:stored_for, ->(*) { raise Errno::EACCES, "storage" }) do
+      assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+        post restart_api_v1_session_path(session.id), headers: @headers
+      end
+    end
+
+    assert_response :success
+    assert_equal "running", session.reload.status
   end
 
   test "should not restart from scratch without git_root" do
