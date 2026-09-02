@@ -96,17 +96,29 @@ class RealFileSystemAdapterTest < ActiveSupport::TestCase
     assert_includes matches, File.join(@temp_dir, "subdir", "nested.txt")
   end
 
-  # Without FNM_DOTMATCH, `**/` never descends into a hidden directory — which
-  # is exactly where a `.venv` lives (NonRelocatableClonePaths).
-  test "glob descends into hidden directories only when asked to" do
-    @adapter.mkdir_p(File.join(@temp_dir, ".venv"))
-    @adapter.write(File.join(@temp_dir, ".venv", "pyvenv.cfg"), "home = /usr/bin")
+  test "children lists a directory's immediate entries by name" do
+    @adapter.mkdir_p(File.join(@temp_dir, "subdir", "nested"))
+    @adapter.write(File.join(@temp_dir, "root.txt"), "a")
+    @adapter.write(File.join(@temp_dir, ".hidden"), "b")
+    @adapter.write(File.join(@temp_dir, "subdir", "nested", "deep.txt"), "c")
 
-    pattern = File.join(@temp_dir, "**", "pyvenv.cfg")
+    assert_equal [ ".hidden", "root.txt", "subdir" ], @adapter.children(@temp_dir).sort
+    assert_equal [ "nested" ], @adapter.children(File.join(@temp_dir, "subdir"))
+  end
 
-    assert_empty @adapter.glob(pattern)
-    assert_equal [ File.join(@temp_dir, ".venv", "pyvenv.cfg") ],
-      @adapter.glob(pattern, flags: File::FNM_DOTMATCH)
+  test "children raises for a path that is not a readable directory" do
+    assert_raises(SystemCallError) { @adapter.children(File.join(@temp_dir, "nonexistent")) }
+  end
+
+  test "symlink? distinguishes a link from what it points at" do
+    target = File.join(@temp_dir, "target")
+    link = File.join(@temp_dir, "link")
+    @adapter.mkdir_p(target)
+    File.symlink(target, link)
+
+    assert @adapter.symlink?(link)
+    assert_not @adapter.symlink?(target)
+    assert_not @adapter.symlink?(File.join(@temp_dir, "nonexistent"))
   end
 
   test "mtime returns modification time" do

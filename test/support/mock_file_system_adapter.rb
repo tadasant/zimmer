@@ -41,10 +41,7 @@ class MockFileSystemAdapter < FileSystemAdapter
     @directories.include?(path)
   end
 
-  # `flags` is accepted and ignored: the translation below matches dotfiles
-  # unconditionally, so the mock is already as permissive as FNM_DOTMATCH makes
-  # the real one.
-  def glob(pattern, flags: 0)
+  def glob(pattern)
     # Convert glob pattern to regex
     # ** matches any number of directories (including none)
     # * matches any characters except /
@@ -63,6 +60,24 @@ class MockFileSystemAdapter < FileSystemAdapter
     matching_dirs = @directories.select { |path| path.match?(regex) }
 
     (matching_files + matching_dirs.to_a).sort
+  end
+
+  # The mock holds a flat set of paths rather than a tree, so a directory's
+  # immediate entries are derived: every path under it, reduced to its first
+  # remaining segment.
+  def children(path)
+    raise Errno::ENOTDIR, "Not a directory - #{path}" unless @directories.include?(path)
+
+    prefix = "#{path}/"
+    (@files.keys + @directories.to_a)
+      .select { |candidate| candidate.start_with?(prefix) }
+      .map { |candidate| candidate.delete_prefix(prefix).split("/").first }
+      .compact.uniq.sort
+  end
+
+  # The mock has no symlinks to model.
+  def symlink?(_path)
+    false
   end
 
   def mtime(path)

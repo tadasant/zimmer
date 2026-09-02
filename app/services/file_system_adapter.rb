@@ -60,12 +60,26 @@ class FileSystemAdapter
 
   # Find files matching a pattern
   # @param pattern [String] A glob pattern (e.g., "*.rb", "**/*.txt")
-  # @param flags [Integer] File::FNM_* flags, as Dir.glob takes them.
-  #   File::FNM_DOTMATCH is the one that matters in practice: without it `**/`
-  #   never descends into a hidden directory, so a `.venv` is invisible.
   # @return [Array<String>] List of matching file paths
-  def glob(pattern, flags: 0)
+  def glob(pattern)
     raise NotImplementedError, "#{self.class}#glob must be implemented"
+  end
+
+  # The names of a directory's immediate entries, excluding "." and "..".
+  # For walking a tree one level at a time, where a glob would have to
+  # enumerate the whole thing before anything could be pruned.
+  # @param path [String] The directory to list
+  # @return [Array<String>] Entry names, not paths
+  # @raise [SystemCallError] If the path is not a readable directory
+  def children(path)
+    raise NotImplementedError, "#{self.class}#children must be implemented"
+  end
+
+  # Whether a path is a symbolic link, tested without following it.
+  # @param path [String] The path to check
+  # @return [Boolean]
+  def symlink?(path)
+    raise NotImplementedError, "#{self.class}#symlink? must be implemented"
   end
 
   # Get the modification time of a file
