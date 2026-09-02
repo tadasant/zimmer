@@ -304,6 +304,62 @@ add-only](/limitations/#admin-keys-are-add-only), so a live box also needs the l
 `/root/.ssh/authorized_keys`).
 :::
 
+## The git identity an agent session commits with
+
+The same `$HOME` inheritance that leaves a session without an SSH key left it without a **git
+identity**. `Dockerfile.base` writes the `gh auth git-credential` helper into `~/.gitconfig` and no
+`[user]` section, and clone preparation sets a remote and a branch and never an identity — so
+*pushing* worked and *committing* did not. Every committing session paid for that once, with a first
+`git commit` that exits 128:
+
+```
+Author identity unknown
+fatal: empty ident name (for <rails@…>) not allowed
+```
+
+118 times in three days on one production instance, spread thin across many clones
+([#575](https://github.com/tadasant/zimmer/issues/575)). The session then recovered by *inventing* an
+identity — usually by reading `git log` — which made authorship a norm rediscovered per session
+rather than a configured fact.
+
+`GitIdentityProvisioner` closes it. Two env vars, in the clear (neither half is a secret — both are
+published in every commit they sign):
+
+| Variable | What |
+| --- | --- |
+| `ZIMMER_GIT_USER_NAME` | `user.name` for every commit a session makes |
+| `ZIMMER_GIT_USER_EMAIL` | `user.email` for the same |
+
+Both are declared in `config/deploy.yml`'s `env.clear` and read from the deploy-time environment, so
+each destination supplies its own; for production that is the [private companion
+repo](/operate/companion-repo/) that orchestrates the deploy. `config/initializers/git_identity.rb`
+writes them into `~/.gitconfig` at boot, beside the credential helper the image already put there.
+
+Three details are load-bearing:
+
+- **The global config, not the clone.** A session's working trees are not all clones Zimmer made:
+  `GitCloneService` clones the session's own, `ForkSessionService` `git init`s a scaffold for a fork
+  with no source tree to copy, `Execution::Providers::LocalFilesystem` runs its own `git clone`, and
+  an agent freely makes worktrees and scratch repos. One `[user]` section covers all of them —
+  including whatever creates a working tree next — where a `git config --local` write covers exactly
+  the call sites that remembered to make it.
+- **Boot, not build.** An identity is per-deployment; a credential helper is not. Baking a name and
+  an email into a public image would put this deployment's identity in a self-hoster's git history.
+- **No default, and no half.** An unconfigured deployment gets nothing written and one line in the
+  log naming both variables; a deployment that sets only one gets a warning and still nothing. A
+  missing identity fails loudly at commit time and is recoverable — a *guessed* one lands silently in
+  history and is not. That is the [limitation this
+  leaves](/limitations/#a-deployment-that-configures-no-git-identity-still-cannot-commit).
+
+Worth being explicit about what this settles rather than solves: **every agent commit is authored as
+whatever identity you configure, with nothing in `git log` distinguishing it from a commit the human
+typed.** Configuring the operator's own name and email — which is what the observed norm already was,
+198 of the last 200 commits — makes that uniform and deliberate instead of rediscovered per session,
+but it does not make agent authorship legible. A deployment that wants that separation should give
+the sessions their own identity here; the mechanism does not care which you pick. Attribution *of a
+push* is a different and still-open problem — every session shares one GitHub token
+([#214](https://github.com/tadasant/zimmer/issues/214)).
+
 ## Where secrets end up that they shouldn't
 
 :::caution[The Tailscale auth key is in the droplet's `user_data`]

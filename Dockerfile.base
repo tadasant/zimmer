@@ -261,11 +261,16 @@ RUN npx puppeteer@^24 browsers install chrome
 # The OAuth token comes from `gh auth login` and is mounted as a volume at
 # ~/.config/gh — the helper invokes gh to fetch it on demand.
 #
-# CI mirrors this pattern in `.github/workflows/agent-orchestrator-ci.yml`
-# (validate_air_config job, "Configure git auth for private catalog clones"
-# step) so AIR's catalog clones in CI use the same auth path as production
-# runtime. If you change the credential helper here, update the CI step too
-# — otherwise CI and prod will drift on auth behavior.
+# This is the credential half of the git surface only. The IDENTITY half —
+# `user.name` / `user.email`, without which a session's first `git commit` exits
+# 128 — is written into this same global config at boot by GitIdentityProvisioner,
+# from ZIMMER_GIT_USER_NAME / ZIMMER_GIT_USER_EMAIL. It is deliberately not baked
+# here: credentials are the same for every deployment running this image, and an
+# identity is not. See app/services/git_identity_provisioner.rb.
+#
+# Nothing in CI mirrors either half. The catalog AIR resolves is self-contained and
+# offline (see AGENTS.md), so CI clones nothing private and commits nothing — it
+# needs neither the helper nor an identity.
 RUN git config --global credential.https://github.com.helper '' \
     && git config --global credential.https://github.com.helper '!/usr/bin/gh auth git-credential'
 

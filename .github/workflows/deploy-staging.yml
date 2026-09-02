@@ -384,6 +384,14 @@ jobs:
           STAGING_SENTRY_DSN_BACKEND: ${{ secrets.STAGING_SENTRY_DSN_BACKEND }}
           STAGING_OTEL_LOGS_EXPORTER_ENDPOINT: ${{ secrets.STAGING_OTEL_LOGS_EXPORTER_ENDPOINT }}
           STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN: ${{ secrets.STAGING_OTEL_LOGS_EXPORTER_BEARER_TOKEN }}
+          # The commit identity staging's agent sessions get (config/deploy.yml reads
+          # both from this environment). Repository VARIABLES, not secrets: an author
+          # name and email are published in every commit they sign, and masking them
+          # would only make a wrong one harder to diagnose. Unset is survivable and
+          # deliberate -- no identity is written and sessions cannot commit, which is
+          # exactly the state before #575 -- but it is invisible, hence the check below.
+          ZIMMER_GIT_USER_NAME: ${{ vars.ZIMMER_GIT_USER_NAME }}
+          ZIMMER_GIT_USER_EMAIL: ${{ vars.ZIMMER_GIT_USER_EMAIL }}
         run: |
           set -euo pipefail
           # API_KEYS is a comma-separated list; the injected self-session MCP server
@@ -453,6 +461,17 @@ jobs:
             echo "::warning::Parameter Store is OFF: STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON is unset."
             echo "::warning::Staging boots fine and every \${VAR} resolves from staging.yml.enc as before --"
             echo "::warning::the store link is simply absent. The Connectors page names the reason."
+          fi
+          # Same reasoning as the SSH key: unset is survivable and completely
+          # invisible from outside a session -- the app boots healthy and only the
+          # first `git commit` fails, with an error nobody is watching for.
+          if [ -n "${ZIMMER_GIT_USER_NAME:-}" ] && [ -n "${ZIMMER_GIT_USER_EMAIL:-}" ]; then
+            echo "✅ Session git identity ON (${ZIMMER_GIT_USER_NAME} <${ZIMMER_GIT_USER_EMAIL}>; written to ~/.gitconfig on boot)"
+          else
+            echo "::warning::Sessions will have NO git identity: set the ZIMMER_GIT_USER_NAME and"
+            echo "::warning::ZIMMER_GIT_USER_EMAIL repository variables. Both are required -- Zimmer"
+            echo "::warning::will not invent the missing half -- and without them every committing"
+            echo "::warning::session's first \`git commit\` fails with 'Author identity unknown'."
           fi
           echo "-------------------------------"
           kamal accessory boot all -d staging
