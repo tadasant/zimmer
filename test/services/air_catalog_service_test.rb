@@ -250,6 +250,25 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "raises CatalogError, not Errno::ENOENT, when the air binary is not there to spawn" do
+    # A binary that exits non-zero comes back as a failed status; a binary that
+    # is missing raises out of the spawn itself as a SystemCallError, which no
+    # `rescue CatalogError` between here and a view would catch. That is how a
+    # missing AIR CLI reached a session-card render as an
+    # ActionView::Template::Error instead of degrading (GlitchTip #61).
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, "/nonexistent/node_modules/.bin/air") do
+        Open3.stub(:capture3, ->(*) { raise Errno::ENOENT, "/nonexistent/node_modules/.bin/air" }) do
+          error = assert_raises(AirCatalogService::CatalogError) do
+            AirCatalogService.entries_for(:skills)
+          end
+          assert_match(/could not run the AIR CLI/, error.message)
+          assert_match(/Errno::ENOENT/, error.message)
+        end
+      end
+    end
+  end
+
   test "raises CatalogError when air resolve exits non-zero" do
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do

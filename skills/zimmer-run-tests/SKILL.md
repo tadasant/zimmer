@@ -141,7 +141,7 @@ catalog resolving to non-empty data. If you see a wave of
 catalog resolution — not your change. Verify with:
 
 ```bash
-AIR_CONFIG=$PWD/air.json ~/.cache/air-cli/node_modules/.bin/air \
+AIR_CONFIG=$PWD/air.json "$(bin/rails runner 'print AirPrepareService::AIR_INSTALL_DIR')"/node_modules/.bin/air \
   resolve --json --no-scope --git-protocol https | ruby -rjson -e \
   'j=JSON.parse($stdin.read); j.each { |k, v| puts "#{k}: #{v.size}" }'
 ```

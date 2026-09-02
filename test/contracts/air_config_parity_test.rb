@@ -11,7 +11,7 @@ require "json"
 #    `AirPrepareService::AIR_CLI_VERSION` is what the app looks for. They are the
 #    same string today by convention only. Bump one and not the other and
 #    `ensure_air_installed!` misses the marker on every boot — so the first
-#    session on a fresh container rm_rf's the baked-in install and re-downloads
+#    session on a fresh container replaces the baked-in install and re-downloads
 #    the CLI from npm on the session's launch path, or (the other direction)
 #    trusts a marker for a version the image never installed.
 #

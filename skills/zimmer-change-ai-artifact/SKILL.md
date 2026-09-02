@@ -138,7 +138,7 @@ the body.
 Resolve the catalog exactly the way the app does:
 
 ```bash
-AIR=~/.cache/air-cli/node_modules/.bin/air   # or /opt/air-cli/node_modules/.bin/air
+AIR="$(bin/rails runner 'print AirPrepareService::AIR_INSTALL_DIR')"/node_modules/.bin/air
 AIR_CONFIG=$PWD/air.json $AIR resolve --json --no-scope --git-protocol https \
   > /tmp/resolve.json 2>/tmp/resolve.err
 echo "exit=$?"; cat /tmp/resolve.err          # MUST be empty — any "Dropping the reference" is a failure
