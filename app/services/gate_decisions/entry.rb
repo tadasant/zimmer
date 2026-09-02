@@ -17,7 +17,7 @@ module GateDecisions
   # WHAT IT REFUSES TO CARRY
   #
   # `human_feedback` is stripped, always, on every path. It is not a payload key
-  # in this schema — it is GateDecisionFeedback, written from a human boundary
+  # in this schema — it is GateDecisionFeedback, written from the browser surface
   # only. Leaving it in `payload` would hand back exactly the forgery this design
   # exists to prevent: a machine writing a note that says a human said something.
   class Entry

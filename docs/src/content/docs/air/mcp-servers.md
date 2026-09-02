@@ -126,7 +126,9 @@ entry at the instance preparing the session so a staging session never orchestra
 The catalog also carries `zimmer*` entries you attach deliberately, each scoped to a tool group:
 `zimmer-sessions`, `zimmer-fleet`, and `zimmer-gate-decisions` (the [gate decision
 ledger](/operate/gate-decisions/) — separate from `zimmer-sessions` on purpose, so that carrying
-session orchestration does not carry the ability to write gate ratings).
+session orchestration does not carry the ability to write gate ratings). `gate_decisions` is an
+opt-in tool group, so `zimmer-gate-decisions` is the *only* entry that reaches the ledger tools:
+the unscoped `zimmer` entry does not carry them.
 
 → [Zimmer's MCP server](/extend/mcp-server/) for the tool surface, the scoped variants, and auth.
 

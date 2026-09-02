@@ -33,7 +33,7 @@
 #   * Rows are append-only. A note cannot be edited into saying something else,
 #     and cannot be deleted to make a gate look better than it was.
 #
-# The `imported` channel is the one exception to "a human typed this", and it is
+# The `imported` channel does not even come through that boundary, and it is
 # honest about itself: those rows are the `human_feedback` arrays transcribed
 # from the JSON ledgers by the one-time backfill, where the authorship the source
 # recorded is whatever it recorded — often nothing, which is why `author` is

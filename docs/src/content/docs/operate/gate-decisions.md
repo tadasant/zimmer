@@ -74,9 +74,10 @@ write over the shared API key, on the REST or MCP surfaces an agent is actually 
 rule out an agent that goes looking for the browser route and posts a form to it. A genuine
 human-only guarantee needs a way to tell a person from an agent at the web surface — the agent-login
 primitive Zimmer does not have yet ([#371](https://github.com/tadasant/zimmer/issues/371),
-[#220](https://github.com/tadasant/zimmer/issues/220)). Until it exists, `web_ui` means "came in
-through the browser surface", which is weaker than "a human typed it", and the ledger should be read
-that way.
+[#220](https://github.com/tadasant/zimmer/issues/220)). CSRF enforcement is still on, so the form
+post is not free — an agent would have to fetch a token from a Zimmer page first — but a speed bump
+is not a boundary. Until the primitive exists, `web_ui` means "came in through the browser surface",
+which is weaker than "a human typed it", and the ledger should be read that way.
 
 Rows backfilled from the old JSON files carry the `imported` channel rather than `web_ui`, and their
 `author` is null when the source did not record one. A plausible-looking author invented by an
@@ -97,10 +98,11 @@ every session carrying `zimmer-sessions` would be handed the ability to write ga
 the base set, so would every session holding the unscoped `zimmer` server, since omitting
 `tool_groups` means "every base group". A ledger every session has a pen for is not evidence of
 anything. So `gate_decisions` sits outside the base set: it is valid and addressable, but a
-connection has to name it, and the connections that do are the two gate roots'.
-`gate_decisions_readonly` — generated automatically, like every domain group's readonly variant —
-carries the two reads and not the write. The catalog server that scopes to the full group is
-`zimmer-gate-decisions`.
+connection has to name it. `gate_decisions_readonly` — generated automatically, like every domain
+group's readonly variant — carries the two reads and not the write. The one catalog entry that
+scopes to the full group is `zimmer-gate-decisions`, and it is meant for the two gate roots, which
+live in a deployment's own catalog rather than in Zimmer's — so attaching it there is what puts the
+write tool back within reach of the gates, and of nothing else.
 
 Be precise about what that buys, though: **tool groups are a scoping boundary, not an authorization
 one.** The API key is shared by the whole fleet and is written into every session's own MCP config,
@@ -108,10 +110,6 @@ so a determined agent could compose its own `?tool_groups=` URL. What the group 
 session is *offered*, which is what keeps recording a rating from being something any session does
 in passing. The guarantee that does not depend on a caller staying inside its tools is the feedback
 boundary above: no API key reaches `POST /gate_decisions/:id/feedbacks` at all.
-
-`gate_decisions` is a base group, so the unscoped `/mcp` surface carries the write tool too. That is
-what "no `tool_groups` means every base group" has always meant; the scoping that matters is that
-`sessions` and `self_session` do not reach it.
 
 The same filters are on `GET /api/v1/gate_decisions`; see [the REST API](/extend/rest-api/).
 

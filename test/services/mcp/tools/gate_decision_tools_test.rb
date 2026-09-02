@@ -102,11 +102,11 @@ class Mcp::Tools::GateDecisionToolsTest < ActiveSupport::TestCase
 
     assert_includes output, "should-have-held"
     assert_includes output, "##{record.id}"
-    assert_includes output, "typed into Zimmer by a human"
+    assert_includes output, "came in through Zimmer's browser surface"
     assert_includes output, "Nope."
   end
 
-  test "the feedback tool distinguishes an imported note from one a human typed" do
+  test "the feedback tool distinguishes an imported note from one written at the browser" do
     record = decision
     record.feedbacks.create!(verdict: "mischaracterized", channel: GateDecisionFeedback::IMPORTED)
 

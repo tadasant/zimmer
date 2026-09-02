@@ -9,8 +9,9 @@ module GateDecisions
   # once rather than three times:
   #
   #   * `human_feedback` never survives a write. Entry strips it; nothing here
-  #     puts it back. The only writer of GateDecisionFeedback is a human boundary
-  #     (and the importer, on its own honestly-labelled channel).
+  #     puts it back. The only writer of GateDecisionFeedback is the browser
+  #     surface (and the importer, on its own honestly-labelled channel).
+  #     See GateDecisionFeedback for how far that boundary reaches.
   #   * `writing_session` is passed in by the CALLER'S BOUNDARY, resolved from the
   #     MCP connection or the API request, and is never read out of the entry. A
   #     row that could name its own author is a row an agent can launder a

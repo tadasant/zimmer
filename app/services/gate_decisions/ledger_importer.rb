@@ -136,10 +136,10 @@ module GateDecisions
     # rows on the `imported` channel.
     #
     # Written here and nowhere else on any machine path. The channel says plainly
-    # what these are — notes transcribed from the JSON ledgers, not words typed
-    # into Zimmer by a person — so a reader can tell a backfilled note from one
-    # that came through the human boundary. Existing notes are matched on what
-    # they say, so a re-run adds nothing.
+    # what these are — notes transcribed from the JSON ledgers, not words entered
+    # into Zimmer — so a reader can tell a backfilled note from one that came
+    # through the browser surface. Existing notes are matched on what they say, so
+    # a re-run adds nothing.
     def import_feedback(decision, parsed)
       notes = parsed.human_feedback
       return 0 if notes.empty?

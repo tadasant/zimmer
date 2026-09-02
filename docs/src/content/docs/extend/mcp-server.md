@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 23 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 26 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -208,8 +208,10 @@ human spoke to this session) or `elsewhere` (a human spoke to another session in
 `gate_decisions` is a group of its own rather than three more tools in `sessions`, and it is opt-in
 rather than base. Folded into `sessions`, every session carrying `zimmer-sessions` would be handed
 the ability to write gate ratings; left in the base set, so would every session holding the full
-`zimmer` server — and a ledger every session has a pen for is not evidence of anything. The two gate
-roots name the group; nothing else does. Like every tool group this is a **scoping** boundary rather
+`zimmer` server — and a ledger every session has a pen for is not evidence of anything. The group is
+meant for the two gate roots, whose scoped `zimmer-gate-decisions` server is the one catalog entry
+that names it; those roots live in a deployment's own catalog rather than in Zimmer's, so nothing in
+Zimmer's own catalog reaches the group. Like every tool group this is a **scoping** boundary rather
 than an authorization one — it decides what a session is offered, not what a shared API key can
 reach. Nothing in this group or any other can write `human_feedback`: the key is scrubbed
 recursively out of every entry, `record_gate_decision` says so in its receipt, and the only write
@@ -479,8 +481,10 @@ as a JSON-RPC error, which the model never sees.
 2. Call the models and services directly. If the logic already exists behind a service object, call
    it — the MCP layer validates arguments, calls, and formats; it does not own business logic.
 3. Register it in `Mcp::Registry::ALL_TOOLS` with its domain group and whether it is a write
-   operation. Add `composite_groups: %w[self_session]` if a session should be able to use it on
-   itself, and a `composite_overrides` entry if it needs a narrower variant in that group (see
-   `action_session`).
+   operation. If the group is new, decide whether it belongs in `BASE_GROUPS` (every unscoped
+   connection gets it) or `OPT_IN_GROUPS` (a connection has to name it) — the second is for a group
+   whose write tools should not ride along on `/mcp`. Add `composite_groups: %w[self_session]` if a
+   session should be able to use it on itself, and a `composite_overrides` entry if it needs a
+   narrower variant in that group (see `action_session`).
 4. Test it under `test/services/mcp/tools/`, and let `test/controllers/mcp_controller_test.rb` cover
    the wire shape.

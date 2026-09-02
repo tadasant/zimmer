@@ -22,7 +22,8 @@
 # authentication at all — the perimeter is the tailnet, and agent sessions run
 # inside it. This boundary rules out a write over the shared API key, on the REST
 # and MCP surfaces a session is actually offered; it does not rule out an agent
-# that goes looking for this route. "Human-only" needs a way to tell a person from
+# that goes looking for this route — CSRF enforcement means it would have to fetch
+# a token from a Zimmer page first, which is a speed bump, not a boundary. "Human-only" needs a way to tell a person from
 # an agent at the web surface, which is the agent-login primitive Zimmer does not
 # have yet (#371, #220). Until then `web_ui` means "came in through the browser
 # surface", which is weaker, and the channel should be read that way.

@@ -3,7 +3,7 @@
 require "test_helper"
 
 class Mcp::RegistryTest < ActiveSupport::TestCase
-  test "no groups means every base group (the full read+write surface)" do
+  test "no groups means every base group, and nothing outside them" do
     assert_equal Mcp::Registry::BASE_GROUPS, Mcp::Registry.parse_groups(nil)
     assert_equal Mcp::Registry::BASE_GROUPS, Mcp::Registry.parse_groups("")
 

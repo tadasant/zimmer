@@ -29,7 +29,7 @@ module Mcp
         **Verdicts seen so far:** `should-have-merged`, `should-have-held`, `should-have-proceeded`, `mischaracterized`. Each note comes with the decision it corrects, so you can see the rating the human disagreed with.
 
         **Provenance is part of the answer**, and it is reported per note:
-        - `web_ui` — typed into Zimmer by the named human. This is the trustworthy channel: no API key and no MCP tool can write it, only the browser.
+        - `web_ui` — came in through Zimmer's browser surface, which no API key and no MCP tool reaches. That is the trustworthy channel, and it is a *browser* boundary rather than a human one: Zimmer's web UI has no login, so it means "not written over the fleet's API key", not "a human typed this".
         - `imported` — transcribed from the JSON ledgers by the one-time backfill. Same words, older provenance; the source did not always record who said them.
 
         **Returns:** each note with its verdict, date, author, channel, and the decision it corrects.
@@ -105,7 +105,7 @@ module Mcp
         ]
         lines << "- **Artifact:** #{decision.artifact_url}" if decision.artifact_url.present?
         lines << "- **Author:** #{note.display_name || 'not recorded in the source'}"
-        lines << "- **Channel:** #{note.channel}#{note.channel == GateDecisionFeedback::IMPORTED ? ' (transcribed from the JSON ledger by the backfill)' : ' (typed into Zimmer by a human)'}"
+        lines << "- **Channel:** #{note.channel}#{note.channel == GateDecisionFeedback::IMPORTED ? ' (transcribed from the JSON ledger by the backfill)' : ' (came in through Zimmer\'s browser surface)'}"
         lines << ""
         lines << (note.note.presence&.truncate(MAX_NOTE_DISPLAY) || "*(no note text recorded)*")
         lines.join("\n")

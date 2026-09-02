@@ -38,7 +38,7 @@ module Mcp
 
         **The entry is yours.** Pass whatever your gate's schema says a decision is, as `entry`. It is stored verbatim and returned verbatim. A handful of stable fields (`pr`/`issue`, `decided_at`, `decision`, `producing_session`/`spawned_session`) are also promoted to indexed columns so `search_gate_decisions` can filter on them — but nothing is dropped, nothing is renamed, and a key your gate adds next week needs no change here.
 
-        **`human_feedback` is not writable from this tool, or any other, ever.** If you pass it, it is silently dropped. That field records a human overruling a gate, and it is only worth what the guarantee that a machine did not write it is worth. It is added from Zimmer's web UI, which is the one surface no agent tool and no API key reaches. Read them with `search_gate_decisions { with_human_feedback: true }` or `get_gate_decision_feedback`.
+        **`human_feedback` is not writable from this tool, or any other, ever.** If you pass it, it is silently dropped. That field records a human overruling a gate, and it is only worth what the guarantee that a machine did not write it is worth. It is added from Zimmer's web UI, which is the one surface no agent tool and no API key reaches — a browser boundary rather than a human one, since that UI has no login. Read them with `search_gate_decisions { with_human_feedback: true }` or `get_gate_decision_feedback`.
 
         **Rows are append-only.** There is no edit and no delete, here or anywhere. A re-rate or a correction is a NEW call on the same artifact — say so in the entry (`"decision": "correction"`, and cite the earlier decision's id in your reasoning) so both readings stay visible.
 

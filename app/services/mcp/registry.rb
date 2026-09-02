@@ -23,8 +23,8 @@ module Mcp
   # that composite group — that is how action_session narrows from the full
   # action list to the self-management subset in the self_session variant.
   module Registry
-    # The groups a connection gets when it asks for nothing. "The full surface"
-    # means these.
+    # The groups a connection gets when it asks for nothing. Not the whole
+    # catalog — see OPT_IN_GROUPS.
     BASE_GROUPS = %w[sessions notifications triggers health].freeze
 
     # Domain groups a connection has to name to get. Valid and addressable —
@@ -112,8 +112,10 @@ module Mcp
       # broadest reach in the deployment rather than the narrowest. So a
       # connection has to name `gate_decisions` to get the write;
       # `gate_decisions_readonly` — free, from the generated readonly variant —
-      # gets the two reads and not the write. The two gate roots' scoped servers
-      # are the only connections that ask.
+      # gets the two reads and not the write. The group is meant for the two gate
+      # roots' scoped servers — those roots live in a deployment's own catalog
+      # rather than in Zimmer's, so `zimmer-gate-decisions` (mcp.json) is the entry
+      # they attach, and no root in this repo's catalog attaches it.
       #
       # BE PRECISE ABOUT WHAT THAT BUYS. Tool groups are a SCOPING boundary, not an
       # authorization one: the API key is shared by the whole fleet and is written

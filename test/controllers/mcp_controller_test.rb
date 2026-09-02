@@ -102,7 +102,7 @@ class McpControllerTest < ActionDispatch::IntegrationTest
 
   # --- Tool listing and scoping ---
 
-  test "tools/list returns the full surface by default" do
+  test "tools/list returns the base-group surface by default" do
     tools = rpc("tools/list")["result"]["tools"].map { |t| t["name"] }
     assert_equal Mcp::Registry.tools_for(Mcp::Registry::BASE_GROUPS).size, tools.size
     assert_includes tools, "start_session"
