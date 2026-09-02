@@ -888,7 +888,9 @@ seconds. Taken as a maximum that is indistinguishable from a wedge.
 
 The `critical` gate above no longer reads it that way. The **Grafana** rule over
 `zimmer_good_job_oldest_ready_age_seconds` (`Zimmer GoodJob queue is not draining`, threshold 900s)
-still does, and cannot tell the two apart — it carries no `queue` label to split on.
+still reads that single number — it carries no `queue` label to split on — but it no longer pages on
+age alone: `tadasant-internal#2260` gated it on throughput as well, for the same reason this gate
+went per-lane. The two fixes are the same argument applied on either side of the boundary.
 
 `Oldest ready by queue` is each queue's *own* longest-waiting ready row, oldest queue first, and the
 first bullet names the lane and job class behind the global figure:
