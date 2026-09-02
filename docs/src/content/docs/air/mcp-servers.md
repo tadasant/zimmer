@@ -274,8 +274,10 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   `_npx/<hash>` and, on a cold clone, race to populate it. `NpxCacheIsolator` finds those servers at
   config-write time and gives each its own `NPM_CONFIG_CACHE` under
   `.npm-cache/isolated/<server>/`, so there is nothing to race over. Servers that don't share a
-  package share the clone's `.npm-cache`, so tarballs are still downloaded once. Both answers live
-  under `.npm-cache`, which is what keeps the heal and clear services below able to reach them.
+  package share the clone's `.npm-cache`, so tarballs are still downloaded once. Both answers come
+  from `NpxCacheLayout`, the one place that knows where a clone's npm caches live — the isolator
+  writes those paths, the heal, clear and bin-permission mechanisms below walk them, and none of
+  them can drift about which roots exist.
 - A catalog entry that sets `NPM_CONFIG_CACHE` itself keeps its value — that is the operator's call.
 - `NpxCacheHealService` exists to detect and delete a corrupted `_npx` cache — by matching npm's
   error text (`ENOTEMPTY`, `ERR_UNSUPPORTED_DIR_IMPORT`). An entire service that self-heals a
@@ -285,7 +287,12 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   on any `_npx/*/node_modules/.bin` target that has none. Some packages publish their entrypoint as
   `-rw-r--r--` and rely on npm's bin-linking to `chmod` it; when that does not land, the server dies
   on `exec` with `EACCES` identically on every retry, so the server is left out for the life of the
-  clone ([#467](https://github.com/tadasant/zimmer/issues/467)). Codex sessions are not covered — see
+  clone ([#467](https://github.com/tadasant/zimmer/issues/467)). It sweeps every cache root the
+  layout knows about — the shared one and each isolated root — because the two servers that get
+  isolated in practice both run `onepassword-mcp-server`, the package whose published tarball ships
+  its entrypoint `-rw-r--r--` ([#498](https://github.com/tadasant/zimmer/issues/498)). Each root is
+  its own containment boundary: a shim that resolves outside the root it was found in is refused
+  rather than chmod'ed. Codex sessions are not covered — see
   [Limitations](/limitations/#the-npx-bin-permission-repair-only-reaches-claude-sessions-and-only-on-the-next-launch).
 - `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the python
   packages listed in `mcp.json`, and `npm install -g` the npm ones. The npm half no longer helps an

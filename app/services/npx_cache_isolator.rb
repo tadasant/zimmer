@@ -56,9 +56,11 @@
 # concurrently, which is strictly cheaper than the failed connect + 30s retry it
 # replaces.
 #
-# Both answers live under `<clone>/.npm-cache`, which is what keeps
-# NpxCacheHealService's `_npx` globs and CacheClearService's `**/.npm-cache` sweep
-# able to reach them.
+# Both answers come from NpxCacheLayout, which is where the shape of these paths
+# is decided and where every service that walks them reads it from: an isolated
+# root nests inside the clone's existing `.npm-cache`, so NpxCacheHealService's
+# `_npx` globs, NpxBinExecutableGuard's shim sweep and CacheClearService's
+# `**/.npm-cache` sweep all still reach it.
 #
 # Runtime-agnostic: operates on the `{ "command" => ..., "args" => [...] }` shape
 # shared by Claude's `.mcp.json` entries and Codex's `.codex/config.toml`
@@ -66,11 +68,6 @@
 module NpxCacheIsolator
   # The npm variable that decides where `_npx/<hash>` lives.
   NPM_CACHE_VAR = "NPM_CONFIG_CACHE"
-
-  # Isolated caches live under the clone's existing `.npm-cache` rather than
-  # beside it, so CacheClearService's `**/.npm-cache` sweep still reclaims them
-  # and NpxCacheHealService's clone-scoped safety check still recognizes them.
-  ISOLATED_SUBDIR = "isolated"
 
   # npx flags that take a separate value argument. Their value must be skipped or
   # it would be mistaken for the package spec — a catalog entry that carries, say,
@@ -108,7 +105,7 @@ module NpxCacheIsolator
   # @param working_directory [String] the session's clone working directory
   # @return [String] absolute path
   def shared_cache_dir(working_directory)
-    File.join(working_directory, ".npm-cache")
+    NpxCacheLayout.shared_cache_dir(working_directory)
   end
 
   # Where each npx server in a config should keep its npm cache: its own isolated
@@ -148,19 +145,15 @@ module NpxCacheIsolator
     by_cache_key.values.select { |names| names.size > 1 }.flatten
   end
 
-  # The directory to point one isolated server's npm cache at.
-  #
-  # Named after the server rather than the package so two servers running the
-  # same package land in different trees — which is the entire point. The name is
-  # sanitized for the filesystem; two names that sanitize to the same string would
-  # simply share a cache again, i.e. degrade to today's behavior rather than to
-  # something worse.
+  # The directory to point one isolated server's npm cache at — a per-server root
+  # inside the clone's shared cache, named and placed by NpxCacheLayout so the
+  # services that walk those roots are looking where this one writes.
   #
   # @param working_directory [String] the session's clone working directory
   # @param server_name [String]
   # @return [String] absolute path
   def cache_dir_for(working_directory, server_name)
-    File.join(working_directory, ".npm-cache", ISOLATED_SUBDIR, sanitize(server_name))
+    NpxCacheLayout.isolated_cache_dir(working_directory, server_name)
   end
 
   # npx's own cache key for an entry: the sorted package specs, or nil when the
@@ -214,16 +207,5 @@ module NpxCacheIsolator
     end
 
     specs.compact_blank
-  end
-
-  # A filesystem-safe directory name for a server. `.` and `..` are rejected
-  # rather than sanitized: both resolve back to a shared parent, which would put
-  # the server on the very cache this class exists to keep it off. Every other
-  # name collapses to a plain segment inside the clone.
-  def sanitize(server_name)
-    sanitized = server_name.to_s.gsub(/[^A-Za-z0-9._-]/, "_")
-    return "unnamed" if sanitized.blank? || sanitized.delete(".").empty?
-
-    sanitized
   end
 end

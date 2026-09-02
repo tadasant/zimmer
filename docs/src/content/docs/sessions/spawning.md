@@ -237,7 +237,8 @@ Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH` (see below),
 `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default 1,000,000), and when MCP is on: `MCP_TIMEOUT=180000`,
 a clone-local `NPM_CONFIG_CACHE`, and one filesystem side effect — `NpxBinExecutableGuard` restores
-the execute bit on any bin target in that cache which lost it
+the execute bit on any bin target that lost it, in every npx cache root the clone has: the shared
+one and each per-server root an isolated server was given
 ([MCP servers](/air/mcp-servers/#timeouts-and-caching)). The MCP servers themselves do not depend on
 inheriting that variable: each `npx` entry carries its own copy, written into the config file.
 
