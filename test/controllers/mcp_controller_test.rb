@@ -130,6 +130,43 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_equal %w[search_gate_decisions get_gate_decision_feedback].sort, readonly.sort
   end
 
+  test "the work backlog's writes exist only on a connection that names work_backlog" do
+    unscoped = rpc("tools/list")["result"]["tools"].map { |t| t["name"] }
+    refute_includes unscoped, "append_work_backlog_item"
+    refute_includes unscoped, "pull_work_backlog_items"
+    refute_includes unscoped, "get_work_backlog"
+
+    sessions_only = rpc("tools/list", path: "/mcp?tool_groups=sessions")["result"]["tools"].map { |t| t["name"] }
+    refute_includes sessions_only, "append_work_backlog_item"
+
+    call = rpc("tools/call", { "name" => "append_work_backlog_item", "arguments" => {} }, path: "/mcp?tool_groups=sessions")
+    assert_equal(-32602, call["error"]["code"], "a sessions-scoped connection cannot call the append tool")
+
+    scoped = rpc("tools/list", path: "/mcp?tool_groups=work_backlog")["result"]["tools"].map { |t| t["name"] }
+    assert_equal %w[get_work_backlog append_work_backlog_item pull_work_backlog_items].sort, scoped.sort
+
+    readonly = rpc("tools/list", path: "/mcp?tool_groups=work_backlog_readonly")["result"]["tools"].map { |t| t["name"] }
+    assert_equal [ "get_work_backlog" ], readonly
+
+    # No tool on ANY connection pins, hand-places, removes by judgement or
+    # promotes an item — those are the REST controller's, on purpose.
+    everything = Mcp::Registry::VALID_GROUPS.join(",")
+    all_tools = rpc("tools/list", path: "/mcp?tool_groups=#{everything}")["result"]["tools"].map { |t| t["name"] }
+    assert_empty all_tools.grep(/pin|place|remove|start_now|promote/)
+  end
+
+  test "the append tool stamps the writing session from the connection, not the body" do
+    writer = sessions(:running)
+    args = { "key" => "zimmer#5", "issue_url" => "https://github.com/tadasant/zimmer/issues/5", "repo" => "tadasant/zimmer",
+             "surface" => "zimmer", "title" => "t", "kind" => "bug", "scope_direction" => "convergent", "estimated_cost" => "small" }
+
+    body = rpc("tools/call", { "name" => "append_work_backlog_item", "arguments" => args },
+               path: "/mcp?tool_groups=work_backlog&session_id=#{writer.id}")
+
+    assert_nil body["error"], body.inspect
+    assert_equal writer.id, WorkBacklogItem.find_by!(key: "zimmer#5").writing_session_id
+  end
+
   test "tools/list is scoped by tool_groups" do
     tools = rpc("tools/list", path: "/mcp?tool_groups=self_session")["result"]["tools"].map { |t| t["name"] }
 

@@ -68,7 +68,13 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # feature row that cascaded away would leave the split shorter than the whole,
     # and one that kept a dead id would leave a split with no whole to reconcile
     # against. Both tables forget the session and keep the spend.
-    [ "token_usage_features", "session_id", :nullify ]
+    [ "token_usage_features", "session_id", :nullify ],
+    # Nullify on all three: a backlog row is the record of what the gate cleared
+    # and what became of it, and outlives the session that appended it, the
+    # session that pulled it, and the session it became.
+    [ "work_backlog_items", "started_by_session_id", :nullify ],
+    [ "work_backlog_items", "started_session_id", :nullify ],
+    [ "work_backlog_items", "writing_session_id", :nullify ]
   ].freeze
 
   test "row-level delete of a session with notifications does not raise a foreign key violation" do

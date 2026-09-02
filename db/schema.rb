@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_02_090000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_02_150000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -805,6 +805,54 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_090000) do
     t.index ["slack_user_ids"], name: "index_users_on_slack_user_ids", using: :gin
   end
 
+  create_table "work_backlog_items", force: :cascade do |t|
+    t.datetime "added_at", null: false
+    t.string "added_by", null: false
+    t.string "added_via", default: "api", null: false
+    t.datetime "created_at", null: false
+    t.date "decided_at"
+    t.string "estimated_cost", null: false
+    t.string "gate_verdict"
+    t.string "issue_url"
+    t.string "key", null: false
+    t.string "kind", null: false
+    t.jsonb "payload", default: {}, null: false
+    t.boolean "pinned", default: false, null: false
+    t.integer "precedence", null: false
+    t.text "removal_reason"
+    t.datetime "removed_at"
+    t.string "removed_by"
+    t.string "repo", null: false
+    t.string "scope_direction", null: false
+    t.datetime "started_at"
+    t.bigint "started_by_session_id"
+    t.bigint "started_session_id"
+    t.string "status", default: "queued", null: false
+    t.string "surface", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "writing_session_id"
+    t.index ["added_at"], name: "index_work_backlog_items_on_added_at"
+    t.index ["added_by"], name: "index_work_backlog_items_on_added_by"
+    t.index ["decided_at"], name: "index_work_backlog_items_on_decided_at"
+    t.index ["estimated_cost"], name: "index_work_backlog_items_on_estimated_cost"
+    t.index ["gate_verdict"], name: "index_work_backlog_items_on_gate_verdict"
+    t.index ["issue_url"], name: "index_work_backlog_items_on_issue_url"
+    t.index ["key"], name: "index_work_backlog_items_on_key"
+    t.index ["key"], name: "index_work_backlog_items_on_queued_key", unique: true, where: "((status)::text = 'queued'::text)"
+    t.index ["kind"], name: "index_work_backlog_items_on_kind"
+    t.index ["pinned"], name: "index_work_backlog_items_on_pinned", where: "pinned"
+    t.index ["removed_at"], name: "index_work_backlog_items_on_removed_at"
+    t.index ["repo"], name: "index_work_backlog_items_on_repo"
+    t.index ["scope_direction"], name: "index_work_backlog_items_on_scope_direction"
+    t.index ["started_at"], name: "index_work_backlog_items_on_started_at"
+    t.index ["started_by_session_id"], name: "index_work_backlog_items_on_started_by_session_id"
+    t.index ["started_session_id"], name: "index_work_backlog_items_on_started_session_id"
+    t.index ["status", "precedence", "added_at", "id"], name: "index_work_backlog_items_rank", order: { precedence: :desc }
+    t.index ["surface"], name: "index_work_backlog_items_on_surface"
+    t.index ["writing_session_id"], name: "index_work_backlog_items_on_writing_session_id"
+  end
+
   create_table "x_oauth_credentials", force: :cascade do |t|
     t.text "access_token"
     t.string "access_token_env_var", null: false
@@ -852,4 +900,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_090000) do
   add_foreign_key "token_usage_features", "session_token_usages", column: "request_id", primary_key: "request_id", on_delete: :cascade
   add_foreign_key "token_usage_features", "sessions", on_delete: :nullify
   add_foreign_key "trigger_conditions", "triggers"
+  add_foreign_key "work_backlog_items", "sessions", column: "started_by_session_id", on_delete: :nullify
+  add_foreign_key "work_backlog_items", "sessions", column: "started_session_id", on_delete: :nullify
+  add_foreign_key "work_backlog_items", "sessions", column: "writing_session_id", on_delete: :nullify
 end
