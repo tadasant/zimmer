@@ -83,14 +83,14 @@ class HealthMonitorService
     "auth" => { depth: 100, stall_age: 30.minutes }
   }.freeze
 
-  # How many lanes have to be holding ready work before "every lane is stalled" is
-  # readable as a statement about the WORKER rather than about a lane.
+  # How many lanes have to be stalled at once before the stall is readable as a
+  # statement about the WORKER rather than about a lane.
   #
   # One lane with an old head says only that that lane is not draining, and
   # QUEUE_LANE_CRITICAL_THRESHOLDS already judges that with the threshold sized for
   # it — an `agents` lane 150 deep and three hours old, with every other lane empty
   # because the worker is emptying them on sight, is admission control, and the
-  # fleet-wide branch must not overrule that with the fast-lane floor. Two is the
+  # cross-lane branch must not overrule that with the fast-lane floor. Two is the
   # smallest number that makes the claim a comparison.
   WORKER_STALL_MIN_LANES = 2
 
@@ -1123,18 +1123,30 @@ class HealthMonitorService
   #   A lane      One lane is past BOTH its own depth and its own stall age. Checked
   #               first, so the page names the starving lane instead of describing it
   #               in fleet-wide terms that fit it badly.
-  #   The worker  Several lanes' heads are all old at once and no single lane's own
-  #               tolerance explains it. Nothing anywhere is being picked up, which is
-  #               the SlackTriggerPollerJob thread-starvation incident this alerter
-  #               exists for. Held to the original global numbers.
+  #   The worker  Several lanes are stalled at once and their COMBINED backlog is past
+  #               the original global depth, even though no one of them is past its own
+  #               bar. That is the SlackTriggerPollerJob thread-starvation shape: work
+  #               piling up across lanes rather than in one.
   #
-  # `oldest_ready_age_seconds_by_queue` holds each lane's OLDEST ready row, so the
-  # minimum over it is the freshest any lane's head of line is — and a head only
-  # advances when a worker takes the job. New arrivals do not lower it. One lane
-  # still picking work up therefore keeps the worker branch quiet however deep the
-  # backlog is, which is the distinction the whole rule turns on. Lanes with nothing
-  # ready contribute no head and are absent, rather than counting as zero and
-  # silencing the branch.
+  # Both branches are strict narrowings of the queue-blind rule — every per-lane depth
+  # threshold is at least QUEUE_DEPTH_CRITICAL_THRESHOLD and every per-lane stall age
+  # at least QUEUE_STALL_CRITICAL_AGE, and the cross-lane branch sums a SUBSET of the
+  # ready count — so nothing pages that did not page before. This only removes
+  # firings, which is the whole point; it cannot add one.
+  #
+  # `oldest_ready_age_seconds_by_queue` holds each lane's OLDEST ready row, and a
+  # head only advances when a worker takes the job — so a lane whose head is older
+  # than QUEUE_STALL_CRITICAL_AGE has picked up nothing in that window, whatever has
+  # arrived behind it. The cross-lane branch is scoped to exactly those lanes and
+  # sums only THEIR depth.
+  #
+  # Deliberately not "the freshest lane head is old", which is the same sentence with
+  # the quantifier in the wrong place: it asks every lane to be stalled, so a single
+  # lane that was empty a moment ago and has just been handed one job contributes a
+  # ~0s head and silences the branch — including for `pollers`, which this monitor
+  # itself runs on and which therefore almost always has fresh work at sample time.
+  # Scoping to the stalled subset asks the question the branch means: is there enough
+  # work sitting still, in enough places, to be the worker rather than a lane?
   def system_health_status(queue_stats)
     depth = queue_stats[:ready_count].to_i
 
@@ -1147,13 +1159,14 @@ class HealthMonitorService
       )
     end
 
-    freshest_lane_head = worker_wide_stall_age(queue_stats)
-    if freshest_lane_head && depth >= QUEUE_DEPTH_CRITICAL_THRESHOLD
+    stalled = stalled_lane_backlog(queue_stats)
+    if stalled
       return HealthStatus.new(
         status: :critical,
-        message: "Queue backlog critical: #{depth} jobs ready, oldest waiting " \
+        message: "Queue backlog critical: #{stalled[:depth]} jobs ready across " \
+                 "#{stalled[:lanes]} stalled lanes, oldest waiting " \
                  "#{format_wait(queue_stats[:oldest_ready_age_seconds])}; " \
-                 "no lane has picked up work in #{format_wait(freshest_lane_head)}"
+                 "none of them has picked up work in #{format_wait(stalled[:freshest_age_seconds])}"
       )
     end
 
@@ -1171,7 +1184,13 @@ class HealthMonitorService
     depths = queue_stats[:ready_count_by_queue] || {}
     ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
 
-    depths.sort_by { |_queue, count| -count }.each do |queue, count|
+    # `lane_depths` already returns deepest-first with a name tiebreak. Re-sorting
+    # here would discard that stability — `sort_by` is not stable, so two lanes at
+    # equal depth could swap between two reads of an unchanged queue and the page
+    # would name a different lane each time.
+    depths.each do |queue, count|
+      # The depths and the ages are two queries against a moving table, so a lane
+      # can appear in one and not the other. No age is no evidence of a stall.
       age = ages[queue]
       next if age.nil?
 
@@ -1184,16 +1203,33 @@ class HealthMonitorService
     nil
   end
 
-  # How long the freshest lane head has been waiting, when EVERY lane holding ready
-  # work is past the fast-lane floor and there are enough of them for that to mean
-  # the worker. Nil otherwise — including when only one lane holds anything, which
-  # `starved_lane` has already judged on that lane's own terms.
-  def worker_wide_stall_age(queue_stats)
-    ages = (queue_stats[:oldest_ready_age_seconds_by_queue] || {}).values
-    return nil if ages.size < WORKER_STALL_MIN_LANES
+  # The backlog held by the lanes that have picked up nothing in
+  # QUEUE_STALL_CRITICAL_AGE, when there are enough such lanes for that to mean the
+  # worker and their combined depth is past the original global threshold. Nil
+  # otherwise.
+  #
+  # The depth summed is the STALLED lanes' own, not `ready_count`: a lane that is
+  # draining is not part of the backlog this branch is describing, and counting it
+  # would put us back to ANDing one lane's depth against another lane's age.
+  #
+  # A stall confined to a single lane returns nil here and is left to
+  # `starved_lane`, which judges it on that lane's own terms — the point of the
+  # overrides. That does mean a lane with a relaxed threshold is tolerated for
+  # longer when it stalls alone; for `agents` that is the intent, and a worker that
+  # is wholly dead cannot be caught here at all, since this monitor runs on the
+  # worker it watches. That case belongs to the external Grafana rule, which is why
+  # it exists alongside this one.
+  def stalled_lane_backlog(queue_stats)
+    depths = queue_stats[:ready_count_by_queue] || {}
+    ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
 
-    freshest = ages.min
-    freshest if freshest >= QUEUE_STALL_CRITICAL_AGE
+    stalled = ages.select { |_queue, age| age >= QUEUE_STALL_CRITICAL_AGE }
+    return nil if stalled.size < WORKER_STALL_MIN_LANES
+
+    depth = stalled.sum { |queue, _age| depths[queue].to_i }
+    return nil if depth < QUEUE_DEPTH_CRITICAL_THRESHOLD
+
+    { depth: depth, lanes: stalled.size, freshest_age_seconds: stalled.values.min }
   end
 
   # A lane absent from QUEUE_LANE_CRITICAL_THRESHOLDS keeps the original calibration.

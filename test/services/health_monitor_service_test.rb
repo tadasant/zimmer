@@ -606,8 +606,41 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     status = @service.system_health[:status]
 
     assert status.critical?
-    assert_includes status.message, "110 jobs ready"
-    assert_includes status.message, "no lane has picked up work in 30m"
+    assert_includes status.message, "110 jobs ready across 3 stalled lanes"
+    assert_includes status.message, "none of them has picked up work in 30m"
+  end
+
+  # The branch is scoped to the STALLED lanes, not gated on every lane being
+  # stalled. Asking every lane to be old puts the quantifier in the wrong place: one
+  # lane that was empty a moment ago and has just been handed a job contributes a
+  # ~0s head and would silence a genuine cross-lane stall. `pollers` makes that the
+  # normal case rather than a corner one — this monitor runs on it.
+  test "a fresh lane does not silence a stall spread across the others" do
+    enqueue_lane("default", 90, head_waiting_for: 60.minutes)
+    enqueue_lane("inference", 60, head_waiting_for: 60.minutes)
+    enqueue_lane("maintenance", 40, head_waiting_for: 60.minutes)
+    enqueue_lane("pollers", 1, head_waiting_for: 5.seconds)
+
+    status = @service.system_health[:status]
+
+    assert status.critical?,
+      "190 ready sitting still across three lanes is the worker, whatever one fresh lane says"
+    assert_includes status.message, "190 jobs ready across 3 stalled lanes",
+      "the draining lane's depth must not be counted into the stalled backlog"
+  end
+
+  # No single lane here is past its own bar, and the stalled lanes together are
+  # under the global one — so the depth summed must be the stalled lanes' own.
+  test "a draining lane's depth is not borrowed to make the stalled lanes critical" do
+    enqueue_lane("default", 90, head_waiting_for: 30.minutes)
+    enqueue_lane("inference", 5, head_waiting_for: 30.minutes)
+    enqueue_lane("agents", 60, head_waiting_for: 10.seconds)
+
+    health = @service.system_health
+
+    assert_equal 155, health[:queue_depth]
+    refute health[:status].critical?,
+      "95 ready is sitting still; the other 60 are moving, and only the first is the backlog"
   end
 
   test "one lane still picking work up keeps the worker-wide branch quiet" do
@@ -708,6 +741,18 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     refute_includes stats[:oldest_ready_age_seconds_by_queue].keys, "agents"
     assert_nil stats[:ready_count_by_queue]["agents"],
       "a Hash default would hand a scraper a zero for a lane that has no ready work"
+  end
+
+  # `ready_count_by_queue` and `oldest_ready_age_seconds_by_queue` are two queries
+  # against a moving table, so a lane can appear in one and not the other. No age is
+  # no evidence of a stall, and must not be read as one.
+  test "a lane with a depth but no head age is not critical" do
+    enqueue_lane("inference", 200, head_waiting_for: 90.minutes)
+    stats = @service.system_health[:queue_stats].merge(oldest_ready_age_seconds_by_queue: {})
+
+    status = @service.send(:system_health_status, stats)
+
+    refute status.critical?, "a lane whose head could not be read is not a lane known to be stalled"
   end
 
   test "the global oldest age is the oldest of the lane heads" do
