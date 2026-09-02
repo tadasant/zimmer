@@ -84,6 +84,7 @@ From `config.good_job.cron`:
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
 | hourly :15 | `CleanupStaleTriggersJob` | Destroy dead one-time wake-up triggers — an archived target session, a wake a resume consumed without firing, or a schedule that has lapsed |
+| hourly :40 | `LiveCloneIntegrityJob` | Report, at `.error`, any live session whose clone directory has been deleted or stripped underneath it — see below |
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
 | daily 06:00 | `ClaudeCodeUpdateJob` | Update the Claude Code CLI to the latest version |
 | daily 08:00 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
@@ -263,6 +264,75 @@ that need no ownership argument made for them.
 Every other enumerator of the clones base skips tombstones for the same reason: `CloneDiskGuard`
 will not size a tree that is disappearing under `du`, and `CacheClearService` will not clear an
 `.npm-cache` inside a clone that is on its way out.
+
+## A clone is only deleted if nobody live still owns it
+
+Every reaper that deletes a clone opens by building an ownership snapshot — a plucked list of
+candidate ids, a `Session.live_clone_paths` set, a basename→owner map — and then spends the rest of
+its run deleting from it. What sits between the snapshot and the `rm` is everything the run does in
+between: `git bundle create` over a whole working tree, a Docker Compose teardown bounded at 120s
+*per directory*, an `rm -rf` of several gigabytes, one primary-key lookup per candidate. On a healthy
+box that gap is milliseconds. On 2026-09-02 it was minutes — the queue was 144 jobs deep with the
+oldest waiting 1h20m and the slow-query log was full of second-long `SELECT sessions.* WHERE id = $1`
+— and a snapshot that says "archived" is a claim about the past, not about the instant the bytes go.
+
+A session unarchived, resumed, or restarted inside that gap is live by the time its turn comes up,
+and every guard that would have saved it was evaluated before it woke. Three sessions lost their
+clones that afternoon ([#808](https://github.com/tadasant/zimmer/issues/808),
+[#811](https://github.com/tadasant/zimmer/issues/811)).
+
+`CloneReaper` is the last guard, and the only one with no gap after it. It asks the database who owns
+the directory **at the moment of deletion** and refuses if a live session still does:
+
+- Ownership is matched on the expanded path **or** the basename. Clone names carry a timestamp and a
+  random suffix, so a basename is a globally unique handle that survives a stored `clone_path` which
+  cannot be reconciled with the path being swept — a symlinked or relocated clones base.
+- The lookup is `unscoped`: this query decides deletions, so a default scope added later for
+  soft-delete or tenancy must not be able to hide a live row from it.
+- It **fails closed**. A question that cannot be answered is answered "live". Leaking a stale clone
+  costs disk the next sweep reclaims; deleting a live one costs work that exists nowhere else.
+- A refusal logs at `.error` and writes a durable warning to the session. A refusal is never routine
+  — it means a reaper's snapshot went stale and this guard caught it — so it is worth a page.
+
+`GitCloneService.cleanup_clone` routes through it, which covers `DeferredCloneCleanupJob`,
+`EmptyTrashJob` and both of `StaleCloneCleanupJob`'s sweeps at once;
+`OrphanCloneFilesystemCleanupJob` calls it directly. The paths that dispose of a clone directory the
+caller itself just created and is rolling back — a failed `git clone`, a fork's partial destination —
+still call `AtomicCloneRemoval.remove`: they delete a directory no session references yet, so there
+is nothing there for the guard to protect.
+
+Alongside it, the two jobs that also delete **unrecoverable** per-session state — the scratch
+directory, the Claude config directory, prompt attachments, none of which has a remote to come back
+from — re-read the owning session's status immediately before doing so, rather than inheriting the
+one their scope matched.
+
+## Noticing when a live session has lost its working tree
+
+The state left behind on 2026-09-02 was trivially visible on disk: a clone directory holding nothing
+but the runtime scaffolding Zimmer writes into it (`.mcp.json`, `.claude/`, the stderr log), with the
+git tree and `.git` gone. Nothing told anyone. The only signal that reached a human was two
+`ForkSessionService` errors from sessions that happened to be forking off the victims at the time.
+
+`LiveCloneIntegrityJob` runs hourly at :40 and closes that. It walks every live session's
+`clone_path` and reports, in **one `.error` line** naming the sessions:
+
+- a clone directory that has **lost its git tree**, for any live status — there is no benign way for
+  a tracked working tree to disappear from underneath a live session. The line names what is still in
+  the directory, because a tree holding only Zimmer's own scaffolding is the #808 signature;
+- a clone root that is **gone entirely**, but only for a `running` session, whose agent process has
+  that directory as its cwd right now. `waiting` and `needs_input` sessions legitimately sit on a
+  deleted clone between an archive and the resume that re-clones it, and a backed-up queue can hold
+  them there for a while;
+- a clone that has lost the session's **agent root subdirectory**, which is fatal on its own —
+  `air prepare` writes `<clone>/<subdirectory>/.mcp.json` and dies with `ENOENT`.
+
+A fork whose clone was scaffolded empty on purpose (`clone_scaffolded`) is exempt from the git-tree
+check. A healthy hour writes only an `INFO` line, which is below the
+[export threshold](/operate/observability/).
+
+This is deliberately not `MangledCloneReportJob`'s job. That one counts what the *archive-side*
+mass-deletion guard defused, from markers `DeferredCloneCleanupJob` writes; a clone destroyed under a
+running session never reaches that guard and leaves no marker.
 
 ## Counting mangled clones without paging for each one
 
@@ -498,7 +568,8 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubCommentPollerJob`, `GitHubPullRequestPollerJob`, `GitHubMergeConflictPollerJob`,
   `CatalogRefreshJob`, `CliStatusRefreshJob`, `WarmSkillsCacheJob`, `EgressHealthCheckJob`,
-  `ElicitationEndpointHealthCheckJob`, `SystemHealthMonitorJob` and `MangledCloneReportJob`.
+  `ElicitationEndpointHealthCheckJob`, `SystemHealthMonitorJob`, `MangledCloneReportJob` and
+  `LiveCloneIntegrityJob`.
   The trigger pollers make slow external calls once per condition, and a slow tick must not stack against itself.
   Their polling is idempotent — state only advances for items that produced a session — so a skipped
   tick is simply picked up by the next run.

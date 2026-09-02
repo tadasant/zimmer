@@ -1930,6 +1930,29 @@ The scaffolded directory belongs to the fork, is reclaimed when the fork is arch
 nothing about the source session is restored, mutated, or left behind. See
 [Status summary](/sessions/status-summary/#what-a-scaffolded-fork-leaves-behind).
 
+### The last-moment clone ownership check can refuse a legitimate delete
+
+Every clone deletion by a reaper goes through `CloneReaper`, which re-asks the database who owns the
+directory at the instant of deletion and refuses if a live session still does — see
+[A clone is only deleted if nobody live still owns it](/operate/background-jobs/#a-clone-is-only-deleted-if-nobody-live-still-owns-it).
+It closes the window that destroyed three sessions' uncommitted work on 2026-09-02
+([#808](https://github.com/tadasant/zimmer/issues/808)), and it is deliberately biased toward
+refusing.
+
+Two ways that bias costs something:
+
+- **Ownership is matched on the basename as well as the path.** That is what makes the check immune
+  to a `clone_path` stored under a relocated or symlinked base. Clone basenames carry a timestamp and
+  four random bytes, so a collision is effectively impossible — but if one ever happened, the guard
+  would refuse to delete a genuinely dead clone because an unrelated live session shares its name.
+- **It fails closed.** If the ownership query cannot be answered — the database is down, the
+  connection pool is exhausted — nothing is deleted for as long as that lasts. Under sustained disk
+  pressure that is the worse of the two failures to have chosen, because `CloneDiskGuard`'s
+  reclamation path cannot free anything either.
+
+Both cost disk, and disk is reclaimed by the next sweep. The alternative failure is a running agent's
+uncommitted work, which exists nowhere else.
+
 ### A clone delete that cannot rename falls back to a non-atomic in-place delete
 
 Clone deletion goes through `AtomicCloneRemoval`: the clone is renamed to a sibling
@@ -2300,6 +2323,7 @@ durable against archive — but not indefinitely. The contract is:
 | Archive, then unarchive | Survives, contents intact |
 | Trash retention expires (`TRASH_RETENTION_PERIOD`, 4 days after archive) | Deleted by `EmptyTrashJob` |
 | Archived >1h with no `trash_after`, or failed >24h, **and** the session recorded a `clone_path` | Deleted by `StaleCloneCleanupJob` |
+| Any of the above, but the session woke up before the reaper got to it | **Not** deleted — the status is re-read immediately beforehand ([#808](https://github.com/tadasant/zimmer/issues/808)) |
 | The session row is hard-deleted | Deleted with the row, by `Session#reclaim_session_directories` |
 
 So a session can trust scratch for recovery state across an archive/unarchive round trip, and cannot
