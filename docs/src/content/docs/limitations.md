@@ -2034,7 +2034,42 @@ reads a conversation and never builds or boots anything. Two edges come with tha
   reads as dirty to `CloneArtifactService`, so `DeferredCloneCleanupJob` preserves artifacts and holds
   the clone for `TRASH_RETENTION_PERIOD` instead of deleting it immediately.
 
-Neither affects a user-initiated fork, which copies the tree whole.
+Neither affects a user-initiated fork, which copies the tree whole apart from the directories no copy
+can relocate — see below.
+
+### A copied clone drops the virtualenv, and only the virtualenv
+
+`NonRelocatableClonePaths` keeps a clone copy — a fork, or `clones:relocate` — from carrying a Python
+virtualenv whose console-script shebangs name the clone it came from
+([#671](https://github.com/tadasant/zimmer/issues/671), and
+[A copied clone sheds what it cannot relocate](/sessions/spawning/#a-copied-clone-sheds-what-it-cannot-relocate)
+for why that failed silently). Four edges come with it:
+
+- **It is prospective.** A clone relocated before this shipped still holds an environment pointing at
+  its predecessor. Nothing sweeps for those, deliberately: deleting a directory inside a live
+  session's working tree is the exact hazard the copy-never-move rule exists to avoid. `rm -rf .venv
+  && uv sync` repairs one.
+- **A fork of a Python repo starts without an environment**, and finds out when it runs something.
+  That is the trade the fix makes — a loud failure that a warm `uv sync` clears in seconds, in place
+  of a silent one that runs the wrong checkout's sources.
+- **Only virtualenvs are detected.** They are matched by their `pyvenv.cfg` marker plus the `bin/` or
+  `Scripts/` directory beside it, which together are definitive. Nothing else is: npm and pnpm write
+  `node_modules/.bin` shims as *relative* symlinks with `#!/usr/bin/env node` shebangs, so they
+  survive relocation, and blanket-dropping `node_modules` would cost every fork a reinstall to fix a
+  hazard that layout does not have. A tool that wrote absolute paths into an ignored directory would
+  still be carried, and would need its own detector.
+- **A repository that *tracks* a whole virtualenv would have it pruned from the copy.** The script
+  directory in the detection rule is what keeps a tracked bare `pyvenv.cfg` fixture out of it, but a
+  committed environment is indistinguishable from an installed one. The fork's tree would then be
+  missing tracked files, which `CloneArtifactService` reads as deletions — and a committed
+  environment of 50+ files, deleted with nothing else changed, trips the
+  [mass-deletion guard](#a-session-that-deletes-50-tracked-files-and-nothing-else-loses-those-deletions-on-archive) on a clone that
+  is merely pruned. The source clone is untouched either way. No repository Zimmer runs does this.
+
+The scan that finds them walks the source tree once before the copy, skipping `.git`,
+`node_modules`, `vendor/bundle`, and whatever the caller is already excluding — ~180 ms on Zimmer's
+own clone, against a copy of the same tree that costs seconds. It never follows a symlinked
+directory, which both matches what the copy does with one and makes a symlink loop impossible.
 
 ### Terminating a pid that is not this process's child falls back to a liveness check that lies
 

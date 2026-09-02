@@ -30,6 +30,14 @@ class RealFileSystemAdapter < FileSystemAdapter
     Dir.glob(pattern)
   end
 
+  def children(path)
+    Dir.children(path)
+  end
+
+  def symlink?(path)
+    File.symlink?(path)
+  end
+
   def mtime(path)
     File.mtime(path)
   end

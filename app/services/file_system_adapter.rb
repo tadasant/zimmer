@@ -65,6 +65,23 @@ class FileSystemAdapter
     raise NotImplementedError, "#{self.class}#glob must be implemented"
   end
 
+  # The names of a directory's immediate entries, excluding "." and "..".
+  # For walking a tree one level at a time, where a glob would have to
+  # enumerate the whole thing before anything could be pruned.
+  # @param path [String] The directory to list
+  # @return [Array<String>] Entry names, not paths
+  # @raise [SystemCallError] If the path is not a readable directory
+  def children(path)
+    raise NotImplementedError, "#{self.class}#children must be implemented"
+  end
+
+  # Whether a path is a symbolic link, tested without following it.
+  # @param path [String] The path to check
+  # @return [Boolean]
+  def symlink?(path)
+    raise NotImplementedError, "#{self.class}#symlink? must be implemented"
+  end
+
   # Get the modification time of a file
   # @param path [String] The file path
   # @return [Time] The last modification time
