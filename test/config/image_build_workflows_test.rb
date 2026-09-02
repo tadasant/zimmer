@@ -6,11 +6,11 @@ require "yaml"
 # Every image-building job on the shared self-hosted runner must isolate its Docker
 # client state. All runner workers on that box execute as one OS user, so the default
 # ~/.docker is shared mutable state: `docker buildx create --use` writes a single
-# current-builder file that build-push-action later reads to pick a builder, and
-# docker/login-action's post step logs out of a single shared credential store. A job
-# that leaves either at the default builds on a co-tenant's buildkit container and
-# dies mid-build when that co-tenant's post step removes it ("graceful_stop" GOAWAY,
-# then `no builder "<other-jobs-uuid>" found`).
+# current-builder file that build-push-action later reads to pick a builder, and a
+# `docker logout` — docker/login-action's post step, or an explicit step — empties a
+# single shared credential store. A job that leaves either at the default builds on a
+# co-tenant's buildkit container and dies mid-build when that co-tenant's post step
+# removes it ("graceful_stop" GOAWAY, then `no builder "<other-jobs-uuid>" found`).
 #
 # This asserts the two guards structurally, across every workflow, so a newly added
 # image build inherits them instead of rediscovering the flake.
@@ -176,6 +176,118 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
       assert_includes run, "ghcr.io/tadasant/zimmer:#{tag}",
         "#{RELEASE_WORKFLOW}: the `tags` output must still publish the :#{tag} tag"
     end
+  end
+
+  # The login talks to the same registry the attempts above retry, and it was the one link
+  # in the chain with no protection at all: on 2026-09-02 run 33632998177 died on
+  # `net/http: TLS handshake timeout` reaching ghcr.io/token, 48 seconds in, and every
+  # step after it — buildx, the base resolve, all three build attempts, the prod notify —
+  # skipped. Retrying the push half of a flaky registry while the login stays single-shot
+  # leaves the release exactly as fragile as the weakest step.
+  test "the release job's GHCR login retries a transient registry failure" do
+    steps, attempts = self.class.release_build_attempts
+    script = Rails.root.join(".github/scripts/ghcr-login.sh")
+
+    assert script.exist?, "#{RELEASE_WORKFLOW} references #{script.basename}, which does not exist"
+    assert script.executable?,
+      "#{script.basename} must be executable — the workflow invokes it as a bare `run:` command, " \
+      "which fails with 'Permission denied' otherwise"
+
+    login = steps.find { |s| s["run"].to_s.include?(script.basename.to_s) }
+    assert login,
+      "#{RELEASE_WORKFLOW}: no step runs #{script.basename}. A single-shot login makes one bad " \
+      "handshake against ghcr.io fail the whole release, however many times the build retries."
+    assert_empty steps.select { |s| s["uses"].to_s.start_with?("docker/login-action@") },
+      "#{RELEASE_WORKFLOW}: docker/login-action is single-shot — swapping it back in silently " \
+      "undoes the retry"
+
+    # The script derives its attempt count from this list, so an empty or non-numeric value
+    # is the difference between a retry and no retry, and `sleep` would only say so at
+    # runtime — on the release that was already failing.
+    backoffs = login.dig("env", "LOGIN_BACKOFF_SECONDS").to_s.split
+    assert_not_empty backoffs,
+      "#{RELEASE_WORKFLOW}: LOGIN_BACKOFF_SECONDS drives the attempt count; empty means one attempt"
+    backoffs.each do |backoff|
+      assert_match(/\A\d+\z/, backoff,
+        "#{RELEASE_WORKFLOW}: LOGIN_BACKOFF_SECONDS is passed straight to `sleep`, so a " \
+        "non-numeric entry fails the step at runtime rather than at review time")
+    end
+
+    assert login.dig("env", "REGISTRY_PASSWORD").to_s.include?("secrets."),
+      "#{RELEASE_WORKFLOW}: the login must still be handed a real token; the script refuses to " \
+      "retry an empty one, but only if it is wired to a secret in the first place"
+
+    assert_not login["continue-on-error"],
+      "#{RELEASE_WORKFLOW}: once the login has spent its attempts it must fail the job — a " \
+      "swallowed login failure produces an unauthenticated build that fails less legibly later"
+
+    # Credentials must land in this job's private DOCKER_CONFIG, not the shared ~/.docker
+    # that every co-tenant on the self-hosted box also writes to.
+    isolate = steps.index { |s| s["run"].to_s.include?("DOCKER_CONFIG=") && s["run"].to_s.include?("RUNNER_TEMP") }
+    assert_operator isolate, :<, steps.index(login),
+      "#{RELEASE_WORKFLOW}: the login must run after the DOCKER_CONFIG isolation step"
+    assert_operator steps.index(login), :<, steps.index(attempts.first),
+      "#{RELEASE_WORKFLOW}: the login must precede the first build attempt"
+  end
+
+  # A throttled manifest read here does not fail the job — it fails CLOSED into
+  # need_base=true, which escalates a read hiccup into a full base rebuild and push against
+  # a registry that may already be refusing the account. Retrying the read first is what
+  # keeps a hiccup from costing a base build. It cannot read the error to decide: a 404 on a
+  # manifest is a shape the throttle has already worn, so "not found" is not evidence of
+  # absence.
+  test "the base image resolve retries its manifest read before deciding the base is missing" do
+    steps, = self.class.release_build_attempts
+    resolve = steps.find { |s| s["id"] == "base" }
+    assert resolve, "#{RELEASE_WORKFLOW}: expected the base resolve step to carry `id: base`"
+
+    # Comments in this step discuss the retry at length, and every one of these assertions
+    # would pass on the prose alone. Match the code.
+    code = resolve["run"].to_s.lines.grep_v(/\A\s*#/).join
+
+    assert_equal 1, code.scan(/imagetools inspect/).length,
+      "#{RELEASE_WORKFLOW}: the retry is expected to be a loop over one `imagetools inspect`, " \
+      "not copies of it that can drift apart"
+
+    loop_body = code[/^\s*for\s+\w+\s+in\s+[^\n]*;\s*do\n(.*?)^\s*done$/m, 1]
+    assert loop_body,
+      "#{RELEASE_WORKFLOW}: the manifest read must sit inside a `for … do … done` retry loop — " \
+      "a single-shot read turns a registry hiccup into a full base rebuild and push against a " \
+      "registry that may already be refusing the account"
+    assert_match(/imagetools inspect/, loop_body,
+      "#{RELEASE_WORKFLOW}: the retry loop must be the thing wrapping the manifest read")
+    assert_match(/^\s*sleep /, loop_body,
+      "#{RELEASE_WORKFLOW}: retrying a manifest read with no backoff just re-asks a registry " \
+      "that is still refusing")
+
+    assert_match(/^\s*echo "need_base=true" >> "\$GITHUB_OUTPUT"$/, code,
+      "#{RELEASE_WORKFLOW}: an exhausted retry must still fall through to rebuilding the base, " \
+      "which is the behaviour that keeps a failed base build from being skipped later")
+  end
+
+  # The retrying login is a `run:` step, so it has no post step — the logout that
+  # `docker/login-action` contributed has to be spelled out, and its `if:` has to keep it
+  # off the SHARED ~/.docker. `always()` alone fires on the runs where checkout or the
+  # isolation step failed, and DOCKER_CONFIG is empty on exactly those, so a bare
+  # `docker logout` would strip GHCR credentials out from under a concurrent job's push.
+  test "the release job logs out again, and cannot do it against the shared docker config" do
+    steps, = self.class.release_build_attempts
+
+    logout = steps.find { |s| s["run"].to_s.include?("docker logout") }
+    assert logout,
+      "#{RELEASE_WORKFLOW}: nothing logs out of GHCR. The retrying login has no post step, so " \
+      "deleting this leaves the credential behind rather than reverting to login-action's cleanup."
+    assert_equal steps.last, logout,
+      "#{RELEASE_WORKFLOW}: the logout must be the last step, or it pulls the credential out " \
+      "from under the steps that still need it"
+
+    condition = logout["if"].to_s
+    assert_includes condition, "always()",
+      "#{RELEASE_WORKFLOW}: the run that leaves a credential behind is the one that failed"
+    assert_match(/env\.DOCKER_CONFIG\s*!=\s*''/, condition,
+      "#{RELEASE_WORKFLOW}: `always()` also fires when the DOCKER_CONFIG isolation step never " \
+      "ran, and an unguarded `docker logout` then writes to the shared ~/.docker this job goes " \
+      "to such lengths to stay out of")
   end
 
   # The retry is blind by design, so the backoff steps carry the diagnosis: they probe
