@@ -43,10 +43,16 @@ class PiExtensionsTest < ActiveSupport::TestCase
 
   # `npm install` succeeds as long as the tarball unpacked, so the image's only
   # proof that an extension is actually loadable is the `test -f` on its
-  # entrypoint. That check is worth nothing if it asserts a different path than
+  # entrypoint. That check is worth nothing if it names a different path than
   # the one #resolved_paths hands to `pi -e`: the build goes green and every Pi
   # session runs with the extension silently dropped.
-  test "the Dockerfile smoke-checks the same entrypoint path the registry resolves" do
+  #
+  # The prefix is the literal `/opt/pi-extensions` rather than INSTALL_DIR on
+  # purpose. INSTALL_DIR is what THIS process reads, and PI_EXTENSIONS_DIR can
+  # redirect it to somewhere a CI runner can write; the image's prefix is fixed
+  # by the Dockerfile's own `npm install --prefix`. Only `entrypoint` is shared
+  # between the two, so it is the only part worth asserting against.
+  test "the Dockerfile smoke-checks the entrypoint the registry declares" do
     dockerfile = Rails.root.join("Dockerfile.base").read
 
     PiExtensions.installable.each do |ext|
