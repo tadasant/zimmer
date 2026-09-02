@@ -49,13 +49,32 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   test "names the backlogged queues and job classes when work is waiting" do
     HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown).returns(
       { by_queue: { "agents" => 231, "default" => 18 },
-        by_job_class: { "AgentSessionJob" => 231, "SessionTitleJob" => 18 } }
+        by_job_class: { "AgentSessionJob" => 231, "SessionTitleJob" => 18 },
+        oldest_by_queue: { "agents" => 1500, "default" => 4 },
+        head_of_line: { queue: "agents", job_class: "AgentSessionJob", age_seconds: 1500 } }
     )
 
     result = @tool.call({})
 
     assert_includes result, "- **Ready backlog by queue:** agents 231, default 18"
     assert_includes result, "- **Ready backlog by job class:** AgentSessionJob 231, SessionTitleJob 18"
+  end
+
+  # `oldest_ready_age_seconds` in the JSON below is one number over every queue at
+  # once, and it is what the Grafana `GoodJob queue is not draining` rule fires on.
+  # An agent triaging that page has to be able to tell one starved lane from a
+  # wedged worker, and the maximum alone cannot: `inference` and `maintenance` run
+  # two threads against jobs that block for a minute or more, so their head of line
+  # is routinely tens of minutes old while everything else turns over in seconds.
+  test "names each queue's own head-of-line age, oldest lane first" do
+    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown).returns(
+      { by_queue: { "inference" => 26, "maintenance" => 19 },
+        by_job_class: { "SessionStatusSummaryJob" => 17, "DeferredCloneCleanupJob" => 15 },
+        oldest_by_queue: { "inference" => 1640, "maintenance" => 1290, "pollers" => 4 },
+        head_of_line: { queue: "inference", job_class: "SessionStatusSummaryJob", age_seconds: 1640 } }
+    )
+
+    assert_includes @tool.call({}), "- **Oldest ready by queue:** inference 27m, maintenance 21m, pollers 4s"
   end
 
   # A breakdown of an empty queue is a line of noise on every healthy call. A
