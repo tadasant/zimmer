@@ -184,6 +184,13 @@ filters to continue from exactly where it stopped. An empty result that says "sc
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
 hundreds of megabytes and up to ten minutes stale.
 
+Two defaults matter when the question is "does this work already have a session?". `show_archived`
+defaults to `false`, and a session that finished a piece of work has archived itself — so a
+duplicate check has to pass `show_archived: true` or name `archived` in `status`, or it misses
+exactly the sessions it is looking for. And each result's prompt line is a preview, the first
+100 characters, so an issue URL named later in a prompt is not visible in the listing; `query` does
+not read the prompt column, so search for the identifier a router put in `custom_metadata` instead.
+
 `get_session` always includes a `### Session Hierarchy` section (the spawn tree this session belongs
 to — an edge means "spawned", not "most recently talked to") and a `### Human Messages` section (the
 messages Zimmer knows a named human authored anywhere in that tree, with author, channel, timestamp,
