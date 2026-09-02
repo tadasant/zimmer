@@ -149,6 +149,23 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_match(/Query too long/, error.message)
   end
 
+  # #683: `query` reaches metadata and custom_metadata, which is where a router-spawned
+  # session carries the issue it is working — so an agent that searches by the issue's
+  # identifier gets an exact duplicate check. It does NOT reach the prompt column, and
+  # the description must not suggest it does.
+  test "query matches custom_metadata but not the prompt" do
+    session = Session.create!(
+      title: "Fix the login timeout", prompt: "Context first. Then: work https://github.com/test/repo/issues/9876",
+      git_root: "https://github.com/test/repo.git", agent_runtime: "claude_code", status: :needs_input,
+      custom_metadata: { "tracking_issue" => "https://github.com/test/repo/issues/4321" }
+    )
+
+    output = @tool.call("query" => "repo/issues/4321")
+    assert_includes output, "(ID: #{session.id})"
+
+    assert_equal "No sessions found matching the specified criteria.", @tool.call("query" => "repo/issues/9876")
+  end
+
   test "the tool description no longer claims to search titles only" do
     description = Mcp::Tools::QuickSearchSessions.rendered_description
 
@@ -157,14 +174,46 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     # #683: the description also has to stop implying `query` is title-only, since it
     # has always reached metadata and custom_metadata as well.
     assert_includes description, "custom_metadata"
+    assert_includes description, "`query` never reads the prompt column"
   end
 
-  test "prompt preview is truncated" do
+  # #683: the two facts an agent needs to deduplicate correctly, stated where the agent
+  # reads them — in the tool's own schema, not in the source or the catalog prose.
+  test "show_archived's description says the default hides finished work" do
+    schema = Mcp::Tools::QuickSearchSessions.input_schema.to_h.deep_symbolize_keys
+
+    show_archived = schema.dig(:properties, :show_archived, :description)
+    assert_includes show_archived, "Default: false"
+    assert_includes show_archived, "a session that finished a piece of work has archived itself"
+    assert_includes show_archived, "sets this true"
+    assert_includes show_archived, 'names "archived" in status, which includes them too'
+
+    query = schema.dig(:properties, :query, :description)
+    assert_includes query, "metadata/custom_metadata JSON"
+    assert_includes query, "not against the prompt"
+
+    description = Mcp::Tools::QuickSearchSessions.rendered_description
+    assert_includes description, "show_archived: true"
+  end
+
+  test "the description says the prompt preview is a leading prefix of a fixed length" do
+    description = Mcp::Tools::QuickSearchSessions.rendered_description
+    length = Mcp::Tools::QuickSearchSessions::MAX_PROMPT_DISPLAY_LENGTH
+
+    assert_includes description, "a leading prefix of the prompt"
+    assert_includes description, "an identifier named later in the prompt is not shown"
+    assert_includes description, "the first #{length} characters of the prompt, then `...`"
+  end
+
+  test "prompt preview is truncated to the documented leading prefix" do
     session = sessions(:running)
-    session.update!(prompt: "x" * 150)
+    length = Mcp::Tools::QuickSearchSessions::MAX_PROMPT_DISPLAY_LENGTH
+    # An identifier past the prefix is exactly what the description warns is not shown.
+    session.update!(prompt: "#{'x' * length}https://github.com/test/repo/issues/4321")
 
     output = @tool.call("id" => session.id)
 
-    assert_includes output, "- **Prompt:** #{'x' * 100}..."
+    assert_includes output, "- **Prompt:** #{'x' * length}..."
+    assert_not_includes output, "issues/4321"
   end
 end
