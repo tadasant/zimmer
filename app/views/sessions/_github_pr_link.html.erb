@@ -23,7 +23,6 @@
       icon_classes = "mr-1.5"
     else
       button_size_classes = "px-3 py-1.5 text-xs"
-      toggle_size_classes = "px-2 py-1.5 text-xs"
       icon_classes = "-ml-0.5 mr-1.5"
     end
   %>
@@ -47,33 +46,65 @@
       <% end %>
     <% end %>
   <% else %>
-    <%# Multiple PRs - button group with dropdown %>
+    <%# Multiple PRs - a dropdown over all of them. The trigger differs by size:
+        the session header has room for a button group, the dashboard card's
+        footer does not. %>
     <div class="relative inline-flex" data-controller="dropdown">
-      <%# Primary button - most recent PR with CI status indicator %>
-      <%= link_to primary_url, target: "_blank", rel: "noopener noreferrer",
-          class: "inline-flex items-center #{button_size_classes} border border-gray-300 font-medium rounded-l-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500",
-          title: "View most recent PR on GitHub (#{primary_status_text})",
-          data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(agent_session) } do %>
-        <svg class="<%= icon_classes %> h-4 w-4 <%= primary_icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-          <path d="<%= pr_icon_path(primary_status) %>"/>
-        </svg>
-        <%= extract_pr_number(primary_url) %><span class="sr-only"> (<%= primary_status_text %>)</span>
-        <% if primary_status == "open" && primary_ci_status.present? %>
-          <span class="ml-1.5 inline-flex items-center" title="CI: <%= primary_ci_status.titleize %>">
-            <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(primary_ci_status) %>"></span>
-          </span>
+      <% if size == :large %>
+        <%# Primary button - most recent PR with CI status indicator %>
+        <%= link_to primary_url, target: "_blank", rel: "noopener noreferrer",
+            class: "inline-flex items-center #{button_size_classes} border border-gray-300 font-medium rounded-l-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500",
+            title: "View most recent PR on GitHub (#{primary_status_text})",
+            data: { controller: "session-activity", action: "click->session-activity#touch", session_activity_url_value: touch_activity_session_path(agent_session) } do %>
+          <svg class="<%= icon_classes %> h-4 w-4 <%= primary_icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="<%= pr_icon_path(primary_status) %>"/>
+          </svg>
+          <%= extract_pr_number(primary_url) %><span class="sr-only"> (<%= primary_status_text %>)</span>
+          <% if primary_status == "open" && primary_ci_status.present? %>
+            <span class="ml-1.5 inline-flex items-center" title="CI: <%= primary_ci_status.titleize %>">
+              <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(primary_ci_status) %>"></span>
+            </span>
+          <% end %>
         <% end %>
-      <% end %>
 
-      <%# Dropdown toggle button %>
-      <button type="button"
-              class="inline-flex items-center <%= toggle_size_classes %> border border-l-0 border-gray-300 font-medium rounded-r-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-              data-action="click->dropdown#toggle"
-              title="View all PRs (<%= pr_urls.size %>)">
-        <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-          <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
-        </svg>
-      </button>
+        <%# Dropdown toggle button %>
+        <button type="button"
+                class="inline-flex items-center <%= toggle_size_classes %> border border-l-0 border-gray-300 font-medium rounded-r-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                data-action="click->dropdown#toggle"
+                title="View all PRs (<%= pr_urls.size %>)">
+          <svg class="h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      <% else %>
+        <%# One control, not a group. A dashboard card is 320-400px wide, and its
+            footer has to seat this next to the ⋮ / Trash / View group in ~288px at
+            the narrow end. The link-plus-chevron pair needs 126px of that and the
+            row wrapped onto a second line (#607); a single trigger needs 73px, which
+            is about what the single-PR button costs -- so a session with several PRs
+            costs the footer no more room than a session with one.
+            The face carries the count rather than the newest PR's number: it triggers
+            a menu over all of them, and the menu names each one. The glyph, its
+            color and the CI dot still describe the newest, with the title and the
+            sr-only span spelling that out for anyone reading neither. %>
+        <button type="button"
+                class="inline-flex items-center <%= button_size_classes %> border border-gray-300 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                data-action="click->dropdown#toggle"
+                title="View all PRs (<%= pr_urls.size %>) — most recent <%= extract_pr_number(primary_url) %> (<%= primary_status_text %>)">
+          <svg class="<%= icon_classes %> h-4 w-4 <%= primary_icon_color %>" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="<%= pr_icon_path(primary_status) %>"/>
+          </svg>
+          <%= pr_urls.size %><span class="sr-only"> PRs, most recent <%= extract_pr_number(primary_url) %> (<%= primary_status_text %>)</span>
+          <% if primary_status == "open" && primary_ci_status.present? %>
+            <span class="ml-1.5 inline-flex items-center" title="CI: <%= primary_ci_status.titleize %>">
+              <span class="h-2 w-2 rounded-full <%= ci_status_bg_class(primary_ci_status) %>"></span>
+            </span>
+          <% end %>
+          <svg class="ml-1 -mr-1 h-4 w-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      <% end %>
 
       <%# Dropdown menu - opens downward (top-full) since button is in sticky header near top of screen %>
       <div class="hidden absolute left-0 top-full mt-1 w-64 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50"
