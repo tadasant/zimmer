@@ -814,14 +814,56 @@ class AgentSessionJob < ApplicationJob
             @broadcast_service.session_status(session)
             return
           end
+          # Re-attaching was this job's ONLY plan, and the pid it was sent for is gone.
+          # Before parking, ask whether there is anything to come back to: a session
+          # whose runtime never wrote a line has no conversation to resume, so parking
+          # it leaves a completely empty session sitting in the human action queue
+          # looking exactly like one that asked a question. Restart it instead
+          # (zimmer#807 — prod session 12267 sat there for nine and a half minutes).
+          restart = Sessions::RestartUnstartedTurn.call(
+            session,
+            working_directory: working_directory,
+            file_system: @file_system,
+            log_buffer: log_buffer
+          )
+          if restart.restarted?
+            log_buffer.flush
+            @broadcast_service.session_status(session.reload)
+            return
+          end
+
           # Mark as recovery-initiated pause so CleanupOrphanedSessionsJob and
           # DeploymentRecoveryJob can auto-continue this session. Without this marker,
           # the session gets stuck at needs_input because no recovery path picks it up.
+          #
+          # NOT when the restart budget is spent. That session has already been given
+          # every restart it is going to get and neither sweep can do anything a third
+          # one would not; leaving the marker on would hand it to twelve doomed
+          # auto-continue attempts and then abandon it anyway. It comes to rest with
+          # RestartUnstartedTurn::ABANDONED_KEY recording why, and announces the
+          # `needs_input` the recovery carve-out would otherwise have swallowed.
+          if restart.abandoned?
+            session.update!(
+              running_job_id: nil,
+              metadata: (session.metadata || {}).merge("failure_reason" => "unstarted_turn_not_recoverable")
+            )
+            session.pause! if session.may_pause?
+            session.announce_deferred_needs_input! if session.reload.resting_in_needs_input?
+            @broadcast_service.session_status(session)
+            return
+          end
+
           session.update!(
             running_job_id: nil,
             metadata: (session.metadata || {}).merge("paused_by" => "recovery")
           )
           session.pause! if session.may_pause?
+          # A recovery pause promises a sweep will continue this session, and until now
+          # the only thing that kept that promise was a five-minute cron — the whole of
+          # the dead air between the failed recovery and the rescue. Ask for the same
+          # continuation directly, on a short delay, so the promise is kept promptly and
+          # the cron is the backstop it was meant to be rather than the mechanism.
+          RecoveryContinuationJob.schedule_for(session)
           # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
           @broadcast_service.session_status(session)
           return
