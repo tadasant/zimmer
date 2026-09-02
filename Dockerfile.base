@@ -170,9 +170,18 @@ RUN set -eo pipefail; \
 # PiExtensions#resolved_paths skips what is not on disk, and CliStatusService
 # reports the gap. When v0.1.0 publishes, add them to this line and drop the
 # `pending_publish:` flags.
+#
+# The `test -f` is a smoke check on the entrypoint, not on the install: `npm
+# install` reports success as long as the tarball unpacked, so a wrong path
+# would otherwise ship an image where PiExtensions#resolved_paths silently
+# drops the extension and every Pi session runs without MCP. The path is a Pi
+# extension source (`index.ts`, from the package's own `pi.extensions` field),
+# because Pi loads TypeScript directly — pi-mcp-adapter's `dist/` holds only
+# its public-export subset and has no `index.js`. pi_extensions_test asserts
+# this path matches PiExtensions::REGISTRY.
 RUN set -eo pipefail; \
     for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
-    test -f /opt/pi-extensions/node_modules/pi-mcp-adapter/dist/index.js
+    test -f /opt/pi-extensions/node_modules/pi-mcp-adapter/index.ts
 
 # Create rails user for security (non-root runtime)
 # Use --force for groupadd to handle pre-existing GID 1000 in base images
