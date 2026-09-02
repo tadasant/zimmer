@@ -118,4 +118,33 @@ class SessionPrecedenceTest < ActiveSupport::TestCase
     assert_equal SessionPrecedence::DEFAULT + SessionPrecedence::SLOT_GAP,
       Session.precedence_above_top_spot
   end
+
+  # --- symbolic placements ------------------------------------------------------
+
+  test "precedence_for_place resolves top_of_spot against the live queue" do
+    build_session(precedence: 70, scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal 70 + SessionPrecedence::SLOT_GAP,
+      Session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
+  end
+
+  test "precedence_for_place passes a caller's scope through to the placement" do
+    excluded = build_session(precedence: 900, scheduling_class: SessionGenesis::SPOT)
+    build_session(precedence: 30, scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal 30 + SessionPrecedence::SLOT_GAP,
+      Session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT, Session.where.not(id: excluded.id))
+  end
+
+  test "precedence_for_place rejects a placement it does not know" do
+    error = assert_raises(ArgumentError) { Session.precedence_for_place("bottom_of_spot") }
+
+    assert_match(/Unknown precedence placement/, error.message)
+  end
+
+  # Every surface validates the argument it accepts against this list, so a
+  # placement that is not in it is one no schema will advertise.
+  test "PLACES names every placement the surfaces accept" do
+    assert_equal [ SessionPrecedence::PLACE_TOP_OF_SPOT ], SessionPrecedence::PLACES
+  end
 end

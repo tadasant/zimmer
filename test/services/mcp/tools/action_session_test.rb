@@ -114,6 +114,143 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/100000 comes before 50/, description)
   end
 
+  # --- place --------------------------------------------------------------------
+
+  test "change_precedence with place top_of_spot lands the session above the current top" do
+    top = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 400)
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 0)
+
+    output = @tool.call("action" => "change_precedence", "session_id" => session.id,
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    session.reload
+    assert_equal 400 + SessionPrecedence::SLOT_GAP, session.precedence
+    assert_operator session.precedence, :>, top.precedence, "it heads the queue it was placed into"
+    assert_equal session, Session.where(id: [ top.id, session.id ]).ranked.first
+    assert_includes output, "- **Precedence:** #{session.precedence} (was 0)"
+  end
+
+  # The reason the value is resolved server-side rather than read and passed
+  # back: a top that has since been archived is not the top any more, and a
+  # caller working from a stale read would inflate the scale by 90,000.
+  test "change_precedence with place top_of_spot reads the live queue, not a stale top" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 90_000, status: :archived)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 20)
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 0)
+
+    @tool.call("action" => "change_precedence", "session_id" => session.id,
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    assert_equal 20 + SessionPrecedence::SLOT_GAP, session.reload.precedence
+  end
+
+  # A session already on top must not be measured against itself, or repeating
+  # the call would walk it SLOT_GAP higher every time. Same exclusion the Ranked
+  # view's demote button applies.
+  test "place top_of_spot does not measure a session against itself" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 500)
+
+    @tool.call("action" => "change_precedence", "session_id" => session.id,
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+    first = session.reload.precedence
+
+    @tool.call("action" => "change_precedence", "session_id" => session.id,
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    assert_equal first, session.reload.precedence, "a repeat placement is a no-op, not a ratchet"
+  end
+
+  test "change_scheduling_class can demote a session straight to the head of the queue" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 120)
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY, precedence: 0)
+
+    output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+      "scheduling_class" => "spot", "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    session.reload
+    assert session.spot?
+    assert_equal 120 + SessionPrecedence::SLOT_GAP, session.precedence
+    assert_includes output, "- **Precedence:** 125 (was 0)"
+    assert_includes session.logs.pluck(:content), "Precedence set via MCP to 125 (was 0)"
+  end
+
+  test "change_precedence accepts place in place of the required precedence" do
+    session = sessions(:needs_input)
+
+    assert_nothing_raised do
+      @tool.call("action" => "change_precedence", "session_id" => session.id,
+        "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+    end
+  end
+
+  test "change_precedence still requires one of the two, and names both" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_precedence", "session_id" => sessions(:needs_input).id)
+    end
+
+    assert_match(/"precedence" parameter is required/, error.message)
+    assert_match(/top_of_spot/, error.message)
+  end
+
+  test "place and precedence together are a tool error" do
+    session = sessions(:needs_input)
+    session.update!(precedence: 7)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_precedence", "session_id" => session.id,
+        "place" => SessionPrecedence::PLACE_TOP_OF_SPOT, "precedence" => 50)
+    end
+
+    assert_match(/mutually exclusive/, error.message)
+    assert_equal 7, session.reload.precedence, "and nothing moved"
+  end
+
+  test "an unknown place is a tool error" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "change_precedence", "session_id" => sessions(:needs_input).id,
+        "place" => "bottom_of_spot")
+    end
+
+    assert_match(/Unknown place/, error.message)
+  end
+
+  # Passing neither leaves a demotion exactly where it was before the argument
+  # existed: on whatever rank the session already carried.
+  test "change_scheduling_class without place or precedence leaves the rank alone" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY, precedence: 33)
+
+    @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+      "scheduling_class" => "spot")
+
+    assert_equal 33, session.reload.precedence
+  end
+
+  test "the place argument is advertised on the schema and says when to use it" do
+    place = Mcp::Tools::ActionSession.input_schema.to_h.dig(:properties, :place)
+
+    assert_equal [ SessionPrecedence::PLACE_TOP_OF_SPOT ], place[:enum]
+    assert_match(/head of the spot queue/i, place[:description])
+    assert_match(/mutually exclusive/i, place[:description])
+  end
+
+  # The prose every agent reads before ranking work: it must no longer teach the
+  # racy two-call recipe the symbolic form replaces.
+  test "the precedence description points at the placement instead of a read-then-write" do
+    description = Mcp::Tools::ActionSession.input_schema.to_h.dig(:properties, :precedence, :description)
+
+    assert_match(/top_of_spot/, description)
+    refute_match(/read the current top with quick_search_sessions and pass a few points above it/, description)
+  end
+
   test "rejects an unknown action" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "self_destruct", "session_id" => sessions(:needs_input).id) }
     assert_match(/Unknown action/, error.message)

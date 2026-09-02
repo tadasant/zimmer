@@ -9,6 +9,8 @@ module Mcp
     # allowed roots, and must use that root's exact default MCP servers — the
     # same lock the decoupled server enforced from ALLOWED_AGENT_ROOTS.
     class StartSession < Tool
+      include PrecedenceArgument
+
       tool_name "start_session"
 
       AGENT_RUNTIME_DESC = <<~TEXT.strip
@@ -82,6 +84,8 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
 
       PRECEDENCE_DESC = PrecedenceDocs::START_SESSION
 
+      PLACE_DESC = PrecedenceDocs::PLACE
+
       IDEMPOTENCY_KEY_DESC = <<~TEXT.strip
         Names THIS create attempt so it is safe to retry. **Generate a fresh UUID** and pass it. If the call errors — including a gateway timeout, where the session may well have been created before the response was lost — call start_session again with the SAME key: Zimmer returns the session the first call made instead of creating a second one, and never queues a second agent. Without a key there is no way to tell a create that never landed from one whose response was lost, and retrying spawns a duplicate. Max #{Session::IDEMPOTENCY_KEY_MAX_LENGTH} characters. Do NOT derive the key from the task, an issue number, or a date: keys share one global namespace, so two callers that independently derive "issue-577-fix" would collide and the second one's session would silently never be created — a duplicate is at least visible, a missing session is not. The key is not a fingerprint of the arguments either: reusing one returns the first session whatever you pass, so use a fresh UUID for each new unit of work.
       TEXT
@@ -119,7 +123,7 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
 
         **Scheduling class:** Pass `scheduling_class: "spot"` for long, unattended work nobody is waiting on, so it yields to work a human is watching when the Claude Code quota gets tight. Omit it and the session takes its parent's explicit class, or its genesis's default.
 
-        **Precedence:** Spot sessions start in precedence order, highest first, on an absolute scale (100000 comes before 50). Omit `precedence` in the ordinary case: a session you spawn is placed one point above the session in `parent_session_id`, which keeps a tree of work together. Set it when this work genuinely outranks — or is genuinely less urgent than — the rest of the spot queue.
+        **Precedence:** Spot sessions start in precedence order, highest first, on an absolute scale (100000 comes before 50). Omit `precedence` in the ordinary case: a session you spawn is placed one point above the session in `parent_session_id`, which keeps a tree of work together. Set it when this work genuinely outranks — or is genuinely less urgent than — the rest of the spot queue. To spawn straight into the HEAD of the spot queue, pass `place: "top_of_spot"` rather than a number — the server resolves it against the live queue in this same call, which reading the current top and passing a value above it cannot do without a race.
 
         **Retries and timeouts — pass `idempotency_key`:** this create is safe to retry only if you name the attempt. Pass an `idempotency_key` unique to the unit of work; repeating the call with the same key returns the session the first call created and queues no second agent. This matters because the call can fail *after* the session is created: a gateway timeout is returned by the proxy in front of Zimmer, so it carries no session id and cannot tell you whether the write landed — and in every observed case it had. So:
 
@@ -160,6 +164,7 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
             description: SCHEDULING_CLASS_DESC
           },
           precedence: { type: "integer", description: PRECEDENCE_DESC },
+          place: { type: "string", enum: SessionPrecedence::PLACES, description: PLACE_DESC },
           idempotency_key: { type: "string", description: IDEMPOTENCY_KEY_DESC },
           auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC }
         },
@@ -270,7 +275,10 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
         attrs[:custom_metadata] = args["custom_metadata"] if args["custom_metadata"].is_a?(Hash)
         attrs[:parent_session_id] = args["parent_session_id"] unless args["parent_session_id"].nil?
         attrs[:scheduling_class] = scheduling_class(args) if args["scheduling_class"].present?
-        attrs[:precedence] = precedence(args) unless args["precedence"].nil?
+        # An explicit null reads as "say nothing" here (unlike action_session's
+        # ranking actions, where naming the argument at all is a claim), so the
+        # ordinary just-above-the-parent inheritance still applies.
+        attrs[:precedence] = resolved_precedence(args) if args["place"].present? || !args["precedence"].nil?
         attrs[:idempotency_key] = args["idempotency_key"] if args["idempotency_key"].present?
         attrs
       end
@@ -283,24 +291,6 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
         value = args["scheduling_class"].to_s
         unless SessionGenesis::CLASSES.include?(value)
           raise ToolError, "Unknown scheduling_class: #{value}. Valid: #{SessionGenesis::CLASSES.join(', ')}"
-        end
-
-        value
-      end
-
-      # An explicit rank beats the "just above the parent" default. Bounded rather
-      # than free: the column is a 32-bit integer and the reorder maths averages
-      # values, so a caller passing 10**12 would break the ranked view's arithmetic
-      # rather than simply ranking very high.
-      def precedence(args)
-        value = args["precedence"]
-        unless value.is_a?(Integer) || value.to_s.match?(/\A-?\d+\z/)
-          raise ToolError, "precedence must be an integer (got #{value.inspect})"
-        end
-
-        value = value.to_i
-        unless value.between?(SessionPrecedence::MIN, SessionPrecedence::MAX)
-          raise ToolError, "precedence must be between #{SessionPrecedence::MIN} and #{SessionPrecedence::MAX}"
         end
 
         value
