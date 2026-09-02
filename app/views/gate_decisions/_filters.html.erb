@@ -1,0 +1,57 @@
+<%# The filter bar. Every control here maps to one key on GateDecisions::Filters,
+    the same object the REST index and `search_gate_decisions` use — so a
+    question asked on this page and the same question asked by a gate cannot come
+    back with different answers.
+
+    The surface and decision options come from the corpus, not from a constant:
+    the vocabulary belongs to the gates, and a verdict word one of them starts
+    writing tomorrow should appear here without a deploy. %>
+<%= form_with url: gate_decisions_path, method: :get, data: { turbo: false },
+    class: "bg-white border border-gray-200 rounded-lg p-3 mb-4" do %>
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 items-end">
+    <div>
+      <label for="gate" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Gate</label>
+      <%= select_tag :gate, options_for_select([ [ "Any", "" ], [ "PR merge", GateDecision::PR_MERGE ], [ "Issue work", GateDecision::ISSUE_WORK ] ], filters.gate),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="surface" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Surface</label>
+      <%= select_tag :surface, options_for_select([ [ "Any", "" ] ] + surface_options.map { |s| [ s, s ] }, filters.surface),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="decision" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Decision</label>
+      <%= select_tag :decision, options_for_select([ [ "Any", "" ] ] + decision_options.map { |d| [ d, d ] }, filters.decision),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="from" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Decided from</label>
+      <%= date_field_tag :from, filters.from, class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="to" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Decided to</label>
+      <%= date_field_tag :to, filters.to, class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="artifact_query" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Artifact URL</label>
+      <%= text_field_tag :artifact_query, filters.artifact_query, placeholder: "781, /issues/",
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+  </div>
+  <div class="flex flex-wrap items-center gap-2 mt-3">
+    <div class="flex-1 min-w-[14rem]">
+      <label for="query" class="sr-only">Search the entries</label>
+      <%# Substring over the whole entry — the reasoning, the ratings, the
+          justifications. A file path or an issue number matches literally. %>
+      <%= text_field_tag :query, filters.query, placeholder: "Search every word of every entry — a file path, an issue number, a phrase",
+          class: "w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <label class="inline-flex items-center gap-1.5 text-sm text-gray-700 whitespace-nowrap">
+      <%= check_box_tag :with_human_feedback, "1", filters.with_human_feedback, class: "rounded border-gray-300 text-indigo-600" %>
+      Has a human note
+    </label>
+    <%= submit_tag "Apply", class: "px-3 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 cursor-pointer" %>
+    <%= link_to "Clear", gate_decisions_path, class: "px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900" %>
+  </div>
+  <p class="text-xs text-gray-500 mt-2 truncate"><%= filters.describe %></p>
+<% end %>
