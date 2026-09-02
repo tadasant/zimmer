@@ -840,6 +840,73 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "at #{MOBILE_WIDTH}px (#{overlap})"
   end
 
+  # Same budget, the multi-PR variant -- the one that spends it. A link plus a
+  # dropdown chevron costs 126px, and next to the ⋮ / Trash / View group's 180px
+  # that needs 314px of a 288px row, so the footer wrapped and the card grew a
+  # line (#607).
+  #
+  # Measured at both widths the grid's `minmax(320px, 400px)` track produces at the
+  # narrow end. 343px is what a 375px phone lands on. 320px is the track's floor,
+  # and it is what a narrower phone gets: the track never goes below its 320px
+  # minimum, so a grid container under 320px still lays out a 320px card (and
+  # centres it, overflowing). Both are below `sm:`, so the card body is `px-4` and
+  # the row is the card less 32px.
+  #
+  # The track is pinned rather than inferred from the viewport because Selenium
+  # sizes the window, not the viewport, and the arithmetic from one to the other is
+  # not this test's subject.
+  #
+  # The assertion is that the row is one line tall -- exactly as tall as its tallest
+  # group -- rather than that two particular buttons overlap: a footer that wraps is
+  # a row twice its content's height, and that reads the same however the groups are
+  # later rearranged.
+  test "a session card's multi-PR button shares the footer's line with the action buttons at both narrow card widths" do
+    urls = [ "https://github.com/owner/repo/pull/603", "https://github.com/owner/repo/pull/607" ]
+    session = create_session(status: :needs_input)
+    session.update!(custom_metadata: {
+      "github_pull_request_urls" => urls,
+      "github_pull_request_statuses" => { urls[0] => "merged", urls[1] => "open" },
+      "github_pull_request_ci_statuses" => { urls[1] => "pass" }
+    })
+
+    visit root_path
+    assert_selector "[data-controller='dropdown'] button[title^='View all PRs']"
+
+    assert_no_horizontal_overflow("sessions index with a multi-PR button")
+
+    [ 343, 320 ].each do |card_width|
+      page.execute_script(<<~JS)
+        document.querySelectorAll(".category-grid").forEach((grid) => {
+          grid.style.gridTemplateColumns = "#{card_width}px";
+        });
+      JS
+
+      row = page.evaluate_script(<<~JS)
+        (function () {
+          const trigger = document.querySelector("[data-controller='dropdown'] button[title^='View all PRs']");
+          const row = trigger.closest("div.justify-between");
+          if (!row) return "no footer row: the card markup this test reads has moved";
+          if (row.children.length !== 2) {
+            return "expected the footer row to hold 2 groups, found " + row.children.length;
+          }
+          const groups = Array.from(row.children).map((g) => g.getBoundingClientRect());
+          return {
+            height: Math.round(row.getBoundingClientRect().height),
+            line: Math.round(Math.max(...groups.map((g) => g.height))),
+            width: Math.round(row.getBoundingClientRect().width),
+            groups: groups.map((g) => Math.round(g.width)).join(" + ")
+          };
+        })()
+      JS
+
+      assert_kind_of Hash, row, "could not measure the footer row at a #{card_width}px card (#{row})"
+      assert_equal row["line"], row["height"],
+        "the footer wrapped onto a second line at a #{card_width}px card: the row is " \
+        "#{row['height']}px tall where one line is #{row['line']}px, fitting " \
+        "#{row['groups']} into #{row['width']}px"
+    end
+  end
+
   # The desktop layout has to keep working: these same pages are read on a laptop,
   # and `flex-wrap` / stacked-on-mobile fixes are exactly the kind of change that
   # silently reflows a wide screen.
