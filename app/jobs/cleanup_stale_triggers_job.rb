@@ -11,17 +11,26 @@
 #    off the user's homepage and the wake is moot. Triggers with
 #    resuscitate_archived = true are exempt — those explicitly opt into
 #    waking archived sessions.
-# 2. Triggers with at least one one-time schedule condition whose scheduled_at
-#    is more than 1 hour in the past. ScheduleTriggerJob should have destroyed
-#    these on its next tick; if they linger, something went wrong.
+# 2. Triggers with at least one one-time schedule condition, collected on
+#    either of two grounds:
+#    a. The wake is already dead — every condition is a one-shot, every one of
+#       them has been consumed, and it created no session (Trigger#dead_one_time_wake?).
+#       A resume consumes a pending wake without firing it, so this shape can
+#       never fire again and is collectable the moment it appears, whatever its
+#       scheduled_at says.
+#    b. Every condition is a one-time schedule whose scheduled_at is more than
+#       1 hour in the past. ScheduleTriggerJob should have destroyed these on its
+#       next tick; if they linger, something went wrong.
 #
 # Triggers in the `failed` status are exempt from BOTH sweeps. A failed trigger
 # is a deliberate tombstone: ScheduleTriggerJob parked it there precisely so the
 # user would see that a wake did not fire and could re-arm it. It lapsed by
 # definition — its scheduled_at is in the past and it will never fire on its own
-# — so heuristic 2 would match every one of them and quietly delete the evidence
+# — so heuristic 2b would match every one of them and quietly delete the evidence
 # an hour later, which is the bug this job would be re-introducing rather than
-# catching. Only the user clears a failed trigger.
+# catching. 2a would take the other half: the one failure that does not re-arm is
+# a raise from the cleanup BEHIND a successful fire, which parks the trigger with
+# its schedule already consumed. Only the user clears a failed trigger.
 class CleanupStaleTriggersJob < ApplicationJob
   queue_as :default
   include SingletonSweep
@@ -35,7 +44,7 @@ class CleanupStaleTriggersJob < ApplicationJob
     total = archived_target_count + stale_schedule_count
     if total > 0
       Rails.logger.info "[CleanupStaleTriggersJob] Destroyed #{total} stale trigger(s) " \
-        "(archived target: #{archived_target_count}, lapsed one-time schedule: #{stale_schedule_count})"
+        "(archived target: #{archived_target_count}, dead one-time schedule: #{stale_schedule_count})"
     end
   end
 
@@ -71,13 +80,21 @@ class CleanupStaleTriggersJob < ApplicationJob
     destroyed_ids.size
   end
 
-  # Destroys triggers whose ONLY conditions are one-time schedules whose
-  # scheduled_at is far enough in the past that ScheduleTriggerJob should
-  # already have fired and destroyed them. Surviving triggers indicate a
-  # bug or interrupted firing — they will never fire on their own (because
-  # one_time_schedule? returns false once last_triggered_at is set, and
-  # schedule_due? returns false if last is set), so nothing else will clean
-  # them up.
+  # Destroys one-time schedule triggers that will never fire again, on either
+  # of the two grounds described at the top of this file: the wake is already
+  # dead (consumed without firing), or its scheduled_at lapsed far enough in the
+  # past that ScheduleTriggerJob should already have fired and destroyed it.
+  #
+  # Both grounds rest on the same fact: #schedule_due? returns false forever
+  # once last_triggered_at is set, so no other path will clean these up.
+  # (TriggerCondition#one_time_schedule? is NOT that guard — it asks only
+  # `condition_type == "schedule" && scheduled_at.present?` and keeps answering
+  # true for a consumed condition.) That is exactly why a consumed wake needs a
+  # collectability ground of its own: with nothing left to fire it, the lapsed
+  # ground is all that reaches it, and that ground is a function of when the
+  # wake was *scheduled* rather than of when it died. A wake set 12 hours out
+  # and consumed five minutes later would sit in the list, `enabled` and
+  # apparently armed, for the remaining ~13 hours.
   def destroy_stale_one_time_schedule_triggers
     now = Time.current
     destroyed_ids = []
@@ -100,19 +117,24 @@ class CleanupStaleTriggersJob < ApplicationJob
     return 0 if candidate_ids.empty?
 
     Trigger.where(id: candidate_ids).where.not(status: "failed").includes(:trigger_conditions).find_each do |trigger|
-      # Only destroy if EVERY condition is a one-time schedule whose
-      # scheduled_at is past the cutoff (timezone-aware). If the trigger has
-      # any other kind of condition (recurring schedule, slack, ao_event),
-      # leave it alone — those keep the trigger legitimate.
-      next unless all_conditions_stale_one_time_schedules?(trigger, now)
+      # Both grounds insist that EVERY condition on the trigger be dead, not
+      # just the schedule that made it a candidate. If the trigger carries any
+      # other kind of condition (recurring schedule, slack, an unconsumed
+      # ao_event), leave it alone — those keep the trigger legitimate.
+      reason =
+        if trigger.dead_one_time_wake?
+          "consumed without firing — it can never fire again"
+        elsif all_conditions_stale_one_time_schedules?(trigger, now)
+          "scheduled_at(s) all > #{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
+        end
+      next if reason.nil?
 
       trigger_id = trigger.id
       trigger.destroy!
       destroyed_ids << trigger_id
-      Rails.logger.info "[CleanupStaleTriggersJob] Destroyed lapsed one-time trigger #{trigger_id} — " \
-        "scheduled_at(s) all > #{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
+      Rails.logger.info "[CleanupStaleTriggersJob] Destroyed dead one-time trigger #{trigger_id} — #{reason}"
     rescue => e
-      Rails.logger.error "[CleanupStaleTriggersJob] Failed to destroy lapsed trigger #{trigger.id}: " \
+      Rails.logger.error "[CleanupStaleTriggersJob] Failed to destroy dead one-time trigger #{trigger.id}: " \
         "#{e.class}: #{e.message}"
     end
 
