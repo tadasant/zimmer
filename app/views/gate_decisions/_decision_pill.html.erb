@@ -1,0 +1,17 @@
+<%# The one place a verdict gets a colour, so the ledger and the detail page can
+    never disagree about what amber means.
+
+    Coloured by what the word DOES, matched loosely, because the vocabulary
+    belongs to the gates and not to this app: `hold` is the gate stopping work,
+    `auto-*` is it letting work through unattended, `authorized-*` is a human
+    having said yes. A verdict none of those match is still rendered — grey, and
+    legible — rather than dropped, which is what happens the first time a gate
+    invents a word. %>
+<% word = decision.to_s.strip %>
+<% tone = if word.blank?                      then "bg-gray-100 text-gray-500"
+          elsif word.match?(/hold/i)          then "bg-amber-100 text-amber-800"
+          elsif word.match?(/\Aauto-?/i)      then "bg-emerald-100 text-emerald-800"
+          elsif word.match?(/authoriz|merge|proceed/i) then "bg-sky-100 text-sky-800"
+          else "bg-gray-100 text-gray-700"
+          end %>
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap <%= tone %>"><%= word.presence || "—" %></span>

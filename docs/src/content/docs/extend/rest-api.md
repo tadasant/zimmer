@@ -681,7 +681,7 @@ the same question differently.
 
 | Endpoint | What it does |
 | --- | --- |
-| `GET /gate_decisions` | Newest first, summaries only. Filters: `gate`, `surface`, `decision`, `artifact_url`, `query` (full text over the entry), `with_human_feedback`, `from`, `to`, plus `page`/`per_page` |
+| `GET /gate_decisions` | Newest first, summaries only. Filters: `gate`, `surface`, `decision`, `artifact_url` (exact), `artifact_query` (substring over the artifact URL), `query` (full text over the entry), `with_human_feedback`, `from`, `to`, plus `page`/`per_page` |
 | `GET /gate_decisions/:id` | One decision **with** its `payload` and its human feedback |
 | `POST /gate_decisions` | Record one. Body: `gate`, `surface`, `entry` (the decision in the gate's own schema), optional `writing_session_id` |
 

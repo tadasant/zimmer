@@ -1,0 +1,5 @@
+<%# Which gate made the call. Two values today (`pr_merge`, `issue_work`); a third
+    would render as itself rather than as nothing. %>
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap <%=
+  gate == GateDecision::PR_MERGE ? 'bg-indigo-100 text-indigo-800' : 'bg-purple-100 text-purple-800' %>"><%=
+  gate == GateDecision::PR_MERGE ? "PR merge" : gate.to_s.tr("_", " ") %></span>

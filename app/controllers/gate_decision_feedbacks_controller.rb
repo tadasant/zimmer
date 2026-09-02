@@ -32,9 +32,8 @@
 # There is no update and no destroy: a note cannot be edited into saying
 # something else, or deleted to make a gate look better than it was.
 #
-# The `/gate-decisions` view that will POST here is deliberately not part of this
-# change — it is the next phase's work. This action is complete and tested
-# without it.
+# `gate_decisions/_feedback` is the form that posts here, on the detail page at
+# `/gate_decisions/:id`. It is the only thing that does.
 class GateDecisionFeedbacksController < ApplicationController
   # POST /gate_decisions/:gate_decision_id/feedbacks
   def create
@@ -79,9 +78,9 @@ class GateDecisionFeedbacksController < ApplicationController
     Date.current
   end
 
-  # There is no gate-decisions page yet to go back to, so the fallback is the
-  # dashboard. Once the view lands it will be the referrer and this keeps working
-  # unchanged.
+  # Back to the decision the note was typed on, which is the referrer. The
+  # fallback covers a POST with no referer — a direct one, or a browser that
+  # strips the header — where there is no page to return to.
   def respond(decision, notice: nil, alert: nil)
     respond_to do |format|
       format.html { redirect_back(fallback_location: root_path, notice: notice, alert: alert) }

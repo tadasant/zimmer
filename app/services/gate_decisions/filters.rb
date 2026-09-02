@@ -14,8 +14,8 @@ module GateDecisions
     DEFAULT_LIMIT = 10
     MAX_LIMIT = 100
 
-    attr_reader :gate, :surface, :decision, :artifact_url, :from, :to, :query, :limit, :offset,
-                :with_human_feedback
+    attr_reader :gate, :surface, :decision, :artifact_url, :artifact_query, :from, :to, :query,
+                :limit, :offset, :with_human_feedback
 
     def initialize(source)
       source = source.to_h.deep_stringify_keys
@@ -24,6 +24,10 @@ module GateDecisions
       @surface = GateDecision.normalize_surface(source["surface"])
       @decision = source["decision"].presence&.to_s&.strip
       @artifact_url = source["artifact_url"].presence&.to_s&.strip
+      # Deliberately a second key rather than a looser reading of `artifact_url`.
+      # A gate asking "has THIS pull request been rated before" must keep getting
+      # the exact match; the substring search is what a person browsing wants.
+      @artifact_query = source["artifact_query"].presence&.to_s&.strip
       @from = parse_date(source["from"], "from")
       @to = parse_date(source["to"], "to")
       @query = source["query"].presence&.to_s
@@ -41,6 +45,7 @@ module GateDecisions
       scope = scope.for_surface(surface) if surface
       scope = scope.with_decision(decision) if decision
       scope = scope.for_artifact(artifact_url) if artifact_url
+      scope = scope.matching_artifact_url(artifact_query) if artifact_query.present?
       scope = scope.decided_between(from, to) if from || to
       scope = scope.matching_text(query) if query.present?
       scope = scope.with_human_feedback if with_human_feedback
@@ -53,6 +58,7 @@ module GateDecisions
       parts << "surface=#{surface}" if surface
       parts << "decision=#{decision}" if decision
       parts << "artifact_url=#{artifact_url}" if artifact_url
+      parts << "artifact_url~#{artifact_query}" if artifact_query.present?
       parts << "from=#{from}" if from
       parts << "to=#{to}" if to
       parts << "query=#{query.inspect}" if query.present?

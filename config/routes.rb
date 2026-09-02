@@ -321,11 +321,16 @@ Rails.application.routes.draw do
   # Last in the group so it cannot shadow "stats" as a session identifier.
   get "outcomes/:id", to: "outcomes#show", as: :outcome
 
-  # Human feedback on a gate decision. Browser-only, and that is the security
-  # property: this is an ApplicationController descendant, so the request came
-  # from the one human who can reach the web UI. No API and no MCP route reaches
-  # it. See GateDecisionFeedbacksController.
-  resources :gate_decisions, only: [] do
+  # Gate Decisions: the browsable ledger of every rating the PR-merge and
+  # issue-work gates have made. Read-only — decisions are append-only and written
+  # by the gates, so there is no create, update or destroy here.
+  #
+  # The nested feedbacks#create is the page's one write, and it is browser-only
+  # by design: GateDecisionFeedbacksController is an ApplicationController
+  # descendant, so no API key and no MCP tool reaches it. Read the honest limits
+  # of that boundary on the controller itself — Zimmer's browser surface
+  # authenticates nobody.
+  resources :gate_decisions, only: [ :index, :show ] do
     resources :feedbacks, only: [ :create ], controller: "gate_decision_feedbacks"
   end
 

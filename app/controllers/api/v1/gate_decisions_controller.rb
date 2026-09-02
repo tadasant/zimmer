@@ -22,8 +22,8 @@
 class Api::V1::GateDecisionsController < Api::BaseController
   # GET /api/v1/gate_decisions
   #
-  # Filters: gate, surface, decision, artifact_url, from, to, query,
-  # with_human_feedback. Paginated with the standard page/per_page.
+  # Filters: gate, surface, decision, artifact_url, artifact_query, from, to,
+  # query, with_human_feedback. Paginated with the standard page/per_page.
   def index
     filters = GateDecisions::Filters.new(filter_params)
     result = paginate(filters.scope.includes(:feedbacks))
@@ -73,7 +73,14 @@ class Api::V1::GateDecisionsController < Api::BaseController
   # ActionController::Parameters cannot be converted to a Hash, and spelling the
   # filters out here keeps the REST surface and the MCP tool's input schema
   # visibly the same list.
-  FILTER_KEYS = %i[gate surface decision artifact_url query with_human_feedback from to].freeze
+  #
+  # `artifact_query` — substring over the artifact URL, as against `artifact_url`'s
+  # exact match — is honoured by GateDecisions::Filters, so it works here and on
+  # `search_gate_decisions`, which passes its arguments through. It is documented
+  # on this surface and on the /gate_decisions page, and not in the tool's schema:
+  # a gate's question is "has THIS pull request been rated", which `artifact_url`
+  # already answers exactly, and `query` covers the loose read.
+  FILTER_KEYS = %i[gate surface decision artifact_url artifact_query query with_human_feedback from to].freeze
 
   def filter_params
     params.permit(*FILTER_KEYS).to_h
