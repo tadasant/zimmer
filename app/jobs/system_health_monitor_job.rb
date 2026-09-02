@@ -4,9 +4,10 @@
 # into an *alert a human actually sees*.
 #
 # Background: HealthMonitorService#system_health already computes a
-# `status: :critical` ("Queue backlog critical: N jobs ready") once the ready GoodJob
-# backlog crosses QUEUE_DEPTH_CRITICAL_THRESHOLD and stops draining
-# (QUEUE_STALL_CRITICAL_AGE). That status was surfaced only in
+# `status: :critical` ("Queue backlog critical: ...") once a backlog is both deep
+# and not draining — either on a single lane past its own
+# QUEUE_LANE_CRITICAL_THRESHOLDS, or fleet-wide with no lane picking anything up
+# (QUEUE_DEPTH_CRITICAL_THRESHOLD, QUEUE_STALL_CRITICAL_AGE). That status was surfaced only in
 # the on-demand health report — nothing paged on it — so a real backlog collapse
 # (the SlackTriggerPollerJob thread-starvation incident) grew for ~5 hours before
 # anyone noticed. This job closes that gap: it re-evaluates system health on a
@@ -89,10 +90,12 @@ class SystemHealthMonitorJob < ApplicationJob
     # human-facing page is delivered by AlertService below — logging at .error
     # would additionally trip the "any Zimmer ERROR → critical" Grafana rule on top of
     # the Slack page (double-alerting). See CLAUDE.md logging philosophy.
+    # Quote the gate's own message rather than rebuilding it: it names WHICH of the
+    # two critical shapes fired — a single starved lane, or no lane picking work up
+    # at all — and that is the first thing the responder needs.
     Rails.logger.warn(
-      "[SystemHealthMonitorJob] Queue backlog critical: #{depth} ready job(s), oldest waiting " \
-      "#{HealthMonitorService.format_wait(system_health[:queue_stats][:oldest_ready_age_seconds])}, " \
-      "for #{streak} consecutive check(s); alerting #eng-alerts."
+      "[SystemHealthMonitorJob] #{system_health[:status].message} " \
+      "(#{depth} ready job(s), for #{streak} consecutive check(s)); alerting #eng-alerts."
     )
 
     AlertService.raise_alert(
@@ -122,7 +125,7 @@ class SystemHealthMonitorJob < ApplicationJob
     breakdown = ready_backlog_breakdown
 
     [
-      "GoodJob backlog is critical.",
+      system_health[:status].message,
       "",
       "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
         "oldest waiting #{head_of_line_age(stats, breakdown[:head_of_line])}" \
@@ -135,16 +138,16 @@ class SystemHealthMonitorJob < ApplicationJob
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
       "",
-      "Read the head-of-line ages first, because that is the number this page and " \
-        "the Grafana `not draining` rule both fire on, and taken across all queues " \
-        "at once it cannot tell the two causes apart. ONE old queue beside fresh " \
-        "ones is that queue starving: its threads are all held (an `agents` thread " \
-        "lasts as long as its session, and `inference` and `maintenance` run two " \
-        "threads against jobs that block for a minute or more) or blocked on a long " \
-        "external wait, and every other queue will still look healthy — including " \
-        "the processing rate, which is a trailing hour and lags a stall by many " \
-        "minutes. EVERY queue old at once is the worker itself: down, restarting, or " \
-        "starved of database round-trips."
+      "The line above already says which of the two shapes this is, because the gate " \
+        "decides per lane rather than on one age across all of them. ONE old queue " \
+        "beside fresh ones is that queue starving: its threads are all held (an " \
+        "`agents` thread lasts as long as its session, and `inference` and " \
+        "`maintenance` run two threads against jobs that block for a minute or " \
+        "more) or blocked on a long external wait, and every other queue will still " \
+        "look healthy — including the processing rate, which is a trailing hour and " \
+        "lags a stall by many minutes. EVERY queue old at once is the worker itself: " \
+        "down, restarting, or starved of database round-trips. The Grafana `not " \
+        "draining` rule still fires on the single global age and cannot tell them apart."
     ].join("\n")
   end
 
@@ -171,8 +174,8 @@ class SystemHealthMonitorJob < ApplicationJob
   # row `queue_statistics` measured may already be claimed when the breakdown runs,
   # leaving the bullet quoting one row's age next to another row's lane. Taking
   # both from `head_of_line` keeps the sentence internally true. `queue_statistics`
-  # remains the fallback — and remains what the `critical` gate thresholds on,
-  # which this does not touch.
+  # remains the fallback; its own per-lane numbers are what the `critical` gate
+  # thresholded on, which this does not touch.
   def head_of_line_age(stats, head)
     seconds = head.present? ? head[:age_seconds] : stats[:oldest_ready_age_seconds]
     HealthMonitorService.format_wait(seconds)
