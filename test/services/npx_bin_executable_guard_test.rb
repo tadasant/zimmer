@@ -176,6 +176,55 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
     refute File.executable?(other_root_target)
   end
 
+  # Discovery enumerates directories, and a directory can be a symlink to anywhere
+  # on the host. Such a root is inside the clone as written and somewhere else once
+  # resolved — and it is the resolved root every shim target is then checked
+  # against, so the escape has to be caught at the root, not per shim.
+  test "refuses a cache root that resolves outside the clone" do
+    outside = File.join(@temp_dir, "outside-cache")
+    bin_dir = File.join(outside, "_npx", "8888aaaa9999bbbb", "node_modules", ".bin")
+    package_dir = File.join(outside, "_npx", "8888aaaa9999bbbb", "node_modules", "escaped-server")
+    FileUtils.mkdir_p(bin_dir)
+    FileUtils.mkdir_p(package_dir)
+    target = File.join(package_dir, "index.js")
+    File.write(target, "#!/usr/bin/env node\n")
+    File.chmod(0o644, target)
+    File.symlink(File.join("..", "escaped-server", "index.js"), File.join(bin_dir, "escaped-server"))
+
+    FileUtils.mkdir_p(File.join(@working_directory, ".npm-cache", "smuggler"))
+    File.symlink(outside, File.join(@working_directory, ".npm-cache", "smuggler", "link"))
+
+    log = StringIO.new
+    assert_empty NpxBinExecutableGuard.repair!(
+      working_directory: @working_directory, logger: Logger.new(log)
+    )
+    refute File.executable?(target), "a root outside the clone must never be walked"
+    assert_match(/Refusing to walk/, log.string)
+  end
+
+  # A root that loses its race with NpxCacheHealService between discovery and
+  # resolution takes itself out of the sweep, not its siblings.
+  test "a root that vanishes mid-sweep does not abort the roots beside it" do
+    isolated_npx = isolated_npx_dir("1password-tadas-rw")
+    doomed = install_package("04f14e66d79e7af4", "onepassword-mcp-server", npx_dir: isolated_npx)
+    survivor = install_package("1111111111111111", "solo-mcp-server")
+
+    log = StringIO.new
+    original_realpath = File.method(:realpath)
+    File.stub(:realpath, ->(path, *rest) {
+      raise Errno::ENOENT, path if path == isolated_npx
+
+      original_realpath.call(path, *rest)
+    }) do
+      assert_equal [ survivor[:target] ], NpxBinExecutableGuard.repair!(
+        working_directory: @working_directory, logger: Logger.new(log)
+      )
+    end
+
+    assert_match(/Could not walk/, log.string)
+    refute File.executable?(doomed[:target])
+  end
+
   test "repairs a bin entry npm wrote as a regular file rather than a symlink" do
     bin_dir = File.join(@npx_dir, "aaaa1111bbbb2222", "node_modules", ".bin")
     FileUtils.mkdir_p(bin_dir)
@@ -217,13 +266,34 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
     install_package("7777aaaa8888bbbb")
     log = StringIO.new
 
-    Dir.stub(:glob, ->(*) { raise Errno::EIO }) do
+    NpxCacheLayout.stub(:within_clone_cache?, ->(*) { raise "boom" }) do
       assert_empty NpxBinExecutableGuard.repair!(
         working_directory: @working_directory, logger: Logger.new(log)
       )
     end
 
     assert_match(/Error repairing npx bin permissions/, log.string)
+  end
+
+  # The chmods that already landed are facts about the filesystem, so an error on
+  # a later root reports them rather than dropping them.
+  test "reports what earlier roots repaired when a later one raises" do
+    shared = install_package("7777aaaa8888bbbb")
+    isolated_npx = isolated_npx_dir("1password-tadas-rw")
+    install_package("04f14e66d79e7af4", "onepassword-mcp-server", npx_dir: isolated_npx)
+
+    original_realpath = File.method(:realpath)
+    File.stub(:realpath, ->(path, *rest) {
+      raise "boom" if path == isolated_npx
+
+      original_realpath.call(path, *rest)
+    }) do
+      assert_equal [ shared[:target] ], NpxBinExecutableGuard.repair!(
+        working_directory: @working_directory, logger: @logger
+      )
+    end
+
+    assert File.executable?(shared[:target])
   end
 
   test "is idempotent" do

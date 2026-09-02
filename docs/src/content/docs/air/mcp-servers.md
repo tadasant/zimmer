@@ -291,8 +291,8 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   layout knows about — the shared one and each isolated root — because the two servers that get
   isolated in practice both run `onepassword-mcp-server`, the package whose published tarball ships
   its entrypoint `-rw-r--r--` ([#498](https://github.com/tadasant/zimmer/issues/498)). Each root is
-  its own containment boundary: a shim that resolves outside the root it was found in is refused
-  rather than chmod'ed. Codex sessions are not covered — see
+  its own containment boundary, checked twice: a root that resolves outside the clone is not walked
+  at all, and within a root a shim that resolves outside it is refused rather than chmod'ed. Codex sessions are not covered — see
   [Limitations](/limitations/#the-npx-bin-permission-repair-only-reaches-claude-sessions-and-only-on-the-next-launch).
 - `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the python
   packages listed in `mcp.json`, and `npm install -g` the npm ones. The npm half no longer helps an
