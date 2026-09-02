@@ -35,8 +35,7 @@
 #     not yet persisted `clone_path`. That window is bounded by the clone itself
 #     (GIT_CLONE_TIMEOUT_SECONDS, 300s, plus bounded retries — under ten minutes
 #     in the worst case), so two hours is more than an order of magnitude of
-#     headroom, and is still more conservative than the equivalent sweep in
-#     StaleCloneCleanupJob (ORPHAN_AGE_THRESHOLD, 1 hour).
+#     headroom.
 #
 class OrphanCloneFilesystemCleanupJob < ApplicationJob
   queue_as :maintenance
@@ -246,7 +245,7 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
 
     # Hard, age-independent guard: never touch a clone owned by a live
     # (non-terminal) session, regardless of age. Belt-and-suspenders alongside
-    # the tracked_paths check above.
+    # the `tracked` check above.
     live_paths = Session.live_clone_paths
 
     entries.filter_map do |entry|
@@ -281,6 +280,11 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
   # rewrote the directory but not the metadata (#671). The basename guard makes
   # it harmless, and that is exactly why it needs saying out loud: nothing else
   # would ever notice.
+  #
+  # Recorded on the session as well as in the log, because the per-session record
+  # survives the deploy this job's stdout does not — the same argument
+  # CloneReaper makes for its own refusals. Best-effort: a tripwire that can
+  # raise is a tripwire that takes out the sweep it was reporting on.
   def flag_path_drift(owner, full_path)
     owner_id, stored_path = owner
     return if stored_path == File.expand_path(full_path)
@@ -288,6 +292,19 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     Rails.logger.warn "[OrphanCloneFilesystemCleanupJob] #{full_path} is owned by session #{owner_id}, " \
       "whose stored clone_path is #{stored_path} — matched by basename, not by path. " \
       "The directory is safe; investigate clone_path canonicalization."
+
+    session = Session.unscoped.find_by(id: owner_id)
+    return unless session
+
+    session.logs.create!(
+      level: "warning",
+      content: "The orphan sweep matched this session's clone directory (#{File.basename(full_path)}) by " \
+        "basename rather than by path: it is at #{full_path} while clone_path reads #{stored_path}. " \
+        "The directory was left alone. Investigate clone_path canonicalization."
+    )
+  rescue StandardError => e
+    Rails.logger.error "[OrphanCloneFilesystemCleanupJob] Failed to record clone_path drift for session " \
+      "#{owner_id}: #{e.class} - #{e.message}"
   end
 
   def cleanup_orphan(dir_path)

@@ -132,6 +132,13 @@ module AtomicCloneRemoval
     tombstones.first(limit).each do |entry|
       full_path = File.join(base, entry)
 
+      # An in-place-delete marker whose clone is still on disk is doing its job:
+      # it names a directory that may be a half-tree. Reaping it would delete the
+      # label and leave the unlabelled tree, which is the state this whole module
+      # exists to prevent. A real tombstone — the renamed copy — has no surviving
+      # clone at its original name, so this only ever spares a marker.
+      next if marker_for_surviving_clone?(base, entry, full_path)
+
       # No `File.directory?` guard: a tombstone can be a file or a dangling symlink
       # (ForkSessionService disposes of a destination that may be "a partially
       # written tree, a bare directory, or nothing"), and skipping those would leak
@@ -206,6 +213,19 @@ module AtomicCloneRemoval
   rescue StandardError => e
     Rails.logger.error "[AtomicCloneRemoval] Could not write the in-place-delete marker #{marker}: " \
       "#{e.class} - #{e.message}"
+    false
+  end
+
+  # Whether `entry` is an in-place-delete marker (a FILE) whose named clone is
+  # still on disk. See the call site in .reap_tombstones.
+  def marker_for_surviving_clone?(base, entry, full_path)
+    return false if File.directory?(full_path)
+
+    clone_name = entry.sub(TOMBSTONE_PATTERN, "")
+    return false if clone_name.empty? || clone_name == entry
+
+    File.directory?(File.join(base, clone_name))
+  rescue SystemCallError
     false
   end
 

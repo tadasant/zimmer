@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class AtomicCloneRemovalTest < ActiveSupport::TestCase
   setup do
@@ -133,14 +134,43 @@ class AtomicCloneRemovalTest < ActiveSupport::TestCase
       "and the marker must name the clone it is about, so an operator can tell what the half-tree is"
   end
 
-  test "a completed in-place fallback cleans its own marker up" do
+  test "a completed in-place fallback cleans its own marker up, and says so at .error" do
+    # `.error` rather than `.warn` is the load-bearing half: the Grafana rule that
+    # pages on production ERROR records is the only thing that would ever tell
+    # anyone this path ran, and the absence of that line is what ruled it out
+    # while triaging #808.
     file_system = RealFileSystemAdapter.new
     file_system.stubs(:rename).raises(Errno::EXDEV, "simulated cross-device rename")
+    Rails.logger.expects(:error).with(regexp_matches(/non-atomic in-place delete/)).once
 
     assert AtomicCloneRemoval.remove(@clone, file_system: file_system)
 
     assert_not File.exist?(@clone)
     assert_empty tombstones
+  end
+
+  test "the marker outlives a tombstone reap while the clone it names is still there" do
+    # Reaping the label and leaving the unlabelled tree is the exact state this
+    # module exists to prevent, so the reap must spare a marker whose clone
+    # survived — and must still take an ordinary tombstone in the same pass.
+    marker = File.join(@base, "#{File.basename(@clone)}.deleting-0123abcd")
+    File.write(marker, "in-place delete in flight\n")
+    ordinary = File.join(@base, "zimmer-main-1770000000-cafebabe.deleting-89abcdef")
+    FileUtils.mkdir_p(ordinary)
+
+    AtomicCloneRemoval.reap_tombstones(@base)
+
+    assert File.exist?(marker), "the marker names a clone that is still on disk"
+    assert_not File.exist?(ordinary), "an ordinary tombstone is still doomed"
+  end
+
+  test "the marker is reaped once the clone it names is gone" do
+    marker = File.join(@base, "zimmer-main-1770000000-facefeed.deleting-0123abcd")
+    File.write(marker, "in-place delete that finished\n")
+
+    AtomicCloneRemoval.reap_tombstones(@base)
+
+    assert_not File.exist?(marker)
   end
 
   test "a clone that vanished under the rename is not an error" do

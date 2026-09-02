@@ -137,14 +137,15 @@ GoodJob runs `:async` in-process — so booting the app on a live host starts ev
 *empty*, on a filesystem that is not.
 
 "Empty database, nothing to act on" is the wrong intuition for the set-difference
-sweeps. `StaleCloneCleanupJob` is on the development schedule and
-`OrphanCloneFilesystemCleanupJob` is not, but both define an orphan as
-a directory under `~/.zimmer/clones` with no owning `Session` row, so an empty database
-makes *every live clone* look orphaned. They are safe here only because of a specific
+sweeps. `OrphanCloneFilesystemCleanupJob` defines an orphan as a directory under
+`~/.zimmer/clones` with no owning `Session` row, and `StaleCloneCleanupJob` — which *is*
+on the development schedule — does the same for the four per-session roots beside it
+(scratch, the Claude config dir, the two prompt-attachment trees). An empty database
+makes *every* one of those look orphaned. They are safe here only because of a specific
 fence — `SWEEPS_DEFAULT_DURABLE_ROOT = %w[production staging]` and
 `inside_default_durable_root?` make them refuse to sweep the default root when
 `Rails.env` is development. That fence, not the empty database, is what protects other
-sessions' clones. A new cron job that sweeps the filesystem needs its own.
+sessions' clones and scratch. A new cron job that sweeps the filesystem needs its own.
 :::
 
 ## Taking screenshots
