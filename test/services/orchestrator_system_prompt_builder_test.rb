@@ -344,10 +344,14 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "`quick_search_sessions`",
       "expected the search tool to be named so the agent can actually go looking"
     # quick_search_sessions lives in the `sessions` tool group, which is not part
-    # of the self_session set injected into every session — and it matches titles
-    # only. Both caveats are stated so the step does not dead-end.
+    # of the self_session set injected into every session — that caveat is stated
+    # so the step does not dead-end. And the prompt must not tell the agent the
+    # tool matches titles only: `query` reaches custom_metadata, which is where a
+    # router-spawned session carries its tracking issue, so the exact search is the
+    # one to run first (#683).
     assert_includes prompt, "if you have a sessions-scoped MCP server"
-    assert_includes prompt, "it matches titles only, so scan rather than keyword-search"
+    assert_not_includes prompt, "matches titles only"
+    assert_includes prompt, "its `query` reaches `custom_metadata` as well as titles, so search the blocker's issue URL or number before scanning the board"
     assert_includes prompt, "check the tracking issue for a linked session or PR"
   end
 

@@ -26,11 +26,14 @@ module Mcp
 
         **Two searches, one tool.** By default `query` matches session titles plus the `metadata` and `custom_metadata` JSON — fast, and the whole corpus every time. Set `search_contents: true` to also match the session **transcript**, which is how you find a session by something said mid-conversation.
 
+        **Checking whether a piece of work already has a session.** Search for the artifact's identifier — the tracking issue's URL or number, or the PR URL — rather than a title keyword: `query` reaches `custom_metadata`, where a spawner records the issue it handed over and where Zimmer records the PR URLs a session opens, while titles are free text each spawner wrote on its own. Pass `show_archived: true`. A session that finished a piece of work has archived itself, so the default excludes exactly the sessions a duplicate-check most wants to find. Do not rely on the **Prompt** line in results to spot a match: it is the first #{MAX_PROMPT_DISPLAY_LENGTH} characters of the prompt, a leading prefix, so an identifier named later in the prompt is not shown — and `query` does not read the prompt column at all. A session is found by its prompt text only with `search_contents: true`, and only as far as the transcript recorded it.
+
         **What `search_contents` costs, and what it promises.** Transcripts have no index a substring search can use, so the scan is bounded: it walks candidates newest-first, stops as soon as it has `per_page` matches or its time budget runs out, and always returns rather than timing out. It reports how far it got, and when it stopped early it returns a `scan_cursor` — pass that back to continue from exactly where it left off. Results are ordered newest-first regardless of `order`, and no total count is reported (counting matches would cost the full scan the bound exists to avoid). Narrow with `status`, `genesis` or `agent_runtime` to make it reach further back per call.
 
         **Use cases:**
         - Find a specific session by ID (set id parameter)
-        - Search sessions by title keyword (set query parameter)
+        - Search sessions by a substring of the title or the metadata/custom_metadata JSON (set query parameter)
+        - Check whether an issue or PR already has a session working it (query the issue URL or number, with show_archived: true)
         - Find the session that discussed something, by a phrase from the conversation (query + search_contents: true)
         - List all sessions with an optional status filter (one status, or an array to match any)
         - Monitor sessions that need human attention (status: "needs_input")
@@ -40,7 +43,7 @@ module Mcp
         still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
         a pause outranks precedence and scheduling class. Skip it and take the next candidate.
 
-        **Returns:** A list of matching sessions with their status, configuration, and metadata.
+        **Returns:** A list of matching sessions with their status, configuration, and metadata. Each result's **Prompt** line is a preview — the first #{MAX_PROMPT_DISPLAY_LENGTH} characters of the prompt, then `...` — not the whole prompt; get_session has the full text.
 
         **Session statuses:**
         - waiting: Session created, waiting to start
@@ -60,7 +63,7 @@ module Mcp
           query: {
             type: "string",
             maxLength: MAX_QUERY_LENGTH,
-            description: "Search query to find sessions. Substring match (case-insensitive) against the session title and the metadata/custom_metadata JSON; add search_contents: true to match transcript text too. Leave empty to list all sessions."
+            description: "Search query to find sessions. Substring match (case-insensitive) against the session title and the metadata/custom_metadata JSON — not against the prompt. Add search_contents: true to match transcript text too. Leave empty to list all sessions."
           },
           search_contents: {
             type: "boolean",
@@ -98,7 +101,7 @@ module Mcp
           },
           show_archived: {
             type: "boolean",
-            description: "Include archived sessions in results. Default: false"
+            description: "Include archived sessions in results. Default: false — which hides the highest-value duplicate-check case: a session that finished a piece of work has archived itself, so a search for work that may already be done must set this true. Naming \"archived\" in status also includes them, without this flag."
           },
           page: {
             type: "number",
