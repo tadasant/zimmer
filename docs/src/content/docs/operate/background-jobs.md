@@ -83,7 +83,7 @@ From `config.good_job.cron`:
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
-| hourly :15 | `CleanupStaleTriggersJob` | Destroy orphaned one-time wake-up triggers — an archived target session, or a schedule that has lapsed |
+| hourly :15 | `CleanupStaleTriggersJob` | Destroy dead one-time wake-up triggers — an archived target session, a wake a resume consumed without firing, or a schedule that has lapsed |
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
 | daily 06:00 | `ClaudeCodeUpdateJob` | Update the Claude Code CLI to the latest version |
 | daily 08:00 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |

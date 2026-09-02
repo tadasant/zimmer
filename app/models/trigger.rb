@@ -267,6 +267,41 @@ class Trigger < ApplicationRecord
     one_shot.any? && one_shot.all? { |c| c.last_triggered_at.present? }
   end
 
+  # True when this wake is dead on arrival: it can never fire again, and it
+  # never did anything. `CleanupStaleTriggersJob` collects these on sight.
+  #
+  # The usual way a trigger reaches this shape is a resume that consumed it
+  # rather than a fire. SessionStateMachine#cancel_pending_one_time_wake_triggers
+  # stamps `last_triggered_at` on every pending one-time wake aimed at a session
+  # being deliberately resumed, and that stamp closes #schedule_due? (and the
+  # session-scoped `ao_event` one-shot guard) permanently. Nothing fires it, so
+  # the auto-delete that normally removes a spent one-time trigger never runs,
+  # and the row survives as `enabled` with 0 sessions — an armed, pending wake to
+  # every reader of /triggers and `search_triggers`.
+  #
+  # Deliberately narrower than #spent_one_shot_wake? on both sides:
+  #
+  # - #one_time_reuse_trigger? demands that EVERY condition be a one-shot, where
+  #   #spent_one_shot_wake? only asks it of the one-shots it finds. A consumed
+  #   schedule sharing a trigger with a Slack or recurring condition leaves that
+  #   trigger perfectly alive, and destroying it would delete an armed trigger.
+  # - `sessions_created_count` keeps this to wakes that delivered nothing. A
+  #   trigger that spawned a session is the firing job's to clean up behind its
+  #   own fire, and this predicate is not the place to second-guess that.
+  #
+  # Status is deliberately NOT part of this. A `failed` trigger is a tombstone
+  # the user clears, and both of CleanupStaleTriggersJob's sweeps exclude it
+  # there rather than here, so this predicate stays a statement about whether
+  # the wake is dead and not about whether anyone still wants to see it.
+  # True for both one-shot shapes — a one-time schedule and a session-scoped
+  # `ao_event` — because a resume consumes both. CleanupStaleTriggersJob only
+  # asks the question of triggers carrying a one-time schedule, so an
+  # `ao_event`-only wake answers true here and is still not collected; see
+  # https://github.com/tadasant/zimmer/issues/793.
+  def dead_one_time_wake?
+    one_time_reuse_trigger? && spent_one_shot_wake? && sessions_created_count.to_i.zero?
+  end
+
   # Returns the condition types present on this trigger
   def condition_types
     trigger_conditions.pluck(:condition_type).uniq
