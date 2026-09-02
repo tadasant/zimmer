@@ -1579,14 +1579,22 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
       metadata: { "failure_reason" => "git_clone_failed" }
     )
     image = store_image_for(session)
+    file = store_file_for(session, filename: "notes.txt", content: "read me")
 
     post restart_api_v1_session_path(session.id), headers: @headers
 
     assert_response :success
     assert_enqueued_with(
       job: AgentSessionJob,
-      args: [ session.id, nil, { images: [ { path: image[:path], media_type: "image/png" } ] } ]
+      args: [
+        session.id, nil,
+        {
+          images: [ { path: image[:path], media_type: "image/png" } ],
+          files: [ { path: file[:path], original_filename: "notes.txt", size: "read me".bytesize } ]
+        }
+      ]
     )
+    assert session.logs.where("content LIKE ?", "%carrying 1 image and 1 file%").exists?
   end
 
   # This path is taken when something has ALREADY gone wrong. A storage tree that

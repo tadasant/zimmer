@@ -3218,6 +3218,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.logs.where("content LIKE ?", "%Restarting session from scratch%").exists?
     assert session.logs.where("content LIKE ?", "%full setup will be re-attempted%").exists?
 
+    # A session with nothing stored says nothing about what it carries.
+    assert_not session.logs.where("content LIKE ?", "%carrying%").exists?
+
     # Verify stale metadata was cleared
     assert_nil session.metadata["failure_reason"]
   end

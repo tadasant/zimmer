@@ -73,9 +73,10 @@ class Sessions::FirstTurnAttachmentsTest < ActiveSupport::TestCase
     end
   end
 
-  test "phrase names what a turn is carrying, and says nothing when it carries nothing" do
-    assert_nil Sessions::FirstTurnAttachments.phrase([], [])
-    assert_equal "1 image", Sessions::FirstTurnAttachments.phrase([ {} ], [])
-    assert_equal "2 images and 1 file", Sessions::FirstTurnAttachments.phrase([ {}, {} ], [ {} ])
+  test "the carrying clause names what a turn holds, and is empty when it holds nothing" do
+    assert_equal "", Sessions::FirstTurnAttachments.carrying_clause([], [])
+    assert_equal ", carrying 1 image", Sessions::FirstTurnAttachments.carrying_clause([ {} ], [])
+    assert_equal ", carrying 2 images and 1 file",
+      Sessions::FirstTurnAttachments.carrying_clause([ {}, {} ], [ {} ])
   end
 end

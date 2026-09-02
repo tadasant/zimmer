@@ -165,8 +165,11 @@ class ImageStorageService < SessionAttachmentStorage
   def detect_media_type_from_content(binary_data)
     return nil if binary_data.nil? || binary_data.bytesize < 4
 
-    # Check magic bytes
-    bytes = binary_data.bytes
+    # Check magic bytes. Only the first 12 are ever read, and materializing an
+    # Integer per byte of a 10 MB upload to look at four of them is a cost every
+    # caller pays — including .describe_entry, which sniffs a stored image on the
+    # synchronous path of a restart.
+    bytes = binary_data.byteslice(0, 12).bytes
 
     # PNG: 89 50 4E 47 (0x89 'P' 'N' 'G')
     if bytes[0..3] == [ 0x89, 0x50, 0x4E, 0x47 ]
