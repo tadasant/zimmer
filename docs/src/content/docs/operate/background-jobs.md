@@ -743,15 +743,63 @@ which 23 were scheduled for later and 15 were mid-execution, leaving 68 actually
 
 Depth alone is not enough either. Zimmer's workers clear on the order of a thousand jobs an hour, so
 a hundred ready jobs is about five minutes of work on a healthy instance and an outage in front of a
-wedged one. `critical` therefore requires **both** conditions:
+wedged one. `critical` therefore requires **both** — deep *and* not moving. The two conditions are
+ANDed rather than ORed because age alone says nothing about scale: three jobs that have sat for
+twenty minutes on an otherwise idle instance is not something to wake anyone for, and paging on it
+would rebuild the noise this threshold exists to remove.
 
-- `ready_count` ≥ `QUEUE_DEPTH_CRITICAL_THRESHOLD` (100), **and**
-- `oldest_ready_age_seconds` ≥ `QUEUE_STALL_CRITICAL_AGE` (10 minutes)
+The two have to be true of the **same work**, and that is the part the queue-blind version of this
+got wrong. It ANDed a global `ready_count` against `oldest_ready_age_seconds`, which is the *maximum*
+head-of-line age across every lane. With one lane those are the same thing; with seven they are not,
+because the depth and the age can come from different queues. On 2026-09-02 the Tadasant production
+deployment paged on exactly that: 109 ready summed from `inference` 68 + `maintenance` 23 + `agents`
+18 — no lane within 30 of the hundred-deep threshold — beside a 57-minute head-of-line age
+contributed by `inference` alone, while `agents` had picked work up 4 minutes earlier, the worker's
+heartbeat was 23 seconds old and it was clearing 1079 jobs an hour. Both operands were true and
+neither was evidence of a stall.
 
-A deep queue that is still draining is a `warning`: visible on `/health`, silent in Slack. The two
-conditions are ANDed rather than ORed because age alone says nothing about scale — three jobs that
-have sat for twenty minutes on an otherwise idle instance is not something to wake anyone for, and
-paging on it would rebuild the noise this threshold exists to remove.
+So the conjunction is evaluated per lane, in the two shapes a backlog can actually take. `critical`
+is either of:
+
+- **A starved lane** — one queue past **both** its own depth and its own stall age, from
+  `QUEUE_LANE_CRITICAL_THRESHOLDS`. Checked first, so the page names the lane instead of describing
+  one queue in fleet-wide terms that fit it badly.
+- **A stalled worker** — `ready_count` ≥ `QUEUE_DEPTH_CRITICAL_THRESHOLD` (100) and **every** lane
+  holding ready work has a head of line older than `QUEUE_STALL_CRITICAL_AGE` (10 minutes), across at
+  least `WORKER_STALL_MIN_LANES` (2) lanes. A head of line only advances when a worker takes the job,
+  so one lane still turning over means the worker is alive however deep the backlog is.
+
+The per-lane thresholds are sized from each lane's thread count and its jobs' durations. Only the
+lanes that deviate from the original calibration are listed; anything absent — `default`, `pollers`,
+`triggers`, and any new queue nobody has sized yet — keeps 100 ready and 10 minutes.
+
+| Lane | Threads | Why it deviates | Depth | Stall age |
+| --- | --- | --- | --- | --- |
+| `inference` | 2 | `SessionTitleJob` blocks for `INFERENCE_TIMEOUT` (30s) and `SessionStatusSummaryJob` for `HEADLESS_TIMEOUT` (90s). At the 90s ceiling that is 2 × 3600/90 = **80 jobs/hour**, so a hundred-deep lane is over an hour of legitimate work | 150 | 60m |
+| `maintenance` | 2 | Filesystem scans, `bundle install`, docker prune, transcript archiving — minutes each, same shape | 100 | 60m |
+| `agents` | 8 | `AgentSessionJob` holds its thread for the whole life of the session, so a ready one waiting hours is admission control working as designed | 100 | 4h |
+| `auth` | 2 | `RuntimeLoginJob` holds a thread for as long as the login CLI is open, up to `MAX_DURATION` (12 minutes) | 100 | 30m |
+
+A deep queue that is still draining is a `warning`: visible on `/health`, silent in Slack.
+
+`queue_statistics` therefore carries two more keys alongside the totals, and they are also what the
+`zimmer-host` obs collector scrapes off `/health/export_diagnostics` to label its `zimmer_good_job_*`
+series by queue:
+
+| Key | Meaning |
+| --- | --- |
+| `ready_count_by_queue` | `ready_count` per lane, deepest first |
+| `oldest_ready_age_seconds_by_queue` | `oldest_ready_age_seconds` per lane, oldest first |
+
+Two properties are load-bearing for both readers. They are **uncapped**, unlike the alert body's
+breakdown below — a lane the cap cut would read as having no depth, and both the gate and the metric
+would stop seeing the very queue that is starving. And a lane with nothing ready is **absent rather
+than zero**, matching the `oldest_ready_age_seconds: nil` convention, because an idle lane and a
+draining one are different facts and a `0` reports the wrong one.
+
+Both come from the same read as `oldest_ready_age_seconds`, which is now derived as the oldest of the
+per-lane heads rather than queried separately, so the global figure and the lane figures can no longer
+disagree about a row that drained between two queries.
 
 The three populations partition `pending_count` exactly: `scheduled_count` counts only *unclaimed*
 future-dated rows, so a locked row dated in the future is counted once, as claimed.
@@ -791,13 +839,15 @@ the line exists to support. Its length is bounded by the number of distinct queu
 
 #### Read the head-of-line ages first
 
-`oldest_ready_age_seconds` is a single number over **every queue at once**, and it is what both
-backlog alerts fire on: this deployment's own `critical` gate above, and the Grafana rule over
-`zimmer_good_job_oldest_ready_age_seconds` (`Zimmer GoodJob queue is not draining`, threshold 900s).
-Once the lanes were sized apart it stopped being interpretable on its own. Two threads in front of
-jobs that block for `SessionStatusSummaryGenerator::HEADLESS_TIMEOUT` (90s) hold their head of line
-for tens of minutes on a routine burst — with a healthy worker, a flat backlog depth, and every
-other lane turning over in seconds. Taken as a maximum that is indistinguishable from a wedge.
+`oldest_ready_age_seconds` is a single number over **every queue at once**. Once the lanes were sized
+apart it stopped being interpretable on its own: two threads in front of jobs that block for
+`SessionStatusSummaryGenerator::HEADLESS_TIMEOUT` (90s) hold their head of line for tens of minutes on
+a routine burst — with a healthy worker, a flat backlog depth, and every other lane turning over in
+seconds. Taken as a maximum that is indistinguishable from a wedge.
+
+The `critical` gate above no longer reads it that way. The **Grafana** rule over
+`zimmer_good_job_oldest_ready_age_seconds` (`Zimmer GoodJob queue is not draining`, threshold 900s)
+still does, and cannot tell the two apart — it carries no `queue` label to split on.
 
 `Oldest ready by queue` is each queue's *own* longest-waiting ready row, oldest queue first, and the
 first bullet names the lane and job class behind the global figure:
@@ -812,6 +862,10 @@ first bullet names the lane and job class behind the global figure:
 - **Every queue old at once** — the worker itself: down, restarting, or starved of database
   round-trips.
 - **Deep in one queue but its head is fresh** — busy, not starved. The lane is turning work over.
+
+The page's first line already says which of the first two it is, because the gate makes that call
+per lane rather than on one age across all of them. The bullets are still how you check it, and how
+you read a Grafana firing, which does not.
 
 The ages come from one `DISTINCT ON (queue_name)` query — one row per queue, each queue's exact
 oldest, cost bounded by the number of distinct queue names rather than by backlog depth. That shape

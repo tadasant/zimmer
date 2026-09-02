@@ -46,6 +46,54 @@ class HealthMonitorService
   # noise this threshold exists to remove. Depth is what makes a stall an incident.
   QUEUE_STALL_CRITICAL_AGE = 10.minutes
 
+  # Per-lane overrides for the `critical` gate, for the lanes whose designed
+  # head-of-line residency is nothing like `default`'s.
+  #
+  # The two constants above were calibrated when `default` was, in effect, the only
+  # lane: a hundred ready jobs was about five minutes of work, so a head of line
+  # older than ten minutes behind that depth meant something was wedged. #763 and
+  # #770 then carved `inference`, `maintenance`, `agents` and `auth` out of
+  # `default` and sized them for jobs that BLOCK — and a threshold describing a lane
+  # that turns jobs over in milliseconds says nothing true about a lane running two
+  # threads against a ninety-second LLM call.
+  #
+  # So the lanes that still turn over fast (`default`, `pollers`, `triggers`) are
+  # absent here and keep the original numbers; only the lanes that deviate are
+  # listed, each sized from its own thread count and its own jobs' durations:
+  #
+  #   inference    2 threads (GOOD_JOB_INFERENCE_THREADS) against SessionTitleJob
+  #                (INFERENCE_TIMEOUT 30s) and SessionStatusSummaryJob
+  #                (HEADLESS_TIMEOUT 90s). At the 90s ceiling that is 2 x 3600/90 =
+  #                80 jobs/hour, so a hundred-deep lane is over an hour of
+  #                legitimate work and a ten-minute head age cannot tell "full"
+  #                from "wedged". 150 deep AND an hour at the head can.
+  #   maintenance  2 threads against filesystem scans, `bundle install`, docker
+  #                prune and transcript archiving — minutes each, same shape.
+  #   agents       8 threads, and AgentSessionJob holds its thread for the whole
+  #                life of the session. A ready AgentSessionJob waiting hours is
+  #                the scheduler's admission control working as designed (see
+  #                ConnectionBudget.good_job_queue_threads), not a stall.
+  #   auth         2 threads, and RuntimeLoginJob holds one for as long as the
+  #                login CLI is open — up to MAX_DURATION, twelve minutes. A third
+  #                concurrent login legitimately waits out two of those.
+  QUEUE_LANE_CRITICAL_THRESHOLDS = {
+    "inference" => { depth: 150, stall_age: 60.minutes },
+    "maintenance" => { depth: 100, stall_age: 60.minutes },
+    "agents" => { depth: 100, stall_age: 4.hours },
+    "auth" => { depth: 100, stall_age: 30.minutes }
+  }.freeze
+
+  # How many lanes have to be holding ready work before "every lane is stalled" is
+  # readable as a statement about the WORKER rather than about a lane.
+  #
+  # One lane with an old head says only that that lane is not draining, and
+  # QUEUE_LANE_CRITICAL_THRESHOLDS already judges that with the threshold sized for
+  # it — an `agents` lane 150 deep and three hours old, with every other lane empty
+  # because the worker is emptying them on sight, is admission control, and the
+  # fleet-wide branch must not overrule that with the fast-lane floor. Two is the
+  # smallest number that makes the claim a comparison.
+  WORKER_STALL_MIN_LANES = 2
+
   # How many entries `ready_backlog_breakdown` keeps from each breakdown. Enough
   # to cover every Zimmer queue and still name the job classes that matter, short
   # enough that the alert body stays readable in Slack. Whatever the limit cuts is
@@ -556,16 +604,16 @@ class HealthMonitorService
   # different thread counts and job durations.
   #
   # `oldest_by_queue` exists because `queue_statistics[:oldest_ready_age_seconds]`
-  # is a single number over every queue at once, and it is the number BOTH backlog
-  # alerts threshold on — this service's own `critical` gate, and the Grafana rule
-  # over `zimmer_good_job_oldest_ready_age_seconds`. A global head-of-line age
+  # is a single number over every queue at once. A global head-of-line age
   # stopped being interpretable the moment the lanes were sized apart: two threads
   # against jobs that block for a minute and a half hold their head of line for
   # tens of minutes while the worker is healthy and the depth is flat, and that
   # reads identically to a wedged worker if the only number you have is the
   # maximum across all of them. Per-queue ages separate the two on sight — one old
   # lane beside six fresh ones is that lane starving; every lane old at once is the
-  # worker.
+  # worker. `system_health_status` now thresholds on that distinction rather than
+  # only printing it; the Grafana rule over
+  # `zimmer_good_job_oldest_ready_age_seconds` still reads the single global number.
   #
   # `oldest_by_queue` is the one breakdown here that is NOT capped. The counts can
   # be, because `top_counts` hands back an `other (N more)` remainder and the
@@ -575,11 +623,12 @@ class HealthMonitorService
   # squarely on the comparison the line exists for, and the entry count is bounded
   # by the number of distinct queue names anyway.
   #
-  # Deliberately NOT folded into `queue_statistics`. That runs on every /health
-  # render; these are further scans of `good_jobs` and are only worth paying for
-  # when something is about to page, or when somebody is asking this exact
-  # question. Cardinality is small either way — seven queues, and job classes
-  # bounded by the app's job count.
+  # `queue_statistics` carries its own uncapped per-lane depths and head ages,
+  # because the `critical` gate cannot evaluate a per-lane conjunction without them.
+  # What stays here, and stays off the /health render, is the by-job-class breakdown
+  # and the capping: those answer "deep with what" for a human reading a page, not
+  # "is this an incident". Cardinality is small either way — seven queues, and job
+  # classes bounded by the app's job count.
   #
   # @param limit [Integer] how many entries to keep from each COUNT breakdown
   # @return [Hash] :by_queue and :by_job_class, ordered Hashes of name => count;
@@ -593,7 +642,7 @@ class HealthMonitorService
     {
       by_queue: top_counts(ready.group(:queue_name).count, limit),
       by_job_class: top_counts(ready.group(:job_class).count, limit),
-      oldest_by_queue: heads.to_h { |head| [ head[:queue], head[:age_seconds] ] },
+      oldest_by_queue: lane_head_ages(heads),
       head_of_line: heads.first
     }
   end
@@ -668,37 +717,63 @@ class HealthMonitorService
     # Calculate processing rate (jobs completed in last hour)
     completed_last_hour = GoodJob::Job.where("finished_at > ?", 1.hour.ago).count
 
+    # One read, two answers. `system_health_status` needs each lane's depth AND each
+    # lane's head-of-line age to evaluate its conjunction within a lane, and taking
+    # them from separate queries against a moving table would let it threshold one
+    # lane's depth against another lane's age. Uncapped, unlike the alert body's
+    # breakdown: a lane the cap cut would read as having no depth at all, and the
+    # gate would stop seeing the very queue that is starving.
+    heads = head_of_line_by_queue(ready_jobs)
+
     {
       pending_count: pending_jobs.count,
       ready_count: ready_jobs.count,
       scheduled_count: scheduled_jobs.count,
       claimed_count: running_jobs.count,
       failed_count: failed_jobs.count,
-      oldest_ready_age_seconds: oldest_ready_age_seconds(ready_jobs),
+      # Named for the collector that scrapes them off /health/export_diagnostics
+      # (#778): the same units as the flat keys above, per lane. A queue with
+      # nothing ready is ABSENT from both rather than present as a zero, matching
+      # the `oldest_ready_age_seconds: nil` convention — an idle lane and a
+      # draining one are different facts and a metric that flattens them to 0 says
+      # the wrong one.
+      ready_count_by_queue: lane_depths(ready_jobs),
+      oldest_ready_age_seconds_by_queue: lane_head_ages(heads),
+      # The global head of line is the oldest of the per-lane heads by definition —
+      # the oldest ready row anywhere is the head of its own lane — so it comes from
+      # the same read rather than a query of its own, and the two can no longer
+      # disagree about a row that drained between them.
+      oldest_ready_age_seconds: heads.first&.fetch(:age_seconds),
       processing_rate_per_hour: completed_last_hour
     }
   end
 
-  # How long the longest-waiting ready job has been waiting, in seconds — nil when
-  # nothing is ready.
+  # Ready depth per lane, deepest first, uncapped, with the same UNKNOWN_LABEL
+  # treatment `head_of_line_by_queue` gives a row GoodJob wrote with no queue name —
+  # so a lane appears under one key in both halves and the gate can join them.
   #
-  # "Waiting since" is `scheduled_at` for a job that was future-dated — it only became
-  # backlog when its scheduled time arrived, and charging it for the hours it spent
-  # correctly parked would make every wake-up trigger look like a stall — falling back
-  # to `created_at` for a row with no `scheduled_at` at all.
-  #
-  # Read real columns rather than `minimum(Arel.sql(...))`: a calculation over a raw
-  # SQL expression has no column to infer a type from, so the adapter decides whether
-  # you get a Time or a String. `pick` on the columns themselves does not, and it
-  # avoids materializing a whole row (including its `serialized_params` jsonb) on a
-  # path that runs on every /health render and every monitor tick.
-  def oldest_ready_age_seconds(ready_jobs)
-    scheduled_at, created_at = ready_jobs.order(Arel.sql("COALESCE(scheduled_at, created_at) ASC"))
-                                         .pick(:scheduled_at, :created_at)
-    waiting_since = scheduled_at || created_at
-    return nil if waiting_since.nil?
+  # Ordered rather than left in the adapter's grouping order, so two reads of an
+  # unchanged queue serialize identically; and a plain Hash rather than the
+  # accumulator's `Hash.new(0)`, so a lane with nothing ready reads as absent to a
+  # Ruby caller too and not as a zero the default conjured.
+  def lane_depths(ready_jobs)
+    counts = ready_jobs.group(:queue_name).count.each_with_object(Hash.new(0)) do |(queue, count), acc|
+      acc[queue.presence || UNKNOWN_LABEL] += count
+    end
 
-    [ (Time.current - waiting_since).round, 0 ].max
+    counts.sort_by { |queue, count| [ -count, queue.to_s ] }.to_h
+  end
+
+  # Head-of-line age per lane, oldest lane first. `heads` arrives sorted oldest
+  # first and two raw queue names can share one label (a NULL and an empty string
+  # both render as UNKNOWN_LABEL), so keeping the FIRST sighting keeps the older of
+  # them — the age the gate has to see, and the one the alert body means. Writing
+  # the label blind would keep the younger and quietly under-report the lane it
+  # collapsed.
+  def lane_head_ages(heads)
+    heads.each_with_object({}) do |head, acc|
+      acc[head[:queue]] ||= head[:age_seconds]
+    end
   end
 
   # Each queue's own longest-waiting ready row, oldest queue first.
@@ -715,8 +790,9 @@ class HealthMonitorService
   #
   # Postgres-only, which the rest of this application already is (advisory locks,
   # `jsonb`, GoodJob itself). The columns come back adapter-cast because they are
-  # real columns; the raw COALESCE only orders, so it never has to infer a type —
-  # the trap `oldest_ready_age_seconds` documents.
+  # real columns; the raw COALESCE only orders, so it never has to infer a type. A
+  # `minimum(Arel.sql(...))` over the expression instead would have no column to
+  # infer from, leaving the adapter to decide whether you get a Time or a String.
   #
   # `id` breaks ties so two reads of an unchanged queue name the same row.
   #
@@ -730,8 +806,8 @@ class HealthMonitorService
 
     heads.map do |head|
       # `created_at` is NOT NULL on `good_jobs`, so the fallback always resolves and
-      # there is no undateable row to guard against — unlike `oldest_ready_age_seconds`,
-      # whose nil check answers "no rows at all", which here is an empty result.
+      # there is no undateable row to guard against. "Nothing is ready" is an empty
+      # result here, which is why the caller reads a nil global age off `first`.
       waiting_since = head.scheduled_at || head.created_at
 
       {
@@ -1023,22 +1099,105 @@ class HealthMonitorService
   end
 
   # Determine system health status from the ready backlog and how long its head has
-  # been waiting. Critical needs both — deep *and* stalled; see the threshold
-  # constants. A deep queue that is still draining is a warning, which surfaces on the
-  # health dashboard without paging anyone.
+  # been waiting. Critical still needs both — deep *and* stalled — but the two have
+  # to be true of the SAME work, which is what the queue-blind version of this could
+  # not express.
+  #
+  # The old gate ANDed a global ready count against the maximum head-of-line age
+  # across every lane. With one lane that is the same thing; with seven it is not,
+  # because the depth and the age can come from different queues. On 2026-09-02 the
+  # Tadasant production deployment paged on exactly that: 109 ready summed from
+  # `inference` 68 + `maintenance` 23 + `agents` 18 — no lane within 30 of the
+  # hundred-deep threshold — beside a 57-minute head-of-line age contributed by
+  # `inference` alone, while `agents` was 4 minutes fresh, the worker's heartbeat was
+  # 23 seconds old and it was clearing 1079 jobs an hour. Both operands were true and
+  # neither was evidence of a stall. The conjunction the constants describe, "a deep
+  # queue that is not moving", was never actually evaluated.
+  #
+  # So it is evaluated twice, once for each thing a backlog can mean — the same two
+  # readings SystemHealthMonitorJob's alert body asks the responder to tell apart:
+  #
+  #   A lane      One lane is past BOTH its own depth and its own stall age. Checked
+  #               first, so the page names the starving lane instead of describing it
+  #               in fleet-wide terms that fit it badly.
+  #   The worker  Several lanes' heads are all old at once and no single lane's own
+  #               tolerance explains it. Nothing anywhere is being picked up, which is
+  #               the SlackTriggerPollerJob thread-starvation incident this alerter
+  #               exists for. Held to the original global numbers.
+  #
+  # `oldest_ready_age_seconds_by_queue` holds each lane's OLDEST ready row, so the
+  # minimum over it is the freshest any lane's head of line is — and a head only advances when a worker
+  # takes the job. New arrivals do not lower it. One lane still picking work up
+  # therefore keeps the worker branch quiet however deep the backlog is, which is the
+  # distinction the whole rule turns on. Lanes with nothing ready contribute no head
+  # and are absent, rather than counting as zero and silencing the branch.
   def system_health_status(queue_stats)
     depth = queue_stats[:ready_count].to_i
-    waiting_for = queue_stats[:oldest_ready_age_seconds].to_i
 
-    if depth >= QUEUE_DEPTH_CRITICAL_THRESHOLD && waiting_for >= QUEUE_STALL_CRITICAL_AGE
-      HealthStatus.new(
+    starved = starved_lane(queue_stats)
+    if starved
+      return HealthStatus.new(
         status: :critical,
-        message: "Queue backlog critical: #{depth} jobs ready, oldest waiting #{format_wait(waiting_for)}"
+        message: "Queue backlog critical: the #{starved[:queue]} lane has #{starved[:depth]} jobs ready, " \
+                 "oldest waiting #{format_wait(starved[:age_seconds])}"
       )
-    elsif depth >= QUEUE_DEPTH_WARNING_THRESHOLD
+    end
+
+    freshest_lane_head = worker_wide_stall_age(queue_stats)
+    if freshest_lane_head && depth >= QUEUE_DEPTH_CRITICAL_THRESHOLD
+      return HealthStatus.new(
+        status: :critical,
+        message: "Queue backlog critical: #{depth} jobs ready, oldest waiting " \
+                 "#{format_wait(queue_stats[:oldest_ready_age_seconds])}; " \
+                 "no lane has picked up work in #{format_wait(freshest_lane_head)}"
+      )
+    end
+
+    if depth >= QUEUE_DEPTH_WARNING_THRESHOLD
       HealthStatus.new(status: :warning, message: "Queue backlog elevated: #{depth} jobs ready")
     else
       HealthStatus.new(status: :healthy, message: "Queue processing normally")
+    end
+  end
+
+  # The single lane that is past both of its own thresholds, deepest first so the
+  # message names the worst one when several qualify. Nil when every lane is within
+  # what its thread count and its jobs' durations explain.
+  def starved_lane(queue_stats)
+    depths = queue_stats[:ready_count_by_queue] || {}
+    ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
+
+    depths.sort_by { |_queue, count| -count }.each do |queue, count|
+      age = ages[queue]
+      next if age.nil?
+
+      thresholds = lane_critical_thresholds(queue)
+      next unless count >= thresholds[:depth] && age >= thresholds[:stall_age]
+
+      return { queue: queue, depth: count, age_seconds: age }
+    end
+
+    nil
+  end
+
+  # How long the freshest lane head has been waiting, when EVERY lane holding ready
+  # work is past the fast-lane floor and there are enough of them for that to mean
+  # the worker. Nil otherwise — including when only one lane holds anything, which
+  # `starved_lane` has already judged on that lane's own terms.
+  def worker_wide_stall_age(queue_stats)
+    ages = (queue_stats[:oldest_ready_age_seconds_by_queue] || {}).values
+    return nil if ages.size < WORKER_STALL_MIN_LANES
+
+    freshest = ages.min
+    freshest if freshest >= QUEUE_STALL_CRITICAL_AGE
+  end
+
+  # A lane absent from QUEUE_LANE_CRITICAL_THRESHOLDS keeps the original calibration.
+  # That is the right default for a lane nobody has sized yet as well as for the fast
+  # ones: a new queue is a `default`-shaped queue until somebody says otherwise.
+  def lane_critical_thresholds(queue)
+    QUEUE_LANE_CRITICAL_THRESHOLDS.fetch(queue) do
+      { depth: QUEUE_DEPTH_CRITICAL_THRESHOLD, stall_age: QUEUE_STALL_CRITICAL_AGE }
     end
   end
 

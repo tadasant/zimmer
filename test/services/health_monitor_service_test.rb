@@ -247,9 +247,20 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   # `scheduled_at` matches `created_at` because that is the shape GoodJob writes:
   # `GoodJob::Job.enqueue_args` always populates it, even for an immediate enqueue.
-  def enqueue_ready_jobs(count, waiting_for: HealthMonitorService::QUEUE_STALL_CRITICAL_AGE + 1.minute)
+  def enqueue_ready_jobs(count, waiting_for: HealthMonitorService::QUEUE_STALL_CRITICAL_AGE + 1.minute,
+                         queue: "default")
     enqueued_at = waiting_for.ago
-    insert_good_jobs(count) { { created_at: enqueued_at, updated_at: enqueued_at, scheduled_at: enqueued_at } }
+    insert_good_jobs(count) do
+      { queue_name: queue, created_at: enqueued_at, updated_at: enqueued_at, scheduled_at: enqueued_at }
+    end
+  end
+
+  # A lane whose head has waited `head_waiting_for` with `count - 1` fresher rows
+  # behind it — the shape a real lane has, and the one the gate reads: depth from
+  # the whole lane, age from its oldest row alone.
+  def enqueue_lane(queue, count, head_waiting_for:)
+    enqueue_ready_jobs(1, queue: queue, waiting_for: head_waiting_for)
+    enqueue_ready_jobs(count - 1, queue: queue, waiting_for: 5.seconds) if count > 1
   end
 
   def enqueue_scheduled_jobs(count, due_in: 1.hour)
@@ -552,6 +563,162 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert status.critical?
     assert_includes status.message, "200 jobs ready"
     assert_includes status.message, "30m"
+  end
+
+  # === Lane-aware critical gate ===
+  #
+  # The gate ANDs "deep" with "not moving", and before 2026-09-02 it ANDed them
+  # across different queues: a global ready count against the maximum head-of-line
+  # age over every lane. Zimmer runs seven lanes sized apart on purpose, so both
+  # halves can be true of a healthy fleet without either being true of the same
+  # work. These pin the distinction the gate now draws.
+
+  # The 2026-09-02 15:46Z production page, exactly — the firing that showed the bug.
+  test "the 2026-09-02 firing's lane split is not critical" do
+    enqueue_lane("inference", 68, head_waiting_for: 57.minutes)
+    enqueue_lane("maintenance", 23, head_waiting_for: 56.minutes)
+    enqueue_lane("agents", 18, head_waiting_for: 4.minutes)
+
+    status = @service.system_health[:status]
+
+    refute status.critical?,
+      "109 ready summed across three lanes, none of them deep, beside an agents lane " \
+      "that picked work up 4 minutes ago, is not a backlog collapse"
+    assert status.warning?, "109 ready is still past the warning threshold and belongs on the dashboard"
+  end
+
+  test "a deep global backlog whose depth and age come from different lanes is not critical" do
+    enqueue_lane("default", 95, head_waiting_for: 2.seconds)
+    enqueue_lane("inference", 20, head_waiting_for: 70.minutes)
+
+    health = @service.system_health
+
+    assert_equal 115, health[:queue_depth]
+    refute health[:status].critical?,
+      "a busy lane's depth must not be ANDed with a different lane's head-of-line age"
+  end
+
+  test "every lane old at once is critical, because that is the worker" do
+    enqueue_lane("default", 60, head_waiting_for: 30.minutes)
+    enqueue_lane("inference", 30, head_waiting_for: 30.minutes)
+    enqueue_lane("agents", 20, head_waiting_for: 30.minutes)
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert_includes status.message, "110 jobs ready"
+    assert_includes status.message, "no lane has picked up work in 30m"
+  end
+
+  test "one lane still picking work up keeps the worker-wide branch quiet" do
+    enqueue_lane("default", 60, head_waiting_for: 30.minutes)
+    enqueue_lane("inference", 30, head_waiting_for: 30.minutes)
+    enqueue_lane("agents", 20, head_waiting_for: 20.seconds)
+
+    refute @service.system_health[:status].critical?,
+      "a head of line only advances when a worker takes the job, so one fresh lane means the worker is alive"
+  end
+
+  # Two threads against a 90s ceiling is ~80 jobs/hour, so a hundred-deep inference
+  # lane is over an hour of legitimate work — indistinguishable, on the old numbers,
+  # from a wedged one.
+  test "the inference lane's designed steady state is not critical at fast-lane numbers" do
+    enqueue_lane("inference", 120, head_waiting_for: 45.minutes)
+
+    status = @service.system_health[:status]
+
+    refute status.critical?,
+      "120 deep and 45m at the head is what two threads against a blocking LLM call look like when healthy"
+    assert status.warning?
+  end
+
+  test "a lane past its own thresholds is critical and says which lane" do
+    enqueue_lane("inference", 160, head_waiting_for: 70.minutes)
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert_includes status.message, "the inference lane has 160 jobs ready"
+    assert_includes status.message, "1h 10m"
+  end
+
+  # A starved lane is named as such even when it is the only lane holding work, so
+  # the page does not describe one queue in fleet-wide terms that fit it badly.
+  test "a starved lane is named rather than reported as a worker-wide stall" do
+    enqueue_lane("inference", 160, head_waiting_for: 70.minutes)
+    enqueue_lane("maintenance", 5, head_waiting_for: 65.minutes)
+
+    assert_includes @service.system_health[:status].message, "the inference lane"
+  end
+
+  # `agents` holds a thread for the whole life of a session, so a ready
+  # AgentSessionJob waiting hours is admission control, not a stall — and the
+  # fleet-wide branch must not overrule that just because every other lane is empty.
+  test "the agents lane tolerates an hours-deep wait the fast lanes would not" do
+    enqueue_lane("agents", 150, head_waiting_for: 3.hours)
+
+    refute @service.system_health[:status].critical?
+  end
+
+  test "a lane with no override keeps the original global calibration" do
+    enqueue_lane("triggers", 110, head_waiting_for: 15.minutes)
+
+    status = @service.system_health[:status]
+
+    assert status.critical?, "an unlisted lane is a default-shaped lane until somebody sizes it"
+    assert_includes status.message, "the triggers lane has 110 jobs ready"
+  end
+
+  # The gate reads its own per-lane numbers off `queue_statistics`, which must not
+  # be capped the way the alert body's breakdown is: a lane the cap cut would read
+  # as having no depth, and the gate would stop seeing the queue that is starving.
+  # The obs collector scrapes the same two keys off /health/export_diagnostics
+  # (#778) and needs the same property.
+  test "queue_statistics reports every lane, past the alert breakdown's cap" do
+    lanes = %w[agents pollers triggers auth inference maintenance default]
+    assert_operator lanes.size, :>, HealthMonitorService::READY_BREAKDOWN_LIMIT
+
+    lanes.each_with_index { |lane, i| enqueue_lane(lane, i + 1, head_waiting_for: (i + 1).minutes) }
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_equal lanes.sort, stats[:ready_count_by_queue].keys.sort
+    assert_equal lanes.sort, stats[:oldest_ready_age_seconds_by_queue].keys.sort
+    assert_equal 7, stats[:ready_count_by_queue]["default"]
+  end
+
+  test "the per-lane breakdowns are deepest and oldest first, so two reads serialize alike" do
+    enqueue_lane("maintenance", 4, head_waiting_for: 9.minutes)
+    enqueue_lane("inference", 9, head_waiting_for: 2.minutes)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_equal %w[inference maintenance], stats[:ready_count_by_queue].keys
+    assert_equal %w[maintenance inference], stats[:oldest_ready_age_seconds_by_queue].keys
+  end
+
+  # An idle lane and a draining one are different facts, and a metric that reports
+  # the idle one as 0 says the wrong one.
+  test "a lane with nothing ready is absent from the per-lane breakdowns, not zero" do
+    enqueue_lane("inference", 3, head_waiting_for: 5.minutes)
+
+    stats = @service.system_health[:queue_stats]
+
+    refute_includes stats[:ready_count_by_queue].keys, "agents"
+    refute_includes stats[:oldest_ready_age_seconds_by_queue].keys, "agents"
+    assert_nil stats[:ready_count_by_queue]["agents"],
+      "a Hash default would hand a scraper a zero for a lane that has no ready work"
+  end
+
+  test "the global oldest age is the oldest of the lane heads" do
+    enqueue_lane("inference", 3, head_waiting_for: 40.minutes)
+    enqueue_lane("agents", 3, head_waiting_for: 90.seconds)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_in_delta 2400, stats[:oldest_ready_age_seconds], 5
+    assert_in_delta 2400, stats[:oldest_ready_age_seconds_by_queue]["inference"], 5
+    assert_in_delta 90, stats[:oldest_ready_age_seconds_by_queue]["agents"], 5
   end
 
   test "a queue of only future-dated jobs is healthy however deep it is" do
