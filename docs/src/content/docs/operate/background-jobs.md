@@ -590,7 +590,7 @@ unclaimed rows for these three classes from `default` to `inference`. `PostDeplo
 ## Queue recovery mode
 
 The escape hatch for a queue that has run away from you. `QueueRecoveryMode` halts job **execution**
-on the demand-side queues — `pollers`, `triggers`, `inference` and `default` — and deliberately leaves `agents`
+on the demand-side queues — `pollers`, `triggers`, `inference`, `maintenance` and `default` — and deliberately leaves `agents`
 and `auth` running.
 
 That asymmetry is the whole design. Pausing every queue would also pause `agents`, which is where

@@ -2698,8 +2698,8 @@ retry. Tracked in [#577](https://github.com/tadasant/zimmer/issues/577).
 ### Queue recovery mode is deliberately outside the health cooldown, and the web control is anonymous
 
 `QueueRecoveryMode` (see [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode)) is
-Zimmer's escape hatch for a runaway job queue: it halts execution on `pollers`, `triggers` and
-`default` for up to four hours. Two things about it are choices rather than oversights, and both cut
+Zimmer's escape hatch for a runaway job queue: it halts execution on `pollers`, `triggers`,
+`inference`, `maintenance` and `default` for up to four hours. Two things about it are choices rather than oversights, and both cut
 against the grain of the section below.
 
 None of its three surfaces sit behind `HealthActionCooldown`. That throttle **fails closed** when the
