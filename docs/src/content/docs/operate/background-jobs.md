@@ -764,10 +764,30 @@ is either of:
 - **A starved lane** — one queue past **both** its own depth and its own stall age, from
   `QUEUE_LANE_CRITICAL_THRESHOLDS`. Checked first, so the page names the lane instead of describing
   one queue in fleet-wide terms that fit it badly.
-- **A stalled worker** — `ready_count` ≥ `QUEUE_DEPTH_CRITICAL_THRESHOLD` (100) and **every** lane
-  holding ready work has a head of line older than `QUEUE_STALL_CRITICAL_AGE` (10 minutes), across at
-  least `WORKER_STALL_MIN_LANES` (2) lanes. A head of line only advances when a worker takes the job,
-  so one lane still turning over means the worker is alive however deep the backlog is.
+- **A stalled worker** — at least `WORKER_STALL_MIN_LANES` (2) lanes have a head of line older than
+  `QUEUE_STALL_CRITICAL_AGE` (10 minutes), and **their combined depth** is ≥
+  `QUEUE_DEPTH_CRITICAL_THRESHOLD` (100), even though no one of them is past its own bar. A head of
+  line only advances when a worker takes the job, so a lane past that floor has picked up nothing in
+  the window whatever has arrived behind it.
+
+  The depth summed is the **stalled lanes' own**, not `ready_count`: a lane that is draining is not
+  part of the backlog this branch describes, and counting it would be back to ANDing one lane's depth
+  against another lane's age. Equally, the condition is *not* "the freshest lane head is old" — that
+  is the same sentence with the quantifier in the wrong place. It asks every lane to be stalled, so a
+  lane that was empty a moment ago and has just been handed one job contributes a ~0s head and
+  silences a genuine cross-lane stall. `pollers` makes that the normal case rather than a corner one,
+  since `SystemHealthMonitorJob` runs on it.
+
+Both branches are strict narrowings of the old queue-blind rule — every per-lane depth threshold is
+at least 100, every per-lane stall age at least 10 minutes, and the cross-lane branch sums a *subset*
+of `ready_count` — so this can only remove firings, never add one.
+
+A stall confined to a single lane is left to the starved-lane branch, judged on that lane's own
+terms, which is the point of the overrides: an `agents` lane 150 deep and three hours old with every
+other lane empty is admission control, not an incident. The cost is that a lane with a relaxed
+threshold is tolerated for longer when it stalls alone. A worker that is *wholly* dead cannot be
+caught here at all — this monitor runs on the worker it watches — which is what the external Grafana
+rule is for.
 
 The per-lane thresholds are sized from each lane's thread count and its jobs' durations. Only the
 lanes that deviate from the original calibration are listed; anything absent — `default`, `pollers`,
