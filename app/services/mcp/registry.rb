@@ -32,7 +32,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog].freeze
 
     COMPOSITE_GROUPS = %w[self_session].freeze
 
@@ -131,7 +131,29 @@ module Mcp
       #
       Definition.new(klass: "Mcp::Tools::SearchGateDecisions", group: "gate_decisions", write: false),
       Definition.new(klass: "Mcp::Tools::GetGateDecisionFeedback", group: "gate_decisions", write: false),
-      Definition.new(klass: "Mcp::Tools::RecordGateDecision", group: "gate_decisions", write: true)
+      Definition.new(klass: "Mcp::Tools::RecordGateDecision", group: "gate_decisions", write: true),
+
+      # Work backlog — the ranked queue of gate-cleared issues the 04:00 groomer
+      # starts work from.
+      #
+      # OPT-IN, FOR THE SAME REASON AS gate_decisions AND ONE MORE: the queue is
+      # read by a job that spawns sessions from it with no human in the loop, so
+      # an entry on it becomes an unattended implementing session. Folded into
+      # `sessions`, every session carrying `zimmer-sessions` could enqueue work;
+      # in BASE_GROUPS the unscoped `zimmer` surface could. So a connection has
+      # to name `work_backlog` to append or pull; `work_backlog_readonly` gets the
+      # read (what the Issues view and any analysis session needs) and not the
+      # writes. `zimmer-work-backlog` (mcp.json) is the entry the gate and groomer
+      # roots attach; those roots live in a deployment's own catalog.
+      #
+      # Note what is NOT here, on this group or any other: no tool pins an item,
+      # hand-places one, or removes one by judgement. Those are a human's, and
+      # exist only on the REST controller — see Api::V1::WorkBacklogItemsController.
+      # Nor is there a "start now as priority" tool: promoting queued work to the
+      # priority class is the human's lever over the spot queue, so it is REST only.
+      Definition.new(klass: "Mcp::Tools::GetWorkBacklog", group: "work_backlog", write: false),
+      Definition.new(klass: "Mcp::Tools::AppendWorkBacklogItem", group: "work_backlog", write: true),
+      Definition.new(klass: "Mcp::Tools::PullWorkBacklogItems", group: "work_backlog", write: true)
     ].freeze
 
     module_function

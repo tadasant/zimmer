@@ -131,6 +131,7 @@ export default defineConfig({
             { label: "Observability", slug: "operate/observability" },
             { label: "Token spend", slug: "operate/costs" },
             { label: "The gate decision ledger", slug: "operate/gate-decisions" },
+            { label: "The work backlog", slug: "operate/work-backlog" },
             { label: "Testing philosophy", slug: "operate/testing" },
           ],
         },

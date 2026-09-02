@@ -24,6 +24,10 @@ Rails.application.routes.draw do
     # authenticated human at the web-UI boundary rather than typed into a form.
     resources :gate_decisions, only: [ :index, :show ]
     resources :gate_decision_feedbacks, only: [ :index, :show ]
+    # Read-only: every write to the queue goes through WorkBacklog::Ranking's
+    # lock and re-rank (the API and MCP tools), and a row edited here would
+    # skip both.
+    resources :work_backlog_items, only: [ :index, :show ]
     # Read-only: both tables are derived, and both are re-derived on a cron —
     # BurnRateRecomputeJob every 20 minutes, QuotaCapacityCalibrationJob every 15.
     # A hand-edited rate or capacity would be overwritten on the next run, and in
@@ -181,6 +185,24 @@ Rails.application.routes.draw do
       # this namespace authenticates is shared by the whole agent fleet and so
       # establishes a caller but not a person.
       resources :gate_decisions, only: [ :index, :show, :create ]
+
+      # The work backlog: the ranked queue of gate-cleared issues. `create` and
+      # `pull` mirror the append_work_backlog_item / pull_work_backlog_items MCP
+      # tools; `start_now`, `pin`, `unpin` and `remove` are the human-only
+      # operations and deliberately have NO MCP counterpart. :id on the member
+      # routes is the row id or the item's key ("zimmer#498").
+      # The id constraint lets a key with a dot in it ("next.js#5") route.
+      resources :work_backlog_items, only: [ :index, :show, :create ], constraints: { id: %r{[^/]+} } do
+        collection do
+          post :pull
+        end
+        member do
+          post :start_now
+          patch :pin
+          patch :unpin
+          post :remove
+        end
+      end
 
       # Outcome analyses of archived session transcripts (the Outcomes view).
       # `create` is the REST half of the `save_outcome_analysis` MCP tool; :id on
