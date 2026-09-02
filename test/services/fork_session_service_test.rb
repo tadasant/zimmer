@@ -1105,6 +1105,49 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       "a user-initiated fork is a working session and keeps its installed dependencies"
   end
 
+  # zimmer#671: a fork's clone is at a new path, and a virtualenv is not
+  # relocatable — its console scripts open with `#!<SOURCE-CLONE>/.venv/bin/python`.
+  # Copied, they run the SOURCE session's sources from inside the fork, silently.
+  test "a fork sheds a virtualenv rather than inheriting one that points at the source clone" do
+    @mock_fs.write(File.join(@clone_path, "src/app.py"), "print('hi')")
+    @mock_fs.write(File.join(@clone_path, ".venv/pyvenv.cfg"), "home = /usr/bin\n")
+    @mock_fs.write(File.join(@clone_path, ".venv/bin/pytest"), "#!#{@clone_path}/.venv/bin/python\n")
+    @mock_fs.write(File.join(@clone_path, "packages/api/.venv/pyvenv.cfg"), "home = /usr/bin\n")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?
+    new_clone = result.forked_session.metadata["clone_path"]
+
+    assert @mock_fs.exists?(File.join(new_clone, "src/app.py")), "the working tree still comes along"
+    assert_not @mock_fs.exists?(File.join(new_clone, ".venv/bin/pytest")),
+      "the fork must not inherit a shim whose shebang names the source clone"
+    assert_not @mock_fs.exists?(File.join(new_clone, "packages/api/.venv/pyvenv.cfg")),
+      "a nested virtualenv is no more relocatable than one at the root"
+
+    # The copy is the only thing that changes: the source session may be live,
+    # and its clone is read, never pruned.
+    assert @mock_fs.exists?(File.join(@clone_path, ".venv/bin/pytest")),
+      "the source clone must survive the copy untouched"
+  end
+
+  test "a directory merely named venv is not mistaken for one and still forks" do
+    @mock_fs.write(File.join(@clone_path, "venv/README.md"), "a source dir that happens to be called venv")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?
+    assert @mock_fs.exists?(File.join(result.forked_session.metadata["clone_path"], "venv/README.md"))
+  end
+
   # --- Scaffolding a clone that is no longer there ---------------------------
 
   # For a caller whose fork never reads the tree — SessionStatusSummaryGenerator's

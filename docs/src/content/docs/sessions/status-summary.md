@@ -110,8 +110,11 @@ Three things keep that from failing a fork:
   is told not to run tools; it never builds or boots anything. `ForkSessionService::DEPENDENCY_DIRECTORIES`
   (`vendor/bundle`, `**/node_modules`) is excluded from its copy, which is most of the bytes and most
   of the seconds — and every second the copy is not running is a second the source tree cannot change
-  underneath it. A **user-initiated** fork excludes nothing; it is a working session and wants the
-  tree it forked.
+  underneath it. A **user-initiated** fork keeps its installed dependencies; it is a working session
+  and wants the tree it forked. What every fork sheds regardless is the set of directories that
+  hard-code the source clone's own path — a Python virtualenv above all, whose console-script shebangs
+  would send the fork's interpreter back to the source checkout. See
+  [A copied clone sheds what it cannot relocate](/sessions/spawning/#a-copied-clone-sheds-what-it-cannot-relocate).
 - **A failed fork cleans up after itself.** The partial destination is removed rather than left for
   `OrphanCloneFilesystemCleanupJob`, whose scheduled sweep ignores anything younger than 48 hours
   (2 hours on [the disk-pressure path](/operate/background-jobs/#clone-pruning-has-a-second-urgent-gear)). A retry only

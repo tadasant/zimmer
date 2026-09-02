@@ -96,6 +96,19 @@ class RealFileSystemAdapterTest < ActiveSupport::TestCase
     assert_includes matches, File.join(@temp_dir, "subdir", "nested.txt")
   end
 
+  # Without FNM_DOTMATCH, `**/` never descends into a hidden directory — which
+  # is exactly where a `.venv` lives (NonRelocatableClonePaths).
+  test "glob descends into hidden directories only when asked to" do
+    @adapter.mkdir_p(File.join(@temp_dir, ".venv"))
+    @adapter.write(File.join(@temp_dir, ".venv", "pyvenv.cfg"), "home = /usr/bin")
+
+    pattern = File.join(@temp_dir, "**", "pyvenv.cfg")
+
+    assert_empty @adapter.glob(pattern)
+    assert_equal [ File.join(@temp_dir, ".venv", "pyvenv.cfg") ],
+      @adapter.glob(pattern, flags: File::FNM_DOTMATCH)
+  end
+
   test "mtime returns modification time" do
     path = File.join(@temp_dir, "test.txt")
     before_write = Time.current - 1.second # Allow for timing precision

@@ -41,7 +41,10 @@ class MockFileSystemAdapter < FileSystemAdapter
     @directories.include?(path)
   end
 
-  def glob(pattern)
+  # `flags` is accepted and ignored: the translation below matches dotfiles
+  # unconditionally, so the mock is already as permissive as FNM_DOTMATCH makes
+  # the real one.
+  def glob(pattern, flags: 0)
     # Convert glob pattern to regex
     # ** matches any number of directories (including none)
     # * matches any characters except /

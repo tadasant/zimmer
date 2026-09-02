@@ -189,6 +189,47 @@ requirement can ask for more than that, so a healthy host pays one `df` and noth
 out — the guard permits the clone. A broken measurement must never be the reason no session can
 start; a clone that dies on `ENOSPC` is strictly better than that.
 
+## A copied clone sheds what it cannot relocate
+
+Most clones are created by `git clone`. Two are created by copying an existing one: `ForkSessionService`
+gives a fork a copy of its source tree, and `bin/rails clones:relocate` copies a clone to a new base
+directory. Both rewrite the session's path-bearing metadata in lockstep with the copy — and neither
+can rewrite what is *inside* the tree.
+
+A Python virtualenv is the case where that matters, because it is not relocatable. Every console
+script in `<venv>/bin` opens with a shebang naming the interpreter by absolute path:
+
+```
+$ head -1 .venv/bin/pytest
+#!/home/rails/.zimmer/clones/repo-main-1787709410-c2ba6679/.venv/bin/python
+```
+
+Copied into a clone at a different path, that shim still execs the *old* clone's interpreter, which
+imports the *old* clone's sources. The `.pth` files for editable installs are written relative to the
+venv, so they follow the copy and resolve correctly — which is what makes the failure so hard to
+read. `uv run python -c "import pkg; print(pkg.__file__)"` reports the new clone and looks healthy,
+while `uv run pytest` runs the previous checkout. It surfaces as an `ImportError` naming a symbol
+that plainly exists in the file the error points at, because the path in the error is a different
+checkout of the same repository. Worse, it is silently *stale* rather than broken: two checkouts that
+have not diverged produce a green suite against the wrong tree.
+
+`NonRelocatableClonePaths` finds those directories so the copy can leave them behind. A virtualenv is
+matched by its `pyvenv.cfg` marker (PEP 405) rather than by name, so an environment called `env` or
+`.direnv/python-3.13` is found and a source directory that merely happens to be called `venv` is
+kept. Both copy paths apply it, and both log which paths they dropped.
+
+Dropping rather than rewriting is the deliberate call. `uv sync` against a warm cache rebuilds an
+environment in seconds, and a clone that arrives without one fails immediately and legibly where a
+clone that arrives with a stale one fails silently.
+
+**Nothing is deleted.** Detection reads the source tree and returns fnmatch patterns; the copy applies
+them while writing the destination. That is the whole safety argument for a task that copies **live**
+sessions' clones by design — "copy, never move, so a live session's cwd is never pulled out from under
+it". Skipping a directory while writing the destination cannot touch the source.
+
+The fix is prospective. A clone that was relocated before it shipped still holds a stale environment;
+`rm -rf .venv && uv sync` is the repair, and the session doing the work is the one that notices.
+
 ## The spawn environment
 
 Shared scrubbing (`CliSpawnEnv`):

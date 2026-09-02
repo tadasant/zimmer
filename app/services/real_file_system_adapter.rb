@@ -26,8 +26,8 @@ class RealFileSystemAdapter < FileSystemAdapter
     File.directory?(path)
   end
 
-  def glob(pattern)
-    Dir.glob(pattern)
+  def glob(pattern, flags: 0)
+    Dir.glob(pattern, flags)
   end
 
   def mtime(path)

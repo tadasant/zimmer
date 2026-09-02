@@ -60,8 +60,11 @@ class FileSystemAdapter
 
   # Find files matching a pattern
   # @param pattern [String] A glob pattern (e.g., "*.rb", "**/*.txt")
+  # @param flags [Integer] File::FNM_* flags, as Dir.glob takes them.
+  #   File::FNM_DOTMATCH is the one that matters in practice: without it `**/`
+  #   never descends into a hidden directory, so a `.venv` is invisible.
   # @return [Array<String>] List of matching file paths
-  def glob(pattern)
+  def glob(pattern, flags: 0)
     raise NotImplementedError, "#{self.class}#glob must be implemented"
   end
 
