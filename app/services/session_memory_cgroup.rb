@@ -18,17 +18,17 @@
 # daemon, and every other session on the box goes with it.
 #
 # So each session gets its own cgroup with its own `memory.max`. A runaway command
-# now exhausts its OWN budget and the kernel kills something inside THAT cgroup,
-# which bounds the blast radius to the session that caused it. The container cap
-# still exists and still protects the host; this is the missing layer underneath it.
+# exhausts its OWN budget and the kernel kills something inside THAT cgroup, which
+# bounds the blast radius to the session that caused it. The container cap protects
+# the host; this is the layer underneath it.
 #
 # WHAT IT ALSO BUYS
 # -----------------
 # #815 could not establish which session issued the offending command: "on a
 # shared-cgroup worker there is no path from 'a process was OOM-killed' to 'this
 # session did it'". The cgroup is named `session-<id>`, so the kernel's own
-# `oom-kill:` line now carries `oom_memcg=/zimmer.sessions/session-12398` and names
-# it for us — no extra plumbing, and it works for the kill we did not anticipate.
+# `oom-kill:` line carries `oom_memcg=/zimmer.sessions/session-12398` and names it for
+# us — no extra plumbing, and it works for the kill nobody anticipated.
 # `memory.peak` and `memory.events` give the same attribution while the session is
 # still alive.
 #
@@ -78,9 +78,15 @@ class SessionMemoryCgroup
   # session, which is the failure that has actually happened twice; making it an
   # admission-control budget would mean setting it near 1.5 GiB, which would start
   # killing sessions that work today. A conservative bound plus per-session visibility
-  # is the right first cut, and `memory.peak` is now recorded per session so the number
-  # can be tightened on evidence rather than on guesswork.
+  # is the right first cut, and `memory.peak` is recorded per session so the number can
+  # be tightened on evidence rather than on guesswork.
   DEFAULT_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
+
+  # Where a session remembers what it has already been told about its own cgroup. The
+  # count alone is not enough — see #incarnation for why the inode travels with it.
+  OOM_KILL_COUNT_KEY = "memory_cgroup_oom_kills"
+  INCARNATION_KEY = "memory_cgroup_incarnation"
+  LAST_KILL_AT_KEY = "memory_cgroup_oom_killed_at"
 
   # `sh -c SCRIPT $0 $1 $2...`: $1 is the cgroup.procs path, $2 onward are the real
   # argv. The shell writes its own pid — which `exec` then keeps — and gets out of the
@@ -131,7 +137,15 @@ class SessionMemoryCgroup
     # True only when the delegated parent exists AND this uid can create children in
     # it — the two halves bin/docker-entrypoint provides together. Anything else (plain
     # runc, the web role, a dev machine, a test run) is false and every caller no-ops.
+    #
+    # A configured limit of zero is false here too, and that is the point of it: the
+    # break-glass has to take the whole mechanism out of the path, not just widen the
+    # bound. Writing `max` into `memory.max` would leave every spawn still wrapped in
+    # `sh` and every process still migrated — no use at all to an operator whose
+    # incident IS the wrapper.
     def available?
+      return false if limit_bytes.zero?
+
       path = parent_path
       File.directory?(path) && File.writable?(path)
     rescue SystemCallError
@@ -149,25 +163,50 @@ class SessionMemoryCgroup
       new(session_id)
     end
 
-    # Remove every session cgroup that no longer holds a process.
+    # Remove the session cgroups that are finished with.
     #
-    # A cgroup outlives the session's processes: `rmdir` fails while any pid is still
-    # in it, and a session can end in ways that never reach #remove (a worker killed
-    # mid-deploy, a job interrupted). An empty cgroup costs a directory and a few
-    # kernel structs, but they accumulate one per session forever, so something has to
-    # sweep. Emptiness is the whole test — a cgroup with a live process in it is a live
-    # session, whatever the database thinks, and rmdir would refuse anyway.
+    # An empty cgroup costs a directory and a few kernel structs, but they arrive one
+    # per session and nothing else would ever remove them: `rmdir` refuses while any pid
+    # is still inside, so a session cannot always tear its own down, and a worker killed
+    # mid-deploy never gets the chance.
+    #
+    # Emptiness is NOT sufficient on its own, which is the trap here. A session sits
+    # between turns — `needs_input` for hours is the normal case — with a cgroup that
+    # holds no processes and is not remotely garbage. Sweeping it would reset
+    # `memory.peak` and the OOM counter that the next turn's reporting reads, so a
+    # session that OOMs once, idles, and OOMs again would have the second kill silently
+    # swallowed. So a cgroup is removed only when it is empty AND its session is
+    # archived or gone from the database entirely.
+    #
+    # The counter can still restart underneath a live session — a deploy recreates the
+    # container and takes every cgroup in it — so the readers do not depend on this
+    # holding. See #accounted_oom_kills, which keys the baseline to the cgroup's
+    # incarnation rather than trusting it to persist.
     #
     # @return [Integer] how many were removed
     def sweep!
       return 0 unless available?
 
-      Dir.children(parent_path).count do |name|
-        next false unless name.start_with?("session-")
+      # Both halves are the filter: the prefix keeps the sweep off the `app` cgroup the
+      # entrypoint created, and a parseable id keeps it off anything else that happens to
+      # be named like one. A directory this class did not create is not this class's to
+      # remove.
+      candidates = Dir.children(parent_path).filter_map do |name|
+        next unless name.start_with?("session-")
+
+        id = Integer(name.delete_prefix("session-"), exception: false)
+        [ name, id ] if id
+      end
+      return 0 if candidates.empty?
+
+      live = Session.where(id: candidates.map(&:last)).where.not(status: :archived).pluck(:id).to_set
+
+      candidates.count do |name, id|
+        next false if live.include?(id)
 
         remove_if_empty(File.join(parent_path, name))
       end
-    rescue SystemCallError => e
+    rescue SystemCallError, ActiveRecord::ActiveRecordError => e
       Rails.logger.warn("[SessionMemoryCgroup] Sweep failed: #{e.message}")
       0
     end
@@ -214,17 +253,24 @@ class SessionMemoryCgroup
     File.join(path, "cgroup.procs")
   end
 
-  # Create the cgroup and write its limit. Idempotent: a session that respawns — a
-  # continuation, a signal-death resume, a follow-up turn — reuses the same cgroup, so
-  # `memory.peak` and the OOM counter accumulate across the session's whole life rather
-  # than resetting on every turn.
+  # Create the cgroup and write its limit.
+  #
+  # Idempotent, and deliberately so: a session respawns constantly — a follow-up turn, a
+  # continuation, a signal-death resume — and each one reuses the cgroup it already has,
+  # so `memory.peak` and the OOM counter accumulate over as much of the session's life as
+  # the cgroup itself survives.
+  #
+  # That last clause is the honest one. The cgroup does not outlive the container: a
+  # deploy recreates the worker and takes the whole subtree with it, and the sweep
+  # removes it once the session is archived. So the counters can restart underneath a
+  # session that is still going, which is why the readers key their baseline to
+  # #incarnation instead of assuming the count only ever grows.
   #
   # @return [Boolean] true if the cgroup is ready to be entered
   def prepare!
     FileUtils.mkdir_p(path)
 
-    limit = self.class.limit_bytes
-    File.write(File.join(path, "memory.max"), limit.zero? ? "max" : limit.to_s)
+    File.write(File.join(path, "memory.max"), self.class.limit_bytes.to_s)
 
     # Deliberately no `memory.high`. It throttles the allocator and reclaims before the
     # hard limit, which sounds like a gentler failure — but the memory at issue here is
@@ -246,10 +292,14 @@ class SessionMemoryCgroup
   # escalation path and the transcript pollers all see exactly what they saw before.
   #
   # `$1` rather than an interpolated path so a path with a space or a quote in it cannot
-  # become shell syntax. A failure to enter warns on stderr — which the monitoring loop
-  # already tails into the session log, alongside the shell's own error — and runs the
-  # command anyway: unbounded is today's behaviour, and refusing to start the session
-  # would be a far worse trade than running it without a bound.
+  # become shell syntax. A failure to enter warns on the runtime's stderr log, alongside
+  # the shell's own error, and runs the command anyway: unbounded is the behaviour every
+  # deployment had before this existed, and refusing to start the session would be a far
+  # worse trade than running it without a bound.
+  #
+  # That log is only surfaced into the session log when a turn FAILS, so it is not on its
+  # own a reliable way to hear about an unbounded session. SessionMemoryWatch is —
+  # it notices a cgroup that never took a process and says so from the monitor loop.
   #
   # @param command [Array<String>] the argv the adapter built
   # @return [Array<String>] argv to hand Process.spawn
@@ -280,13 +330,99 @@ class SessionMemoryCgroup
     read_event("oom_kill")
   end
 
-  def exists?
-    File.directory?(path)
+  # An identifier for THIS instance of the cgroup directory, which changes when the
+  # directory is recreated.
+  #
+  # It is the only thing that distinguishes "the counter has not moved" from "the counter
+  # is a different counter now", and both readers need that distinction: `memory.events`
+  # restarts at zero whenever the cgroup is recreated — by a deploy, by the sweep after an
+  # archive — while the count they recorded lives in Postgres and survives.
+  #
+  # Without it, a session that OOM-killed a subprocess (recorded: 1), idled long enough to
+  # be swept, and then OOM-killed another in a fresh cgroup (counter: 1) would compare
+  # 1 to 1 and report nothing at all. That is the repeat-runaway case —
+  # tadasant/zimmer#719's four kills an hour — which is precisely the one worth hearing
+  # about.
+  #
+  # The inode ALONE is not enough, which is worth stating because it is the obvious
+  # choice and it is wrong: a filesystem is free to hand the same inode straight back, and
+  # ext4 does exactly that — measured, a remove-then-recreate of the same directory
+  # returns the identical inode number every time. The creation time is what separates
+  # them, and the inode is what separates two directories created in the same nanosecond.
+  # Neither is load-bearing on its own; the pair is.
+  #
+  # @return [String, nil]
+  def incarnation
+    stat = File.stat(path)
+    "#{stat.ino}:#{stat.ctime.to_i}.#{stat.ctime.nsec}"
+  rescue SystemCallError
+    nil
   end
 
-  # @return [Boolean] true if the cgroup was removed
-  def remove
-    self.class.remove_if_empty(path)
+  # How many OOM kills in this cgroup the session has already been told about.
+  #
+  # Zero whenever the recorded baseline belongs to a different incarnation, because then
+  # every kill the current counter holds is news.
+  #
+  # @param session [Session]
+  # @return [Integer]
+  def accounted_oom_kills(session)
+    metadata = session.metadata || {}
+    return 0 unless metadata[INCARNATION_KEY] == incarnation
+
+    metadata[OOM_KILL_COUNT_KEY].to_i
+  end
+
+  # Kills the session has not been told about yet.
+  #
+  # @param session [Session]
+  # @return [Integer, nil] nil when the counter could not be read at all
+  def unaccounted_oom_kills(session)
+    observed = oom_kill_count
+    return nil if observed.nil?
+
+    [ observed - accounted_oom_kills(session), 0 ].max
+  end
+
+  # Record what we have reported, against the incarnation it was counted in.
+  #
+  # @param session [Session]
+  # @param observed [Integer]
+  # @return [void]
+  def record_oom_kills!(session, observed)
+    session.merge_metadata!(
+      OOM_KILL_COUNT_KEY => observed,
+      INCARNATION_KEY => incarnation,
+      LAST_KILL_AT_KEY => Time.current.iso8601
+    )
+  end
+
+  # Did the kernel kill something in here recently enough that a process dying now is
+  # plausibly the same event?
+  #
+  # ProcessLifecycleManager needs this because the two readers race: SessionMemoryWatch
+  # polls every 10s, so a tick landing between the kernel's kill of the agent and the
+  # monitor loop noticing the exit consumes the delta, and the exit path would then find
+  # nothing unaccounted and fall back to "likely OOM or external kill" for a death that
+  # WAS the bound. The window is wider than the race needs on purpose — misattributing a
+  # signal death to memory costs a log line and a recovery prompt that is decent advice
+  # either way, while missing one costs the explanation entirely.
+  #
+  # @param session [Session]
+  # @param within [ActiveSupport::Duration]
+  # @return [Boolean]
+  def recently_oom_killed?(session, within:)
+    metadata = session.metadata || {}
+    return false unless metadata[INCARNATION_KEY] == incarnation
+
+    at = metadata[LAST_KILL_AT_KEY]
+    at.present? && Time.zone.parse(at.to_s) > within.ago
+  rescue ArgumentError, TypeError
+    false
+  end
+
+  def exists?
+    File.directory?(path)
   end
 
   private

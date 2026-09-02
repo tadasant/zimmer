@@ -337,8 +337,16 @@ The same job sweeps the other host-level leftover of a session's process tree: i
 any pid is still inside, so a session cannot always tear its own down and a worker killed
 mid-deploy never gets the chance — and they arrive one per session. The sweep runs first, before
 the two zombie passes and outside their early returns, because "no zombies this tick" is the
-common case and is not a reason to leave the cgroups behind. Emptiness is the whole test: a
-cgroup holding a live process is a live session, whatever the database thinks.
+common case and is not a reason to leave the cgroups behind.
+
+**Emptiness alone is not the test, and that is the interesting part.** A session between turns
+sits in `needs_input` for hours with a cgroup that holds no processes and is not remotely garbage:
+removing it resets the `memory.peak` and OOM counters the next turn reads, so a session that OOMs,
+idles, and OOMs again would have the second kill silently swallowed — precisely the repeat-runaway
+case worth hearing about. So a cgroup is removed only when it is empty **and** its session is
+archived or gone from the database. The counters can still restart underneath a live session (a
+deploy recreates the container and every cgroup in it), which is why the readers key their
+baseline to the cgroup's incarnation rather than trusting it to persist.
 
 ## What the PR comment poller acts on
 

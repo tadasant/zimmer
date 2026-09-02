@@ -279,8 +279,10 @@ container cap: six sessions at 4 GiB is 24 GiB against 10g. It bounds **one** ru
 is the failure that has actually happened; an admission-control budget would have to sit near
 1.5 GiB and would start killing sessions that work today. A healthy worker was measured at
 1.6 GiB of anonymous memory with three concurrent sessions — the Rails worker included — so
-4 GiB is roughly an order of magnitude of headroom. `0` disables the bound entirely, which is
-the break-glass an incident might need. It is set at deploy time, never on the box.
+4 GiB is roughly an order of magnitude of headroom. `0` disables the bound entirely — not by writing `max` into
+`memory.max` but by taking the whole mechanism out of the spawn path, since an operator reaching
+for the break-glass in an incident may well be reaching for it because of the wrapper. It is set at
+deploy time, never on the box.
 
 **What you see when it fires.** Three things, depending on what died:
 
@@ -296,9 +298,14 @@ has no swap, so there is nothing to reclaim, and all it would buy is a long allo
 followed by the same kill. Early warning comes from polling `memory.current` instead: one
 log line when a session crosses 75% of its bound.
 
-`ZombieReaperJob` sweeps session cgroups that no longer hold a process, because `rmdir`
-refuses while any pid is still inside and a worker killed mid-deploy never gets to clean up
-after itself.
+`ZombieReaperJob` sweeps session cgroups, because `rmdir` refuses while any pid is still inside
+and a worker killed mid-deploy never gets to clean up after itself. It removes one only when it is
+empty **and** its session is archived or gone: a session between turns has an empty cgroup and is
+not finished with it, and sweeping that would reset the counters the next turn reads. The counters
+can restart anyway — a deploy takes every cgroup in the container with it — so the two readers key
+their "already reported" baseline to the cgroup's *incarnation* (its inode paired with its creation
+time; the inode alone is not enough, because a filesystem is free to hand the same one straight
+back). Without that, a session that OOMs, idles, and OOMs again loses the second report.
 
 Where this is **not** in force, and what it is not, is in
 [Limitations](/limitations/#a-sessions-memory-bound-needs-the-nested-docker-worker).

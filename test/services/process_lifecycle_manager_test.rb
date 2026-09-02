@@ -2204,25 +2204,12 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
 
   private
 
-  # Stand in for the session's memory cgroup: a directory of ordinary files, pointed at by
-  # ZIMMER_SESSION_CGROUP_ROOT, so the manager reads what a kernel would have written.
+  # Stand in for the session's memory cgroup, via SessionMemoryCgroupHelpers.
   def with_session_cgroup(oom_kills:, limit: 4 * 1024 * 1024 * 1024, peak: nil)
-    original = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
-    Dir.mktmpdir("cgroupfs") do |tmp|
-      parent = File.join(tmp, "zimmer.sessions")
-      FileUtils.mkdir_p(parent)
-      ENV["ZIMMER_SESSION_CGROUP_ROOT"] = parent
-
-      cgroup = File.join(parent, "session-#{@session.id}")
-      FileUtils.mkdir_p(cgroup)
-      File.write(File.join(cgroup, "memory.max"), limit.to_s)
-      File.write(File.join(cgroup, "memory.events"), "oom_kill #{oom_kills}\n")
-      File.write(File.join(cgroup, "memory.peak"), peak.to_s) if peak
-
+    with_delegated_cgroup_parent do
+      write_session_cgroup(@session.id, oom_kills: oom_kills, limit: limit, peak: peak)
       yield
     end
-  ensure
-    original.nil? ? ENV.delete("ZIMMER_SESSION_CGROUP_ROOT") : ENV["ZIMMER_SESSION_CGROUP_ROOT"] = original
   end
 
   # Helper to calculate the transcript directory for the test session
@@ -2526,15 +2513,70 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # kill that happened once, hours ago.
   test "handle_exit does not blame the memory bound for a kill already accounted for" do
     @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
-    @session.update!(metadata: @session.metadata.merge(SessionMemoryWatch::OOM_KILL_COUNT_KEY => 1))
 
     with_session_cgroup(oom_kills: 1) do
+      # Recorded against THIS cgroup's incarnation, and long enough ago that the
+      # attribution window has closed — i.e. a subprocess kill the watch already
+      # reported, not the death being handled now.
+      cgroup = SessionMemoryCgroup.for(@session.id)
+      @session.update!(metadata: @session.metadata.merge(
+        SessionMemoryCgroup::OOM_KILL_COUNT_KEY => 1,
+        SessionMemoryCgroup::INCARNATION_KEY => cgroup.incarnation,
+        SessionMemoryCgroup::LAST_KILL_AT_KEY => 2.hours.ago.iso8601
+      ))
+
       manager = create_manager
       manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
 
       manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
 
       assert_equal AutomatedPrompts::SYSTEM_RECOVERY, @mock_cli_adapter.resumed_sessions.last[:prompt]
+    end
+  end
+
+  # The 10s hole between the watch consuming a delta and the monitor loop noticing the
+  # process is gone. Without the recency check the death that WAS the bound gets the
+  # generic nudge, which is the one case the memory-aware prompt exists for.
+  test "handle_exit still blames the bound for a kill the watch consumed moments ago" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    with_session_cgroup(oom_kills: 1) do
+      cgroup = SessionMemoryCgroup.for(@session.id)
+      @session.update!(metadata: @session.metadata.merge(
+        SessionMemoryCgroup::OOM_KILL_COUNT_KEY => 1,
+        SessionMemoryCgroup::INCARNATION_KEY => cgroup.incarnation,
+        SessionMemoryCgroup::LAST_KILL_AT_KEY => 3.seconds.ago.iso8601
+      ))
+
+      manager = create_manager
+      manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+      manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+      assert_match(/reached its memory limit/, @mock_cli_adapter.resumed_sessions.last[:prompt])
+    end
+  end
+
+  # A deploy recreates the container and every cgroup in it; the recorded count lives in
+  # Postgres and survives. Comparing them without the incarnation makes the fresh
+  # counter's kill invisible.
+  test "handle_exit blames the bound when the counter restarted under a live session" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    with_session_cgroup(oom_kills: 1) do
+      # A baseline from an incarnation that no longer exists: same count, stale inode.
+      @session.update!(metadata: @session.metadata.merge(
+        SessionMemoryCgroup::OOM_KILL_COUNT_KEY => 1,
+        SessionMemoryCgroup::INCARNATION_KEY => "0:0.0",
+        SessionMemoryCgroup::LAST_KILL_AT_KEY => 2.hours.ago.iso8601
+      ))
+
+      manager = create_manager
+      manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+      manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+      assert_match(/reached its memory limit/, @mock_cli_adapter.resumed_sessions.last[:prompt])
     end
   end
 

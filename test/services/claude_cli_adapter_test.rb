@@ -917,18 +917,6 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal [ "claude", "test" ], @mock_process_manager.spawned_processes.first[:command]
   end
 
-  def with_delegated_cgroup_parent
-    original = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
-    Dir.mktmpdir("cgroupfs") do |tmp|
-      parent = File.join(tmp, "zimmer.sessions")
-      FileUtils.mkdir_p(parent)
-      ENV["ZIMMER_SESSION_CGROUP_ROOT"] = parent
-      yield parent
-    end
-  ensure
-    original.nil? ? ENV.delete("ZIMMER_SESSION_CGROUP_ROOT") : ENV["ZIMMER_SESSION_CGROUP_ROOT"] = original
-  end
-
   test "spawn_process returns hash with pid and stderr_log_path" do
     command = [ "claude", "test" ]
 

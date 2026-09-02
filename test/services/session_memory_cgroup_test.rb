@@ -77,18 +77,84 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
   test "prepare! reuses an existing cgroup rather than resetting its counters" do
     cgroup = SessionMemoryCgroup.for(7)
     cgroup.prepare!
+    before = cgroup.incarnation
     File.write(File.join(cgroup.path, "memory.events"), "oom_kill 3\n")
 
     assert cgroup.prepare!
     assert_equal 3, cgroup.oom_kill_count
+    assert_equal before, cgroup.incarnation, "a reused cgroup is the same incarnation"
   end
 
-  test "a limit of 0 means no bound at all, for an operator disabling this in an incident" do
-    ENV["ZIMMER_SESSION_MEMORY_MAX_MB"] = "0"
-    cgroup = SessionMemoryCgroup.for(1)
-    cgroup.prepare!
+  # --- the reported-kills baseline ----------------------------------------
+  #
+  # Shared by SessionMemoryWatch (which reports) and ProcessLifecycleManager (which
+  # attributes a signal death), so it lives here rather than in either of them.
 
-    assert_equal "max", File.read(File.join(cgroup.path, "memory.max"))
+  test "every kill is unaccounted for until the session is told" do
+    cgroup = SessionMemoryCgroup.for(30)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom_kill 2\n")
+    session = sessions(:active_session)
+
+    assert_equal 2, cgroup.unaccounted_oom_kills(session)
+
+    cgroup.record_oom_kills!(session, 2)
+
+    assert_equal 0, cgroup.unaccounted_oom_kills(session.reload)
+  end
+
+  # The inode alone would not do this: ext4 hands the same inode straight back on a
+  # remove-and-recreate, which is why #incarnation pairs it with the creation time.
+  test "a recreated cgroup's counter is news, even at the same count" do
+    cgroup = SessionMemoryCgroup.for(31)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom_kill 1\n")
+    session = sessions(:active_session)
+    cgroup.record_oom_kills!(session, 1)
+
+    assert_equal 0, cgroup.unaccounted_oom_kills(session.reload)
+
+    recreate_session_cgroup(31, oom_kills: 1)
+
+    assert_equal 1, SessionMemoryCgroup.for(31).unaccounted_oom_kills(session.reload),
+      "the counter restarted, so its kill has never been reported"
+  end
+
+  test "a session with no metadata at all does not blow up the readers" do
+    cgroup = SessionMemoryCgroup.for(32)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom_kill 1\n")
+    session = sessions(:active_session)
+    session.update_columns(metadata: nil)
+
+    assert_equal 1, cgroup.unaccounted_oom_kills(session)
+    refute cgroup.recently_oom_killed?(session, within: 1.minute)
+  end
+
+  test "recently_oom_killed? is scoped to the incarnation it was recorded against" do
+    cgroup = SessionMemoryCgroup.for(33)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom_kill 1\n")
+    session = sessions(:active_session)
+    cgroup.record_oom_kills!(session, 1)
+
+    assert cgroup.recently_oom_killed?(session.reload, within: 1.minute)
+
+    recreate_session_cgroup(33, oom_kills: 1)
+
+    refute SessionMemoryCgroup.for(33).recently_oom_killed?(session, within: 1.minute),
+      "a timestamp from a cgroup that no longer exists says nothing about this one"
+  end
+
+  # The break-glass has to take the whole mechanism out of the path, not merely widen the
+  # bound: an operator reaching for it in an incident may well be reaching for it BECAUSE
+  # of the `sh` wrapper or the migration, and writing `max` into memory.max would leave
+  # both exactly where they were.
+  test "a limit of 0 takes the whole mechanism out of the spawn path" do
+    ENV["ZIMMER_SESSION_MEMORY_MAX_MB"] = "0"
+
+    refute SessionMemoryCgroup.available?
+    assert_nil SessionMemoryCgroup.for(1)
   end
 
   test "an unparseable limit falls back to the default rather than to no bound" do
@@ -197,12 +263,43 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
   # though the kernel shows control files inside it, while the same call on a tmpdir
   # holding those file names fails with ENOTEMPTY. The selection is what is asserted here;
   # that a populated cgroup really does rmdir is verified on staging.
-  test "the sweep removes cgroups with no processes left in them" do
+  test "the sweep removes cgroups whose session is gone from the database" do
     finished = SessionMemoryCgroup.for(20)
     FileUtils.mkdir_p(finished.path)
 
     assert_equal 1, SessionMemoryCgroup.sweep!
     refute_predicate finished, :exists?
+  end
+
+  # THE BUG A REVIEW CAUGHT, from the sweep's side. A session between turns sits in
+  # `needs_input` for hours with a cgroup that holds no processes and is not remotely
+  # garbage. Removing it resets `memory.peak` and the OOM counter the next turn reads,
+  # so a session that OOMs, idles, and OOMs again loses the second report.
+  test "the sweep leaves a live session's cgroup alone even when it holds no processes" do
+    session = sessions(:active_session)
+    idle = SessionMemoryCgroup.for(session.id)
+    FileUtils.mkdir_p(idle.path)
+
+    assert_equal 0, SessionMemoryCgroup.sweep!
+    assert_predicate idle, :exists?,
+      "a session between turns has an empty cgroup and is not finished with it"
+  end
+
+  test "the sweep removes an archived session's cgroup" do
+    session = sessions(:active_session)
+    session.update_columns(status: Session.statuses[:archived])
+    done = SessionMemoryCgroup.for(session.id)
+    FileUtils.mkdir_p(done.path)
+
+    assert_equal 1, SessionMemoryCgroup.sweep!
+    refute_predicate done, :exists?
+  end
+
+  test "the sweep ignores a directory that is not a session cgroup" do
+    FileUtils.mkdir_p(File.join(@parent, "session-not-a-number"))
+
+    assert_equal 0, SessionMemoryCgroup.sweep!
+    assert File.directory?(File.join(@parent, "session-not-a-number"))
   end
 
   test "the sweep leaves a cgroup that still holds a process, whatever the database thinks" do
