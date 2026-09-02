@@ -377,7 +377,7 @@ class AirCatalogService
     def run_air_resolve!
       ensure_air_cli!
 
-      stdout, stderr, status = Open3.capture3(air_env, air_binary, "resolve", "--json", "--no-scope", "--git-protocol", "https")
+      stdout, stderr, status = capture_air(air_env, air_binary, "resolve", "--json", "--no-scope", "--git-protocol", "https")
       unless SubprocessStatus.success?(status)
         raise CatalogError, "air resolve failed (#{SubprocessStatus.describe_failure(status)}): #{stderr.presence || stdout}"
       end
@@ -421,11 +421,29 @@ class AirCatalogService
     def run_air_update!
       ensure_air_cli!
 
-      stdout, stderr, status = Open3.capture3(air_env, air_binary, "update", "--git-protocol", "https")
+      stdout, stderr, status = capture_air(air_env, air_binary, "update", "--git-protocol", "https")
       unless SubprocessStatus.success?(status)
         raise CatalogError, "air update failed (#{SubprocessStatus.describe_failure(status)}): #{stderr.presence || stdout}"
       end
       Rails.logger.info "[AirCatalogService] air update: #{stdout.strip}" if stdout.present?
+    end
+
+    # Spawn the AIR binary, converting an unreachable one into CatalogError.
+    #
+    # A binary that exits non-zero comes back as a failed status and is handled
+    # by the callers above; a binary that is not there at all raises
+    # Errno::ENOENT out of the spawn itself, which is a SystemCallError and so
+    # slips past every `rescue CatalogError` between here and the view. That is
+    # how a missing AIR CLI reached a session-card render as an
+    # ActionView::Template::Error and killed the job around it, instead of
+    # degrading to the last-known-good catalog like every other resolve failure
+    # (GlitchTip #61, 2026-09-01). The install path takes care not to remove the
+    # binary (see AirPrepareService#swap_staged_install!), but "the file is
+    # gone" is a state this service should survive however it arises.
+    def capture_air(*command)
+      Open3.capture3(*command)
+    rescue SystemCallError => e
+      raise CatalogError, "could not run the AIR CLI (#{e.class}: #{e.message})"
     end
 
     # Lazy-install AIR CLI on first use. Converts AirPrepareError to CatalogError

@@ -237,11 +237,28 @@ pinned to `AIR_CLI_VERSION = "0.13.0"` — the CLI plus both adapters, the secre
 the GitHub provider. Guarded by a version marker file, a binary health check (`air --version`), and
 a cross-process install lock.
 
+The install builds into a `.incoming` staging directory and swaps the finished tree into place. The
+published directory therefore stays readable for the whole install, which matters because readers
+hold no lock: `AirCatalogService` spawns `<AIR_INSTALL_DIR>/node_modules/.bin/air` directly, so an
+install that emptied the directory first would hand every concurrent reader `Errno::ENOENT` for the
+minute npm takes. A failed install leaves the previous tree in place.
+
+`AIR_INSTALL_DIR` defaults to `/opt/air-cli` when that path exists or `/opt` is writable, and to
+`~/.cache/air-cli` otherwise — but **only in a deployed environment**. Development resolves to
+`~/.cache/air-cli` and test to `~/.cache/air-cli-test`, whatever is on disk; an explicit
+`AIR_INSTALL_DIR` still outranks all of it. Agent sessions run on the same host as the production
+container, and both `test/test_helper.rb` (at suite boot) and the catalog initializer under
+`bin/agent-dev` call `ensure_air_installed!`, so a session running tests or a dev server in its
+clone would otherwise reinstall over the directory the live app is shelling out to. That is
+not hypothetical: on 2026-09-01 a branch that added an adapter to the package set did exactly this
+and produced 10 production `ERROR` records in a minute, including an `ActionView::Template::Error`
+rendering the dashboard's session cards.
+
 :::caution[Two versions to keep in lockstep]
 `Dockerfile.base` bakes `@pulsemcp/air-cli@0.13.0` into `/opt/air-cli` and touches a
 `.air-version-0.13.0` marker; `AirPrepareService::AIR_CLI_VERSION` is what `ensure_air_installed!`
 looks for. If they drift, the image's pre-baked CLI is ignored and the first session on a fresh
-container `rm_rf`s it and re-downloads a different version — on the session's launch path.
+container replaces it with a different version — on the session's launch path.
 
 `test/contracts/air_config_parity_test.rb` asserts they agree (and that `air.json` and
 `air.production.json` still declare the same catalog), so drift fails a test rather than a deploy.
