@@ -1312,6 +1312,43 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert condition.github_baseline_covers?("tadasant/anything", "any label")
   end
 
+  # …but "covers what is watched now" is only safe while the scope is not moving. An
+  # edit that widens a condition that has never had a scope stamped — every live
+  # condition, in the window between this deploy and its first tick — would otherwise
+  # read the seen-set as already covering the repo added a millisecond ago, and every PR
+  # already labelled there would look like a new event. The pre-edit scope is stamped
+  # first, so the poller has something truthful to diff against.
+  test "widening a condition that has no recorded baseline scope stamps the pre-edit scope first" do
+    condition = trigger_conditions(:github_label_condition)
+    # update_column, so the setup itself does not stamp a scope: this is a row that was
+    # baselined before the key existed.
+    condition.update_column(:configuration, condition.configuration.merge(
+      "seen_items" => [ "tadasant/zimmer#1:ready to merge" ]
+    ))
+    assert_nil condition.reload.github_baseline_scope
+
+    condition.update!(configuration: github_label_config("repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ]))
+    condition.reload
+
+    assert_equal [ "tadasant/zimmer" ], condition.github_baseline_scope["repos"],
+                 "the stamp must describe what the seen-set covered BEFORE the edit"
+    assert condition.github_baseline_covers?("tadasant/zimmer", "ready to merge")
+    assert_not condition.github_baseline_covers?("tadasant/zimmer-catalog", "ready to merge"),
+               "the newly-added repo must not be read as already baselined"
+  end
+
+  # The backfill describes a seen-set, so a condition without one gets no stamp — the
+  # poller re-baselines it and writes its own.
+  test "a condition with no seen-set gets no backfilled baseline scope" do
+    condition = trigger_conditions(:github_label_condition)
+    condition.update_column(:configuration, condition.configuration.except("seen_items"))
+
+    condition.reload.update!(configuration: github_label_config("repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ]))
+
+    assert_nil condition.reload.github_baseline_scope
+    assert_not condition.github_baselined?
+  end
+
   test "flipping the target invalidates the baseline, since a repo numbers issues and PRs together" do
     condition = trigger_conditions(:github_label_condition)
     condition.update!(configuration: condition.configuration.merge(
@@ -1344,6 +1381,28 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_equal "2026-07-13T10:00:00Z", condition.github_last_issue_at,
                  "the cursor must restart at the edit, not be dropped for the next tick to set"
     assert_equal [], condition.github_seen_issue_keys
+  end
+
+  # Only a repo that was NOT watched before can back-fire, so only that rebases. A
+  # removal keeps the cursor: rebasing on one throws away live position for nothing, and
+  # if the poller happens to be behind it skips every issue opened in the repos that are
+  # still watched — #647's shape, through the one path a narrowing can reach.
+  test "removing a repo from a github_issue condition keeps its cursor" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ]
+    ))
+    # The cursor is set in its own write: the widening above legitimately rebases it.
+    condition.update!(configuration: condition.reload.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z",
+      "seen_issue_keys" => [ "tadasant/zimmer#42" ]
+    ))
+
+    condition.update!(configuration: { "repos" => [ "tadasant/zimmer" ] })
+
+    condition.reload
+    assert_equal "2026-07-12T09:00:00Z", condition.github_last_issue_at
+    assert_equal [ "tadasant/zimmer#42" ], condition.github_seen_issue_keys
   end
 
   test "github condition descriptions read as events" do

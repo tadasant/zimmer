@@ -109,10 +109,10 @@ module Mcp
           need to echo them — editing `repos` on a live `github_label` condition keeps its
           seen-set, and the poller baselines only the newly-watched repos/labels rather than
           stampeding a session for everything already labelled in them. The one key that is
-          still rebased by an edit is a `github_issue` condition's `last_issue_at`: its state is
-          a single global time cursor with no per-repo dimension, so changing `repos` restarts it
-          at the moment of the edit rather than back-firing every issue the new repo has opened
-          since.
+          still rebased by an edit is a `github_issue` condition's `last_issue_at`, and only when
+          the edit ADDS a repo: its state is a single global time cursor with no per-repo
+          dimension, so a widening restarts it at the moment of the edit rather than back-firing
+          every issue the new repo has opened since. Removing a repo keeps the cursor.
         - An element without an `id` adds a new condition.
         - An existing condition the array does not mention is **left alone**. To delete one,
           send `{"id": 123, "remove": true}`.

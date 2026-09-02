@@ -776,14 +776,56 @@ class TriggerCondition < ApplicationRecord
       configuration[key] = configuration_was[key] if configuration_was.key?(key)
     end
 
-    rebase_github_issue_cursor if condition_type == "github_issue" && github_watch_scope_changed?
+    backfill_github_baseline_scope if condition_type == "github_label"
+    rebase_github_issue_cursor if condition_type == "github_issue" && github_issue_scope_widened?
+  end
+
+  # Stamp what the existing seen-set covers, for a condition baselined before
+  # `baseline_scope` was recorded at all.
+  #
+  # Every live condition looks like that on the deploy that introduces the key, and the
+  # poller reads an ABSENT scope as "covers whatever is watched now" — safe on its own,
+  # since it fires nothing retroactively. It stops being safe the moment the same write
+  # also WIDENS the scope: the seen-set would then be read as already covering the repo
+  # that was added a millisecond ago, and every PR already labelled there would look
+  # like a new event. That is the stampede this whole mechanism exists to prevent,
+  # reachable in the one window where nothing had stamped a scope yet.
+  #
+  # `configuration_was` is the answer, and it is only available here: at this point in
+  # the save it still holds the repos/target/labels the seen-set was genuinely built
+  # against. Recording them before the edit lands leaves the poller with a truthful
+  # baseline to diff the new scope against.
+  #
+  # Only for a condition that HAS a seen-set — `baseline_scope` describes one, and a
+  # condition without one is re-baselined by the poller anyway, which stamps its own.
+  def backfill_github_baseline_scope
+    return unless configuration.key?("seen_items")
+    return if configuration["baseline_scope"].is_a?(Hash)
+
+    configuration["baseline_scope"] = {
+      "repos" => split_lines(configuration_was["repos"]).sort,
+      "target" => configuration_was["target"].presence || "pull_request",
+      "labels" => split_lines(configuration_was["labels"]).sort
+    }
+  end
+
+  # Whether this edit puts a repo in scope that was not in it before. Only a repo the
+  # condition did not watch can back-fire, so only that rebases the cursor: a narrowing
+  # cannot make an old issue look new, which is the same reasoning that keeps
+  # `exclude_labels` out of the watch scope entirely. Rebasing on a removal would throw
+  # away a live cursor for nothing — and if the poller happened to be behind, it would
+  # skip every issue opened in the repos that are still watched.
+  def github_issue_scope_widened?
+    watched_before = split_lines(configuration_was["repos"]).map { |repo| repo.to_s.downcase }
+
+    split_lines(configuration["repos"]).any? { |repo| watched_before.exclude?(repo.to_s.downcase) }
   end
 
   # A `github_issue` condition's whole state is ONE global time cursor, with no per-repo
   # dimension to record a partial baseline in. Carrying it across a newly-added repo
   # would fire for every issue that repo has opened since the cursor — and the cursor
   # only advances when an issue fires, so on a quiet trigger that is months of history.
-  # So a scope change still re-baselines it, deliberately, and unifying it with the
+  # So a WIDENED scope still re-baselines it, deliberately, and unifying it with the
   # seen-set's precision would mean per-repo cursors: a redesign, not this fix.
   #
   # What changes is only WHEN: the cursor is rebased to the moment of the edit rather

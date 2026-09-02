@@ -703,11 +703,12 @@ nothing else has fired past it since, and does nothing once something has. Open 
 you want the gate.
 :::
 
-Editing `exclude_labels` does **not** re-baseline the condition — unlike `repos`, which does. An
-exclusion only ever narrows, and a `github_issue` condition's state is a time cursor, so a
-narrowing cannot make an old issue look new. Adding a repo is the widening case, and re-baselining
-is what stops it stampeding a session for every issue that repo has already opened: the cursor
-advances only when an issue *fires*, so on a quiet trigger it can be months behind the clock.
+Only a **widening** re-baselines the condition: adding a repo. Editing `exclude_labels`, or
+removing a repo, does not — a `github_issue` condition's state is a time cursor, and a narrowing
+cannot make an old issue look new, so throwing the cursor away would lose live position for
+nothing. Adding a repo is different, and re-baselining is what stops it stampeding a session for
+every issue that repo has already opened: the cursor advances only when an issue *fires*, so on a
+quiet trigger it can be months behind the clock.
 
 The re-baseline happens **at the moment of the edit**, not at the next tick: `last_issue_at`
 restarts at "now" as the edit is saved. Nothing back-fires, and nothing opened in the up-to-a-minute
