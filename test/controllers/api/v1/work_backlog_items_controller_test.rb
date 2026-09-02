@@ -111,9 +111,14 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "create rejects a pinned flag it cannot read and a precedence outside the integer range" do
-    post api_v1_work_backlog_items_path, params: append_attributes("pinned" => "yes", "precedence" => 1), headers: @headers, as: :json
+    post api_v1_work_backlog_items_path, params: append_attributes("pinned" => "maybe", "precedence" => 1), headers: @headers, as: :json
     assert_response :unprocessable_entity
     assert body["messages"].any? { |m| m.include?("pinned must be true or false") }
+
+    post api_v1_work_backlog_items_path, params: append_attributes(key: "zimmer#yes", "pinned" => "yes", "precedence" => 7000), headers: @headers, as: :json
+    assert_response :created
+    assert_equal true, body.dig("work_backlog_item", "pinned")
+    WorkBacklogItem.delete_all
 
     post api_v1_work_backlog_items_path, params: append_attributes("pinned" => true, "precedence" => 2**31), headers: @headers, as: :json
     assert_response :unprocessable_entity

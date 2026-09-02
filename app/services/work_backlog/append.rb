@@ -106,11 +106,10 @@ module WorkBacklog
       # placed by the band rules.
       def assign_precedence!(item, placement)
         placement = placement.to_h.deep_stringify_keys
-        raw = placement["pinned"]
-        pinned = raw.nil? || raw.to_s.strip.empty? ? false : ActiveModel::Type::Boolean.new.cast(raw)
-        raise InvalidItem, "pinned must be true or false (got #{raw.inspect})" if pinned.nil?
+        pinned = Filters.strict_bool(placement["pinned"])
+        raise InvalidItem, "pinned must be true or false (got #{placement['pinned'].inspect})" if pinned == :invalid
 
-        if pinned
+        if pinned == true
           raise InvalidItem, "a pinned item needs an explicit precedence" if placement["precedence"].blank?
 
           item.precedence = Integer(placement["precedence"])
