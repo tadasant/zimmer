@@ -847,8 +847,14 @@ class AgentSessionJob < ApplicationJob
               running_job_id: nil,
               metadata: (session.metadata || {}).merge("failure_reason" => "unstarted_turn_not_recoverable")
             )
+            # No `announce_deferred_needs_input!` here, and the absent marker is why:
+            # `announcement_deferred_to_recovery_sweep?` reads `paused_by`, so without
+            # it the `pause` callback makes the announcement itself. Adding a second
+            # one would bump the transition counter again and fan out a duplicate wake
+            # and push — and would override the one case the callback withholds
+            # deliberately, a status-summary fork, which is Zimmer's own bookkeeping
+            # and must never page anyone.
             session.pause! if session.may_pause?
-            session.announce_deferred_needs_input! if session.reload.resting_in_needs_input?
             @broadcast_service.session_status(session)
             return
           end
@@ -858,11 +864,10 @@ class AgentSessionJob < ApplicationJob
             metadata: (session.metadata || {}).merge("paused_by" => "recovery")
           )
           session.pause! if session.may_pause?
-          # A recovery pause promises a sweep will continue this session, and until now
-          # the only thing that kept that promise was a five-minute cron — the whole of
-          # the dead air between the failed recovery and the rescue. Ask for the same
-          # continuation directly, on a short delay, so the promise is kept promptly and
-          # the cron is the backstop it was meant to be rather than the mechanism.
+          # A recovery pause promises a sweep will continue this session. Ask for that
+          # continuation directly, on a short delay, rather than leaving the promise to
+          # CleanupOrphanedSessionsJob's five-minute cron — which is the dead air
+          # between the failed recovery and the rescue. The cron stays the backstop.
           RecoveryContinuationJob.schedule_for(session)
           # Broadcast status immediately for snappy UI updates (don't wait for after_update_commit)
           @broadcast_service.session_status(session)

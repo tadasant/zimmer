@@ -865,7 +865,7 @@ about to reap.
 
 ## Retry and recovery machinery
 
-| Service | What it handles |
+| Service or job | What it handles |
 | --- | --- |
 | `SigtermRetryService` | Deploys and OOM kills. `MAX_RETRIES = 3` |
 | `ApiErrorRetryService` | Vendor API errors; classifies quota vs transient |
@@ -879,8 +879,8 @@ about to reap.
 
 ### A recovery sweep does not resume a trashed session
 
-The two sweeps above and `SessionRecoveryService`'s hung-process auto-restart each decide from a
-session object read minutes earlier, and a human can click Trash in the gap. Resuming from that
+The two sweeps above, `RecoveryContinuationJob`, and `SessionRecoveryService`'s hung-process
+auto-restart each decide from a session object read minutes earlier, and a human can click Trash in the gap. Resuming from that
 stale read writes `running` over an archived row and starts a real agent against a clone whose
 trash-cleanup clock has already begun.
 

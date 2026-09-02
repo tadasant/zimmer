@@ -501,29 +501,34 @@ than `--resume`. Re-asserting the old id would hit the #519 trap: a transcript h
 runtime's own bookkeeping is simultaneously too present to create against ("already in use") and too
 empty to resume ("no conversation found").
 
-What this replaced: on 2026-09-02 a worker interruption caught production sessions 12265 and 12267 at
-once. 12265 had made tool calls and resumed harmlessly. 12267 had produced nothing — zero assistant
+The behaviour this replaced: on 2026-09-02 a worker interruption caught production sessions 12265 and
+12267 at once. 12265 had made tool calls and resumed harmlessly. 12267 had produced nothing — zero assistant
 turns, zero tool calls — and sat in the homepage action queue with a completely empty transcript,
 indistinguishable from a session asking a question, for nine and a half minutes, until an unrelated
 orphan sweep reached it.
 
 #### The recovery pause asks for its own continuation
 
-A recovery pause is a promise that a sweep will continue the session, and the promise used to be kept
-only by `CleanupOrphanedSessionsJob`'s five-minute cron. Worse, the two mechanisms could cancel out:
-the nudge `AgentSessionJob` enqueues after a worker interruption is dropped when a recovery job is
-already queued ("Skipping job - session already has a running job"), and when that recovery job then
-failed to adopt its dead pid it re-enqueued nothing at all — leaving the session with no pending work
-of any kind.
+A recovery pause is a promise that a sweep will continue the session, and with only
+`CleanupOrphanedSessionsJob`'s five-minute cron to keep it the wait is whatever is left of that
+cron's period. The two mechanisms can also cancel out: the nudge `AgentSessionJob` enqueues after a
+worker interruption is dropped when a recovery job is already queued ("Skipping job - session already
+has a running job"), and when that recovery job then fails to adopt its dead pid it re-enqueues
+nothing at all — leaving the session with no pending work of any kind.
 
-So the code that parks the session also asks for the continuation. `RecoveryContinuationJob` is
-scheduled with a 30-second delay and delegates to the very same `SessionContinuation` the sweeps use,
-so there is one implementation of "continue a recovery-paused session" and one attempt budget.
-Running twice is harmless: `Session#claim_system_recovery_turn!` takes a row lock and refuses a
-session something else is already driving. Every guard the sweeps apply is re-asked of the row at
-delivery time — still `paused_by: "recovery"`, still `needs_input` or `waiting`, not in a frozen
-category — because all three can change inside the delay window. The cron remains the backstop
-behind it rather than the mechanism.
+So the dead-process branch asks for the continuation itself. `RecoveryContinuationJob` is scheduled
+with a 30-second delay and delegates to the very same `SessionContinuation` the sweeps use, so there
+is one implementation of "continue a recovery-paused session" and one attempt budget. Every guard the
+sweeps apply is re-asked of the row at delivery time — still `paused_by: "recovery"`, still
+`needs_input` or `waiting`, not in a frozen category — because all three can change inside the delay
+window, and `Session#claim_system_recovery_turn!` re-reads the row `FOR UPDATE` so a cron tick
+landing at the same moment cannot produce two turns. The cron stays the backstop rather than the
+mechanism.
+
+**This covers one of the six writers of `paused_by: "recovery"`, deliberately.** It is scheduled by
+`AgentSessionJob`'s dead-process branch — the one the nine-and-a-half-minute stall came through.
+`SessionRecoveryService#transition_to_needs_input`, `AgentSessionJob`'s `InterruptError` and
+MCP-retry parks, and the two sweeps' own re-parks still rely on the cron.
 
 #### Auto-continue gives up
 

@@ -418,6 +418,7 @@ class Session < ApplicationRecord
     spawn_failed
     git_clone_failed
     clone_validation_failed
+    unstarted_turn_not_recoverable
   ].freeze
 
   # Metadata keys that represent setup artifacts created during session initialization.
