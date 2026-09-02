@@ -2354,7 +2354,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # Stub filesystem operations with the correctly sanitized path
     Dir.expects(:exist?).with(expected_transcript_dir).returns(true).at_least_once
-    Dir.expects(:glob).with(File.join(expected_transcript_dir, "*.jsonl")).returns([ fake_transcript_file ]).at_least_once
+    # Matched on the pattern alone: what this test is about is the sanitized
+    # path, not the FNM_* flags RealFileSystemAdapter#glob forwards alongside it.
+    Dir.expects(:glob)
+      .with { |pattern, *| pattern == File.join(expected_transcript_dir, "*.jsonl") }
+      .returns([ fake_transcript_file ]).at_least_once
     File.expects(:mtime).returns(Time.current).at_least_once
     File.expects(:read).returns(transcript_content).at_least_once
 
