@@ -201,8 +201,9 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     @label_condition.update!(configuration: @label_condition.configuration.merge(
       "labels" => [ "ready to merge", "urgent" ]
     ))
-    # Editing the watched labels re-baselines, so re-establish an empty baseline first.
-    @label_condition.update!(configuration: @label_condition.configuration.merge("seen_items" => []))
+    # Adding a label baselines what already carries it, so let one quiet tick take a
+    # baseline that covers both labels before the real event arrives.
+    stub_search(label: []) { GithubTriggerPollerJob.perform_now }
 
     stub_search(label: [ item(number: 5, labels: [ "ready to merge", "urgent" ]) ]) do
       assert_difference("Session.count", 2) { GithubTriggerPollerJob.perform_now }
@@ -742,6 +743,31 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     end
   end
 
+  # The compound case: a condition that has never had a scope stamped — which is every
+  # live condition between this deploy and its first tick — and is widened in that
+  # window. Reading its absent scope as "covers what is watched now" would make the
+  # repo added a moment ago look already-baselined, and every PR labelled there for
+  # weeks would fire. The pre-edit scope is stamped by the edit itself, so it does not.
+  test "widening a condition that has no recorded baseline scope does not stampede its new repo" do
+    assert_nil @label_condition.github_baseline_scope
+    assert @label_condition.github_baselined?
+
+    @label_condition.update!(configuration: @label_condition.configuration.merge(
+      "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ]
+    ))
+
+    already_labelled = (1..3).map do |n|
+      item(number: n, labels: [ "ready to merge" ], repo: "tadasant/zimmer-catalog")
+    end
+    stub_search(label: already_labelled + [ item(number: 7, labels: [ "ready to merge" ]) ]) do
+      # Exactly one session: #7, in the repo that was already watched. The three in the
+      # newly-added repo are baselined.
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal "https://github.com/tadasant/zimmer/pull/7", Session.order(:id).last.prompt[/https:\S+/]
+  end
+
   # A condition baselined before `baseline_scope` was recorded has none, and the deploy
   # that introduces the key must not make its whole result set look newly in scope.
   test "a seen-set with no recorded baseline scope keeps firing, and gets one stamped" do
@@ -1061,8 +1087,9 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
                  "the user's edit must survive the poller's write"
     assert_equal [], @label_condition.github_seen_items,
                  "state computed against the old scope must be dropped, not written over the edit"
-    assert_nil @label_condition.github_baseline_scope,
-               "and nothing may claim a baseline the discarded tick did not take"
+    assert_equal [ "tadasant/zimmer" ], @label_condition.github_baseline_scope["repos"],
+                 "the baseline still describes the pre-edit scope the edit stamped — the " \
+                 "discarded tick may not advance it to the new one"
   end
 
   test "a template that names only Slack-shared variables still gets a GitHub context block" do
