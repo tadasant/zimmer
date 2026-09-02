@@ -1,7 +1,7 @@
 require "test_helper"
 require "mocha/minitest"
 
-# The two branches this service exists to tell apart (zimmer#807):
+# The two branches this service exists to tell apart:
 #
 #   * production session 12267 — its process died before the runtime wrote a line,
 #     so there is nothing to resume and the stored prompt is what should run;

@@ -819,7 +819,7 @@ class AgentSessionJob < ApplicationJob
           # whose runtime never wrote a line has no conversation to resume, so parking
           # it leaves a completely empty session sitting in the human action queue
           # looking exactly like one that asked a question. Restart it instead
-          # (zimmer#807 — prod session 12267 sat there for nine and a half minutes).
+          # (prod session 12267 sat there for nine and a half minutes).
           restart = Sessions::RestartUnstartedTurn.call(
             session,
             working_directory: working_directory,

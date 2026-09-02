@@ -4,7 +4,7 @@ module Sessions
   # The agent process a monitoring job was sent to adopt is gone, and the runtime
   # never wrote a line under it. Restart the turn instead of parking the session.
   #
-  # ## The bug this closes (zimmer#807)
+  # ## The bug this closes
   #
   # AgentSessionJob's `resume_monitoring` path has exactly one plan: re-attach to
   # the pid recorded in metadata. When that pid turns out to be dead its only other
