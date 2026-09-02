@@ -138,7 +138,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # older version, so ensure_air_installed! reinstalls — the case a version
     # bump or a changed package set produces.
     create_fake_air_binary(@tmp_air_dir, "0.0.1-old")
-    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
     stale_marker = File.join(@tmp_air_dir, ".air-version-0.0.1-old")
     FileUtils.touch(stale_marker)
 
@@ -174,7 +174,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes File.read(File.join(@tmp_air_dir, "package-lock.json")), "9.9.9-new",
       "package-lock.json must be swapped alongside node_modules"
 
-    assert File.exist?(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}")),
+    assert File.exist?(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename)),
       "a completed install must leave its marker behind"
     assert_not File.exist?(stale_marker),
       "the marker describing the tree that was just replaced must not survive it — the fast path " \
@@ -186,7 +186,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   end
 
   test "a second reinstall reclaims the tree the previous one retired" do
-    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
     retired = File.join(@tmp_air_dir, AirPrepareService::RETIRED_DIR_NAME)
     FileUtils.mkdir_p(File.join(retired, "node_modules"))
     File.write(File.join(retired, "node_modules", "leftover.txt"), "from the install before last")
@@ -206,7 +206,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "a failed install leaves the previous working tree untouched" do
     live_binary = File.join(@tmp_air_dir, "node_modules", ".bin", "air")
-    File.delete(File.join(@tmp_air_dir, ".air-version-#{AirPrepareService::AIR_CLI_VERSION}"))
+    File.delete(File.join(@tmp_air_dir, AirPrepareService.air_marker_filename))
 
     stub_air_subprocess(proc { |*args, **opts|
       cmd_args = args.is_a?(Array) ? args : [ args ]
