@@ -70,7 +70,7 @@ Everything in `.env.example` is commented out except `RAILS_ENV=development`. Th
 | `AGENT_CLONES_DIR` | Where session clones go. Default `~/.zimmer/clones` |
 | `GOOD_JOB_AGENTS_THREADS` | Worker concurrency: how many agent sessions run at once. It also moves the database pool that has to serve them — see [the connection budget](/operate/deploying/#the-database-connection-budget) |
 
-`gh` and the agent CLIs authenticate via OAuth (`gh auth login`, `claude /login`), not env vars.
+`gh` and the agent CLIs authenticate via OAuth (`gh auth login`, `claude auth login`), not env vars.
 
 ## First run: the catalog
 
