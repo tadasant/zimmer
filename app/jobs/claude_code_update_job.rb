@@ -15,7 +15,7 @@ require "open3"
 # which is volume-mounted (the claude_local named volume) for persistence
 # across container restarts and deploys.
 class ClaudeCodeUpdateJob < ApplicationJob
-  queue_as :default
+  queue_as :maintenance
 
   # Singleton: only one update at a time.
   include SingletonSweep

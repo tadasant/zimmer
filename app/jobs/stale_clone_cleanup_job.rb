@@ -28,7 +28,7 @@
 class StaleCloneCleanupJob < ApplicationJob
   include DatabaseRetry
   include DurableSessionStorage
-  queue_as :default
+  queue_as :maintenance
   include SingletonSweep
 
   # Grace period before considering an archived clone "stale" and eligible for cleanup

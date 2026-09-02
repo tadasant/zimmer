@@ -237,7 +237,7 @@ only enqueue a job and are never throttled. See
 [the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 
 `action_health` also carries the job-queue escape hatch: `enter_queue_recovery_mode` (`reason`,
-`ttl_minutes`) halts execution on `pollers`, `triggers`, `inference` and `default` while leaving `agents`
+`ttl_minutes`) halts execution on `pollers`, `triggers`, `inference`, `maintenance` and `default` while leaving `agents`
 running, and `exit_queue_recovery_mode` resumes it. Both are outside that cooldown — the way out of
 a halt has to work on the first try. `get_system_health` states the mode up front when it is on,
 because a pending-job count means something completely different when the queues are deliberately

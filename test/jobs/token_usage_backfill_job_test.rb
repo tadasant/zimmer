@@ -58,9 +58,9 @@ class TokenUsageBackfillJobTest < ActiveJob::TestCase
     assert stalled.reload.complete?
   end
 
-  test "runs on the default queue, not pollers" do
+  test "runs on the maintenance queue, not pollers" do
     # Bulk work that holds its thread for minutes must not sit on the queue the
     # latency-sensitive singleton pollers share.
-    assert_equal "default", TokenUsageBackfillJob.new.queue_name
+    assert_equal "maintenance", TokenUsageBackfillJob.new.queue_name
   end
 end

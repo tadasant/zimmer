@@ -22,7 +22,7 @@
 class DeferredCloneCleanupJob < ApplicationJob
   include DatabaseRetry
   include DurableSessionStorage
-  queue_as :default
+  queue_as :maintenance
 
   # Delay before cleanup runs (should be longer than the undo window)
   CLEANUP_DELAY = 10.seconds

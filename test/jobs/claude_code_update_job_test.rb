@@ -9,9 +9,9 @@ class ClaudeCodeUpdateJobTest < ActiveJob::TestCase
     end
   end
 
-  test "uses default queue" do
+  test "uses the blocking maintenance queue" do
     job = ClaudeCodeUpdateJob.new
-    assert_equal "default", job.queue_name
+    assert_equal "maintenance", job.queue_name
   end
 
   test "performs without error" do

@@ -28,7 +28,7 @@ require "fileutils"
 #
 class TranscriptArchiveJob < ApplicationJob
   include DatabaseRetry
-  queue_as :default
+  queue_as :maintenance
   include SingletonSweep
 
   # Subdirectory, under the durable ~/.zimmer root, that holds the archive.

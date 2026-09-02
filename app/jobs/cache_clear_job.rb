@@ -13,7 +13,7 @@
 #   CacheClearJob.perform_later                    # Clear caches only
 #   CacheClearJob.perform_later(reinstall: true)   # Clear and reinstall MCP packages
 class CacheClearJob < ApplicationJob
-  queue_as :default
+  queue_as :maintenance
 
   def perform(reinstall: false)
     Rails.logger.info "[CacheClearJob] Starting cache clear in worker container"
