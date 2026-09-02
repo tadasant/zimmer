@@ -1322,7 +1322,7 @@ header that decided the body. It happens in browser memory and never touches the
 why `Vary: Turbo-Frame` could not help and why disabling prefetch on one link never did either: the
 key is the URL, so *any* other link to the same session seeded the entry just as well.
 
-Two rules follow, and both are pinned by tests:
+Four rules follow, and all of them are pinned by tests:
 
 - **Nothing links to a drawer path.** Turbo's prefetch cache is only ever seeded by hovering an
   `<a>`, so as long as no anchor points at `/sessions/:id/drawer`, no entry for it can exist. A
@@ -1339,15 +1339,19 @@ Two rules follow, and both are pinned by tests:
   they fall back to an ordinary navigation.
 - **The log-level filter re-fetches the frame's own address.** Changing the log level is a server
   round trip — the server filters timeline items before paginating them — so the detail body has to
-  be re-rendered with a `filter` param. `log_level_filter_controller` resolves *which* address to
-  re-fetch from `closest("turbo-frame")`: inside the drawer that is the frame's `src`, and on the
-  full page, where there is no frame, it falls back to `window.location`. It used to always use
-  `window.location`, which in the drawer is the **dashboard** — so opening the drawer with a
-  non-default level saved in `localStorage` navigated the dashboard to `/?filter=<level>`, a param
-  that means nothing there, and dismissed the drawer along with the reader's place
-  ([#666](https://github.com/tadasant/zimmer/issues/666)). What the frame now navigates to is
-  `/sessions/:id/drawer?filter=<level>` — a drawer url, so the rule above still holds, and no
-  anchor points at it so the prefetch cache still cannot be seeded for it.
+  be re-rendered with a `filter` param. `log_level_filter_controller` picks *which* address to
+  re-fetch off the enclosing frame's `src`: a frame carrying one was lazy-loaded from that address
+  into some other document, which is the drawer, so the frame's `src` is the session's address; no
+  frame, or a frame without a `src`, was rendered as part of this document, so the document's own
+  address is the body's — that covers the full session page and `/sessions/:id/drawer` opened
+  directly. Using `window.location` unconditionally is what broke the drawer, where it is the
+  **dashboard**: opening the drawer with a non-default level saved in `localStorage` navigated the
+  dashboard to `/?filter=<level>`, a param that means nothing there, and dismissed the drawer along
+  with the reader's place ([#666](https://github.com/tadasant/zimmer/issues/666)). What the frame
+  navigates to is `/sessions/:id/drawer?filter=<level>` — a drawer url, so the rule above still
+  holds, and no anchor points at it so the prefetch cache still cannot be seeded for it. A frame
+  navigation has no browser loading UI behind it, so the drawer dims the frame for the round trip
+  off Turbo's own `busy` attribute rather than leaving the previous filter's content looking live.
 - **A redirect the frame follows lands on the drawer url.** A frame follows a 302 with its own
   `Turbo-Frame` header still attached, so `#follow_up`'s "queued instead" branch and `#refresh` —
   the two that redirect rather than answering with a Turbo Stream — pick their target through
@@ -1360,8 +1364,8 @@ says, no link on the dashboard points at a drawer path, and — asserted over th
 drawer body, so a link added later is caught without anyone remembering the rule — every same-origin
 link inside the drawer escapes to `_top`. `test/system/session_drawer_log_filter_test.rb` drives the
 log-level filter in both contexts and asserts the dashboard's URL is untouched when the drawer
-re-filters. Opening `/sessions/:id/drawer` by hand is not a supported
-way to read a session — it answers with a bare frame and no chrome — it is the drawer's own address.
+re-filters. Opening `/sessions/:id/drawer` by hand is not a supported way to read a session — it
+answers with a bare frame and no chrome — it is the drawer's own address.
 
 ### The reopen backfill
 

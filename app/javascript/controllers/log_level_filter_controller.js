@@ -9,17 +9,17 @@ export default class extends Controller {
   }
 
   connect() {
-    // Check whether the address this body was rendered from already carries an
-    // explicit filter param (see `filterOrigin` — that address is NOT always the
-    // document's).
+    // Does the address this body was rendered from already carry an explicit
+    // filter param? That address is not always the document's — see filterOrigin.
     const origin = this.filterOrigin
-    const urlFilter = origin.url ? origin.url.searchParams.get('filter') : null
+    const urlFilter = origin.url.searchParams.get('filter')
 
     // If no filter param, check localStorage for user's preference and re-fetch
     // with it (so the server can filter properly)
     if (!urlFilter) {
       const savedLevel = localStorage.getItem('logLevelFilter')
-      if (savedLevel && savedLevel !== this.serverFilterValue && this.refetchAtLevel(savedLevel)) {
+      if (savedLevel && savedLevel !== this.serverFilterValue) {
+        this.refetchAtLevel(savedLevel, origin)
         return // Don't continue setup — this DOM is being replaced
       }
     }
@@ -65,64 +65,54 @@ export default class extends Controller {
     // Changing the filter needs fresh server-side filtered data: the server
     // filters items before pagination, so a new level means re-fetching with the
     // new filter parameter.
-    if (this.refetchAtLevel(newLevel)) return
-
-    // Nothing addressable to re-fetch (see `filterOrigin`). Fall back to hiding
-    // and showing the items already in the DOM, so the select still does
-    // something rather than nothing.
-    this.levelValue = newLevel
-    this.filter()
+    this.refetchAtLevel(newLevel)
   }
 
-  // Where this detail body came from, and therefore what has to be re-fetched to
-  // change its filter. The body renders in two places, at two different
-  // addresses:
+  // The address this detail body was rendered from, and therefore the thing that
+  // has to be re-fetched to change its filter. Two cases, told apart by the
+  // enclosing frame's `src`:
   //
-  //   - the full session page (/sessions/:id), which is the document itself; and
-  //   - the dashboard's right-side drawer, where it is lazy-loaded into
-  //     <turbo-frame id="session_detail"> from /sessions/:id/drawer.
+  //   - **A frame carrying a `src`** was lazy-loaded from that address into some
+  //     other document. That is the dashboard's session drawer, where
+  //     `window.location` is the DASHBOARD rather than the session — so filtering
+  //     through the document navigates the whole page to /?filter=<level>, a
+  //     param that means nothing there, and dismisses the drawer along with the
+  //     reader's place (#666). The frame's own `src` is the session's address.
+  //   - **No frame, or a frame with no `src`**, was server-rendered as part of
+  //     this document, so the document's address is the body's address too. That
+  //     covers the full session page (/sessions/:id, no frame at all) and
+  //     /sessions/:id/drawer opened directly (a bare frame, which #drawer renders
+  //     without a `src`).
   //
-  // Inside the drawer `window.location` is the DASHBOARD, not the session, so
-  // filtering through it navigated the whole page to /?filter=<level> — a param
-  // that means nothing there — dismissing the drawer and losing the reader's
-  // place (#666). The enclosing frame's own `src` is the session's address, so
-  // that is what the drawer re-fetches. `closest("turbo-frame")` returns null on
-  // the full page, which is how the document branch is selected.
-  //
-  // Returns { frame, url }: `frame` is null on the full page, and `url` is null
-  // only for the degenerate case of a frame with no `src` — a body that is not
-  // in the document and has no address of its own either. Navigating the
-  // document from there would be the very bug this replaces, so it reports "no
-  // origin" and the callers fall back to client-side filtering.
+  // Returns { frame, url }; `frame` is null whenever the document is the thing to
+  // navigate.
   get filterOrigin() {
-    const frame = this.element.closest("turbo-frame")
-    if (!frame) return { frame: null, url: new URL(window.location.href) }
+    const frame = this.element.closest('turbo-frame')
+    // Turbo's FrameElement#src is a plain attribute passthrough, so it hands back
+    // whatever string was set — often a relative path. Resolve against the document.
+    const src = frame && frame.getAttribute('src')
+    if (!src) return { frame: null, url: new URL(window.location.href) }
 
-    // Turbo's FrameElement#src is a plain attribute passthrough, so it can be a
-    // relative path — resolve it against the document.
-    const src = frame.getAttribute("src")
-    return { frame, url: src ? new URL(src, window.location.href) : null }
+    return { frame, url: new URL(src, window.location.href) }
   }
 
-  // Re-fetch this detail body at `level`, addressing whichever of the two
-  // origins above applies. Returns true when a fetch was started (the caller's
-  // DOM is on its way out), false when there was nothing to address.
-  refetchAtLevel(level) {
-    const { frame, url } = this.filterOrigin
-    if (!url) return false
-
+  // Re-fetch this detail body at `level`, addressing whichever of the two origins
+  // above applies. The caller's DOM is on its way out once this returns.
+  refetchAtLevel(level, origin = this.filterOrigin) {
+    const { frame, url } = origin
     url.searchParams.set('filter', level)
 
     if (frame) {
       // Setting `src` is a real Turbo Frame navigation: the response's matching
       // frame is swapped in, so only the drawer's contents change and the
       // dashboard behind it — scroll position, open drawer and all — is left
-      // alone.
+      // alone. Turbo marks the frame `busy` for the round trip; the drawer styles
+      // that (app/assets/tailwind/application.css) so the stale content reads as
+      // stale, which the browser's own loading UI used to do for free.
       frame.src = url.toString()
     } else {
       window.location.href = url.toString()
     }
-    return true
   }
 
   filter() {

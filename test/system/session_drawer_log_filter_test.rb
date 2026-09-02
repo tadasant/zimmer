@@ -5,13 +5,11 @@ require "application_system_test_case"
 # them. The body renders at two different addresses — the full session page
 # (/sessions/:id, the document itself) and the dashboard drawer's lazy frame
 # (/sessions/:id/drawer) — so "re-render me at this level" has to address the
-# right one.
+# right one, or the drawer navigates the dashboard and dismisses itself (#666).
 #
-# It used to always address the document. Inside the drawer that is the
-# DASHBOARD, so the filter navigated the whole page to /?filter=<level> — a
-# param that means nothing there — dismissing the drawer and losing the reader's
-# place (#666). These tests pin both halves: the drawer re-filters its own frame,
-# and the full page still navigates itself.
+# These tests pin both halves: the drawer re-filters its own frame, and the full
+# page still navigates itself. The prose is in
+# docs/src/content/docs/sessions/lifecycle.md, "The drawer loads its own URL".
 class SessionDrawerLogFilterTest < ApplicationSystemTestCase
   # A log line is a "regular-log" item: the server renders it at `show-logs` and
   # `verbose`, and omits it at `minimal` (the default). So its presence is a
@@ -85,6 +83,10 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
   # navigates the document, so the full session page behaves exactly as before.
   test "the full session page still restores the saved log level from localStorage" do
     visit session_path(@session)
+    # connect() writes the rendered level to localStorage, so wait for the
+    # controller to have run before overwriting it — otherwise the two writes
+    # race and the controller's `minimal` can land last.
+    wait_for_stimulus_controller("log-level-filter")
     page.execute_script("localStorage.setItem('logLevelFilter', 'show-logs')")
 
     # A fresh load with the preference saved and no filter param: connect()
