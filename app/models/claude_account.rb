@@ -1247,7 +1247,7 @@ class ClaudeAccount < ApplicationRecord
   #     the outgoing account's copy on that path.
   #   * the container-local ~/.claude.json exists and names somebody else. The
   #     marker is written by Zimmer and the CLI rewrites `claudeAiOauth` without
-  #     touching it, so after a manual `claude /login` as another account the
+  #     touching it, so after a manual `claude auth login` as another account the
   #     marker is stale and adopting on its word alone would graft that other
   #     subscription's tokens onto this row. Two disagreeing witnesses are not
   #     proof of ownership; one silent witness (no identity file, as after a

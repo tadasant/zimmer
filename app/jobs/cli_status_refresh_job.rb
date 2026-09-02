@@ -6,8 +6,10 @@
 # and authentication status of CLI tools (gh, claude, fly). Results are cached
 # so the web endpoints can return immediately without blocking on shell commands.
 #
-# The CLI status checks can take 3-10+ seconds (especially `claude whoami`),
-# so running them in a background job prevents blocking page loads.
+# The CLI status checks shell out to each tool (`gh auth status`, `codex login
+# status`, ...) and can take several seconds, so running them in a background job
+# prevents blocking page loads. None of them may reach a billable path — see the
+# `check_auth` contract on CliStatusService.
 class CliStatusRefreshJob < ApplicationJob
   queue_as :pollers
 
