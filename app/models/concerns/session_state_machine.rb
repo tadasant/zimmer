@@ -1913,9 +1913,10 @@ module SessionStateMachine
   # clone-only sessions that later received one), where the after_create_commit
   # callback skipped enqueuing because the prompt was blank at creation time.
   #
-  # Coalesced per session: a SessionTitleJob already queued or running for this
-  # session reads the transcript when it runs, so a second one behind it would
-  # only find the work done. A session that stays uncategorized (the inference
+  # Coalesced per session: a SessionTitleJob already queued and unclaimed for
+  # this session reads the transcript when it runs, so a second one behind it
+  # would only find the work done. (One already running took its snapshot when
+  # it started and does not count.) A session that stays uncategorized (the inference
   # answered NONE) re-enqueues on every pause for as long as that holds, and
   # without this check a session sleeping and waking on a short self-wake
   # stacks one title job per wake — see PendingSessionJob.
@@ -1949,10 +1950,12 @@ module SessionStateMachine
   # last summary, so a transition that adds no transcript costs nothing.
   #
   # Coalesced per session at this site only: a SessionStatusSummaryJob already
-  # queued for this session — automatic or forced — computes the line count it
-  # summarizes when it claims the record, so it will cover this transition's
-  # transcript too, and a second copy would only claim an `inference` thread to
-  # return "Summary is current". The forced surfaces (Regenerate in the panel,
+  # queued and unclaimed for this session — automatic or forced — computes the
+  # line count it summarizes when it claims the record, so it will cover this
+  # transition's transcript too, and a second copy would only claim an
+  # `inference` thread to return "Summary is current". One already running took
+  # its snapshot when it started and does not count; the fresh enqueue then
+  # meets its claim and returns after a SELECT. The forced surfaces (Regenerate in the panel,
   # REST, MCP) do not pass through here and are never coalesced — see
   # SessionStatusSummaryJob for why a queue-level dedup key would be wrong.
   def enqueue_status_summary_refresh

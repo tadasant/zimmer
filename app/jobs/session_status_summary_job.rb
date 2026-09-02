@@ -20,7 +20,7 @@
 #
 # The AUTOMATIC trigger does coalesce, at its enqueue site rather than here:
 # SessionStateMachine#enqueue_status_summary_refresh skips the enqueue when any
-# SessionStatusSummaryJob for the session is still unfinished (PendingSessionJob),
+# SessionStatusSummaryJob for the session is queued and unclaimed (PendingSessionJob),
 # because that job reads the transcript line count when it claims the record and
 # so already covers the transition that would have enqueued another. Forced runs
 # never consult that check, so a queued automatic refresh cannot swallow one.

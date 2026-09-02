@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Whether a session already has an unfinished job of a given class queued or
-# running — the question an automatic, best-effort enqueue asks before adding
+# Whether a session already has a job of a given class queued and not yet
+# claimed — the question an automatic, best-effort enqueue asks before adding
 # another.
 #
 # The two jobs that ask it, SessionTitleJob and SessionStatusSummaryJob, are
@@ -21,6 +21,19 @@
 # never be collapsed into a queued automatic run — a key on the session id
 # would do exactly that, so they do not consult this at all.
 #
+# A job that is already performing does not count. It took its snapshot of the
+# session when it started, so a transition landing during its run is not
+# covered by it, and the fresh enqueue that follows is the cheap kind: the
+# running job holds the summary claim, so the new one returns "already being
+# generated" or "current" after a SELECT. A row GoodJob is retrying has had
+# `performed_at` reset to nil and does count, which is right — it has not yet
+# read anything.
+#
+# StatusSummaryBackstopJob and SessionStatusSummaryHarvestJob also enqueue a
+# summary job and are deliberately not routed through this check: the backstop
+# refuses a record already `pending` and is capped per sweep, and the harvest
+# retries once per fork, so neither can stack a job per wake.
+#
 # `serialized_params -> 'arguments' ->> 0` is the session id, the same column
 # expression PendingAgentTurns reads. Best-effort by design: two transitions
 # landing in the same instant can both see nothing queued and enqueue twice,
@@ -30,10 +43,11 @@ module PendingSessionJob
 
   # @param job_class [Class] an ActiveJob class whose first argument is a session id
   # @param session_id [Integer]
-  # @return [Boolean] true when an unfinished job of that class exists for the session
+  # @return [Boolean] true when a job of that class is queued for the session and no
+  #   worker has claimed it yet
   def queued?(job_class, session_id)
     GoodJob::Job
-      .where(job_class: job_class.name, finished_at: nil)
+      .where(job_class: job_class.name, finished_at: nil, performed_at: nil)
       .where("serialized_params -> 'arguments' ->> 0 = ?", session_id.to_s)
       .exists?
   end
