@@ -19,10 +19,13 @@ module GateDecisions
       REPO = "tadasant/tadasant-internal"
       DIRECTORY = "artifacts/references"
 
-      # Generous: the largest file is a few MB over an authenticated API call, and
-      # the caller is a background task with a slice budget, not a request.
-      LIST_TIMEOUT = 30
-      FETCH_TIMEOUT = 120
+      # Both sit UNDER PostDeployTaskJob::SLICE_BUDGET (90s), because the importer
+      # only checks its budget between files: a fetch allowed to run longer than
+      # the whole slice would hold a worker thread past the deadline before the
+      # budget is consulted even once. The largest ledger is 3.4 MB over an
+      # authenticated API call, so this is still generous.
+      LIST_TIMEOUT = 15
+      FETCH_TIMEOUT = 60
 
       def initialize(repo: REPO, directory: DIRECTORY)
         @repo = repo

@@ -15,11 +15,14 @@
 #
 # So the defence is structural, in three parts:
 #
-#   * There is no MCP tool that writes here, and none that can. The write path is
-#     GateDecisionFeedbacksController, which is an ApplicationController
-#     descendant — the browser. Api::BaseController authenticates an API key the
-#     whole agent fleet shares, so it establishes a caller but not a person, and
-#     it deliberately has no feedback-append action.
+#   * There is no MCP tool that writes here, and no REST action either. The write
+#     path is GateDecisionFeedbacksController, an ApplicationController descendant
+#     — the browser. Api::BaseController (and McpController with it) authenticates
+#     an API key the whole agent fleet shares, so it establishes a caller but not a
+#     person. This is the one guarantee here that does not depend on a caller
+#     staying inside the tools it was offered: the `gate_decisions` tool group
+#     scopes what a session is handed, whereas an API key cannot cross this
+#     boundary at all.
 #   * `author` is resolved at that boundary from `User.admin`, never read from
 #     the request body. Same rule as HumanMessage, for the same reason.
 #   * Rows are append-only. A note cannot be edited into saying something else,
@@ -47,10 +50,11 @@ class GateDecisionFeedback < ApplicationRecord
 
   scope :chronological, -> { order(:received_at, :id) }
 
+  # Model-level, with the same caveat as GateDecision: `update_all` and raw SQL
+  # bypass a callback, and a Postgres trigger cannot survive this app's Ruby schema
+  # dump. Nothing in the app writes to this table except the two paths above.
   before_update { raise ActiveRecord::ReadOnlyRecord, "GateDecisionFeedback is append-only: add another note instead of editing one" }
-  before_destroy do
-    raise ActiveRecord::ReadOnlyRecord, "GateDecisionFeedback is append-only and cannot be deleted" unless destroyed_by_association
-  end
+  before_destroy { raise ActiveRecord::ReadOnlyRecord, "GateDecisionFeedback is append-only and cannot be deleted" }
 
   # Falls back to the raw key rather than dropping the row: a human said it even
   # if the roster has since changed. Same treatment as HumanMessage#display_name.

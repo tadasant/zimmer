@@ -35,8 +35,8 @@ module GateDecisions
     # The filtered relation, newest decision first. Deliberately does NOT apply
     # `limit`/`offset` — the REST index paginates with its own helper, and the MCP
     # tool slices with these. Applying it here would make one of the two wrong.
-    def scope(base = GateDecision.all)
-      scope = base
+    def scope
+      scope = GateDecision.all
       scope = scope.for_gate(gate) if gate
       scope = scope.for_surface(surface) if surface
       scope = scope.with_decision(decision) if decision

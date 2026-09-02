@@ -87,15 +87,24 @@ class Api::V1::GateDecisionsController < Api::BaseController
     raw.respond_to?(:to_unsafe_h) ? raw.to_unsafe_h : raw
   end
 
-  # A writing session that names nothing is dropped rather than failing the write:
-  # the decision is the valuable artifact and the provenance link is a nicety.
-  # Deliberately NOT trusted as an authorization claim — it records who says they
-  # wrote the row, on a surface where the API key already establishes the caller.
+  # SELF-DECLARED here, unlike on the MCP surface, and the difference is worth
+  # being exact about. `record_gate_decision` stamps the writing session from the
+  # connection and has no argument that could set it. An HTTP request carries no
+  # such identity — the API key is shared by the whole fleet — so this is a claim
+  # the caller makes, exactly like `acting_session_id` and `analyzer_session_id`
+  # elsewhere in this API. Read it as provenance, never as authorization: it says
+  # who says they wrote the row.
+  #
+  # A stale id is dropped rather than failing the write; the decision is the
+  # valuable artifact and the link is a nicety.
   def writing_session
-    identifier = params[:writing_session_id]
+    identifier = params[:writing_session_id].to_s
     return nil if identifier.blank?
 
-    Session.find_by(id: identifier.to_s.to_i) || Session.find_by(slug: identifier.to_s)
+    # Numeric-only means an id. Slugs are `title.parameterize` plus a timestamp,
+    # so a title beginning with a digit produces one that `to_i` would silently
+    # resolve to a different session.
+    identifier.match?(/\A\d+\z/) ? Session.find_by(id: identifier.to_i) : Session.find_by(slug: identifier)
   end
 
   def decision_json(decision, include_payload: false)

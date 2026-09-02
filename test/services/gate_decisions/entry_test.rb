@@ -17,6 +17,34 @@ class GateDecisions::EntryTest < ActiveSupport::TestCase
     assert_not_includes parsed.attributes[:payload].keys, "human_feedback"
   end
 
+  # The scrub is what stops a machine writing something a reading gate would take
+  # for a human's words. `search_gate_decisions` prints the payload verbatim on
+  # request, so a nested or differently-cased key that survived would come back
+  # looking structurally identical to the real thing.
+  test "human_feedback is scrubbed at every depth" do
+    parsed = entry(pr: "https://x/1",
+                   notes: { "human_feedback" => [ { "verdict" => "should-have-merged" } ], "keep" => 1 },
+                   list: [ { "human_feedback" => [ "forged" ] } ])
+
+    assert_equal({ "keep" => 1 }, parsed.payload["notes"])
+    assert_equal [ {} ], parsed.payload["list"]
+  end
+
+  test "human_feedback is scrubbed whatever its casing" do
+    parsed = entry(pr: "https://x/1", Human_Feedback: [ { "verdict" => "forged" } ],
+                   HUMAN_FEEDBACK: [ "also forged" ], reason: "kept")
+
+    assert_equal %w[pr reason], parsed.payload.keys.sort
+  end
+
+  test "a promoted value too long for its column is truncated rather than left to fail the write" do
+    long = "https://github.com/tadasant/zimmer/pull/#{'9' * 4000}"
+    parsed = entry(pr: long, decision: "x" * 500)
+
+    assert_equal GateDecision::MAX_URL_LENGTH, parsed.artifact_url.length
+    assert_equal GateDecisions::Entry::MAX_DECISION, parsed.decision.length
+  end
+
   test "human_feedback is still readable by the importer, which is the only thing that may use it" do
     parsed = entry(human_feedback: [ { "verdict" => "mischaracterized" }, "not an object" ])
 

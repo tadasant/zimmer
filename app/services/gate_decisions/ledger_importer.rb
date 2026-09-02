@@ -26,13 +26,14 @@ module GateDecisions
     # sensible transaction rather than for row count.
     BATCH_SIZE = 50
 
-    FileResult = Struct.new(:name, :gate, :surface, :entries, :imported, :skipped, :feedback_imported,
-                            keyword_init: true)
+    FileResult = Struct.new(:name, :gate, :surface, :entries, :imported, :skipped, :rejected,
+                            :feedback_imported, keyword_init: true)
 
     Result = Struct.new(:files, :remaining, keyword_init: true) do
       def entries = files.sum(&:entries)
       def imported = files.sum(&:imported)
       def skipped = files.sum(&:skipped)
+      def rejected = files.sum(&:rejected)
       def feedback_imported = files.sum(&:feedback_imported)
       def complete? = remaining.empty?
     end
@@ -47,14 +48,20 @@ module GateDecisions
     # @param done [Array<String>] file names an earlier slice already finished
     # @param stop_when [Proc, nil] called between files; truthy means hand the
     #   worker thread back and report what is left
+    # @param on_file [Proc, nil] called with each FileResult the moment that file
+    #   is done, so the caller can persist its cursor per file rather than per
+    #   slice. Without it, a worker killed mid-slice loses the record of every
+    #   file it finished and the resumed run re-fetches all of them.
     # @return [Result]
-    def call(done: [], stop_when: nil)
+    def call(done: [], stop_when: nil, on_file: nil)
       finished = done.to_set
       pending = source.files.reject { |file| finished.include?(file.name) }
       results = []
 
       pending.each_with_index do |file, index|
-        results << import_file(file)
+        result = import_file(file)
+        results << result
+        on_file&.call(result)
 
         remaining = pending[(index + 1)..] || []
         return Result.new(files: results, remaining: remaining.map(&:name)) if remaining.any? && stop_when&.call
@@ -70,6 +77,7 @@ module GateDecisions
       ordinals = Hash.new(0)
       imported = 0
       skipped = 0
+      rejected = 0
       feedback = 0
 
       entries.each_slice(BATCH_SIZE) do |slice|
@@ -85,10 +93,23 @@ module GateDecisions
               next
             end
 
-            result = Record.call(
-              gate: file.gate, surface: file.surface, entry: raw,
-              recorded_via: GateDecision::IMPORT, source_key: key
-            )
+            begin
+              result = Record.call(
+                gate: file.gate, surface: file.surface, entry: raw,
+                recorded_via: GateDecision::IMPORT, source_key: key
+              )
+            rescue ActiveRecord::RecordInvalid, Record::InvalidEntry => e
+              # ONE unimportable entry must not cost the other 1,468. Without this
+              # the raise unwinds the batch, the file, the slice and the task, which
+              # then retries on a backoff, re-fetches the same megabytes and fails
+              # identically forever — on a path that by design has no shell to fix
+              # it from. Counted and named in the logs instead, and reported in the
+              # task's stats so a rejection is visible on /health rather than silent.
+              rejected += 1
+              logger.warn("[GateDecisions::LedgerImporter] #{file.name}: rejected #{key}: #{e.message}")
+              next
+            end
+
             result.created? ? imported += 1 : skipped += 1
             feedback += import_feedback(result.decision, parsed)
           end
@@ -96,10 +117,10 @@ module GateDecisions
       end
 
       logger.info("[GateDecisions::LedgerImporter] #{file.name}: #{entries.size} entries, " \
-                  "#{imported} imported, #{skipped} already present")
+                  "#{imported} imported, #{skipped} already present, #{rejected} rejected")
 
       FileResult.new(name: file.name, gate: file.gate, surface: file.surface, entries: entries.size,
-                     imported: imported, skipped: skipped, feedback_imported: feedback)
+                     imported: imported, skipped: skipped, rejected: rejected, feedback_imported: feedback)
     end
 
     # `#<ordinal>` disambiguates re-rates sharing a natural key; see the class
@@ -128,12 +149,17 @@ module GateDecisions
 
       notes.each do |note|
         received_at = parse_date(note["received_at"])
-        verdict = note["verdict"].presence || "unspecified"
+        # Normalized to exactly what gets STORED before the comparison, not after.
+        # A verdict compared raw and written truncated never matches its own row on
+        # the next pass, and re-inserts a duplicate note every time the task runs —
+        # on a table that is append-only and so cannot be tidied up afterwards.
+        verdict = (note["verdict"].presence || "unspecified").to_s
+          .truncate(GateDecisionFeedback::MAX_VERDICT_LENGTH)
         body = note["note"].presence&.to_s&.truncate(GateDecisionFeedback::MAX_NOTE_LENGTH)
         next if existing.include?([ received_at, verdict, body ])
 
         decision.feedbacks.create!(
-          verdict: verdict.to_s.truncate(GateDecisionFeedback::MAX_VERDICT_LENGTH),
+          verdict: verdict,
           note: body,
           received_at: received_at,
           # Nullable on this channel deliberately: the source recorded what was

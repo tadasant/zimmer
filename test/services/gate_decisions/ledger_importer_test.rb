@@ -196,6 +196,37 @@ class GateDecisions::LedgerImporterTest < ActiveSupport::TestCase
     end
   end
 
+  # One bad entry must not cost the other 1,468. Without isolation the raise
+  # unwinds the batch, the file, the slice and the whole post-deploy task, which
+  # then retries on a backoff and fails identically forever.
+  test "an entry the model refuses is counted and skipped, not fatal" do
+    with_ledgers("PR_MERGE_GATE_ZIMMER_LEDGER.json" => [
+      pr_entry(number: 1),
+      pr_entry(number: 2, reason: "x" * (GateDecision::MAX_PAYLOAD_BYTES + 1)),
+      pr_entry(number: 3)
+    ]) do |source|
+      result = import(source)
+
+      assert_equal 2, result.imported
+      assert_equal 1, result.rejected
+      assert_equal 3, result.entries
+      assert_equal 2, GateDecision.count
+    end
+  end
+
+  test "each file is reported the moment it finishes, so a caller can checkpoint per file" do
+    with_ledgers(
+      "ISSUE_WORK_GATE_ZIMMER_LEDGER.json" => [ issue_entry(number: 1) ],
+      "PR_MERGE_GATE_ZIMMER_LEDGER.json" => [ pr_entry(number: 2) ]
+    ) do |source|
+      seen = []
+      import(source, on_file: ->(file) { seen << [ file.name, GateDecision.count ] })
+
+      assert_equal [ [ "ISSUE_WORK_GATE_ZIMMER_LEDGER.json", 1 ],
+                     [ "PR_MERGE_GATE_ZIMMER_LEDGER.json", 2 ] ], seen
+    end
+  end
+
   test "a missing directory says so rather than importing nothing quietly" do
     error = assert_raises(GateDecisions::LedgerSource::Unavailable) do
       import(GateDecisions::LedgerSource::Directory.new("/nope/not/here"))

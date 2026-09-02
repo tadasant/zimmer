@@ -38,10 +38,12 @@ class CreateGateDecisions < ActiveRecord::Migration[8.1]
       # extracted from it, and the original stays in `payload`.
       t.string :producing_session_url
 
-      # The session that WROTE this row, stamped server-side from the MCP
-      # connection or the API request. Never taken from an agent-supplied
-      # parameter: a ledger row that can name its own author is a ledger row an
-      # agent can launder a decision through.
+      # The session that WROTE this row. On the MCP surface it is stamped
+      # server-side from the connection and there is no argument that could set
+      # it. On the REST surface there is no connection identity to read, so it is
+      # a self-declared `writing_session_id` param — the same shape, and the same
+      # caveat, as `acting_session_id` and `analyzer_session_id` elsewhere in the
+      # API. Read it as provenance, never as an authorization claim.
       t.references :writing_session, foreign_key: { to_table: :sessions, on_delete: :nullify }, index: true
 
       # How the row got here: `import` (backfilled from the JSON ledgers), `mcp`
@@ -108,5 +110,14 @@ class CreateGateDecisions < ActiveRecord::Migration[8.1]
 
     add_index :gate_decision_feedbacks, [ :gate_decision_id, :received_at ],
               name: "index_gate_decision_feedbacks_on_decision_and_received"
+
+    # NOTE ON ENFORCEMENT. Append-only is enforced on the models, not with a
+    # Postgres trigger. A trigger would be the stronger guarantee — `update_all`,
+    # `delete_all` and raw SQL all walk past a `before_update` — but this app dumps
+    # its schema in Rails' Ruby format, which cannot carry triggers or functions.
+    # A trigger installed here would exist in production and silently NOT exist in
+    # CI, in test, or in any environment built by `db:schema:load`, which is a
+    # worse place to be than an honest callback: the guarantee would be untestable
+    # and every environment would disagree about it. Filed as zimmer#780.
   end
 end

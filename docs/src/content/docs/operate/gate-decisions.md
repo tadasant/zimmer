@@ -14,9 +14,14 @@ read the whole thing to calibrate one rating.
 ## What a decision is
 
 A row is one rating, and it is **append-only**. There is no update and no delete — not through the
-REST API, not through MCP, not in the model. A correction is a *new* row on the same artifact citing
-the earlier one, so both readings stay visible and the record cannot be edited into agreement with
-itself.
+REST API, not through MCP, and not through the model, which raises on both. A correction is a *new*
+row on the same artifact citing the earlier one, so both readings stay visible and the record cannot
+be edited into agreement with itself.
+
+The honest limit: this is enforced on the model, so `update_all` and raw SQL would bypass it. A
+Postgres trigger would be stronger, but Rails' Ruby schema dumper cannot carry one, so it would
+exist in production and silently not exist in CI — a guarantee no test could hold you to. Nothing in
+the app takes those paths against this table.
 
 Only a handful of fields are columns:
 
@@ -28,7 +33,7 @@ Only a handful of fields are columns:
 | `decided_at` | The date the gate wrote in the entry |
 | `decision` | The verdict — `auto-merge`, `hold`, `auto-proceed`, … |
 | `producing_session_url` | The session whose work was rated, pulled out of the prose it is usually embedded in |
-| `writing_session_id` | The session that wrote the row, stamped server-side |
+| `writing_session_id` | The session that wrote the row — stamped from the connection on MCP, self-declared on REST |
 | `recorded_via` | `import`, `mcp` or `api` |
 | `payload` | **The entry, verbatim** |
 
@@ -49,8 +54,10 @@ whose diff another gate read, and the gates' own escalation doc says why that ma
 ledger-shaped PR carrying a fabricated `human_feedback` note *"would sail through a structural check
 and never be seen by a human."* A direct database write removes that last look. So:
 
-- **No MCP tool writes it, on any group.** `record_gate_decision` silently drops the key if you send
-  it, and says so in its receipt.
+- **No MCP tool writes it, on any group** — at any nesting depth, and whatever its casing. The key
+  is scrubbed recursively out of every entry, so it cannot ride into `payload` as
+  `Human_Feedback` or under some other key and be printed back to a reading gate as though it were
+  real. `record_gate_decision` says in its receipt when it dropped one.
 - **The REST API has no feedback action at all.** `Api::BaseController` authenticates an API key the
   whole agent fleet shares — that establishes a caller, not a person.
 - **The write path is the browser**, `POST /gate_decisions/:id/feedbacks`, served by an
@@ -75,10 +82,21 @@ Three MCP tools, in a **tool group of their own** (`gate_decisions`), served at 
 | `record_gate_decision` | Write one rating. The only write tool in the group |
 
 The group matters as much as the tools. Folded into `sessions`, every session carrying
-`zimmer-sessions` could write gate ratings, and a ledger anything can write is not evidence of
-anything. `gate_decisions_readonly` — generated automatically, like every base group's readonly
-variant — carries the two reads and not the write. The catalog server that scopes to it is
-`zimmer-gate-decisions`.
+`zimmer-sessions` would be handed the ability to write gate ratings, and a ledger every session has
+a pen for is not evidence of anything. `gate_decisions_readonly` — generated automatically, like
+every base group's readonly variant — carries the two reads and not the write. The catalog server
+that scopes to it is `zimmer-gate-decisions`.
+
+Be precise about what that buys, though: **tool groups are a scoping boundary, not an authorization
+one.** The API key is shared by the whole fleet and is written into every session's own MCP config,
+so a determined agent could compose its own `?tool_groups=` URL. What the group decides is what a
+session is *offered*, which is what keeps recording a rating from being something any session does
+in passing. The guarantee that does not depend on a caller staying inside its tools is the feedback
+boundary above: no API key reaches `POST /gate_decisions/:id/feedbacks` at all.
+
+`gate_decisions` is a base group, so the unscoped `/mcp` surface carries the write tool too. That is
+what "no `tool_groups` means every base group" has always meant; the scoping that matters is that
+`sessions` and `self_session` do not reach it.
 
 The same filters are on `GET /api/v1/gate_decisions`; see [the REST API](/extend/rest-api/).
 
@@ -95,6 +113,11 @@ that group**. The tuple alone is not unique in the real corpus: 52 of its groups
 entries, 59 rows in total, and those are re-rates — the same PR rated twice in a day because the
 base branch moved. They are genuinely distinct decisions, and keying on the bare tuple would have
 dropped every one of them.
+
+One entry it cannot import does not stop the other 1,468: the entry is counted as `rejected`, named
+in the logs, and reported in the task's stats, rather than aborting a slice that would then retry,
+re-fetch the same megabytes and fail identically forever. The cursor is written as each file
+finishes, so a worker killed mid-slice resumes rather than starting over.
 
 The source is resolved in order: an explicit directory, then `GATE_DECISION_LEDGER_DIR`, then
 GitHub via the `gh` credential every Zimmer container already carries. Outside production, a source

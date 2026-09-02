@@ -8,8 +8,9 @@
 # These records lived as arrays in JSON files in `tadasant/tadasant-internal`,
 # one auto-merged pull request per append. A gate calibrating a single rating had
 # to read the entire file — 3.3 MB and 300 entries for the zimmer PR ledger — to
-# find the handful of comparable decisions it wanted. `GateDecision.recent_for`
-# is that read, filtered.
+# find the handful of comparable decisions it wanted. `GateDecisions::Filters`
+# is that read, filtered, and it backs both the REST index and the
+# `search_gate_decisions` MCP tool.
 #
 # APPEND-ONLY, AND ENFORCED HERE
 #
@@ -46,7 +47,12 @@ class GateDecision < ApplicationRecord
   MAX_PAYLOAD_BYTES = 512.kilobytes
 
   belongs_to :writing_session, class_name: "Session", optional: true
-  has_many :feedbacks, class_name: "GateDecisionFeedback", dependent: :destroy, inverse_of: :gate_decision
+  # `restrict_with_exception`, not `destroy`: a GateDecision can never be
+  # destroyed, so a cascade here is unreachable today — and leaving one in place
+  # is a path that would quietly start deleting human feedback if the parent's
+  # guard were ever relaxed.
+  has_many :feedbacks, class_name: "GateDecisionFeedback", dependent: :restrict_with_exception,
+           inverse_of: :gate_decision
 
   validates :gate, inclusion: { in: GATES }
   validates :surface, presence: true, length: { maximum: MAX_SURFACE_LENGTH }
@@ -72,16 +78,14 @@ class GateDecision < ApplicationRecord
   scope :recent_first, -> { order(decided_at: :desc, id: :desc) }
   scope :with_human_feedback, -> { where(id: GateDecisionFeedback.select(:gate_decision_id)) }
 
+  # Enforced here rather than with a Postgres trigger, which would be stronger but
+  # cannot survive this app's Ruby schema dump — see the migration. So the honest
+  # statement of the guarantee is: every path that goes through a model instance
+  # is append-only, and `update_all` / `delete_all` / raw SQL are not. Nothing in
+  # the app takes those paths against this table, and the API and MCP surfaces
+  # expose no update or destroy at all.
   before_update { raise ActiveRecord::ReadOnlyRecord, "GateDecision is append-only: record a new decision instead of editing one" }
-  before_destroy do
-    raise ActiveRecord::ReadOnlyRecord, "GateDecision is append-only and cannot be deleted" unless destroyed_by_association
-  end
-
-  # The most recent decisions on one surface — the query a gate runs instead of
-  # reading the whole ledger file.
-  def self.recent_for(gate:, surface:, limit: 10)
-    for_gate(gate).for_surface(surface).recent_first.limit(limit)
-  end
+  before_destroy { raise ActiveRecord::ReadOnlyRecord, "GateDecision is append-only and cannot be deleted" }
 
   # Substring search across the whole entry.
   #
@@ -113,10 +117,6 @@ class GateDecision < ApplicationRecord
 
   def title
     payload["title"].presence
-  end
-
-  def human_feedback?
-    feedbacks.any?
   end
 
   private

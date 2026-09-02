@@ -55,12 +55,22 @@ module GateDecisions
           writing_session: writing_session,
           source_key: source_key
         )
-        decision.save!
+        # `requires_new: true` so the INSERT gets its own savepoint. The importer
+        # wraps a whole batch in one transaction, and in Postgres a failed INSERT
+        # poisons the enclosing transaction — the rescue below would then raise
+        # `PG::InFailedSqlTransaction` on its own read, which is precisely the case
+        # it exists to handle.
+        GateDecision.transaction(requires_new: true) { decision.save! }
 
         Result.new(decision: decision, created: true)
       rescue ActiveRecord::RecordNotUnique
-        # Only reachable with a source_key, and only from the importer running
-        # concurrently with itself. The row the other pass wrote is the answer.
+        # Only meaningful with a source_key, and only from the importer running
+        # concurrently with itself: the row the other pass wrote is the answer. A
+        # live write has no source_key, so a uniqueness violation there came from
+        # some other constraint and must not be swallowed — `find_by(source_key: nil)`
+        # would hand back an arbitrary unrelated row and call it "already recorded".
+        raise if source_key.nil?
+
         existing = GateDecision.find_by!(source_key: source_key)
         Result.new(decision: existing, created: false)
       end

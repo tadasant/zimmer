@@ -202,12 +202,13 @@ this?" must be able to tell "no human turns" from "I forgot the flag." Entries a
 human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). See
 [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
 
-`gate_decisions` is a group of its own rather than three more tools in `sessions`, and that
-separation is the whole security property of the [gate decision
-ledger](/operate/gate-decisions/): folded in, every session carrying `zimmer-sessions` could write
-gate ratings, and a ledger anything can write is not evidence of anything. Nothing in this group —
-or in any other — can write `human_feedback`. `record_gate_decision` drops the key if you send it
-and says so in its receipt; the only write path is the browser. `search_gate_decisions` is the read
+`gate_decisions` is a group of its own rather than three more tools in `sessions`: folded in, every
+session carrying `zimmer-sessions` would be handed the ability to write gate ratings, and a ledger
+every session has a pen for is not evidence of anything. Like every tool group this is a **scoping**
+boundary rather than an authorization one — it decides what a session is offered, not what a shared
+API key can reach. Nothing in this group or any other can write `human_feedback`: the key is
+scrubbed recursively out of every entry, `record_gate_decision` says so in its receipt, and the only
+write path is the browser. See the [gate decision ledger](/operate/gate-decisions/). `search_gate_decisions` is the read
 that replaces loading a 3.4 MB JSON file to calibrate one rating, and its description is as much of
 the feature as its code, since a gate that does not know it can ask for "the last 10 holds on this
 surface" will go on reading everything.

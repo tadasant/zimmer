@@ -9,10 +9,11 @@ module Mcp
     #
     # `gate_decisions` is a base group of its own rather than a few more tools in
     # `sessions`, because otherwise every session carrying `zimmer-sessions` — which
-    # is most of them — could write gate ratings. A ledger anything can write is
-    # not evidence. Only a connection that explicitly enables `gate_decisions`
-    # reaches this; `gate_decisions_readonly` gets the two read tools and not this
-    # one.
+    # is most of them — would be handed the ability to write gate ratings. A
+    # connection scoped to `gate_decisions` gets this tool; one scoped to
+    # `gate_decisions_readonly` gets the two reads and not this. That is a scoping
+    # boundary rather than an authorization one — see Mcp::Registry for what it
+    # does and does not buy.
     #
     # TWO THINGS THIS TOOL WILL NOT LET A CALLER DO.
     #

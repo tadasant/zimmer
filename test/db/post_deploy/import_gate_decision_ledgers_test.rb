@@ -51,7 +51,8 @@ class ImportGateDecisionLedgersTest < ActiveSupport::TestCase
     assert_equal 3, GateDecision.count
     assert_equal 3, run.stats["decisions_imported"]
     assert_equal 3, run.stats["entries_seen"]
-    assert_equal 0, run.stats["files_remaining"]
+    assert_equal 0, run.stats["rejected"]
+    assert_equal 2, run.cursor["files_done"].size
     assert_equal 2, run.stats.dig("per_file", "PR_MERGE_GATE_ZIMMER_LEDGER.json", "imported")
     assert_equal 1, run.stats.dig("per_file", "ISSUE_WORK_GATE_ZIMMER_LEDGER.json", "imported")
   end
@@ -82,6 +83,7 @@ class ImportGateDecisionLedgersTest < ActiveSupport::TestCase
     assert_equal PostDeployTask::CONTINUE, outcome
     assert_equal 1, GateDecision.count
     assert_equal 1, run.cursor["files_done"].size
+    assert_equal 1, run.stats["decisions_imported"], "the finished file is checkpointed, not held to the end"
 
     run.claim!(owner: "test")
     resumed = with_ledger_dir(dir) { @task_class.new(run: run, logger: Rails.logger).up }

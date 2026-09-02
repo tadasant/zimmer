@@ -89,18 +89,30 @@ module Mcp
 
       # Gate decisions — the pr-merge-gate / issue-work-gate ledger.
       #
-      # A GROUP OF ITS OWN, and that is the security property the whole feature
-      # rests on. Folded into `sessions` these would be reachable by every session
-      # carrying `zimmer-sessions`, which is most of them, and a ledger anything
-      # can write is not evidence of anything. Only a connection that names
-      # `gate_decisions` can record a rating; `gate_decisions_readonly` — which the
-      # generated readonly variant gives for free — carries the two reads and not
-      # the write.
+      # A GROUP OF ITS OWN. Folded into `sessions` these would be offered to every
+      # session carrying `zimmer-sessions`, which is most of them, and a ledger
+      # every session is handed a pen for is not evidence of anything. A
+      # connection scoped to `gate_decisions` gets the write;
+      # `gate_decisions_readonly` — free, from the generated readonly variant —
+      # gets the two reads and not the write.
       #
-      # Note what is NOT here: there is no tool that writes human feedback, on this
-      # group or any other. That field is writable only from the browser
-      # (GateDecisionFeedbacksController), because its entire value is that a
-      # machine did not write it.
+      # BE PRECISE ABOUT WHAT THAT BUYS. Tool groups are a SCOPING boundary, not an
+      # authorization one: the API key is shared by the whole fleet and is written
+      # into every session's own MCP config, so an agent that went looking could
+      # compose its own `?tool_groups=` URL. What the group does is decide what a
+      # session is *offered*, which is what keeps a rating from being something any
+      # session can write in passing. The property that does not depend on the
+      # caller behaving is the next paragraph.
+      #
+      # Note what is NOT here, on this group or any other: no tool writes human
+      # feedback. That table has one writer, the browser controller, and it is not
+      # reachable from this endpoint at all — see GateDecisionFeedback.
+      #
+      # `gate_decisions` is a base group, so the unscoped `/mcp` surface (the
+      # `zimmer` catalog entry, injected into roots with `default_subagent_roots`)
+      # carries the write too. That is what "no tool_groups means every base group"
+      # has always meant; the scoping that matters is that `sessions` and
+      # `self_session` do not reach it.
       Definition.new(klass: "Mcp::Tools::SearchGateDecisions", group: "gate_decisions", write: false),
       Definition.new(klass: "Mcp::Tools::GetGateDecisionFeedback", group: "gate_decisions", write: false),
       Definition.new(klass: "Mcp::Tools::RecordGateDecision", group: "gate_decisions", write: true)

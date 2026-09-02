@@ -37,6 +37,13 @@ module GateDecisions
 
     URL_PATTERN = %r{https?://[^\s<>"'\\]+}
 
+    # A promoted value that overruns its column would fail validation and, in the
+    # importer, take the whole batch with it. These are guards on a value pulled
+    # out of free-form prose, not limits anyone should reach: the longest URL in
+    # the historical corpus is 69 characters and the longest decision is 43.
+    MAX_URL = GateDecision::MAX_URL_LENGTH
+    MAX_DECISION = 200
+
     attr_reader :gate, :surface, :raw
 
     # @param gate [String] "pr_merge" or "issue_work"
@@ -64,12 +71,18 @@ module GateDecisions
     # in a machine-writable column. The promoted values above are copies, not
     # moves: a reader that only knows the JSON schema still sees whole entries.
     def payload
-      raw.except(*FORBIDDEN_KEYS)
+      scrub(raw)
     end
 
     # The `human_feedback` array as the source wrote it, for the importer to turn
     # into GateDecisionFeedback rows. Never reachable from a live write path — the
     # MCP tool and the REST create action both drop it on the floor.
+    #
+    # Exact key, exact casing, top level only — deliberately narrower than `scrub`
+    # below. The two are asymmetric on purpose: the scrub is defensive and removes
+    # anything that *looks* like feedback, while this promotes source data into the
+    # one table a machine cannot write, so it recognizes only the shape the gates
+    # actually wrote. Every one of the 8 notes in the historical corpus has it.
     def human_feedback
       Array(raw["human_feedback"]).select { |item| item.is_a?(Hash) }
     end
@@ -84,7 +97,8 @@ module GateDecisions
 
     def decision
       value = raw["decision"]
-      value.is_a?(String) ? value.strip.presence : value.presence&.to_s
+      text = value.is_a?(String) ? value.strip : value.presence&.to_s
+      text.presence&.truncate(MAX_DECISION)
     end
 
     # The gates write a plain `"2026-09-02"`. Anything else — a bare year, a null,
@@ -113,7 +127,22 @@ module GateDecisions
       match = value[URL_PATTERN]
       return nil unless match
 
-      match.sub(/[.,;:)\]]+\z/, "").presence
+      match.sub(/[.,;:)\]]+\z/, "").presence&.truncate(MAX_URL)
+    end
+
+    # Every forbidden key, at every depth, whatever its casing. Values are walked
+    # rather than only the top level — see the class comment.
+    def scrub(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(key, nested), kept|
+          next if FORBIDDEN_KEYS.include?(key.to_s.downcase)
+
+          kept[key] = scrub(nested)
+        end
+      when Array then value.map { |item| scrub(item) }
+      else value
+      end
     end
   end
 end

@@ -32,7 +32,5 @@ module GateDecisions
       @gate = gate
       @surface = surface
     end
-
-    def to_s = name
   end
 end
