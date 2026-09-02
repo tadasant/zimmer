@@ -56,10 +56,13 @@ class LiveCloneIntegrityJobTest < ActiveJob::TestCase
     LiveCloneIntegrityJob.perform_now
   end
 
-  test "reports a running session whose clone root is gone entirely" do
+  # Session#deliver_follow_up! flips a session to `running` before it enqueues the
+  # job whose recreate path rebuilds the clone, so on a congested box this is a
+  # normal state that lasts minutes. Reporting it would page for healthy work.
+  test "does not report a running session waiting for its clone to be recreated" do
     FileUtils.rm_rf(@clone_path)
 
-    expect_integrity_error { |message| message.include?("clone root") && message.include?("is gone") }
+    expect_no_integrity_error
 
     LiveCloneIntegrityJob.perform_now
   end
@@ -87,6 +90,14 @@ class LiveCloneIntegrityJobTest < ActiveJob::TestCase
     @session.update!(metadata: @session.metadata.merge("clone_scaffolded" => true))
 
     expect_no_integrity_error
+
+    LiveCloneIntegrityJob.perform_now
+  end
+
+  test "a scaffolded clone is still held to having the session's agent root" do
+    @session.update!(subdirectory: "zimmer", metadata: @session.metadata.merge("clone_scaffolded" => true))
+
+    expect_integrity_error { |message| message.include?("agent root zimmer") }
 
     LiveCloneIntegrityJob.perform_now
   end

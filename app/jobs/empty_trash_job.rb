@@ -46,14 +46,23 @@ class EmptyTrashJob < ApplicationJob
   # Whether `session` is still trash, asked of the database right now rather than
   # taken from the batch this run loaded.
   #
-  # `find_each` batches a thousand rows at a time and each session here costs a
-  # Docker Compose teardown plus a recursive delete of a whole working tree, so
-  # the status that put a session in the batch can be minutes old by the time its
-  # turn comes up. An unarchive inside that window puts the session back to work
-  # on this clone — and unlike the clone, the scratch directory, Claude config
-  # and prompt attachments deleted below have no remote to come back from (#808).
+  # Two things move under this job. `find_each` batches a thousand rows at a time
+  # and each session costs a Docker Compose teardown plus a recursive delete of a
+  # whole working tree, so the status that put a session in the batch can be
+  # minutes old by the time its turn comes up. And an unarchive stays `archived`
+  # for its whole duration, so a session having a new clone built for it right
+  # now still matches this job's scope. `Session.reap_protected?` answers both,
+  # and unlike the clone, the scratch directory, Claude config and prompt
+  # attachments deleted below have no remote to come back from (#808).
+  #
   # Fails closed.
   def still_trash?(session)
+    if Session.reap_protected?(session.id)
+      Rails.logger.warn "[EmptyTrashJob] Skipping session #{session.id}: it is live, or being unarchived, as " \
+        "of now, so the retention deadline that selected it no longer applies"
+      return false
+    end
+
     status = Session.status_label(Session.unscoped.where(id: session.id).pick(:status))
     return true if status == "archived"
 

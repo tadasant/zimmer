@@ -149,20 +149,22 @@ class StaleCloneCleanupJob < ApplicationJob
   # Whether `session` is still a session this job may reap, asked of the database
   # right now rather than taken from the status the candidate scope matched.
   #
-  # The scopes above are plucked at the top of the run and then worked through
-  # one directory at a time, and each directory costs a recursive delete of a
-  # whole working tree. A session unarchived — or a failed one resumed — inside
-  # that gap is live by the time its turn comes up, and reaping it deletes a
-  # running agent's uncommitted work along with the scratch directory and prompt
-  # attachments, which have no remote to come back from (#808). Fails closed: a
-  # question we cannot answer is answered "live".
+  # Two things move under this job. The scopes above are plucked at the top of
+  # the run and then worked through one directory at a time, each costing a
+  # recursive delete of a whole working tree — so a session unarchived, or a
+  # failed one resumed, inside that gap is live by the time its turn comes up.
+  # And an unarchive is `archived` for its whole duration, which makes a session
+  # that is having a *new* clone built for it right now look exactly like one
+  # whose old clone was abandoned. `Session.reap_protected?` answers both (#808).
+  #
+  # Fails closed: a question we cannot answer is answered "protected". This
+  # method guards the whole of #cleanup_session_clone regardless of how the
+  # caller got here, so it does not assume the caller re-read the row.
   def reapable_now?(session)
-    status = Session.status_label(Session.unscoped.where(id: session.id).pick(:status))
-    return false if status.nil?
-    return true unless Session.live_status?(status)
+    return true unless Session.reap_protected?(session.id)
 
-    Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it became #{status} after this " \
-      "run picked it as a stale-clone candidate"
+    Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it is live, or being unarchived, " \
+      "as of now — this run picked it as a stale-clone candidate on a status that has since changed"
     false
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error "[StaleCloneCleanupJob] Could not re-check the status of session #{session.id} " \
@@ -193,12 +195,15 @@ class StaleCloneCleanupJob < ApplicationJob
     # log at the bottom of this method still has something to record.
     if reapable_now?(session)
       cleaned_anything = cleanup_durable_state(session) || cleaned_anything
-    end
 
-    artifact_service = CloneArtifactService.new
-    if artifact_service.cleanup_artifacts(session.id)
-      Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale artifacts for session #{session.id}"
-      cleaned_anything = true
+      # Inside the gate, not after it. Preserved artifacts are the git bundle and
+      # patch of this session's uncommitted work — the thing UnarchiveSessionService
+      # restores from, and the last copy of it once the clone above is gone.
+      artifact_service = CloneArtifactService.new
+      if artifact_service.cleanup_artifacts(session.id)
+        Rails.logger.info "[StaleCloneCleanupJob] Cleaned stale artifacts for session #{session.id}"
+        cleaned_anything = true
+      end
     end
 
     return false unless cleaned_anything

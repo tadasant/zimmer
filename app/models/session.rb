@@ -268,6 +268,53 @@ class Session < ApplicationRecord
       .to_set
   end
 
+  # Metadata key stamped for the duration of an unarchive.
+  #
+  # An unarchive re-clones from the remote and replays preserved artifacts onto
+  # the new tree *while the row still says `archived`* — the status transition is
+  # the last thing UnarchiveSessionService does, after `air prepare` has run. For
+  # that window the row is indistinguishable from an abandoned archive with a
+  # stale clone: archived, no trash deadline, `archived_at` days old, and a
+  # `clone_path` pointing at a directory. That is exactly what
+  # StaleCloneCleanupJob's archived scope selects, so the reaper deletes the
+  # clone the unarchive just created, along with the preserved artifacts it was
+  # restored from — and the unarchive keeps writing `.mcp.json` and the transcript
+  # into the vacated path, which is the wreckage found in zimmer#808 / zimmer#811.
+  UNARCHIVE_IN_FLIGHT_KEY = "unarchive_started_at"
+
+  # How long an `unarchive_started_at` stamp is honoured. An unarchive is bounded
+  # by GIT_CLONE_TIMEOUT_SECONDS (300s) plus bounded retries, an artifact replay
+  # and an `air prepare`, so half an hour is generous. It is bounded at all
+  # because an unarchive that crashes between the stamp and the clear must not
+  # pin a clone on disk forever.
+  UNARCHIVE_GRACE_PERIOD = 30.minutes
+
+  # Sessions whose on-disk state must not be reaped: the live ones, plus the ones
+  # being unarchived right now.
+  #
+  # This is the authoritative answer to "may this session's clone, scratch
+  # directory or preserved artifacts be deleted?", and it is deliberately one
+  # scope rather than a status check repeated at each reaper — the unarchive
+  # window is invisible to `status` alone.
+  #
+  # The timestamp is compared as a string: both sides are fixed-width ISO8601
+  # UTC, so lexicographic order is chronological order, and unlike a cast a stray
+  # value in this free-form column cannot raise `PG::InvalidDatetimeFormat` and
+  # take a sweep down with it.
+  scope :reap_protected, ->(now = Time.current) {
+    where(status: NON_REAPABLE_STATUSES)
+      .or(where("metadata->>'#{UNARCHIVE_IN_FLIGHT_KEY}' >= ?", (now - UNARCHIVE_GRACE_PERIOD).utc.iso8601))
+  }
+
+  # Whether `id`'s on-disk state is protected from reaping right now, asked of the
+  # database at the moment of the question rather than taken from a snapshot.
+  #
+  # @param id [Integer]
+  # @return [Boolean] false when the row does not exist
+  def self.reap_protected?(id, now: Time.current)
+    unscoped.reap_protected(now).where(id: id).exists?
+  end
+
   # The status label for a value read straight out of a `pluck`/`pick`.
   #
   # Rails casts an enum column to its label on `pluck`, so this is normally the
@@ -281,8 +328,13 @@ class Session < ApplicationRecord
   # @return [String, nil]
   def self.status_label(raw)
     return nil if raw.nil?
+    return statuses.key(raw) if raw.is_a?(Integer)
 
-    raw.is_a?(Integer) ? statuses.key(raw) : raw.to_s
+    label = raw.to_s
+    # A numeric string is the same hazard wearing a different type: it would fall
+    # through every `NON_REAPABLE_STATUSES.include?` check and read as terminal,
+    # which is the direction that deletes a running agent's work.
+    label.match?(/\A\d+\z/) ? statuses.key(label.to_i) : label
   end
 
   # Whether a raw status value names a live (non-reapable) session.

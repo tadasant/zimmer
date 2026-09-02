@@ -21,17 +21,29 @@
 #
 # What counts as damage
 # ---------------------
-#   * A clone directory that has lost its git tree. There is no benign way for a
-#     tracked working tree to disappear from underneath a live session, so this
-#     is reported for any live status.
-#   * A clone root that is gone entirely — but only for a `running` session, whose
-#     agent process has that directory as its cwd right now. `waiting` and
-#     `needs_input` sessions legitimately sit on a deleted clone between an
-#     archive and the resume that re-clones it (AgentSessionJob's recreate path),
-#     and a backed-up queue can hold them there for a while.
+# Only what has no benign explanation — a detector that cries wolf is a detector
+# somebody mutes:
+#
+#   * A clone directory that exists but has lost its git tree. There is no benign
+#     way for a tracked working tree to disappear from underneath a live session,
+#     and this is the exact state found on disk after the incident.
+#   * A clone that has lost the session's agent root subdirectory, which is fatal
+#     on its own: `air prepare` writes `<clone>/<subdirectory>/.mcp.json` and dies
+#     with ENOENT.
+#
+# A clone root that is **gone entirely** is deliberately NOT reported, for any
+# status. A session legitimately sits on a deleted clone between an archive and
+# the resume that re-clones it, and `Session#deliver_follow_up!` flips a session
+# to `running` *before* it enqueues the job whose recreate path rebuilds the
+# clone — so on the congested afternoon this job exists for, `running` with no
+# clone root is a normal, minutes-to-hours-long state. That case is not silent
+# anyway: the session fails with "clone directory not found", which is already an
+# error somebody sees.
 #
 # A scaffolded fork clone (`clone_scaffolded`) is exempt from the git-tree check:
-# it was created empty on purpose, and its `git init` is best-effort.
+# it was created empty on purpose, and its `git init` is best-effort. It is not
+# exempt from the subdirectory check — ForkSessionService creates the working
+# directory explicitly, so its absence is damage there too.
 class LiveCloneIntegrityJob < ApplicationJob
   include DatabaseRetry
 
@@ -44,10 +56,6 @@ class LiveCloneIntegrityJob < ApplicationJob
     key: -> { "live_clone_integrity" },
     total_limit: 1
   )
-
-  # Sessions whose clone root going missing is reportable on its own. See the
-  # class comment for why the other live statuses are not.
-  ROOT_REQUIRED_STATUSES = %w[running].freeze
 
   # A bad hour can damage many clones and the line has to stay readable.
   DISPLAY_LIMIT = 20
@@ -98,16 +106,11 @@ class LiveCloneIntegrityJob < ApplicationJob
   def damage_for(session)
     path = session[:clone_path].to_s
     return nil if path.blank?
+    # A clone root that is simply absent is a session waiting to be re-cloned.
+    # See the class comment.
+    return nil unless File.directory?(path)
 
-    unless File.directory?(path)
-      return nil unless ROOT_REQUIRED_STATUSES.include?(session[:status])
-
-      return "session #{session[:id]} (#{session[:status]}): clone root #{path} is gone"
-    end
-
-    return nil if session[:scaffolded]
-
-    unless File.exist?(File.join(path, ".git"))
+    if !session[:scaffolded] && !File.exist?(File.join(path, ".git"))
       surviving = surviving_entries(path)
       return "session #{session[:id]} (#{session[:status]}): #{path} has no .git " \
         "(#{surviving.empty? ? "empty" : "left: #{surviving.join(', ')}"})"

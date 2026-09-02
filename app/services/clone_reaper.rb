@@ -25,10 +25,19 @@
 # half-tree `AtomicCloneRemoval` was written to prevent — minus the uncommitted
 # work (zimmer#808, zimmer#811).
 #
+# There is a second way the snapshot lies, and it does not need a slow box at
+# all: an unarchive is `archived` for its whole duration. UnarchiveSessionService
+# re-clones from the remote, replays the preserved artifacts and runs
+# `air prepare` before it transitions the status, so for that window a session
+# having a *new* clone built for it is indistinguishable from one whose old clone
+# was abandoned — same status, same absent trash deadline, same days-old
+# `archived_at`. `Session.reap_protected` is what tells them apart.
+#
 # So this asks the question again, in the DB, at the moment of deletion, and
 # refuses if the answer changed. It is not a replacement for the sweeps' own
 # guards — those are what keep the candidate list small and cheap — it is the
-# last one, the only one with no gap after it.
+# last one, and the gap after it is the microseconds between the `SELECT` and the
+# `rename(2)` rather than the minutes a sweep leaves.
 #
 # Fail-closed
 # -----------
@@ -39,20 +48,15 @@
 # What this is NOT for
 # --------------------
 # Disposing of a clone directory the caller itself just created and is rolling
-# back — `GitCloneService`'s failed-clone cleanup, `ForkSessionService`'s partial
+# back — `GitCloneService#discard_failed_clone`, `ForkSessionService`'s partial
 # destination. Those paths delete a directory no session references yet, so the
-# lookup below finds no owner and permits them; but they are also the paths whose
-# callers treat "the path is clear" as a precondition, and a guard that can only
-# ever turn a no-op into a refusal there is a guard with nothing to protect. They
-# go on calling `AtomicCloneRemoval.remove` directly.
+# guard has nothing to protect there, and it can only do harm: failing closed on
+# a momentary database blip would leave a partial tree at the path, and the next
+# `git clone` into it dies with "destination path already exists and is not an
+# empty directory" — which `transient_clone_error?` does not classify as
+# transient, turning a retryable clone failure into a permanent session failure.
+# Those paths call `AtomicCloneRemoval.remove` directly, and must keep doing so.
 module CloneReaper
-  # What `.reap` did.
-  #
-  #   :removed  — the clone was deleted
-  #   :absent   — there was nothing at the path
-  #   :refused  — a live session still owns it (or ownership could not be read)
-  OUTCOMES = %i[removed absent refused].freeze
-
   module_function
 
   # Delete a clone directory, unless a live session still owns it.
@@ -60,10 +64,13 @@ module CloneReaper
   # @param path [String, Pathname] the clone directory
   # @param reason [String] what asked for the deletion, for the refusal log
   # @param file_system [FileSystemAdapter] injected for the call sites that own one
-  # @return [Symbol] one of OUTCOMES
+  # @return [Symbol] `:removed`, `:absent` (nothing at the path), or `:refused`
   def reap(path, reason:, file_system: RealFileSystemAdapter.new)
     return :absent if path.nil? || path.to_s.empty?
-    return :absent unless file_system.directory?(path)
+    # `exists?`, not `directory?`, matching AtomicCloneRemoval: a clone path can
+    # be a plain file or a dangling symlink, and skipping those leaks them while
+    # reporting them cleaned.
+    return :absent unless file_system.exists?(path)
 
     owner = live_owner(path)
 
@@ -75,7 +82,8 @@ module CloneReaper
     AtomicCloneRemoval.remove(path, file_system: file_system) ? :removed : :absent
   end
 
-  # The live session that still owns `path`, re-read from the database right now.
+  # The still-protected session that owns `path`, re-read from the database right
+  # now — live, or being unarchived (see `Session.reap_protected`).
   #
   # Matched on the expanded path OR the basename, mirroring
   # StaleCloneCleanupJob's basename guard: clone directory names carry a
@@ -83,31 +91,37 @@ module CloneReaper
   # clone and survives a stored `clone_path` that cannot be reconciled with the
   # path being swept (a symlinked or relocated clones base).
   #
-  # @return [Hash, nil] `{id:, status:}` for the owner, `{id: nil}` when the
-  #   question could not be answered, nil when nothing live owns the path
+  # `unscoped` deliberately: this query decides deletions, so a default scope
+  # added later for soft-delete or tenancy must not be able to hide a protected
+  # row from it.
+  #
+  # @return [Hash, nil] `{id:, status:, unarchiving:}` for the owner, `{id: nil}`
+  #   when the question could not be answered, nil when nothing protected owns it
   def live_owner(path)
     expanded = File.expand_path(path.to_s)
     basename = File.basename(expanded)
 
     owner = Session.unscoped
-      .where(status: Session::NON_REAPABLE_STATUSES)
+      .reap_protected
       .where("metadata->>'clone_path' IS NOT NULL")
-      .pluck(:id, :status, Arel.sql("metadata->>'clone_path'"))
-      .find do |(_id, _status, owned_path)|
+      .pluck(:id, :status,
+             Arel.sql("metadata->>'clone_path'"),
+             Arel.sql("metadata->>'#{Session::UNARCHIVE_IN_FLIGHT_KEY}'"))
+      .find do |(_id, _status, owned_path, _unarchiving)|
         owned_path.present? &&
           (File.expand_path(owned_path) == expanded || File.basename(owned_path) == basename)
       end
 
     return nil if owner.nil?
 
-    { id: owner[0], status: Session.status_label(owner[1]) }
-  rescue ActiveRecord::ActiveRecordError, SystemCallError => e
-    # Fail closed. `unscoped` deliberately, above: this query decides deletions,
-    # so a default scope added later for soft-delete or tenancy must not be able
-    # to hide a live row from it.
+    { id: owner[0], status: Session.status_label(owner[1]), unarchiving: owner[3].present? }
+  rescue ActiveRecord::ActiveRecordError, SystemCallError, ArgumentError => e
+    # Fail closed. ArgumentError is in the list because File.expand_path raises it
+    # for an unresolvable `~user` prefix, and a path we cannot even canonicalize
+    # is not one to delete on the strength of an ownership query we never ran.
     Rails.logger.error "[CloneReaper] Could not establish who owns #{path} (#{e.class}: #{e.message}); " \
       "refusing to delete it"
-    { id: nil, status: nil }
+    { id: nil, status: nil, unarchiving: false }
   end
 
   # A refusal means a reaper's snapshot went stale and this guard caught it —
@@ -122,11 +136,19 @@ module CloneReaper
       return
     end
 
-    Rails.logger.error "[CloneReaper] Refused to delete #{path} (#{reason}): session #{owner[:id]} is " \
-      "#{owner[:status]} and still owns it. The reaper's view of that session was stale — it is live now, " \
+    Rails.logger.error "[CloneReaper] Refused to delete #{path} (#{reason}): session #{owner[:id]} " \
+      "#{owner_description(owner)} and still owns it. The reaper's view of that session was stale, " \
       "so the clone was left in place (zimmer#808)."
 
     record_refusal(owner, path, reason)
+  end
+
+  # Why the owner is protected, in the words the reader needs: "archived" alone
+  # would read as a contradiction on the unarchive path.
+  def owner_description(owner)
+    return "is being unarchived right now (status #{owner[:status]})" if owner[:unarchiving]
+
+    "is #{owner[:status]}"
   end
 
   # Durable, attributable, and on the one surface a person reading Zimmer sees.
@@ -139,11 +161,15 @@ module CloneReaper
     session.logs.create!(
       level: "warning",
       content: "A cleanup sweep (#{reason}) was about to delete this session's clone directory " \
-        "(#{File.basename(path.to_s)}) while the session is #{owner[:status]}. It was refused and the " \
-        "clone was left in place."
+        "(#{File.basename(path.to_s)}) while the session #{owner_description(owner)}. It was refused and " \
+        "the clone was left in place."
     )
   rescue StandardError => e
     Rails.logger.error "[CloneReaper] Failed to record the refusal for session #{owner[:id]}: " \
       "#{e.class} - #{e.message}"
   end
+
+  # Only `.reap` is a door. The rest are its internals, and saying so structurally
+  # is what keeps "the one door" a fact rather than an aspiration.
+  private_class_method :refuse, :record_refusal, :owner_description
 end

@@ -62,15 +62,31 @@ class EmptyTrashJobTest < ActiveJob::TestCase
     assert Dir.exist?(scratch_path), "scratch has no remote to come back from; it must survive"
   end
 
-  test "a full run leaves a live session's clone in place" do
+  test "leaves durable state alone when a session wakes up after its clone is deleted" do
     scratch_path = SessionScratchDirectory.ensure_for(@session.id)
-    # trash_after still set and expired, but the session is live again — the sweep
-    # must not act on the status its scope matched.
-    @session.update_columns(status: Session.statuses[:needs_input])
+    batched = Session.find(@session.id)
+
+    # Trash when the clone delete starts, live by the time the unrecoverable half
+    # of the cleanup would run. The clone goes; nothing that lacks a remote does.
+    job = EmptyTrashJob.new
+    job.stubs(:still_trash?).returns(true).then.returns(false)
+
+    job.send(:cleanup_session, batched)
+
+    assert Dir.exist?(scratch_path), "scratch has no remote to come back from; it must survive"
+  end
+
+  # zimmer#808's other half: an unarchive is `archived` for its whole duration, so
+  # a session having a NEW clone built for it still matches this job's scope.
+  test "does not reap a session that is being unarchived right now" do
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    @session.update_columns(
+      metadata: @session.metadata.merge(Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601)
+    )
 
     EmptyTrashJob.perform_now
 
-    assert File.directory?(@clone_path)
+    assert File.directory?(@clone_path), "the clone an unarchive just built must survive"
     assert Dir.exist?(scratch_path)
   end
 
