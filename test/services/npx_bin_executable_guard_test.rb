@@ -32,19 +32,27 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
   # Build the tree npx leaves behind: a package whose entrypoint is linked into
   # `.bin` under the hash dir. `mode` is the entrypoint's mode — 0644 is how
   # onepassword-mcp-server ships (zimmer#467), 0755 is a healthy install.
-  def install_package(hash, name = "acme-mcp-server", mode: 0o644, entrypoint: "build/index.js")
-    package_dir = File.join(@npx_dir, hash, "node_modules", name)
+  # `npx_dir` defaults to the clone's shared cache root; pass an isolated one to
+  # build the tree NpxCacheIsolator produces.
+  def install_package(hash, name = "acme-mcp-server", mode: 0o644, entrypoint: "build/index.js", npx_dir: @npx_dir)
+    package_dir = File.join(npx_dir, hash, "node_modules", name)
     target = File.join(package_dir, entrypoint)
     FileUtils.mkdir_p(File.dirname(target))
     File.write(target, "#!/usr/bin/env node\n")
     File.chmod(mode, target)
 
-    bin_dir = File.join(@npx_dir, hash, "node_modules", ".bin")
+    bin_dir = File.join(npx_dir, hash, "node_modules", ".bin")
     FileUtils.mkdir_p(bin_dir)
     shim = File.join(bin_dir, name)
     File.symlink(File.join("..", name, entrypoint), shim)
 
     { shim: shim, target: target }
+  end
+
+  # Where NpxCacheIsolator points a server that shares an npx package with another
+  # server in the same config.
+  def isolated_npx_dir(server_name)
+    File.join(@working_directory, ".npm-cache", "isolated", server_name, "_npx")
   end
 
   def repair
@@ -91,6 +99,81 @@ class NpxBinExecutableGuardTest < ActiveSupport::TestCase
     assert_equal [ first[:target], second[:target] ].sort, repair.sort
     assert File.executable?(first[:target])
     assert File.executable?(second[:target])
+  end
+
+  # NpxCacheIsolator gives every server that shares an npx package with another
+  # server in the same config a cache root of its own, so its `_npx` tree does not
+  # sit directly under `.npm-cache`. The two servers that collide in production —
+  # `1password-tadas-rw` and `1password-pulsemcp-rw` — both run
+  # `npx -y onepassword-mcp-server@latest`, the very package that ships its
+  # entrypoint `-rw-r--r--`. Before zimmer#498 the guard globbed only the shared
+  # root, so isolation silently opted those servers out of this repair.
+  test "restores the execute bit inside a per-server isolated cache root" do
+    paths = install_package(
+      "04f14e66d79e7af4", "onepassword-mcp-server",
+      npx_dir: isolated_npx_dir("1password-tadas-rw")
+    )
+    refute File.executable?(paths[:target]), "fixture must start non-executable"
+
+    assert_equal [ paths[:target] ], repair
+    assert File.executable?(paths[:target])
+    assert_equal 0o755, File.stat(paths[:target]).mode & 0o777
+  end
+
+  test "sweeps the shared root and every isolated root in one pass" do
+    shared = install_package("1111111111111111", "solo-mcp-server")
+    # Two isolated roots holding the same package under the same npx hash — the
+    # collision that made the isolator hand them separate roots in the first place.
+    tadas = install_package(
+      "04f14e66d79e7af4", "onepassword-mcp-server",
+      npx_dir: isolated_npx_dir("1password-tadas-rw")
+    )
+    pulsemcp = install_package(
+      "04f14e66d79e7af4", "onepassword-mcp-server",
+      npx_dir: isolated_npx_dir("1password-pulsemcp-rw")
+    )
+
+    assert_equal [ shared[:target], tadas[:target], pulsemcp[:target] ].sort, repair.sort
+    assert File.executable?(tadas[:target])
+    assert File.executable?(pulsemcp[:target])
+  end
+
+  # Containment is enforced per root, so an isolated root gets the same refusal the
+  # shared root does rather than inheriting a check made against a different tree.
+  test "skips a shim in an isolated root whose target escapes the cache" do
+    outside = File.join(@temp_dir, "isolated-escapee.js")
+    File.write(outside, "#!/usr/bin/env node\n")
+    File.chmod(0o644, outside)
+
+    bin_dir = File.join(isolated_npx_dir("1password-tadas-rw"), "04f14e66d79e7af4", "node_modules", ".bin")
+    FileUtils.mkdir_p(bin_dir)
+    File.symlink(outside, File.join(bin_dir, "escaping-server"))
+
+    log = StringIO.new
+    assert_empty NpxBinExecutableGuard.repair!(
+      working_directory: @working_directory, logger: Logger.new(log)
+    )
+    refute File.executable?(outside), "a target outside the cache must never be chmod'ed"
+    assert_match(/Refusing to repair/, log.string)
+  end
+
+  # Each root is its own containment boundary: a shim that reaches out of its
+  # isolated root into a sibling cache root is refused even though the target is
+  # still somewhere under the clone's `.npm-cache`.
+  test "skips a shim in an isolated root whose target resolves into another root" do
+    other_root_target = File.join(
+      @npx_dir, "2222222222222222", "node_modules", "borrowed-server", "build", "index.js"
+    )
+    FileUtils.mkdir_p(File.dirname(other_root_target))
+    File.write(other_root_target, "#!/usr/bin/env node\n")
+    File.chmod(0o644, other_root_target)
+
+    bin_dir = File.join(isolated_npx_dir("1password-tadas-rw"), "04f14e66d79e7af4", "node_modules", ".bin")
+    FileUtils.mkdir_p(bin_dir)
+    File.symlink(other_root_target, File.join(bin_dir, "borrowed-server"))
+
+    assert_empty repair
+    refute File.executable?(other_root_target)
   end
 
   test "repairs a bin entry npm wrote as a regular file rather than a symlink" do
