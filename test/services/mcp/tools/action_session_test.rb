@@ -151,19 +151,56 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
   # A session already on top must not be measured against itself, or repeating
   # the call would walk it SLOT_GAP higher every time. Same exclusion the Ranked
-  # view's demote button applies.
+  # view's demote button applies. The runner-up at 100 is what makes this test
+  # able to tell a correct exclusion from a fall-through to the nothing-queued
+  # branch, which would answer DEFAULT + SLOT_GAP whatever else is queued.
   test "place top_of_spot does not measure a session against itself" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 100)
     session = sessions(:needs_input)
-    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 500)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 50)
 
     @tool.call("action" => "change_precedence", "session_id" => session.id,
       "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
-    first = session.reload.precedence
+    assert_equal 105, session.reload.precedence
 
     @tool.call("action" => "change_precedence", "session_id" => session.id,
       "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
 
-    assert_equal first, session.reload.precedence, "a repeat placement is a no-op, not a ratchet"
+    assert_equal 105, session.reload.precedence, "a repeat placement is a no-op, not a ratchet"
+  end
+
+  # The other half of the self-exclusion: excluding the session stops the ratchet
+  # upward, and flooring the result at the rank it already holds stops the
+  # overshoot downward. Without the floor this session would be rewritten from
+  # 1000 to 15 — still the head of the SPOT queue, but now beneath the priority
+  # session carrying 500, which would outrank it on a later demotion.
+  test "place top_of_spot never lowers the rank of a session already on top" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 10)
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::PRIORITY, precedence: 500)
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 1_000)
+
+    @tool.call("action" => "change_precedence", "session_id" => session.id,
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    assert_equal 1_000, session.reload.precedence
+  end
+
+  # The floor must not turn into a "never moves" rule: a session below the top
+  # still gets placed above it.
+  test "place top_of_spot still raises a session that is not on top" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 800)
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 1)
+
+    @tool.call("action" => "change_precedence", "session_id" => session.id,
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    assert_equal 805, session.reload.precedence
   end
 
   test "change_scheduling_class can demote a session straight to the head of the queue" do
@@ -182,13 +219,36 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes session.logs.pluck(:content), "Precedence set via MCP to 125 (was 0)"
   end
 
-  test "change_precedence accepts place in place of the required precedence" do
+  # A placement applies whichever class the session is being moved to. Precedence
+  # is carried on a priority session too, and is what a later demotion lands on,
+  # so a caller that names a placement on a promotion means it — unlike the
+  # Ranked view's demote button, which only ever sends one on a demotion.
+  test "change_scheduling_class honours place on a promotion as well as a demotion" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 60)
     session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 0)
 
-    assert_nothing_raised do
-      @tool.call("action" => "change_precedence", "session_id" => session.id,
-        "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
-    end
+    @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+      "scheduling_class" => "priority", "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    session.reload
+    assert session.priority?
+    assert_equal 65, session.precedence, "the rank it will land on if it is demoted again"
+  end
+
+  # `place` wins over an explicitly-null `precedence` rather than tripping the
+  # mutual-exclusion check: a null is the argument left out, not a value.
+  test "place alongside an explicitly null precedence is the placement, not an error" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 200)
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 0)
+
+    @tool.call("action" => "change_precedence", "session_id" => session.id,
+      "place" => SessionPrecedence::PLACE_TOP_OF_SPOT, "precedence" => nil)
+
+    assert_equal 205, session.reload.precedence
   end
 
   test "change_precedence still requires one of the two, and names both" do

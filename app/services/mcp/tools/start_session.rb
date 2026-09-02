@@ -275,10 +275,7 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
         attrs[:custom_metadata] = args["custom_metadata"] if args["custom_metadata"].is_a?(Hash)
         attrs[:parent_session_id] = args["parent_session_id"] unless args["parent_session_id"].nil?
         attrs[:scheduling_class] = scheduling_class(args) if args["scheduling_class"].present?
-        # An explicit null reads as "say nothing" here (unlike action_session's
-        # ranking actions, where naming the argument at all is a claim), so the
-        # ordinary just-above-the-parent inheritance still applies.
-        attrs[:precedence] = resolved_precedence(args) if args["place"].present? || !args["precedence"].nil?
+        attrs[:precedence] = resolved_precedence(args) if precedence_given?(args)
         attrs[:idempotency_key] = args["idempotency_key"] if args["idempotency_key"].present?
         attrs
       end
