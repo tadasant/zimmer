@@ -90,8 +90,7 @@ module Sessions
       restart!(attempt)
     rescue => e
       # A recovery that cannot run must not become the thing that breaks the
-      # recovery path. Decline, and let the caller's park — the behaviour that was
-      # here before this service — happen exactly as it used to.
+      # recovery path. Decline, so the caller falls through to its own park.
       Rails.logger.error(
         "[Sessions::RestartUnstartedTurn] Could not restart session #{@session&.id}: #{e.message}"
       )
@@ -103,12 +102,20 @@ module Sessions
 
     attr_reader :session
 
-    # The best durable prompt to replay. Mirrors ProcessLifecycleManager#recovery_prompt:
-    # a follow-up that was in flight when the process died is the turn that was lost,
-    # and only a session that never got past its first turn falls back to `prompt`.
+    # The best durable prompt to replay: a follow-up that was in flight when the
+    # process died is the turn that was lost, and only a session that never got past
+    # its first turn falls back to `prompt`.
+    #
+    # ProcessLifecycleManager#recovery_prompt asks the same question and answers it
+    # with one more candidate, `active_follow_up_prompt`, which is deliberately NOT
+    # consulted here. That key holds `build_prompt_with_goal(...)` OUTPUT — the user's
+    # text with the goal block, the session notes and the degraded-MCP block already
+    # wrapped around it. PLM hands its answer straight to the CLI adapter; this
+    # service hands it to `deliver_follow_up!`, whose job expands it AGAIN. Replaying
+    # the expanded form would give the agent the goal instruction twice on the first
+    # restart and four times on the second. The three keys below all hold raw text.
     def prompt
-      @prompt ||= session.metadata&.dig("active_follow_up_prompt").presence ||
-        session.metadata&.dig("sent_message").presence ||
+      @prompt ||= session.metadata&.dig("sent_message").presence ||
         session.metadata&.dig("pending_follow_up_prompt").presence ||
         session.prompt
     end
@@ -121,8 +128,11 @@ module Sessions
       )
     end
 
+    # Reloaded before it is read, as ProcessLifecycleManager#empty_turn_recovery_needed?
+    # does with the same key: the caller has written to this row several times on the
+    # way here, and a stale in-memory `metadata` would under-count the budget.
     def restart_count
-      session.metadata&.dig(COUNT_KEY).to_i
+      session.reload.metadata&.dig(COUNT_KEY).to_i
     end
 
     def restart!(attempt)
@@ -133,27 +143,44 @@ module Sessions
         level: "warning"
       )
 
-      # A new runtime session id, for the same reason #handle_empty_turn takes one:
-      # neither store holds a conversation, so the old id names nothing a restart
-      # would lose — and if the runtime got as far as writing its own bookkeeping
-      # under it, re-asserting it is refused as "already in use" (#519).
-      reset_runtime_session_id!
-
-      # `deliver_follow_up!` is the one shared delivery path: it drops the stale
-      # per-turn metadata, resumes the session, stamps the prompt where the SIGTERM
-      # recovery looks for it, enqueues the job and records running_job_id — closing
-      # the window in which the session is running with no tracked job, which is the
-      # exact shape of the stall this service is fixing.
+      # ONE transaction around the id reset and the delivery, and it is load-bearing
+      # twice over.
       #
-      # `runtime_started` is stamped false alongside the prompt so the replacement
-      # spawn builds `--session-id` rather than `--resume`. Resuming into a
-      # conversation we have just established does not exist is how a restart turns
-      # into a "no conversation found" park.
-      session.deliver_follow_up!(
-        prompt,
-        clear_metadata_keys: Session::STALE_RETRY_METADATA_KEYS,
-        metadata_updates: { COUNT_KEY => attempt, "runtime_started" => false }
-      )
+      # `deliver_follow_up!` inserts the job row before it writes `running_job_id`.
+      # The caller is a monitoring job that currently OWNS `running_job_id` and is
+      # still executing, so a GoodJob scheduler thread picking the new row up in that
+      # gap would read the old owner, find it alive, and drop the turn with "Skipping
+      # job - session already has a running job" — the exact stall this service
+      # exists to remove, reintroduced through a narrower window. Both the INSERT and
+      # its NOTIFY become visible only at commit, so inside a transaction there is no
+      # gap to lose the turn in. SessionContinuation#continue_with_queued_user_message
+      # documents the same hazard from the other side.
+      #
+      # It also makes the id reset undoable: if the delivery raises, #call rescues to
+      # `:declined` and the caller parks exactly as it used to — and the session must
+      # not be left carrying an id no spawn ever took.
+      ActiveRecord::Base.transaction do
+        # A new runtime session id, for the same reason #handle_empty_turn takes one:
+        # neither store holds a conversation, so the old id names nothing a restart
+        # would lose — and if the runtime got as far as writing its own bookkeeping
+        # under it, re-asserting it is refused as "already in use" (#519).
+        reset_runtime_session_id!
+
+        # `deliver_follow_up!` is the one shared delivery path: it drops the stale
+        # per-turn metadata, resumes the session, stamps the prompt where the SIGTERM
+        # recovery looks for it, enqueues the job and records running_job_id — closing
+        # the window in which the session is running with no tracked job.
+        #
+        # `runtime_started` is stamped false alongside the prompt so the replacement
+        # spawn builds `--session-id` rather than `--resume`. Resuming into a
+        # conversation we have just established does not exist is how a restart turns
+        # into a "no conversation found" park.
+        session.deliver_follow_up!(
+          prompt,
+          clear_metadata_keys: Session::STALE_RETRY_METADATA_KEYS,
+          metadata_updates: { COUNT_KEY => attempt, "runtime_started" => false }
+        )
+      end
 
       Rails.logger.info(
         "[Sessions::RestartUnstartedTurn] Restarted session #{session.id} from its own prompt " \
@@ -163,12 +190,28 @@ module Sessions
     end
 
     # Claude Code honors the `--session-id` Zimmer supplies, so a fresh id is minted
-    # for it. Codex ignores it and mints its own rollout, so the stored id is dropped
-    # instead — leaving it would keep transcript polling reading the abandoned
-    # rollout forever (ProcessLifecycleManager#release_stale_runtime_session_id!).
+    # for it: the old one names no conversation, and re-asserting one whose transcript
+    # file exists is refused as "already in use".
+    #
+    # Codex ignores the supplied id and mints its own rollout, so the stored id names
+    # a rollout the replacement will never write to — and CodexTranscriptSource#
+    # find_main_transcript prefers the rollout whose filename carries it, so leaving
+    # it set keeps the poller reading the abandoned file (ProcessLifecycleManager#
+    # release_stale_runtime_session_id! is the same reasoning). Dropping it is right,
+    # but ONLY when the prompt being replayed is the session's own.
+    #
+    # The scope is not caution, it is the delivery vehicle. PLM releases the id after
+    # spawning directly; this service delivers through a follow-up job, and that job
+    # reclassifies a follow-up on a session with no `session_id` as a fresh start,
+    # which spawns carrying `session.prompt`. That is exactly what we want when
+    # `session.prompt` is what we chose to replay — and would silently substitute the
+    # first prompt for a lost follow-up otherwise. So a mints-its-own-id runtime keeps
+    # its stale id in the follow-up case; the poller re-attaches on the next turn that
+    # captures an id, which is strictly better than replaying the wrong turn.
     def reset_runtime_session_id!
       if TranscriptRuntime.normalizer_for(session).mints_own_session_id?
         return if session.session_id.blank?
+        return unless prompt == session.prompt
 
         add_log(
           "Releasing stale runtime session id #{session.session_id} so transcript polling re-attaches " \

@@ -156,6 +156,16 @@ class Sessions::RestartUnstartedTurnTest < ActiveJob::TestCase
     assert_equal "database is on fire", result.message
   end
 
+  test "leaves the runtime session id alone when the restart could not be carried out" do
+    original_session_id = @session.session_id
+    @session.stubs(:deliver_follow_up!).raises(StandardError, "database is on fire")
+
+    assert Sessions::RestartUnstartedTurn.call(@session, working_directory: @clone_path).declined?
+
+    assert_equal original_session_id, @session.reload.session_id,
+      "the caller parks after a declined restart, and must not be left holding an id no spawn took"
+  end
+
   test "drops the stored runtime session id for a runtime that mints its own" do
     @session.update!(agent_runtime: "codex")
     skip "codex runtime not registered" unless TranscriptRuntime.normalizer_for(@session).mints_own_session_id?
@@ -164,5 +174,37 @@ class Sessions::RestartUnstartedTurnTest < ActiveJob::TestCase
 
     assert_nil @session.reload.session_id,
       "leaving it set keeps transcript polling reading the abandoned rollout"
+  end
+
+  # The follow-up job reclassifies a session with no `session_id` as a fresh start and
+  # spawns carrying `session.prompt`. That is right when `session.prompt` is what we
+  # chose to replay, and would silently substitute the first prompt for a lost
+  # follow-up otherwise — so on a mints-its-own-id runtime the id survives that case.
+  test "keeps the stored runtime session id when a mints-own-id runtime is replaying a follow-up" do
+    @session.update!(agent_runtime: "codex")
+    skip "codex runtime not registered" unless TranscriptRuntime.normalizer_for(@session).mints_own_session_id?
+    @session.merge_metadata!("pending_follow_up_prompt" => "Actually, do the other thing")
+    original_session_id = @session.session_id
+
+    assert restart.restarted?
+
+    @session.reload
+    assert_equal original_session_id, @session.session_id,
+      "replaying the right turn outranks re-attaching the poller a turn earlier"
+    assert_equal "Actually, do the other thing", @session.metadata["pending_follow_up_prompt"]
+  end
+
+  # `active_follow_up_prompt` holds build_prompt_with_goal OUTPUT, and deliver_follow_up!
+  # expands again — so replaying it would hand the agent the goal block twice.
+  test "never replays the already-expanded active_follow_up_prompt" do
+    @session.merge_metadata!(
+      "active_follow_up_prompt" => "Do the thing\n\nThe user has indicated the goal for this task is: Open a PR.",
+      "pending_follow_up_prompt" => "Do the thing"
+    )
+
+    assert restart.restarted?
+
+    assert_equal "Do the thing", @session.reload.metadata["pending_follow_up_prompt"],
+      "the raw text is what gets replayed; the delivery path re-applies the goal itself"
   end
 end

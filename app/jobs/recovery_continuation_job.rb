@@ -6,24 +6,29 @@
 # ## Why this exists
 #
 # A recovery pause (`paused_by: "recovery"`) is a promise: the session says nothing
-# to watchers and sends no push, because a sweep is going to continue it. Until now
-# the only thing keeping that promise was CleanupOrphanedSessionsJob's five-minute
-# cron, so the interval between "recovery gave up" and "something happened" was
-# whatever was left of that cron's period. Production session 12265 waited nine and
-# a half minutes.
+# to watchers and sends no push, because a sweep is going to continue it. With only
+# CleanupOrphanedSessionsJob's five-minute cron to keep it, the interval between
+# "recovery gave up" and "something happened" is whatever is left of that cron's
+# period. Production session 12265 waited nine and a half minutes.
 #
-# Worse, the two mechanisms could cancel out. The nudge AgentSessionJob enqueues
-# after a worker interruption is dropped when a recovery job is already queued
-# ("Skipping job - session already has a running job"); when that recovery job then
-# failed to adopt its dead pid, it re-enqueued nothing at all, and the session was
-# left with no pending work of any kind.
+# The two mechanisms can also cancel out. The nudge AgentSessionJob enqueues after a
+# worker interruption is dropped when a recovery job is already queued ("Skipping job
+# - session already has a running job"); when that recovery job then fails to adopt
+# its dead pid it re-enqueues nothing at all, and the session is left with no pending
+# work of any kind.
 #
 # So the party that parks the session also asks for the continuation, on a short
 # delay. This job is deliberately thin: it delegates to the very same
 # SessionContinuation the sweeps use, so there is one implementation of "continue a
-# recovery-paused session" and one attempt budget, and running twice is harmless —
-# Session#claim_system_recovery_turn! takes a row lock and refuses a session
-# something else is already driving.
+# recovery-paused session" and one attempt budget.
+#
+# Racing a cron tick is bounded rather than impossible. The automated-prompt path is
+# safe outright — Session#claim_system_recovery_turn! re-reads the row `FOR UPDATE`
+# and refuses a session something else is already driving. The queued-user-message
+# path SessionContinuation tries first takes no such lock, so two continuations
+# landing in the same instant can both reach EnqueuedMessageProcessorService; that
+# race is shared with the two existing sweeps and is not made safe here, only more
+# reachable, which is why the delay is 30 seconds rather than zero.
 class RecoveryContinuationJob < ApplicationJob
   include SessionContinuation
 

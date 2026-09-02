@@ -74,6 +74,41 @@ class AgentSessionJobUnstartedRestartTest < ActiveJob::TestCase
       "the decision must be legible on the session's own timeline"
   end
 
+  # The restart is only a fix if the job it queues actually runs. Nothing else in
+  # these tests performs it, and that is exactly where a delivery the replacement job
+  # refuses — a missing session_id, a dropped concurrency claim — would hide.
+  test "the queued replacement turn is accepted and spawns, rather than being refused" do
+    perform_dead_pid_recovery
+    queued = enqueued_jobs.find { |j| j["job_class"] == "AgentSessionJob" }
+    prompt = ActiveJob::Arguments.deserialize(queued["arguments"])[1]
+
+    job = AgentSessionJob.new
+    mock_pm = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_fs.mkdir_p(CLONE)
+    mock_cli = MockClaudeCliAdapter.new
+    mock_cli.process_manager = mock_pm
+    mock_cli.file_system = mock_fs
+    job.process_manager = mock_pm
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli
+
+    job.perform(@session.id, prompt)
+
+    @session.reload
+    assert_not @session.logs.any? { |l| l.content.include?("Skipping job") },
+      "the replacement turn must not be dropped by the concurrency guard"
+    assert_not @session.logs.any? { |l| l.content.include?("session_id is missing") },
+      "the replacement turn must not be refused for a missing session id"
+    assert_operator mock_cli.executed_commands.size, :>=, 1,
+      "the replacement turn must actually spawn the runtime"
+    assert_includes mock_cli.executed_commands.first[:prompt].to_s, "Ship the thing",
+      "the spawned turn must carry the work that never happened"
+    assert_empty mock_cli.resumed_sessions,
+      "with runtime_started off the spawn must build --session-id, never --resume into a " \
+      "conversation the session does not have"
+  end
+
   test "the restart does not wait for the orphan sweep" do
     perform_dead_pid_recovery
 
@@ -127,6 +162,21 @@ class AgentSessionJobUnstartedRestartTest < ActiveJob::TestCase
     assert_equal "unstarted_turn_not_recoverable", @session.metadata["failure_reason"]
     assert_present @session.metadata[Sessions::RestartUnstartedTurn::ABANDONED_KEY]
     assert @session.logs.any? { |l| l.content.include?("Not restarting this turn again") }
+  end
+
+  # The abandoned park writes no `paused_by`, so the pause callback announces it in
+  # the ordinary way. A second, manual announcement would double-count the transition
+  # and fan out a duplicate wake and push.
+  test "the abandoned park announces exactly once" do
+    @session.merge_metadata!(
+      Sessions::RestartUnstartedTurn::COUNT_KEY => Sessions::RestartUnstartedTurn::MAX_RESTARTS
+    )
+
+    perform_dead_pid_recovery
+
+    assert_equal "needs_input", @session.status
+    assert_equal 1, @session.needs_input_transition_count,
+      "the pause announced itself; nothing may announce it a second time"
   end
 
   test "the restart budget is spent one attempt at a time" do
