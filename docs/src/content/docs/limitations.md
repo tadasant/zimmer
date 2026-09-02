@@ -41,8 +41,9 @@ Tracked in [#121](https://github.com/tadasant/zimmer/issues/121).
 `GitIdentityProvisioner` writes `user.name` / `user.email` into `~/.gitconfig` at boot from
 `ZIMMER_GIT_USER_NAME` / `ZIMMER_GIT_USER_EMAIL` ([provisioning](/operate/provisioning/#the-git-identity-an-agent-session-commits-with)).
 Set neither, or only one, and it writes nothing: a session in that deployment still meets
-`Author identity unknown` on its first commit, exactly as before
-([#575](https://github.com/tadasant/zimmer/issues/575)).
+`Author identity unknown` on its first commit, exactly as it did before that class existed.
+
+**No issue tracks this, deliberately** — it is a design choice, not a defect awaiting a fix.
 
 That is the deliberate half of the fix, not an oversight. The alternative is a default identity baked
 into the repo, which would put Zimmer's guess — `Zimmer Agent <zimmer@localhost>` — into a

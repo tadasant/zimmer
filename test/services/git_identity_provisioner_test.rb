@@ -2,6 +2,8 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "open3"
+require "securerandom"
 require "tmpdir"
 
 # These tests drive real `git` against a temp HOME rather than stubbing the
@@ -79,8 +81,23 @@ class GitIdentityProvisionerTest < ActiveSupport::TestCase
     configure("Zimmer Test Operator", "operator@example.com")
     provision
 
-    assert_equal File.join(@home, ".gitconfig"), GitIdentityProvisioner.config_path(home: @home)
     assert_match(/operator@example\.com/, File.read(File.join(@home, ".gitconfig")))
+  end
+
+  # `--global` prefers $XDG_CONFIG_HOME/git/config when ~/.gitconfig is absent, which
+  # is the whole subject of config_path's comment: a home with no gitconfig must still
+  # get one at the path a reader expects, not somewhere else.
+  test "creates ~/.gitconfig on a home that has none, rather than an XDG path" do
+    FileUtils.rm_f(File.join(@home, ".gitconfig"))
+    xdg = File.join(@home, ".config")
+    FileUtils.mkdir_p(File.join(xdg, "git"))
+    configure("Zimmer Test Operator", "operator@example.com")
+
+    with_env("XDG_CONFIG_HOME" => xdg) { provision }
+
+    assert_path_exists File.join(@home, ".gitconfig")
+    assert_not File.exist?(File.join(xdg, "git", "config"))
+    assert_equal "operator@example.com", git_in(@home, "config", "--global", "user.email").first
   end
 
   test "provisions nothing and says so when neither variable is set" do
@@ -95,6 +112,32 @@ class GitIdentityProvisionerTest < ActiveSupport::TestCase
     assert_nil provision
     assert_equal CREDENTIAL_HELPER, File.read(File.join(@home, ".gitconfig"))
     assert @logger.messages(:warn).any? { |m| m.include?(EMAIL_VAR) }
+  end
+
+  test "provisions nothing when only the email is set, naming the missing name" do
+    ENV[EMAIL_VAR] = "operator@example.com"
+
+    assert_nil provision
+    assert_equal CREDENTIAL_HELPER, File.read(File.join(@home, ".gitconfig"))
+    assert @logger.messages(:warn).any? { |m| m.include?(NAME_VAR) }
+  end
+
+  test "rejects an email carrying a character git cannot put in an ident line" do
+    configure("Zimmer Test Operator", "operator@example.com>")
+
+    assert_nil provision
+    assert_equal CREDENTIAL_HELPER, File.read(File.join(@home, ".gitconfig"))
+    assert @logger.messages(:warn).any? { |m| m.include?(EMAIL_VAR) }
+  end
+
+  # The realistic typo: the two variables swapped, or the email left as prose. git
+  # itself would accept it and every commit after would wear it.
+  test "rejects an email that is not shaped like one" do
+    configure("Zimmer Test Operator", "Zimmer Test Operator")
+
+    assert_nil provision
+    assert_equal CREDENTIAL_HELPER, File.read(File.join(@home, ".gitconfig"))
+    assert @logger.messages(:warn).any? { |m| m.include?(EMAIL_VAR) && m.include?("email address") }
   end
 
   test "rejects a value carrying a character git cannot put in an ident line" do
@@ -121,6 +164,27 @@ class GitIdentityProvisionerTest < ActiveSupport::TestCase
     assert_equal [ "operator@example.com" ], values.lines.map(&:strip)
   end
 
+  test "converges a config that already carries the key twice" do
+    run_git_global("config", "--global", "--add", "user.email", "first@example.com")
+    run_git_global("config", "--global", "--add", "user.email", "operator@example.com")
+    configure("Zimmer Test Operator", "operator@example.com")
+
+    provision
+
+    values, = git_in(@home, "config", "--global", "--get-all", "user.email")
+    assert_equal [ "operator@example.com" ], values.lines.map(&:strip)
+  end
+
+  test "logs the value it replaces, so a clobbered identity is recoverable" do
+    run_git_global("config", "--global", "user.email", "someone@example.com")
+    configure("Zimmer Test Operator", "operator@example.com")
+
+    provision
+
+    assert @logger.messages(:warn).any? { |m| m.include?("someone@example.com") },
+      "expected the replaced value to appear in the log"
+  end
+
   test "a changed value replaces the old one instead of appending a second" do
     configure("Zimmer Test Operator", "operator@example.com")
     provision
@@ -130,6 +194,18 @@ class GitIdentityProvisionerTest < ActiveSupport::TestCase
 
     values, = git_in(@home, "config", "--global", "--get-all", "user.email")
     assert_equal [ "someone@example.com" ], values.lines.map(&:strip)
+  end
+
+  test "an unwritable config is logged, not raised" do
+    configure("Zimmer Test Operator", "operator@example.com")
+    File.chmod(0o500, @home)
+
+    begin
+      assert_nil provision
+      assert @logger.messages(:warn).any? { |m| m.include?("Failed to provision the git identity") }
+    ensure
+      File.chmod(0o700, @home)
+    end
   end
 
   test "a git failure is logged, not raised" do
@@ -145,6 +221,21 @@ class GitIdentityProvisionerTest < ActiveSupport::TestCase
   def configure(name, email)
     ENV[NAME_VAR] = name
     ENV[EMAIL_VAR] = email
+  end
+
+  # Seeds the provisioned global config directly, for the cases that need something
+  # already in it before `ensure!` runs.
+  def run_git_global(*args)
+    _out, status = git_in(@home, *args)
+    assert_equal 0, status.exitstatus
+  end
+
+  def with_env(vars)
+    original = vars.transform_values { |_| nil }.merge(vars.keys.index_with { |k| ENV[k] })
+    vars.each { |k, v| ENV[k] = v }
+    yield
+  ensure
+    original.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
   end
 
   def provision

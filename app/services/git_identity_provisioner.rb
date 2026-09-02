@@ -6,19 +6,19 @@
 #
 # WHY THIS EXISTS
 #
-# Zimmer configures git *credentials* centrally and git *identity* nowhere. The
-# image's `~/.gitconfig` carries the `gh auth git-credential` helper (Dockerfile.base)
-# and no `[user]` section, and clone preparation sets a remote and a branch and never
-# an identity. So pushing works and committing does not: the first `git commit` of
-# every committing session exits 128 with
+# Zimmer configured git *credentials* centrally and git *identity* nowhere. The
+# image's `~/.gitconfig` carried the `gh auth git-credential` helper (Dockerfile.base)
+# and no `[user]` section, and clone preparation set a remote and a branch and never
+# an identity. So pushing worked and committing did not: the first `git commit` of
+# every committing session exited 128 with
 #
 #   Author identity unknown
 #   fatal: empty ident name (for <rails@…>) not allowed
 #
 # A transcript scan of one production instance found that 118 times in three days,
 # spread thin across many clones — every committing session paying it once (#575).
-# The session then recovers by *inventing* an identity, usually by reading `git log`,
-# which makes authorship a norm rediscovered per session rather than a configured
+# The session then recovered by *inventing* an identity, usually by reading `git log`,
+# which made authorship a norm rediscovered per session rather than a configured
 # fact.
 #
 # WHY THE GLOBAL CONFIG, NOT THE CLONE
@@ -70,29 +70,42 @@ class GitIdentityProvisioner
   # disallowed characters"); a newline git would accept and store escaped, as a
   # quoted multi-line value, producing an author nobody meant.
   #
-  # Neither can corrupt `~/.gitconfig` — git writes the value through its own
-  # escaping, and Kamal's env-file encoder turns a real newline into a literal `\n`
-  # before it ever reaches here. This is caught early so a typo in a deploy variable
-  # is one warning naming that variable, rather than every commit thereafter wearing
-  # a mangled author.
+  # Neither can corrupt `~/.gitconfig`: git writes every value through its own
+  # escaping, so even `a@b.com"]\n[core]\n\tpager = …` lands as one escaped string
+  # rather than a second config section. This is a *typo* check, not a security
+  # boundary — it exists so a bad deploy variable is one warning naming that
+  # variable, rather than every commit thereafter wearing a mangled author.
   DISALLOWED = /[<>\n\r]/
+
+  # The same check for the email half, which has a shape a name does not. Deliberately
+  # minimal — one `@`, no whitespace either side — because this is here to catch
+  # `ZIMMER_GIT_USER_EMAIL="Tadas Antanavicius"` (the two variables swapped, or one
+  # left as prose), not to adjudicate RFC 5322. git itself accepts anything.
+  EMAIL_SHAPE = /\A[^@\s]+@[^@\s]+\z/
 
   class << self
     # Write `[user]` into the global git config when both variables are set.
     #
     # Idempotent and safe to call on every boot: it reads the current values first
     # and writes only what differs, so a container that is already correct runs two
-    # `git config --get` calls and stops.
+    # `git config --get-all` calls and stops.
     #
     # Best-effort by design — a missing, malformed, or unwritable identity must never
     # break a boot. It degrades to exactly the state before this class existed
     # (sessions cannot commit until they set an identity themselves) and says so in
     # the log.
     #
-    # @param home [String] home directory whose global config to write (defaults to $HOME)
-    # @param logger [Logger] where to report
+    # @param home [String, nil] home directory whose global config to write (defaults to $HOME)
+    # @param logger [Logger, nil] where to report (defaults to Rails.logger)
     # @return [Hash, nil] the provisioned {name:, email:}, or nil when nothing was
-    def ensure!(home: Dir.home, logger: Rails.logger)
+    def ensure!(home: nil, logger: nil)
+      # Resolved in the body, not as default arguments: a default is evaluated
+      # *outside* the method's `rescue`, so a raising `Dir.home` or `Rails.logger`
+      # would escape `ensure!` entirely and abort the boot this promises never to
+      # break.
+      home ||= Dir.home
+      logger ||= Rails.logger
+
       name = ENV[NAME_ENV_VAR].presence&.strip
       email = ENV[EMAIL_ENV_VAR].presence&.strip
 
@@ -114,6 +127,12 @@ class GitIdentityProvisioner
       if name.match?(DISALLOWED) || email.match?(DISALLOWED)
         offender = name.match?(DISALLOWED) ? NAME_ENV_VAR : EMAIL_ENV_VAR
         logger.warn "#{offender} contains a character git cannot put in an ident line (<, >, or a newline) — " \
+          "no git identity was provisioned"
+        return nil
+      end
+
+      unless email.match?(EMAIL_SHAPE)
+        logger.warn "#{EMAIL_ENV_VAR} does not look like an email address (#{email.inspect}) — " \
           "no git identity was provisioned"
         return nil
       end
@@ -143,7 +162,15 @@ class GitIdentityProvisioner
       written = false
 
       { "user.name" => name, "user.email" => email }.each do |key, value|
-        next if read_config(key, path: path) == value
+        existing = read_config(key, path: path)
+        next if existing == [ value ]
+
+        # Logged before the write, and only when something is actually being taken
+        # away, so a value this replaces is recoverable from the log. That matters
+        # most off the deployment: a developer who exports these and then runs
+        # `bin/rails console` is having their personal global identity rewritten,
+        # and `--replace-all` leaves no other trace of what was there.
+        logger.warn "Replacing the existing global #{key} #{existing.inspect} with #{value.inspect} in #{path}" if existing.any?
 
         run_git([ "config", "--global", "--replace-all", key, value ], path: path)
         written = true
@@ -153,20 +180,24 @@ class GitIdentityProvisioner
       { name: name, email: email }
     end
 
-    # Current value of a global key, or nil when unset. `git config --get` exits 1
-    # for "not found", which is not a failure worth raising over.
+    # Every value a global key currently holds, oldest first — `[]` when unset.
+    #
+    # `--get-all` rather than `--get`, which returns only the LAST of several values
+    # with exit 0: a config that somehow carries the key twice would then compare
+    # equal and never be converged, leaving the duplicate forever. Exit 1 means "not
+    # found", which is not a failure worth raising over.
     def read_config(key, path:)
-      stdout, _stderr, status = run_subprocess([ "git", "config", "--global", "--get", key ], path: path)
-      return nil unless SubprocessStatus.success?(status)
+      stdout, _stderr, status = run_subprocess([ "git", "config", "--global", "--get-all", key ], path: path)
+      return [] unless SubprocessStatus.success?(status)
 
-      stdout.strip.presence
+      stdout.lines.map(&:strip).reject(&:empty?)
     end
 
     def run_git(args, path:)
-      stdout, stderr, status = run_subprocess([ "git" ] + args, path: path)
+      _stdout, stderr, status = run_subprocess([ "git" ] + args, path: path)
       return if SubprocessStatus.success?(status)
 
-      raise "git #{args.join(' ')} failed (#{SubprocessStatus.describe_failure(status)}): #{stdout}#{stderr}"
+      raise "git #{args.join(' ')} failed: #{SubprocessStatus.describe_failure(status, stderr)}"
     end
 
     # GIT_CONFIG_GLOBAL pins which file `--global` means, so this writes the config
