@@ -1050,18 +1050,28 @@ class Session < ApplicationRecord
   # timeline: `:archived` is terminal and nothing will ever make this turn a good
   # idea, while `:not_resumable` means the session is already `running` — somebody
   # else got there first, and re-enqueueing would be the two-processes-on-one-
-  # session defect (#400).
+  # session defect (#400). Those two are exhaustive: `resume` transitions from
+  # `waiting`, `needs_input` and `failed` with no guard, so past the `archived?`
+  # check the only unresumable status left is `running`.
   #
   # It does NOT refuse an UNARCHIVED session. Every unarchive path leaves
   # `archived` before anything is enqueued, so by the time a sweep or a follow-up
   # reaches this the row reads `needs_input` or `waiting`, exactly as it should.
   #
-  # @yield [] runs under the lock, after the refusal check and before the resume —
-  #   for the stale-metadata clearing every caller does, which has to happen before
-  #   `resume!`'s callbacks write metadata of their own
+  # BOTH refusals are decided BEFORE the block runs, and that ordering is the
+  # method's contract: a refused claim writes nothing at all, so the caller has
+  # nothing to undo and needs no rollback to be correct. Deciding after the block
+  # would leave the caller's stale-metadata clear — `running_job_id: nil` and a
+  # stripped `paused_by` — committed over a live turn by any caller that did not
+  # think to roll back, which is the ownership-clobber shape of #400 arriving from
+  # a new direction.
+  #
+  # @yield [] runs under the lock, after both refusal checks and before the
+  #   resume — for the stale-metadata clearing every caller does, which has to
+  #   happen before `resume!`'s callbacks write metadata of their own
   # @return [Symbol] :claimed when the session was resumed and the caller may
   #   enqueue a turn, :archived when the row is in the trash, :not_resumable when
-  #   the state machine refused the resume
+  #   something else is already driving the session
   def claim_system_recovery_turn!
     transaction do
       # `reload` before `lock!`, not `with_lock` alone. AASM persists its
@@ -1075,11 +1085,11 @@ class Session < ApplicationRecord
       lock!
 
       next :archived if archived?
+      next :not_resumable unless may_resume?
 
       yield if block_given?
 
-      next :not_resumable unless resume_for_system_recovery!
-
+      resume_for_system_recovery!
       :claimed
     end
   end

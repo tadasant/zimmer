@@ -368,16 +368,20 @@ class SessionRecoveryService
       return
     end
 
-    # Everything below happens under the row lock claim_system_recovery_turn! takes,
-    # including the enqueue. This service has been carrying its `session` object
-    # since before it started killing a pid — terminating a process, polling a
-    # transcript and draining the message queue all take time, and a human can
-    # archive the session in any of it. See Session#claim_system_recovery_turn!.
+    # The enqueue happens under the row lock claim_system_recovery_turn! takes.
+    # This service has been carrying its `session` object since before it started
+    # killing a pid — terminating a process, polling a transcript and draining the
+    # message queue all take time, and a human can archive the session in any of
+    # it. See Session#claim_system_recovery_turn!.
+    #
+    # Nothing is logged until the claim succeeds. `add_log` writes to @log_buffer
+    # when the caller supplied one, and a buffered line is not part of this
+    # transaction — announcing an auto-restart above the claim would leave a
+    # timeline that says the session was restarted immediately followed by one
+    # saying it was not.
     outcome = nil
     with_db_retry do
       ActiveRecord::Base.transaction do
-        add_log("Auto-restarting session after hung process termination", level: "info")
-
         outcome = session.claim_system_recovery_turn! do
           # Clear stale retry metadata before restarting.
           # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
@@ -387,9 +391,9 @@ class SessionRecoveryService
           )
         end
 
-        # Nothing is enqueued for a refused claim, and nothing the claim wrote is
-        # kept — the row is left exactly as it was found.
-        raise ActiveRecord::Rollback unless outcome == :claimed
+        next unless outcome == :claimed
+
+        add_log("Auto-restarting session after hung process termination", level: "info")
 
         AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
 

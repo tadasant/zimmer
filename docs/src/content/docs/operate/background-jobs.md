@@ -828,16 +828,17 @@ about to reap.
 
 ### A recovery sweep does not resume a trashed session
 
-Every one of those recovery paths — the two sweeps above and `SessionRecoveryService`'s
-hung-process auto-restart — decides from a session object it read minutes earlier, and a human can
-click Trash in the gap. Resuming from that stale read wrote `running` over an archived row and
-started a real agent against a clone whose trash-cleanup clock had already begun.
+The two sweeps above and `SessionRecoveryService`'s hung-process auto-restart each decide from a
+session object read minutes earlier, and a human can click Trash in the gap. Resuming from that
+stale read writes `running` over an archived row and starts a real agent against a clone whose
+trash-cleanup clock has already begun.
 
-They all go through `Session#claim_system_recovery_turn!` now: a `FOR UPDATE` re-read inside the
+All three go through `Session#claim_system_recovery_turn!`: a `FOR UPDATE` re-read inside the
 caller's transaction, refusing an `archived` row (and an already-`running` one) before anything is
 enqueued, with the refusal recorded on the session's own timeline. The lock is held until the
 caller commits, so the enqueue cannot straddle an archive. See
-[Spawning and monitoring](/sessions/spawning/) for the delivery-time guard this pairs with, and
+[Spawning and monitoring](/sessions/spawning/) for the delivery-time guard this pairs with, for the
+callers that do **not** route through it yet, and for
 [#554](https://github.com/tadasant/zimmer/issues/554).
 
 :::caution[`GlobalRateLimitTracker` is only global with Redis]
