@@ -52,7 +52,10 @@
                       longest token, so one unbreakable title (a test name, a branch)
                       widens the table past its scroll container. %>
                   <%= link_to gate_decision_path(decision), class: "text-gray-900 font-medium hover:text-indigo-700 line-clamp-2 wrap-anywhere" do %>
-                    <%= decision.title.presence || decision.artifact_url.presence || "Decision ##{decision.id}" %>
+                    <%# `list_title`, not `title`: the ledger loads rows without their
+                        payload (see GateDecisionsController::LIST_COLUMNS), and
+                        `#title` reads the payload. %>
+                    <%= decision.list_title.presence || decision.artifact_url.presence || "Decision ##{decision.id}" %>
                   <% end %>
                   <% if decision.artifact_url.present? %>
                     <%# Only ever an href when it IS an http(s) URL — the column is
@@ -85,11 +88,11 @@
             <% end %>
             <% if @decisions.empty? %>
               <tr><td colspan="7" class="px-3 py-10 text-center text-sm text-gray-500">
-                <% if GateDecision.exists? %>
-                  No gate decisions match these filters.
-                <% else %>
+                <% if @ledger_empty %>
                   No gate decisions have been recorded yet. The historical ledgers arrive with the
                   <code class="text-xs">ImportGateDecisionLedgers</code> post-deploy task; after that the gates append here as they rate.
+                <% else %>
+                  No gate decisions match these filters.
                 <% end %>
               </td></tr>
             <% end %>

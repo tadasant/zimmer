@@ -90,7 +90,12 @@ class GateDecisions::PayloadViewTest < ActiveSupport::TestCase
     assert_equal %w[reason], view.prose_fields.map(&:key)
   end
 
-  test "glance may pick but fields never omits, in the order the gate wrote them" do
+  test "glance may pick but fields never omits, and the hash order is preserved as given" do
+    # This class preserves whatever order the Hash it is handed is in. That is NOT
+    # the order the gate wrote the entry: `payload` is jsonb, which normalizes to
+    # shortest-key-first then bytewise, so a round trip through the database
+    # reorders the keys before this ever sees them. Nothing is dropped either way,
+    # which is the property that matters.
     payload = { "reason" => "y" * 900, "decision" => "hold", "ratings" => { "impact" => "small" } }
 
     assert_equal %w[reason decision ratings], GateDecisions::PayloadView.new(payload).fields.map(&:key)
@@ -113,13 +118,13 @@ class GateDecisions::PayloadViewTest < ActiveSupport::TestCase
     field = GateDecisions::PayloadView.new("staleness_check" => "live").fields.sole
 
     assert_equal "Staleness check", field.label
-    assert_equal "entry-staleness-check", field.anchor
+    assert_equal "entry-0-staleness-check", field.anchor
   end
 
   test "a key that humanizes to nothing still gets a label and an anchor" do
     field = GateDecisions::PayloadView.new("_" => "x").fields.sole
 
     assert_equal "_", field.label
-    assert_equal "entry-field", field.anchor
+    assert_equal "entry-0-field", field.anchor
   end
 end

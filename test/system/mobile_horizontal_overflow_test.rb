@@ -729,8 +729,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_selector "h2", text: "At a glance"
     assert_no_horizontal_overflow("gate decision detail")
     # Probe 1 cannot see an element clipped by an ancestor, and the prose sits
-    # inside several. The long tokens are the whole risk here, so check per-element.
-    past_edge = elements_past_right_edge("#entry-reason")
+    # inside several. The long tokens are the whole risk here, so check
+    # per-element. Anchors carry the field's position (see PayloadView::Field), so
+    # find the section by its heading rather than guessing the id.
+    reason_id = find("section h2", text: "Reason").find(:xpath, "..")[:id]
+    past_edge = elements_past_right_edge("##{reason_id}")
     assert_empty past_edge,
       "gate prose ends past the #{MOBILE_WIDTH}px viewport:\n  #{past_edge.join("\n  ")}"
     past_edge = elements_past_right_edge("#human-feedback")
@@ -754,14 +757,15 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.driver.browser.manage.window.resize_to(1400, 900)
 
     visit gate_decision_path(decision)
-    assert_selector "section#entry-deep"
+    # Anchors carry the field's position, so find the section by its heading.
+    deep_id = find("section h2", text: "Deep").find(:xpath, "..")[:id]
 
     section_width = evaluate_script(<<~JS)
-      document.querySelector("#entry-deep").getBoundingClientRect().width
+      document.querySelector("##{deep_id}").getBoundingClientRect().width
     JS
     value_width = evaluate_script(<<~JS)
       (function () {
-        const el = Array.from(document.querySelectorAll("#entry-deep dd"))
+        const el = Array.from(document.querySelectorAll("##{deep_id} dd"))
           .find((d) => d.textContent.includes("the value at the bottom") && d.querySelectorAll("dd").length === 0);
         return el ? el.getBoundingClientRect().width : 0;
       })()

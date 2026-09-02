@@ -40,8 +40,16 @@ module GateDecisions
   # other four paragraphs, so one skims and the other does not, and no rule
   # naming either of them was needed to get that right.
   #
-  # `fields` is everything, in the order the gate wrote it, and it is the
-  # non-negotiable half: `glance` may pick, the entry view never omits.
+  # `fields` is everything, and it is the non-negotiable half: `glance` may pick,
+  # the entry view never omits.
+  #
+  # ORDER IS POSTGRES'S, NOT THE GATE'S. `payload` is `jsonb`, which normalizes an
+  # object on the way in: keys come back shortest-first, then bytewise, whatever
+  # order the gate wrote them. That is stable and deterministic — the same entry
+  # always renders the same way — but it is not authoring order, and nothing here
+  # can recover authoring order because the column never stored it. Sorting the
+  # keys some other way would only trade one arbitrary order for another, so this
+  # takes the one the database gives and says so.
   class PayloadView
     # Above this many characters, or across a line break, a string stops being a
     # value on a row and becomes a paragraph with its own heading. Tuned to the
@@ -55,21 +63,31 @@ module GateDecisions
     # limit anyone should reach.
     MAX_DEPTH = 4
 
+    # The most elements an array is drawn one-per-card. The longest list in the
+    # corpus holds 5.
+    MAX_ITEMS = 200
+
     # One renderable value: what to call it, what it is, and — for the two
     # container kinds — the fields inside it, already classified.
-    Field = Struct.new(:key, :value, :kind, :children, :depth, keyword_init: true) do
+    Field = Struct.new(:key, :value, :kind, :children, :depth, :position, keyword_init: true) do
       # Keys are snake_case in both gates' schemas. Humanized for display, but
       # never rewritten: an unrecognized key still reads as itself.
       def label
         key.to_s.tr("_", " ").strip.presence&.upcase_first || key.to_s
       end
 
-      # Stable enough for a jump link, and prefixed so a payload key cannot
-      # collide with an id elsewhere on the page. A key that slugifies to nothing
-      # — punctuation only — still gets a usable anchor rather than `entry-`.
+      # A jump-link target, and it has to be UNIQUE — a duplicate id sends every
+      # link in "The reasoning" to whichever section came first.
+      #
+      # The key alone is not unique, and the payload is the one place we cannot
+      # assume otherwise. `parameterize` maps "Reason" and "reason" together, and
+      # "a_b" / "a-b" / "a b" together; a key with no ASCII letters at all — a
+      # gate writing Japanese — slugifies to the empty string, so two of those
+      # would both land on `entry-field`. So the field's position carries the
+      # uniqueness and the slug carries the readability.
       def anchor
         slug = key.to_s.parameterize.tr("_", "-").gsub(/\A-+|-+\z/, "")
-        "entry-#{slug.presence || 'field'}"
+        "entry-#{position}-#{slug.presence || 'field'}"
       end
 
       def prose? = kind == :prose
@@ -92,9 +110,10 @@ module GateDecisions
       @payload = payload.is_a?(Hash) ? payload : {}
     end
 
-    # Every top-level field, in the order the gate wrote it. Nothing is dropped.
+    # Every top-level field, in the order `jsonb` gives them back — shortest key
+    # first, then bytewise. Nothing is dropped.
     def fields
-      @fields ||= build(payload, depth: 0)
+      @fields ||= build(payload, depth: 0, prefix: "")
     end
 
     def any?
@@ -107,25 +126,31 @@ module GateDecisions
     end
 
     # The long-form half, which is what someone auditing a hold came to read.
-    # Doubles as the jump list on the detail page.
+    # Doubles as the jump list on the detail page — and TOP-LEVEL is what makes
+    # that work, not an oversight: the detail page gives a `<section>` (and so an
+    # anchor) to each top-level field, so a nested prose field has no target a
+    # jump link could point at. It is still rendered in full, inside its parent.
     def prose_fields
       @prose_fields ||= fields.select(&:prose?)
     end
 
     private
 
-    def build(hash, depth:)
-      hash.map { |key, value| field_for(key, value, depth) }
+    def build(hash, depth:, prefix:)
+      hash.each_with_index.map { |(key, value), index| field_for(key, value, depth, "#{prefix}#{index}") }
     end
 
-    def field_for(key, value, depth)
+    def field_for(key, value, depth, position)
       kind = classify(value, depth)
       children = case kind
-      when :object then build(value, depth: depth + 1)
-      when :list then value.each_with_index.map { |item, index| field_for("#{key} #{index + 1}", item, depth + 1) }
+      when :object then build(value, depth: depth + 1, prefix: "#{position}-")
+      when :list
+        value.each_with_index.map do |item, index|
+          field_for("#{key} #{index + 1}", item, depth + 1, "#{position}-#{index}")
+        end
       end
 
-      Field.new(key: key, value: value, kind: kind, children: children, depth: depth)
+      Field.new(key: key, value: value, kind: kind, children: children, depth: depth, position: position)
     end
 
     def classify(value, depth)
@@ -141,8 +166,9 @@ module GateDecisions
     end
 
     def classify_string(value)
-      return :blank if value.strip.empty?
-      return :url if value.strip.match?(%r{\Ahttps?://\S+\z})
+      stripped = value.strip
+      return :blank if stripped.empty?
+      return :url if stripped.match?(%r{\Ahttps?://\S+\z})
 
       value.length > PROSE_LENGTH || value.include?("\n") ? :prose : :text
     end
@@ -150,6 +176,11 @@ module GateDecisions
     def classify_array(value, depth)
       return :blank if value.empty?
       return :json if depth >= MAX_DEPTH
+      # The breadth counterpart to MAX_DEPTH, and it matters for the same reason:
+      # a payload is allowed up to 512 KB, so an array far longer than anything a
+      # gate writes today would otherwise become one Field struct and one partial
+      # render per element. Past the cap it is still shown, as JSON.
+      return :json if value.length > MAX_ITEMS
       # A list of short scalars is a row of chips; anything heavier gets a card
       # each. `facets: ["subtractive"]` and `disclosures: [{…}, {…}]` are both in
       # the corpus and neither needed a rule mentioning it.
