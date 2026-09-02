@@ -438,6 +438,27 @@ rows) — so saturating it would take thousands of broadcasts per second, and si
 produce single or double digits. If that estimate is ever wrong, the failure will be quiet. Raise
 `CABLE_DB_POOL` and `app_required_backends` together.
 
+### The database retry helpers do not catch the error a mid-flight connection death raises
+
+`DatabaseRetry` (`app/jobs/concerns/database_retry.rb`) and `ControllerDatabaseRetry`
+(`app/controllers/concerns/controller_database_retry.rb`) retry `PG::ConnectionBad`,
+`PG::UnableToSend`, `ActiveRecord::ConnectionNotEstablished` and `ActiveRecord::Deadlocked`. A
+connection that dies *while a statement is in flight* — a Postgres restart, a failover, an admin
+disconnect — does not raise any of those. Active Record translates it to
+`ActiveRecord::ConnectionFailed`, which descends from `QueryAborted` → `StatementInvalid`, not from
+`ConnectionNotEstablished`. So it is not on the list, and the block is not retried.
+
+It is mostly harmless today, because the adapter itself reconnects: the *next* statement on that
+connection verifies and reconnects under the adapter's own lock, so the caller after this one
+succeeds. What is lost is this helper's retry — the caller that hit the death still sees the error.
+Tracked in [#779](https://github.com/tadasant/zimmer/issues/779).
+
+The helpers deliberately do *not* reconnect by hand. They used to, on
+`ActiveRecord::ConnectionNotEstablished` — which `ActiveRecord::ConnectionTimeoutError` (the pool is
+full) inherits from, so the branch fired on exhaustion, leased a *sticky* connection out of an
+already empty pool, and on a GoodJob thread tore down the Postgres session holding the job's advisory
+lock ([#708](https://github.com/tadasant/zimmer/issues/708)).
+
 ### Staging cannot exercise the managed-database path
 
 Staging runs a `postgres:16` Kamal accessory on the droplet; only production has a managed cluster. So
