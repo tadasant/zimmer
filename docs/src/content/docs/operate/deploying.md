@@ -309,7 +309,11 @@ end
 
 That is the whole authoring surface. Nothing registers it, nothing else has to be edited, and
 `PostDeployTaskJob` — a two-minute cron entry on the `default` queue — picks it up within a couple
-of minutes of the deploy.
+of minutes of the deploy. It runs at priority `-100`, ahead of ordinary default-queue work. A
+database migration also promotes any safe, inherited runner row to that priority: Active Job stores
+priority when it enqueues a row, so changing the job class alone cannot update a singleton row left
+by the previous release. Together those safeguards keep a default backlog from blocking the task
+that must migrate that backlog.
 
 ### What it guarantees, and what it does not
 
