@@ -230,6 +230,15 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
     comments.reject { |c| known.include?([ c[:comment_type], c[:comment_id] ]) }
   end
 
+  # The whole transcript, deliberately — including the part a fork copied from
+  # the session it was forked from. GithubPrUrlHook trims that prefix off its own
+  # parser, because crediting a fork with the source's *pull requests* enrols an
+  # extra session in three pollers. Here the asymmetry is the point: this list is
+  # read to SUPPRESS a comment, so inheriting the source's ids costs a
+  # re-delivery that was never wanted rather than a wrong one that was. And it
+  # costs nothing even then — `AgentPostedGithubComment` rows are global, with a
+  # unique index on `[comment_type, comment_id]`, so a fork re-offering the
+  # source's ids writes nothing new.
   def parser
     @parser ||= TranscriptHooks::ToolCallParser.for(session: session, parsed_transcript: parsed_transcript)
   end

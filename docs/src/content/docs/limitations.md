@@ -3090,7 +3090,20 @@ check at all for the first. That warning is also written once per session and ne
 session that was warned and is then resumed or unarchived — `resume` runs from `failed`,
 `unarchive_to_*` from `archived` — keeps a warning its later PR made obsolete.
 
-Narrowed in [#214](https://github.com/tadasant/zimmer/issues/214) and widened in
+A fork is read from **one past** `metadata["forked_at_message_index"]`, because everything at or
+before that index — the index is inclusive — is a copy of the source session's conversation and
+shows the *source* opening PRs. Two edges come with that. The fork point is a message index into the
+fork's own stored transcript, which holds only as long as that transcript stays a prefix-stable
+append — the same assumption `broadcast_message_count` makes, and one a runtime that reshaped its
+history on resume would break silently, in the too-tight direction. Nothing in the repo breaks it
+today: Claude appends to the file, `AgentSessionJob#write_transcript_to_clone` re-materializes
+`session.transcript` verbatim when a clone is recreated, and `#carryover_prefix` re-attaches the
+stored head across a Codex rollout rotation. And the trim only governs what is written from here on: **a fork credited before this
+shipped keeps the list it was given**, because the hook adds URLs and never removes them. Such a
+fork stays in all three pollers' scope for the source's PRs until it is archived or failed.
+
+Narrowed in [#214](https://github.com/tadasant/zimmer/issues/214) and
+[#556](https://github.com/tadasant/zimmer/issues/556), widened in
 [#89](https://github.com/tadasant/zimmer/issues/89).
 
 ---

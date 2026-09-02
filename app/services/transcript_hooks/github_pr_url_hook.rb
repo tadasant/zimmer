@@ -41,9 +41,14 @@
 #   - A URL in a user message. Zimmer's own trigger prompts carry PR URLs
 #     ("comment on your PR <url>"), so adopting them would let one misrouted
 #     notification bootstrap a permanent wrong association.
-#   - Anything at all in a status-summary fork's transcript, which is a copy of
-#     the source session's and therefore shows the *source* opening PRs. See the
-#     guard at the top of `#call`.
+#   - Anything in the part of a fork's transcript it did not write. A fork starts
+#     life holding a copy of the source session's conversation, so the source's
+#     own `gh pr create` sits in it as CREATED evidence. Only the messages after
+#     the fork point are read; see `#own_parsed_transcript`.
+#   - Anything at all in a status-summary fork's transcript, including the one
+#     turn it writes itself. Such a fork exists to answer a question about
+#     another session and opens nothing, ever. Guarded outright at the top of
+#     `#call`, above and beyond the fork-point trim.
 #
 # Every rule above is a bet against the opposite failure — a session that opened a
 # PR and has nothing recorded, which silently switches off every GitHub
@@ -268,6 +273,15 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     #
     # `warn_if_pr_goal_captured_no_url` already declines to reason about a fork's
     # empty list for the same reason; this is the writing half of that guard.
+    #
+    # Kept as its own outright guard even though #own_parsed_transcript now drops
+    # every fork's copied prefix. That trim would already have prevented the
+    # production page — a summary fork is forked at the source's *last* message,
+    # so the whole of the source's conversation, creates included, is prefix —
+    # but it is not the same statement. This one says the stronger thing: a
+    # session Zimmer created to write a blurb opens nothing, ever, so not even
+    # its own turn counts. And it holds without depending on the fork point
+    # having been recorded.
     return if session.status_summary_fork?
 
     new_pr_urls = extract_pr_urls
@@ -390,8 +404,39 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
 
   # The runtime-aware view of this transcript's tool calls and results. The
   # Claude and Codex shapes both live in TranscriptHooks::ToolCallParser.
+  #
+  # Built over #own_parsed_transcript, so every one of the three evidence rules
+  # sees only what this session wrote.
   def parser
-    @parser ||= TranscriptHooks::ToolCallParser.for(session: session, parsed_transcript: parsed_transcript)
+    @parser ||= TranscriptHooks::ToolCallParser.for(session: session, parsed_transcript: own_parsed_transcript)
+  end
+
+  # The part of this transcript that is this session's own.
+  #
+  # For everything except a fork that is the whole thing. A fork is different:
+  # ForkSessionService gives it a *copy* of the source session's conversation up
+  # to the fork point, so the source's own `gh pr create` — its output, the
+  # command that produced it, and any prose claiming it — is sitting in the
+  # fork's transcript from the moment the fork exists. Reading it credits the
+  # fork with pull requests the source opened, and `Session.with_github_prs` then
+  # enrols both sessions in all three GitHub pollers: one review comment draws
+  # two independent agent responses, and the merge and merge-conflict notices go
+  # to both (#556, the shape #214 warns about).
+  #
+  # Dropping the copied prefix — rather than declining to record anything for a
+  # fork at all, which is what a status-summary fork gets — is what keeps the
+  # other half true. A user fork is a live working session that may go on to open
+  # pull requests of its own, and those must still be recorded, or the fix would
+  # silently switch off every GitHub integration for a session that really did
+  # open the PR (#89). The fork point is the line between the two: evidence at or
+  # before `forked_at_message_index` is the source's, evidence after it is the
+  # fork's.
+  #
+  # A transcript shorter than the prefix it is supposed to carry leaves nothing,
+  # which is the right answer rather than a fallback: there is no message here
+  # this session is known to have written.
+  def own_parsed_transcript
+    @own_parsed_transcript ||= parsed_transcript.drop(session.inherited_transcript_message_count)
   end
 
   # The PR-creating invocations in this transcript — `gh pr create` and REST

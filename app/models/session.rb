@@ -633,6 +633,39 @@ class Session < ApplicationRecord
     metadata&.dig(SessionStatusSummaryGenerator::FORK_MARKER)
   end
 
+  # How many messages at the head of this session's transcript were copied from
+  # the session it was forked from, rather than written here.
+  #
+  # `ForkSessionService` truncates the source's transcript at
+  # `forked_at_message_index` *inclusive* and stores that slice as the fork's
+  # starting transcript, so the copied prefix is one longer than the index. Every
+  # later message is the fork's own.
+  #
+  # That reading needs the stored transcript to stay a prefix-stable append,
+  # which is the assumption `broadcast_message_count` already indexes on rather
+  # than a new one. Nothing in the repo breaks it: the runtime appends,
+  # `AgentSessionJob#write_transcript_to_clone` re-materializes the stored
+  # transcript verbatim when a clone is recreated, and
+  # `TranscriptPollerService#carryover_prefix` re-attaches the stored head across
+  # a Codex rollout rotation. It is an assumption all the same, and
+  # `limitations.md` records what a runtime that reshaped its history on resume
+  # would cost.
+  #
+  # Zero for a session that is not a fork, and zero for a fork whose metadata
+  # carries no usable fork point: a reader that cannot locate the boundary must
+  # not guess that everything is inherited, because that is the reading which
+  # silently discards a session's own evidence. `SessionStatusSummaryHarvestJob`
+  # reads the same field for the same reason — the fork's answer starts one past
+  # the fork point.
+  #
+  # @return [Integer]
+  def inherited_transcript_message_count
+    index = metadata&.dig("forked_at_message_index")
+    return 0 unless index.is_a?(Integer) && index >= 0
+
+    index + 1
+  end
+
   # The bundle of pluggable implementations for this session's agent runtime
   # (CLI adapter, retry strategy, transcript source/normalizer, prompt
   # contribution, ...). Resolved from RuntimeRegistry by agent_runtime. Callers
