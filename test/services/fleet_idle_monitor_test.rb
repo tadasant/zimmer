@@ -239,7 +239,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   # session this would spawn is priority, so it would start, find nothing to
   # serve, park, and have re-armed the latch on the way through.
   test "an account pool with nothing to serve holds the event off" do
-    AppSetting.editable.update!(quota_pool_available: false)
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(status: :quota_exceeded)
 
     freeze_time do
       assert_not FleetIdleMonitor.check!
@@ -296,5 +296,26 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
 
     assert_equal before.to_i, setting.fleet_idle_since.to_i
     assert_nil setting.fleet_idle_event_fired_at, "nothing was fired, so nothing was recorded"
+  end
+
+  # The regression the latch decoupling exists to prevent. `quota_pool_available`
+  # is an announcement latch, not a pool reading: QuotaAvailabilityMonitor holds
+  # it at `false` through a recovery it has deferred because the spot gate is at
+  # its utilization limit, which can last days. Reading it here would suppress the
+  # idle event for all of that, on a spot-budget condition that says nothing about
+  # the pool — and the session this spawns is priority and ungated, so it would
+  # have run perfectly well.
+  test "a deferred recovery does not hold the event off while the pool can serve" do
+    AppSetting.editable.update!(quota_pool_available: false)
+    assert ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).available.exists?,
+      "the pool must be able to serve, so the latch is the only thing that could hold this off"
+
+    freeze_time do
+      assert_not FleetIdleMonitor.check!
+      travel FleetIdleMonitor::IDLE_THRESHOLD + 1.minute
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!
+      end
+    end
   end
 end

@@ -1152,12 +1152,22 @@ reads, and deliberately not the evidence-based predicate a PARK stops on — see
 "is the pool drained"](#one-predicate-for-is-the-pool-drained).
 
 That rising edge is **necessary but not sufficient**. Before firing, the monitor asks
-`SpotGateService` whether any spot session could start right now, because starting spot work is the
-entire job of the session this event spawns. A held gate means the answer is no, so the event is
-**deferred**: the stored level stays `false` and the next sweep asks both questions again. Nothing is
-spent and nothing is lost — the gate opens on a window rolling over, on the fleet's burn falling, or
-on a slot freeing, none of which needs this event to happen first. Parked **priority** sessions are
-unaffected either way, because the same sweep resumes them directly and the gate never holds them.
+`SpotGateService` whether a quota window is holding spot work, because starting spot work is the
+entire job of the session this event spawns. An `at_utilization_limit` hold means there is nothing to
+hand out, so the event is **deferred**: the stored level stays `false` and the next sweep asks both
+questions again. Nothing is spent and nothing is lost — the hold lifts on a window rolling over or on
+the fleet's burn falling, neither of which needs this event to happen first. Parked **priority**
+sessions are unaffected either way, because the same sweep resumes them directly and the gate never
+holds them.
+
+`fleet_at_cap` is deliberately **not** a deferral reason, though it zeroes the woken session's
+headroom just as effectively. A window's hold moves on the window's clock, slower than this
+fifteen-minute sweep, so observing it once is good evidence it will still be there in a minute. Cap
+contention moves on a session's clock, much faster — a slot frees whenever anything finishes — so a
+fleet habitually at its cap would show `fleet_at_cap` to every sweep while ordinary held spot
+sessions took the freed slots on their own ten-minute ladder, and the outage-parked sessions, whose
+only wake path this is, would starve behind them. It is also the honest scope: this event is the
+quota pool recovering, and cap contention is not a quota condition.
 
 The two readings drift apart because they measure different things, which is the whole defect
 ([#611](https://github.com/tadasant/zimmer/issues/611)). An account goes back to `available` when

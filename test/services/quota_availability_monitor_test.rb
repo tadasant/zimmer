@@ -284,10 +284,14 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # A slot-starved fleet leaves the woken session exactly as little to hand out
-  # as a spent budget does: it computes its headroom as ceiling minus running and
-  # forces it to zero on any held decision.
-  test "the edge does not fire while every fleet slot is taken" do
+  # A full fleet is NOT a reason to defer, and the asymmetry is the point. A
+  # window's hold moves on the window's clock, which is slower than this
+  # fifteen-minute sweep; cap contention moves on a session's clock, which is far
+  # faster. Deferring on the cap would let a fleet that habitually runs at its
+  # cap show `fleet_at_cap` to every sweep while ordinary held spot sessions took
+  # the freed slots on their own ten-minute ladder — starving the outage-parked
+  # sessions whose only wake path this is.
+  test "a full fleet is not a reason to defer the edge" do
     enable_spot_gating(max_concurrent: 1)
     exceeded = account(:quota_exceeded)
     seed_reading(exceeded, utilization_5h: 0.10, utilization_7d: 0.10)
@@ -297,12 +301,12 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
       git_root: "https://github.com/test/repo.git", branch: "main",
       execution_provider: "local_filesystem", session_id: SecureRandom.uuid)
 
-    assert_equal SpotGateService::FLEET_CAP_REASON, SpotGateService.evaluate.reason
+    assert_equal SpotGateService::FLEET_CAP_REASON, SpotGateService.evaluate.reason,
+      "the fixture must reproduce a gate held on the cap rather than on a window"
 
-    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
-      assert_not QuotaAvailabilityMonitor.check!
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.check!
     end
-    assert_equal false, AppSetting.current.reload.quota_pool_available
   end
 
   # Fail OPEN. A gate that cannot be read must not become an outage of the only

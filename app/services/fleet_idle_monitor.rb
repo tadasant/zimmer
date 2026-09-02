@@ -244,13 +244,23 @@ class FleetIdleMonitor
         .exists?
     end
 
-    # Whether the account pool can serve anything, as QuotaAvailabilityMonitor
-    # last recorded it. Read from the stored level rather than re-derived, so the
-    # two monitors cannot disagree about the same pool; `nil` (never observed)
-    # reads as available, which is the pre-outage default and what a fresh
-    # deployment has.
-    def pool_available?(setting)
-      setting.quota_pool_available != false
+    # Whether the account pool can serve anything, asked of the pool itself.
+    #
+    # Deliberately NOT `AppSetting#quota_pool_available`. That column looks like a
+    # pool reading and is really an ANNOUNCEMENT LATCH: QuotaAvailabilityMonitor
+    # holds it at `false` through a recovery it has not fired the event for yet —
+    # a fire that delivered nothing and was re-armed, or one deferred because the
+    # spot gate is at its utilization limit. The second of those can last days,
+    # and reading the latch would suppress this event for all of it, on the
+    # strength of a spot-budget condition that says nothing about the pool. The
+    # session this spawns is PRIORITY and ungated: it would start and run, not
+    # find an empty pool and park, so the reason condition 4 exists does not
+    # apply. See QuotaAvailabilityMonitor for what the latch means.
+    #
+    # An unreadable pool reads as available, matching the `nil` (never observed)
+    # default this replaced: a monitoring gap must not manufacture an outage.
+    def pool_available?(_setting)
+      QuotaAvailabilityMonitor.pool_available?(ClaudeAuthProvider::RUNTIME) != false
     end
 
     # Put the idle clock back to "the fleet has work", writing only when there is
