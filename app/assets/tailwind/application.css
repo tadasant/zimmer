@@ -358,6 +358,22 @@
   }
 }
 
+/* The drawer's detail body re-fetches itself in place when the log level changes
+   (log_level_filter_controller sets the frame's own `src` rather than navigating
+   the dashboard). A frame navigation has no browser loading UI behind it — the
+   spinner a full-page navigation used to give for free — so without this the
+   drawer sits showing the OLD filter's content for the whole round trip with
+   nothing to say it is working, and invites a second click on the select.
+
+   Turbo sets `busy` on a frame for exactly the duration of its fetch, so this
+   needs no JS to arm or disarm. Dim rather than blank: the reader keeps their
+   place, and the content is still the right session. */
+turbo-frame#session_detail[busy] {
+  opacity: 0.6;
+  pointer-events: none;
+  transition: opacity 150ms ease-in-out;
+}
+
 /* The session drawer's panel slides in under `transition-transform duration-300`.
    Honor prefers-reduced-motion by removing the motion outright.
 
