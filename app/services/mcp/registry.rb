@@ -9,6 +9,7 @@ module Mcp
   #
   #   (no groups)   → all base groups: the full surface
   #   sessions      → spawn/inspect/act on other sessions
+  #   gate_decisions → read and append the agent gates' decision ledger
   #   self_session  → the curated set auto-injected into every session, so a
   #                   session can manage itself (notes/title/heartbeat/archive),
   #                   notify its user, and schedule its own wake-ups
@@ -20,7 +21,7 @@ module Mcp
   # that composite group — that is how action_session narrows from the full
   # action list to the self-management subset in the self_session variant.
   module Registry
-    BASE_GROUPS = %w[sessions notifications triggers health].freeze
+    BASE_GROUPS = %w[sessions notifications triggers health gate_decisions].freeze
     COMPOSITE_GROUPS = %w[self_session].freeze
     VALID_GROUPS = (BASE_GROUPS + BASE_GROUPS.map { |g| "#{g}_readonly" } + COMPOSITE_GROUPS).freeze
 
@@ -84,7 +85,25 @@ module Mcp
       # spent. Read-only, and fleet-wide, so it stays out of self_session.
       Definition.new(klass: "Mcp::Tools::GetCosts", group: "health", write: false),
       Definition.new(klass: "Mcp::Tools::GetSpotPolicy", group: "health", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionSpotPolicy", group: "health", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionSpotPolicy", group: "health", write: true),
+
+      # Gate decisions — the pr-merge-gate / issue-work-gate ledger.
+      #
+      # A GROUP OF ITS OWN, and that is the security property the whole feature
+      # rests on. Folded into `sessions` these would be reachable by every session
+      # carrying `zimmer-sessions`, which is most of them, and a ledger anything
+      # can write is not evidence of anything. Only a connection that names
+      # `gate_decisions` can record a rating; `gate_decisions_readonly` — which the
+      # generated readonly variant gives for free — carries the two reads and not
+      # the write.
+      #
+      # Note what is NOT here: there is no tool that writes human feedback, on this
+      # group or any other. That field is writable only from the browser
+      # (GateDecisionFeedbacksController), because its entire value is that a
+      # machine did not write it.
+      Definition.new(klass: "Mcp::Tools::SearchGateDecisions", group: "gate_decisions", write: false),
+      Definition.new(klass: "Mcp::Tools::GetGateDecisionFeedback", group: "gate_decisions", write: false),
+      Definition.new(klass: "Mcp::Tools::RecordGateDecision", group: "gate_decisions", write: true)
     ].freeze
 
     module_function

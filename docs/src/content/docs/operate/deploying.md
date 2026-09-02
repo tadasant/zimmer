@@ -365,6 +365,17 @@ both the former. A worker killed mid-task (a deploy, an OOM) leaves its claim be
 expires after 20 minutes and the abandoned claim is converted into an ordinary failure, so it
 retries down the same path.
 
+### A worked example: the gate decision backfill
+
+`ImportGateDecisionLedgers` is the shape most non-trivial tasks take. It has to move 1,469 entries
+across 19 JSON files in a *different* repository into `gate_decisions`, which means fetching a few
+megabytes over the network — so it slices by file, checkpoints the names of the ones it finished
+into the cursor, and returns `CONTINUE` when the budget runs out. It is idempotent because it only
+ever inserts, keyed on each entry's identity; a second pass finds every row already present and
+writes nothing. Its `stats` carry the per-file counts, which is what makes "did it import
+everything?" a question the health panel answers rather than one somebody has to take on trust. See
+[the gate decision ledger](/operate/gate-decisions/).
+
 ### Seeing it without a shell
 
 One object, `PostDeployTaskRun.summary`, rendered four ways so they cannot disagree:

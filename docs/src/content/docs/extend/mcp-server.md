@@ -76,15 +76,16 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The full surface — all 23 tools |
+| `/mcp` | The full surface — all 26 tools |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 7 tools a session needs to run itself |
+| `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
-The groups are `sessions`, `notifications`, `triggers`, `health` (each with a `_readonly` variant),
-plus the composite `self_session`. Omitting `tool_groups` enables all four base groups. An unknown
-group is dropped with a warning rather than failing the connection.
+The groups are `sessions`, `notifications`, `triggers`, `health`, `gate_decisions` (each with a
+`_readonly` variant), plus the composite `self_session`. Omitting `tool_groups` enables all five
+base groups. An unknown group is dropped with a warning rather than failing the connection.
 
 `self_session` is the important one. It is **auto-injected into every session** (see below) and
 carries `get_session`, `get_session_provenance`, `get_configs`, `send_push_notification`,
@@ -164,7 +165,7 @@ production.
 
 ## The tool surface
 
-23 tools, four domains.
+26 tools, five domains.
 
 | Group | Tools |
 | --- | --- |
@@ -172,6 +173,7 @@ production.
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |
+| `gate_decisions` | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 
 `quick_search_sessions` matches session titles plus the `metadata` and `custom_metadata` JSON by
 default, and `search_contents: true` widens it to the **transcript** — this is the MCP route to
@@ -199,6 +201,16 @@ important reading of the message record is the empty one: a caller asking "did a
 this?" must be able to tell "no human turns" from "I forgot the flag." Entries are marked `here` (a
 human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). See
 [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
+
+`gate_decisions` is a group of its own rather than three more tools in `sessions`, and that
+separation is the whole security property of the [gate decision
+ledger](/operate/gate-decisions/): folded in, every session carrying `zimmer-sessions` could write
+gate ratings, and a ledger anything can write is not evidence of anything. Nothing in this group —
+or in any other — can write `human_feedback`. `record_gate_decision` drops the key if you send it
+and says so in its receipt; the only write path is the browser. `search_gate_decisions` is the read
+that replaces loading a 3.4 MB JSON file to calibrate one rating, and its description is as much of
+the feature as its code, since a gate that does not know it can ask for "the last 10 holds on this
+surface" will go on reading everything.
 
 `get_session_provenance` returns those same two sections on their own, for one `session_id`. Zimmer
 injects neither into a session's turns, so this is the tool a session calls to read its own

@@ -96,6 +96,15 @@
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
+  "zimmer-gate-decisions": {
+    "title": "Zimmer Gate Decisions",
+    "description": "Zimmer's native MCP server, scoped to the agent gates' decision ledger: search past pr-merge-gate / issue-work-gate ratings, read the human corrections to them, and record a new one. Deliberately separate from zimmer-sessions so that carrying session orchestration does not carry the ability to write gate ratings. No tool here writes human feedback — that is the web UI only.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=gate_decisions",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "figma": {
     "title": "Figma",
     "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",
