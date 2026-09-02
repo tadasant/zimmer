@@ -9,20 +9,18 @@ export default class extends Controller {
   }
 
   connect() {
-    // Check if URL has an explicit filter param
-    const urlParams = new URLSearchParams(window.location.search)
-    const urlFilter = urlParams.get('filter')
+    // Check whether the address this body was rendered from already carries an
+    // explicit filter param (see `filterOrigin` — that address is NOT always the
+    // document's).
+    const origin = this.filterOrigin
+    const urlFilter = origin.url ? origin.url.searchParams.get('filter') : null
 
-    // If no URL filter param, check localStorage for user's preference
-    // and redirect to include it (so server can filter properly)
+    // If no filter param, check localStorage for user's preference and re-fetch
+    // with it (so the server can filter properly)
     if (!urlFilter) {
       const savedLevel = localStorage.getItem('logLevelFilter')
-      if (savedLevel && savedLevel !== this.serverFilterValue) {
-        // Redirect to include the saved preference
-        const url = new URL(window.location.href)
-        url.searchParams.set('filter', savedLevel)
-        window.location.href = url.toString()
-        return // Don't continue setup since we're redirecting
+      if (savedLevel && savedLevel !== this.serverFilterValue && this.refetchAtLevel(savedLevel)) {
+        return // Don't continue setup — this DOM is being replaced
       }
     }
 
@@ -64,12 +62,67 @@ export default class extends Controller {
     const newLevel = event.target.value
     localStorage.setItem('logLevelFilter', newLevel)
 
-    // When the filter changes, we need to reload the page to get fresh server-side
-    // filtered data. The server now filters items before pagination, so changing
-    // filters requires re-fetching with the new filter parameter.
-    const url = new URL(window.location.href)
-    url.searchParams.set('filter', newLevel)
-    window.location.href = url.toString()
+    // Changing the filter needs fresh server-side filtered data: the server
+    // filters items before pagination, so a new level means re-fetching with the
+    // new filter parameter.
+    if (this.refetchAtLevel(newLevel)) return
+
+    // Nothing addressable to re-fetch (see `filterOrigin`). Fall back to hiding
+    // and showing the items already in the DOM, so the select still does
+    // something rather than nothing.
+    this.levelValue = newLevel
+    this.filter()
+  }
+
+  // Where this detail body came from, and therefore what has to be re-fetched to
+  // change its filter. The body renders in two places, at two different
+  // addresses:
+  //
+  //   - the full session page (/sessions/:id), which is the document itself; and
+  //   - the dashboard's right-side drawer, where it is lazy-loaded into
+  //     <turbo-frame id="session_detail"> from /sessions/:id/drawer.
+  //
+  // Inside the drawer `window.location` is the DASHBOARD, not the session, so
+  // filtering through it navigated the whole page to /?filter=<level> — a param
+  // that means nothing there — dismissing the drawer and losing the reader's
+  // place (#666). The enclosing frame's own `src` is the session's address, so
+  // that is what the drawer re-fetches. `closest("turbo-frame")` returns null on
+  // the full page, which is how the document branch is selected.
+  //
+  // Returns { frame, url }: `frame` is null on the full page, and `url` is null
+  // only for the degenerate case of a frame with no `src` — a body that is not
+  // in the document and has no address of its own either. Navigating the
+  // document from there would be the very bug this replaces, so it reports "no
+  // origin" and the callers fall back to client-side filtering.
+  get filterOrigin() {
+    const frame = this.element.closest("turbo-frame")
+    if (!frame) return { frame: null, url: new URL(window.location.href) }
+
+    // Turbo's FrameElement#src is a plain attribute passthrough, so it can be a
+    // relative path — resolve it against the document.
+    const src = frame.getAttribute("src")
+    return { frame, url: src ? new URL(src, window.location.href) : null }
+  }
+
+  // Re-fetch this detail body at `level`, addressing whichever of the two
+  // origins above applies. Returns true when a fetch was started (the caller's
+  // DOM is on its way out), false when there was nothing to address.
+  refetchAtLevel(level) {
+    const { frame, url } = this.filterOrigin
+    if (!url) return false
+
+    url.searchParams.set('filter', level)
+
+    if (frame) {
+      // Setting `src` is a real Turbo Frame navigation: the response's matching
+      // frame is swapped in, so only the drawer's contents change and the
+      // dashboard behind it — scroll position, open drawer and all — is left
+      // alone.
+      frame.src = url.toString()
+    } else {
+      window.location.href = url.toString()
+    }
+    return true
   }
 
   filter() {
