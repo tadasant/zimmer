@@ -95,7 +95,9 @@ class TriggerCondition < ApplicationRecord
   # Keys inside `configuration` that belong to the poller, not the user. They are
   # never rendered as form fields, so a UI edit submits a configuration hash without
   # them — see #preserve_github_poll_state for why they are merged back in.
-  GITHUB_POLL_STATE_KEYS = %w[seen_items seen_missing_counts last_issue_at seen_issue_keys].freeze
+  GITHUB_POLL_STATE_KEYS = %w[
+    seen_items seen_missing_counts baseline_scope last_issue_at seen_issue_keys
+  ].freeze
 
   # The same problem on the Slack side, and worse: these keys are every cursor the
   # Slack poller owns, so a plain "save" in the UI — which submits only the rendered
@@ -416,6 +418,54 @@ class TriggerCondition < ApplicationRecord
     raw.is_a?(Hash) ? raw : {}
   end
 
+  # What the seen-set is a baseline OF: the repos, target and labels that were being
+  # watched when the poller last wrote it. Recorded because the seen-set alone cannot
+  # answer the question a widened scope asks — "is this item new, or has it been sitting
+  # there labelled since before its repo was watched?" Without it the poller has only two
+  # bad answers: fire for everything in the newly-watched repo (a stampede), or throw the
+  # whole seen-set away and absorb everything (which is #647 — it swallows the real label
+  # events in the repos that were already watched).
+  #
+  # Absent means "covers whatever is watched now". That is what a condition baselined
+  # before this key existed looks like, and it is the safe reading: it fires nothing
+  # retroactively, and the next tick stamps the real scope.
+  def github_baseline_scope
+    raw = configuration["baseline_scope"]
+    raw.is_a?(Hash) ? raw : nil
+  end
+
+  # The value to stamp into `baseline_scope` for what is watched now.
+  def github_scope_snapshot
+    { "repos" => github_repos.sort, "target" => github_target, "labels" => github_labels.sort }
+  end
+
+  # True when the seen-set's baseline was taken against a different `target` — issues
+  # instead of PRs, or the reverse. A repo numbers its issues and its PRs from one
+  # sequence, so `owner/repo#12:label` means a different item on either side of that
+  # flip and the seen-set cannot be carried across it. Everything is re-baselined.
+  def github_baseline_retargeted?
+    scope = github_baseline_scope
+    return false if scope.nil?
+
+    scope["target"].to_s != github_target.to_s
+  end
+
+  # Whether an item carrying +label+ in +repo+ falls inside the scope the seen-set was
+  # baselined against. A false here means the item is not an event: it was already there
+  # when the repo (or the label) was added to the condition, so it is baselined silently
+  # rather than fired.
+  #
+  # Case-insensitive on both, because the poller's keys use the CONFIGURED casing while
+  # GitHub returns its own, and `label:`/`repo:` search qualifiers ignore case anyway.
+  def github_baseline_covers?(repo, label)
+    scope = github_baseline_scope
+    return true if scope.nil?
+    return false if github_baseline_retargeted?
+
+    Array(scope["repos"]).any? { |watched| watched.to_s.casecmp?(repo.to_s) } &&
+      Array(scope["labels"]).any? { |watched| watched.to_s.casecmp?(label.to_s) }
+  end
+
   # Cursor for github_issue conditions: the created_at of the newest issue fired.
   def github_last_issue_at
     configuration["last_issue_at"].presence
@@ -697,20 +747,95 @@ class TriggerCondition < ApplicationRecord
     end
   end
 
+  # Keep the poller's bookkeeping across a user's edit of the same row.
+  #
+  # An edit — a UI save, an MCP `update`, a PATCH — replaces `configuration` wholesale,
+  # and the poller's keys are not rendered as form fields, so every one of those writes
+  # arrives without them. Merging back the keys an incoming hash OMITS is what stops a
+  # plain save from re-baselining a live condition.
+  #
+  # This used to DELETE all of them whenever the watched scope changed, on the theory
+  # that a widened watch would otherwise stampede a session for everything already
+  # labelled. It bought that at the price of #647: adding a fourth repo to a live
+  # `github_label` condition dropped the seen-set, and the next tick absorbed every PR
+  # labelled in the meantime — in the repos that were already being watched — as
+  # "already seen", permanently. The stampede is now headed off where it can be headed
+  # off precisely, by the poller: `baseline_scope` records what the seen-set covers, so
+  # items that are only in the result set because their repo or label was just added are
+  # baselined without firing while everything else still fires. Nothing has to be thrown
+  # away, so an edit to `repos` costs the condition nothing.
+  #
+  # `github_issue` is the exception, and stays a re-baseline — see below.
   def preserve_github_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
     return unless configuration_changed?
 
-    if github_watch_scope_changed?
-      GITHUB_POLL_STATE_KEYS.each { |key| configuration.delete(key) }
-      return
-    end
-
     GITHUB_POLL_STATE_KEYS.each do |key|
       next if configuration.key?(key)
       configuration[key] = configuration_was[key] if configuration_was.key?(key)
     end
+
+    backfill_github_baseline_scope if condition_type == "github_label"
+    rebase_github_issue_cursor if condition_type == "github_issue" && github_issue_scope_widened?
+  end
+
+  # Stamp what the existing seen-set covers, for a condition baselined before
+  # `baseline_scope` was recorded at all.
+  #
+  # Every live condition looks like that on the deploy that introduces the key, and the
+  # poller reads an ABSENT scope as "covers whatever is watched now" — safe on its own,
+  # since it fires nothing retroactively. It stops being safe the moment the same write
+  # also WIDENS the scope: the seen-set would then be read as already covering the repo
+  # that was added a millisecond ago, and every PR already labelled there would look
+  # like a new event. That is the stampede this whole mechanism exists to prevent,
+  # reachable in the one window where nothing had stamped a scope yet.
+  #
+  # `configuration_was` is the answer, and it is only available here: at this point in
+  # the save it still holds the repos/target/labels the seen-set was genuinely built
+  # against. Recording them before the edit lands leaves the poller with a truthful
+  # baseline to diff the new scope against.
+  #
+  # Only for a condition that HAS a seen-set — `baseline_scope` describes one, and a
+  # condition without one is re-baselined by the poller anyway, which stamps its own.
+  def backfill_github_baseline_scope
+    return unless configuration.key?("seen_items")
+    return if configuration["baseline_scope"].is_a?(Hash)
+
+    configuration["baseline_scope"] = {
+      "repos" => split_lines(configuration_was["repos"]).sort,
+      "target" => configuration_was["target"].presence || "pull_request",
+      "labels" => split_lines(configuration_was["labels"]).sort
+    }
+  end
+
+  # Whether this edit puts a repo in scope that was not in it before. Only a repo the
+  # condition did not watch can back-fire, so only that rebases the cursor: a narrowing
+  # cannot make an old issue look new, which is the same reasoning that keeps
+  # `exclude_labels` out of the watch scope entirely. Rebasing on a removal would throw
+  # away a live cursor for nothing — and if the poller happened to be behind, it would
+  # skip every issue opened in the repos that are still watched.
+  def github_issue_scope_widened?
+    watched_before = split_lines(configuration_was["repos"]).map { |repo| repo.to_s.downcase }
+
+    split_lines(configuration["repos"]).any? { |repo| watched_before.exclude?(repo.to_s.downcase) }
+  end
+
+  # A `github_issue` condition's whole state is ONE global time cursor, with no per-repo
+  # dimension to record a partial baseline in. Carrying it across a newly-added repo
+  # would fire for every issue that repo has opened since the cursor — and the cursor
+  # only advances when an issue fires, so on a quiet trigger that is months of history.
+  # So a WIDENED scope still re-baselines it, deliberately, and unifying it with the
+  # seen-set's precision would mean per-repo cursors: a redesign, not this fix.
+  #
+  # What changes is only WHEN: the cursor is rebased to the moment of the edit rather
+  # than deleted and rebased at the next tick, which closes the up-to-a-minute window in
+  # which an issue opened between the edit and that tick fell before the new cursor and
+  # was never seen. Nothing back-fires — the cursor still starts at "now" — and nothing
+  # in the gap is lost.
+  def rebase_github_issue_cursor
+    configuration["last_issue_at"] = Time.current.utc.iso8601 if configuration_was.key?("last_issue_at")
+    configuration["seen_issue_keys"] = []
   end
 
   def github_watch_scope_changed?

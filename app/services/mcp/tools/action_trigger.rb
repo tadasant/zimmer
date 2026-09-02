@@ -25,7 +25,11 @@ module Mcp
     # dm_timestamps — plus allowed_user_ids), which `preserve_slack_poll_state`
     # keeps only by merging back the keys an incoming configuration OMITS. A replace
     # would destroy the row and take its cursors with it, silently re-baselining a
-    # live trigger; an omitted-means-untouched upsert cannot.
+    # live trigger; an omitted-means-untouched upsert cannot. The GitHub conditions
+    # (TriggerCondition::GITHUB_POLL_STATE_KEYS) are kept the same way — and, since
+    # #647, kept across a change to `repos`/`labels` too, so editing what a live
+    # `github_label` condition watches no longer costs it the events it was mid-flight
+    # on.
     class ActionTrigger < Tool
       ACTIONS = %w[create update delete toggle invoke].freeze
       # `ao_event` is creatable here, and it has to be: the /triggers form has
@@ -101,10 +105,14 @@ module Mcp
           you want to keep — notably `event_type`, which defaults to `new_message` (fire on
           everything) if you drop it. Keys a POLLER owns survive an update that omits them: the
           Slack cursors (plus `allowed_user_ids`), and the GitHub ones (`seen_items`,
-          `seen_missing_counts`, `last_issue_at`, `seen_issue_keys`). The GitHub keys are the
-          one exception with a condition attached — an edit that changes `repos`, `labels` or
-          `target` deliberately DROPS them to re-baseline the condition, since widening what is
-          watched would otherwise stampede a session for everything already matching.
+          `seen_missing_counts`, `baseline_scope`, `last_issue_at`, `seen_issue_keys`). You do not
+          need to echo them — editing `repos` on a live `github_label` condition keeps its
+          seen-set, and the poller baselines only the newly-watched repos/labels rather than
+          stampeding a session for everything already labelled in them. The one key that is
+          still rebased by an edit is a `github_issue` condition's `last_issue_at`, and only when
+          the edit ADDS a repo: its state is a single global time cursor with no per-repo
+          dimension, so a widening restarts it at the moment of the edit rather than back-firing
+          every issue the new repo has opened since. Removing a repo keeps the cursor.
         - An element without an `id` adds a new condition.
         - An existing condition the array does not mention is **left alone**. To delete one,
           send `{"id": 123, "remove": true}`.
