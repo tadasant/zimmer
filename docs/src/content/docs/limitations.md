@@ -112,7 +112,7 @@ posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Sla
 watch. Staging alerts are only distinguishable from production's by the posting bot (*Zimmer
 (Staging)*), so point staging at a different channel if that noise is unwelcome.
 
-### The release build's retry masks a flake, and only on the app-image half
+### The release build's retry masks a flake
 
 `release-image.yml` builds the app image up to three times before giving up, because an account-wide
 GHCR secondary rate limit intermittently breaks both the `zimmer-base` pull on the way in and the
@@ -134,11 +134,23 @@ from both the base and app packages between attempts and annotating which was re
 annotation only *reports*, nothing acts on it, and because both probes are reads they cannot clear a
 write-side throttle even when both come back green.
 
-It also covers only the app build. `Check for base image` and `Build & push base image` hit the same
-rate limit with no retry at all, and they fail *worse*: a throttled `imagetools inspect` fails closed
-into `need_base=true`, which escalates a read hiccup into a full base rebuild and push against the
-registry that is already refusing the account, and fails the job before the app build's first attempt
-is reached. That path has not been observed failing; all three real incidents were the app build.
+The blindness now extends to the other two registry steps in the job, which used to have no retry at
+all. `Log in to GHCR` runs `.github/scripts/ghcr-login.sh` — the same `docker login` a
+`docker/login-action` step would run, three times, backing off 90s then 240s — because a single-shot
+login is a single point of failure in front of everything else: on 2026-09-02 one
+`net/http: TLS handshake timeout` reaching `ghcr.io/token` failed the release 48 seconds in and
+skipped every step after it. And `Resolve base image` retries its `imagetools inspect` three times,
+5s then 15s apart, because that read fails *closed* into `need_base=true` — a hiccup there does not
+fail the job, it escalates into a full base rebuild and push against a registry that may already be
+refusing the account.
+
+Neither retry is free of the same objection. The login now takes up to 5.5 minutes of backoff to
+report a token that is genuinely wrong, and the base resolve pays 20 seconds of waiting on every
+legitimate base bump, since a base declaration that really did change is absent and so exhausts the
+retries every time. `Build & push base image` itself is still single-shot: a throttle that survives
+the resolve's retries and then kills the base build fails the job before the app build's first
+attempt is reached. That path has not been observed failing; all the real incidents were the app
+build and the login.
 
 ### Telemetry is a hard no-op when misconfigured, and says nothing
 

@@ -548,7 +548,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
-| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) if GHCR throttles the pull or the push |
+| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) at every point it touches GHCR — the login, the base manifest read, and the build's pull and push |
 | `build-base-image.yml` | manual + monthly cron | rebuilds the base image outside the normal release path |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
@@ -724,7 +724,7 @@ None of the three means the images are damaged or the credentials are wrong. On 
 throttle took out this workflow and the production deploy in a different repo inside the same two
 minutes, and `docker login` had succeeded seconds before the deploy's pull was refused.
 
-`Check for base image` is not what failed in any of them. It resolves the manifest through
+`Resolve base image` is not what failed in any of them. It resolves the manifest through
 `docker buildx imagetools inspect` for real, and in the red runs it passed *correctly* — the image
 genuinely existed. What fails is the layer traffic after it, once the build is already underway.
 
@@ -780,12 +780,59 @@ each gated on every prior one failing, identical build inputs, `continue-on-erro
 last, and a probing backoff step in every gap. Each of those, alone, is enough to produce a workflow
 that publishes nothing and reports the release green.
 
-What the retry does **not** cover is the base-image half of the same job. `Check for base image` and
-`Build & push base image` are single-shot, and they talk to the same throttled registry — so a
-throttled `imagetools inspect` fails closed into `need_base=true` and escalates a read hiccup into a
-*full base rebuild and push* against a registry that is currently refusing the account. That path
-fails the job before the app build's first attempt is ever reached. It has not bitten yet; all three
-observed failures were the app build.
+#### The login and the base resolve retry too
+
+The build attempts are not the only place this job touches GHCR, and for a while they were the only
+place that survived it touching back.
+
+**`Log in to GHCR`** was a plain `docker/login-action` step, which tries once. On 2026-09-02 that cost
+a release outright: 48 seconds in, ghcr.io failed to complete a TLS handshake, and every step after
+the login — buildx, the base resolve, all three build attempts, the production notify — skipped.
+
+```
+Error response from daemon: Get "https://ghcr.io/v2/": Get "https://ghcr.io/token?…":
+net/http: TLS handshake timeout
+```
+
+Nothing about that commit caused it. The step now runs `.github/scripts/ghcr-login.sh`, which does the
+same `docker login --password-stdin` the action does — same registry, same `github.actor`, same
+`GITHUB_TOKEN` — up to three times, backing off 90 then 240 seconds, on the same reasoning and the same
+numbers as the build attempts. It is blind for the same reason too: this registry's failures have worn
+a 403, two different 404s, and now a transport error with no HTTP status at all.
+
+Two things it deliberately does not do. It does not retry an **empty** `REGISTRY_PASSWORD` — a missing
+credential is a configuration fault, and three attempts at it only delay the diagnosis by 330 seconds.
+And it does not carry `continue-on-error`: once the attempts are spent the login must fail the job,
+because an unauthenticated build fails later and less legibly. Registry output is fenced with
+`::stop-commands::` before being echoed, since a daemon error line beginning with `::` would otherwise
+be read as a workflow command.
+
+Because the login is now a `run:` step rather than an action, there is no post step to log out. A
+`Log out of GHCR` step with `if: always()` replaces it. That is belt and braces: the credential lands
+in this job's private `$DOCKER_CONFIG` and holds a `GITHUB_TOKEN` that expires with the job.
+
+**`Resolve base image`** retries its `imagetools inspect` three times, 5 then 15 seconds apart. That
+read does not fail the job — it fails *closed* into `need_base=true`, which is worse in its own way: a
+hiccup escalates into a *full base rebuild and push* against a registry that may already be refusing
+the account. It cannot read the error to decide, because the one shape that would look like "genuinely
+absent" is a 404, and a 404 on a manifest is exactly what this throttle has already impersonated. The
+backoffs are seconds rather than 90/240 because the wait is paid on the ordinary path too: a base
+declaration that genuinely changed is absent, so it exhausts the retries every time. 20 seconds is a
+rounding error against the base build that follows; 5.5 minutes on every base bump would not be. When
+all three reads come back empty the step says so in a `::notice::`, so a base build that then fails on
+registry errors reads as a throttle rather than as a broken `Dockerfile.base`.
+
+`Build & push base image` is still single-shot. A throttle that survives the resolve's retries and
+then kills the base build fails the job before the app build's first attempt is ever reached. That
+path has not bitten yet; all the observed failures were the app build and the login.
+
+`ghcr_login_test.rb` drives the login script with `docker` stubbed on PATH and `sleep` stubbed out —
+succeed-first-time, fail-twice-then-succeed, never-succeed, empty token, and a forged `::error::` line
+from the registry — because a retry whose failure path has never run is not a retry, and ghcr.io
+cannot be asked for a TLS timeout on demand. `image_build_workflows_test.rb` holds the wiring: that
+the login runs the script rather than the single-shot action, that its backoff list is non-empty and
+numeric, that it runs after the `DOCKER_CONFIG` isolation and before the first build attempt, and that
+the base resolve's read sits inside a loop with a backoff.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 

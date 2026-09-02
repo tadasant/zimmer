@@ -178,6 +178,85 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     end
   end
 
+  # The login talks to the same registry the attempts above retry, and it was the one link
+  # in the chain with no protection at all: on 2026-09-02 run 33632998177 died on
+  # `net/http: TLS handshake timeout` reaching ghcr.io/token, 48 seconds in, and every
+  # step after it — buildx, the base resolve, all three build attempts, the prod notify —
+  # skipped. Retrying the push half of a flaky registry while the login stays single-shot
+  # leaves the release exactly as fragile as the weakest step.
+  test "the release job's GHCR login retries a transient registry failure" do
+    steps, attempts = self.class.release_build_attempts
+    script = Rails.root.join(".github/scripts/ghcr-login.sh")
+
+    assert script.exist?, "#{RELEASE_WORKFLOW} references #{script.basename}, which does not exist"
+    assert script.executable?,
+      "#{script.basename} must be executable — the workflow invokes it as a bare `run:` command, " \
+      "which fails with 'Permission denied' otherwise"
+
+    login = steps.find { |s| s["run"].to_s.include?(script.basename.to_s) }
+    assert login,
+      "#{RELEASE_WORKFLOW}: no step runs #{script.basename}. A single-shot login makes one bad " \
+      "handshake against ghcr.io fail the whole release, however many times the build retries."
+    assert_empty steps.select { |s| s["uses"].to_s.start_with?("docker/login-action@") },
+      "#{RELEASE_WORKFLOW}: docker/login-action is single-shot — swapping it back in silently " \
+      "undoes the retry"
+
+    # The script derives its attempt count from this list, so an empty or non-numeric value
+    # is the difference between a retry and no retry, and `sleep` would only say so at
+    # runtime — on the release that was already failing.
+    backoffs = login.dig("env", "LOGIN_BACKOFF_SECONDS").to_s.split
+    assert_not_empty backoffs,
+      "#{RELEASE_WORKFLOW}: LOGIN_BACKOFF_SECONDS drives the attempt count; empty means one attempt"
+    backoffs.each do |backoff|
+      assert_match(/\A\d+\z/, backoff,
+        "#{RELEASE_WORKFLOW}: LOGIN_BACKOFF_SECONDS is passed straight to `sleep`, so a " \
+        "non-numeric entry fails the step at runtime rather than at review time")
+    end
+
+    assert login.dig("env", "REGISTRY_PASSWORD").to_s.include?("secrets."),
+      "#{RELEASE_WORKFLOW}: the login must still be handed a real token; the script refuses to " \
+      "retry an empty one, but only if it is wired to a secret in the first place"
+
+    assert_not login["continue-on-error"],
+      "#{RELEASE_WORKFLOW}: once the login has spent its attempts it must fail the job — a " \
+      "swallowed login failure produces an unauthenticated build that fails less legibly later"
+
+    # Credentials must land in this job's private DOCKER_CONFIG, not the shared ~/.docker
+    # that every co-tenant on the self-hosted box also writes to.
+    isolate = steps.index { |s| s["run"].to_s.include?("DOCKER_CONFIG=") && s["run"].to_s.include?("RUNNER_TEMP") }
+    assert_operator isolate, :<, steps.index(login),
+      "#{RELEASE_WORKFLOW}: the login must run after the DOCKER_CONFIG isolation step"
+    assert_operator steps.index(login), :<, steps.index(attempts.first),
+      "#{RELEASE_WORKFLOW}: the login must precede the first build attempt"
+  end
+
+  # A throttled manifest read here does not fail the job — it fails CLOSED into
+  # need_base=true, which escalates a read hiccup into a full base rebuild and push against
+  # a registry that may already be refusing the account. Retrying the read first is what
+  # keeps a hiccup from costing a base build. It cannot read the error to decide: a 404 on a
+  # manifest is a shape the throttle has already worn, so "not found" is not evidence of
+  # absence.
+  test "the base image resolve retries its manifest read before deciding the base is missing" do
+    steps, = self.class.release_build_attempts
+    resolve = steps.find { |s| s["id"] == "base" }
+    assert resolve, "#{RELEASE_WORKFLOW}: expected the base resolve step to carry `id: base`"
+
+    run = resolve["run"].to_s
+    inspects = run.scan(/imagetools inspect/).length
+    assert_equal 1, inspects,
+      "#{RELEASE_WORKFLOW}: the retry is expected to be a loop over one `imagetools inspect`, " \
+      "not copies of it that can drift apart"
+    assert_match(/\bfor\b.*\n.*imagetools inspect/m, run,
+      "#{RELEASE_WORKFLOW}: the manifest read must sit inside a retry loop — a single-shot read " \
+      "turns a registry hiccup into a full base rebuild")
+    assert_match(/sleep /, run,
+      "#{RELEASE_WORKFLOW}: retrying a manifest read with no backoff just re-asks a registry " \
+      "that is still refusing")
+    assert_includes run, "need_base=true",
+      "#{RELEASE_WORKFLOW}: an exhausted retry must still fall through to rebuilding the base, " \
+      "which is the behaviour that keeps a failed base build from being skipped later"
+  end
+
   # The retry is blind by design, so the backoff steps carry the diagnosis: they probe
   # GHCR and report whether the registry was answering, which is what tells a human
   # reading an exhausted run whether to suspect the registry or the build.
