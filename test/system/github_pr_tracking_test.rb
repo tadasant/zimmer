@@ -120,9 +120,37 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
   end
 
   # A session with several PRs renders a second, separate copy of that label in the
-  # dropdown's primary button, so it gets its own pin. The menu rows below it are the
-  # one place the state stays visible text -- there is room in a list.
+  # session header's dropdown primary button, so it gets its own pin. The menu rows
+  # below it are the one place the state stays visible text -- there is room in a list.
   test "the multi-PR button label drops the state parenthetical too" do
+    first = "https://github.com/owner/repo/pull/122"
+    second = "https://github.com/owner/repo/pull/123"
+    @session.update!(custom_metadata: {
+      "github_pull_request_urls" => [ first, second ],
+      "github_pull_request_statuses" => { first => "merged", second => "open" }
+    })
+
+    visit session_path(@session)
+
+    primary = find("a[href='#{second}'].rounded-l-md")
+
+    sighted_label = page.evaluate_script(<<~JS, primary)
+      (function (el) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll(".sr-only").forEach((n) => n.remove());
+        return clone.textContent;
+      })(arguments[0])
+    JS
+    assert_equal "#123", sighted_label.squish
+    assert_equal "(Open)", primary.find("span.sr-only", visible: :all).text(:all).strip
+    assert_equal "View most recent PR on GitHub (Open)", primary[:title]
+  end
+
+  # The dashboard card cannot seat that button group next to the ⋮ / Trash / View
+  # group -- the footer wrapped (#607) -- so several PRs collapse there into one
+  # dropdown trigger. Its face is the count, and the newest PR's number and state,
+  # which the header spells out in the label, ride in the sr-only span and the title.
+  test "the multi-PR card control collapses to a count and keeps the rest for assistive tech" do
     first = "https://github.com/owner/repo/pull/122"
     second = "https://github.com/owner/repo/pull/123"
     @session.update!(custom_metadata: {
@@ -133,18 +161,30 @@ class GithubPrTrackingTest < ApplicationSystemTestCase
     visit root_path(every_status_params)
 
     within "turbo-frame#session_#{@session.id}" do
-      primary = find("a[href='#{second}'].rounded-l-md")
+      trigger = find("[data-controller='dropdown'] > button")
 
-      sighted_label = page.evaluate_script(<<~JS, primary)
+      assert_no_selector "a[href='#{second}'].rounded-l-md"
+
+      sighted_label = page.evaluate_script(<<~JS, trigger)
         (function (el) {
           const clone = el.cloneNode(true);
           clone.querySelectorAll(".sr-only").forEach((n) => n.remove());
           return clone.textContent;
         })(arguments[0])
       JS
-      assert_equal "#123", sighted_label.squish
-      assert_equal "(Open)", primary.find("span.sr-only", visible: :all).text(:all).strip
-      assert_equal "View most recent PR on GitHub (Open)", primary[:title]
+      assert_equal "2", sighted_label.squish
+      assert_equal "PRs, most recent #123 (Open)",
+        trigger.find("span.sr-only", visible: :all).text(:all).strip
+      assert_equal "View all PRs (2) — most recent #123 (Open)", trigger[:title]
+
+      # The glyph still describes the newest PR, the way the header's primary
+      # button does: open, so green.
+      assert_includes trigger.find("svg", match: :first)[:class], "text-green-600"
+
+      # Every PR is still one click away, newest first.
+      trigger.click
+      assert_selector "[role='menuitem'][href='#{second}']"
+      assert_selector "[role='menuitem'][href='#{first}']"
     end
   end
 
