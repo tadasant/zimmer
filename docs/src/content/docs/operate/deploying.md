@@ -376,6 +376,10 @@ writes nothing. Its `stats` carry the per-file counts, which is what makes "did 
 everything?" a question the health panel answers rather than one somebody has to take on trust. See
 [the gate decision ledger](/operate/gate-decisions/).
 
+`ImportWorkBacklog` is the small end of the same shape: one ~100 KB file, 117 items, one slice, keyed
+on each item's `id` so a second pass writes nothing, with the counts on its `stats`. See
+[the work backlog](/operate/work-backlog/).
+
 ### Seeing it without a shell
 
 One object, `PostDeployTaskRun.summary`, rendered four ways so they cannot disagree:

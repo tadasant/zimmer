@@ -356,6 +356,16 @@ class ServersConfigTest < ActiveSupport::TestCase
 
     assert_equal [ "zimmer-gate-decisions" ], reaching.map(&:name)
   end
+
+  test "zimmer-work-backlog is the only catalog entry that reaches the opt-in backlog writes" do
+    reaching = ServersConfig.all.select do |server|
+      groups = Rack::Utils.parse_query(URI.parse(server.url.to_s).query.to_s)["tool_groups"].to_s.split(",").map(&:strip)
+      names = Mcp::Registry.tools_for(groups.presence || Mcp::Registry::BASE_GROUPS).map(&:tool_name)
+      names.include?("append_work_backlog_item") || names.include?("pull_work_backlog_items")
+    end
+
+    assert_equal [ "zimmer-work-backlog" ], reaching.map(&:name)
+  end
   test "required_variables spans env, headers, url and args" do
     server = ServersConfig::Server.new("composite", {
       "type" => "streamable-http",

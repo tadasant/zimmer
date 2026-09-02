@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 26 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 29 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -80,11 +80,12 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 7 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
+| `/mcp?tool_groups=work_backlog` | The [work backlog](/operate/work-backlog/): read the ranked queue, append a cleared issue, pull the top items into spot sessions |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
-The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions` is an
-**opt-in** group, and `self_session` is a composite. Each domain group, opt-in included, has a
+The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions` and
+`work_backlog` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -168,7 +169,7 @@ production.
 
 ## The tool surface
 
-26 tools, five domains — 23 of them on the unscoped surface.
+29 tools, six domains — 23 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -177,6 +178,7 @@ production.
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
+| `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items` |
 
 `quick_search_sessions` matches session titles plus the `metadata` and `custom_metadata` JSON by
 default, and `search_contents: true` widens it to the **transcript** — this is the MCP route to
@@ -219,6 +221,18 @@ path is the browser. See the [gate decision ledger](/operate/gate-decisions/).
 `search_gate_decisions` is the read that replaces loading a 3.4 MB JSON file to calibrate one
 rating, and its description is as much of the feature as its code, since a gate that does not know
 it can ask for "the last 10 holds on this surface" will go on reading everything.
+
+`work_backlog` is opt-in for the same reason and one more: the [work backlog](/operate/work-backlog/)
+is read by a job that spawns sessions from it with no human in the loop, so an entry on it becomes an
+unattended implementing session. `get_work_backlog` returns the queue in rank order with each item's
+whole-queue position; `append_work_backlog_item` places the item by the band rules, stamps the writing
+session and its agent root from the connection, and refuses `prompt`, `precedence`, `pinned` and
+`added_by` outright; `pull_work_backlog_items` spawns a `spot` `zimmer-router` session per item as a
+child of the caller and records it on the row. What is deliberately absent, on this group or any
+other: no tool pins an item, hand-places it, removes it by judgement, or starts it as a `priority`
+session — those are the human's levers over what the fleet works on next and exist only on the REST
+controller. The one removal an agent may make is on a pull, with a reason from a fixed vocabulary of
+observed facts. `zimmer-work-backlog` (mcp.json) is the one catalog entry that names the group.
 
 `get_session_provenance` returns those same two sections on their own, for one `session_id`. Zimmer
 injects neither into a session's turns, so this is the tool a session calls to read its own

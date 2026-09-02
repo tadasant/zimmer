@@ -64,7 +64,24 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 26, names.size
+    assert_equal 29, names.size
+  end
+
+  # The work backlog is read by a job that spawns sessions from it with no
+  # human in the loop, so who may write to it matters as much as it does for
+  # the gate ledger — and the group is opt-in for the same reason.
+  test "the work_backlog group carries the three backlog tools, nothing else reaches them, and readonly drops the writes" do
+    backlog_tools = %w[get_work_backlog append_work_backlog_item pull_work_backlog_items]
+
+    assert_equal backlog_tools.sort, Mcp::Registry.tools_for([ "work_backlog" ]).map(&:tool_name).sort
+    assert_equal [ "get_work_backlog" ], Mcp::Registry.tools_for([ "work_backlog_readonly" ]).map(&:tool_name)
+
+    [ [ "sessions" ], [ "self_session" ], [ "sessions", "self_session" ], [ "health" ], [ "triggers" ],
+      [ "notifications" ], [ "gate_decisions" ], Mcp::Registry.parse_groups(nil) ].each do |groups|
+      names = Mcp::Registry.tools_for(groups).map(&:tool_name)
+      assert_empty names & backlog_tools,
+                   "#{groups.join(',')} must not reach the work backlog, but reaches #{(names & backlog_tools).join(', ')}"
+    end
   end
 
   # The gate decision ledger's whole trustworthiness rests on this group being

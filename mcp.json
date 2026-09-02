@@ -105,6 +105,15 @@
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
+  "zimmer-work-backlog": {
+    "title": "Zimmer Work Backlog",
+    "description": "Zimmer's native MCP server, scoped to the agent fleet's work backlog: read the ranked queue of gate-cleared issues, append one the issue work gate just cleared, and pull the top items into spot implementing sessions. work_backlog is an opt-in tool group, so this is the only catalog entry that reaches those tools — the unscoped zimmer entry does not carry them, and carrying session orchestration does not carry the ability to enqueue work. No tool here pins, hand-places, removes by judgement, or promotes an item to a priority session — those are the REST surface only.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=work_backlog",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "figma": {
     "title": "Figma",
     "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",
