@@ -57,11 +57,16 @@ module Mcp
 
       private
 
-      # What the backlog is MADE OF, not just how deep it is.
+      # What the backlog is MADE OF, and WHERE it is old — not just how deep.
       #
       # `system_health` below already carries `ready_count`, and a bare count
-      # cannot tell a starved queue from a busy one — Zimmer's six queues have
-      # very different thread counts and job durations. The Slack backlog page
+      # cannot tell a starved queue from a busy one — Zimmer's seven queues have
+      # very different thread counts and job durations. It also carries
+      # `oldest_ready_age_seconds`, which is the number the Grafana `GoodJob queue
+      # is not draining` rule fires on, taken across every queue at once; the
+      # per-queue ages are what turn that page into an answer, because a two-thread
+      # lane in front of jobs that block for a minute holds its head of line for
+      # tens of minutes with a perfectly healthy worker. The Slack backlog page
       # carries the same split, and this is the tool an agent triaging that page
       # actually has: the GoodJob dashboard needs a browser session on the
       # production host, which an agent session does not have. Without it the
@@ -74,7 +79,7 @@ module Mcp
       #
       # Silent when nothing is waiting — a breakdown of an empty queue is a line
       # of noise on every healthy call. But NOT silent when the read fails: these
-      # are two grouped scans of `good_jobs`, and the caller most likely to hit a
+      # are three scans of `good_jobs`, and the caller most likely to hit a
       # database that cannot serve them is the one triaging a database that is
       # struggling. Saying so beats raising and losing the whole health report.
       def ready_backlog_lines
@@ -83,11 +88,27 @@ module Mcp
 
         [
           "- **Ready backlog by queue:** #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
-          "- **Ready backlog by job class:** #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}"
+          "- **Ready backlog by job class:** #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
+          "- **Oldest ready by queue:** #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}",
+          *head_of_line_line(breakdown[:head_of_line])
         ]
       rescue StandardError => e
         Rails.logger.warn("[GetSystemHealth] Could not read the backlog breakdown: #{e.message}")
         [ "- **Ready backlog breakdown:** unavailable (#{e.class})" ]
+      end
+
+      # The single row the alerts fire on, named. The Slack page renders the same
+      # lane and job class inline on its first bullet; this is the half of that
+      # parity the ages line cannot carry, and it is the more useful half here —
+      # the reader is an agent with no route to /jobs, so the job class is the only
+      # way it learns WHAT is waiting rather than merely where.
+      def head_of_line_line(head)
+        return [] if head.blank?
+
+        [
+          "- **Head of line:** #{head[:queue]} / #{head[:job_class]}, " \
+            "waiting #{HealthMonitorService.format_wait(head[:age_seconds])}"
+        ]
       end
 
       # Stated up front, and stated in BOTH directions. A pending queue depth means

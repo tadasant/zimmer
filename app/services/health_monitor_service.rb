@@ -95,6 +95,19 @@ class HealthMonitorService
     counts.map { |name, count| "#{name} #{count}" }.join(", ")
   end
 
+  # One head-of-line-age breakdown as a line of "<queue> <age>" pairs, in the
+  # order it was built — oldest queue first, so the lane holding the backlog is
+  # the first thing read.
+  #
+  # Same three answers as `format_breakdown`, and for the same reason: `nil` is
+  # "the query failed", empty is "nothing is waiting", anything else is the split.
+  def self.format_ages(ages)
+    return "unavailable" if ages.nil?
+    return "none" if ages.empty?
+
+    ages.map { |queue, seconds| "#{queue} #{format_wait(seconds)}" }.join(", ")
+  end
+
   # Structured result for health status
   HealthStatus = Struct.new(:status, :message, keyword_init: true) do
     def healthy?
@@ -533,29 +546,55 @@ class HealthMonitorService
     results
   end
 
-  # The backlog split by queue and by job class.
+  # The backlog split by queue and by job class, and — the part the thresholds
+  # actually fire on — the age of each queue's own head of line.
   #
   # `queue_statistics` answers "how deep", which is what the thresholds need. It
   # does not answer "deep with WHAT", and that is the question every triage of a
   # backlog page actually opens with: a ready count alone cannot distinguish a
-  # starved queue from a busy one, and Zimmer runs six queues with very different
-  # thread counts and job durations.
+  # starved queue from a busy one, and Zimmer runs seven queues with very
+  # different thread counts and job durations.
+  #
+  # `oldest_by_queue` exists because `queue_statistics[:oldest_ready_age_seconds]`
+  # is a single number over every queue at once, and it is the number BOTH backlog
+  # alerts threshold on — this service's own `critical` gate, and the Grafana rule
+  # over `zimmer_good_job_oldest_ready_age_seconds`. A global head-of-line age
+  # stopped being interpretable the moment the lanes were sized apart: two threads
+  # against jobs that block for a minute and a half hold their head of line for
+  # tens of minutes while the worker is healthy and the depth is flat, and that
+  # reads identically to a wedged worker if the only number you have is the
+  # maximum across all of them. Per-queue ages separate the two on sight — one old
+  # lane beside six fresh ones is that lane starving; every lane old at once is the
+  # worker.
+  #
+  # `oldest_by_queue` is the one breakdown here that is NOT capped. The counts can
+  # be, because `top_counts` hands back an `other (N more)` remainder and the
+  # reader can still see the total. An age has no such remainder — "other 12m"
+  # means nothing — so a cap would leave a lane's absence meaning three different
+  # things at once: no ready work there, or cut by the cap. That ambiguity lands
+  # squarely on the comparison the line exists for, and the entry count is bounded
+  # by the number of distinct queue names anyway.
   #
   # Deliberately NOT folded into `queue_statistics`. That runs on every /health
-  # render; these are two more grouped scans of `good_jobs` and are only worth
-  # paying for when something is about to page. Cardinality is small either way —
-  # six queues, and job classes bounded by the app's job count — so the grouping
-  # is done in SQL and the ordering in Ruby, which keeps this free of adapter
-  # differences in how a grouped COUNT may be ordered.
+  # render; these are further scans of `good_jobs` and are only worth paying for
+  # when something is about to page, or when somebody is asking this exact
+  # question. Cardinality is small either way — seven queues, and job classes
+  # bounded by the app's job count.
   #
-  # @param limit [Integer] how many entries to keep from each breakdown
-  # @return [Hash] :by_queue and :by_job_class, each an ordered Hash of name => count
+  # @param limit [Integer] how many entries to keep from each COUNT breakdown
+  # @return [Hash] :by_queue and :by_job_class, ordered Hashes of name => count;
+  #   :oldest_by_queue, an uncapped ordered Hash of queue => age in seconds,
+  #   oldest first; :head_of_line, the longest-waiting ready row, or nil when
+  #   nothing is waiting
   def ready_backlog_breakdown(limit: READY_BREAKDOWN_LIMIT)
     ready = ready_scope(GoodJob::Job.where(finished_at: nil, locked_by_id: nil))
+    heads = head_of_line_by_queue(ready)
 
     {
       by_queue: top_counts(ready.group(:queue_name).count, limit),
-      by_job_class: top_counts(ready.group(:job_class).count, limit)
+      by_job_class: top_counts(ready.group(:job_class).count, limit),
+      oldest_by_queue: heads.to_h { |head| [ head[:queue], head[:age_seconds] ] },
+      head_of_line: heads.first
     }
   end
 
@@ -660,6 +699,47 @@ class HealthMonitorService
     return nil if waiting_since.nil?
 
     [ (Time.current - waiting_since).round, 0 ].max
+  end
+
+  # Each queue's own longest-waiting ready row, oldest queue first.
+  #
+  # `DISTINCT ON (queue_name)` with the matching `ORDER BY` is what makes this one
+  # row per queue rather than a scan the deepest queue can monopolize. The
+  # alternative — read the N oldest ready rows and keep the first sighting of each
+  # queue — is wrong in exactly the case the page most needs: a single lane holding
+  # more ready rows than the window would fill it entirely, and every other lane
+  # would go missing from a line whose whole job is to be compared across lanes.
+  # This returns every queue's exact head, and its cost is bounded by the number of
+  # distinct queue names rather than by the backlog depth. `good_jobs` has a
+  # partial `(queue_name, scheduled_at)` index for it.
+  #
+  # Postgres-only, which the rest of this application already is (advisory locks,
+  # `jsonb`, GoodJob itself). The columns come back adapter-cast because they are
+  # real columns; the raw COALESCE only orders, so it never has to infer a type —
+  # the trap `oldest_ready_age_seconds` documents.
+  #
+  # `id` breaks ties so two reads of an unchanged queue name the same row.
+  #
+  # @return [Array<Hash>] one entry per queue: :queue, :job_class, :age_seconds
+  def head_of_line_by_queue(ready_jobs)
+    now = Time.current
+
+    heads = ready_jobs
+      .select(Arel.sql("DISTINCT ON (queue_name) id, queue_name, job_class, scheduled_at, created_at"))
+      .order(Arel.sql("queue_name, COALESCE(scheduled_at, created_at) ASC, id ASC"))
+
+    heads.map do |head|
+      # `created_at` is NOT NULL on `good_jobs`, so the fallback always resolves and
+      # there is no undateable row to guard against — unlike `oldest_ready_age_seconds`,
+      # whose nil check answers "no rows at all", which here is an empty result.
+      waiting_since = head.scheduled_at || head.created_at
+
+      {
+        queue: head.queue_name.presence || UNKNOWN_LABEL,
+        job_class: head.job_class.presence || UNKNOWN_LABEL,
+        age_seconds: [ (now - waiting_since).round, 0 ].max
+      }
+    end.sort_by { |head| -head[:age_seconds] }
   end
 
   # Unclaimed work whose time has come — the population every "backlog" number
