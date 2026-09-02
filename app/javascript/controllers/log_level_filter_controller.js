@@ -9,20 +9,18 @@ export default class extends Controller {
   }
 
   connect() {
-    // Check if URL has an explicit filter param
-    const urlParams = new URLSearchParams(window.location.search)
-    const urlFilter = urlParams.get('filter')
+    // Does the address this body was rendered from already carry an explicit
+    // filter param? That address is not always the document's — see filterOrigin.
+    const origin = this.filterOrigin
+    const urlFilter = origin.url.searchParams.get('filter')
 
-    // If no URL filter param, check localStorage for user's preference
-    // and redirect to include it (so server can filter properly)
+    // If no filter param, check localStorage for user's preference and re-fetch
+    // with it (so the server can filter properly)
     if (!urlFilter) {
       const savedLevel = localStorage.getItem('logLevelFilter')
       if (savedLevel && savedLevel !== this.serverFilterValue) {
-        // Redirect to include the saved preference
-        const url = new URL(window.location.href)
-        url.searchParams.set('filter', savedLevel)
-        window.location.href = url.toString()
-        return // Don't continue setup since we're redirecting
+        this.refetchAtLevel(savedLevel, origin)
+        return // Don't continue setup — this DOM is being replaced
       }
     }
 
@@ -64,12 +62,57 @@ export default class extends Controller {
     const newLevel = event.target.value
     localStorage.setItem('logLevelFilter', newLevel)
 
-    // When the filter changes, we need to reload the page to get fresh server-side
-    // filtered data. The server now filters items before pagination, so changing
-    // filters requires re-fetching with the new filter parameter.
-    const url = new URL(window.location.href)
-    url.searchParams.set('filter', newLevel)
-    window.location.href = url.toString()
+    // Changing the filter needs fresh server-side filtered data: the server
+    // filters items before pagination, so a new level means re-fetching with the
+    // new filter parameter.
+    this.refetchAtLevel(newLevel)
+  }
+
+  // The address this detail body was rendered from, and therefore the thing that
+  // has to be re-fetched to change its filter. Two cases, told apart by the
+  // enclosing frame's `src`:
+  //
+  //   - **A frame carrying a `src`** was lazy-loaded from that address into some
+  //     other document. That is the dashboard's session drawer, where
+  //     `window.location` is the DASHBOARD rather than the session — so filtering
+  //     through the document navigates the whole page to /?filter=<level>, a
+  //     param that means nothing there, and dismisses the drawer along with the
+  //     reader's place (#666). The frame's own `src` is the session's address.
+  //   - **No frame, or a frame with no `src`**, was server-rendered as part of
+  //     this document, so the document's address is the body's address too. That
+  //     covers the full session page (/sessions/:id, no frame at all) and
+  //     /sessions/:id/drawer opened directly (a bare frame, which #drawer renders
+  //     without a `src`).
+  //
+  // Returns { frame, url }; `frame` is null whenever the document is the thing to
+  // navigate.
+  get filterOrigin() {
+    const frame = this.element.closest('turbo-frame')
+    // Turbo's FrameElement#src is a plain attribute passthrough, so it hands back
+    // whatever string was set — often a relative path. Resolve against the document.
+    const src = frame && frame.getAttribute('src')
+    if (!src) return { frame: null, url: new URL(window.location.href) }
+
+    return { frame, url: new URL(src, window.location.href) }
+  }
+
+  // Re-fetch this detail body at `level`, addressing whichever of the two origins
+  // above applies. The caller's DOM is on its way out once this returns.
+  refetchAtLevel(level, origin = this.filterOrigin) {
+    const { frame, url } = origin
+    url.searchParams.set('filter', level)
+
+    if (frame) {
+      // Setting `src` is a real Turbo Frame navigation: the response's matching
+      // frame is swapped in, so only the drawer's contents change and the
+      // dashboard behind it — scroll position, open drawer and all — is left
+      // alone. Turbo marks the frame `busy` for the round trip; the drawer styles
+      // that (app/assets/tailwind/application.css) so the stale content reads as
+      // stale, which the browser's own loading UI used to do for free.
+      frame.src = url.toString()
+    } else {
+      window.location.href = url.toString()
+    }
   }
 
   filter() {
