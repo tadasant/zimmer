@@ -137,8 +137,15 @@ namespace :clones do
           Dir.exist?(new_clone_path) &&
           File.expand_path(old_clone_path) != File.expand_path(new_clone_path)
         if old_removable
-          FileUtils.rm_rf(old_clone_path)
-          log.call "session #{session.id}: removed old clone #{old_clone_path}"
+          # Through GitCloneService, so this delete is atomic (#412) and answers
+          # to CloneReaper like every other reap. The metadata rewrite above has
+          # already repointed this session at the new copy, so the guard sees the
+          # session owning the NEW path and has nothing to protect at the old one.
+          if GitCloneService.cleanup_clone(old_clone_path, reason: "clones:relocate (session #{session.id})") == :refused
+            log.call "session #{session.id}: old clone #{old_clone_path} was NOT removed (refused by CloneReaper)"
+          else
+            log.call "session #{session.id}: removed old clone #{old_clone_path}"
+          end
         end
       rescue => e
         errors += 1

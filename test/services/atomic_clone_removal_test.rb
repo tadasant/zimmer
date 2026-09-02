@@ -114,6 +114,35 @@ class AtomicCloneRemovalTest < ActiveSupport::TestCase
     assert_empty tombstones
   end
 
+  test "an interrupted in-place fallback leaves a tombstone marker naming the clone, not an anonymous half-tree" do
+    # The one path that still deletes under the clone's own name. It must not be
+    # able to produce the state AtomicCloneRemoval exists to prevent WITHOUT
+    # labelling it — a half-tree nothing can tell from a healthy clone is what
+    # cost three live sessions their working trees (zimmer#808/#811).
+    file_system = RealFileSystemAdapter.new
+    file_system.stubs(:rename).raises(Errno::EXDEV, "simulated cross-device rename")
+    file_system.stubs(:rm_rf).with { |path| path.to_s == @clone }.raises(Errno::EIO, "interrupted mid-delete")
+
+    assert_raises(Errno::EIO) do
+      AtomicCloneRemoval.remove(@clone, file_system: file_system)
+    end
+
+    marker = tombstones
+    assert_equal 1, marker.size, "the in-place delete must be labelled by a tombstone marker"
+    assert marker.first.start_with?(File.basename(@clone)),
+      "and the marker must name the clone it is about, so an operator can tell what the half-tree is"
+  end
+
+  test "a completed in-place fallback cleans its own marker up" do
+    file_system = RealFileSystemAdapter.new
+    file_system.stubs(:rename).raises(Errno::EXDEV, "simulated cross-device rename")
+
+    assert AtomicCloneRemoval.remove(@clone, file_system: file_system)
+
+    assert_not File.exist?(@clone)
+    assert_empty tombstones
+  end
+
   test "a clone that vanished under the rename is not an error" do
     file_system = RealFileSystemAdapter.new
     file_system.stubs(:rename).raises(Errno::ENOENT, "gone")

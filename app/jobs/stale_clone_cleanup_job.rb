@@ -13,17 +13,19 @@
 #
 # Sessions with a non-nil trash_after are SKIPPED — they belong to EmptyTrashJob.
 #
-# Additionally performs a filesystem-level orphan sweep: lists all directories in
-# the clones directory and deletes any not referenced by an active session's
-# clone_path metadata. This catches directories whose session metadata was cleared
-# before the directory was deleted.
+# It does NOT sweep the clones directory for orphaned directories. That question —
+# "which directory under the clones base does no session own?" — has exactly one
+# owner, OrphanCloneFilesystemCleanupJob. Two owners with two age bars is #709:
+# the shorter bar takes every candidate first, leaving the disk-pressure
+# reclamation CloneDiskGuard drives with nothing to reclaim. What this job does
+# in the clones base is reap tombstones (see #reap_clone_tombstones), which have
+# no owner to reason about.
 #
-# And a second orphan sweep over the four roots whose per-session directories are
-# named for the session id — scratch, the Claude config dir, and the two
-# prompt-attachment trees. Every
-# other reaper in the pipeline starts from a Session query, so a hard-deleted row
-# takes with it the only handle on its bytes; this sweep is the one that can still
-# find them (see #sweep_orphaned_session_directories).
+# It DOES sweep the four roots whose per-session directories are named for the
+# session id — scratch, the Claude config dir, and the two prompt-attachment
+# trees. Every other reaper in the pipeline starts from a Session query, so a
+# hard-deleted row takes with it the only handle on its bytes; this sweep is the
+# one that can still find them (see #sweep_orphaned_session_directories).
 #
 class StaleCloneCleanupJob < ApplicationJob
   include DatabaseRetry
@@ -41,8 +43,9 @@ class StaleCloneCleanupJob < ApplicationJob
   # to investigate and retry before the clone is reclaimed.
   FAILED_SESSION_STALE_THRESHOLD = 24.hours
 
-  # Minimum age before an unreferenced directory is considered orphaned.
-  # Prevents racing with session startup (clone created but metadata not yet persisted).
+  # Minimum age before an unreferenced per-session directory is considered
+  # orphaned. Prevents racing with session startup — a scratch directory created
+  # before its row committed survives regardless of what the database says.
   ORPHAN_AGE_THRESHOLD = 1.hour
 
   # Directory names the per-session orphan sweep is willing to consider. A session
@@ -97,9 +100,7 @@ class StaleCloneCleanupJob < ApplicationJob
       end
     end
 
-    orphan_result = sweep_orphaned_clones
-    cleaned_count += orphan_result[:cleaned]
-    error_count += orphan_result[:errors]
+    reap_clone_tombstones
 
     orphan_dir_result = sweep_orphaned_session_directories
     cleaned_count += orphan_dir_result[:cleaned]
@@ -157,14 +158,30 @@ class StaleCloneCleanupJob < ApplicationJob
   # that is having a *new* clone built for it right now look exactly like one
   # whose old clone was abandoned. `Session.reap_protected?` answers both (#808).
   #
+  # A trash deadline is the third way the answer goes stale, and it does not need
+  # a live session at all. All three of this job's candidate scopes require
+  # `trash_after` to be nil — a session with one belongs to EmptyTrashJob, which
+  # waits for the deadline and preserves artifacts first. An unarchive followed
+  # by a re-archive restarts that deadline, leaving a row that is `archived`,
+  # not `reap_protected`, and squarely mid-undo-window. Re-reading only the
+  # status waves it through and this job reaps it an hour later, unpreserved and
+  # without tearing Docker down.
+  #
   # Fails closed: a question we cannot answer is answered "protected". This
   # method guards the whole of #cleanup_session_clone regardless of how the
   # caller got here, so it does not assume the caller re-read the row.
   def reapable_now?(session)
-    return true unless Session.reap_protected?(session.id)
+    if Session.reap_protected?(session.id)
+      Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it is live, or being unarchived, " \
+        "as of now — this run picked it as a stale-clone candidate on a status that has since changed"
+      return false
+    end
 
-    Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it is live, or being unarchived, " \
-      "as of now — this run picked it as a stale-clone candidate on a status that has since changed"
+    trash_after = Session.unscoped.where(id: session.id).pick(:trash_after)
+    return true if trash_after.nil?
+
+    Rails.logger.warn "[StaleCloneCleanupJob] Skipping session #{session.id}: it now carries a trash deadline " \
+      "of #{trash_after.iso8601}, so it belongs to EmptyTrashJob and its undo window is still open"
     false
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error "[StaleCloneCleanupJob] Could not re-check the status of session #{session.id} " \
@@ -258,98 +275,30 @@ class StaleCloneCleanupJob < ApplicationJob
     cleaned_anything
   end
 
-  # Filesystem-level sweep: finds clone directories not referenced by any active
-  # session and removes them. This catches orphaned directories whose session
-  # metadata was cleared before the directory was deleted.
-  def sweep_orphaned_clones
-    cleaned = 0
-    errors = 0
-    skipped_referenced = 0
-
+  # Reap the tombstones a clone delete left behind when it was interrupted
+  # between the rename and the recursive unlink (#412). A tombstone is doomed by
+  # construction — no owner to ask about, and no window in which one is still
+  # wanted — so it is the only thing in the clones base this job touches.
+  #
+  # A clones-base orphan sweep here would be #709's other half.
+  # `OrphanCloneFilesystemCleanupJob` asks that question — "which directory here
+  # does no session own?" — on a 48-hour bar, and an hourly bar beside it takes
+  # every candidate first, which is why `CloneDiskGuard`'s two-hour
+  # disk-pressure reclamation can never find one. #813 gave both sweeps the same
+  # last guard (`CloneReaper`), which removes the sharpest edge of having two;
+  # having only one removes the rest. One job owns the question, and
+  # `CloneReaper` answers it.
+  #
+  # Behind #sweepable_root?: a tombstone has no owner to ask the database about,
+  # so the environment fence is the only guard it can have. It is what keeps
+  # `bin/dev` and `bin/rails test` on a machine sharing ~/.zimmer/clones from
+  # deleting inside the durable volume.
+  def reap_clone_tombstones
     clones_base = clones_directory
-    unless clones_base && File.directory?(clones_base)
-      return { cleaned: cleaned, errors: errors, skipped_referenced: skipped_referenced }
-    end
+    return unless clones_base && File.directory?(clones_base)
+    return unless sweepable_root?("clones", clones_base)
 
-    active_clone_paths = active_session_clone_paths
-    # Hard, age-independent guard: clones of live (non-terminal) sessions are
-    # NEVER swept, no matter how old. A session can idle in needs_input for weeks
-    # and still be resumed expecting its filesystem intact.
-    live_clone_paths = Session.live_clone_paths
-    # Normalization-immune catch-all, keyed by globally-unique basename
-    # (timestamp + random suffix). The orphan sweep exists to remove directories
-    # that NO session owns, so a directory ANY session still references — in any
-    # status — must never be swept here; stale clones of terminal sessions are
-    # reclaimed by the dedicated DB-driven scopes above (which apply the correct
-    # grace window and write a durable per-session log). Guarding on basename for
-    # every referencing session (not just live ones, and not just by path) closes
-    # the gap where a stored clone_path can't be reconciled with the scan path by
-    # File.expand_path — e.g. a symlinked clones base or a path stored under a
-    # different/relocated base. A basename match reliably identifies the same
-    # clone because clone names are globally unique.
-    referenced_owners = referenced_clone_owners_by_basename
-    cutoff = ORPHAN_AGE_THRESHOLD.ago
-
-    # Directories left by a clone delete that was interrupted between the rename
-    # and the recursive unlink (#412). They are counted and logged by
-    # AtomicCloneRemoval rather than folded into this sweep's totals: they are not
-    # orphaned clones, and the age and ownership guards below do not apply to them
-    # — a tombstone is doomed the moment it is created.
-    #
-    # Behind #sweepable_root? even though the rest of this sweep is not. The rest
-    # is guarded by asking the database who owns each directory, which is a bad
-    # question when the database does not describe the volume; a tombstone has no
-    # owner to ask about, so the environment fence is the only guard it can have.
-    # It is also what keeps `bin/dev` and `bin/rails test` on a machine sharing
-    # ~/.zimmer/clones from deleting inside the durable volume.
-    AtomicCloneRemoval.reap_tombstones(clones_base) if sweepable_root?("clones", clones_base)
-
-    Dir.children(clones_base).each do |entry|
-      full_path = File.join(clones_base, entry)
-      next unless File.directory?(full_path)
-      # Not a clone: a delete in flight, or one interrupted since the reap above.
-      # Either way it is never this sweep's to reason about.
-      next if AtomicCloneRemoval.tombstone?(entry)
-
-      normalized = File.expand_path(full_path)
-      next if live_clone_paths.include?(normalized)
-      next if active_clone_paths.include?(normalized)
-
-      # Final, normalization-immune guard. Reaching this point means the path
-      # checks above missed a directory that a session still references (its
-      # stored clone_path could not be reconciled with the scan path). Deleting
-      # it would orphan a session from its working tree, so skip it AND record
-      # the near-miss durably: the per-session DB log survives deploys, unlike
-      # this job's stdout, so a recurring canonicalization/relocation bug stays
-      # visible on the session itself instead of silently destroying its clone.
-      if (owner_id = referenced_owners[entry])
-        skipped_referenced += 1
-        flag_referenced_clone_skip(owner_id, full_path)
-        next
-      end
-
-      begin
-        mtime = File.mtime(full_path)
-        next if mtime > cutoff
-
-        # The ownership snapshot above was taken before this loop started, and the
-        # loop deletes whole working trees one at a time. CloneReaper asks again
-        # at the instant of deletion (#808).
-        next if GitCloneService.cleanup_clone(full_path, reason: "StaleCloneCleanupJob orphan sweep") == :refused
-
-        Rails.logger.info "[StaleCloneCleanupJob] Swept orphaned clone directory: #{full_path} (mtime: #{mtime.iso8601})"
-        cleaned += 1
-      rescue => e
-        errors += 1
-        Rails.logger.error "[StaleCloneCleanupJob] Failed to sweep orphaned clone #{full_path}: #{e.class} - #{e.message}"
-      end
-    end
-
-    if cleaned > 0
-      Rails.logger.info "[StaleCloneCleanupJob] Orphan sweep: removed #{cleaned} directories"
-    end
-
-    { cleaned: cleaned, errors: errors, skipped_referenced: skipped_referenced }
+    AtomicCloneRemoval.reap_tombstones(clones_base)
   end
 
   # Filesystem-level sweep over the roots whose per-session directories are named
@@ -534,67 +483,6 @@ class StaleCloneCleanupJob < ApplicationJob
     Session.unscoped.exists?
   end
 
-  # Maps every session-referenced clone directory's basename to its owning
-  # session id (across ALL statuses). Basenames are globally unique (timestamp +
-  # random suffix), so this is an unambiguous, path-normalization-immune lookup
-  # for "is this directory still owned by a session?".
-  def referenced_clone_owners_by_basename
-    Session
-      .where("metadata->>'clone_path' IS NOT NULL")
-      .pluck(:id, Arel.sql("metadata->>'clone_path'"))
-      .each_with_object({}) do |(id, path), map|
-        next if path.blank?
-        # First writer wins; a basename collision is effectively impossible, so
-        # the chosen id is deterministic enough for the durable flag below.
-        map[File.basename(path)] ||= id
-      end
-  end
-
-  # Records a durable, attributable warning when the orphan sweep was about to
-  # delete a directory still referenced by a session. This is a guard-gap
-  # tripwire: under normal operation the path guards catch referenced clones and
-  # this never fires.
-  def flag_referenced_clone_skip(owner_id, full_path)
-    Rails.logger.warn "[StaleCloneCleanupJob] Orphan sweep skipped #{full_path}: still referenced by session #{owner_id} " \
-      "(stored clone_path could not be reconciled with the scan path by File.expand_path; matched by basename)"
-
-    session = Session.find_by(id: owner_id)
-    return unless session
-
-    with_db_retry do
-      session.logs.create!(
-        level: "warning",
-        content: "Orphan sweep skipped deleting this session's clone directory (#{File.basename(full_path)}); " \
-          "its stored clone_path did not match the scan path and was only caught by the unique-basename guard. " \
-          "Investigate clone_path canonicalization."
-      )
-    end
-  rescue => e
-    # Never let the durable-flag write break the sweep; the stdout WARN above
-    # still fired.
-    Rails.logger.error "[StaleCloneCleanupJob] Failed to record referenced-clone skip for session #{owner_id}: #{e.class} - #{e.message}"
-  end
-
-  # All clone_path values from sessions that might still need their clone.
-  # Includes failed sessions (which have a 24-hour grace period before cleanup)
-  # and archived sessions still in the trash pipeline (managed by EmptyTrashJob).
-  def active_session_clone_paths
-    actively_used = Session
-      .where(status: [ :waiting, :running, :needs_input, :failed ])
-      .where("metadata->>'clone_path' IS NOT NULL")
-
-    in_trash_pipeline = Session
-      .where(status: :archived)
-      .where.not(trash_after: nil)
-      .where("metadata->>'clone_path' IS NOT NULL")
-
-    actively_used.or(in_trash_pipeline)
-      .pluck(Arel.sql("metadata->>'clone_path'"))
-      .compact
-      .map { |p| File.expand_path(p) }
-      .to_set
-  end
-
   # Settable for testing — allows tests to inject a temp directory
   class_attribute :clones_directory_override, default: nil
 
@@ -602,8 +490,8 @@ class StaleCloneCleanupJob < ApplicationJob
     return self.class.clones_directory_override if self.class.clones_directory_override
 
     # Single source of truth shared with every clone writer and reaper.
-    # The orphan sweep guards on File.directory? before using this, so returning
-    # a not-yet-created path is harmless.
+    # #reap_clone_tombstones guards on File.directory? before using this, so
+    # returning a not-yet-created path is harmless.
     ClonesDirectory.base
   end
 end

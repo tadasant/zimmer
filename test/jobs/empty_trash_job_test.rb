@@ -90,6 +90,29 @@ class EmptyTrashJobTest < ActiveJob::TestCase
     assert Dir.exist?(scratch_path)
   end
 
+  test "does not reap a session re-archived into a fresh trash window" do
+    # An unarchive followed by a re-archive restarts the four-day deadline. The
+    # row is `archived`, not `reap_protected`, and squarely mid-undo-window — so
+    # a status-only re-read waves it through and everything below the clone
+    # (scratch, config, attachments, artifacts) goes with it, none of which has a
+    # remote to come back from.
+    scratch_path = SessionScratchDirectory.ensure_for(@session.id)
+    @session.update_columns(trash_after: 4.days.from_now)
+
+    EmptyTrashJob.perform_now
+
+    assert File.directory?(@clone_path), "a restarted undo window must keep the clone"
+    assert Dir.exist?(scratch_path), "and the scratch directory it cannot rebuild"
+  end
+
+  test "does not reap a session whose trash deadline was cleared entirely" do
+    @session.update_columns(trash_after: nil)
+
+    EmptyTrashJob.perform_now
+
+    assert File.directory?(@clone_path)
+  end
+
   test "cleans up artifacts for expired trashed session" do
     # Remove clone to isolate artifact cleanup behavior
     FileUtils.rm_rf(@clone_path)

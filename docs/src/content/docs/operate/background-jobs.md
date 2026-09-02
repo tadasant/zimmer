@@ -82,7 +82,7 @@ From `config.good_job.cron`:
 | 15m | `ClaudeUsageSamplerJob` | Read the serving Claude account's quota, so the spot gate decides on a fresh number — `QuotaResetCheckerJob` samples only *exceeded* accounts, and a healthy one is otherwise read only when somebody opens /quotas. See [Spot and priority](/sessions/spot-and-priority/). |
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
-| hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, and sweep the scratch/attachment directories of sessions whose row is gone |
+| hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, reap deletion tombstones, and sweep the scratch/attachment directories of sessions whose row is gone |
 | hourly :15 | `CleanupStaleTriggersJob` | Destroy dead one-time wake-up triggers — an archived target session, a wake a resume consumed without firing, or a schedule that has lapsed |
 | hourly :40 | `LiveCloneIntegrityJob` | Report, at `.error`, any live session whose clone directory has been deleted or stripped underneath it — see below |
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
@@ -203,9 +203,26 @@ compute every one of those as an orphan. Scratch and prompt attachments have no 
 re-fetched from, so that is unrecoverable, which is why the fence is on the *path* rather than on
 whether some `AGENT_*_DIR` happens to be set.
 
+## One job owns the clones directory
+
+"Which directory under the clones base does no session own?" is asked by
+`OrphanCloneFilesystemCleanupJob` and by nothing else.
+
+A second sweep over the same directory on a shorter age bar is
+[#709](https://github.com/tadasant/zimmer/issues/709): it takes every candidate before this job's
+48-hour bar — or the two-hour disk-pressure reclamation below — can find one, so reclamation under
+pressure finds nothing to reclaim. Worse than the wasted gear, it gives the clones base two answers
+to "which directories are safe to delete", which is, in `CloneDiskGuard`'s own words, *"exactly how
+a pruner ends up eating a live session's working directory"* —
+[#808](https://github.com/tadasant/zimmer/issues/808) and
+[#811](https://github.com/tadasant/zimmer/issues/811) on 2026-09-02. `CloneReaper` removed the
+sharpest edge of having two by giving both the same last guard; having only one removes the rest.
+What `StaleCloneCleanupJob` does in the clones base is reap tombstones, which have no owner to
+reason about.
+
 ## Clone pruning has a second, urgent gear
 
-`OrphanCloneFilesystemCleanupJob` is on the hourly cleanup cron, and on that schedule it is
+`OrphanCloneFilesystemCleanupJob` is on the six-hourly cleanup cron, and on that schedule it is
 patient: `AGE_THRESHOLD` is 48 hours and `BATCH_LIMIT` is 20 directories per run. That is the right
 posture for a background sweep and the wrong one for a disk filling up in an afternoon, so the same
 job has a second entry point.
@@ -231,11 +248,11 @@ session's working directory is a far worse outcome than the disk pressure it was
 
 | Guard | Effect |
 | --- | --- |
-| Tracked-path check | A directory whose basename matches **any** session row's `metadata->>'clone_path'` is never a candidate, whatever that session's status. Only directories with no owning row at all are eligible |
+| Tracked-path check | A directory whose basename matches **any** session row's `metadata->>'clone_path'` is never a candidate, whatever that session's status. Only directories with no owning row at all are eligible. The query is `unscoped`, because it decides deletions: a default scope added later for soft-delete or tenancy would otherwise hide a session and make its clone look orphaned. A directory saved by its basename while its owner's stored path points elsewhere is `clone_path` canonicalization drift ([#671](https://github.com/tadasant/zimmer/issues/671)) and is logged at `.warn` — harmless, and nothing else would ever notice it |
 | `Session.live_clone_paths` | A second, age-independent check: a clone owned by a non-terminal session is never touched |
-| `PRESSURE_AGE_THRESHOLD` (2 hours) | Covers the startup race where a clone exists but its session has not yet persisted `clone_path`. That window is bounded by `GIT_CLONE_TIMEOUT_SECONDS` (300s) plus bounded retries — under ten minutes at worst — so two hours is more than an order of magnitude of headroom, and still more conservative than `StaleCloneCleanupJob`'s equivalent sweep at one hour |
+| `PRESSURE_AGE_THRESHOLD` (2 hours) | Covers the startup race where a clone exists but its session has not yet persisted `clone_path`. That window is bounded by `GIT_CLONE_TIMEOUT_SECONDS` (300s) plus bounded retries — under ten minutes at worst — so two hours is more than an order of magnitude of headroom |
 | Stop-at-target | Space is re-probed after every removal, so a run under pressure deletes the fewest directories that clear the requirement, oldest first |
-| Only the deployment that owns the volume | A clones base inside the durable volume is reaped only in production and staging. This is the fence `StaleCloneCleanupJob` already applies to its per-session sweep, and it exists because orphan-hood is a set difference against the **connected** database: `bin/rails test` (`zimmer_test`) and `bin/dev` (`zimmer_development`) both resolve the clones base to `~/.zimmer/clones`, so on a machine that also hosts a real Zimmer, either would compute every live clone as an orphan. A relocated base (`AGENT_CLONES_DIR` pointed clear of the volume) is reapable anywhere |
+| Only the deployment that owns the volume | A clones base inside the durable volume is reaped only in production and staging. This is the same fence `StaleCloneCleanupJob` applies to its per-session sweep, and it exists because orphan-hood is a set difference against the **connected** database: `bin/rails test` (`zimmer_test`) and `bin/dev` (`zimmer_development`) both resolve the clones base to `~/.zimmer/clones`, so on a machine that also hosts a real Zimmer, either would compute every live clone as an orphan. A relocated base (`AGENT_CLONES_DIR` pointed clear of the volume) is reapable anywhere |
 
 A removal that raises is logged and skipped; the run continues with the next candidate.
 
@@ -249,11 +266,12 @@ and the delete *does* leave is the tombstone.
 
 Both sweeps therefore treat a tombstone as its own category, not as a clone:
 
-- **Never a candidate.** `find_orphan_directories` and `sweep_orphaned_clones` skip any name matching
-  the tombstone pattern, so a tombstone is never counted as an orphaned clone, never weighed against
-  session ownership, and never left to sit out an age threshold that does not apply to it.
-- **Always reaped.** Each run calls `AtomicCloneRemoval.reap_tombstones` on the clones base first,
-  with no age bar: a tombstone is doomed the moment it is created, so there is no window in which one
+- **Never a candidate.** `find_orphan_directories` skips any name matching the tombstone pattern, so
+  a tombstone is never counted as an orphaned clone, never weighed against session ownership, and
+  never left to sit out an age threshold that does not apply to it.
+- **Always reaped.** Every run of either job calls `AtomicCloneRemoval.reap_tombstones` on the clones
+  base — first thing in `OrphanCloneFilesystemCleanupJob`, after the per-session pass in
+  `StaleCloneCleanupJob` — with no age bar: a tombstone is doomed the moment it is created, so there is no window in which one
   is still wanted, and racing a delete that is still in flight is harmless — both processes are
   unlinking the same doomed tree. `REAP_LIMIT` (50) bounds one pass; the rest go to the next run.
 
