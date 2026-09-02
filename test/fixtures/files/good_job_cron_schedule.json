@@ -203,7 +203,7 @@
     "cleanup_stale_triggers": {
       "cron": "15 * * * *",
       "class": "CleanupStaleTriggersJob",
-      "description": "Destroy orphaned one-time wake-up triggers (archived target session or lapsed schedule)"
+      "description": "Destroy dead one-time wake-up triggers (archived target session, consumed-without-firing wake, or lapsed schedule)"
     },
     "zombie_reaper": {
       "cron": "*/5 * * * *",
@@ -430,7 +430,7 @@
     "cleanup_stale_triggers": {
       "cron": "15 * * * *",
       "class": "CleanupStaleTriggersJob",
-      "description": "Destroy orphaned one-time wake-up triggers (archived target session or lapsed schedule)"
+      "description": "Destroy dead one-time wake-up triggers (archived target session, consumed-without-firing wake, or lapsed schedule)"
     },
     "zombie_reaper": {
       "cron": "*/5 * * * *",
@@ -572,7 +572,7 @@
     "cleanup_stale_triggers": {
       "cron": "15 * * * *",
       "class": "CleanupStaleTriggersJob",
-      "description": "Destroy orphaned one-time wake-up triggers (archived target session or lapsed schedule)"
+      "description": "Destroy dead one-time wake-up triggers (archived target session, consumed-without-firing wake, or lapsed schedule)"
     },
     "zombie_reaper": {
       "cron": "*/5 * * * *",
