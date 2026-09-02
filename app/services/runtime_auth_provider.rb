@@ -64,7 +64,7 @@
 # no-ops here so a provider only overrides the ones its runtime needs.
 #
 # reconcile_filesystem_identity! -> void
-#   Adopt a manual filesystem identity switch (e.g. `claude /login`) into the DB
+#   Adopt a manual filesystem identity switch (e.g. `claude auth login`) into the DB
 #   so the subsequent token sync targets the right account.
 #
 # sync_current_account_tokens! -> void

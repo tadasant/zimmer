@@ -71,26 +71,29 @@ class CliStatusService
     claude: {
       name: "Claude Code",
       check_installed: "which claude",
-      # There is no shell probe to run here, so this one does not shell out.
+      # No `claude` invocation can answer this one, so it does not shell out.
       #
-      # `claude whoami` used to be the check. `whoami` is not a subcommand, so
-      # the CLI took it as a PROMPT and answered it with a full agent turn —
-      # CLAUDE.md loaded, Bash tool called, prose written — every 2 minutes on
-      # cron, burning the pooled quota that gates spot scheduling (#536).
-      #
-      # `claude auth status` is a real subcommand, and it is still the wrong
-      # check: verified against CLI 2.1.258, it reports only credentials it
-      # finds in the ENVIRONMENT (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY).
-      # Pointed at ~/.claude/.credentials.json — the store Zimmer's web and
-      # worker containers actually authenticate from — it prints "Not logged in"
-      # and exits 1 even with a complete token pair on disk. It would have
-      # flipped this tile to "not authenticated" in production, and it reports 0
-      # for a bogus ANTHROPIC_API_KEY, which is the same silent-failure shape.
+      # Two facts about the CLI, both verified against 2.1.258. First, `whoami`
+      # is not a subcommand and `claude` takes a bare positional prompt, so that
+      # argv is billed as an inference turn (#536) — which is what the
+      # `check_auth` contract in the header exists to keep out. Second,
+      # `claude auth status` IS a real subcommand and still cannot answer it: it
+      # reports only credentials it finds in the ENVIRONMENT
+      # (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY), so against
+      # ~/.claude/.credentials.json — the store the web and worker containers
+      # authenticate from — it prints "Not logged in" and exits 1 with a
+      # complete token pair sitting on disk.
       #
       # ClaudeCredentialHealth is the authority Zimmer already trusts for this
-      # question — the same read the health dashboard and the token-refresh
-      # sweep use, and it follows the credential wherever it lives (the shared
-      # file, or the DB under session-scoped credentials).
+      # question — the same read the /health Agent Authentication card and
+      # RefreshRuntimeAuthTokensJob use — and it follows the credential wherever
+      # it lives: the shared file, or the current account's row under
+      # session-scoped credentials.
+      #
+      # Like every other entry here, this reports whether a credential is
+      # PRESENT and complete, not whether the vendor still honours it. A spent
+      # pair reads as authenticated; the auth-outage park and the account pool's
+      # own refresh sweep are what catch that. See limitations.md.
       check_auth: -> { ClaudeCredentialHealth.status.ok? },
       check_version: "claude --version",
       auth_method: :oauth,
@@ -301,12 +304,15 @@ class CliStatusService
   #
   # A callable that raises reports "not authenticated" rather than taking the
   # whole refresh down with it, which is the failure mode `system` already had.
+  # It goes to Sentry as well as the log, because the visible symptom is a tile
+  # stuck on "Not Authenticated" and nobody can reach a shell to grep for why.
   def check_auth(check)
     if check.respond_to?(:call)
       begin
-        return check.call == true
+        return !!check.call
       rescue => e
         Rails.logger.warn "[CliStatusService] Auth check raised: #{e.class}: #{e.message}"
+        ErrorReporter.report_exception(e, context: { component: "CliStatusService" })
         return false
       end
     end
