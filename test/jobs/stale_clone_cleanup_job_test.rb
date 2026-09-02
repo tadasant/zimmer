@@ -81,7 +81,7 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
   # asks at the instant of deletion.
   test "the orphan sweep still refuses a live session's clone with its snapshot guards blinded" do
     @session.update_columns(status: Session.statuses[:running])
-    FileUtils.touch(@clone_path, mtime: (StaleCloneCleanupJob::ORPHAN_AGE_THRESHOLD + 1.hour).ago)
+    FileUtils.touch(@clone_path, mtime: (StaleCloneCleanupJob::ORPHAN_AGE_THRESHOLD + 1.hour).ago.to_time)
 
     Session.stubs(:live_clone_paths).returns(Set.new)
     StaleCloneCleanupJob.any_instance.stubs(:active_session_clone_paths).returns(Set.new)
