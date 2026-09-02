@@ -132,4 +132,75 @@ class ClonesTasksTest < ActiveSupport::TestCase
 
     assert_equal File.join(@dest_base, "repo-main-106-ggg"), session.reload.metadata["clone_path"]
   end
+
+  # --- Non-relocatable directories (zimmer#671) ------------------------------
+
+  # A virtualenv as `uv venv` leaves it: the console scripts name the
+  # interpreter by absolute path, so a copy of the tree arrives pointing back at
+  # the clone it came from.
+  def create_virtualenv(clone_path, relative_path: ".venv")
+    venv = File.join(clone_path, relative_path)
+    FileUtils.mkdir_p(File.join(venv, "bin"))
+    File.write(File.join(venv, "pyvenv.cfg"), "home = /usr/bin\nversion = 3.13.1\n")
+    File.write(File.join(venv, "bin", "pytest"), "#!#{File.join(venv, 'bin', 'python')}\nimport pytest\n")
+
+    FileUtils.mkdir_p(File.join(clone_path, "src"))
+    File.write(File.join(clone_path, "src", "app.py"), "print('hi')")
+    venv
+  end
+
+  test "a relocated clone does not inherit the old clone's virtualenv" do
+    session = session_with_clone(name: "repo-main-107-hhh")
+    old_clone = session.metadata["clone_path"]
+    create_virtualenv(old_clone)
+    ENV["DEST"] = @dest_base
+
+    output = run_relocate
+
+    new_clone = File.join(@dest_base, "repo-main-107-hhh")
+    assert_equal new_clone, session.reload.metadata["clone_path"]
+    assert File.exist?(File.join(new_clone, "src", "app.py")), "the working tree still comes along"
+
+    # The defect: before the fix this file existed in the new clone and opened
+    # with `#!<OLD-CLONE>/.venv/bin/python`, so `uv run pytest` ran the previous
+    # checkout's sources without saying so.
+    assert_not File.exist?(File.join(new_clone, ".venv")),
+      "a relocated clone must not carry a virtualenv whose shebangs name the clone it came from"
+
+    assert_match(/leaving 1 non-relocatable path\(s\) out of the copy \(\.venv\)/, output)
+  end
+
+  # The property the whole remedy rests on: this task copies live sessions'
+  # clones by design, so the exclusion must only ever shape what is WRITTEN to
+  # the destination. Nothing is removed from the source.
+  test "excluding a virtualenv never touches the source clone" do
+    session = session_with_clone(name: "repo-main-108-iii")
+    old_clone = session.metadata["clone_path"]
+    venv = create_virtualenv(old_clone)
+    shebang = File.readlines(File.join(venv, "bin", "pytest")).first
+    ENV["DEST"] = @dest_base
+
+    run_relocate
+
+    assert File.exist?(File.join(venv, "pyvenv.cfg")), "the live session's venv must survive the copy"
+    assert_equal shebang, File.readlines(File.join(venv, "bin", "pytest")).first,
+      "the source clone is read, never rewritten or pruned"
+    assert File.exist?(File.join(old_clone, "SENTINEL.txt"))
+  end
+
+  test "nested virtualenvs are found and named in the dry-run report" do
+    session = session_with_clone(name: "repo-main-109-jjj")
+    old_clone = session.metadata["clone_path"]
+    create_virtualenv(old_clone)
+    create_virtualenv(old_clone, relative_path: "packages/api/.venv")
+    ENV["DEST"] = @dest_base
+    ENV["DRY_RUN"] = "true"
+
+    output = run_relocate
+
+    assert_match(/leaving 2 non-relocatable path\(s\)/, output)
+    assert_match(/\.venv, packages\/api\/\.venv/, output)
+    assert_equal [], Dir.children(@dest_base), "a dry run still copies nothing"
+    assert_equal old_clone, session.reload.metadata["clone_path"]
+  end
 end

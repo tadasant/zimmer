@@ -28,6 +28,7 @@ namespace :clones do
     dest_base = (ENV["DEST"].presence && File.expand_path(ENV["DEST"])) || ClonesDirectory.base
     dry_run = ENV["DRY_RUN"] == "true"
     remove_old = ENV["REMOVE_OLD"] == "true"
+    file_system = RealFileSystemAdapter.new
 
     FileUtils.mkdir_p(dest_base) unless dry_run
 
@@ -69,6 +70,19 @@ namespace :clones do
       end
 
       begin
+        # Directories whose contents hard-code the clone's own absolute path —
+        # a Python virtualenv's console-script shebangs above all. Copied, they
+        # would arrive in the new clone still pointing at the old one, and a
+        # venv fails that way *silently*: the shim runs, against the previous
+        # checkout's sources (zimmer#671). The copy leaves them behind instead;
+        # nothing is deleted, and the source clone is never touched, which is
+        # what keeps this safe against the live sessions it runs on.
+        non_relocatable = NonRelocatableClonePaths.detect(old_clone_path, file_system: file_system)
+        if non_relocatable.any?
+          log.call "session #{session.id}: leaving #{non_relocatable.size} non-relocatable path(s) out of the copy " \
+            "(#{non_relocatable.join(', ')}) — the new clone must rebuild them"
+        end
+
         if dry_run
           log.call "session #{session.id} (#{session.status}): would copy #{old_clone_path} -> #{new_clone_path} and rewrite #{path_keys.join(', ')}"
           relocated += 1
@@ -77,7 +91,7 @@ namespace :clones do
 
         # Copy (never move) so a live session's cwd is never pulled out from under it.
         unless Dir.exist?(new_clone_path)
-          FileUtils.cp_r(old_clone_path, new_clone_path)
+          file_system.cp_r(old_clone_path, new_clone_path, exclude: NonRelocatableClonePaths.to_patterns(non_relocatable))
         end
 
         # Rewrite every path-bearing metadata key in lockstep. Each value is
