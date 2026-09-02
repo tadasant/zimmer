@@ -4,23 +4,26 @@ require "test_helper"
 require "mocha/minitest"
 
 # Unit coverage for ControllerDatabaseRetry#with_db_retry — the controller-side
-# twin of DatabaseRetry, carrying the same #708 defect and the same fix: a
-# pool-exhaustion error is retried, not reconnected.
+# twin of DatabaseRetry, which carries the same #708 invariant: a pool-exhaustion
+# error is retried, and nothing is reconnected.
 class ControllerDatabaseRetryTest < ActiveSupport::TestCase
+  Format = Struct.new(:json?)
+  Request = Struct.new(:format)
+
   # Stands in for a controller: the concern only needs controller_name /
   # action_name to log, and the request/render/flash trio on the give-up path.
   # Overriding Kernel#sleep records the backoff instead of taking it.
   class Host
     include ControllerDatabaseRetry
 
-    attr_reader :delays, :rendered, :flashes, :redirects
+    attr_reader :delays, :rendered, :flashes, :redirects, :request
 
     def initialize(json: true)
       @delays = []
       @rendered = []
       @flashes = {}
       @redirects = []
-      @json = json
+      @request = Request.new(Format.new(json))
     end
 
     def sleep(seconds)
@@ -29,7 +32,6 @@ class ControllerDatabaseRetryTest < ActiveSupport::TestCase
 
     def controller_name = "sessions"
     def action_name = "index"
-    def request = Struct.new(:format).new(Struct.new(:json?).new(@json))
     def flash = @flashes
     def root_path = "/"
     def render(**options) = @rendered << options
@@ -38,7 +40,7 @@ class ControllerDatabaseRetryTest < ActiveSupport::TestCase
 
   setup { @host = Host.new }
 
-  test "ConnectionTimeoutError is what ConnectionNotEstablished used to catch" do
+  test "a pool-exhaustion error reaches the rescue as a ConnectionNotEstablished" do
     assert_kind_of ActiveRecord::ConnectionNotEstablished,
                    ActiveRecord::ConnectionTimeoutError.new("pool is full")
     assert_includes ControllerDatabaseRetry::RETRYABLE_EXCEPTIONS,
@@ -78,6 +80,9 @@ class ControllerDatabaseRetryTest < ActiveSupport::TestCase
   end
 
   test "a genuinely broken connection is still retried" do
+    # Belt and braces: PG::ConnectionBad is not a ConnectionNotEstablished, so this
+    # shape never took the reconnect branch even before #708. The expectation is
+    # here so the whole retryable list is covered by the same rule.
     ActiveRecord::Base.expects(:connection).never
 
     attempts = 0
@@ -100,6 +105,32 @@ class ControllerDatabaseRetryTest < ActiveSupport::TestCase
     assert_empty host.rendered
     assert_equal [ { fallback_location: "/" } ], host.redirects
     assert_match(/high server activity/, host.flashes[:alert])
+  end
+
+  test "a deadlock is retried without touching the connection" do
+    ActiveRecord::Base.expects(:connection).never
+
+    attempts = 0
+    result = @host.with_db_retry do
+      attempts += 1
+      raise ActiveRecord::Deadlocked, "deadlock detected" if attempts == 1
+
+      :ok
+    end
+
+    assert_equal :ok, result
+    assert_equal 2, attempts
+    assert_equal [ 0.3 ], @host.delays
+  end
+
+  test "max_attempts and base_delay overrides drive the budget and the backoff" do
+    assert_equal false,
+                 @host.with_db_retry(max_attempts: 4, base_delay: 0.1) {
+                   raise ActiveRecord::ConnectionTimeoutError, "all pooled connections were in use"
+                 }
+
+    assert_equal [ 0.1, 0.2, 0.4 ], @host.delays
+    assert_equal [ :service_unavailable ], @host.rendered.map { |r| r[:status] }
   end
 
   test "a non-retryable error is not retried" do

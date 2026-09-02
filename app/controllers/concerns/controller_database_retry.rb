@@ -15,13 +15,13 @@ module ControllerDatabaseRetry
   # Retry database operations with exponential backoff
   # Lower max_attempts than jobs since users are waiting for HTTP response
   #
-  # Recovery is Active Record's job, not ours: since 7.1 the adapter verifies a
-  # connection it is not confident about and reconnects under its own lock, so
-  # re-running the block is all this helper has to do. Reconnecting by hand here
-  # fired on `ActiveRecord::ConnectionTimeoutError` — which inherits from
-  # `ActiveRecord::ConnectionNotEstablished` but means the pool is full, not that
-  # this connection is broken — and leased a sticky connection out of an already
-  # empty pool. See #708.
+  # Recovery is Active Record's job, not ours: the adapter verifies a connection it
+  # is not confident about and reconnects it on the thread that owns it, so
+  # re-running the block is all this helper has to do. A reconnect by hand keyed on
+  # `ActiveRecord::ConnectionNotEstablished` also fires on
+  # `ActiveRecord::ConnectionTimeoutError`, which inherits from it but means the
+  # pool is full rather than that this connection is broken — leasing a sticky
+  # connection out of an already empty pool. See #708.
   #
   # @param max_attempts [Integer] Maximum number of retry attempts (default: 3)
   # @param base_delay [Float] Base delay in seconds for exponential backoff (default: 0.3)
