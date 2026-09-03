@@ -134,7 +134,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   def seed_pool(reset_5h:, utilization_5h: 1.0, utilization_7d: 0.10, reset_7d: 2.days.from_now)
     ClaudeAccountQuotaSnapshot.delete_all
     account = ClaudeAccount.create!(email: "mcp-pool-#{SecureRandom.hex(4)}@example.com",
-                                    runtime: "claude_code", oauth_config: { "x" => 1 }, is_current: true)
+                                    runtime: "claude_code", oauth_config: { "x" => 1 })
     ClaudeAccountQuotaSnapshot.create!(claude_account: account, utilization_5h: utilization_5h,
       utilization_7d: utilization_7d, reset_5h: reset_5h, reset_7d: reset_7d,
       active_session_count: 1, trigger: "usage_sample")
@@ -143,15 +143,77 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     account
   end
 
+  # travel_to, because the countdown is floored to the minute: a wall-clock
+  # `90.minutes.from_now` becomes "1 hour and 29 minutes" the moment setup takes a
+  # second, and a test that flips on timing is worse than no test.
   test "get_spot_policy says when the account pool comes back, as a countdown and a wall clock" do
-    reset = 90.minutes.from_now
-    seed_pool(reset_5h: reset)
+    travel_to Time.utc(2026, 9, 3, 12, 0, 0) do
+      reset = 90.minutes.from_now
+      seed_pool(reset_5h: reset)
+
+      output = get_policy
+
+      assert_match(/Account pool capacity:\*\* The one account with a reading is out of capacity\./, output)
+      assert_match(/The first one has room on both windows again in 1 hour and 30 minutes/, output)
+      assert_match(/\(Sep 3, 13:30 UTC\)/, output)
+    end
+  end
+
+  test "get_spot_policy counts down in minutes, and says so when there is less than one" do
+    seed_pool(reset_5h: Time.current + 30.seconds)
+
+    assert_match(/room on both windows again in under a minute/, get_policy)
+  end
+
+  # The branch for a deadline that crosses between the measurement and the render.
+  # ClaudeAccountPool never records a reset already in the past, and an account
+  # whose window has rolled is no longer blocked, so this is only reachable from a
+  # decision built before the deadline passed — which is exactly the race it is
+  # for. It is the tool's half of the page's "That moment has passed — refresh for
+  # a fresh reading", so it is worth pinning rather than leaving to a live race.
+  #
+  # It also pins the shape of the 7-day sentence, whose own clause follows this
+  # phrase: two stacked em-dashes there read as a sentence that lost its way.
+  test "get_spot_policy calls a reset that has just passed stale rather than counting to zero" do
+    passed = 2.minutes.ago
+    capacity = SpotGateService::PoolCapacity.new(
+      next_capacity_at: passed, next_weekly_reset: passed,
+      capacity_now: false, weekly_spent_count: 1, read_count: 1, servable_count: 0
+    )
+    stamp = Regexp.escape(passed.utc.strftime(ClaudeAccountPool::RESET_TIME_FORMAT))
+
+    SpotGateService.stub(:evaluate, decision_carrying(capacity)) do
+      output = get_policy
+
+      assert_match(/again now \(#{stamp}\); that moment has passed, so this reading is stale/, output)
+      assert_match(/Next 7-day reset:\*\* now \(#{stamp}\); that moment has passed, so this reading is stale — the soonest recorded among 1 account/,
+                   output)
+    end
+  end
+
+  def decision_carrying(capacity)
+    SpotGateService::Decision.new(
+      allowed: true, reason: "within_limits", detail: "within limits",
+      five_hour: nil, weekly: nil, active_sessions: 0, fleet_cap: 10,
+      accounts_read: 1, pool_size: 1,
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: capacity
+    )
+  end
+
+  # Gating off is not the same emptiness as an unprobed pool, and only the second
+  # one is empty on /quotas too. The page measures the pool whatever the gate
+  # setting is; with gating off (the default) the tool used to say nothing at all.
+  test "get_spot_policy reports the pool even when spot gating is turned off" do
+    seed_pool(reset_5h: 90.minutes.from_now)
+    AppSetting.editable.update!(spot_gating_enabled: false)
 
     output = get_policy
 
-    assert_match(/Account pool capacity:\*\* every account with a reading is out of capacity/, output)
-    assert_match(/The first one has room on both windows again in 1 hour and 30 minutes/, output)
-    assert_match(/\(#{Regexp.escape(reset.utc.strftime("%b %-d, %H:%M UTC"))}\)/, output)
+    assert_match(/Gating enabled:\*\* no/, output)
+    assert_match(/Spot sessions:\*\* running/, output)
+    assert_match(/Account pool capacity:\*\* The one account with a reading is out of capacity\./, output)
+    assert_match(/The first one has room on both windows again in 1 hour/, output)
   end
 
   # The property the change exists for: the tool reports what the Measure
@@ -172,7 +234,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
     output = get_policy
 
-    assert_match(/Account pool capacity:\*\* available now — at least one account has room on both/, output)
+    assert_match(/Account pool capacity:\*\* available now — 1 account of 1 with a reading has room on both windows right now/, output)
     refute_match(/Account pool capacity:\*\*\s*\n/, output, "a nil timestamp must never render as an empty answer")
   end
 
@@ -181,20 +243,22 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   test "get_spot_policy names the absence when nothing recorded a reset time" do
     seed_pool(reset_5h: nil, reset_7d: nil)
 
-    assert_match(/none of them recorded a reset time — nothing here says when the pool comes back/,
+    assert_match(/No reset time is recorded for the blocked windows, so nothing here says when the pool comes back/,
                  get_policy)
   end
 
   test "get_spot_policy reports the 7-day rollover under the weekly window" do
-    reset = 3.days.from_now
-    seed_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10, utilization_7d: 1.0, reset_7d: reset)
+    travel_to Time.utc(2026, 9, 3, 12, 0, 0) do
+      seed_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10,
+                utilization_7d: 1.0, reset_7d: 3.days.from_now)
 
-    output = get_policy
+      output = get_policy
 
-    assert_match(/Next 7-day reset:\*\* in 3 days/, output)
-    assert_match(/the soonest recorded among 1 account whose 7-day window is spent/, output)
-    assert_operator output.index("### Weekly window"), :<, output.index("Next 7-day reset"),
-                    "the 7-day rollover belongs under the window it is about"
+      assert_match(/Next 7-day reset:\*\* in 3 days \(Sep 6, 12:00 UTC\)/, output)
+      assert_match(/the soonest recorded among 1 account whose 7-day window is spent/, output)
+      assert_operator output.index("### Weekly window"), :<, output.index("Next 7-day reset"),
+                      "the 7-day rollover belongs under the window it is about"
+    end
   end
 
   test "get_spot_policy says nothing is waiting on a 7-day reset when no week is spent" do
@@ -206,7 +270,8 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   test "get_spot_policy names a spent week that recorded no rollover" do
     seed_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10, utilization_7d: 1.0, reset_7d: nil)
 
-    assert_match(/Next 7-day reset:\*\* unknown — no reset time is recorded for the 1 account/, get_policy)
+    assert_match(/Next 7-day reset:\*\* unknown — 1 account with a spent 7-day window, and no reset time recorded for it/,
+                 get_policy)
   end
 
   # No pool reading at all is a third state, and the tool must not answer it by
@@ -219,6 +284,17 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
     refute_match(/Account pool capacity/, output)
     refute_match(/Next 7-day reset/, output)
+  end
+
+  # A weekly window with no reading renders a sentence rather than a list, so the
+  # 7-day line has to be separated from it or the two run together as one
+  # paragraph that reads like a contradiction.
+  test "get_spot_policy keeps the 7-day line off a weekly window with no reading" do
+    seed_pool(reset_5h: 90.minutes.from_now, utilization_7d: nil, reset_7d: nil)
+
+    section = get_policy[/### Weekly window.*?(?=\n### )/m]
+
+    assert_includes section, "No reading available.\n\n- **Next 7-day reset:**"
   end
 
   # The readonly group serves the same tool object, so the reset information is

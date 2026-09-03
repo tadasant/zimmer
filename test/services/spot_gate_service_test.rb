@@ -916,6 +916,15 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal measure.next_weekly_reset, capacity.next_weekly_reset
     assert_equal measure.capacity_now?, capacity.capacity_now?
     assert_equal measure.weekly_spent_count, capacity.weekly_spent_count
+    assert_equal measure.read_count, capacity.read_count
+    assert_equal measure.servable_count, capacity.servable_count
+  end
+
+  # A measure over nothing would report "nobody has capacity and nobody knows
+  # when", which is a claim about a pool that was never probed. The page guards
+  # the same way before it renders a banner.
+  test "a measure with no readings produces no capacity answer at all" do
+    assert_nil SpotGateService::PoolCapacity.from(ClaudeAccountPool.measure)
   end
 
   test "a pool with room reports capacity now and no time to wait for" do
@@ -927,6 +936,8 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_nil capacity.next_capacity_at, "there is nothing to wait for while the pool is serving"
     assert_equal 0, capacity.weekly_spent_count
     assert_nil capacity.next_weekly_reset
+    assert_equal 1, capacity.read_count
+    assert_equal 1, capacity.servable_count
   end
 
   # The two nil cases for `next_capacity_at`, which a caller cannot tell apart
@@ -938,6 +949,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
 
     refute capacity.capacity_now?
     assert_in_delta 45.minutes.from_now.to_f, capacity.next_capacity_at.to_f, 5
+    assert_equal 0, capacity.servable_count
   end
 
   test "a blocked pool that recorded no reset carries a nil the counts explain" do

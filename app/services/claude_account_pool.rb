@@ -20,6 +20,13 @@
 # An account with no reading contributes nothing and is not counted in the
 # denominator either — there is no number to average.
 class ClaudeAccountPool
+  # How a reset time is written wherever one is shown. UTC, because the two
+  # surfaces that render it disagree about who is reading: /quotas rewrites it to
+  # the viewer's wall clock in the browser, and `get_spot_policy` answers an agent
+  # that has no viewer timezone to be rewritten into. One constant so a change to
+  # the format cannot move one surface without the other.
+  RESET_TIME_FORMAT = "%b %-d, %H:%M UTC"
+
   # Both windows averaged across the pool, plus enough to say what was averaged.
   #
   # `read_count` is the accounts that contributed; `account_count` is the pool.

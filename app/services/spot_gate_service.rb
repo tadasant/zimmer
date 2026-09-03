@@ -227,17 +227,33 @@ class SpotGateService
   # - `next_weekly_reset` is nil because no account's week is spent
   #   (`weekly_spent_count` is zero, so a 7-day rollover is not what holds the
   #   pool) or because the accounts whose week IS spent recorded no reset time.
+  #
+  # `read_count` and `servable_count` are the same two figures the banner names
+  # its accounts with, so a surface reading this can say "3 accounts of 5" rather
+  # than "at least one". Both are copies, and there is no `blocked_count` because
+  # nothing needs one: the blocked sentences only render when `capacity_now` is
+  # false, which is exactly when every account with a reading is blocked.
   PoolCapacity = Data.define(:next_capacity_at, :next_weekly_reset,
-                             :capacity_now, :weekly_spent_count) do
+                             :capacity_now, :weekly_spent_count,
+                             :read_count, :servable_count) do
     # Copied off the measure rather than derived here. A second derivation is the
-    # drift this type exists to prevent.
+    # drift this type exists to prevent, so every field is a straight read —
+    # including the two that Measure itself derives.
+    #
+    # Nil when the pool has nothing to say, which is the same guard
+    # `pool_capacity_banner` applies before rendering anything: a measure over
+    # zero readings would report "nobody has capacity and nobody knows when",
+    # which is a claim about a pool that was never probed.
     def self.from(measure)
+      return nil unless measure.any_readings?
+
       new(next_capacity_at: measure.next_capacity_at, next_weekly_reset: measure.next_weekly_reset,
-          capacity_now: measure.capacity_now?, weekly_spent_count: measure.weekly_spent_count)
+          capacity_now: measure.capacity_now?, weekly_spent_count: measure.weekly_spent_count,
+          read_count: measure.read_count, servable_count: measure.servable_count)
     end
 
-    # Data's own to_h is exactly the four fields, so there is nothing to override
-    # — unlike Reading and Decision below, which serialize derived figures too.
+    # Data's own to_h is exactly these fields, so there is nothing to override —
+    # unlike Reading and Decision below, which serialize derived figures too.
     def capacity_now? = capacity_now
   end
 

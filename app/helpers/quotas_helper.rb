@@ -181,7 +181,7 @@ module QuotasHelper
   # what remains if JavaScript never runs. The title keeps UTC reachable either
   # way.
   def pool_reset_time(reset_time, css: "font-medium text-gray-700")
-    utc_text = reset_time.utc.strftime("%b %-d, %H:%M UTC")
+    utc_text = reset_time.utc.strftime(ClaudeAccountPool::RESET_TIME_FORMAT)
 
     time_tag(reset_time.utc, utc_text,
       title: utc_text,
