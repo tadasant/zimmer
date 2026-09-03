@@ -132,6 +132,30 @@ module SessionPrecedence
     end
   end
 
+  # The precedence THIS session should take at a symbolic placement — the form
+  # every surface wants when it is re-placing a session that is already in the
+  # queue (MCP's `action_session`, `PATCH /api/v1/sessions/:id`).
+  #
+  # Two adjustments over the class method, both about a session measuring itself:
+  #
+  # 1. It is excluded from the population, so "put this at the head" applied to
+  #    the row already on top does not walk it SLOT_GAP higher every call. Same
+  #    exclusion the Ranked view's demote button applies.
+  # 2. The result is floored at the value the session already holds. Without
+  #    that, (1) overshoots in the other direction: a session on top at 1000 with
+  #    a runner-up at 10 would be rewritten to 15 — still the head of the spot
+  #    queue, but now beneath a priority session carrying 500 that would outrank
+  #    it on a later demotion. "Put this first" is never a request to lower a
+  #    rank, so a session that is already first keeps its number.
+  #
+  # @param place [String] one of PLACES
+  # @raise [ArgumentError] if the placement is not one this knows
+  # @return [Integer]
+  def precedence_for_place(place)
+    resolved = self.class.precedence_for_place(place, self.class.where.not(id: id))
+    [ resolved, precedence.to_i ].max
+  end
+
   # Records that a caller named a value, so create-time inheritance leaves it
   # alone — an explicit 0 is a choice and must not be re-derived. ActiveRecord's
   # own load path does not go through this writer, so it only ever fires for a

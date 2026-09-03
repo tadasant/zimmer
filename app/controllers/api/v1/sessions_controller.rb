@@ -97,6 +97,9 @@ class Api::V1::SessionsController < Api::BaseController
   #     genesis would give it. Omit to derive (inheriting a parent's explicit class if it has one).
   #   - precedence: where this session sits in the spot queue — higher is handled sooner, on an
   #     absolute scale. Omit to land one point above the parent, or at the default with no parent.
+  #   - place: a symbolic placement (SessionPrecedence::PLACES, "top_of_spot" today) the server
+  #     resolves against the live queue as part of this write, so the caller does not have to read
+  #     the current top and write above it in a second request. Mutually exclusive with precedence.
   #   - idempotency_key: names THIS create attempt so it is safe to retry. Repeating the call
   #     with the same key returns the session the first call made — 200 with
   #     "idempotent_replay": true rather than 201 — and queues no second agent job. Without
@@ -110,7 +113,14 @@ class Api::V1::SessionsController < Api::BaseController
       return render json: { session: session_json(replayed), idempotent_replay: true }, status: :ok
     end
 
-    @session = Session.new(session_params.except(:agent_root))
+    # Resolved before the record exists, so a bad pairing is a 422 rather than a
+    # session created and then ranked wrong. Nothing to exclude and no rank to
+    # keep on a create, so this is the plain class-method resolution.
+    placement = resolved_placement(session_params)
+    return if performed?
+
+    @session = Session.new(session_params.except(:agent_root, :place))
+    @session.precedence = placement unless placement.nil?
     # Machine-created. When the caller passed a parent_session_id this is an agent
     # continuing an existing line of work, so assign_genesis inherits that parent's
     # genesis and leaves `api` alone; `api` is only what a parentless call gets.
@@ -151,10 +161,21 @@ class Api::V1::SessionsController < Api::BaseController
   # PATCH/PUT /api/v1/sessions/:id
   # Update an existing session.
   # Note: Only certain fields can be updated based on session status.
+  #
+  # Ranking takes either `precedence` (an absolute rank) or `place` (a symbolic
+  # one the server resolves against the live queue), never both.
   def update
     was_priority = @session.priority_class == SessionGenesis::PRIORITY
 
-    if @session.update(session_update_params)
+    # The session already holds a rank, so it places itself: excluded from its own
+    # population, and never lowered by a request to put it first.
+    placement = resolved_placement(session_update_params, session: @session)
+    return if performed?
+
+    attrs = session_update_params.except(:place)
+    attrs[:precedence] = placement unless placement.nil?
+
+    if @session.update(attrs)
       # Promoting a waiting session starts it, the same as the Ranked view's
       # Promote and `action_session`'s `change_scheduling_class` — which is what
       # makes the promise above ("moved to priority and started") true. The hold
@@ -1322,12 +1343,14 @@ class Api::V1::SessionsController < Api::BaseController
   # `agent_root` is permitted here alongside the rest of the create payload, but
   # it is not a Session column — it names a catalog entry that
   # resolve_agent_root_defaults! expands into git_root, branch, subdirectory and
-  # the catalog defaults. Hence `.except(:agent_root)` at the Session.new call.
+  # the catalog defaults. `place` is not a column either; it resolves to a
+  # `precedence` before the record is built. Hence `.except(:agent_root, :place)`
+  # at the Session.new call.
   def session_params
     params.permit(
       :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
       :title, :slug, :goal, :execution_provider, :is_autonomous,
-      :parent_session_id, :auto_compact_window, :scheduling_class, :precedence,
+      :parent_session_id, :auto_compact_window, :scheduling_class, :precedence, :place,
       :idempotency_key,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
     )
@@ -1406,9 +1429,61 @@ class Api::V1::SessionsController < Api::BaseController
   # policy every other session shares. Send null to drop back to derived.
   #
   # `precedence` is updatable for the same reason at one remove: a session that
-  # stays spot still needs to be movable within the queue.
+  # stays spot still needs to be movable within the queue. `place` is the
+  # symbolic form of the same move — not a column, so #update excepts it.
   def session_update_params
-    params.permit(:title, :slug, :goal, :is_autonomous, :scheduling_class, :precedence, custom_metadata: {})
+    params.permit(:title, :slug, :goal, :is_autonomous, :scheduling_class, :precedence, :place, custom_metadata: {})
+  end
+
+  # The precedence a `place` asks for, or nil when the caller named no placement.
+  #
+  # `place` is the symbolic half of the pair: rather than naming a number, the
+  # caller names a position (SessionPrecedence::PLACES) and the server works the
+  # value out against the queue as it stands at the moment of this write. The
+  # alternative is a read-then-write — read the current top, write a few points
+  # above it — which can be overtaken between the two requests, landing the
+  # session second in the queue it meant to head, and which makes the caller
+  # re-derive a rule (the live maximum over non-archived *spot* sessions) that
+  # the server owns. Resolution goes through `Session.precedence_for_place`, the
+  # same helper the Ranked view's demote button and the MCP tools use, so the
+  # surfaces cannot drift apart on what "the top of the queue" means.
+  #
+  # Renders a 422 and returns nil on a bad request; callers check `performed?`.
+  #
+  # `place` is an enum, so a blank one is the argument left out rather than a
+  # placement. `precedence` is a scalar whose whole range is meaningful, so
+  # anything but a JSON null is a value the caller chose — and choosing both is
+  # two answers to one question, refused the way MCP refuses it rather than
+  # silently preferring one.
+  #
+  # @param permitted [ActionController::Parameters] the permitted write payload
+  # @param session [Session, nil] the session being placed, when it already exists
+  # @return [Integer, nil]
+  def resolved_placement(permitted, session: nil)
+    place = permitted[:place]
+    return nil if place.blank?
+
+    unless permitted[:precedence].nil?
+      render_api_error(
+        "Invalid placement",
+        '"place" and "precedence" are mutually exclusive — they are two answers to the same ' \
+        'question. Pass "place" to let the server work the value out against the live queue, ' \
+        'or "precedence" to name an absolute rank yourself.',
+        status: :unprocessable_entity
+      )
+      return nil
+    end
+
+    unless SessionPrecedence::PLACES.include?(place.to_s)
+      render_api_error(
+        "Invalid placement",
+        "Unknown place: #{place.inspect}. Valid: #{SessionPrecedence::PLACES.join(', ')}.",
+        status: :unprocessable_entity
+      )
+      return nil
+    end
+
+    session ? session.precedence_for_place(place.to_s) : Session.precedence_for_place(place.to_s)
   end
 
   def regenerate_mcp_config_file(session)
