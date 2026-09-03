@@ -911,21 +911,30 @@ class Trigger < ApplicationRecord
       # destroys its siblings it would lose its whole wake set, deadline backstop
       # included.
       #
-      # Leaving the watcher armed is safe for the same reason the pause-time
-      # suppression is: the deferral is to something that always arrives. Either a
-      # sweep continues the session, and its next real pause announces normally, or
-      # SessionContinuation spends its attempt budget and announces via
-      # Session#announce_deferred_needs_input! — which enqueues the same
+      # The pause itself does not swallow the wake. A sweep either continues the
+      # session, whose next real pause announces normally, or SessionContinuation
+      # spends its attempt budget and announces via
+      # Session#announce_deferred_needs_input!. Both enqueue the same
       # AoEventTriggerJob, and that job re-queries the enabled conditions at fire
-      # time, so a watcher armed mid-pause is picked up. The one case with no sweep
-      # coming — a frozen category — is excluded from the predicate, so it still
-      # fires here immediately.
+      # time, so a watcher armed mid-pause is picked up by whichever happens. The
+      # one case with no sweep coming — a frozen category — is excluded from the
+      # predicate, so it still fires here immediately.
       #
-      # Only `needs_input` is affected. `session_failed` and `session_archived`
-      # announce unconditionally at their own transitions, and a failed session can
-      # carry `paused_by: "recovery"` too (CleanupOrphanedSessionsJob sweeps those),
-      # so gating them on this predicate would strand a watcher for a real failure.
-      if target_status == "needs_input" && watched_session.announcement_deferred_to_recovery_sweep?
+      # What that does not promise is that a lone `session_needs_input` condition
+      # always gets something. The session can go on to archive, which prunes every
+      # non-archived condition watching it, or to fail; and a recovery that keeps
+      # succeeding clears the attempt counter with the rest of
+      # Session::STALE_RETRY_METADATA_KEYS, so the give-up branch may never be
+      # reached. The full wake set plus a `wake_me_up_later` deadline is what covers
+      # those outcomes — which is why wake_me_up_when_session_changes_state asks for
+      # all three events and a backstop — and preserving that set is the point here.
+      # The pause-time suppression this matches carries the same exposure.
+      #
+      # Only `needs_input` is affected. `session_failed` and `session_archived` fire
+      # at their own transitions and have no deferral behind them, and a failed
+      # session can carry `paused_by: "recovery"` too (CleanupOrphanedSessionsJob
+      # sweeps those), so gating them here would strand a watcher for a real failure.
+      if event_name == "session_needs_input" && watched_session.announcement_deferred_to_recovery_sweep?
         Rails.logger.info(
           "[Trigger#fire_ao_event_immediately_if_state_matches] " \
           "Watched session #{watched_id} is in a recovery pause — leaving trigger " \

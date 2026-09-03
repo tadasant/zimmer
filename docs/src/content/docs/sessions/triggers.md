@@ -486,6 +486,13 @@ path asks the same question the `pause` callback asks,
 and leaves the watcher armed instead of firing it. A frozen category still fires at once, because no
 sweep is coming to make the announcement later.
 
+What that buys is the wake *set*, not a promise that a lone `session_needs_input` condition is
+enough. The continued session can go on to archive — which prunes every non-`session_archived`
+condition watching it — or to fail, and a recovery that keeps succeeding clears the attempt counter
+along with the rest of `Session::STALE_RETRY_METADATA_KEYS`, so the give-up branch may never be
+reached. Those outcomes are what the other two events and the `wake_me_up_later` deadline are for,
+and keeping that set intact is the whole point of not firing here.
+
 **Broadcast (unscoped) `session_needs_input` conditions are settled too.** They ride the same job, so
 a broadcast trigger no longer fires on a turn boundary either — and it inherits the 30-second delay.
 

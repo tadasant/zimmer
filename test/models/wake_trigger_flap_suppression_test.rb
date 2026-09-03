@@ -222,13 +222,16 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     run_deferred_commit_callbacks_inline
     trigger = nil
     assert_no_enqueued_jobs(only: AoEventTriggerJob) do
-      trigger = watch(@watched, "session_needs_input")
+      # reset_watcher: false so the watcher is left where trigger creation put it,
+      # which is what the last assertion below is about.
+      trigger = watch(@watched, "session_needs_input", reset_watcher: false)
     end
 
     assert Trigger.exists?(trigger.id), "the watcher must stay armed for the real event"
     assert_nil trigger.trigger_conditions.sole.reload.last_triggered_at,
       "the one-shot guard must be unspent — this wake has not happened yet"
-    assert @watcher.reload.needs_input?, "nothing has happened to the child worth waking anybody for"
+    assert @watcher.reload.waiting?,
+      "the watcher went to sleep on its wake and nothing resumed it"
   end
 
   test "the suppressed watcher is woken by the sweep it was deferred to giving up" do
