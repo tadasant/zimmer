@@ -109,14 +109,10 @@ class DatabaseRetryTest < ActiveSupport::TestCase
     )
 
     begin
-      pid = adapter.select_value("SELECT pg_backend_pid()")
-
       # Terminate that backend from another session, the way a Postgres restart or
       # an admin disconnect does: the client-side handle survives, the server-side
       # session does not.
-      ActiveRecord::Base.connection_pool.with_connection do |c|
-        c.select_value("SELECT pg_terminate_backend(#{pid.to_i})")
-      end
+      terminate_backend_of(adapter)
 
       ActiveRecord::Base.expects(:connection).never
 
@@ -170,5 +166,157 @@ class DatabaseRetryTest < ActiveSupport::TestCase
 
     assert_equal 1, attempts
     assert_empty @host.delays
+  end
+
+  # #779: a connection that dies mid-statement is the common shape of a Postgres
+  # restart, a failover or an admin disconnect, and Active Record reports it as
+  # ActiveRecord::ConnectionFailed — a *sibling* of ConnectionNotEstablished, not a
+  # descendant, so it only reaches the rescue because it is named on the list.
+  test "a connection that dies mid-statement is not a ConnectionNotEstablished" do
+    # The premise the fix rests on, asserted against the Active Record pinned in
+    # Gemfile.lock rather than taken on trust.
+    refute_kind_of ActiveRecord::ConnectionNotEstablished,
+                   ActiveRecord::ConnectionFailed.new("PQconsumeInput() FATAL: terminating connection")
+    assert_kind_of ActiveRecord::QueryAborted,
+                   ActiveRecord::ConnectionFailed.new("PQconsumeInput() FATAL: terminating connection")
+    assert_includes DatabaseRetry::RETRYABLE_EXCEPTIONS, ActiveRecord::ConnectionFailed
+  end
+
+  test "a connection that dies mid-statement is retried" do
+    ActiveRecord::Base.expects(:connection).never
+
+    attempts = 0
+    result = @host.with_db_retry do
+      attempts += 1
+      if attempts == 1
+        raise ActiveRecord::ConnectionFailed,
+              "PQconsumeInput() FATAL:  terminating connection due to administrator command"
+      end
+
+      :recovered
+    end
+
+    assert_equal :recovered, result
+    assert_equal 2, attempts
+    assert_equal [ 0.5 ], @host.delays
+  end
+
+  # The constraint the narrow class buys, and the reason the list names
+  # ConnectionFailed rather than its parent: QueryAborted also covers the timeouts,
+  # which say the database is alive and the query was merely too slow. Retrying
+  # those spends the timeout over again in-process instead of letting
+  # ApplicationJob's `retry_on ActiveRecord::StatementTimeout` back off properly.
+  [ ActiveRecord::StatementTimeout, ActiveRecord::QueryCanceled, ActiveRecord::AdapterTimeout ].each do |aborted_class|
+    test "#{aborted_class}, a QueryAborted sibling of ConnectionFailed, is still not retried" do
+      assert_kind_of ActiveRecord::QueryAborted, aborted_class.new("timed out"),
+                     "this pins the narrow class only if it really shares ConnectionFailed's parent"
+
+      attempts = 0
+      assert_raises(aborted_class) do
+        @host.with_db_retry do
+          attempts += 1
+          raise aborted_class, "timed out"
+        end
+      end
+
+      assert_equal 1, attempts, "a timeout must propagate on the first attempt"
+      assert_empty @host.delays
+    end
+  end
+
+  test "a lock wait timeout is still not retried" do
+    # LockWaitTimeout descends straight from StatementInvalid rather than through
+    # QueryAborted, so this widening could not have reached it — asserted anyway,
+    # because lock contention is handled by name elsewhere in the app (Trigger and
+    # SessionsController both rescue it) and the helper must not start absorbing it.
+    refute_kind_of ActiveRecord::QueryAborted, ActiveRecord::LockWaitTimeout.new("lock wait")
+
+    attempts = 0
+    assert_raises(ActiveRecord::LockWaitTimeout) do
+      @host.with_db_retry do
+        attempts += 1
+        raise ActiveRecord::LockWaitTimeout, "lock wait"
+      end
+    end
+
+    assert_equal 1, attempts
+    assert_empty @host.delays
+  end
+
+  test "the two retry helpers rescue exactly the same exceptions" do
+    # ControllerDatabaseRetry references this list rather than copying it. assert_same
+    # rather than assert_equal on purpose: an equal-but-separate array would mean
+    # someone reintroduced the copy, which is the drift this guards against.
+    assert_same DatabaseRetry::RETRYABLE_EXCEPTIONS,
+                ControllerDatabaseRetry::RETRYABLE_EXCEPTIONS
+  end
+
+  test "with_db_retry recovers a real terminated Postgres backend" do
+    # The end-to-end proof for #779, against a real server: kill the backend from
+    # another session, then run a statement through the helper. Attempt 1 hits the
+    # dead backend and raises ConnectionFailed; the adapter reconnects itself and
+    # attempt 2 succeeds.
+    #
+    # Standalone adapter rather than a pooled connection for the same reason as the
+    # upstream-behaviour test above: transactional fixtures pin every pool
+    # connection, and a pinned connection is deliberately unrecoverable.
+    adapter = ActiveRecord::ConnectionAdapters::PostgreSQLAdapter.new(
+      ActiveRecord::Base.connection_db_config.configuration_hash
+    )
+
+    begin
+      terminate_backend_of(adapter)
+
+      ActiveRecord::Base.expects(:connection).never
+
+      attempts = 0
+      result = @host.with_db_retry do
+        attempts += 1
+        adapter.select_value("SELECT 1").to_i
+      end
+
+      assert_equal 1, result
+      assert_equal 2, attempts, "attempt 1 should hit the dead backend, attempt 2 should succeed"
+      assert_equal [ 0.5 ], @host.delays
+    ensure
+      adapter.disconnect!
+    end
+  end
+
+  test "a connection death that outlives the budget still raises" do
+    # The other half of the mid-flight case: a failover that lasts longer than
+    # 0.5s + 1s of backoff. The helper spends its attempts and re-raises rather
+    # than returning something the caller would mistake for success.
+    attempts = 0
+    error = assert_raises(ActiveRecord::ConnectionFailed) do
+      @host.with_db_retry do
+        attempts += 1
+        raise ActiveRecord::ConnectionFailed, "PQconsumeInput() FATAL:  terminating connection"
+      end
+    end
+
+    assert_equal 3, attempts
+    assert_equal [ 0.5, 1.0 ], @host.delays
+    assert_match(/terminating connection/, error.message)
+  end
+
+  private
+
+  # `pg_terminate_backend` signals the backend and returns without waiting for it to
+  # die, so a statement issued immediately afterwards can still land on a live
+  # session. Wait for the backend to actually be gone, so "the next statement fails"
+  # is a fact rather than a race.
+  def terminate_backend_of(adapter)
+    pid = adapter.select_value("SELECT pg_backend_pid()").to_i
+
+    ActiveRecord::Base.connection_pool.with_connection do |c|
+      c.select_value("SELECT pg_terminate_backend(#{pid})")
+
+      50.times do
+        break if c.select_value("SELECT count(*) FROM pg_stat_activity WHERE pid = #{pid}").to_i.zero?
+
+        sleep 0.02
+      end
+    end
   end
 end

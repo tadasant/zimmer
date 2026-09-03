@@ -484,31 +484,47 @@ rows) — so saturating it would take thousands of broadcasts per second, and si
 produce single or double digits. If that estimate is ever wrong, the failure will be quiet. Raise
 `CABLE_DB_POOL` and `app_required_backends` together.
 
-### The database retry helpers miss most mid-flight connection deaths, and hold a thread longer when the pool is full
+### The database retry helpers hold a thread longer when the pool is full
 
 `DatabaseRetry` (`app/jobs/concerns/database_retry.rb`) and `ControllerDatabaseRetry`
 (`app/controllers/concerns/controller_database_retry.rb`) retry `PG::ConnectionBad`,
-`PG::UnableToSend`, `ActiveRecord::ConnectionNotEstablished` and `ActiveRecord::Deadlocked`. A
-connection that dies *while a statement is in flight* — a Postgres restart, a failover, an admin
-disconnect — usually raises none of those. `PostgreSQLAdapter#translate_exception`
-(`postgresql_adapter.rb:818`) turns a libpq failure into `ActiveRecord::ConnectionFailed`, which
-descends from `QueryAborted` → `StatementInvalid`, not from `ConnectionNotEstablished`, so it is not
-on the list and the block is not retried. The translation keys on the libpq message: a
-`PG::ConnectionBad` whose message does *not* end in a newline, or one matching `connection is
-closed` / `no connection to the server`, becomes `ConnectionNotEstablished` instead and *is* retried.
-So whether a given death is retried depends on the wording libpq chose.
+`PG::UnableToSend`, `ActiveRecord::ConnectionNotEstablished`, `ActiveRecord::ConnectionFailed` and
+`ActiveRecord::Deadlocked`. `ConnectionFailed` is the one covering a connection that dies *while a
+statement is in flight* — what a Postgres restart, a failover or an admin disconnect looks like from
+the caller ([#779](https://github.com/tadasant/zimmer/issues/779)). The list lives in `DatabaseRetry`;
+`ControllerDatabaseRetry` points its constant at it rather than keeping a second copy.
 
-It is mostly harmless, because the adapter itself reconnects: the *next* statement on that connection
-verifies and reconnects, so the caller after this one succeeds. What is lost is this helper's retry —
-the caller that hit the death still sees the error. Tracked in
-[#779](https://github.com/tadasant/zimmer/issues/779).
+The list stops at `ConnectionFailed` and does not climb to its parent `ActiveRecord::QueryAborted`,
+which also covers `StatementTimeout`, `QueryCanceled` and `AdapterTimeout`. Those say the database is
+alive and the query was too slow, so they must keep propagating: `ApplicationJob` has its own
+`retry_on ActiveRecord::StatementTimeout` with proper backoff, and `ControllerDatabaseRetry`'s
+give-up path *renders* a friendly 503 rather than re-raising, so a timeout on the list would be
+swallowed outright.
 
 The helpers deliberately do *not* reconnect by hand
 ([#708](https://github.com/tadasant/zimmer/issues/708)): `ActiveRecord::ConnectionTimeoutError` (the
 pool is full) inherits from `ActiveRecord::ConnectionNotEstablished` (this connection is broken), so a
 reconnect keyed on the parent class fires on exhaustion — leasing a *sticky* connection out of an
 already empty pool, and on a GoodJob thread tearing down the Postgres session holding the job's
-advisory lock.
+advisory lock. Recovery is Active Record's job anyway: the adapter verifies and reconnects a
+connection it is not confident about, so re-running the block is all the helper has to do.
+
+That last part holds only outside a *materialized* transaction. `reconnect_can_restore_state?` is
+`transaction_manager.restorable? && !@raw_connection_dirty`
+(`activerecord/lib/active_record/connection_adapters/abstract_adapter.rb`), so a block that has
+already written inside an open transaction gets no reconnect — every attempt raises again and the
+retry buys nothing but its own backoff. No caller nests that way today; the ordering to keep is
+`with_db_retry` *outside* `transaction`, as `SessionsController` does.
+
+**Retried blocks must be safe to run twice.** A connection can die after the server has made a
+`COMMIT` durable but before the acknowledgement reaches the client, and that is indistinguishable
+from a commit that never happened — so a retried write can apply twice. This is inherent to retrying
+a lost connection at all and predates `ConnectionFailed` joining the list (`PG::ConnectionBad` has
+the same property); what changed is that the common failover shape now actually reaches the retry.
+Every `with_db_retry` block today is a single idempotent-enough statement — a metadata merge, an
+`update!`, a budget record, a log insert — where a double-apply is at worst a duplicated log line.
+Keep it that way: do not wrap a non-idempotent write, or anything with an external side effect, in
+`with_db_retry`.
 
 The cost of leaving the retry in place is time. Under exhaustion each attempt blocks for the pool's
 `checkout_timeout` (unset in `config/database.yml`, so the 5s default), and all three attempts now
