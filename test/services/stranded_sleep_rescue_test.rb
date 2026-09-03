@@ -238,6 +238,56 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     assert_equal "waiting", session.reload.status
   end
 
+  # #awaiting_scheduled_wake? ignores recurring conditions on purpose — they are
+  # not per-session wake-ups — but a recurring trigger holding this session as its
+  # reuse target really will follow up into it. That session is being driven, not
+  # stranded, and waking it would barge a drumbeat already on its way.
+  test "a session a recurring trigger is driving is left alone" do
+    session = sleeping_session
+    Trigger.create!(
+      name: "Every hour",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "tick",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "interval" => 1, "unit" => "hours" } }
+      ]
+    )
+    back_date(session)
+
+    assert_equal 0, StrandedSleepRescue.sweep!.rescued
+    assert_equal "waiting", session.reload.status
+  end
+
+  # The budget is spent inside the same transaction as the claim and the enqueue,
+  # so a turn can never be enqueued without one being paid for.
+  test "the rescue budget is spent in the same write that clears the stale keys" do
+    session = sleeping_session
+
+    StrandedSleepRescue.sweep!
+
+    assert_equal 1, session.reload.metadata[StrandedSleepRescue::RESCUE_COUNT],
+      "the counter survives the STALE_RETRY_METADATA_KEYS clear it is listed in"
+  end
+
+  # Order matters: a session that armed a wake between the page read and the
+  # repair has fixed itself, and giving up on it first would abandon and alert
+  # about a healthy session.
+  test "a session that is spent its budget but has since armed a wake is left alone, not abandoned" do
+    session = sleeping_session
+    session.merge_metadata!(StrandedSleepRescue::RESCUE_COUNT => StrandedSleepRescue::MAX_RESCUES)
+    watched = other_session(status: :running)
+    arm_wake!(session, [ ao_event_condition(watched, event_name: "session_needs_input") ])
+    back_date(session)
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 0, result.abandoned
+    assert_nil session.reload.metadata[StrandedSleepRescue::ABANDONED]
+  end
+
   test "a session in a frozen category is left alone" do
     frozen = Category.create!(name: "Parked #{SecureRandom.hex(4)}", is_frozen: true)
     session = sleeping_session(category: frozen)

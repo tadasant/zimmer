@@ -166,9 +166,11 @@ class StrandedSleepRescue
         # here would deliver a follow-up prompt into a conversation that does not
         # exist.
         .where.not(session_id: [ nil, "" ])
-        # Quiet by `updated_at`, which is also the cooldown: recording a rescue
-        # goes through merge_metadata!, so a rescued session is out of this
-        # population for another GRACE whether or not anything else moves.
+        # Quiet by `updated_at`, which is also the cooldown. A rescue leaves the
+        # population by status anyway — the session goes to `running` — but every
+        # write this sweep makes to a session (the rescue's metadata clear, the
+        # abandon marker) stamps `updated_at` too, so a session that comes back to
+        # `waiting` is out of scope for another GRACE regardless.
         .where(updated_at: ...cutoff)
         # Something is already on its way to this session.
         .where("NOT EXISTS (SELECT 1 FROM enqueued_messages WHERE enqueued_messages.session_id = " \
@@ -252,9 +254,11 @@ class StrandedSleepRescue
         examined += page.size
         cursor = [ page.last.updated_at, page.last.id ]
 
-        sleeping = Session.ids_awaiting_scheduled_wake(page.map(&:id))
+        ids = page.map(&:id)
+        sleeping = Session.ids_awaiting_scheduled_wake(ids)
+        driven = driven_by_recurring_trigger_ids(ids)
         page.each do |session|
-          next if sleeping.include?(session.id)
+          next if sleeping.include?(session.id) || driven.include?(session.id)
 
           found << session
           break if found.size >= MAX_ACTIONS_PER_SWEEP
@@ -262,6 +266,42 @@ class StrandedSleepRescue
       end
 
       [ found, examined ]
+    end
+
+    # Of +session_ids+, those a RECURRING trigger is going to follow up into.
+    #
+    # Session#awaiting_scheduled_wake? deliberately ignores recurring conditions —
+    # they are not per-session wake-ups — but a recurring trigger holding this
+    # session as its reuse target really will deliver into it on its own schedule.
+    # A heartbeat set with `set_heartbeat`, or any recurring trigger a user
+    # pointed at a session, is a session being DRIVEN rather than a session
+    # stranded, and resuming it here would barge a drumbeat that is already on its
+    # way.
+    #
+    # Asked in Ruby rather than SQL because "recurring" is a property of the
+    # condition's JSON configuration (a schedule with no `scheduled_at`, a Slack
+    # or GitHub feed, a broadcast `ao_event`) rather than of a column — but asked
+    # once per PAGE rather than once per session, so it stays a fixed query cost.
+    #
+    # Fails safe in the same direction as everything else here: an unreadable
+    # trigger table means "leave them alone", which costs a pass.
+    #
+    # @return [Set<Integer>]
+    def driven_by_recurring_trigger_ids(session_ids)
+      return Set.new if session_ids.empty?
+
+      TriggerCondition
+        .joins(:trigger)
+        .includes(:trigger)
+        .where(triggers: { last_session_id: session_ids, reuse_session: true, status: "enabled" })
+        .reject { |condition| condition.one_time_schedule? || condition.session_scoped_ao_event? }
+        .map { |condition| condition.trigger.last_session_id }
+        .to_set
+    rescue ActiveRecord::ActiveRecordError => e
+      Rails.logger.error(
+        "[StrandedSleepRescue] Could not read recurring triggers for #{session_ids.size} session(s): #{e.message}"
+      )
+      session_ids.to_set
     end
 
     # One page of candidates strictly after +cursor+, a `[updated_at, id]` pair.
@@ -296,22 +336,33 @@ class StrandedSleepRescue
       session.reload
       count = (session.metadata || {})[RESCUE_COUNT].to_i
 
-      return give_up!(session, logger, count) if count >= MAX_RESCUES
-
-      # Re-ask under the reload: the whole point of the sweep is that this
-      # population is invisible, so a wake arriving between the read and here is
-      # exactly the case that must not be trampled.
-      if session.awaiting_scheduled_wake?
-        logger.info("Left a session alone — it acquired a wake", session_id: session.id)
+      # Re-ask under the reload, and BEFORE consulting the budget — the order is
+      # load-bearing. A session that armed a wake between the page read and here
+      # is not stranded at all, and giving up on it first would stamp it
+      # `stranded_sleep_abandoned`, write an error to its timeline and alert,
+      # about a session that had just fixed itself.
+      if session.awaiting_scheduled_wake? ||
+          driven_by_recurring_trigger_ids([ session.id ]).include?(session.id)
+        logger.info("Left a session alone — it is not stranded after all", session_id: session.id)
         return :refused
       end
+
+      return give_up!(session, logger, count) if count >= MAX_RESCUES
 
       outcome = nil
       ActiveRecord::Base.transaction do
         outcome = session.claim_system_recovery_turn! do
+          # The budget is spent in the SAME write that clears the stale keys, and
+          # inside the same transaction as the enqueue. Incrementing afterwards
+          # left a window where a crash — or a raise from the bookkeeping itself —
+          # enqueued a turn without spending anything, which makes MAX_RESCUES a
+          # suggestion rather than a bound. RESCUE_COUNT is itself in
+          # STALE_RETRY_METADATA_KEYS, so it has to be re-added after the except.
           session.update!(
             running_job_id: nil,
-            metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+            metadata: (session.metadata || {})
+              .except(*Session::STALE_RETRY_METADATA_KEYS)
+              .merge(RESCUE_COUNT => count + 1)
           )
         end
 
@@ -341,9 +392,6 @@ class StrandedSleepRescue
           session_id: session.id, outcome: outcome)
         return :refused
       end
-
-      # Written AFTER the claim, so the budget only counts turns actually enqueued.
-      session.merge_metadata!(RESCUE_COUNT => count + 1)
 
       logger.warn("Resumed a session asleep on a wake that could never fire",
         session_id: session.id, rescue_attempt: count + 1)
