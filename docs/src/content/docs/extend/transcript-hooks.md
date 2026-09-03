@@ -98,11 +98,19 @@ than becoming four commands, one of which is the bare literal.
 
 The create is then matched **anywhere** in what is left, rather than at the front of the segment.
 A create sits behind all sorts of things in command position — `cd ... &&`, `GH_TOKEN=x`,
-`timeout 120`, `until ... ; do`, `sudo -E`, `xargs`, the `bash -lc` wrapper — and an anchor would
-drop every one of them it did not enumerate. Quoting is likewise read one line at a time, and a line
-that ends inside an unclosed quote falls back to the crude split. Both of those are the same bet: a
-heredoc body or a shell comment carrying an apostrophe or two must not be able to swallow the real
-`gh pr create` on the line below it. Recording too little is the worse failure, and it is silent.
+`timeout 120`, `until ... ; do`, `sudo -E`, `xargs` — and an anchor would drop every one of them it
+did not enumerate. Quoting is likewise read one line at a time, and a line that ends inside an
+unclosed quote falls back to the crude split. Both of those are the same bet: a heredoc body or a
+shell comment carrying an apostrophe or two must not be able to swallow the real `gh pr create` on
+the line below it. Recording too little is the worse failure, and it is silent.
+
+One quoted string is not data: the script a shell is handed. `bash -lc "cd /repo && gh pr create"` —
+the shape Codex writes in front of every command it runs, and one an agent writes by hand — carries
+*more commands*, so `ShellSegments` splits it again in place of the wrapper wherever the wrapper
+appears, including behind a `timeout` or an `xargs -I{}`. Keeping it whole would be wrong in both
+directions at once: the create inside it would be blanked as an argument, and `bash -lc "gh api
+.../comments --paginate && rm -f x"` would read as a single command whose `rm -f` supplies the write
+flag for the read in front of it.
 
 The claimed path is what catches creation routes that are not a shell command at all: a wrapper
 script, an MCP tool, the GitHub web UI. It requires a creation phrase adjacent to the URL — an inflected verb

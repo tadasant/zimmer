@@ -169,9 +169,9 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "records a PR opened by a gh pr create inside a quoted shell wrapper" do
-    # `sh -c "..."` is the shape ShellSegments strips the front of, opening quote
-    # included. What trails is a script, so the create in it is run rather than
-    # quoted.
+    # What a shell is handed is a script, not data. ShellSegments splits it in
+    # place of the wrapper, so the create is a command of its own rather than
+    # something the wrapper quoted.
     run_hook claude_pr_create(
       "https://github.com/owner/repo/pull/55",
       command: %q(sh -c "cd /home/rails/clones/repo && gh pr create --fill")
@@ -256,6 +256,34 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     )
 
     assert_equal [ "https://github.com/owner/repo/pull/175" ], tracked_urls
+  end
+
+  test "records a PR opened by a REST API POST inside a quoted shell wrapper" do
+    # What a shell is handed is a script, not data: the `cd` in front of the create
+    # is a command of its own, and the create is read as one too.
+    run_hook(
+      claude_shell_call(
+        id: "toolu_rest",
+        command: %q(bash -lc "cd /repo && gh api repos/owner/repo/pulls -X POST -f title=T")
+      ),
+      claude_tool_result(id: "toolu_rest", content: "https://github.com/owner/repo/pull/176")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/176" ], tracked_urls
+  end
+
+  test "ignores the PR list a quoted shell wrapper reads next to an unrelated write" do
+    # The same wrapper in the other direction: read as one command, the comment
+    # POST beside the list vouches for every PR the list printed (#214).
+    run_hook(
+      claude_shell_call(
+        id: "toolu_list",
+        command: %q(bash -lc "gh api repos/owner/repo/pulls --paginate && gh api repos/owner/repo/issues/1/comments -X POST -f body=x")
+      ),
+      claude_tool_result(id: "toolu_list", content: "https://github.com/owner/repo/pull/1\nhttps://github.com/owner/repo/pull/2")
+    )
+
+    assert_nil tracked_urls
   end
 
   test "records a PR opened by a REST API POST in every method-flag spelling" do

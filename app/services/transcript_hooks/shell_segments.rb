@@ -54,10 +54,9 @@ module TranscriptHooks::ShellSegments
   PLAIN_RUN_PATTERN = /[^\\"';|&\n]+/
 
   # A quoted string, and only a *closed* one. What a command quotes is what it was
-  # handed rather than what it runs, so #unquoted takes these out — but an
-  # unterminated quote is left alone, because that is what a stripped wrapper
-  # leaves behind: `bash -lc "cd x && gh pr create"` arrives with its opening quote
-  # already gone (SHELL_WRAPPER_PATTERN), and what trails is a script, not data.
+  # handed rather than what it runs, so #unquoted takes these out — but a quote
+  # with no partner is not a span, and blanking to the end of the line on the
+  # strength of one would delete a command over a stray apostrophe.
   QUOTED_SPAN_PATTERN = /"(?:\\.|[^"\\])*"|'[^']*'/m
 
   # A backslash-newline is one command wrapped over several lines, so it is folded
@@ -76,11 +75,17 @@ module TranscriptHooks::ShellSegments
   # `GH_TOKEN=x gh api ...` still starts with `gh api`.
   ENV_PREFIX_PATTERN = /\A(?:\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/
 
-  # `bash -lc <script>`, `sh -c <script>`: Codex records a shell call as an argv
-  # array which the parser joins back into one string, so this wrapper is the front
-  # of every Codex command. Stripped so what the script runs sits at the front,
-  # exactly as it does in a Claude `Bash` command.
-  SHELL_WRAPPER_PATTERN = %r{\A(?:\S*/)?(?:ba|da|z|k)?sh\s+-[a-z]*c\s+["']?}
+  # A command handed a *script* rather than data: a shell's `-c` — which is the
+  # front of every joined Codex argv — and `eval`. What follows is more commands,
+  # so it is split again rather than kept whole. `bash -lc "gh api A --paginate &&
+  # rm -f x"` is two commands, and reading it as one lets `rm`'s flags vouch for
+  # the read in front of them, which is #214 with the whole thread's comments.
+  #
+  # The shell form is recognised wherever it appears, because a wrapper sits behind
+  # the same things any other command does — `timeout 120 bash -lc "..."`,
+  # `xargs -I{} sh -c "..."`. `eval` only in command position, since it is also an
+  # ordinary English word that could sit in an argument.
+  WRAPPED_SCRIPT_PATTERN = %r{(?:\A\s*eval|(?:\A|\s)(?:\S*/)?(?:ba|da|z|k)?sh\s+-[a-z]*c)\s(?<script>.+)\z}m
 
   # The keyword of a compound statement, which sits in front of the command it
   # runs on the same line: `for i in 1 2 3; do gh api ...`, `if ...; then gh api`.
@@ -91,41 +96,86 @@ module TranscriptHooks::ShellSegments
   # The commands in +command+, each normalized so that the invocation it runs is at
   # the front of the string and callers can anchor their patterns there. The
   # prefixes are stripped in the order they nest — a compound-statement keyword
-  # around a capture around a wrapper around an environment assignment — and the
-  # environment strip runs on both sides of the wrapper, since either can come
-  # first.
+  # around a capture around an environment assignment — and a command that was
+  # handed a script runs that script through the whole of this again.
   #
   # @param command [String]
   # @return [Array<String>]
   def shell_segments(command)
-    script = command.to_s.gsub(LINE_CONTINUATION_PATTERN, " ")
-
-    script.split("\n").flat_map { |line| split_line(line) }.filter_map do |segment|
-      normalized = segment.sub(KEYWORD_PREFIX_PATTERN, "")
-                          .sub(CAPTURE_PREFIX_PATTERN, "")
-                          .sub(ENV_PREFIX_PATTERN, "")
-                          .sub(SHELL_WRAPPER_PATTERN, "")
-                          .sub(ENV_PREFIX_PATTERN, "")
-                          .strip
-
-      normalized unless normalized.empty?
-    end
+    split_script(command.to_s.gsub(LINE_CONTINUATION_PATTERN, " "))
   end
 
   # +segment+ with every closed quoted string blanked out: what the command runs,
   # with what it was handed removed. `grep -n "gh pr create" hook.rb` runs a grep
   # and nothing else, however much its argument reads like an invocation.
   #
-  # Blanked rather than deleted, so that neighbouring words cannot be run together
-  # into something neither of them said.
+  # Blanked to spaces rather than deleted, so that neighbouring words cannot be run
+  # together into something neither of them said — and so that a position in the
+  # result is a position in +segment+, which is how a wrapper is told from the
+  # mention of one.
   #
   # @param segment [String]
   # @return [String]
   def unquoted(segment)
-    segment.gsub(QUOTED_SPAN_PATTERN, " ")
+    segment.to_s.gsub(QUOTED_SPAN_PATTERN) { |span| " " * span.length }
   end
 
   private
+
+  # +script+ as the commands it runs: split into lines, each line into segments,
+  # each segment normalized — and where a segment hands a script to a shell, that
+  # script split the same way in place of it.
+  #
+  # The recursion terminates on its own: a wrapped script is what follows the
+  # wrapper, so each round is strictly shorter than the one before it.
+  #
+  # @param script [String]
+  # @return [Array<String>]
+  def split_script(script)
+    script.split("\n").flat_map { |line| split_line(line) }.flat_map do |segment|
+      normalized = segment.sub(KEYWORD_PREFIX_PATTERN, "")
+                          .sub(CAPTURE_PREFIX_PATTERN, "")
+                          .sub(ENV_PREFIX_PATTERN, "")
+                          .strip
+
+      if (wrapped = wrapped_script(normalized))
+        split_script(wrapped)
+      elsif normalized.empty?
+        []
+      else
+        [ normalized ]
+      end
+    end
+  end
+
+  # The script +segment+ hands a shell to run, or nil if it hands one nothing.
+  #
+  # Located in the #unquoted view so that a wrapper *named* inside a quoted string
+  # is not mistaken for one being run: `echo "bash -c gh pr create"` runs an echo.
+  # That view preserves offsets, so where the script starts there is where it
+  # starts here.
+  #
+  # @param segment [String]
+  # @return [String, nil]
+  def wrapped_script(segment)
+    match = unquoted(segment).match(WRAPPED_SCRIPT_PATTERN)
+    return nil unless match
+
+    unwrap(segment[match.begin(:script)..].to_s)
+  end
+
+  # A wrapped script without the quotes that held it, which are the wrapper's
+  # syntax rather than the script's.
+  #
+  # @param script [String]
+  # @return [String]
+  def unwrap(script)
+    stripped = script.strip
+    quote = QUOTE_CHARACTERS.find { |candidate| stripped.start_with?(candidate) }
+    return stripped unless quote
+
+    stripped.delete_prefix(quote).delete_suffix(quote)
+  end
 
   # One line of a script, split on the separators a shell would act on and skipping
   # the ones it would read as data: a backslash-escaped character, and anything
