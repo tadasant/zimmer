@@ -383,7 +383,8 @@ module Mcp
 
         follow_up_result(
           session.reload,
-          "Message queued (session is running). It will be sent when the agent completes its current task."
+          "Message queued (session is running). It will be sent when the agent completes its current task.",
+          queued_message: enqueued_message
         )
       end
 
@@ -1292,7 +1293,11 @@ module Mcp
 
       # --- Formatting -----------------------------------------------------------
 
-      def follow_up_result(session, message)
+      # `queued_message` is the caller's own message when this branch QUEUED it,
+      # and nil when it delivered it instead — the queue-depth line reads
+      # differently either way, and getting that backwards would misinform the
+      # caller in exactly the way #698 exists to stop.
+      def follow_up_result(session, message, queued_message: nil)
         heading = message.downcase.include?("immediately") ? "Follow-up Sent Immediately" : "Follow-up Sent"
 
         lines = [
@@ -1304,6 +1309,11 @@ module Mcp
           "- **Message:** #{message}"
         ]
         lines << "- **Job ID:** #{session.running_job_id}" if session.running_job_id.present?
+        # The depth this call left behind, so a caller that just became fourth in
+        # line finds out at the moment it happens rather than never. Same reason
+        # `get_session` grew a queued-messages section (#698): an unread queue is
+        # how four sessions each restate the message above it.
+        lines.concat(EnqueuedMessageSections.queue_depth_lines(session, queued_message: queued_message))
         lines.join("\n")
       end
 

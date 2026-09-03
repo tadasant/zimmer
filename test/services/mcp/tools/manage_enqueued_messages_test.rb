@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "test_helper"
+# This file stubs Sessions::InterruptService. Without the require it only passes
+# when some other file in the same run happens to have loaded mocha first.
+require "mocha/minitest"
 
 class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
   setup do
@@ -19,6 +22,19 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
     assert_includes output, "## Message Queued"
     assert_includes output, "- **Position:** 2"
     assert_includes output, "- **Status:** pending"
+  end
+
+  test "create reports the pending depth its message landed in" do
+    @session.enqueued_messages.create!(content: "Ahead of you", position: 1, status: "pending")
+    # A retired row holds a position but is not going to be delivered, which is
+    # why the receipt's position line is not a depth.
+    @session.enqueued_messages.create!(content: "Never delivered", position: 2, status: "undelivered")
+
+    output = @tool.call("session_id" => @session.id, "action" => "create", "content" => "Third position, second in line")
+
+    assert_includes output, "- **Position:** 3"
+    assert_includes output, "- **Queue depth:** 2 messages now pending delivery to this session, yours last at position 3."
+    assert_includes output, "so the 1 ahead of yours is read first"
   end
 
   test "create without content raises" do

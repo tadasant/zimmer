@@ -21,6 +21,139 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     refute_includes output, "I've completed the task for you."
   end
 
+  test "reports an empty queue as an explicit answer rather than an absent section" do
+    output = @tool.call("id" => sessions(:running).id)
+
+    assert_includes output, "### Queued Messages"
+    assert_includes output, "Nothing is queued for this session"
+  end
+
+  test "reports pending queued messages with a count and truncated previews" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Rebase onto main first", position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "b" * 400, position: 2, status: "pending")
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "### Queued Messages"
+    assert_includes output, "- **Pending:** 2 messages queued for this session and not yet delivered."
+    assert_includes output, "**Position 1**"
+    assert_includes output, "Rebase onto main first"
+    assert_includes output, "**Position 2**"
+    # Truncated hard: the 120-char cut, not the 200-char one manage_enqueued_messages uses.
+    assert_includes output, "#{'b' * 120}..."
+    assert_not_includes output, "b" * 121
+    assert_includes output, "anything you send now lands BEHIND them"
+  end
+
+  test "singularizes a one-message queue" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Only one", position: 1, status: "pending")
+
+    assert_includes @tool.call("id" => session.id), "- **Pending:** 1 message queued"
+  end
+
+  test "counts only pending messages, not delivered or retired ones" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Still waiting", position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "Being delivered", position: 2, status: "processing")
+    session.enqueued_messages.create!(content: "Never delivered", position: 3, status: "undelivered")
+    session.enqueued_messages.create!(content: "Already delivered", position: 4, status: "sent")
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Pending:** 1 message queued"
+    assert_includes output, "Still waiting"
+    assert_not_includes output, "Being delivered"
+    assert_not_includes output, "Never delivered"
+    assert_not_includes output, "Already delivered"
+  end
+
+  test "caps the previews and counts the rest" do
+    session = sessions(:running)
+    8.times { |i| session.enqueued_messages.create!(content: "message #{i}", position: i + 1, status: "pending") }
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Pending:** 8 messages queued"
+    assert_includes output, "**Position 5**"
+    assert_not_includes output, "**Position 6**"
+    assert_includes output, "…and 3 more, not shown."
+  end
+
+  test "the queued-messages section stays small even with a full, long queue" do
+    session = sessions(:running)
+    25.times { |i| session.enqueued_messages.create!(content: "x" * 5_000, position: i + 1, status: "pending") }
+
+    output = @tool.call("id" => session.id)
+    section = output[/### Queued Messages.*?(?=\n### )/m]
+
+    assert section.present?
+    assert_operator section.bytesize, :<, 2_000, "queued-messages section grew unbounded: #{section.bytesize} bytes"
+  end
+
+  test "the preview cut keeps exactly the limit and only then adds an ellipsis" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "a" * 120, position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "b" * 121, position: 2, status: "pending")
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "#{'a' * 120}\n"
+    assert_not_includes output, "#{'a' * 120}..."
+    assert_includes output, "#{'b' * 120}..."
+    assert_not_includes output, "b" * 121
+  end
+
+  # The cut is in CHARACTERS, so multibyte content is never split mid-codepoint
+  # — and the section is still bounded, just by ~4 bytes per character rather
+  # than one. This is the case the ASCII bound above does not cover.
+  test "multibyte queued content is cut on characters and stays bounded" do
+    session = sessions(:running)
+    5.times { |i| session.enqueued_messages.create!(content: "日本語" * 1_000, position: i + 1, status: "pending") }
+
+    output = @tool.call("id" => session.id)
+    section = output[/### Queued Messages.*?(?=\n### )/m]
+
+    assert section.valid_encoding?
+    assert_includes section, "#{'日本語' * 40}..."
+    assert_operator section.bytesize, :<, 4_000, "multibyte section grew unbounded: #{section.bytesize} bytes"
+  end
+
+  test "a newline in queued content cannot forge a second bullet" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(
+      content: "innocent\n- **Pending:** 99 messages queued for this session",
+      position: 1,
+      status: "pending"
+    )
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Pending:** 1 message queued"
+    # The forged text survives as READABLE text inside the preview bullet — what
+    # it must not do is start a bullet of its own.
+    assert_not_includes output.lines.map(&:chomp), "- **Pending:** 99 messages queued for this session"
+    assert_includes output, "innocent - **Pending:** 99 messages queued for this session"
+  end
+
+  test "the queued-messages section costs a bounded number of queries" do
+    session = sessions(:running)
+    6.times { |i| session.enqueued_messages.create!(content: "message #{i}", position: i + 1, status: "pending") }
+
+    queries = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      queries << payload[:sql] if payload[:sql]&.include?("enqueued_messages")
+    end
+    begin
+      @tool.call("id" => session.id)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    assert_equal 2, queries.size, "expected one COUNT and one LIMITed select, got:\n#{queries.join("\n")}"
+  end
+
   test "include_transcript inlines the raw transcript and drops the file hint" do
     session = sessions(:archived)
 
