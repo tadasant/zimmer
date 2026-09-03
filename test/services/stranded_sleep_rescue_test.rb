@@ -96,7 +96,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     end
 
     assert_equal 1, result.rescued
-    assert_equal 1, result.stranded
+    assert_equal 1, result.found
     assert_equal "running", session.reload.status
     assert_equal 1, session.metadata[StrandedSleepRescue::RESCUE_COUNT]
   end
@@ -151,7 +151,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     result = StrandedSleepRescue.sweep!
 
     assert_equal 0, result.rescued
-    assert_equal 0, result.stranded
+    assert_equal 0, result.found
     assert_equal "waiting", session.reload.status
   end
 
@@ -359,23 +359,97 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     session.merge_metadata!(StrandedSleepRescue::ABANDONED => Time.current.iso8601)
     back_date(session)
 
-    assert_equal 0, StrandedSleepRescue.sweep!.stranded
+    assert_equal 0, StrandedSleepRescue.sweep!.found
   end
 
-  test "one pass acts on at most MAX_ACTIONS_PER_SWEEP sessions but counts them all" do
+  # The pass stops paging as soon as it has enough to act on, so `found` reports
+  # what it acted on rather than the size of the population — see the Sweep
+  # struct's own note on why one number cannot honestly be both.
+  test "one pass acts on at most MAX_ACTIONS_PER_SWEEP sessions" do
     (StrandedSleepRescue::MAX_ACTIONS_PER_SWEEP + 2).times { sleeping_session }
 
     result = StrandedSleepRescue.sweep!
 
     assert_equal StrandedSleepRescue::MAX_ACTIONS_PER_SWEEP, result.rescued
-    assert_equal StrandedSleepRescue::MAX_ACTIONS_PER_SWEEP + 2, result.stranded
+    assert_equal StrandedSleepRescue::MAX_ACTIONS_PER_SWEEP, result.found
+    assert_operator result.examined, :>=, StrandedSleepRescue::MAX_ACTIONS_PER_SWEEP
+  end
+
+  test "the leftovers from a capped pass are picked up by the next one" do
+    (StrandedSleepRescue::MAX_ACTIONS_PER_SWEEP + 2).times { sleeping_session }
+
+    assert_equal StrandedSleepRescue::MAX_ACTIONS_PER_SWEEP, StrandedSleepRescue.sweep!.rescued
+    assert_equal 2, StrandedSleepRescue.sweep!.rescued,
+      "the sessions the cap left behind must not be forgotten"
+  end
+
+  # The starvation the paging exists to prevent. A legitimately sleeping session
+  # does not advance `updated_at` while it sleeps, so a wake set days out sits at
+  # the head of an oldest-first ordering for days. Filtering fireability after a
+  # single LIMIT would let a page-full of them hide every stranded session behind
+  # them — permanently, and while logging that it found none.
+  test "a page full of legitimate sleepers does not hide a stranded session behind them" do
+    watched = other_session(status: :running)
+    (StrandedSleepRescue::PAGE_SIZE + 5).times do
+      sleeper = sleeping_session(age: 30.days)
+      arm_wake!(sleeper, [ ao_event_condition(watched, event_name: "session_needs_input") ])
+      back_date(sleeper, age: 30.days)
+    end
+
+    # Newer than every one of them, so it sorts last and is only reached by paging.
+    stranded = sleeping_session
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 1, result.rescued
+    assert_equal "running", stranded.reload.status
+  end
+
+  # page_after's cursor is a (updated_at, id) PAIR because updated_at alone is not
+  # unique: a page boundary landing inside a run of equal timestamps would either
+  # skip the rest of the run or loop over it forever. The starvation test above
+  # gives every session a distinct microsecond timestamp, so it never exercises
+  # this — the run of identical ones does.
+  test "a run of identical updated_at values longer than a page does not skip or loop" do
+    watched = other_session(status: :running)
+    sleepers = (StrandedSleepRescue::PAGE_SIZE + 5).times.map do
+      sleeper = sleeping_session(age: 30.days)
+      arm_wake!(sleeper, [ ao_event_condition(watched, event_name: "session_needs_input") ])
+      sleeper
+    end
+    stranded = sleeping_session(age: 30.days)
+
+    # Every candidate carries the SAME updated_at, so the ordering is decided
+    # entirely by the id half of the cursor.
+    same_moment = 30.days.ago
+    Session.where(id: sleepers.map(&:id) + [ stranded.id ]).update_all(updated_at: same_moment)
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 1, result.rescued
+    assert_equal "running", stranded.reload.status
+  end
+
+  # A rescue that raises rolls its budget increment back with the transaction, so
+  # without a cooldown the session neither advances toward MAX_RESCUES nor leaves
+  # the population — it holds one of the pass's five action slots forever.
+  test "a session the sweep could not rescue is cooled down rather than retried every pass" do
+    session = sleeping_session
+    Session.any_instance.stubs(:claim_system_recovery_turn!).raises(RuntimeError, "boom")
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 0, result.rescued
+    assert_equal 1, result.found
+    assert_operator session.reload.updated_at, :>, StrandedSleepRescue::GRACE.ago,
+      "the failed session must fall out of the candidate set for a GRACE"
   end
 
   test "an archived session is never resumed" do
     session = sleeping_session
     Session.where(id: session.id).update_all(status: Session.statuses[:archived])
 
-    assert_equal 0, StrandedSleepRescue.sweep!.stranded
+    assert_equal 0, StrandedSleepRescue.sweep!.found
   end
 
   test "the sweep never raises" do
