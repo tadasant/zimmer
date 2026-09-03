@@ -41,8 +41,8 @@ class XOauthCredential < ApplicationRecord
   # fall back to Net::HTTP's 60-second default, and a token endpoint that
   # accepts the connection and then goes silent holds the caller's thread for a
   # full minute — a GoodJob `default`-queue thread (RefreshXOauthTokensJob,
-  # unattended from cron), a session-prep thread (XOauthTokenVendor), or a Puma
-  # thread (XOauthBootstrap, inside a web request). Bounding it is also what
+  # unattended from cron), a session-prep thread (XOauthTokenVendor), or the
+  # thread running `x_oauth:complete` (XOauthBootstrap). Bounding it is also what
   # makes RefreshXOauthTokensJob's Net::OpenTimeout / Net::ReadTimeout
   # classifications reachable rather than dead code.
   #
@@ -52,7 +52,7 @@ class XOauthCredential < ApplicationRecord
   # by neither this value nor the default; only an overall deadline would catch
   # that, and no caller here has one.
   #
-  # 10s is the read bound ClaudeAccount uses (claude_account.rb:732, :1647) and
+  # 10s is the read bound ClaudeAccount uses on its own token refreshes, and
   # is generous against X's token endpoint, which answers in well under a second
   # normally — a slow-but-working refresh is not turned into a retry loop. The
   # connect half takes the same value rather than ClaudeAccount's tighter 5s,
