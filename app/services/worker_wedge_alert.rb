@@ -4,10 +4,27 @@
 # #eng-alerts.
 #
 # The watchdog (scripts/worker-watchdog.sh, installed as a systemd timer by
-# scripts/install-worker-watchdog.sh) detects the sysbox wedge from issue #502: the
-# worker container reports `running` while every `docker exec` into it fails, so it
-# runs no jobs and no agent sessions while looking perfectly healthy. It hands the
-# incident to this service over `docker exec <web> bin/rails zimmer:worker_wedge_alert`.
+# scripts/install-worker-watchdog.sh) detects a container Docker still reports as
+# `running` while every `docker exec` into it fails. That is the *signature* of the
+# sysbox wedge from issue #502, and it is also all the signature establishes: the
+# cause and the impact are separate questions the payload answers separately.
+# It hands the incident to this service over
+# `docker exec <web> bin/rails zimmer:worker_wedge_alert`.
+#
+# WHAT THIS PAGE MAY CLAIM
+# ------------------------
+# Only what the payload measured. Cause comes from the cgroup's `oom_kill` counter and
+# the container's `OOMKilled` flag; impact comes from the live-process census; and each
+# says "unknown" rather than guessing when its evidence is missing or unread.
+#
+# Both halves matter because both were got wrong (issue #774). On 2026-09-02 two hosts
+# wedged twelve minutes apart with `OOMKilled=false`, `oom_kill=0` and five live workload
+# processes each, on memory limits 5x apart -- and the page called it #502's cgroup OOM
+# and called the worker idle, while production's job queue went on dequeuing throughout.
+# `docker exec` sets up a *new* process in the container's namespaces, so its failure is
+# a statement about starting processes, not about the ones already running. The census is
+# the only field here that speaks to impact, and a census that could not be taken is not
+# a census that came back empty.
 #
 # WHY THE ALERT ARRIVES THIS WAY
 # ------------------------------
@@ -30,11 +47,13 @@
 class WorkerWedgeAlert
   SOURCE = "zimmer-worker-watchdog"
 
-  # AlertService caps the details section at 2800 characters. These bound the two
-  # fields that can be long (the OCI runtime error, and the recovery step list) so the
-  # framing around them can never be squeezed out.
-  MAX_ERROR_CHARS = 600
-  MAX_STEPS_CHARS = 700
+  # AlertService caps the details section at 2800 characters and truncates from the END,
+  # which is where the runbook link is. These bound the two fields that can be long (the
+  # OCI runtime error, and the recovery step list) so the framing around them can never
+  # be squeezed out -- including the longest framing, which is a live census explaining
+  # why a failed `docker exec` proves nothing. A test pins that worst case.
+  MAX_ERROR_CHARS = 500
+  MAX_STEPS_CHARS = 600
 
   # An unparseable payload is quoted back verbatim, bounded, so whoever reads the page
   # can see what the watchdog actually sent.
@@ -52,6 +71,7 @@ class WorkerWedgeAlert
   }.freeze
 
   RUNBOOK = "https://docs.zimmer.tadasant.com/operate/nested-docker/#when-the-worker-wedges"
+  ISSUE_502 = "<https://github.com/tadasant/zimmer/issues/502|#502>"
 
   # @param payload [String] the watchdog's incident JSON, read from stdin
   # @return [Boolean] whatever AlertService#raise_alert returns
@@ -122,9 +142,9 @@ class WorkerWedgeAlert
     return paused_details if paused?
 
     lines = [
-      "The worker container reports `running` while `docker exec` into it fails, so it is " \
-      "running no jobs and no agent sessions. This is the sysbox cgroup-OOM wedge from " \
-      "<https://github.com/tadasant/zimmer/issues/502|#502>.",
+      impact_sentence,
+      "",
+      cause_sentence,
       "",
       "*Host:* #{host}",
       "*Container:* #{container["name"].presence || "?"} (`#{container["id"].presence || "?"}`)" \
@@ -135,8 +155,7 @@ class WorkerWedgeAlert
       "#{", limit #{human_bytes(container["memory_limit_bytes"])}" if container["memory_limit_bytes"].to_i.positive?}",
       "*Probe:* #{probe["consecutive_failures"] || "?"} consecutive `docker exec` failures " \
       "(#{probe["timeout_seconds"] || "?"}s timeout)",
-      "*Cgroup:* #{cgroup["workload_process_count"] || "?"} live workload processes " \
-      "(#{cgroup["process_count"] || "?"} total), oom_kill=#{cgroup["oom_kills"] || "?"}",
+      "*Cgroup:* #{census_summary}, oom_kill=#{oom_kill_summary}",
       "*Recovery:* #{recovery_description}"
     ]
 
@@ -152,8 +171,7 @@ class WorkerWedgeAlert
 
     if unresolved?
       lines << ""
-      lines << "This one is not over: the worker is still not running work. Recovery ladder and " \
-               "the manual last rung (`docker rm` plus a redeploy) are in the runbook: #{RUNBOOK}"
+      lines << unresolved_sentence
     end
 
     lines.join("\n")
@@ -202,9 +220,121 @@ class WorkerWedgeAlert
 
   # `restarted` is the only outcome that means nobody has to do anything. Everything
   # else -- including an outcome this class does not recognise, and a missing one --
-  # leaves the worker not running work, so it must fail towards telling someone.
+  # leaves the container unexecable, so it must fail towards telling someone. It says
+  # nothing about whether work is still running: that is `workload_census`'s answer,
+  # and the sentence below defers to it.
   def unresolved?
     recovery["outcome"].to_s != "restarted"
+  end
+
+  # WHAT WEDGED IT. The signature the watchdog triggers on -- running container, failing
+  # exec -- is shared by #502's cgroup OOM and by whatever produced the 2026-09-02
+  # firings, which carried no OOM at all. So read the OOM fields and say only what they
+  # support. Getting this branch backwards would under-state a real #502 wedge, which is
+  # why it is pinned by tests rather than by a careful read.
+  def cause_sentence
+    case oom_evidence
+    when :present
+      "An OOM kill is recorded against the container or its cgroup, so this is the sysbox " \
+      "cgroup-OOM wedge from #{ISSUE_502}."
+    when :absent
+      "The cgroup's `oom_kill` counter is 0, so no OOM kill landed in it: this is *not* the " \
+      "cgroup-OOM wedge from #{ISSUE_502} and its cause is unknown. #502's ladder may still " \
+      "clear it -- clearing it is not a diagnosis."
+    else
+      "The cgroup's `oom_kill` counter is not in this payload, so whether this is the " \
+      "cgroup-OOM wedge from #{ISSUE_502} is unknown -- a kill inside the cgroup does not " \
+      "have to set `OOMKilled` on the container."
+    end
+  end
+
+  # WHAT IT COST. `docker exec` failing is a statement about starting a new process, not
+  # about the ones already running, so the live-process census is the only thing here that
+  # can speak to impact.
+  def impact_sentence
+    opening = "The worker container reports `running` while `docker exec` into it fails"
+
+    case workload_census
+    when :busy
+      count = workload_process_count
+      "#{opening}. #{count} #{"process".pluralize(count)} #{count == 1 ? "is" : "are"} still alive in " \
+      "its cgroup, and `docker exec` starts a *new* process in the container's namespaces -- its " \
+      "failure says nothing about processes that were already running. Whether the worker is still " \
+      "executing jobs and agent sessions is unverified: read its logs or the queue's head age before " \
+      "calling this an outage."
+    when :empty
+      "#{opening}, and no workload processes are left in its cgroup, so it is running no jobs and " \
+      "no agent sessions."
+    else
+      "#{opening}. The watchdog could not take a census of its cgroup, so whether it is still " \
+      "executing jobs and agent sessions is unknown."
+    end
+  end
+
+  def unresolved_sentence
+    ladder = "Recovery ladder and the manual last rung (`docker rm` plus a redeploy) are in the runbook: #{RUNBOOK}"
+
+    case workload_census
+    when :busy
+      "This one is not over: `docker exec` still fails and the wedge was not cleared. Whether the " \
+      "worker is still running work is unverified -- #{workload_process_count} of its processes are " \
+      "alive -- so establish that it is idle before reaching for the destructive last rung. #{ladder}"
+    when :empty
+      "This one is not over: the worker is still not running work. #{ladder}"
+    else
+      "This one is not over: `docker exec` still fails and the wedge was not cleared. Whether the " \
+      "worker is still running work is unknown, because the cgroup census could not be taken. #{ladder}"
+    end
+  end
+
+  # :present / :absent / :unknown.
+  #
+  # Either signal alone is enough to say an OOM happened. Only the cgroup counter can say
+  # one did NOT: `OOMKilled` is set when the container's init process is the one killed,
+  # and #502's kill lands on a child inside the cgroup, so `OOMKilled=false` on its own
+  # rules nothing out. And the counter speaks only when the scope was located -- the
+  # payload carries `null` for a counter nobody could read.
+  def oom_evidence
+    kills = cgroup_located? ? cgroup["oom_kills"] : nil
+
+    return :present if container["oom_killed"] == true || kills.to_i.positive?
+    return :absent if kills.present?
+
+    :unknown
+  end
+
+  # :busy / :empty / :unknown. The recovery gate refuses to read "could not enumerate" as
+  # "empty", and so does this page. A positive count can only come from a walk that
+  # worked, so it stands on its own; calling the container EMPTY takes the script's
+  # `census_known`, which is the only thing that distinguishes a walk that found nothing
+  # from one that never ran.
+  def workload_census
+    count = cgroup["workload_process_count"]
+
+    return :unknown if count.nil?
+    return :busy if count.to_i.positive?
+
+    cgroup["census_known"] == true ? :empty : :unknown
+  end
+
+  # Nothing under the cgroup was read when the scope could not be located, and `path` is
+  # empty exactly then -- so its counters are defaults rather than readings.
+  def cgroup_located? = cgroup["path"].present?
+
+  def workload_process_count = cgroup["workload_process_count"].to_i
+
+  # The evidence block prints readings. An unread field says so rather than rendering the
+  # zero it was defaulted to, which would contradict the sentences above it.
+  def census_summary
+    return "census unavailable" if workload_census == :unknown
+
+    "#{workload_process_count} live workload processes (#{cgroup["process_count"] || "?"} total)"
+  end
+
+  def oom_kill_summary
+    kills = cgroup_located? ? cgroup["oom_kills"] : nil
+
+    kills.nil? ? "unread" : kills
   end
 
   def truncate(value, limit)
