@@ -2,33 +2,54 @@
 
 require "socket"
 
-# Helpers for exercising the X (Twitter) OAuth token path against a token
-# endpoint that accepts a connection and then never answers.
+# Helpers for exercising the X (Twitter) OAuth token path: a stubbed token
+# endpoint for the ordinary response cases, and a real listening socket for the
+# case the timeouts exist for — an endpoint that accepts the connection and then
+# goes silent.
 #
-# This is the failure mode the timeouts exist for: Net::HTTP's 60-second default
-# read timeout is applied PER READ, so a server that dribbles bytes (or, as here,
-# sends nothing at all) can hold the caller's thread far longer than any single
-# bound suggests. Stubbing Net::HTTP cannot reproduce it — the timeout is
-# enforced by the socket — so these helpers open a real listening socket.
+# The silent case cannot be reproduced by stubbing Net::HTTP, because the bound
+# is enforced by the socket rather than by anything Ruby-visible on the request.
 module XOauthTestHelpers
-  # Runs the block with the URL of a TCP server that completes the handshake and
-  # then stays silent, so a read against it blocks until the read timeout fires.
+  # Runs the block with the URL of a TCP server that accepts connections and
+  # sends nothing back, so a read against it blocks until the read timeout fires.
+  #
+  # Nothing calls accept: the kernel completes the handshake from the listen
+  # backlog on its own, so the connection establishes and the client then waits
+  # on a response that never comes. That leaves no acceptor thread to race the
+  # close against, and no accepted socket to leak.
   def with_hanging_token_endpoint
     server = TCPServer.new("127.0.0.1", 0)
-    connections = []
-    acceptor = Thread.new do
-      loop do
-        connections << server.accept
-      rescue IOError, Errno::EBADF, Errno::ECONNABORTED
-        break
-      end
-    end
-
     yield "http://127.0.0.1:#{server.addr[1]}/2/oauth2/token"
   ensure
-    acceptor&.kill
-    connections&.each { |socket| socket.close rescue nil }
     server&.close
+  end
+
+  # Stubs Net::HTTP.new so refresh!/exchange hit a fake endpoint, returning the
+  # caller block's result plus the captured Net::HTTP::Post request (for header/
+  # body assertions). The connect/read bounds set on the way are readable
+  # afterwards through observed_timeouts.
+  def with_token_endpoint(code:, body:)
+    captured = nil
+    response = Net::HTTPResponse.new("1.1", code.to_s, "")
+    response.stubs(:code).returns(code.to_s)
+    response.stubs(:body).returns(body.is_a?(String) ? body : body.to_json)
+    mock_http = Object.new
+    mock_http.define_singleton_method(:use_ssl=) { |_| }
+    mock_http.define_singleton_method(:open_timeout=) { |v| @open_timeout = v }
+    mock_http.define_singleton_method(:read_timeout=) { |v| @read_timeout = v }
+    mock_http.define_singleton_method(:timeouts) { [ @open_timeout, @read_timeout ] }
+    mock_http.define_singleton_method(:request) { |req| captured = req; response }
+    # Assigned before the block runs, so a block that raises still leaves
+    # observed_timeouts answerable rather than masking the failure with a
+    # NoMethodError on nil.
+    @last_http = mock_http
+    result = Net::HTTP.stub(:new, mock_http) { yield }
+    [ result, captured ]
+  end
+
+  # The [connect, read] bounds the last with_token_endpoint call observed.
+  def observed_timeouts
+    @last_http.timeouts
   end
 
   # Seconds of wall clock the block took, off the monotonic clock.
@@ -38,14 +59,14 @@ module XOauthTestHelpers
     Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
   end
 
-  # Temporarily shortens the bound so a hanging-endpoint test finishes in about a
-  # second instead of ten. The production value is asserted separately.
+  # Shortens the bound so a hanging-endpoint test finishes in about a second
+  # instead of ten. The production value is asserted separately.
   def with_token_request_timeout(seconds)
     original = XOauthCredential::TOKEN_REQUEST_TIMEOUT
-    swap_token_request_timeout(seconds)
+    swap_const(:TOKEN_REQUEST_TIMEOUT, seconds)
     yield
   ensure
-    swap_token_request_timeout(original)
+    swap_const(:TOKEN_REQUEST_TIMEOUT, original)
   end
 
   # XOauthBootstrap reads the token endpoint off the constant rather than a
@@ -60,12 +81,10 @@ module XOauthTestHelpers
 
   private
 
+  # Parallel test workers are processes, so this swap is process-local, and
+  # tests within a worker run one at a time.
   def swap_const(name, value)
     XOauthCredential.send(:remove_const, name)
     XOauthCredential.const_set(name, value)
-  end
-
-  def swap_token_request_timeout(value)
-    swap_const(:TOKEN_REQUEST_TIMEOUT, value)
   end
 end
