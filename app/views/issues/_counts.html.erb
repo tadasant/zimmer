@@ -1,0 +1,32 @@
+<%# The orientation strip: how much work is waiting, how much is running, and how
+    the queue splits by direction. Backlog counts are the WHOLE queue rather than
+    the filtered slice — a filter narrows what you are reading, it does not change
+    how much work there is. %>
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">Queued</div>
+    <div class="text-xl font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(counts[:queued]) %></div>
+  </div>
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">In flight</div>
+    <div class="text-xl font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(counts[:in_flight]) %></div>
+  </div>
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">Queued convergent</div>
+    <div class="text-xl font-bold text-emerald-700 tabular-nums"><%= number_with_delimiter(queued_by_direction[Issues::Direction::CONVERGENT]) %></div>
+  </div>
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">Queued divergent</div>
+    <div class="text-xl font-bold text-violet-700 tabular-nums"><%= number_with_delimiter(queued_by_direction[Issues::Direction::DIVERGENT]) %></div>
+  </div>
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">Open on GitHub</div>
+    <div class="text-xl font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(counts[:github_open]) %></div>
+  </div>
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <%# The pile the issue gate has not reached. It is the number that says
+        whether the queue is a picture of the work or a corner of it. %>
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">Open &amp; unrated</div>
+    <div class="text-xl font-bold text-gray-700 tabular-nums"><%= number_with_delimiter(github_by_direction[Issues::Direction::UNRATED]) %></div>
+  </div>
+</div>

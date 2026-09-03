@@ -132,6 +132,7 @@ export default defineConfig({
             { label: "Token spend", slug: "operate/costs" },
             { label: "The gate decision ledger", slug: "operate/gate-decisions" },
             { label: "The work backlog", slug: "operate/work-backlog" },
+            { label: "The Issues view", slug: "operate/issues-view" },
             { label: "Testing philosophy", slug: "operate/testing" },
           ],
         },

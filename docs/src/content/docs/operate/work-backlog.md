@@ -137,10 +137,16 @@ via the `gh` credential every Zimmer container already carries. Outside producti
 cannot reach is recorded on the task's ledger row and the task completes; in production it fails
 loudly rather than claiming to have imported a queue it never read.
 
+## Reading the queue as a human
+
+[The Issues view](/operate/issues-view/) is the page in front of this table: the queue in rank
+order joined to live GitHub issue state, a **Promote** button on every queued row, and a trend
+chart of open-issue counts over time. Promote does not post to `start_now`: it goes to a separate
+browser-only controller that calls the same `WorkBacklog::Start`, deliberately away from the
+API-key surface every agent session holds.
+
 ## What is not here yet
 
-There is no Issues view. The REST actions the view will drive — including `start_now`, the
-"promote" button's server half — are built and tested; the page is the next phase. The gate and
-groomer skills in the companion repo still write the JSON file until they are cut over to these
-tools, and nothing here requires them to change: the table and the file coexist, and the table
-was seeded from the file.
+The gate and groomer skills in the companion repo still write the JSON file until they are cut
+over to these tools, and nothing here requires them to change: the table and the file coexist, and
+the table was seeded from the file.

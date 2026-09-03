@@ -4,10 +4,10 @@ module WorkBacklog
   # Turn one queued item into an implementing session, and record which.
   #
   # This is the one place the queue becomes work. The groomer's pull calls it
-  # once per item at `spot` class; the Issues view's "start now" button (Phase 2)
-  # and its REST counterpart call it at `priority`. Both spawn exactly what the
-  # groomer spawned by hand: a `zimmer-router` session, goal
-  # `open-reviewed-green-pr`, prompted with the issue URL and the ask.
+  # once per item at `spot` class; the Issues view's Promote button and its REST
+  # counterpart call it at `priority`. All three spawn exactly what the groomer
+  # spawned by hand: a `zimmer-router` session, goal `open-reviewed-green-pr`,
+  # prompted with the issue URL and the ask.
   #
   # ATOMIC. The session is created and the item marked `started` inside the
   # ranking lock, in one transaction: if the spawn raises the item stays queued,
@@ -39,7 +39,7 @@ module WorkBacklog
       #   groomer. Becomes the new session's parent, so it inherits genesis and
       #   sits in the same tree; and is recorded as `started_by_session`.
       # @param genesis [String, nil] for a parentless start: where it came from
-      #   (SessionGenesis::API for REST; the web UI will pass WEB_UI)
+      #   (SessionGenesis::API for REST, WEB_UI for the Issues page's Promote)
       # @param precedence [Integer, nil] explicit spot-queue rank, or nil to sit
       #   just above the parent
       # @return [Result]

@@ -1,0 +1,78 @@
+<% content_for :title, "Issues" %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-[100rem] mx-auto px-3 sm:px-6 py-6">
+    <div class="flex items-center min-w-0 mb-4">
+      <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-3 shrink-0" do %>
+        <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+        </svg>
+      <% end %>
+      <h1 class="text-2xl font-bold text-gray-900 truncate">Issues</h1>
+    </div>
+
+    <p class="text-sm text-gray-600 mb-3">
+      The fleet's work backlog joined to what is going on in GitHub across
+      <%= Issues::GithubSnapshot::REPOS.length %> repos. GitHub is the source of truth: issue state is read live on
+      every page load and cached for <%= distance_of_time_in_words(Issues::GithubSnapshot::CACHE_TTL) %>, and nothing here mirrors it into a table.
+    </p>
+
+    <%# The freshness line, and the button that drops the cache. Stated rather
+        than implied: a page that silently serves a five-minute-old read of
+        GitHub is a page that will be wrong about a label at exactly the moment
+        someone is looking for it. %>
+    <div class="flex flex-wrap items-center gap-2 mb-4 text-xs text-gray-500">
+      <span>GitHub read <%= issue_snapshot_age(@snapshot) %> · <%= number_with_delimiter(@snapshot.issues.length) %> issues loaded</span>
+      <%= button_to "Refresh", refresh_issues_path(@query_params), method: :post,
+          class: "px-2 py-1 border border-gray-300 rounded bg-white hover:bg-gray-50 text-gray-700" %>
+      <% if @snapshot.failed? %>
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">
+          <%= @snapshot.errors.length %> of <%= Issues::GithubSnapshot::REPOS.length %> <%= "repo".pluralize(@snapshot.errors.length) %> could not be read
+        </span>
+      <% end %>
+    </div>
+
+    <%# The one honest note the page owes its reader, in the place the click is.
+        Zimmer's browser surface authenticates nobody — the perimeter is the
+        tailnet, and agent sessions run inside it (#371, #220). "Promote" is
+        drawn away from the API-key and MCP surfaces a session is handed, which
+        is a real boundary and a weaker one than "a person did this". %>
+    <p class="text-xs text-gray-500 mb-4">
+      Promote spawns a <code class="text-[11px]">priority</code> session immediately. It is reachable only from this
+      browser surface — no API key and no MCP tool can pull the lever — but Zimmer's web UI authenticates nobody, so
+      that boundary means "came in through a browser", not "a person clicked it".
+    </p>
+
+    <% if @promoted_session %>
+      <div class="mb-4 rounded-md bg-emerald-50 border border-emerald-200 px-3 py-2 text-sm text-emerald-900">
+        Started
+        <%= link_to "session ##{@promoted_session.id}", session_path(@promoted_session), class: "font-semibold underline" %>
+        — <%= @promoted_session.title %>
+      </div>
+    <% end %>
+
+    <%= render "counts", counts: @board.counts, queued_by_direction: @board.queued_by_direction,
+        github_by_direction: @board.github_by_direction %>
+
+    <%= render "trend", trend: @trend, filters: @filters, query_params: @query_params %>
+
+    <%= render "filters", filters: @filters, repo_options: @board.repo_options,
+        surface_options: @board.surface_options, kind_options: @board.kind_options %>
+
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">
+      Spot queue
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.queued_rows.length) %> shown, in rank order</span>
+    </h2>
+    <%= render "queue", rows: @board.queued_rows, query_params: @query_params, queue_empty: @board.counts[:queued].zero? %>
+
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">
+      In flight
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:in_flight]) %> with a live session</span>
+    </h2>
+    <%= render "in_flight", rows: @board.in_flight_rows %>
+
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">In GitHub, not on the queue</h2>
+    <%= render "repo_summaries", summaries: @board.repo_summaries %>
+    <%= render "github", rows: @board.loose_page_rows, snapshot: @snapshot, total: @board.loose_total,
+        page: @board.github_page, page_count: @board.loose_page_count, query_params: @query_params %>
+  </div>
+</div>

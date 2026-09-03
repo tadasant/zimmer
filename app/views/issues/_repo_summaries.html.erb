@@ -1,0 +1,27 @@
+<%# Per repo: how much is open on GitHub, how much of that is queued, and how the
+    open issues split by direction. The orientation strip for the GitHub half —
+    at ~500 open issues across five repos, the table under it is a sample and this
+    is the whole picture. %>
+<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 mb-4">
+  <% summaries.each do |summary| %>
+    <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+      <div class="flex items-baseline justify-between gap-2">
+        <%= issue_safe_link("https://github.com/#{summary.repo}/issues", issue_repo_short(summary.repo),
+            class: "text-sm font-semibold text-gray-900 hover:text-indigo-700 truncate") %>
+        <span class="text-sm font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(summary.open_count) %> open</span>
+      </div>
+      <% if summary.error %>
+        <p class="text-[11px] text-amber-700 mt-1 wrap-anywhere line-clamp-2" title="<%= summary.error %>">
+          GitHub could not be read: <%= summary.error %>
+        </p>
+      <% else %>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-gray-500 tabular-nums">
+          <span class="text-emerald-700"><%= summary.directions[Issues::Direction::CONVERGENT] %> convergent</span>
+          <span class="text-violet-700"><%= summary.directions[Issues::Direction::DIVERGENT] %> divergent</span>
+          <span><%= summary.directions[Issues::Direction::UNRATED] %> unrated</span>
+          <span><%= summary.queued_count %> queued</span>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+</div>
