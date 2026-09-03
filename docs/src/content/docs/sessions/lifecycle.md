@@ -1138,6 +1138,46 @@ That is why a clean-clone session can still hold a `trash_after` — it is the d
 is still retained, which is not always the clone. See
 [how long scratch lasts](/limitations/#a-sessions-scratch-directory-survives-archive-but-only-for-the-trash-window).
 
+#### Restoring a session that never ran
+
+Everything above assumes the session has a conversation to come back to. Some do not. A session
+created by a trigger, held at the starting line by the spot gate for a whole quota window, and then
+paused or archived has **no runtime `session_id` and no transcript** — its agent process never
+launched. `Session#never_ran?` is that pair, and both halves have to be blank.
+
+Restore and restart used to refuse those sessions outright with *"Session has no session_id"*
+([#557](https://github.com/tadasant/zimmer/issues/557)). That precondition is about *resuming a
+Claude Code conversation*, and applying it to a session that never had one made **Trash
+irreversible** for exactly the class of session where starting over is cheapest and most obviously
+correct — its prompt, agent root, skills, plugins and lineage are all intact and none of its work
+has been done.
+
+A never-run session now takes a separate, much shorter path on both doors:
+
+| Action | What it does for a session that never ran |
+| --- | --- |
+| **Restore** (web **Restore**, `POST /api/v1/sessions/:id/unarchive`, MCP `unarchive`) | No clone, no transcript write, no `air prepare`. `UnarchiveSessionService` drops the half-written setup artifacts of the aborted spawn and returns the row to `needs_input`. |
+| **Restart** (web **Restart**, `POST /api/v1/sessions/:id/restart`, MCP `restart`) | Takes the existing restart-from-scratch path — clear the setup artifacts and the spot-hold keys, null the `session_id`, and enqueue the full setup pipeline with the session's original prompt and its [first-turn attachments](/sessions/spawning/). |
+
+Restore does not clone, on purpose: the fresh start clones for itself, and a clone built here would
+be one the fresh start never uses and a reaper has to sweep. Whatever starts the session next lands
+in `AgentSessionJob`, which already reclassifies a follow-up prompt to a session with no
+`session_id` as a fresh start.
+
+**The dangerous mistake is the inverse one**, so the branch is deliberately narrow. A session
+holding a **transcript** with no `session_id` — what
+`ProcessLifecycleManager#release_stale_runtime_session_id!` leaves behind on a runtime that mints
+its own conversation id — has hours of work in it. Restarting that fresh would silently discard the
+conversation, so it is *not* never-run: it stays on the resume path, and the failure to restore it
+stays loud on every surface. Every other restore failure — a clone that would not rebuild, a DB
+error, a row that cannot leave its state — is likewise still a failure, not a quiet reroute into a
+fresh start.
+
+`Trigger#resuscitatable_session?` is the same predicate, used for a different decision: a recurring
+trigger will not *reuse* a never-run session even though the restore would now succeed, because a
+follow-up into a session with no `session_id` runs that session's own prompt and silently drops the
+one this fire carried. The trigger spawns instead. See [Triggers](/sessions/triggers/).
+
 :::danger[The Undo button doesn't work]
 [Issue #12](https://github.com/tadasant/zimmer/issues/12): the archive `turbo_stream` response
 never renders the flash toast, so there is no toast and no Undo affordance — even though the

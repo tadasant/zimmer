@@ -443,10 +443,15 @@ module Mcp
 
         refuse_if_paused!(session)
 
-        # Setup never completed (e.g. the git clone failed), so re-run the whole
+        # No conversation to prompt into — setup never completed (e.g. the git
+        # clone failed), or the session never ran at all — so re-run the whole
         # setup pipeline instead of prompting a clone that does not exist.
-        return restart_from_scratch(session) if session.failed_before_initial_prompt? && !session.setup_complete?
+        return restart_from_scratch(session) if session.needs_restart_from_scratch?
 
+        # Everything past here resumes a conversation, so it needs the id that
+        # conversation is filed under. A session with no id but a transcript to
+        # lose reaches this point (#needs_restart_from_scratch? deliberately does
+        # not claim it), and is refused rather than silently started over.
         raise ToolError, "Session has no session_id" if session.session_id.blank?
 
         # Must be read before the stale metadata (which carries failure_reason) is cleared.
@@ -483,8 +488,9 @@ module Mcp
         # clone, new session_id — so it carries the attachments that turn was
         # created with (Sessions::FirstTurnAttachments, which never raises, so the
         # fleet sweep's restart cannot start failing on an unreadable volume).
-        # Replaying all of them is deliberate: this path is reached only for a
-        # pre-prompt failure with setup incomplete, and a restart from scratch
+        # Replaying all of them is deliberate: this path is reached only when
+        # there is no conversation to prompt into — a pre-prompt failure with setup
+        # incomplete, or a session that never ran — and a restart from scratch
         # discards the conversation any earlier delivery went to.
         images, files = Sessions::FirstTurnAttachments.for(session)
         carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
