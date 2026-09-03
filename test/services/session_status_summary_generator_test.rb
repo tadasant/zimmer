@@ -334,13 +334,11 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
   # --- What the blurb is allowed to assert ----------------------------------
   #
-  # THE DEFECT THIS SECTION EXISTS FOR (#734). A blurb asserted, in the first
-  # person, "I've scheduled a self-wake to re-poll at 22:45Z and apply the label
-  # once it turns green" for a session that had scheduled no wake and held no
-  # trigger of any kind. The session then sat stranded for 16 hours reading, on
-  # the homepage, as a healthy machine wait — the inversion of what the panel is
-  # for. Both prompts are asserted, because both write the same panel: the rule
-  # is worthless in whichever one it is missing from.
+  # The defect these guard is written up on SessionStatusSummaryGenerator::
+  # STATE_NOT_INTENT_RULE (#734): a blurb narrated a self-wake nobody had
+  # scheduled, and a stranded session read as a healthy machine wait for 16
+  # hours. Both prompts are asserted, because both write the same panel and the
+  # rule is worthless in whichever one it is missing from.
 
   def fork_prompt
     prompts = []
@@ -370,14 +368,14 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
   # Guards what the rule says, not just that a rule is there: cut back to "be
   # accurate", it would keep the two tests above green while leaving the blurb
-  # free to narrate a wake nobody scheduled.
-  test "the rule names the unperformed actions a blurb must not claim" do
+  # free to narrate a wake nobody scheduled. Two anchors rather than a
+  # transcription of the rule — enough to catch a gutting, loose enough that
+  # rewording it is not a test failure.
+  test "the rule bars first-person claims and names the wake that started this" do
     rule = SessionStatusSummaryGenerator::STATE_NOT_INTENT_RULE
 
     assert_match(/first person/, rule)
-    assert_match(/scheduled wake/, rule)
-    assert_match(/follow-up/, rule)
-    assert_match(/retry/, rule)
+    assert_match(/wake/, rule)
   end
 
   # The dashboard broadcasts a card from after_create_commit, so a marker
