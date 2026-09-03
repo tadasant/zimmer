@@ -934,6 +934,24 @@ class TriggerConditionTest < ActiveSupport::TestCase
     end
   end
 
+  # Nothing else in the suite drives the ENV half of default_allowed_user_ids, so
+  # without this the `|| ENV[...]` fallback could be deleted and every test would stay
+  # green -- and a deployment that configures the allow-list as a plain environment
+  # variable rather than a credential would silently stop being restricted.
+  test "the allow-list resolves the credential first and process ENV second" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+
+    with_allowed_user_ids_secret(nil, env: "U111,U222") do
+      assert_equal %w[U111 U222], TriggerCondition.default_allowed_user_ids
+      assert_equal %w[U111 U222], condition.allowed_user_ids
+      assert_not condition.user_allowed?("U_NOT_ON_THE_LIST")
+    end
+
+    with_allowed_user_ids_secret("U333", env: "U111,U222") do
+      assert_equal %w[U333], TriggerCondition.default_allowed_user_ids
+    end
+  end
+
   test "SLACK_BOT_MENTION_ALLOWED_USER_IDS tolerates whitespace and empty entries" do
     condition = trigger_conditions(:bot_mention_slack_condition)
 
@@ -1450,25 +1468,31 @@ class TriggerConditionTest < ActiveSupport::TestCase
 
   # The deployment-wide allow-list resolves through SecretsLoader (encrypted
   # credentials) first, ENV second -- the same order SlackService uses for its token.
-  #
-  # So the helper has to control BOTH, not just the credential: with a nil credential
+  # So the helper controls BOTH sources, not just the credential: with a nil credential
   # the `||` in TriggerCondition.default_allowed_user_ids falls through to whatever
-  # SLACK_BOT_MENTION_ALLOWED_USER_IDS the box exports, and the Zimmer production
-  # droplet exports one -- every agent session running the suite there inherits the
-  # deployment's allow-list. Stubbing the credential alone would leave a test claiming
-  # to assert the unset default while actually asserting "this box has no allow-list".
-  #
-  # `value` is what the deployment sets the allow-list to; nil means it sets nothing,
-  # which is the genuinely-unset case (raw is nil) rather than the blank-but-set one
-  # (raw is a whitespace string, which short-circuits the ENV fallback).
+  # SLACK_BOT_MENTION_ALLOWED_USER_IDS the box happens to export, which would leave a
+  # test claiming to assert the unset default while really asserting "this box has no
+  # allow-list".
   #
   # Sets the real variable rather than stubbing ENV#[], for the same reason
   # with_expiration_env does: a partial mocha stub on ENV#[] breaks every other ENV
-  # read the code path makes.
-  def with_allowed_user_ids_secret(value)
-    SecretsLoader.stubs(:get).with("SLACK_BOT_MENTION_ALLOWED_USER_IDS").returns(value)
+  # read the code path makes. Saving it before anything that can raise, likewise --
+  # an early raise with `previous` unassigned would restore by deleting a variable
+  # the helper never read.
+  #
+  # @param value [String, nil] the credential the deployment sets; nil means it sets
+  #   none, which is the genuinely-unset case (raw is nil) rather than the
+  #   blank-but-set one (a whitespace string, which short-circuits the ENV fallback)
+  # @param env [String, nil] the process-ENV value behind it; nil means unset, which
+  #   is what every caller but the resolution-order test wants
+  def with_allowed_user_ids_secret(value, env: nil)
     previous = ENV["SLACK_BOT_MENTION_ALLOWED_USER_IDS"]
-    ENV.delete("SLACK_BOT_MENTION_ALLOWED_USER_IDS")
+    if env.nil?
+      ENV.delete("SLACK_BOT_MENTION_ALLOWED_USER_IDS")
+    else
+      ENV["SLACK_BOT_MENTION_ALLOWED_USER_IDS"] = env
+    end
+    SecretsLoader.stubs(:get).with("SLACK_BOT_MENTION_ALLOWED_USER_IDS").returns(value)
     yield
   ensure
     if previous.nil?
