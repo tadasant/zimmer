@@ -50,6 +50,51 @@ class TriggersHelperTest < ActionView::TestCase
     end
   end
 
+  # The detail page's badge is the same drift hazard as the row's icon: a type
+  # added to CONDITION_TYPES without an entry here used to print its raw enum
+  # value in a gray pill.
+  test "every condition type maps to a badge label and colours of its own" do
+    TriggerCondition::CONDITION_TYPES.each do |condition_type|
+      badge = trigger_condition_badge(condition_type)
+
+      assert TriggersHelper::CONDITION_TYPE_BADGES.key?(condition_type),
+        "#{condition_type} should have a badge of its own, not the titleized fallback"
+      assert_not_equal condition_type, badge[:label],
+        "#{condition_type} should be badged with words, not with its raw enum value"
+      assert badge[:css].present?, "#{condition_type} should have badge colours"
+    end
+  end
+
+  test "the two GitHub condition types share one badge" do
+    assert_equal trigger_condition_badge("github_label"), trigger_condition_badge("github_issue")
+  end
+
+  test "a condition type with no badge of its own is titleized rather than shown raw" do
+    badge = trigger_condition_badge("some_future_condition_type")
+
+    assert_equal "Some Future Condition Type", badge[:label]
+    assert_equal TriggersHelper::FALLBACK_CONDITION_BADGE_CSS, badge[:css]
+  end
+
+  test "the detail line drops the prefix the badge already carries" do
+    condition = TriggerCondition.new(
+      condition_type: "system_event",
+      configuration: { "event_name" => "quota_available" }
+    )
+
+    assert_equal "System Event: Quota available again", condition.description
+    assert_equal "Quota available again", trigger_condition_detail(condition)
+  end
+
+  test "the detail line is left whole when it does not repeat the badge" do
+    condition = TriggerCondition.new(
+      condition_type: "schedule",
+      configuration: { "unit" => "hours", "interval" => 2, "timezone" => "UTC" }
+    )
+
+    assert_equal condition.description, trigger_condition_detail(condition)
+  end
+
   test "an unknown key renders the same glyph as the fallback key" do
     fallback = render(partial: "triggers/condition_icon", locals: { key: :fallback })
     unknown = render(partial: "triggers/condition_icon", locals: { key: :not_an_icon })

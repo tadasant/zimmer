@@ -59,4 +59,36 @@ module TriggersHelper
 
     keys.presence || [ :fallback ]
   end
+
+  # Condition type → the badge a condition wears on the trigger detail page:
+  # the words in the pill, and the pill's colors. The colors match the icon each
+  # type gets in a trigger row, so the two pages read as one thing.
+  #
+  # Every type in TriggerCondition::CONDITION_TYPES belongs here. A type absent
+  # from this map is titleized rather than shown as its raw enum value, so a
+  # newly added type reads as words even before it is given a badge of its own.
+  CONDITION_TYPE_BADGES = {
+    "slack" => { label: "Slack", css: "bg-purple-100 text-purple-800" },
+    "schedule" => { label: "Schedule", css: "bg-blue-100 text-blue-800" },
+    "ao_event" => { label: "Zimmer Event", css: "bg-orange-100 text-orange-800" },
+    "github_label" => { label: "GitHub", css: "bg-gray-800 text-white" },
+    "github_issue" => { label: "GitHub", css: "bg-gray-800 text-white" },
+    "system_event" => { label: "System Event", css: "bg-emerald-100 text-emerald-800" }
+  }.freeze
+
+  FALLBACK_CONDITION_BADGE_CSS = "bg-gray-100 text-gray-800"
+
+  def trigger_condition_badge(condition_type)
+    CONDITION_TYPE_BADGES[condition_type] ||
+      { label: condition_type.to_s.titleize, css: FALLBACK_CONDITION_BADGE_CSS }
+  end
+
+  # What the badge leaves for the line beside it. TriggerCondition#description
+  # opens with the same words the badge carries ("Slack: …", "System Event: …"),
+  # so the prefix is dropped rather than printed twice.
+  def trigger_condition_detail(condition)
+    label = trigger_condition_badge(condition.condition_type)[:label]
+
+    condition.description.to_s.sub(/\A#{Regexp.escape(label)}: /, "")
+  end
 end
