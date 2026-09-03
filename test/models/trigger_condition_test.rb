@@ -913,9 +913,14 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "allowed_user_ids is empty by default, meaning everyone is allowed" do
     condition = trigger_conditions(:bot_mention_slack_condition)
 
-    assert_empty condition.allowed_user_ids
-    assert condition.allow_all_users?
-    assert condition.user_allowed?("U_ANYONE")
+    # nil == the deployment sets no allow-list at all. Stated, not inherited: this
+    # asserts the default, so it must not read the allow-list of whatever box the
+    # suite happens to run on.
+    with_allowed_user_ids_secret(nil) do
+      assert_empty condition.allowed_user_ids
+      assert condition.allow_all_users?
+      assert condition.user_allowed?("U_ANYONE")
+    end
   end
 
   test "SLACK_BOT_MENTION_ALLOWED_USER_IDS restricts to exactly those users" do
@@ -963,9 +968,13 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "user_allowed? rejects a blank user id even when everyone is allowed" do
     condition = trigger_conditions(:bot_mention_slack_condition)
 
-    assert condition.allow_all_users?
-    assert_not condition.user_allowed?(nil)
-    assert_not condition.user_allowed?("")
+    # "everyone is allowed" is the premise of this test, so it has to be set here
+    # rather than borrowed from the environment.
+    with_allowed_user_ids_secret(nil) do
+      assert condition.allow_all_users?
+      assert_not condition.user_allowed?(nil)
+      assert_not condition.user_allowed?("")
+    end
   end
 
   test "dm_timestamps returns empty hash by default" do
@@ -1441,8 +1450,31 @@ class TriggerConditionTest < ActiveSupport::TestCase
 
   # The deployment-wide allow-list resolves through SecretsLoader (encrypted
   # credentials) first, ENV second -- the same order SlackService uses for its token.
+  #
+  # So the helper has to control BOTH, not just the credential: with a nil credential
+  # the `||` in TriggerCondition.default_allowed_user_ids falls through to whatever
+  # SLACK_BOT_MENTION_ALLOWED_USER_IDS the box exports, and the Zimmer production
+  # droplet exports one -- every agent session running the suite there inherits the
+  # deployment's allow-list. Stubbing the credential alone would leave a test claiming
+  # to assert the unset default while actually asserting "this box has no allow-list".
+  #
+  # `value` is what the deployment sets the allow-list to; nil means it sets nothing,
+  # which is the genuinely-unset case (raw is nil) rather than the blank-but-set one
+  # (raw is a whitespace string, which short-circuits the ENV fallback).
+  #
+  # Sets the real variable rather than stubbing ENV#[], for the same reason
+  # with_expiration_env does: a partial mocha stub on ENV#[] breaks every other ENV
+  # read the code path makes.
   def with_allowed_user_ids_secret(value)
     SecretsLoader.stubs(:get).with("SLACK_BOT_MENTION_ALLOWED_USER_IDS").returns(value)
+    previous = ENV["SLACK_BOT_MENTION_ALLOWED_USER_IDS"]
+    ENV.delete("SLACK_BOT_MENTION_ALLOWED_USER_IDS")
     yield
+  ensure
+    if previous.nil?
+      ENV.delete("SLACK_BOT_MENTION_ALLOWED_USER_IDS")
+    else
+      ENV["SLACK_BOT_MENTION_ALLOWED_USER_IDS"] = previous
+    end
   end
 end
