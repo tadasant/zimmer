@@ -1221,6 +1221,119 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes Mcp::Tools::ActionSession.input_schema.to_h[:properties].keys.map(&:to_s), "halt"
   end
 
+  # --- start_now ----------------------------------------------------------------
+  #
+  # The tool half of the Ranked view's Start entry, and a thin dispatch over
+  # Sessions::StartNow — which has its own tests. What is asserted here is the
+  # dispatch: that the action is reachable at all, and that each of the service's
+  # three outcomes reaches the caller as the right thing rather than as a
+  # uniformly cheerful "starting now".
+
+  test "start_now is one of the actions the tool takes" do
+    assert_includes Mcp::Tools::ActionSession::ACTIONS, "start_now"
+
+    description = Mcp::Tools::ActionSession.input_schema.to_h.dig(:properties, :action, :description)
+    assert_match(/"start_now"/, description)
+  end
+
+  test "start_now enqueues the first turn of a session that has never run" do
+    session = sessions(:waiting)
+    assert_nil session.session_id, "the fixture must be a session that has not started"
+
+    output = nil
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      output = @tool.call("action" => "start_now", "session_id" => session.id)
+    end
+
+    assert_includes output, "## Session Starting Now"
+    assert_includes output, "- **Session ID:** #{session.id}"
+    assert_includes output, "next turn is due now: its first turn was enqueued"
+    assert session.logs.where("content LIKE ?", "%Started now by an agent through MCP%").exists?
+  end
+
+  # A refusal is the answer the service gives when the session cannot start at
+  # all. Reporting it as a start would tell a fleet agent working the queue that
+  # a session it never touched is under way.
+  test "start_now raises rather than reporting a start the service refused" do
+    session = sessions(:needs_input)
+
+    error = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      error = assert_raises(Mcp::ToolError) { @tool.call("action" => "start_now", "session_id" => session.id) }
+    end
+
+    assert_match(/only a waiting session can be started/, error.message)
+  end
+
+  # The refusal the tool's own prose is about: a session asleep on a wake-up it
+  # has not reached carries its own prompt, and starting it underneath that wake
+  # would race the two.
+  test "start_now raises on a session asleep on an armed wake-up" do
+    session = sessions(:waiting)
+    Sessions::ScheduleWakeUp.call(
+      session: session,
+      wake_at: 2.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+      prompt: "Check the build"
+    )
+
+    error = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      error = assert_raises(Mcp::ToolError) { @tool.call("action" => "start_now", "session_id" => session.id) }
+    end
+
+    assert_match(/A pause outranks the queue/, error.message)
+  end
+
+  # Stranded, not queued: there is no turn to pull forward, and no amount of
+  # rescheduling produces one. The error says what to do instead rather than
+  # claiming a start that never happened.
+  test "start_now on a stranded session says there is no turn to bring forward" do
+    session = sessions(:waiting)
+    session.update!(session_id: "cli-abc")
+
+    error = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      error = assert_raises(Mcp::ToolError) { @tool.call("action" => "start_now", "session_id" => session.id) }
+    end
+
+    assert_match(/Nothing is queued for session #{session.id}/, error.message)
+    assert_match(/There is no turn to bring forward/, error.message)
+    assert_match(/follow_up/, error.message)
+    assert_match(/restart/, error.message)
+  end
+
+  # The other door from this tool into Sessions::StartNow: promoting a waiting
+  # session starts it, and the promotion reports what it did. A promotion that
+  # started nothing says nothing, so the two are told apart in the output rather
+  # than every promotion claiming a start.
+
+  test "change_scheduling_class reports the start a promotion performed" do
+    session = sessions(:waiting)
+    session.update!(scheduling_class: SessionGenesis::SPOT)
+
+    output = nil
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id, "scheduling_class" => "priority")
+    end
+
+    assert_includes output, "- **Start:** "
+    assert_includes output, "next turn is due now"
+    assert session.logs.where("content LIKE ?", "%Started now by an agent promoting it through MCP%").exists?
+  end
+
+  test "change_scheduling_class says nothing about a start on a session it left alone" do
+    session = sessions(:waiting)
+    session.update!(scheduling_class: SessionGenesis::SPOT, session_id: "cli-abc")
+
+    output = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id, "scheduling_class" => "priority")
+    end
+
+    assert_includes output, "- **Scheduling class:** priority (was spot)"
+    assert_not_includes output, "- **Start:**"
+  end
+
   # --- restart from scratch ---------------------------------------------------
   #
   # `restart` re-runs the whole setup pipeline when setup never completed, and it
