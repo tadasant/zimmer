@@ -325,22 +325,181 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
       "the job should not instantiate sessions it does not write into the zip"
   end
 
-  test "reconciling subagent-only sessions does not read their transcript payloads" do
-    # A first run archives everything, so the second run's only session work is the
-    # subagent reconciliation pass.
-    TranscriptArchiveJob.perform_now
-
-    subagent = SubagentTranscript.create!(
-      session: sessions(:archived),
+  test "reconciling subagent-bearing sessions reads only the ones it rebuilds" do
+    # Two sessions with NO main transcript, so the marker scan never sees them and both
+    # are live reconciliation candidates on every run. One of them then changes; the other
+    # has to be settled without loading its transcript payload — the per-candidate
+    # `Session.find_by` this replaced loaded both in full, transcript column and all, just
+    # to ask whether the rows were still there.
+    changed = SubagentTranscript.create!(
+      session: sessions(:running),
+      agent_id: "reconcile-#{SecureRandom.hex(4)}",
+      transcript: '{"type": "user", "message": {"role": "user", "content": "hi"}}',
+      status: "completed"
+    )
+    untouched = SubagentTranscript.create!(
+      session: sessions(:waiting),
       agent_id: "reconcile-#{SecureRandom.hex(4)}",
       transcript: '{"type": "user", "message": {"role": "user", "content": "hi"}}',
       status: "completed"
     )
 
+    # A first run archives everything, so the second run's only session work is the
+    # subagent reconciliation pass.
+    TranscriptArchiveJob.perform_now
+
+    changed.update!(transcript: '{"type": "user", "message": {"role": "user", "content": "more"}}')
+
+    selects = full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    assert_equal 1, selects.size,
+      "only the session whose subagent transcript moved should be loaded: #{selects.inspect}"
+  ensure
+    changed&.destroy
+    untouched&.destroy
+  end
+
+  # The pass exists for sessions the marker scan cannot reach at all. Nothing else in the
+  # suite gives a subagent transcript to a session with `transcript: nil`, so without this
+  # the queueing half of the reconciliation pass is never executed — and the narrowing
+  # this change makes there (such a session used to be rebuilt on every single run) would
+  # be free to become "never archived at all" without a single test failing.
+  test "a session with subagent transcripts and no main transcript is archived, then settles" do
+    session = sessions(:running)
+    assert_nil session.transcript, "this test needs a session the marker scan will not see"
+
+    agent_id = "no-main-#{SecureRandom.hex(4)}"
+    subagent = SubagentTranscript.create!(
+      session: session,
+      agent_id: agent_id,
+      transcript: '{"type": "user", "message": {"role": "user", "content": "only a subagent"}}',
+      status: "completed"
+    )
+
+    TranscriptArchiveJob.perform_now
+
+    Zip::File.open(@archive_path) do |zip|
+      assert_not_nil zip.find_entry("sessions/#{session.id}/subagent_transcripts/#{agent_id}.json"),
+        "a session reachable only through the reconciliation pass still has to be archived"
+    end
+    assert_includes JSON.parse(File.read(@metadata_path))["sessions"].keys, session.id.to_s
+
     selects = full_session_row_selects { TranscriptArchiveJob.perform_now }
 
     assert_empty selects,
-      "an already-archived session should be reconciled by id, not by loading its transcript"
+      "and then settle — it used to be rebuilt on every single run"
+
+    Zip::File.open(@archive_path) do |zip|
+      assert_not_nil zip.find_entry("sessions/#{session.id}/subagent_transcripts/#{agent_id}.json"),
+        "a settled entry is carried forward from the old zip, not rewritten from the DB"
+    end
+  ensure
+    subagent&.destroy
+  end
+
+  # What makes shipping this cost one re-archive per subagent-bearing session rather than a
+  # full corpus rebuild: for the sessions that have none — most of them — the recorded stamp
+  # is `sessions.updated_at` byte-for-byte, so an existing sidecar goes on matching. A stamp
+  # rendered any other way (`.utc`, second precision) would silently re-archive everything on
+  # the deploy that introduced it.
+  test "a session with no subagent transcripts is stamped exactly as before" do
+    TranscriptArchiveJob.perform_now
+
+    session = sessions(:with_transcript)
+    assert_empty session.subagent_transcripts, "this test needs a session with no subagent transcripts"
+
+    recorded = JSON.parse(File.read(@metadata_path))["sessions"][session.id.to_s]
+    assert_equal session.reload.updated_at.iso8601(6), recorded
+  end
+
+  # ---------------------------------------------------------------------------
+  # #720 — a session's zip entry carries its subagent transcripts, but change
+  # detection only ever compared `sessions.updated_at`, and `SubagentTranscript` has no
+  # `touch:` on its parent. A subagent transcript written after its session's last
+  # archive was invisible to both passes: the main scan saw an unchanged `updated_at`,
+  # and the reconciliation pass skipped any session already present in the metadata. The
+  # run took its "No changes detected" early return and the transcript stayed out of
+  # latest.zip until some unrelated write happened to bump the session row.
+  # ---------------------------------------------------------------------------
+
+  test "a subagent transcript created after a session's last archive reaches the next zip" do
+    session = sessions(:archived)
+    TranscriptArchiveJob.perform_now
+    assert File.exist?(@archive_path), "the first run has to publish an archive to add to"
+
+    agent_id = "post-archive-#{SecureRandom.hex(4)}"
+    subagent = SubagentTranscript.create!(
+      session: session,
+      agent_id: agent_id,
+      transcript: '{"type": "user", "message": {"role": "user", "content": "written after the archive"}}',
+      status: "completed"
+    )
+
+    Rails.logger.stubs(:info)
+    Rails.logger.expects(:info).with(regexp_matches(/No changes detected/)).never
+
+    TranscriptArchiveJob.perform_now
+
+    Zip::File.open(@archive_path) do |zip|
+      entry = zip.find_entry("sessions/#{session.id}/subagent_transcripts/#{agent_id}.json")
+      assert_not_nil entry,
+        "a subagent transcript written after the last archive has to reach latest.zip"
+      assert_includes JSON.parse(entry.get_input_stream.read)["transcript"], "written after the archive"
+    end
+  ensure
+    subagent&.destroy
+  end
+
+  test "a subagent transcript that grows after its session's last archive is re-archived" do
+    session = sessions(:archived)
+    agent_id = "growing-#{SecureRandom.hex(4)}"
+    subagent = SubagentTranscript.create!(
+      session: session,
+      agent_id: agent_id,
+      transcript: '{"type": "user", "message": {"role": "user", "content": "first"}}',
+      status: "running"
+    )
+
+    TranscriptArchiveJob.perform_now
+
+    subagent.update!(
+      transcript: '{"type": "user", "message": {"role": "user", "content": "second"}}',
+      status: "completed"
+    )
+
+    Rails.logger.stubs(:info)
+    Rails.logger.expects(:info).with(regexp_matches(/No changes detected/)).never
+
+    TranscriptArchiveJob.perform_now
+
+    Zip::File.open(@archive_path) do |zip|
+      data = JSON.parse(zip.find_entry("sessions/#{session.id}/subagent_transcripts/#{agent_id}.json")
+        .get_input_stream.read)
+      assert_includes data["transcript"], "second",
+        "the archive should carry the subagent transcript as it stands now"
+      assert_equal "completed", data["status"]
+    end
+  ensure
+    subagent&.destroy
+  end
+
+  # The other half of the stamp: it has to settle. A session whose subagent transcripts
+  # have not moved since its last archive must not be rebuilt on every tick — that is the
+  # over-broad failure mode, and it is silent in a job already bounded by memory.
+  test "a session whose subagent transcripts have not moved is not rebuilt again" do
+    subagent = SubagentTranscript.create!(
+      session: sessions(:archived),
+      agent_id: "settled-#{SecureRandom.hex(4)}",
+      transcript: '{"type": "user", "message": {"role": "user", "content": "hi"}}',
+      status: "completed"
+    )
+
+    TranscriptArchiveJob.perform_now
+
+    selects = full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    assert_empty selects,
+      "nothing changed, so the run should reach its no-op early return rather than rebuild"
   ensure
     subagent&.destroy
   end
