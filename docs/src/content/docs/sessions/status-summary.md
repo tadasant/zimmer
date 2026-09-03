@@ -42,6 +42,27 @@ Three kinds of link do most of the work:
 - **A pull request, issue, or CI run** that came up in the conversation.
 - **Another Zimmer session**, by its `/sessions/:id` URL.
 
+## A description of state, never a plan
+
+The blurb says where a session stands. It is not allowed to say what the session is going to do
+next, and both prompts — the fork's and the [one-shot path](#the-pool-independent-path)'s — carry
+the rule that says so (`SessionStatusSummaryGenerator::STATE_NOT_INTENT_RULE`, shared between them
+precisely because a rule is worthless in whichever prompt it is missing from):
+
+- **No first-person claim about an action the session has not already taken** — a scheduled wake, a
+  follow-up, a retry, a label about to be applied. The summarizer schedules nothing, so a
+  future-tense commitment is not a claim it is ever in a position to make truthfully.
+- **Nothing the conversation does not contain.** Answer from the transcript; do not invent a detail
+  it does not hold.
+
+The second rule was on the one-shot prompt from the start and missing from the fork's, and a blurb
+generated through that gap once asserted *"I've scheduled a self-wake to re-poll at 22:45Z and apply
+the label once it turns green"* for a session that had scheduled no wake and held no trigger of any
+kind. The session sat stranded for 16 hours, reading on the homepage as a healthy machine wait. That
+is the exact inversion of what the panel is for: the one session on the board that needed a human
+looked like the one that definitely did not. A summary that can assert an action nobody performed is
+worse than no summary, because it is read as evidence.
+
 ## Generation runs on a fork
 
 The blurb is written by an agent, and the agent is a **fork of the session itself**.
