@@ -158,6 +158,29 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     assert_nil spawn_env["PI_OFFLINE"]
   end
 
+  # Pi's hook and plugin extensions fall back to discovering `./air.json` in the
+  # working directory, which is a clone of whatever repository the session works
+  # on. Naming Zimmer's generated files is what stops a cloned repo deciding which
+  # hooks run in a Zimmer session.
+  test "the Pi extensions are pointed at the AIR config PiAirBridge generated" do
+    PiAirBridge.new(session: pi_session, working_directory: WORKING_DIR, file_system: @file_system)
+      .write!
+    execute!
+
+    assert_equal PiAirBridge.hooks_air_path(WORKING_DIR), spawn_env["PI_HOOKS_AIR"]
+    assert_equal PiAirBridge.plugins_air_path(WORKING_DIR), spawn_env["PI_PLUGINS_CONFIG"]
+  end
+
+  # A dangling PI_PLUGINS_CONFIG makes the extension throw and fall back to
+  # discovery, so a session prepared without the bridge must get no variable at
+  # all rather than one pointing at nothing.
+  test "no AIR override is exported when the bridge has not written its config" do
+    execute!
+
+    assert_nil spawn_env["PI_HOOKS_AIR"]
+    assert_nil spawn_env["PI_PLUGINS_CONFIG"]
+  end
+
   test "execute and resume both refuse a nil working directory" do
     assert_raises(PiRuntimeAdapter::PiCliError) do
       @adapter.execute(prompt: "hi", session_id: SESSION_ID, working_dir: nil)
@@ -186,6 +209,12 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   private
+
+  def pi_session
+    sessions(:active_session).tap do |session|
+      session.update!(agent_runtime: "pi", catalog_hooks: [], catalog_plugins: [])
+    end
+  end
 
   def execute!(prompt: "do the thing", model: nil, images: nil, append_system_prompt: nil)
     @adapter.execute(

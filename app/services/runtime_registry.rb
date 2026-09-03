@@ -32,6 +32,10 @@ module RuntimeRegistry
   # AIR writes (server injection, env retargeting, secret resolution) in the
   # runtime's native format (`.mcp.json` for Claude, `.codex/config.toml` for
   # Codex).
+  # `artifact_bridge_class` writes whatever the runtime needs in order to actually
+  # RUN the session's AIR hooks and plugins after `air prepare` has been and gone —
+  # a null object for the runtimes whose AIR adapter already does it, PiAirBridge
+  # for Pi, whose adapter is skills-only.
   Bundle = Struct.new(
     :runtime,
     :air_adapter_name,
@@ -43,6 +47,7 @@ module RuntimeRegistry
     :prompt_contribution_class,
     :config_preparer_class,
     :config_post_processor_class,
+    :artifact_bridge_class,
     :auth_provider_class,
     :mcp_credential_writer_class,
     keyword_init: true
@@ -59,6 +64,9 @@ module RuntimeRegistry
     mcp_status_detector_class: McpLogPollerService,
     prompt_contribution_class: ClaudeRuntimePromptContribution,
     config_post_processor_class: ClaudeMcpConfigPostProcessor,
+    # `air prepare claude` writes the hook table into .claude/settings.json and
+    # materializes plugin content itself, so there is nothing left to bridge.
+    artifact_bridge_class: NullRuntimeArtifactBridge,
     mcp_credential_writer_class: ClaudeMcpCredentialWriter,
     # Populated by forthcoming Phase-1 issues (pulsemcp/pulsemcp#3773 config
     # preparer, pulsemcp/pulsemcp#3774 auth provider). nil until those classes
@@ -92,6 +100,9 @@ module RuntimeRegistry
     prompt_contribution_class: nil,
     config_preparer_class: nil,
     config_post_processor_class: CodexConfigTomlPostProcessor,
+    # Codex exposes no hook lifecycle for AIR to translate into, so there is
+    # nothing for Zimmer to write after prepare either.
+    artifact_bridge_class: NullRuntimeArtifactBridge,
     auth_provider_class: nil,
     mcp_credential_writer_class: CodexMcpCredentialWriter
   ).freeze
@@ -114,6 +125,11 @@ module RuntimeRegistry
   #     TranscriptPollerService dereferences it unconditionally in its
   #     constructor, so a nil here is a NoMethodError on every poll of every Pi
   #     session.
+  #   * `artifact_bridge_class` is PiAirBridge, which writes the AIR hooks and
+  #     plugins config Pi's extensions read. `air prepare pi` writes none: the
+  #     adapter ignores hook entries outright and honors a plugin only as
+  #     composition sugar for its skills, so without the bridge a Pi session's
+  #     selected hooks and plugins would exist in the database and nowhere else.
   #
   # `prompt_contribution_class` is populated here AND registered in
   # RuntimePromptContribution.for — the bundle slot is what the harness doc calls
@@ -134,6 +150,7 @@ module RuntimeRegistry
     prompt_contribution_class: PiRuntimePromptContribution,
     config_preparer_class: nil,
     config_post_processor_class: PiMcpConfigPostProcessor,
+    artifact_bridge_class: PiAirBridge,
     auth_provider_class: nil,
     mcp_credential_writer_class: nil
   ).freeze
