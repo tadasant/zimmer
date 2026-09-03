@@ -32,8 +32,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
 
   # Codex's own key for how long it waits on a server's `initialize`, in seconds
   # (see apply_startup_timeouts!). `startup_timeout_ms` is the deprecated alias
-  # Codex still folds into the same field; an entry carrying either one is left
-  # alone.
+  # Codex folds into the same field; an entry carrying either one is left alone.
   STARTUP_TIMEOUT_KEY = "startup_timeout_sec"
   DEPRECATED_STARTUP_TIMEOUT_KEY = "startup_timeout_ms"
 
@@ -138,7 +137,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     entry["env_vars"] = forwarded | [ OPERATOR_SSH_KEY_PATH_VAR ]
   end
 
-  # Give every stdio server the same startup budget Claude has always had.
+  # Give every stdio server McpStartupTimeout's budget.
   #
   # Claude gets it from `MCP_TIMEOUT` on the agent process, which reaches every
   # server Claude spawns. Codex has no such variable: it reads a per-server
@@ -149,7 +148,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # writing `startup_timeout_sec = 5` moves the same measurement to 5.1s.
   #
   # Thirty seconds is not obviously too little, which is exactly why it is worth
-  # fixing before it bites: #pin_npx_caches_to_clone! guarantees that a fresh
+  # closing before it bites: #pin_npx_caches_to_clone! guarantees that a fresh
   # clone's first launch downloads every npx server from the registry, and the
   # nine in `mcp.json` installing at once cost 18s for the slowest on an idle
   # production droplet. The margin is under 2x, on the runtime where running out
@@ -160,21 +159,24 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # no cold start to absorb, and widening the budget there would only lengthen
   # the wait before a genuinely unreachable URL is reported.
   #
-  # An entry that names a timeout itself keeps it, under either spelling: that is
-  # the operator's call, the same way an explicit NPM_CONFIG_CACHE is.
+  # An entry that already names a timeout keeps it, under either spelling. A
+  # `mcp.json` catalog entry cannot express one — AIR's server schema has no such
+  # field — so in practice this preserves a timeout a repo wrote into its own
+  # checked-in `.codex/config.toml`, which AIR merges around rather than
+  # replaces.
   def apply_startup_timeouts!(servers)
     timed = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
       next if entry["command"].blank?
       next if entry[STARTUP_TIMEOUT_KEY].present? || entry[DEPRECATED_STARTUP_TIMEOUT_KEY].present?
 
-      entry[STARTUP_TIMEOUT_KEY] = McpStartupTimeout.seconds
+      entry[STARTUP_TIMEOUT_KEY] = McpStartupTimeout::SECONDS
       name
     end
 
     return if timed.empty?
 
-    Rails.logger.info "[#{self.class.name}] Set #{STARTUP_TIMEOUT_KEY}=#{McpStartupTimeout.seconds} " \
+    Rails.logger.info "[#{self.class.name}] Set #{STARTUP_TIMEOUT_KEY}=#{McpStartupTimeout::SECONDS} " \
       "on #{timed.size} stdio MCP server(s): #{timed.join(', ')}."
   end
 

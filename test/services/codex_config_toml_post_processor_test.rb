@@ -676,7 +676,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       args = ["-y", "@acme/mcp"]
       command = "npx"
       env_vars = ["ACME_HOST_REGION"]
-      startup_timeout_sec = #{McpStartupTimeout.seconds}
+      startup_timeout_sec = #{McpStartupTimeout::SECONDS}
       [mcp_servers.acme-server.env]
       ACME_API_KEY = "sk-acme-123"
       ELICITATION_POLL_URL = "#{ElicitationEndpoint.url}"
@@ -809,6 +809,31 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_equal 9_000, servers.dig("explicit-ms", "startup_timeout_ms")
     assert_nil servers.dig("explicit-ms", "startup_timeout_sec"),
       "Codex folds the deprecated ms spelling into the same field, so Zimmer must not add a second one"
+  end
+
+  # ensure_baseline! is not a stdio-free path, however much it looks like one.
+  # It parses whatever config is already on the clone, and a session that HAD
+  # explicit MCP servers and no longer does (a follow-up, an unarchive, a fork)
+  # reaches it with the previous run's stdio entries still in that file.
+  test "ensure_baseline! gives a stdio server already on the clone the startup timeout" do
+    write_config("context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] })
+
+    build_processor.ensure_baseline!
+
+    assert_equal McpStartupTimeout::SECONDS, read_config.dig("mcp_servers", "context7", "startup_timeout_sec")
+  end
+
+  test "post_process! leaves an entry that is not a table alone" do
+    write_config("context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] })
+    config = TomlRB.parse(@mock_fs.read(config_file_path))
+    config["mcp_servers"]["junk"] = "not-a-table"
+    @mock_fs.write(config_file_path, TomlRB.dump(config))
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+    assert_equal "not-a-table", servers["junk"]
+    assert_equal McpStartupTimeout::SECONDS, servers.dig("context7", "startup_timeout_sec")
   end
 
   # The point of McpStartupTimeout: one budget, two spellings. A change to
