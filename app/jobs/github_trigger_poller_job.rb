@@ -63,6 +63,12 @@
 # issue that shared its second with the previous tick's newest. The cursor is therefore
 # inclusive (`>=`) and paired with a small set of keys already fired at that exact second.
 #
+# Because that cursor is re-queried from INDEX_LAG_GRACE behind itself, it cannot on its own
+# express "everything that already existed is history": the window reaches straight back
+# through the instant a baseline was taken. `issue_repo_baselines` says it separately — when
+# each repo joined the scope — so a first poll, and a scope-widening edit, can refuse a repo's
+# back catalogue while the grace window stays live for the repos already being watched.
+#
 # A `github_issue` condition may also carry `exclude_labels` — an opt-out the issue's author
 # applies by opening it with one of those labels. It is expressed as a `-label:` negation in
 # the search itself, so an excluded issue is never seen, never fires, and never moves the
@@ -574,9 +580,19 @@ class GithubTriggerPollerJob < ApplicationJob
 
     # First tick: start the clock. Issues that predate the condition are history, not
     # events this trigger was created to react to.
+    #
+    # Saying that with the cursor alone does not hold, because the next tick queries
+    # INDEX_LAG_GRACE *behind* it: "now" as a cursor still returns the last 30 minutes, and
+    # with nothing to reject them they read as fresh. So the baseline records what already
+    # existed as well as when — per repo, by creation time — and the window is free to keep
+    # reaching back.
     if cursor.blank?
       now = Time.current.utc.iso8601
-      write_state(condition, scope, { "last_issue_at" => now, "seen_issue_keys" => [] })
+      write_state(
+        condition, scope,
+        { "last_issue_at" => now, "seen_issue_keys" => [],
+          "issue_repo_baselines" => baselines_for_all_watched(condition, now) }
+      )
       Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} at #{now}; firing none"
       return
     end
@@ -598,7 +614,16 @@ class GithubTriggerPollerJob < ApplicationJob
     return if items.empty?
 
     already_fired = condition.github_seen_issue_keys.to_set
-    fresh = items.reject { |item| already_fired.include?(item_key(item)) }
+    baselines = condition.github_issue_repo_baselines
+
+    # Two ways an item in the window is not an event. It has already fired — that is the
+    # seen-set's job, and it is why the window can be re-queried at all. Or it predates the
+    # baseline of the repo it is in, which is how a repo joins the scope without dragging
+    # its whole history in behind it. Neither is recorded as fired: a pre-baseline issue is
+    # rejected by the same comparison on every tick, so there is nothing to remember.
+    fresh = items.reject do |item|
+      already_fired.include?(item_key(item)) || predates_repo_baseline?(item, baselines)
+    end
     return if fresh.empty?
 
     newest_at = cursor
@@ -624,11 +649,86 @@ class GithubTriggerPollerJob < ApplicationJob
       .uniq
       .sort
 
-    write_state(
+    # A repo baseline is spent once the window no longer reaches back past it: `horizon` is
+    # exactly where the next tick's query starts, so an entry at or before it can never
+    # match another item. Dropping it there bounds the map the same way the horizon bounds
+    # the seen-set. A quiet condition whose window holds only pre-baseline issues never
+    # reaches this write at all, so its entries sit until something fires — harmless, and
+    # the reason the map is a few short strings rather than a store.
+    write_new_issue_state(
       condition, scope,
-      { "last_issue_at" => newest_at, "seen_issue_keys" => retained_keys },
+      { "last_issue_at" => newest_at, "seen_issue_keys" => retained_keys,
+        "issue_repo_baselines" => baselines.select { |_repo, at| at.to_s > horizon } },
+      fired_items: items.select { |item| fired_keys.include?(item_key(item)) }
+    )
+  end
+
+  # #write_state, plus the one thing a `github_issue` tick may not discard on a mid-poll
+  # re-scope: the keys it has already fired.
+  #
+  # The cursor and the baselines are computed against the scope the tick started with, so a
+  # re-scope invalidates them and the edit has rebased them itself — dropping them is right,
+  # and is what #write_state does. "A session already exists for this issue" is not scope-
+  # dependent, though, and the rebased cursor still re-queries the window those issues sit
+  # in. Discarding their keys with the rest of the write is therefore #759 again through a
+  # seconds-wide door: the tick's own fires come back as duplicates on the next one.
+  #
+  # The label path can discard wholesale because #record_fired_key has already persisted
+  # each key as it fired. This path has no such write, so this is where it is paid.
+  def write_new_issue_state(condition, scope, state, fired_items:)
+    condition.reload
+
+    if condition.github_watch_scope == scope
+      condition.write_github_state!(state, fired: true)
+      return
+    end
+
+    # Bounded by the REBASED cursor's window, on the same rule the discarded write used:
+    # a key for an issue the next query cannot return can never reject anything.
+    cursor = condition.github_last_issue_at
+    horizon = cursor.present? ? (Time.iso8601(cursor) - INDEX_LAG_GRACE).utc.iso8601 : nil
+    keys = fired_items
+      .select { |item| horizon.nil? || item["created_at"].to_s >= horizon }
+      .map { |item| item_key(item) }
+
+    Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} was re-scoped mid-poll; " \
+                      "discarding this tick's cursor but keeping #{keys.size} fired key(s)"
+
+    condition.write_github_state!(
+      { "seen_issue_keys" => (condition.github_seen_issue_keys | keys).sort },
       fired: true
     )
+  end
+
+  # Every watched repo baselined at the same instant — the shape a first tick stamps,
+  # where nothing that existed when the condition did is an event.
+  #
+  # That instant is the condition's own `created_at`, NOT "now". The poll runs up to a
+  # minute after the condition was saved, and an issue opened in between was opened after
+  # the condition existed: it is an event, and baselining at the tick would drop it
+  # silently. Same reasoning as rebasing a widened scope at the edit rather than at the
+  # next tick — see TriggerCondition#rebase_github_issue_cursor.
+  #
+  # Clamped to the window at both ends. The floor, because a condition can reach its first
+  # poll long after it was created (a disabled trigger, a poller outage) and the query never
+  # reaches further back than INDEX_LAG_GRACE anyway — an older baseline suppresses nothing,
+  # so the floor changes no outcome and just keeps the stored instant meaningful. The
+  # ceiling, because a baseline ahead of the tick would suppress issues opened between the
+  # two, and nothing about a clock that disagrees with `created_at` should cost an event.
+  def baselines_for_all_watched(condition, at)
+    now = Time.iso8601(at)
+    baseline = condition.created_at.utc.clamp(now - INDEX_LAG_GRACE, now).utc.iso8601
+
+    condition.github_repos.to_h { |repo| [ repo.to_s.downcase, baseline ] }
+  end
+
+  # Whether this issue was opened before its repo joined the condition's scope. Keyed on
+  # `created_at`, which never changes, so an issue GitHub indexes long after the baseline
+  # is still judged by when it was OPENED — the property the baseline is a statement about.
+  def predates_repo_baseline?(item, baselines)
+    baseline = baselines[repo_of(item).to_s.downcase]
+
+    baseline.present? && item["created_at"].to_s < baseline.to_s
   end
 
   # The exclusion is applied by the SEARCH, not by filtering what comes back, so an
