@@ -76,6 +76,13 @@ module Mcp
           sessions are running
         - when the hold lifts, as far as the model can honestly say — for two of the three ceilings that
           is a condition rather than a time, and it is stated as one instead of being dressed up as an ETA
+        - when the ACCOUNT POOL comes back: whether any account has room on both its windows right now
+          and, when none does, the first moment one does — as a countdown and a UTC wall clock. This is a
+          different question from the ceilings above. Those are Zimmer's own gate; this is Claude's quota,
+          so a pool can be out of capacity while the gate is open, and the gate can hold spot work on a
+          pacing curve while every account has room. It is the figure to act on when deciding whether to
+          sleep on a wake and retry or to report a blocker upward. The same numbers the Account Pool
+          section of /quotas renders, from the same measurement
         - what the running fleet is burning in $/min, and what one more session is projected to add
         - the two dormant spot populations, both in `waiting` and NOT running, so both are unrelated to
           the concurrency limit and routinely exceed it: the ones the budget ceiling PAUSED mid-run (the
@@ -110,6 +117,17 @@ module Mcp
         # The same method /quotas renders, so the page and this tool cannot answer
         # the same question differently.
         decision = SpotGateService.evaluate
+        # The gate stops reading the pool the moment it has an answer without one —
+        # gating turned off short-circuits before it ever measures — so a decision
+        # does not always carry the pool's capacity. /quotas has no such
+        # short-circuit: it measures the pool whatever the gate setting is, and
+        # with gating off (the default) it would answer "when does the pool come
+        # back" while this tool said nothing at all.
+        #
+        # The decision's own copy wins when it has one, so the capacity time and
+        # the utilization figures beside it come off a single reading of the pool
+        # rather than two taken moments apart.
+        pool_capacity = decision.pool_capacity || SpotGateService::PoolCapacity.from(ClaudeAccountPool.measure)
         paused_count = SpotSessionPause.paused_count
         # The second dormant population: sessions the gate refused BEFORE a
         # turn. Reporting only `paused_count` under a heading that reads like
@@ -173,8 +191,13 @@ module Mcp
                    "spent counts as 100% in the 5-hour figure)"
         end
 
+        lines.concat(pool_capacity_lines(pool_capacity))
+
         lines.concat(window_lines("5-hour", decision.five_hour))
-        lines.concat(window_lines("Weekly", decision.weekly))
+        # The 7-day rollover rides along with the window it describes, rather than
+        # being appended after it — a window with no reading renders a sentence,
+        # not a list, and a bullet glued straight onto it reads as a contradiction.
+        lines.concat(window_lines("Weekly", decision.weekly, trailing: weekly_reset_lines(pool_capacity)))
         lines.concat(genesis_lines(classes, counts))
         lines.concat(trigger_lines)
 
@@ -183,11 +206,122 @@ module Mcp
 
       private
 
+      # When the ACCOUNT POOL comes back — the question a held session actually
+      # has to answer to choose between sleeping on a wake and escalating.
+      #
+      # Not the same question as `resume_outlook` above it. That one is about
+      # Zimmer's own ceilings; this one is about Claude's quota underneath them,
+      # and the two come apart in both directions: a pool with every account out
+      # of capacity while the gate sits open, and a gate holding spot work on a
+      # pacing curve while every account has room.
+      #
+      # Carried off SpotGateService::PoolCapacity, which copies it off
+      # ClaudeAccountPool::Measure — the same measurement the /quotas banner
+      # renders, so the page and this tool cannot answer it differently.
+      #
+      # Empty when there was no pool reading to decide on at all (gating off, or
+      # nothing probed), which the "no reading" lines below already say.
+      def pool_capacity_lines(capacity)
+        return [] if capacity.nil?
+
+        [ "- **Account pool capacity:** #{pool_capacity_phrase(capacity)}" ]
+      end
+
+      # The three states of the /quotas banner, in its own words. Both absences
+      # are named, because "no time" is two different answers here and a caller
+      # cannot act on the bare nil. See SpotGateService::PoolCapacity.
+      def pool_capacity_phrase(capacity)
+        if capacity.capacity_now?
+          servable = capacity.servable_count
+          return "available now — #{servable} #{"account".pluralize(servable)} of #{capacity.read_count} " \
+                 "with a reading #{servable == 1 ? "has" : "have"} room on both windows right now"
+        end
+
+        blocked = pool_blocked_phrase(capacity)
+        if capacity.next_capacity_at.nil?
+          return "#{blocked} No reset time is recorded for the blocked windows, so nothing here says " \
+                 "when the pool comes back"
+        end
+
+        "#{blocked} The first one has room on both windows again #{reset_phrase(capacity.next_capacity_at)}"
+      end
+
+      # Only ever rendered when nothing is servable, so every account with a
+      # reading is out — which is why this counts them rather than taking a
+      # blocked figure of its own.
+      def pool_blocked_phrase(capacity)
+        return "The one account with a reading is out of capacity." if capacity.read_count == 1
+
+        "All #{capacity.read_count} accounts with a reading are out of capacity."
+      end
+
+      # The 7-day rollover, under the weekly window it belongs to. Measured over
+      # exactly the accounts whose week is spent, so it says "blocked until X"
+      # rather than naming a rollover on an account that was never blocked — the
+      # same set, and the same three states, the /quotas line reports.
+      # The count is tested before the timestamp, which is the opposite order to
+      # the /quotas line and reaches the same three sentences: ClaudeAccountPool
+      # only records a weekly rollover for an account it also counted as spent, so
+      # a zero count always carries a nil time and the two orders cannot disagree.
+      def weekly_reset_lines(capacity)
+        return [] if capacity.nil?
+
+        spent = capacity.weekly_spent_count
+        return [ "- **Next 7-day reset:** no account's 7-day window is spent, so nothing is waiting on one" ] if spent.zero?
+
+        accounts = "#{spent} #{"account".pluralize(spent)}"
+        reset = capacity.next_weekly_reset
+        if reset.nil?
+          return [ "- **Next 7-day reset:** unknown — #{accounts} with a spent 7-day window, and no " \
+                   "reset time recorded for #{spent == 1 ? "it" : "them"}" ]
+        end
+
+        [ "- **Next 7-day reset:** #{reset_phrase(reset)} — the soonest recorded among #{accounts} " \
+          "whose 7-day window is spent" ]
+      end
+
+      # A reset as a countdown AND a wall clock, the pair /quotas shows. The
+      # countdown is what a caller deciding "sleep or escalate" acts on; the
+      # absolute time is what survives being quoted into a later message, where a
+      # relative one would have quietly gone stale.
+      #
+      # A deadline can cross now between the measurement and this render, and a
+      # countdown of "0 seconds" would read as "any moment now" rather than as the
+      # stale reading it is. `time <= Time.current` is the same test the page
+      # applies, rather than a rounded one that would call a deadline 0.4 seconds
+      # out stale while the page was still counting down to it.
+      #
+      # A semicolon, not a dash: the weekly line puts its own clause after this
+      # phrase, and two stacked em-dashes read as a sentence that lost its way.
+      #
+      # Floored to the minute, as `time_until_reset` floors on the page. The
+      # timestamp came off a poll of the account's quota, so "1 hour, 35 minutes,
+      # and 59 seconds" claims a precision the reading does not have, and the
+      # decision it feeds — sleep or escalate — is never made on the seconds.
+      def reset_phrase(time)
+        return "now (#{wall_clock(time)}); that moment has passed, so this reading is stale" if time <= Time.current
+
+        seconds = (time - Time.current).to_i
+        return "in under a minute (#{wall_clock(time)})" if seconds < 1.minute
+
+        "in #{duration(seconds - (seconds % 60))} (#{wall_clock(time)})"
+      end
+
+      # The same format constant /quotas renders, so a change to one moves both. A
+      # tool answer is read by an agent with no viewer timezone to be rewritten
+      # into, which is why that format spells the zone out.
+      def wall_clock(time) = time.utc.strftime(ClaudeAccountPool::RESET_TIME_FORMAT)
+
       # One window, in the units the model actually has for it. Dollars when the
       # calibration has produced a usable estimate; percentages of the window
       # when it has not, said out loud rather than dressed up as money.
-      def window_lines(label, reading)
-        return [ "", "### #{label} window", "", "No reading available." ] if reading.nil?
+      def window_lines(label, reading, trailing: [])
+        if reading.nil?
+          head = [ "", "### #{label} window", "", "No reading available." ]
+          # A blank line, or the bullets would glue onto a sentence and render as
+          # one run-on paragraph rather than as a list.
+          return trailing.empty? ? head : head + [ "" ] + trailing
+        end
 
         window = reading.window
         head = [
@@ -223,7 +357,7 @@ module Mcp
 
         head + body + [
           "- **Has room for a spot session:** #{reading.at_limit? ? "no — #{reading.why_held}" : "yes"}"
-        ]
+        ] + trailing
       end
 
       # The reserve as the operator set it AND as the model derives it. Both, in

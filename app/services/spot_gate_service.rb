@@ -208,8 +208,58 @@ class SpotGateService
     end
   end
 
-  # Both windows as this decision read them, and how the average was taken.
-  PoolReading = Data.define(:five_hour, :weekly, :account_count, :read_count) do
+  # When the ACCOUNT POOL regains capacity, carried off ClaudeAccountPool::Measure
+  # so every surface answers "how long is this down for" from one computation.
+  #
+  # A different question from Decision#resume_outlook, which is about this gate's
+  # own ceilings. This one is about Claude's quota: the pool can be out of
+  # capacity while the gate is wide open, and the gate can hold spot work on a
+  # pacing curve while every account has room.
+  #
+  # Both timestamps are nil for two different reasons, and a caller cannot act on
+  # "nil" without knowing which — so the two counts that tell them apart travel
+  # with them, exactly as they do on the /quotas banner:
+  #
+  # - `next_capacity_at` is nil because the pool has capacity NOW (`capacity_now`
+  #   is true, and there is nothing to wait for) or because everything is blocked
+  #   with no reset time recorded (`capacity_now` is false, and nothing knows when
+  #   the pool comes back).
+  # - `next_weekly_reset` is nil because no account's week is spent
+  #   (`weekly_spent_count` is zero, so a 7-day rollover is not what holds the
+  #   pool) or because the accounts whose week IS spent recorded no reset time.
+  #
+  # `read_count` and `servable_count` are the same two figures the banner names
+  # its accounts with, so a surface reading this can say "3 accounts of 5" rather
+  # than "at least one". Both are copies, and there is no `blocked_count` because
+  # nothing needs one: the blocked sentences only render when `capacity_now` is
+  # false, which is exactly when every account with a reading is blocked.
+  PoolCapacity = Data.define(:next_capacity_at, :next_weekly_reset,
+                             :capacity_now, :weekly_spent_count,
+                             :read_count, :servable_count) do
+    # Copied off the measure rather than derived here. A second derivation is the
+    # drift this type exists to prevent, so every field is a straight read —
+    # including the two that Measure itself derives.
+    #
+    # Nil when the pool has nothing to say, which is the same guard
+    # `pool_capacity_banner` applies before rendering anything: a measure over
+    # zero readings would report "nobody has capacity and nobody knows when",
+    # which is a claim about a pool that was never probed.
+    def self.from(measure)
+      return nil unless measure.any_readings?
+
+      new(next_capacity_at: measure.next_capacity_at, next_weekly_reset: measure.next_weekly_reset,
+          capacity_now: measure.capacity_now?, weekly_spent_count: measure.weekly_spent_count,
+          read_count: measure.read_count, servable_count: measure.servable_count)
+    end
+
+    # Data's own to_h is exactly these fields, so there is nothing to override —
+    # unlike Reading and Decision below, which serialize derived figures too.
+    def capacity_now? = capacity_now
+  end
+
+  # Both windows as this decision read them, how the average was taken, and when
+  # the pool underneath them comes back.
+  PoolReading = Data.define(:five_hour, :weekly, :account_count, :read_count, :capacity) do
     # Window label => reading, skipping a window with no usable number. Labelled
     # rather than positional because two windows can hold equal values and Data
     # compares by value — telling them apart by identity would occasionally name
@@ -235,7 +285,8 @@ class SpotGateService
 
   Decision = Data.define(:allowed, :reason, :detail, :five_hour, :weekly,
                          :active_sessions, :fleet_cap, :accounts_read, :pool_size,
-                         :fleet_burn_usd_per_minute, :candidate_burn_usd_per_minute) do
+                         :fleet_burn_usd_per_minute, :candidate_burn_usd_per_minute,
+                         :pool_capacity) do
     def allowed? = allowed
     def held? = !allowed
 
@@ -354,7 +405,8 @@ class SpotGateService
         fleet_burn_usd_per_minute: fleet_burn_usd_per_minute,
         candidate_burn_usd_per_minute: candidate_burn_usd_per_minute,
         five_hour: five_hour&.to_h,
-        weekly: weekly&.to_h
+        weekly: weekly&.to_h,
+        pool_capacity: pool_capacity&.to_h
       }
     end
   end
@@ -366,7 +418,8 @@ class SpotGateService
     detail: "Priority sessions are never gated on quota or on the fleet cap.",
     five_hour: nil, weekly: nil, active_sessions: nil, fleet_cap: nil,
     accounts_read: nil, pool_size: nil,
-    fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil
+    fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
+    pool_capacity: nil
   ).freeze
 
   class << self
@@ -522,7 +575,8 @@ class SpotGateService
       detail: "Could not evaluate the spot gate (#{error.class}); allowing the session.",
       five_hour: nil, weekly: nil,
       active_sessions: @active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil,
-      fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil
+      fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
+      pool_capacity: nil
     )
   end
 
@@ -531,7 +585,8 @@ class SpotGateService
       allowed: true, reason: reason, detail: detail,
       five_hour: nil, weekly: nil,
       active_sessions: active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil,
-      fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil
+      fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
+      pool_capacity: nil
     )
   end
 
@@ -575,7 +630,8 @@ class SpotGateService
       active_sessions: active_sessions, fleet_cap: fleet_cap,
       accounts_read: pool.read_count, pool_size: pool.account_count,
       fleet_burn_usd_per_minute: fleet_burn_usd_per_minute,
-      candidate_burn_usd_per_minute: candidate_burn_usd_per_minute
+      candidate_burn_usd_per_minute: candidate_burn_usd_per_minute,
+      pool_capacity: pool.capacity
     )
   end
 
@@ -641,7 +697,8 @@ class SpotGateService
     PoolReading.new(
       five_hour: reading(windows[QuotaCapacityEstimate::FIVE_HOUR], burn, waived),
       weekly: reading(windows[QuotaCapacityEstimate::WEEKLY], burn, waived),
-      account_count: measure.account_count, read_count: measure.read_count
+      account_count: measure.account_count, read_count: measure.read_count,
+      capacity: PoolCapacity.from(measure)
     )
   end
 
