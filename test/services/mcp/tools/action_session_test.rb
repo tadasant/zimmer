@@ -354,21 +354,53 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
     result = @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Third in line")
 
-    assert_includes result, "- **Queue depth:** 3 messages now pending delivery to this session."
-    assert_includes result, "yours is not the only message waiting"
+    assert_includes result, "- **Queue depth:** 3 messages now pending delivery to this session, yours last at position 3."
+    assert_includes result, "so the 2 ahead of yours are read first"
   end
 
   test "follow_up reports a depth of one without the consolidate note" do
     result = @tool.call("action" => "follow_up", "session_id" => sessions(:running).id, "prompt" => "Only one")
 
-    assert_includes result, "- **Queue depth:** 1 message now pending delivery to this session."
+    assert_includes result, "- **Queue depth:** 1 message now pending delivery to this session, yours last at position 1."
     assert_not_includes result, "yours is not the only message waiting"
   end
 
-  test "follow_up to an idle session reports no queue depth" do
+  test "follow_up to an idle session with an empty queue reports no queue depth" do
     result = @tool.call("action" => "follow_up", "session_id" => sessions(:needs_input).id, "prompt" => "Keep going")
 
     assert_not_includes result, "**Queue depth:**"
+    assert_not_includes result, "**Still queued:**"
+  end
+
+  # The prompt was DELIVERED on these two branches, not queued, so what is
+  # pending is behind it. Reporting it as "yours last in line" would be the
+  # opposite of what happened.
+  test "follow_up to an idle session reports what is still queued behind the delivered prompt" do
+    session = sessions(:needs_input)
+    session.enqueued_messages.create!(content: "Queued earlier", position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "Queued earlier still", position: 2, status: "pending")
+
+    result = @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Keep going")
+
+    assert_not_includes result, "**Queue depth:**"
+    assert_includes result, "- **Still queued:** 2 other messages are still pending for this session, behind the one you just delivered."
+    assert_includes result, "they are delivered when the turn you just started ends"
+  end
+
+  test "force_immediate follow_up reports what is still queued behind the interrupt" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Queued earlier", position: 1, status: "pending")
+
+    result = @tool.call(
+      "action" => "follow_up",
+      "session_id" => session.id,
+      "prompt" => "Stop what you are doing",
+      "force_immediate" => true
+    )
+
+    assert_not_includes result, "**Queue depth:**"
+    assert_includes result, "- **Still queued:** 1 other message is still pending for this session, behind the one you just delivered."
+    assert_includes result, "it is delivered when the turn you just started ends"
   end
 
   test "follow_up requires a prompt" do
