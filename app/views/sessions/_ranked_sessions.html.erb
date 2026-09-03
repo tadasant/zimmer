@@ -15,6 +15,9 @@
       section_limit     - how many rows each section renders at most
       status_filter     - the statuses this page is showing ([] means all)
       priority_class_filter - "spot", "priority", or nil for both
+      visibility_filter - which board this is: "on_board" (the default, which
+                          leaves snoozed and hidden rows out), "off_board", or
+                          "all". Presentation only.
       live_insert       - false when a filter the client cannot evaluate (search,
                           agent root, genesis) is narrowing the page %>
 <%# A queue that goes stale is a queue you cannot trust, so the rows subscribe to
@@ -61,6 +64,7 @@
          data-ranked-queue-section-limit-value="<%= section_limit %>"
          data-ranked-queue-status-filter-value="<%= status_filter.to_json %>"
          data-ranked-queue-priority-class-filter-value="<%= priority_class_filter %>"
+         data-ranked-queue-visibility-filter-value="<%= visibility_filter %>"
          data-ranked-queue-live-insert-value="<%= live_insert %>">
   <div class="mb-4">
     <h2 class="text-lg font-semibold text-gray-800">Ranked</h2>

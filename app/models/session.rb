@@ -4,6 +4,7 @@ class Session < ApplicationRecord
   include AtomicJsonMetadata
   include SessionGenesisClassification
   include SessionPrecedence
+  include SessionVisibility
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy

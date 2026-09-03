@@ -1,4 +1,7 @@
-<div class="flex flex-col h-full bg-white shadow rounded-lg relative max-w-[400px]">
+<%# data-visibility-unit marks the removable card: when a session is snoozed or
+    hidden from the menu below, visibility_controller takes this element (and its
+    wrapping turbo-frame) off the board without a reload. %>
+<div class="flex flex-col h-full bg-white shadow rounded-lg relative max-w-[400px]" data-visibility-unit>
   <%# Drag handle: only this grab bar starts a category drag, so taps on the card's
       own controls (favorite star, title) never trigger an accidental
       move. Top-center keeps it clear of the status badge (left) and star (right).
@@ -128,6 +131,12 @@
               title="Genesis: <%= agent_session.genesis_label %> — classified <%= agent_session.priority_class(cached_genesis_overrides) %>">
           <%= agent_session.genesis_key %> · <%= agent_session.priority_class(cached_genesis_overrides) %>
         </span>
+        <%# Only ever seen while the board is revealing tucked-away sessions —
+            otherwise this card is not rendered at all. It says which of the two
+            kinds of tucking-away this is, and when it ends. %>
+        <% unless agent_session.board_visible? %>
+          <%= render "sessions/visibility_badge", agent_session: agent_session %>
+        <% end %>
       </div>
     </div>
 
@@ -156,29 +165,39 @@
           <% end %>
           <%# Overflow menu — everything that would otherwise crowd the footer row.
               Sits immediately left of Trash / Restore, opens upward (bottom-full) so
-              a card low on the page does not push its menu off the bottom, and is
-              omitted entirely when it would be empty. %>
-          <% if agent_session.pausable_until? %>
-            <div data-controller="overflow-menu" data-action="pause-until:scheduled->overflow-menu#close">
-              <button type="button"
-                      data-overflow-menu-target="button"
-                      data-action="overflow-menu#toggle"
-                      aria-haspopup="true"
-                      aria-expanded="false"
-                      title="More actions for session <%= agent_session.id %>"
-                      aria-label="More actions for session <%= agent_session.id %>"
-                      class="inline-flex items-center justify-center h-8 w-8 rounded-md border border-gray-300 text-gray-500 bg-white hover:bg-gray-50 hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
-                <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 11.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 17a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
-                </svg>
-              </button>
-              <div data-overflow-menu-target="menu"
-                   role="menu"
-                   class="hidden absolute right-0 bottom-full mb-2 z-30 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
-                <%= render "sessions/pause_until", agent_session: agent_session, variant: :menu_item %>
-              </div>
+              a card low on the page does not push its menu off the bottom.
+
+              Rendered on every card. It used to be omitted for a session Pause
+              Until could not sleep (an archived or failed one), since that left it
+              empty; board visibility is offered for every session in every state,
+              so there is no longer such a card. %>
+          <div data-controller="overflow-menu"
+               data-action="pause-until:scheduled->overflow-menu#close visibility:changed->overflow-menu#close">
+            <button type="button"
+                    data-overflow-menu-target="button"
+                    data-action="overflow-menu#toggle"
+                    aria-haspopup="true"
+                    aria-expanded="false"
+                    title="More actions for session <%= agent_session.id %>"
+                    aria-label="More actions for session <%= agent_session.id %>"
+                    class="inline-flex items-center justify-center h-8 w-8 rounded-md border border-gray-300 text-gray-500 bg-white hover:bg-gray-50 hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500">
+              <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 11.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 17a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
+              </svg>
+            </button>
+            <div data-overflow-menu-target="menu"
+                 role="menu"
+                 class="hidden absolute right-0 bottom-full mb-2 z-30 w-72 max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+              <%# Board visibility first: it is the one offered on every card,
+                  and putting it above Pause Until keeps the destructive-looking
+                  neighbour from being the first thing a thumb lands on. %>
+              <%= render "sessions/visibility_menu", agent_session: agent_session, variant: :menu_item %>
+              <% if agent_session.pausable_until? %>
+                <div class="border-t border-gray-100"></div>
+              <% end %>
+              <%= render "sessions/pause_until", agent_session: agent_session, variant: :menu_item %>
             </div>
-          <% end %>
+          </div>
           <% if agent_session.archived? %>
             <%= link_to unarchive_session_path(agent_session), data: { turbo_method: :post, turbo_frame: "_top" }, class: "inline-flex items-center px-3 py-1.5 border border-green-300 text-xs font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500" do %>
               <svg class="-ml-0.5 mr-1.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">

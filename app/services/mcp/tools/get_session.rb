@@ -283,6 +283,14 @@ module Mcp
         lines << "- **Precedence:** #{session.precedence}#{' — spot sessions start highest first' if session.spot?}"
         lines.concat(spot_hold_lines(session))
         lines.concat(spot_pause_lines(session))
+        # Board visibility, reported only when it is not the default. Stated with
+        # the disclaimer attached, because the one way this field can do harm is an
+        # agent reading "snoozed" as a reason not to act on the session.
+        if (tucked = session.visibility_summary)
+          lines << "- **Board visibility:** #{tucked} — presentation only, so the human's dashboard is not " \
+                   "showing this card. It has no effect on scheduling or execution: this session runs exactly " \
+                   "as it would if it were on the board, and a snooze expires by itself."
+        end
 
         lines << ""
         lines << "### Git Configuration"

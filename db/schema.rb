@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_02_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_03_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -642,6 +642,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_150000) do
     t.text "session_notes"
     t.datetime "session_notes_updated_at"
     t.string "slug"
+    t.datetime "snoozed_until"
     t.integer "sort_order", default: 0, null: false
     t.integer "status", default: 1
     t.string "subdirectory"
@@ -649,6 +650,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_150000) do
     t.json "transcript"
     t.datetime "trash_after"
     t.datetime "updated_at", null: false
+    t.string "visibility", default: "visible", null: false
     t.index "((config ->> 'model'::text))", name: "index_sessions_on_config_model"
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
     t.index "((custom_metadata ->> 'router_session_id'::text))", name: "index_sessions_on_router_session_id"
@@ -678,6 +680,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_02_150000) do
     t.index ["status", "updated_at", "id"], name: "index_sessions_on_legacy_archived_stale_clone_candidates", where: "((trash_after IS NULL) AND (archived_at IS NULL) AND ((metadata ->> 'clone_path'::text) IS NOT NULL))"
     t.index ["status"], name: "index_sessions_on_status"
     t.index ["trash_after"], name: "index_sessions_on_trash_after", where: "(trash_after IS NOT NULL)"
+    t.index ["visibility", "snoozed_until"], name: "index_sessions_on_visibility_and_snoozed_until"
   end
 
   create_table "subagent_transcripts", force: :cascade do |t|
