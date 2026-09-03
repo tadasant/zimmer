@@ -30,12 +30,14 @@ flowchart LR
     GL -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
     GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
 
-    T --> H["heal stale catalog refs"]
+    T --> H["heal stale catalog refs<br/>(agent root repointed, never raised)"]
     H --> D{"reuse_session?"}
     D -->|"yes + session is<br/>needs_input/running/waiting"| FU["follow_up_session!"]
     D -->|"resuscitate_archived<br/>+ archived<br/>+ the session started"| RS["unarchive + follow up"]
-    D -->|no| NEW["create_new_session!<br/>(a one-time reuse trigger skips instead)"]
-    D -->|"archived, never started<br/>(nothing to follow up into)"| NEW
+    D -->|"one-time reuse trigger,<br/>target not reusable"| SK["skip — nothing to spawn,<br/>nothing to resolve"]
+    D -->|no| HR["resolve the agent root<br/>(raises if it cannot)"]
+    D -->|"archived, never started<br/>(nothing to follow up into)"| HR
+    HR --> NEW["create_new_session!"]
 ```
 
 ### `slack`
@@ -1053,6 +1055,35 @@ wrong answer, and so would restarting it fresh over the top of hours of work.
 with a single-file resume path; a Codex unarchive writes nothing and is not failed for it — see
 [Writing a transcript back to disk](/sessions/transcripts/#writing-a-transcript-back-to-disk).
 
+### The agent root is resolved only where it is used
+
+`agent_root_name` is a **spawn-path** field on the fire path. `Trigger#create_new_session!` (and the
+burst notice) hands it to `Session.create_from_agent_root!`; a reuse hands it to nobody, because the
+session it follows up into was already created with a root of its own.
+
+`Trigger#heal_stale_agent_root!` therefore runs twice, and the two calls differ in one thing —
+whether an unresolvable name is allowed to raise.
+
+- **Before the reuse paths, non-raising.** A *renamed* root is still repointed onto its successor on
+  every fire — matched on an exact `git_root` + `subdirectory` match. That repair belongs on every
+  fire because `agent_root_name` is read off the fire path too: `search_triggers` and
+  `action_trigger` gate a scope-restricted MCP connection on it, and the trigger page and the REST
+  payload display it. A reuse trigger that never spawns would otherwise keep a vanished name forever
+  and drop out of a scoped agent's view of its own triggers.
+- **After them, on the spawn path, raising.** A name with no successor is a real failure only for a
+  fire that was about to create a session under it. `ScheduleTriggerJob` parks a one-time wake
+  `failed` on that raise; a recurring schedule instead advances `last_triggered_at` and retries on
+  its next interval, and `AoEventTriggerJob` parks only a session-scoped condition.
+
+Raising up front made the check wrong for a whole class of trigger. Every per-session wake —
+`Sessions::ScheduleWakeUp` behind the `wake_me_up_later` MCP tool, and the session-scoped `ao_event`
+wake behind `wake_me_up_when_session_changes_state` — labels itself with the root of the session it
+is going to reuse, and falls back to the session's runtime name when the session resolves to no
+catalog root at all (a legacy session, or one whose root has since left the catalog).
+`"claude_code"` is not a root, so the wake raised on its own label, the trigger was parked `failed`,
+every firing path filters on `enabled` — and the session slept forever, silently. See
+[#600](https://github.com/tadasant/zimmer/issues/600).
+
 ## Coalescing a repeated fire
 
 A recurring trigger that reuses a session is a drumbeat: one fire, one run. If the session it reuses
@@ -1120,7 +1151,8 @@ A trigger does not have to wait for a condition. All three surfaces can fire one
 
 All three go through `Triggers::ManualFire` into `Trigger#create_session!`, the same chokepoint a
 poller-driven fire uses. So a manual fire is a real fire: the session is linked to the trigger,
-counts toward its fire counter, heals stale catalog references, reuses the target session if the
+counts toward its fire counter, heals stale catalog references (the [agent root only where it is
+actually used](#the-agent-root-is-resolved-only-where-it-is-used)), reuses the target session if the
 trigger is a reuse trigger, and is subject to the [burst cap](#burst-control) — over it, you get a
 burst-notice session or nothing at all, and each surface says which.
 
