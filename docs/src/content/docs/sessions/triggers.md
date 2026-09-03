@@ -35,7 +35,7 @@ flowchart LR
     D -->|"yes + session is<br/>needs_input/running/waiting"| FU["follow_up_session!"]
     D -->|"resuscitate_archived<br/>+ archived<br/>+ the session started"| RS["unarchive + follow up"]
     D -->|no| NEW["create_new_session!<br/>(a one-time reuse trigger skips instead)"]
-    D -->|"archived, never started<br/>(nothing to resuscitate)"| NEW
+    D -->|"archived, never started<br/>(nothing to follow up into)"| NEW
 ```
 
 ### `slack`
@@ -1007,12 +1007,9 @@ restores its clone and its transcript, and the follow-up lands in the resumed co
 
 ### The archived session that never started
 
-Resuscitation only works when there is something to bring back. `UnarchiveSessionService` restores a
-transcript so the agent can resume, and refuses a session with no `session_id` — that is the name it
-would write the transcript under (for a runtime with a single-file resume path; a Codex unarchive
-writes nothing and is not failed for it — see
-[Writing a transcript back to disk](/sessions/transcripts/#writing-a-transcript-back-to-disk)).
-A session with neither is refused on every fire, forever.
+Resuscitation only works when there is a conversation to follow up **into**. A session whose agent
+process never launched has none: no runtime `session_id`, no transcript. `Session#never_ran?` is that
+pair, and both halves have to be blank.
 
 That pair is what the [spot gate](/sessions/spot-and-priority/#the-gate) produces at scale: a `spot`
 session can sit at the starting line for a whole quota window without ever starting, and then be
@@ -1020,10 +1017,18 @@ archived. `session_id` is stamped once the spawn pipeline has the session's clon
 runtime is launched (Zimmer passes it to the CLI as `--session-id`), so a blank one means the session
 never got that far — and its transcript is blank for the same reason.
 
-Without a screen for it, such a candidate kills the trigger outright: the fire raises,
-`ScheduleTriggerJob` advances `last_triggered_at` to close the retry loop, and the schedule is
-consumed with nothing created — on that fire and on every one after it, since the candidate never
-changes. A daily sweep dies silently and permanently on one held session.
+Restoring one of those is fine on its own — that is what
+[restoring a session that never ran](/sessions/lifecycle/#restoring-a-session-that-never-ran) does,
+and `UnarchiveSessionService` no longer refuses it. **Reusing one is not.** A follow-up prompt to a
+session with no `session_id` is reclassified by `AgentSessionJob` as a fresh start, and a fresh start
+runs the session's **own** prompt — so this fire's prompt would be silently dropped in favour of the
+one the session was created with. Spawning gives the trigger a session that runs the prompt it
+actually sent.
+
+It also has to stay a screen because it once bricked triggers outright. The unarchive refused such a
+session, the fire raised, `ScheduleTriggerJob` advanced `last_triggered_at` to close the retry loop,
+and the schedule was consumed with nothing created — on that fire and on every one after it, since
+the candidate never changes. A daily sweep died silently and permanently on one held session.
 
 So a never-started session is not a reuse candidate at all. The trigger logs a warning and falls
 through to the paths it would take with no candidate — the same paths an archived session takes when
@@ -1039,9 +1044,14 @@ through to the paths it would take with no candidate — the same paths an archi
 Every other unarchive failure still raises and alerts. A clone that will not restore, a database
 error, a row that cannot leave its state — and the one case where the id and the transcript come
 apart: a runtime that mints its own conversation id (codex) has that id cleared on a fresh-start
-recovery, so a long-running session can be archived holding a full transcript and no id. It cannot
-be restored either, but it *has* state, so abandoning it quietly and spawning a duplicate alongside
-it would be the wrong answer.
+recovery, so a long-running session can be archived holding a full transcript and no id. That
+session is **not** never-run — it *has* state — so the unarchive still tries to resume it, still
+cannot, and says so loudly. Abandoning it quietly and spawning a duplicate alongside it would be the
+wrong answer, and so would restarting it fresh over the top of hours of work.
+
+`UnarchiveSessionService` writes a restored transcript under the session's `session_id` for a runtime
+with a single-file resume path; a Codex unarchive writes nothing and is not failed for it — see
+[Writing a transcript back to disk](/sessions/transcripts/#writing-a-transcript-back-to-disk).
 
 ## Coalescing a repeated fire
 

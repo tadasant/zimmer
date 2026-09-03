@@ -290,6 +290,64 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert reclassify_log, "Should log that the follow-up was reclassified as a fresh start"
   end
 
+  # The reclassification above nils `follow_up_prompt`, which is what routes the
+  # job down the new-session path — and that path never reaches the follow-up
+  # arm, the only other place `pending_follow_up_prompt` is consumed. Left on the
+  # row, the marker is not merely stale: the arm reads
+  # `pending_follow_up_prompt || follow_up_prompt`, so this turn's discarded text
+  # would win over the NEXT turn's real prompt and be delivered in its place,
+  # silently swallowing the message a human just sent.
+  #
+  # Reachable from the UI the moment a never-started session can be restored
+  # (zimmer#557): a follow-up is how a human continues one.
+  test "reclassifying a follow-up as a fresh start clears the pending delivery marker" do
+    @session.update!(
+      session_id: nil,
+      status: :waiting,
+      metadata: {
+        "pending_follow_up_prompt" => "just check the logs",
+        "pending_follow_up_sent_at" => Time.current.iso8601
+      }
+    )
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+    mock_fs.mkdir_p("/tmp/test-clone")
+
+    GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        mock_process_manager.wait_hook = ->(pid, flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+        mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(@session.id, "just check the logs")
+        end
+      end
+    end
+
+    @session.reload
+    assert_nil @session.metadata["pending_follow_up_prompt"],
+      "the marker must not survive to be replayed over the next turn's prompt"
+    assert_nil @session.metadata["pending_follow_up_sent_at"]
+  end
+
   # When the never-started session also has no prompt of its own, the follow-up
   # text becomes the prompt so the fresh run still has a task to act on.
   test "follow-up prompt for a session with no session_id and no prompt adopts the follow-up text" do

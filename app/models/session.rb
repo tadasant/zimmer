@@ -1403,6 +1403,70 @@ class Session < ApplicationRecord
     session_id.present? && metadata&.dig("clone_path").present?
   end
 
+  # Did this session's agent process never launch, leaving nothing to resume?
+  #
+  # `session_id` is stamped once the spawn pipeline has the session's clone and
+  # BEFORE the runtime is launched (AgentSessionJob passes it to the CLI as
+  # `--session-id`), so a blank one means the session never got that far. That
+  # is the state the spot gate produces at scale: a `spot` session created by a
+  # trigger, held at the starting line for a whole quota window, then paused
+  # into needs_input — or archived — with an empty transcript.
+  #
+  # The transcript is checked as well as the id because the two can come apart:
+  # a runtime that mints its own conversation id (codex) has that id cleared by
+  # ProcessLifecycleManager#release_stale_runtime_session_id! on a fresh-start
+  # recovery, so a session that has been running for hours can hold a full
+  # transcript with no id. That session HAS work, and starting it over would
+  # silently discard it.
+  #
+  # That release leaves a gap this predicate does not close: on a fresh-start
+  # recovery during the FIRST turn, the transcript column can still be empty, so
+  # a codex session reads as never-run while it has a clone and a live process.
+  # Nothing acts on it in that window — the session is `running`, which
+  # `may_resume?` excludes and `archived?` is not — so no restart or restore can
+  # reach it until the process is gone. Once it is, restarting from scratch is
+  # the better of the two answers available: the alternative is the refusal this
+  # predicate exists to remove, which left the session permanently unstartable,
+  # and codex has no single-file resume path to restore it from anyway (see
+  # UnarchiveSessionService#write_transcript_file).
+  #
+  # Deliberately narrow for that reason: the dangerous mistake is the inverse
+  # one, so BOTH signals must be blank before anything treats this session as
+  # never-run. Anything holding restorable state keeps going down the resume
+  # path, where a failure to restore stays loud.
+  #
+  # @return [Boolean] true when there is no conversation to bring back
+  def never_ran?
+    session_id.blank? && transcript.blank?
+  end
+
+  # Can this session only be restarted by re-running the whole setup pipeline —
+  # git clone, MCP config, a fresh session_id, a fresh process?
+  #
+  # Two shapes reach that same answer, and neither has a conversation a
+  # follow-up prompt could land in:
+  #
+  # - setup failed partway through (`failed_before_initial_prompt?` with
+  #   incomplete artifacts), so there is no clone to prompt into; and
+  # - the session never ran at all, so there is nothing to resume. Without this
+  #   half, restarting a never-started session was refused outright with
+  #   "Session has no session_id" — see zimmer#557.
+  #
+  # A `waiting` session is excluded from the second half, and that exclusion is
+  # the same one `#continue_nudge_on_refresh?` and `StalledSessionStart` already
+  # make: a `waiting` session with no session_id has not been abandoned, it is
+  # still owned by the spawn pipeline, and its first job may simply not have been
+  # picked up yet. Starting it here would race that job and clone the repository
+  # twice. A `waiting` session whose job really was lost is `StalledSessionStart`'s
+  # to rescue, after a grace period long enough to tell the two apart.
+  #
+  # @return [Boolean]
+  def needs_restart_from_scratch?
+    return true if failed_before_initial_prompt? && !setup_complete?
+
+    never_ran? && !waiting?
+  end
+
   # How many slug candidates to try before giving up. Each rejected write costs
   # one round trip; a session that cannot find a free suffix in this many tries
   # is hitting something no amount of further spinning will resolve.
