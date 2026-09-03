@@ -2,13 +2,16 @@
 
 require "open3"
 require "fileutils"
-require "path_sanitizer"
 
 module Execution
   module Providers
     # Local filesystem execution provider
     # Uses direct git clone for repository isolation
     # Executes Claude Code CLI in the clone
+    #
+    # Transcript layout is not this provider's concern: ask
+    # TranscriptRuntime.source_for(session).transcript_directory(working_directory:)
+    # for the directory, so each runtime's layout stays defined in one place.
     class LocalFilesystem < Base
       attr_reader :clone_path, :mcp_config_path
 
@@ -123,21 +126,6 @@ module Execution
           clone_path: clone_path&.to_s,
           mcp_config_path: mcp_config_path&.to_s
         }
-      end
-
-      # Get the transcript directory path for Claude Code
-      # Claude Code stores transcripts in ~/.claude/projects/[sanitized-path]/
-      # Uses clone_path which is the working directory for this provider
-      # @return [String] The path to the transcript directory
-      def transcript_directory
-        return nil unless clone_path
-
-        home_dir = File.expand_path("~")
-        claude_projects_dir = File.join(home_dir, ".claude", "projects")
-        # Note: For this provider, clone_path is the working directory
-        sanitized_path = PathSanitizer.sanitize(clone_path)
-
-        File.join(claude_projects_dir, sanitized_path)
       end
 
       private
