@@ -87,6 +87,19 @@ a retry loop, `out=$(...)`, Codex's `bash -lc` wrapper). Reading them together w
 borrow the POST beside it and adopt every PR it printed. `TranscriptHooks::ShellSegments` does the
 split, and `GithubCommentAuthorshipHook` classifies its own `gh api` writes through the same seam.
 
+A create also has to **start** the segment it is read out of. `ShellSegments` puts the invocation at
+the front for every shape that matters — `cd ... &&` is a boundary, and env-var prefixes, `out=$(...)`
+captures, a `do`/`then` keyword and the `bash -lc` wrapper are stripped — so the requirement costs
+none of them, and it rejects `gh pr create` appearing as an *argument* to something else. The split
+knows quoting for the same reason: a separator that is escaped or inside a quoted string is not a
+separator, so `grep -n "def \|gh pr create\|pull/" hook.rb` stays one `grep` rather than becoming
+four commands, one of which appears to run a create. Session 11898 ran exactly that grep, over this
+hook's own source, and recorded the example URL in its header as a PR it had opened
+([#772](https://github.com/tadasant/zimmer/issues/772)). Where the quoting cannot be resolved — a
+heredoc body carrying an apostrophe is the usual way — the crude split is used instead, because
+over-splitting loses a recording where a wrong merge would hide a real create behind the command in
+front of it.
+
 The claimed path is what catches creation routes that are not a shell command at all: a wrapper
 script, an MCP tool, the GitHub web UI. It requires a creation phrase adjacent to the URL — an inflected verb
 running into the URL ("I've opened `<url>`"), or a verb, a PR noun and then the URL ("Created the

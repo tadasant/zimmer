@@ -38,6 +38,11 @@
 #     the repo's open PRs, which is the #214 shape again. Nor does a POST
 #     somewhere else on the line make one: creates are read per command segment,
 #     never across the whole script.
+#   - The output of a command that merely *mentions* a create. `gh pr create`
+#     inside a quoted argument to `grep`, `rg`, `sed` or `echo` is data, not an
+#     invocation, and a command that searches this very file for the literal has
+#     the header you are reading — example URL included — as its result (#772).
+#     A create is read only where it starts the command segment it belongs to.
 #   - A URL in a user message. Zimmer's own trigger prompts carry PR URLs
 #     ("comment on your PR <url>"), so adopting them would let one misrouted
 #     notification bootstrap a permanent wrong association.
@@ -77,14 +82,26 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # (e.g., github.com.evil.com would NOT match)
   GITHUB_PR_URL_PATTERN = %r{https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+}
 
-  # Matches `gh pr create` anywhere inside a shell command. This is a
-  # heuristic — it correctly handles common shapes (`cd ... && gh pr create`,
-  # env-var prefixes like `FOO=bar gh pr create`, and Codex argv arrays joined
-  # into `bash -lc cd ... && gh pr create`) but is not airtight (a `gh pr create`
-  # literal embedded in a heredoc body would also match). A false positive costs
-  # the same-repo guard on that one tool result, which is why the repo a command
-  # names (REPO_FLAG_PATTERN) bounds what its result can vouch for.
-  GH_PR_CREATE_PATTERN = /\bgh\s+pr\s+create\b/
+  # A command segment that *runs* `gh pr create` — which is one that starts with
+  # it. TranscriptHooks::ShellSegments has already moved the invocation to the
+  # front for every shape that matters: `cd ... &&` is a segment boundary, and
+  # env-var prefixes (`GH_TOKEN=x gh pr create`), captures, a `do`/`then` keyword
+  # and Codex's `bash -lc ...` wrapper around a joined argv array are all stripped.
+  # So the anchor costs none of those and rejects the shape that cost #772 — the
+  # literal `gh pr create` sitting inside a quoted string that is *data* to some
+  # other command. Session 11898 ran
+  # `grep -n "def \|pull/\|gh pr create\|..." github_pr_url_hook.rb`, and the hook
+  # read the example URL in its own source as a PR that session had opened.
+  #
+  # Anchoring is only half of that fix: the segment split had to stop treating the
+  # pipes *inside* that grep pattern as separators, or the tail of the pattern
+  # would still arrive here as a segment beginning with `gh pr create`.
+  #
+  # Still a heuristic, not a shell parser: a line of a heredoc body that begins
+  # with `gh pr create` reads as an invocation and is not one. What it no longer
+  # reads as one is the far commoner shape — an argument to `grep`, `rg`, `sed` or
+  # `echo`. Symmetric with GH_API_PATTERN below, which has always been anchored.
+  GH_PR_CREATE_PATTERN = /\Agh\s+pr\s+create\b/
 
   # `gh pr create` goes through GitHub's GraphQL API, and when that API is down
   # the REST API usually is not — so the fallback an agent reaches for is
