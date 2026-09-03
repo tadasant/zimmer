@@ -80,10 +80,10 @@
   "open-pr": {
     "id": "open-pr",
     "title": "Push Working State to a PR",
-    "description": "Push working state to a PR — commit all changes, push to a feature branch, open the PR, self-review, run a fresh-eyes subagent review, and wait for CI. Generic workflow usable across all repos. Its git conventions (branch naming, PR description format, verification/proof standards, wrong-branch recovery) live in the bundled `git-workflow` reference.",
+    "description": "The default PR workflow, usable in any repo: commit all changes, push a feature branch, open (or update) the PR, self-review, run a fresh-eyes subagent review, block until CI is green, apply the `ready to merge` label, and — in Zimmer — schedule a bounded self-wake so the session sleeps on the PR instead of occupying the human's action queue while the merge gate rates it. Its git conventions (branch naming, PR description format, verification/proof standards, wrong-branch recovery) live in the bundled `git-workflow` reference.",
     "path": "open-pr",
     "category": "workflow",
-    "user_invocable": false,
+    "user_invocable": true,
     "default_in_roots": [
       "zimmer"
     ],

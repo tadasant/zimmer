@@ -28,7 +28,7 @@ The generic workflow skills are vendored here too, under `category: workflow`:
 
 | Skill | What it does |
 | --- | --- |
-| `open-pr` | Commit, push, open the PR, self-review, subagent-review, wait for CI. Bundles the `git-workflow` reference. |
+| `open-pr` | Commit, push, open the PR, self-review, subagent-review, wait for CI, then its two terminal steps: apply the `ready to merge` label, and schedule a bounded self-wake so the session sleeps on the PR instead of parking in the action queue. Bundles the `git-workflow` reference. |
 | `wait-for-ci` | Block until CI passes or fails on the current PR. |
 | `recover-from-compaction-thrashing` | Delegate verbose tool calls to subagents so compaction doesn't erase your work. |
 
