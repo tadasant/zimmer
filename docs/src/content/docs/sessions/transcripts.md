@@ -392,6 +392,15 @@ one copy of it: `sessions.transcript` is a `json` column, so a loaded row holds 
 string *and* the type-cast value, and serializing it builds a third copy before the write. Budget
 about three times the largest transcript.
 
+What counts as "changed" is the whole of a session's zip entry, not just the session row. An entry
+carries the session's subagent transcripts alongside its own, and `SubagentTranscript` does not
+`touch:` its parent — so writing one leaves `sessions.updated_at` exactly where it was. The job
+therefore compares the sidecar against the later of `sessions.updated_at` and the session's newest
+subagent-transcript `updated_at`, read for the whole corpus in one `GROUP BY`. Before that, a
+subagent transcript written after its session's last archive never reached `latest.zip` until some
+unrelated write happened to bump the session row
+([#720](https://github.com/tadasant/zimmer/issues/720)).
+
 A draining backlog is visible in two places, and it has to be, because a catching-up archive is
 rewritten on every tick and so is never *stale* — staleness and completeness are different
 questions. The job logs a `deferred to the next tick` line at WARN, the severity production ships to
