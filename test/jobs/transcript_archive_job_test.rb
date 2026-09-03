@@ -326,18 +326,19 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
   end
 
   test "reconciling subagent-bearing sessions reads only the ones it rebuilds" do
-    # Two archived sessions carrying subagent transcripts; one of them then changes. The
-    # unchanged one is a reconciliation candidate on the next run and must be settled by
-    # id alone — the per-candidate `Session.find_by` this replaced loaded it in full,
-    # transcript column and all, just to ask whether the row was still there.
+    # Two sessions with NO main transcript, so the marker scan never sees them and both
+    # are live reconciliation candidates on every run. One of them then changes; the other
+    # has to be settled without loading its transcript payload — the per-candidate
+    # `Session.find_by` this replaced loaded both in full, transcript column and all, just
+    # to ask whether the rows were still there.
     changed = SubagentTranscript.create!(
-      session: sessions(:archived),
+      session: sessions(:running),
       agent_id: "reconcile-#{SecureRandom.hex(4)}",
       transcript: '{"type": "user", "message": {"role": "user", "content": "hi"}}',
       status: "completed"
     )
     untouched = SubagentTranscript.create!(
-      session: sessions(:with_transcript),
+      session: sessions(:waiting),
       agent_id: "reconcile-#{SecureRandom.hex(4)}",
       transcript: '{"type": "user", "message": {"role": "user", "content": "hi"}}',
       status: "completed"
@@ -356,6 +357,59 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
   ensure
     changed&.destroy
     untouched&.destroy
+  end
+
+  # The pass exists for sessions the marker scan cannot reach at all. Nothing else in the
+  # suite gives a subagent transcript to a session with `transcript: nil`, so without this
+  # the queueing half of the reconciliation pass is never executed — and the narrowing
+  # this change makes there (such a session used to be rebuilt on every single run) would
+  # be free to become "never archived at all" without a single test failing.
+  test "a session with subagent transcripts and no main transcript is archived, then settles" do
+    session = sessions(:running)
+    assert_nil session.transcript, "this test needs a session the marker scan will not see"
+
+    agent_id = "no-main-#{SecureRandom.hex(4)}"
+    subagent = SubagentTranscript.create!(
+      session: session,
+      agent_id: agent_id,
+      transcript: '{"type": "user", "message": {"role": "user", "content": "only a subagent"}}',
+      status: "completed"
+    )
+
+    TranscriptArchiveJob.perform_now
+
+    Zip::File.open(@archive_path) do |zip|
+      assert_not_nil zip.find_entry("sessions/#{session.id}/subagent_transcripts/#{agent_id}.json"),
+        "a session reachable only through the reconciliation pass still has to be archived"
+    end
+    assert_includes JSON.parse(File.read(@metadata_path))["sessions"].keys, session.id.to_s
+
+    selects = full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    assert_empty selects,
+      "and then settle — it used to be rebuilt on every single run"
+
+    Zip::File.open(@archive_path) do |zip|
+      assert_not_nil zip.find_entry("sessions/#{session.id}/subagent_transcripts/#{agent_id}.json"),
+        "a settled entry is carried forward from the old zip, not rewritten from the DB"
+    end
+  ensure
+    subagent&.destroy
+  end
+
+  # What makes shipping this cost one re-archive per subagent-bearing session rather than a
+  # full corpus rebuild: for the sessions that have none — most of them — the recorded stamp
+  # is `sessions.updated_at` byte-for-byte, so an existing sidecar goes on matching. A stamp
+  # rendered any other way (`.utc`, second precision) would silently re-archive everything on
+  # the deploy that introduced it.
+  test "a session with no subagent transcripts is stamped exactly as before" do
+    TranscriptArchiveJob.perform_now
+
+    session = sessions(:with_transcript)
+    assert_empty session.subagent_transcripts, "this test needs a session with no subagent transcripts"
+
+    recorded = JSON.parse(File.read(@metadata_path))["sessions"][session.id.to_s]
+    assert_equal session.reload.updated_at.iso8601(6), recorded
   end
 
   # ---------------------------------------------------------------------------

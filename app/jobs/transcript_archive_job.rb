@@ -161,7 +161,14 @@ class TranscriptArchiveJob < ApplicationJob
     # above — and what re-checks the rest against their recorded stamp.
     with_db_retry do
       candidate_ids = subagent_maxima.keys.reject do |sid|
-        session_ids_to_archive.include?(sid) # already queued from the main transcript check
+        session_id = sid.to_s
+        # Pass 1 compares the same stamp, so a session it visited (its id is out of
+        # `removed_session_ids`) and did not queue is already known settled — re-deriving
+        # that here would put a corpus-sized `sessions` read back into a job whose whole
+        # point is to no longer have one. What is left are the sessions pass 1 never saw:
+        # the ones with no main transcript, and the ones that are new to the sidecar.
+        (previous_sessions.key?(session_id) && !removed_session_ids.include?(session_id)) ||
+          session_ids_to_archive.include?(sid) # already queued from the main transcript check
       end
 
       # One `pluck` for the whole slice rather than `Session.find_by` per id. The old form
@@ -211,8 +218,12 @@ class TranscriptArchiveJob < ApplicationJob
                         "#{deferred_count} deferred to the next tick"
     end
 
+    # Sliced to the sessions this run will actually stamp. The detection hash is
+    # corpus-sized; `changed_ids` is capped at MAX_SESSIONS_PER_RUN, and this is the
+    # phase that holds a whole transcript live, so nothing corpus-sized should survive
+    # into it.
     build_archive(changed_ids, previous_sessions, removed_session_ids,
-      deferred_count: deferred_count, subagent_maxima: subagent_maxima)
+      deferred_count: deferred_count, subagent_maxima: subagent_maxima.slice(*changed_ids))
   end
 
   # Path accessors — instance methods so tests can stub them for isolation
@@ -262,7 +273,7 @@ class TranscriptArchiveJob < ApplicationJob
     {}
   end
 
-  def build_archive(changed_ids, previous_sessions, removed_session_ids, deferred_count: 0, subagent_maxima: {})
+  def build_archive(changed_ids, previous_sessions, removed_session_ids, subagent_maxima:, deferred_count: 0)
     temp_path = archive_dir.join("latest_#{SecureRandom.hex(8)}.zip.tmp")
     all_sessions_metadata = previous_sessions.dup
 
@@ -339,7 +350,7 @@ class TranscriptArchiveJob < ApplicationJob
     end
   end
 
-  def update_zip(zip_path, changed_ids, all_sessions_metadata, subagent_maxima: {})
+  def update_zip(zip_path, changed_ids, all_sessions_metadata, subagent_maxima:)
     Zip::File.open(zip_path) do |zip|
       each_changed_session(changed_ids, all_sessions_metadata) do |session|
         add_session_to_zip(zip, session)
@@ -349,7 +360,7 @@ class TranscriptArchiveJob < ApplicationJob
   end
 
   def build_full_zip(zip_path, changed_ids, previous_sessions, all_sessions_metadata, removed_session_ids,
-    subagent_maxima: {})
+    subagent_maxima:)
     # We need to rebuild including unchanged sessions from the old archive
     # plus the changed sessions
     Zip::OutputStream.open(zip_path) do |_|
