@@ -1,14 +1,31 @@
 name: Build base image
 
-# Builds the heavy base image (Node.js, Playwright, gh CLI, gems) from
-# Dockerfile.base and publishes it to ghcr.io/tadasant/zimmer-base:latest.
-# The per-commit "Release image" workflow builds the app FROM this base, so the
-# app build stays fast. Rebuild this when Dockerfile.base, the Ruby version, or
-# heavy system deps change. Manual + monthly to pick up base OS security fixes.
+# Refreshes the heavy base image (Node.js, Playwright, gh CLI, gems) from
+# Dockerfile.base and publishes it to ghcr.io/tadasant/zimmer-base.
+#
+# THIS IS NOT THE PATH A Dockerfile.base CHANGE TAKES TO PRODUCTION, and reading it
+# as though it were has cost a false alarm (#862). `release-image.yml`
+# content-addresses the base on every push to main: it hashes Dockerfile.base,
+# Gemfile, Gemfile.lock, mcp.json and bin/preinstall-mcp-packages, and builds and
+# pushes `zimmer-base:content-<key>` itself whenever that exact declaration has never
+# been published. A change to any of those five inputs rebuilds the base on the merge
+# that lands it, with nobody dispatching anything.
+#
+# This workflow covers the half release-image cannot see: fixes that move no repo
+# input, and therefore no content key — security updates in `ruby:3.4.6-slim` and the
+# apt packages above it, and the unpinned installers Dockerfile.base runs
+# (`claude.ai/install.sh`, `fly.io/install.sh`). Hence the monthly cron.
 on:
   workflow_dispatch: {}
   schedule:
     - cron: "0 6 1 * *" # 06:00 UTC on the 1st of each month
+
+# Two runs share the scratch tag below and promote to the same shared tags. Queue
+# rather than cancel: a cancelled build promotes nothing, but two running at once
+# overwrite each other's scratch image between build and verification.
+concurrency:
+  group: build-base-image
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -48,13 +65,119 @@ jobs:
       - name: Set up Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
-      - name: Build and push base
+
+      - name: Resolve what this run publishes
+        id: plan
+        run: |
+          set -euo pipefail
+          # The same five inputs, hashed the same way, as release-image.yml's "Resolve
+          # base image" step — build_base_image_workflow_test pins the two together,
+          # because they have to agree for this workflow to reach production at all.
+          # release-image builds the app FROM `content-<key>` and reuses that tag for as
+          # long as it exists, so a refresh published under any other name is one the app
+          # image never picks up.
+          BASE_KEY=$(git ls-tree HEAD -- Dockerfile.base Gemfile Gemfile.lock mcp.json bin/preinstall-mcp-packages |
+            sha256sum | cut -c1-20)
+
+          # Everything is built and pushed to this scratch tag first. It is mutable, it is
+          # reused every run, and nothing reads it: no tag that anything resolves is
+          # written until the image behind it has been verified. That ordering is what
+          # keeps release-image's invariant true — `content-<key>` present means that
+          # declaration built AND verified, so a later commit can never skip past a bad
+          # base by finding the tag already there.
+          {
+            echo "key=${BASE_KEY}"
+            echo "scratch=ghcr.io/tadasant/zimmer-base:unverified"
+          } >> "$GITHUB_OUTPUT"
+
+          # `content-…` is what every app image — and so every session container — is
+          # built FROM; `latest` is the default BASE_IMAGE for a hand-run `docker build`
+          # and the probe target in await-ghcr.sh. Both are shared, so only main promotes
+          # to them: a base built from an unreviewed branch is worse than a stale one. A
+          # dispatch from any other ref still builds and still verifies, which is what
+          # makes this workflow safe to exercise from a feature branch.
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "promote=true" >> "$GITHUB_OUTPUT"
+            echo "Will promote to content-${BASE_KEY} and :latest once verified."
+          else
+            echo "promote=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${GITHUB_REF_NAME} is not main: this run builds and verifies, then stops. content-${BASE_KEY} and :latest are left alone."
+          fi
+
+      # Deliberately uncached. The changes this workflow exists to pick up live outside
+      # the repository — a patched apt package, a newer `claude` from the install script
+      # — and every one of them sits in a layer whose cache key has not moved. A cache
+      # hit replays the image the refresh was meant to replace.
+      - name: Build and push to the unverified tag
         uses: docker/build-push-action@v6
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: Dockerfile.base
           push: true
-          tags: ghcr.io/tadasant/zimmer-base:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.plan.outputs.scratch }}
+
+      # Dockerfile.base's `test -f` lines prove what the BUILD produced. This proves what
+      # the REGISTRY serves, which is the artifact every app image is built from: it
+      # pulls the tag back down and reads the versions out of the published layers.
+      # `Dockerfile.base` pins `@tadasant/pi-hooks@0.1.0` and `@tadasant/pi-plugins@0.1.0`
+      # and nothing downstream asserts they arrived, which is the gap this closes.
+      - name: Verify the published image carries every pin
+        run: |
+          set -euo pipefail
+          IMAGE='${{ steps.plan.outputs.scratch }}'
+          trap 'docker image rm -f "$IMAGE" >/dev/null 2>&1 || true' EXIT
+
+          # Whole-line comments are stripped first: Dockerfile.base's prose names versions
+          # it deliberately does NOT install (a puppeteer release it pins away from, the
+          # version chrome-devtools-mcp bundles internally), and matching those would fail
+          # every refresh on packages that were never meant to be there.
+          INSTALLS=$(grep -vE '^[[:space:]]*#' Dockerfile.base)
+          PINS=$(printf '%s\n' "$INSTALLS" |
+            grep -oE '(@[a-z0-9.-]+/)?[a-z0-9.-]+@[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?' |
+            sort -u | tr '\n' ' ')
+          # The Pi extension entrypoints are paths rather than versions, and Dockerfile.base
+          # already states them once, in the `test -f` smoke checks that pi_extensions_test
+          # ties to PiExtensions::REGISTRY. Read them from there instead of restating them.
+          ENTRYPOINTS=$(printf '%s\n' "$INSTALLS" |
+            grep -oE 'test -f [^ ;]+' | sed 's/^test -f //' | sort -u | tr '\n' ' ')
+
+          echo "Pins declared by Dockerfile.base: ${PINS}"
+          echo "Entrypoints declared by Dockerfile.base: ${ENTRYPOINTS}"
+          echo "Checking them against ${IMAGE} as published:"
+
+          # Blind retries, for the reason release-image.yml's base resolve documents at
+          # length: a GHCR secondary rate limit has worn a 403 and a 404 alike, so reading
+          # the error to decide is the mistake. This is a read-after-write against the
+          # registry, which is the shape most likely to hit it.
+          for backoff in 15 60 stop; do
+            docker pull --quiet "$IMAGE" && break
+            [ "$backoff" = stop ] && { echo "Could not pull ${IMAGE} back from GHCR." >&2; exit 1; }
+            echo "Pull of ${IMAGE} failed; retrying in ${backoff}s in case GHCR is throttling."
+            sleep "$backoff"
+          done
+
+          # The script goes in on stdin rather than through a bind mount: the runner and
+          # the Docker daemon do not necessarily share a filesystem.
+          docker run --rm -i --entrypoint bash \
+            -e EXPECTED_PINS="$PINS" \
+            -e EXPECTED_ENTRYPOINTS="$ENTRYPOINTS" \
+            "$IMAGE" -s < .github/scripts/verify-base-image.sh
+
+      # A manifest copy, not a re-upload: the layers are already in the registry, so this
+      # is the one small atomic write that makes the verified image the shared base.
+      - name: Promote the verified image to the shared tags
+        if: steps.plan.outputs.promote == 'true'
+        run: |
+          set -euo pipefail
+          KEY='${{ steps.plan.outputs.key }}'
+          for backoff in 15 60 stop; do
+            docker buildx imagetools create \
+              -t "ghcr.io/tadasant/zimmer-base:content-${KEY}" \
+              -t "ghcr.io/tadasant/zimmer-base:latest" \
+              '${{ steps.plan.outputs.scratch }}' && break
+            [ "$backoff" = stop ] && { echo "Could not promote the verified image." >&2; exit 1; }
+            echo "Promotion failed; retrying in ${backoff}s in case GHCR is throttling."
+            sleep "$backoff"
+          done
+          echo "ghcr.io/tadasant/zimmer-base:content-${KEY} and :latest now serve the verified image."

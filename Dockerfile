@@ -9,9 +9,15 @@
 
 # Use pre-built base image with heavy dependencies (Node.js, Playwright, gh CLI)
 # This dramatically speeds up production builds by caching slow-to-build dependencies.
-# To (re)build the base image, run the "Build base image" workflow
-# (.github/workflows/build-base-image.yml), which publishes zimmer-base from
-# Dockerfile.base. It must be published once before the first app image build.
+#
+# Nobody has to remember to rebuild the base when Dockerfile.base changes:
+# .github/workflows/release-image.yml content-addresses it, and builds and pushes
+# `zimmer-base:content-<key>` before the app image whenever the declaration is one it
+# has never published. It then passes that exact tag as BASE_IMAGE, so the default
+# below is never what a released image is built from — it is for a hand-run
+# `docker build` and for await-ghcr.sh's probe. `build-base-image.yml` is the separate
+# refresh path for fixes that arrive with no repo input changing (base-OS patches, the
+# unpinned installers); it is not on the release path.
 ARG BASE_IMAGE=ghcr.io/tadasant/zimmer-base:latest
 FROM ${BASE_IMAGE} AS base
 
