@@ -3313,7 +3313,8 @@ Heuristics have two failure directions and neither announces itself:
   rather than what it quotes, so `gh pr create` inside a `grep` pattern, an `rg` argument or an
   `echo` is data. Three spellings still read as an invocation: an **unquoted** mention (`echo gh pr
   create`, or a `#` comment saying it), a `\"`-escaped one, and a line of a **heredoc body**, since a
-  heredoc quotes its body by a mechanism the splitter does not model. All are rarer than the quoted
+  heredoc quotes its body by a mechanism the splitter does not model — that last one is live and has
+  bitten the session that wrote this fix, [#873](https://github.com/tadasant/zimmer/issues/873). All are rarer than the quoted
   form that #772 was, and erring this way is deliberate: the same reading is what keeps a real create
   behind `timeout`, `until`, `sudo` or `xargs` from being missed, which is the failure below. The
   same rule is *not* applied in `GithubCommentAuthorshipHook`, whose `gh pr comment` / `gh pr review`
