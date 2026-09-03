@@ -84,13 +84,6 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
   # to the session — a promotion that started nothing and one that started a turn
   # are otherwise the same 200.
 
-  def waiting_spot_session(session_id: nil)
-    Session.create!(
-      git_root: "https://github.com/t/r.git", prompt: "x",
-      genesis: SessionGenesis::GITHUB_ISSUE, status: :waiting, session_id: session_id
-    )
-  end
-
   test "promoting a waiting session reports the start it performed" do
     session = waiting_spot_session
     assert session.spot?
@@ -102,12 +95,13 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert_equal "priority", json["session"]["priority_class"]
     assert_equal "started", json["start"]["outcome"]
     assert_match(/next turn is due now/, json["start"]["message"])
+    assert session.logs.where("content LIKE ?", "%Started now by the REST API promoting it%").exists?
   end
 
   # A refusal is reported rather than swallowed: the promotion went through, the
   # start did not, and a caller that saw only the 200 would think it had.
   test "a promotion whose start is refused says so instead of staying quiet" do
-    session = waiting_spot_session(session_id: "cli-abc")
+    session = waiting_spot_session
     Sessions::ScheduleWakeUp.call(
       session: session,
       wake_at: 2.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -120,7 +114,7 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     json = JSON.parse(response.body)
     assert_equal "priority", json["session"]["priority_class"]
     assert_equal "refused", json["start"]["outcome"]
-    assert_match(/paused/, json["start"]["message"])
+    assert_match(/A pause outranks the queue/, json["start"]["message"])
   end
 
   # Nothing to pull forward is not a start, and it is not a refusal either — the
@@ -163,6 +157,7 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
 
     assert_response :success
     json = JSON.parse(response.body)
+    assert_equal "Renamed", json["session"]["title"]
     assert_not json.key?("start"), "the session was already priority — nothing was promoted"
   end
 
@@ -178,5 +173,16 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert_response :success
     assert_nil session.reload.scheduling_class
     assert session.spot?
+  end
+
+  private
+
+  # `status: :waiting` is the initial state and so is redundant, but the promote
+  # branch turns on it — spelling it out is what makes these tests readable.
+  def waiting_spot_session(session_id: nil)
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "x",
+      genesis: SessionGenesis::GITHUB_ISSUE, status: :waiting, session_id: session_id
+    )
   end
 end
