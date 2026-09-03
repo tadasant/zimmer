@@ -186,4 +186,25 @@ class Sessions::PauseIntoSpotQueueTest < ActiveSupport::TestCase
     assert_match(/cannot be put in the spot queue/, error.message)
     assert session.reload.failed?
   end
+
+  # Dropping the old wake and writing the queue record are ONE act. Split, a
+  # failure after the drop leaves an awake session with nothing armed and no
+  # queue record either — dormant to every sweep and woken by nothing, which is
+  # the one outcome this park must never produce.
+  test "a park that fails partway leaves the earlier wake armed rather than nothing at all" do
+    session = session_in(:needs_input)
+    wake = Sessions::ScheduleWakeUp.call(session: session, wake_at: 2.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                                         prompt: "wake up", timezone: "UTC")
+
+    session.reload
+    session.stub(:merge_metadata!, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
+      assert_raises(ActiveRecord::StatementInvalid) do
+        Sessions::PauseIntoSpotQueue.call(session: session)
+      end
+    end
+
+    assert Trigger.exists?(wake.id), "the supersede must roll back with the park that failed"
+    assert session.reload.awaiting_scheduled_wake?
+    assert_nil session.metadata[SpotSessionPause::PAUSED_REASON]
+  end
 end
