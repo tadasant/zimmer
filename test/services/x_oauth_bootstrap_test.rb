@@ -1,19 +1,10 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class XOauthBootstrapTest < ActiveSupport::TestCase
-  def with_token_endpoint(code:, body:)
-    captured = nil
-    response = Net::HTTPResponse.new("1.1", code.to_s, "")
-    response.stubs(:code).returns(code.to_s)
-    response.stubs(:body).returns(body.is_a?(String) ? body : body.to_json)
-    mock_http = Object.new
-    mock_http.define_singleton_method(:use_ssl=) { |_| }
-    mock_http.define_singleton_method(:request) { |req| captured = req; response }
-    result = Net::HTTP.stub(:new, mock_http) { yield }
-    [ result, captured ]
-  end
+  include XOauthTestHelpers
 
   def with_env(key, value)
     original = ENV[key]
@@ -149,6 +140,70 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
     assert_raises(XOauthBootstrap::ExchangeError) do
       XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
         verifier: "v", client_id: nil, client_secret: nil)
+    end
+  end
+
+  # --- HTTP timeouts (#732) ---
+
+  # exchange_code runs inside a web request, where an unbounded read pins a Puma
+  # thread. It shares XOauthCredential's bounded POST rather than repeating the
+  # Net::HTTP block, so there is one implementation to keep bounded.
+  test "the code exchange bounds both connect and read at TOKEN_REQUEST_TIMEOUT" do
+    with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "ref", expires_in: 7200 }) do
+      XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+        verifier: "v", client_id: "CID", client_secret: "SEC")
+    end
+
+    assert_equal [ XOauthCredential::TOKEN_REQUEST_TIMEOUT, XOauthCredential::TOKEN_REQUEST_TIMEOUT ],
+      observed_timeouts
+  end
+
+  # X rotates the refresh token on every exchange, so the rotated one must land
+  # on the row.
+  test "complete! persists the rotated refresh token on a brand-new row" do
+    cred, = with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "rotated", expires_in: 7200 }) do
+      XOauthBootstrap.complete!(account_key: "tadasayy", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+        verifier: "v", client_id: "CID", client_secret: "SEC")
+    end
+
+    assert_predicate cred, :persisted?
+    assert_equal "rotated", cred.reload.refresh_token
+    assert_equal "tadasayy", cred.account_key
+    assert_equal XOauthCredential::DEFAULT_TOKEN_ENDPOINT, cred.token_endpoint
+  end
+
+  # complete! saves the identity columns before apply_token_response! writes the
+  # rotating ones. Asserting the happy path cannot tell the two orderings apart —
+  # apply_token_response!'s update! would insert the in-memory attributes itself —
+  # so this breaks the second write and asserts the row survives it.
+  test "complete! persists the identity columns before applying the token response" do
+    XOauthCredential.any_instance.stubs(:apply_token_response!).raises(ActiveRecord::RecordInvalid.new(XOauthCredential.new))
+
+    assert_raises(ActiveRecord::RecordInvalid) do
+      with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "rotated", expires_in: 7200 }) do
+        XOauthBootstrap.complete!(account_key: "tadasayy", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+          verifier: "v", client_id: "CID", client_secret: "SEC")
+      end
+    end
+
+    row = XOauthCredential.find_by(access_token_env_var: "X_OAUTH_ACCESS_TOKEN")
+    assert_not_nil row, "the identity columns were not persisted before the token response was applied"
+    assert_equal "tadasayy", row.account_key
+  end
+
+  test "a hanging token endpoint raises Net::ReadTimeout instead of pinning the thread" do
+    with_hanging_token_endpoint do |endpoint|
+      with_default_token_endpoint(endpoint) do
+        with_token_request_timeout(1) do
+          elapsed = elapsed_seconds do
+            assert_raises(Net::ReadTimeout) do
+              XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+                verifier: "v", client_id: "CID", client_secret: "SEC")
+            end
+          end
+          assert_operator elapsed, :<, 10, "the code exchange fell back to Net::HTTP's default read timeout"
+        end
+      end
     end
   end
 end

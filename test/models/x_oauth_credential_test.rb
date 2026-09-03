@@ -3,6 +3,8 @@
 require "test_helper"
 
 class XOauthCredentialTest < ActiveSupport::TestCase
+  include XOauthTestHelpers
+
   def build_credential(**attrs)
     XOauthCredential.create!({
       account_key: "tadasayy",
@@ -12,21 +14,6 @@ class XOauthCredentialTest < ActiveSupport::TestCase
       expires_at: 1.hour.from_now,
       token_endpoint: XOauthCredential::DEFAULT_TOKEN_ENDPOINT
     }.merge(attrs))
-  end
-
-  # Stub Net::HTTP.new so refresh!/exchange hit a fake endpoint, returning the
-  # caller block's result plus the captured Net::HTTP::Post request (for header/
-  # body assertions).
-  def with_token_endpoint(code:, body:)
-    captured = nil
-    response = Net::HTTPResponse.new("1.1", code.to_s, "")
-    response.stubs(:code).returns(code.to_s)
-    response.stubs(:body).returns(body.is_a?(String) ? body : body.to_json)
-    mock_http = Object.new
-    mock_http.define_singleton_method(:use_ssl=) { |_| }
-    mock_http.define_singleton_method(:request) { |req| captured = req; response }
-    result = Net::HTTP.stub(:new, mock_http) { yield }
-    [ result, captured ]
   end
 
   setup do
@@ -161,6 +148,31 @@ class XOauthCredentialTest < ActiveSupport::TestCase
     cred = build_credential(expires_at: 1.minute.from_now)
     with_token_endpoint(code: 500, body: "boom") do
       assert_equal "old-access", cred.current_access_token
+    end
+  end
+
+  # --- HTTP timeouts (#732) ---
+
+  # Unset, both fall back to Net::HTTP's 60-second default, which is a minute of
+  # a held thread against a token endpoint that goes silent.
+  test "the token request bounds both connect and read at TOKEN_REQUEST_TIMEOUT" do
+    cred = build_credential
+    with_token_endpoint(code: 200, body: { access_token: "a", refresh_token: "r", expires_in: 7200 }) do
+      cred.refresh!
+    end
+
+    assert_equal [ XOauthCredential::TOKEN_REQUEST_TIMEOUT, XOauthCredential::TOKEN_REQUEST_TIMEOUT ],
+      observed_timeouts
+    assert_equal 10, XOauthCredential::TOKEN_REQUEST_TIMEOUT
+  end
+
+  test "a hanging token endpoint raises Net::ReadTimeout instead of blocking" do
+    with_hanging_token_endpoint do |endpoint|
+      cred = build_credential(token_endpoint: endpoint)
+      with_token_request_timeout(1) do
+        elapsed = elapsed_seconds { assert_raises(Net::ReadTimeout) { cred.refresh! } }
+        assert_operator elapsed, :<, 10, "the read bound did not apply — this fell back to Net::HTTP's default"
+      end
     end
   end
 end
