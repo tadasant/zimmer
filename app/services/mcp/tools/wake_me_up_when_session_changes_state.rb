@@ -265,8 +265,10 @@ module Mcp
                          "The session is still in its original state — no changes were made."
       end
 
-      # See WakeMeUpLater#trigger_agent_root_name — bookkeeping only for a per-session
-      # wake-up trigger, which always reuses its target session rather than spawning.
+      # See Sessions::ScheduleWakeUp#trigger_agent_root_name — a label only, for a
+      # per-session wake-up trigger, which always reuses its target session rather
+      # than spawning. That comment carries the reasoning, including why an
+      # unresolvable name is safe here and why guessing a default root is not.
       def trigger_agent_root_name(session)
         session.agent_root_key.presence || session.agent_runtime
       end
