@@ -178,9 +178,20 @@ module Sessions
 
     # Trigger requires agent_root_name, but a per-session wake-up trigger
     # (reuse_session + last_session_id + a one-time condition) never spawns a new
-    # session — the target session is always reused — so the value is only ever
-    # bookkeeping. Prefer the catalog root the session resolves to; fall back to
-    # the runtime for sessions that predate agent roots.
+    # session — the target session is always reused — so the value is a label on
+    # the trigger and nothing more. Prefer the catalog root the session resolves
+    # to; fall back to the runtime for sessions that predate agent roots, or
+    # whose root has since left the catalog.
+    #
+    # That fallback names no catalog root, and it does not have to. Trigger only
+    # resolves `agent_root_name` on the path that spawns a session, so a wake
+    # carrying an unresolvable name still fires and still resumes its session.
+    # That is a guarantee of Trigger#create_session!, which runs
+    # #heal_stale_agent_root! after every reuse path has returned, and it is
+    # covered by a test there — before it held, this fallback bricked the wake it
+    # was arming (https://github.com/tadasant/zimmer/issues/600). Do not "fix"
+    # this by guessing a default root: a wake must never arm a root the session
+    # would not have run as.
     def trigger_agent_root_name
       session.agent_root_key.presence || session.agent_runtime
     end

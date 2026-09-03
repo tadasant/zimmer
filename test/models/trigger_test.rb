@@ -1897,6 +1897,75 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal new_root_name, session.metadata["agent_root_key"]
   end
 
+  test "create_session! reuses its session without resolving an unknown agent root" do
+    # Regression for https://github.com/tadasant/zimmer/issues/600. A reuse fire
+    # never hands `agent_root_name` to Session.create_from_agent_root!, so a name
+    # that is not in the catalog must not stop it. Before the heal moved to the
+    # spawn path this raised, ScheduleTriggerJob parked the trigger `failed`, and
+    # the target session — every per-session wake has exactly this shape — slept
+    # forever.
+    target = sessions(:needs_input)
+    trigger = wake_trigger_for(target, agent_root_name: "claude_code")
+
+    AgentRootsConfig.stubs(:exists?).with("claude_code").returns(false)
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-600"))
+    AlertService.expects(:raise_alert).never
+
+    session = trigger.create_session!(prompt: "Resume")
+
+    assert_equal target.id, session&.id, "the wake should have reused its target session"
+    assert_equal :delivered, trigger.last_follow_up_status
+    assert_equal "claude_code", trigger.reload.agent_root_name,
+      "a reuse fire has no successor to look for and must leave the name alone"
+  end
+
+  test "create_session! still raises on an unhealable agent root when a reuse trigger falls through to spawn" do
+    # The other half of #600: skipping the heal on the reuse path must not make it
+    # unreachable. A recurring reuse trigger with nothing left to reuse falls
+    # through to the spawn path, which does hand the name to
+    # Session.create_from_agent_root!, so the raise still has to fire there.
+    trigger = Trigger.create!(
+      name: "Recurring reuse trigger with a vanished target",
+      agent_root_name: "gone-root",
+      prompt_template: "Check in",
+      reuse_session: true,
+      trigger_conditions_attributes: [
+        {
+          condition_type: "slack",
+          configuration: { "channel_id" => "C0A6BF8T45R", "channel_name" => "eng-ci", "event_type" => "new_message" }
+        }
+      ]
+    )
+
+    AgentRootsConfig.stubs(:exists?).with("gone-root").returns(false)
+
+    error = assert_raises(AgentRootsConfig::AgentRootNotFoundError) do
+      trigger.create_session!(prompt: "Check in")
+    end
+    assert_match(/no successor could be identified/, error.message)
+  end
+
+  # A per-session wake-up trigger in the shape Sessions::ScheduleWakeUp builds:
+  # reuse_session + last_session_id + a single one-time schedule.
+  def wake_trigger_for(session, agent_root_name:)
+    Trigger.create!(
+      name: "Wake session ##{session.id}",
+      agent_root_name: agent_root_name,
+      prompt_template: "Resume",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        {
+          condition_type: "schedule",
+          configuration: {
+            "scheduled_at" => 1.hour.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+            "timezone" => "UTC"
+          }
+        }
+      ]
+    )
+  end
+
   # Self-healing stale catalog skills tests
   test "create_session! removes stale catalog skills and creates session" do
     mock_agent_root = OpenStruct.new(

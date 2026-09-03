@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
+require "ostruct"
 
 # The scheduler behind the wake_me_up_later MCP tool.
 class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
@@ -169,5 +171,37 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
     Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(3.hours), prompt: "later")
 
     assert Trigger.exists?(first.id), "the agent-facing path must stay additive — the triple-wake pattern depends on it"
+  end
+
+  # https://github.com/tadasant/zimmer/issues/600. A session that resolves to no
+  # catalog agent root — a legacy one, or one whose root has left the catalog —
+  # gets a wake whose `agent_root_name` names no root. That value is a label on
+  # the trigger; the wake reuses its target session and never spawns, so it must
+  # still fire. It did not: Trigger#create_session! resolved the name before
+  # reaching the reuse path, raised, and ScheduleTriggerJob parked the trigger
+  # `failed` — leaving the session asleep for good, the exact outcome the
+  # past-dated `wake_at` guard above exists to prevent.
+  test "a wake for a session that resolves to no catalog agent root still fires" do
+    session = sessions(:needs_input)
+    assert_nil session.agent_root_key,
+      "fixture precondition: this session must resolve to no catalog agent root"
+
+    trigger = Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at, prompt: "Resume")
+    assert_equal "claude_code", trigger.agent_root_name,
+      "precondition: the wake is armed with a name that is not a catalog root"
+    assert session.reload.waiting?
+
+    AlertService.stubs(:raise_alert)
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-600"))
+
+    travel_to 2.hours.from_now do
+      ScheduleTriggerJob.perform_now
+    end
+
+    assert_not session.reload.waiting?,
+      "the wake should have resumed its session, not left it asleep"
+    assert_equal "Resume", session.metadata["pending_follow_up_prompt"]
+    assert_not_equal "failed", Trigger.find_by(id: trigger.id)&.status,
+      "the wake must not park itself failed on a root it never uses"
   end
 end
