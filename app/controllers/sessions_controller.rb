@@ -72,16 +72,18 @@ class SessionsController < ApplicationController
   RANKED_SECTION_LIMIT = 200
 
   # The Filters section's board-visibility control — the reveal affordance for the
-  # second, presentation-only axis (SessionVisibility). "On board" is the default
-  # and hides the sessions the operator has tucked away; the other two are how a
-  # hidden session is always findable again, so nothing here is ever unrecoverable.
+  # second, presentation-only axis. "On board" is the default and hides the
+  # sessions the operator has tucked away; the other two are how a hidden session
+  # is always findable again, so nothing here is ever unrecoverable.
   #
   # This narrows nothing else. A snoozed session is running, queued and ranked
-  # exactly as it was — the filter decides what is drawn and stops there.
-  VISIBILITY_ON_BOARD = "on_board".freeze
-  VISIBILITY_OFF_BOARD = "off_board".freeze
-  VISIBILITY_ALL = "all".freeze
-  VISIBILITY_FILTER_OPTIONS = [ VISIBILITY_ON_BOARD, VISIBILITY_OFF_BOARD, VISIBILITY_ALL ].freeze
+  # exactly as it was — the filter decides what is drawn and stops there. The
+  # values are SessionVisibility's, shared with the REST listings and the MCP
+  # search so all three spell the filter the same way.
+  VISIBILITY_ON_BOARD = SessionVisibility::FILTER_ON_BOARD
+  VISIBILITY_OFF_BOARD = SessionVisibility::FILTER_OFF_BOARD
+  VISIBILITY_ALL = SessionVisibility::FILTER_ALL
+  VISIBILITY_FILTER_OPTIONS = SessionVisibility::FILTER_OPTIONS
 
   # Cookie that persists an explicit Filters choice (statuses + scheduling class),
   # so the selection survives a reload and a bare visit to "/" rather than snapping
@@ -201,14 +203,7 @@ class SessionsController < ApplicationController
       end
     end
 
-    # How many sessions the default board is holding back, for the Filters
-    # section's reveal affordance. Counted against the status filter the operator
-    # is already looking through — "3 tucked away" has to mean three cards this
-    # board would otherwise show — but never against the visibility filter itself,
-    # which is the thing the number exists to talk them into changing.
-    @off_board_count = base_scope.call(Session.all).board_hidden.count
-
-    sessions = board_scope.call(base_scope.call(Session.all))
+    sessions = base_scope.call(Session.all)
 
     # Roots offered in the Advanced Search agent-root autocomplete. Sourced from the
     # full catalog (not just user-invocable roots) so sessions from any root can be
@@ -242,6 +237,14 @@ class SessionsController < ApplicationController
         sessions = filter_sessions_by_search(sessions, @search_query)
       end
     end
+
+    # Board visibility is the last narrowing, so the reveal count below is counted
+    # through every other filter the operator has set. "3 tucked away" then means
+    # three cards THIS board would otherwise be showing, rather than three
+    # somewhere in the table — the number exists to talk them into revealing, and
+    # it is only persuasive if revealing actually produces those three.
+    @off_board_count = sessions.board_hidden.count
+    sessions = board_scope.call(sessions)
 
     # The Ranked view: the spot queue in the order it will actually be worked,
     # with the priority sessions that outrank all of it stacked above. Two
@@ -3773,6 +3776,13 @@ class SessionsController < ApplicationController
   # The scheduler's rejection, restated for someone looking at a popover rather
   # than at a tool description. Only the too-soon case needs it: the rest of the
   # messages already read as plain English.
+  def pause_until_error_message(error)
+    return error.message unless error.code == :wake_at_too_soon
+
+    "That time has already passed, or is less than " \
+      "#{Sessions::ScheduleWakeUp::WAKE_AT_GRACE_WINDOW.to_i} seconds away. Pick a later time."
+  end
+
   # The JSON the visibility control reads back. `board_visible` is the one the
   # page acts on: it decides whether the card leaves the board.
   def visibility_payload(session)
@@ -3793,13 +3803,6 @@ class SessionsController < ApplicationController
     when SessionVisibility::SNOOZED then "Session #{session.id} snoozed until #{session.snoozed_until}."
     else "Session #{session.id} is back on the board."
     end
-  end
-
-  def pause_until_error_message(error)
-    return error.message unless error.code == :wake_at_too_soon
-
-    "That time has already passed, or is less than " \
-      "#{Sessions::ScheduleWakeUp::WAKE_AT_GRACE_WINDOW.to_i} seconds away. Pick a later time."
   end
 
   # "Pause Until → Spot Queue". Reached from #pause_until, after the same

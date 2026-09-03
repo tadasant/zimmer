@@ -1294,8 +1294,8 @@ class Api::V1::SessionsController < Api::BaseController
   # visible cause. An unrecognized value narrows nothing, for the same reason.
   def apply_visibility_filter(scope)
     case params[:visibility].to_s
-    when SessionsController::VISIBILITY_ON_BOARD then scope.board_visible
-    when SessionsController::VISIBILITY_OFF_BOARD then scope.board_hidden
+    when SessionVisibility::FILTER_ON_BOARD then scope.board_visible
+    when SessionVisibility::FILTER_OFF_BOARD then scope.board_hidden
     else scope
     end
   end

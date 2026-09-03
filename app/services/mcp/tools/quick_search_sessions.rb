@@ -272,11 +272,11 @@ module Mcp
         # Filtering it out by default would produce duplicate work with no visible
         # cause.
         case args["visibility"].to_s
-        when SessionsController::VISIBILITY_ON_BOARD then scope = scope.board_visible
-        when SessionsController::VISIBILITY_OFF_BOARD then scope = scope.board_hidden
+        when SessionVisibility::FILTER_ON_BOARD then scope = scope.board_visible
+        when SessionVisibility::FILTER_OFF_BOARD then scope = scope.board_hidden
         when "" then nil
         else
-          raise ToolError, "Invalid visibility: #{args['visibility']}. Valid: #{SessionsController::VISIBILITY_ON_BOARD}, #{SessionsController::VISIBILITY_OFF_BOARD}."
+          raise ToolError, "Invalid visibility: #{args['visibility']}. Valid: #{SessionVisibility::FILTER_ON_BOARD}, #{SessionVisibility::FILTER_OFF_BOARD}."
         end
 
         if (genesis = args["genesis"].presence)

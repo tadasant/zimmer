@@ -114,6 +114,24 @@ class Api::V1::SessionsVisibilityTest < ActionDispatch::IntegrationTest
     assert_includes ids, hidden.id
   end
 
+  # apply_visibility_filter is wired into both listings; the search half needs its
+  # own test or a regression there is invisible.
+  test "search is unfiltered by default and filters when asked" do
+    on_board = make_session(title: "widget indexer")
+    hidden = make_session(title: "widget indexer", visibility: SessionVisibility::HIDDEN)
+
+    get search_api_v1_sessions_path, params: { q: "widget indexer" }, headers: @headers
+    assert_response :success
+    ids = JSON.parse(response.body)["sessions"].map { |s| s["id"] }
+    assert_includes ids, hidden.id, "search must not hide a tucked-away session by default"
+
+    get search_api_v1_sessions_path, params: { q: "widget indexer", visibility: "off_board" }, headers: @headers
+    assert_response :success
+    ids = JSON.parse(response.body)["sessions"].map { |s| s["id"] }
+    assert_includes ids, hidden.id
+    assert_not_includes ids, on_board.id
+  end
+
   test "the listing filters on visibility when asked" do
     on_board = make_session
     hidden = make_session(visibility: SessionVisibility::HIDDEN)
