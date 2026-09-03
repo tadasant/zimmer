@@ -15,8 +15,9 @@ module Mcp
       ACTIONS = %w[list get create update delete reorder interrupt send_now].freeze
 
       # The queue preview in list/create/update output is capped, matching the
-      # decoupled server's 200-char snippet.
-      CONTENT_PREVIEW_LIMIT = 200
+      # decoupled server's 200-char snippet. Shared with `get_session`'s pending
+      # summary so the two renderings of the same queue cannot drift.
+      CONTENT_PREVIEW_LIMIT = EnqueuedMessageSections::CONTENT_PREVIEW_LIMIT
 
       tool_name "manage_enqueued_messages"
 
@@ -171,7 +172,10 @@ module Mcp
           "- **ID:** #{message.id}",
           "- **Position:** #{message.position}",
           "- **Status:** #{message.status}",
-          "- **Content:** #{preview(message.content)}"
+          "- **Content:** #{preview(message.content)}",
+          # Position is not depth: a retired `undelivered` row holds a position
+          # too. Say how many messages are actually still going to be delivered.
+          *EnqueuedMessageSections.queue_depth_lines(session, queued_message: message)
         ].join("\n")
       end
 
@@ -326,7 +330,7 @@ module Mcp
       end
 
       def preview(content)
-        content.length > CONTENT_PREVIEW_LIMIT ? "#{content[0, CONTENT_PREVIEW_LIMIT]}..." : content
+        EnqueuedMessageSections.preview(content)
       end
     end
   end

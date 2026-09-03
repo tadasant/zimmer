@@ -36,6 +36,8 @@ module Mcp
       description <<~DESC
         Get detailed information about a specific agent session.
 
+        **Queued messages:** always included — how many messages are already queued for this session and not yet delivered, with a truncated one-line preview of the first few. Read it before you send a follow-up: a session with a non-empty queue has already been told something it has not seen, and anything you send lands behind it. Use `manage_enqueued_messages` to read the queue in full, and its `update` / `delete` / `reorder` actions to consolidate it rather than adding to it.
+
         **Status summary:** the cached 2-3 sentence "where things stand" blurb Zimmer writes when a session comes to rest, with a freshness marker saying how many transcript events have landed since. Reading it never generates one — a stale blurb is returned as stale. Use `action_session` with `regenerate_status_summary` when you need it rewritten.
 
         **Returns:** Complete session details including status, configuration, metadata, the session hierarchy and its human messages (always), and optionally:
@@ -291,6 +293,12 @@ module Mcp
                    "showing this card. It has no effect on scheduling or execution: this session runs exactly " \
                    "as it would if it were on the board, and a snooze expires by itself."
         end
+
+        # High in the output, and deliberately: this is the section that answers
+        # "has somebody already told this session something?", it is the reason a
+        # caller reads the dump before following up, and a section near the end
+        # is the one a truncated result loses.
+        lines.concat(EnqueuedMessageSections.summary_lines(session))
 
         lines << ""
         lines << "### Git Configuration"
