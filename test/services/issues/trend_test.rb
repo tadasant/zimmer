@@ -116,6 +116,26 @@ class Issues::TrendTest < ActiveSupport::TestCase
     assert_equal [ Issues::Trend::OTHER ], trend.series.map(&:key)
   end
 
+  test "an issue closed before the window opened is never counted" do
+    trend = build([ github_issue(number: 1, created_at: noon(60), closed_at: noon(40), state: "closed") ],
+                  window_days: 30)
+
+    assert trend.totals.all?(&:zero?)
+  end
+
+  test "exactly MAX_SERIES named segments all keep their own colour" do
+    issues = (1..Issues::Trend::MAX_SERIES).flat_map do |i|
+      # Descending sizes, so the ordering is deterministic and every segment is named.
+      (Issues::Trend::MAX_SERIES - i + 1).times.map { |n| github_issue(number: (i * 100) + n, created_at: noon(5), labels: [ "label-#{i}" ]) }
+    end
+    trend = build(issues, window_days: 7, segment: "label")
+
+    assert_equal Issues::Trend::MAX_SERIES, trend.series.length
+    assert_equal Issues::Trend::PALETTE, trend.series.map(&:color)
+    assert_not_includes trend.series.map(&:key), Issues::Trend::OTHER
+    assert_equal issues.length, trend.totals.last
+  end
+
   test "an unknown segment falls back to direction rather than raising" do
     assert_equal Issues::Trend::DEFAULT_SEGMENT, build([], window_days: 7, segment: "wat").segment
   end

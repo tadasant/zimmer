@@ -40,7 +40,7 @@ module Issues
     # carrying it is deliberately not on the queue.
     HOLD_LABEL = "hold issue work gate"
 
-    attr_reader :filters, :snapshot, :direction_resolver, :github_page
+    attr_reader :filters, :snapshot, :direction_resolver
 
     # @param filters [WorkBacklog::Filters]
     # @param snapshot [Issues::GithubSnapshot::Snapshot]
@@ -48,7 +48,7 @@ module Issues
     def initialize(filters:, snapshot:, github_page: 1)
       @filters = filters
       @snapshot = snapshot
-      @github_page = [ github_page.to_i, 1 ].max
+      @github_page = github_page.to_i
       @github_by_url = snapshot.issues.index_by(&:url)
       @direction_resolver = Direction.new(issue_urls: @github_by_url.keys | backlog_urls)
     end
@@ -58,7 +58,9 @@ module Issues
       @queued_rows ||= begin
         ranked = WorkBacklogItem.queued.in_rank_order.pluck(:id)
         positions = ranked.each_with_index.to_h { |id, i| [ id, i + 1 ] }
-        scoped(WorkBacklogItem::QUEUED).map { |item| build_row(item, positions[item.id]) }
+        scoped(WorkBacklogItem::QUEUED)
+          .map { |item| build_row(item, positions[item.id]) }
+          .select { |row| direction_matches?(row.direction) }
       end
     end
 
@@ -75,14 +77,22 @@ module Issues
     # Open GitHub issues with no live backlog row, filtered by the repo and
     # direction the filter bar is set to. This is the half of the page that is
     # "what is going on in GitHub" rather than "what is on the queue".
+    #
+    # "Live" is exactly what the two lists above show — `queued`, plus `started`
+    # with a session that is still alive. NOT every `started` row: an item whose
+    # session failed or was archived is not queued, is not in flight, and if it
+    # were excluded here as well its open issue would disappear from the page
+    # entirely. That is the ordinary "a pull or a promote started it and the
+    # session died" case, and the honest answer is that the issue is open and
+    # nobody is working it.
     def loose_rows
       @loose_rows ||= begin
-        live = WorkBacklogItem.where(status: [ WorkBacklogItem::QUEUED, WorkBacklogItem::STARTED ])
-                              .where.not(issue_url: nil).pluck(:issue_url).to_set
+        live = (WorkBacklogItem.queued.where.not(issue_url: nil).pluck(:issue_url) +
+                WorkBacklogItem.in_flight.where.not(issue_url: nil).pluck(:issue_url)).to_set
 
         snapshot.issues
                 .select { |issue| issue.open? && !live.include?(issue.url) }
-                .map { |issue| LooseRow.new(github: issue, direction: direction_resolver.call(labels: issue.labels, issue_url: issue.url)) }
+                .map { |issue| LooseRow.new(github: issue, direction: direction_for.call(issue)) }
                 .select { |row| loose_row_matches?(row) }
                 .sort_by { |row| [ row.github.repo, -row.github.number ] }
       end
@@ -90,17 +100,23 @@ module Issues
 
     def loose_total = loose_rows.length
     def loose_page_count = [ (loose_total.to_f / GITHUB_PER_PAGE).ceil, 1 ].max
+
+    # Clamped at BOTH ends. A hand-edited `?gh_page=999` would otherwise render an
+    # empty table under "page 999 of 3", with a Previous link to 998 and the
+    # reassuring-but-false "every open issue is already on the queue".
+    def github_page = @github_page.clamp(1, loose_page_count)
     def loose_page_rows = loose_rows.slice((github_page - 1) * GITHUB_PER_PAGE, GITHUB_PER_PAGE) || []
 
     # The count strip. Backlog counts are the whole queue, not the filtered slice —
     # a filter narrows what you read, it does not change how much work there is.
+    #
+    # Exactly what the strip renders and nothing else: every entry here is a
+    # COUNT(*) on every page load, so a count the page does not show is a query
+    # nobody asked for.
     def counts
       @counts ||= {
         queued: WorkBacklogItem.queued.count,
         in_flight: WorkBacklogItem.in_flight.count,
-        started: WorkBacklogItem.started.count,
-        removed: WorkBacklogItem.removed.count,
-        pinned: WorkBacklogItem.queued.pinned_items.count,
         github_open: snapshot.issues.count(&:open?)
       }
     end
@@ -146,10 +162,15 @@ module Issues
       @trend_issues ||= filters.repo ? snapshot.issues.select { |issue| issue.repo == filters.repo } : snapshot.issues
     end
 
-    # Resolves an issue's direction for the chart. Passed as a callable so Trend
-    # never has to know where directions come from.
+    # Resolves an issue's direction, memoized per issue URL. Passed to Trend as a
+    # callable so it never has to know where directions come from — and shared by
+    # the loose list, the per-repo summaries and the count strip, which between
+    # them would otherwise resolve the same ~950 issues three times over.
     def direction_for
-      @direction_for ||= ->(issue) { direction_resolver.call(labels: issue.labels, issue_url: issue.url) }
+      @direction_for ||= begin
+        cache = {}
+        ->(issue) { cache[issue.url] ||= direction_resolver.call(labels: issue.labels, issue_url: issue.url) }
+      end
     end
 
     # The vocabularies the filter selects offer, drawn from the queue rather than
@@ -169,15 +190,28 @@ module Issues
       @open_issue_directions ||= snapshot.issues.select(&:open?).map { |issue| direction_for.call(issue) }
     end
 
+    # Whether a resolved direction passes the filter bar. Applied in Ruby, after
+    # resolution, on BOTH halves of the page — `filters.scope` can only filter the
+    # `scope_direction` COLUMN, and the column is the second of the four sources
+    # Issues::Direction consults. Filtering the queue on the column while the pill
+    # beside it shows the resolved value is how a row ends up visible under
+    # "divergent" with a "convergent" pill on it.
+    def direction_matches?(resolution)
+      filters.scope_direction.nil? || resolution.direction == filters.scope_direction
+    end
+
     def backlog_urls
       WorkBacklogItem.where.not(issue_url: nil).pluck(:issue_url)
     end
 
-    # The filter object's own scope, forced to one status. `filters.scope` already
-    # applies status; the queued and in-flight lists want two different ones from
-    # the same filter set.
+    # The filter object's own scope, forced to one status and with the direction
+    # filter lifted out. `filters.scope` already applies status; the queued and
+    # in-flight lists want two different ones from the same filter set. And
+    # `scope_direction` is applied in Ruby by #direction_matches? instead, on the
+    # resolved direction — leaving it here as well would compose two different
+    # readings of the same filter and hide rows that satisfy either.
     def scoped(status)
-      filters.scope.unscope(where: :status).where(status: status)
+      filters.scope.unscope(where: :status).unscope(where: :scope_direction).where(status: status)
     end
 
     def build_row(item, position)
@@ -191,9 +225,8 @@ module Issues
     # this list alone rather than silently emptying it.
     def loose_row_matches?(row)
       return false if filters.repo && row.github.repo != filters.repo
-      return false if filters.scope_direction && row.direction.direction != filters.scope_direction
 
-      true
+      direction_matches?(row.direction)
     end
   end
 end

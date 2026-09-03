@@ -72,6 +72,39 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     assert_no_match(/Started\s+<a/, response.body)
   end
 
+  test "an issue_url that is not an http(s) URL is rendered as text, never as an href" do
+    # `issue_url` is agent-written and only length-validated, so a session holding
+    # the fleet's shared API key can put a scheme in it. Nothing may link it.
+    hostile = "javascript:fetch('/api/v1/work_backlog_items')"
+    backlog_item(key: "zimmer#1", title: "Queued with a hostile url", issue_url: hostile)
+    started = backlog_item(key: "zimmer#2", title: "Started with a hostile url", issue_url: hostile)
+    started.mark_started!(session: sessions(:running), by: nil)
+
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    assert_response :success
+    assert_match "Queued with a hostile url", response.body
+    assert_match "Started with a hostile url", response.body
+    assert_no_match(/href="javascript:/, response.body)
+    assert_select "a[href^=?]", "javascript:", count: 0
+  end
+
+  test "a gate session recorded as prose rather than a URL is not linked" do
+    backlog_item(key: "zimmer#1", title: "Cleared by hand",
+                 payload: { "gate_session" => "the groomer ran it by hand" })
+
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    assert_response :success
+    assert_no_match(/gate session/, response.body)
+  end
+
+  test "a nested promoted_session_id is ignored rather than 500ing the page" do
+    with_github_snapshot(github_snapshot) { get issues_path(promoted_session_id: { "a" => "1" }) }
+
+    assert_response :success
+  end
+
   test "a repo GitHub could not be read is named on the page" do
     snapshot = github_snapshot(errors: { "tadasant/motet" => "gh api search/issues failed" })
 

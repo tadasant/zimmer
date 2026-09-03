@@ -1021,7 +1021,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     )
 
     snapshot = Issues::GithubSnapshot::Snapshot.new(
-      fetched_at: Time.current, errors: {}, credential_detail: nil,
+      fetched_at: Time.current, errors: {},
       issues: [
         github_issue(number: 498, title: LONG_TOKEN_TITLE, labels: [ "convergent", "agent-filed", "brittle-assumption" ]),
         github_issue(number: 4242, title: LONG_TOKEN_TITLE,

@@ -49,8 +49,6 @@ module Issues
 
     Series = Data.define(:key, :label, :color, :values) do
       def last_value = values.last.to_i
-      def first_value = values.first.to_i
-      def delta = last_value - first_value
     end
 
     attr_reader :dates, :series, :window_days, :segment

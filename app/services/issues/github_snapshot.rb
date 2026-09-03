@@ -45,7 +45,7 @@ module Issues
 
     # Bump when the cached shape changes, so a deploy does not read yesterday's
     # keys with today's parser.
-    CACHE_KEY = "issues/github_snapshot/v1"
+    CACHE_KEY = "issues/github_snapshot/v2"
 
     # One `gh` call can spend GithubSearchService::REQUEST_TIMEOUT (15s) and a
     # full load is ten of them, so repos are fetched concurrently and the page
@@ -57,12 +57,9 @@ module Issues
     # A whole load: the issues, when it was taken, and — per repo — what went
     # wrong if anything did. A repo that failed is named on the page rather than
     # silently rendering as "no issues", which reads as good news.
-    Snapshot = Data.define(:issues, :fetched_at, :errors, :credential_detail) do
+    Snapshot = Data.define(:issues, :fetched_at, :errors) do
       def stale_seconds = [ (Time.current - fetched_at).to_i, 0 ].max
       def failed? = errors.any?
-
-      # Only the repos that answered.
-      def repos = Issues::GithubSnapshot::REPOS - errors.keys
     end
 
     class << self
@@ -92,12 +89,7 @@ module Issues
           error ? errors[repo] = error : issues.concat(repo_issues)
         end
 
-        {
-          "fetched_at" => Time.current.iso8601,
-          "issues" => issues.map(&:to_h_for_cache),
-          "errors" => errors,
-          "credential_detail" => nil
-        }
+        { "fetched_at" => Time.current.iso8601, "issues" => issues.map(&:to_h_for_cache), "errors" => errors }
       end
 
       private
@@ -107,8 +99,7 @@ module Issues
         Snapshot.new(
           issues: Array(raw["issues"]).map { |hash| GithubIssue.from_cache(hash) },
           fetched_at: GithubIssue.parse_time(raw["fetched_at"]) || Time.current,
-          errors: raw["errors"].is_a?(Hash) ? raw["errors"] : {},
-          credential_detail: raw["credential_detail"]
+          errors: raw["errors"].is_a?(Hash) ? raw["errors"] : {}
         )
       end
 
@@ -116,12 +107,7 @@ module Issues
       # looks like "nothing is going on in GitHub".
       def unauthenticated(preflight)
         reason = "Zimmer's GitHub credential is #{preflight.state} — #{preflight.detail}"
-        {
-          "fetched_at" => Time.current.iso8601,
-          "issues" => [],
-          "errors" => REPOS.index_with { reason },
-          "credential_detail" => reason
-        }
+        { "fetched_at" => Time.current.iso8601, "issues" => [], "errors" => REPOS.index_with { reason } }
       end
 
       # `[repo, issues, error_message]` per repo, in REPOS order.
@@ -134,6 +120,9 @@ module Issues
       def fetch_repos_concurrently(since)
         started = REPOS.map do |repo|
           thread = Thread.new do
+            # Set inside the thread, not on the line after `Thread.new` — a fast
+            # failure could otherwise beat the assignment.
+            Thread.current.report_on_exception = false
             Rails.application.executor.wrap { [ repo, fetch_repo(repo, since), nil ] }
           rescue StandardError => e
             # Caught HERE rather than around `thread.value`, because `Thread#join`
@@ -143,21 +132,23 @@ module Issues
             Rails.logger.warn("[Issues::GithubSnapshot] #{repo}: #{e.class}: #{e.message}")
             [ repo, [], "#{e.class}: #{e.message}" ]
           end
-          # A failure is this method's return value, never a warning printed over
-          # the test suite's output.
-          thread.report_on_exception = false
           [ repo, thread ]
         end
 
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + FETCH_TIMEOUT
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + fetch_timeout
         started.map do |repo, thread|
           remaining = [ deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0 ].max
           next thread.value if thread.join(remaining)
 
           thread.kill
-          [ repo, [], "the GitHub read did not finish within #{FETCH_TIMEOUT}s" ]
+          [ repo, [], "the GitHub read did not finish within #{fetch_timeout}s" ]
         end
       end
+
+      # A seam, not a setting. FETCH_TIMEOUT is the answer everywhere; this exists
+      # so a test can prove the timeout branch reports the repo rather than
+      # silently emptying it, without waiting a minute to find out.
+      def fetch_timeout = FETCH_TIMEOUT
 
       # Two searches, not one. Neither search syntax says "open, or closed since
       # X" in a form both GitHub and we can rely on, and the pair keeps each

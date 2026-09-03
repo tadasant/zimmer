@@ -19,6 +19,12 @@ export default class extends Controller {
 
   connect() {
     this.hidden = new Set()
+    // Nothing to drive. When the window holds no issue history the card renders a
+    // sentence instead of a plot, so there is no scrubber, no crosshair and no
+    // readout — and that is the DEGRADED case (GitHub unreachable, or a window
+    // with nothing in it), which is exactly when a controller must not throw.
+    if (!this.hasScrubTarget || !this.hasPlotTarget) return
+
     // Start on the most recent day: the strip is always occupied, so hovering
     // never makes the page jump by filling an empty row.
     this.show(this.lastIndex)
@@ -37,13 +43,14 @@ export default class extends Controller {
 
   // Dragging the range input, or arrowing it with the keyboard.
   scrub() {
+    if (!this.hasScrubTarget) return
     this.show(Number(this.scrubTarget.value))
   }
 
   // Pointer devices preview the day under the cursor; leaving restores the most
   // recent day, so the strip never goes blank.
   onPointerMove = (event) => {
-    if (!this.hasPlotTarget) return
+    if (!this.hasPlotTarget || !this.hasScrubTarget) return
     const box = this.plotTarget.getBoundingClientRect()
     if (box.width === 0) return
     if (event.clientY < box.top || event.clientY > box.bottom) return
@@ -55,6 +62,7 @@ export default class extends Controller {
   }
 
   onPointerLeave = () => {
+    if (!this.hasScrubTarget) return
     this.scrubTarget.value = this.lastIndex
     this.show(this.lastIndex)
   }

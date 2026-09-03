@@ -42,7 +42,11 @@ module IssuesHelper
   # The steps a y-axis is allowed to climb in, as multiples of a power of ten.
   # Restricted to numbers a reader adds up in their head — an axis that ticks in
   # 137s is arithmetic, not a scale.
-  NICE_STEPS = [ 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 10 ].freeze
+  #
+  # 1.25 is deliberately absent even though 125 and 1250 read fine: against a
+  # power of ten it rounds to 13, so every plot topping out between 51 and 65
+  # would have ticked 0 / 13 / 26 / 39 / 52.
+  NICE_STEPS = [ 1, 1.5, 2, 2.5, 3, 4, 5, 10 ].freeze
 
   # The y gridline values for a plot whose top is `max`.
   #
@@ -84,18 +88,34 @@ module IssuesHelper
     "#{distance_of_time_in_words(seconds)} ago"
   end
 
-  # The gate session that cleared an item, when the gate recorded one.
+  # EVERY URL THIS PAGE LINKS GOES THROUGH HERE.
   #
-  # `payload.gate_session` is free text a gate wrote — usually a URL, sometimes a
-  # URL followed by a paragraph, often absent — and the browser surface
-  # authenticates nobody, so it could hold a `javascript:` scheme. Linked only
-  # when it IS an http(s) URL, and dropped entirely otherwise: a paragraph
-  # rendered as a dead link is the same bug as a hostile scheme rendered as a
-  # live one. Same rule, and the same regex, as GateDecisionsHelper.
-  def issue_gate_session_link(value)
-    text = value.to_s.strip
-    return nil unless text.match?(GateDecisionsHelper::SAFE_URL)
+  # `issue_url` and `payload.gate_session` are written by agents, not by a
+  # validated form: WorkBacklogItem only checks `issue_url`'s length, and
+  # `gate_session` is free text a gate wrote — usually a URL, sometimes a URL
+  # followed by a paragraph, often absent. Any session holding the fleet's shared
+  # API key can put a `javascript:` scheme in either, and Zimmer's browser surface
+  # authenticates nobody, so an unguarded `link_to` would run it in the operator's
+  # browser. There is no CSP in this app to catch it afterwards.
+  #
+  # So a value is linked only when it IS an http(s) URL, and rendered as text
+  # otherwise: a paragraph rendered as a dead link is the same bug as a hostile
+  # scheme rendered as a live one. Same rule, and the same regex, as
+  # GateDecisionsHelper — this page renders the same class of value the gate
+  # decision ledger does.
+  def issue_safe_link(value, text = nil, **options)
+    url = value.to_s.strip
+    label = text.presence || url
+    return tag.span(label, class: options[:class]) unless url.match?(GateDecisionsHelper::SAFE_URL)
 
-    link_to("gate session", text, class: "text-[11px] text-indigo-600 hover:text-indigo-800")
+    link_to(label, url, target: "_blank", rel: "noopener noreferrer", **options)
+  end
+
+  # The gate session that cleared an item, when the gate recorded one and
+  # recorded it as a URL.
+  def issue_gate_session_link(value)
+    return nil unless value.to_s.strip.match?(GateDecisionsHelper::SAFE_URL)
+
+    issue_safe_link(value, "gate session", class: "text-[11px] text-indigo-600 hover:text-indigo-800")
   end
 end

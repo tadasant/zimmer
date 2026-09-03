@@ -43,7 +43,6 @@ class Issues::GithubSnapshotTest < ActiveSupport::TestCase
     assert_equal [ "tadasant/motet" ], snapshot.errors.keys
     assert_match "boom", snapshot.errors["tadasant/motet"]
     assert_equal 1, snapshot.issues.length, "the other four repos still answered"
-    assert_not_includes snapshot.repos, "tadasant/motet"
   end
 
   test "an unexpected error in one repo is caught rather than 500ing the page" do
@@ -64,7 +63,23 @@ class Issues::GithubSnapshotTest < ActiveSupport::TestCase
     snapshot = Issues::GithubSnapshot.send(:hydrate, raw)
 
     assert_equal Issues::GithubSnapshot::REPOS.sort, snapshot.errors.keys.sort
-    assert_match "Bad credentials", snapshot.credential_detail
+    assert snapshot.errors.values.all? { |reason| reason.match?(/Bad credentials/) },
+           "the reason belongs on every repo, since that is what the page renders"
+    assert_empty snapshot.issues
+  end
+
+  test "a repo whose search times out is named rather than silently emptied" do
+    raw = with_preflight_ok do
+      Issues::GithubSnapshot.stub(:fetch_timeout, 0.05) do
+        GithubSearchService.stub(:search_issues, ->(_query) { sleep 2 }) do
+          Issues::GithubSnapshot.load_from_github
+        end
+      end
+    end
+
+    snapshot = Issues::GithubSnapshot.send(:hydrate, raw)
+    assert_equal Issues::GithubSnapshot::REPOS.sort, snapshot.errors.keys.sort
+    assert snapshot.errors.values.all? { |reason| reason.include?("did not finish") }
   end
 
   test "the closed-issue search covers the widest window the page offers" do
