@@ -61,8 +61,8 @@ module TriggersHelper
   end
 
   # Condition type → the badge a condition wears on the trigger detail page:
-  # the words in the pill, and the pill's colors. The colors match the icon each
-  # type gets in a trigger row, so the two pages read as one thing.
+  # the words in the pill, and the pill's colors. The colors echo the hue of the
+  # icon the same type gets in a trigger row, so the two pages read as one thing.
   #
   # Every type in TriggerCondition::CONDITION_TYPES belongs here. A type absent
   # from this map is titleized rather than shown as its raw enum value, so a
@@ -79,16 +79,18 @@ module TriggersHelper
   FALLBACK_CONDITION_BADGE_CSS = "bg-gray-100 text-gray-800"
 
   def trigger_condition_badge(condition_type)
-    CONDITION_TYPE_BADGES[condition_type] ||
-      { label: condition_type.to_s.titleize, css: FALLBACK_CONDITION_BADGE_CSS }
+    type = condition_type.to_s
+
+    CONDITION_TYPE_BADGES[type] || { label: type.titleize, css: FALLBACK_CONDITION_BADGE_CSS }
   end
 
   # What the badge leaves for the line beside it. TriggerCondition#description
   # opens with the same words the badge carries ("Slack: …", "System Event: …"),
-  # so the prefix is dropped rather than printed twice.
+  # so the prefix is dropped rather than printed twice. A description that does
+  # not carry the prefix is left whole.
   def trigger_condition_detail(condition)
     label = trigger_condition_badge(condition.condition_type)[:label]
 
-    condition.description.to_s.sub(/\A#{Regexp.escape(label)}: /, "")
+    condition.description.to_s.delete_prefix("#{label}: ")
   end
 end
