@@ -305,12 +305,18 @@ is waiting for.
 
 `get_spot_policy` reports the same two answers, from the same measurement rather than from a second
 one of its own: the pool's moment as **Account pool capacity** beside the decision, and the 7-day
-rollover as **Next 7-day reset** under the weekly window. Each is a countdown *and* a UTC wall clock
-— the countdown is what a session deciding between sleeping on a wake and escalating acts on, and
-the absolute time is what survives being quoted into a later message. `SpotGateService::PoolCapacity`
-is what carries the four values off `ClaudeAccountPool::Measure` into the decision; the three banner
-states above are the three sentences the tool prints, so the page and the tool cannot answer this
-differently.
+rollover as **Next 7-day reset** under the weekly window. Where there is a time to give, it is given
+as a countdown *and* a UTC wall clock — the countdown is what a session deciding between sleeping on
+a wake and escalating acts on, and the absolute time is what survives being quoted into a later
+message. Where there is not, the tool says which of the two absences it is, in the same words the
+banner uses. `SpotGateService::PoolCapacity` carries the values off `ClaudeAccountPool::Measure`; the
+three banner states above are the three sentences the tool prints, so the page and the tool cannot
+answer this differently.
+
+The gate stops reading the pool as soon as it can answer without it — gating turned off
+short-circuits before it ever measures — so `get_spot_policy` falls back to `ClaudeAccountPool.measure`
+when the decision carries no capacity of its own. The page has no such short-circuit, and with gating
+off the tool would otherwise go silent about a pool the page was still reporting on.
 
 That answer is deliberately separate from the ceilings below. **Account pool capacity** is Claude's
 quota — when an account can serve a request at all. The ceilings are Zimmer's own gate. They come
