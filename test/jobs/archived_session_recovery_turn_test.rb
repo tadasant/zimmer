@@ -25,9 +25,18 @@ require "mocha/minitest"
 # guard (#630 / PR #697) cannot substitute for it: by the time that job runs the
 # row genuinely says `running`, because the resume above is what made it say so.
 #
-# Both enqueuers also used to ignore the `false` that `resume_for_system_recovery!`
+# Every enqueuer here also used to ignore the `false` that `resume_for_system_recovery!`
 # returns when it DOES read the state correctly, and enqueued a job regardless —
 # so a session already `running` got a second agent process pointed at it.
+#
+# THE REST OF THE FAMILY (#753). `HealthMonitorService#retry_failed_sessions` and
+# `AgentSessionJob#auto_continue_after_interrupt` had the identical shape and are
+# covered below. Both windows are narrow rather than minutes wide, and neither is
+# zero: the retry loop reads its relation once and then works from those objects,
+# so every session past the first waits out a `Dir.exist?` stat on the clone
+# volume and a full resume-and-enqueue for each session ahead of it, while the
+# auto-continue spans that same `Dir.exist?` during SIGTERM shutdown — a deploy,
+# which is when somebody is most likely to be emptying the trash.
 #
 # The assertion that matters throughout is `assert_no_enqueued_jobs only:
 # AgentSessionJob`: the job is the agent process, the clone and the quota spend.
@@ -251,6 +260,162 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
       "recovery must not resurrect a session a human trashed mid-recovery"
     assert_equal archived_at.to_i, @session.archived_at.to_i
     mock_poller.verify
+  end
+
+  # ---------------------------------------------------------------------------
+  # HealthMonitorService#retry_failed_sessions — the operator-facing enqueuer
+  # ---------------------------------------------------------------------------
+  #
+  # The relation is read once and the loop then works from those objects, so the
+  # archive can land anywhere between the read and this iteration.
+  # `can_retry_session?` is the hook the tests below archive through because it is
+  # where the real gap is: it stats the clone directory, once per session, after
+  # the relation has already been loaded.
+
+  test "the failed-session retry refuses a session archived after the relation was read" do
+    @session.update!(status: :failed)
+    service = HealthMonitorService.new
+    archived_at = 1.hour.ago
+    service.stubs(:can_retry_session?).with do |_session|
+      Session.where(id: @session.id).update_all(
+        status: Session.statuses[:archived], archived_at: archived_at
+      )
+      true
+    end.returns(true)
+
+    results = nil
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      results = service.retry_failed_sessions(session_ids: [ @session.id ])
+    end
+
+    @session.reload
+    assert_equal "archived", @session.status,
+      "the retry must not write `running` over an archived row"
+    assert_equal archived_at.to_i, @session.archived_at.to_i,
+      "archived_at must not be restamped by a resume the session never took"
+    assert_empty results[:retried]
+  end
+
+  # The refusal has to reach the operator who asked for the retry. A silent no-op
+  # on the `session_ids:` branch is indistinguishable from a bug, so the reason
+  # goes back in `results[:skipped]` — what the JSON surfaces and the action_health
+  # MCP tool return, and what HealthController now flashes — and onto the session's
+  # own timeline.
+  test "a refused retry is reported to the operator and on the session's timeline" do
+    @session.update!(status: :failed)
+    service = HealthMonitorService.new
+    service.stubs(:can_retry_session?).with do |_session|
+      Session.where(id: @session.id).update_all(status: Session.statuses[:archived])
+      true
+    end.returns(true)
+
+    results = service.retry_failed_sessions(session_ids: [ @session.id ])
+
+    skipped = results[:skipped].find { |entry| entry[:session_id] == @session.id }
+    assert_not_nil skipped, "a refused retry must be reported, not dropped"
+    assert_includes skipped[:reason], "it is in the trash"
+    assert_empty results[:failed], "a refusal is not a failed retry"
+
+    refusal = @session.logs.reload.find { |log| log.content.include?("Not retrying this session") }
+    assert_not_nil refusal, "expected a session log explaining why nothing happened"
+    assert_includes refusal.content, "takes no turn"
+  end
+
+  test "the failed-session retry refuses a session that went running underneath it" do
+    @session.update!(status: :failed)
+    service = HealthMonitorService.new
+    service.stubs(:can_retry_session?).with do |_session|
+      Session.where(id: @session.id).update_all(
+        status: Session.statuses[:running], running_job_id: "held-by-the-live-turn"
+      )
+      true
+    end.returns(true)
+
+    results = nil
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      results = service.retry_failed_sessions(session_ids: [ @session.id ])
+    end
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_equal "held-by-the-live-turn", @session.running_job_id,
+      "the refused claim must leave the live turn's ownership alone"
+    assert_includes results[:skipped].first[:reason], "cannot be resumed"
+  end
+
+  # The ordinary path, so the guard cannot pass the tests above by refusing
+  # everything. The stale retry metadata still has to be cleared on the way.
+  test "the failed-session retry still retries a live failed session" do
+    @session.update!(
+      status: :failed,
+      running_job_id: "dead-job",
+      metadata: @session.metadata.merge("paused_by" => "recovery")
+    )
+
+    results = nil
+    assert_enqueued_jobs 1, only: AgentSessionJob do
+      results = HealthMonitorService.new.retry_failed_sessions(session_ids: [ @session.id ])
+    end
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_equal [ @session.id ], results[:retried]
+    assert_empty results[:skipped]
+    assert_nil @session.metadata["paused_by"], "the stale retry metadata must still be cleared"
+  end
+
+  # ---------------------------------------------------------------------------
+  # AgentSessionJob#auto_continue_after_interrupt — the SIGTERM enqueuer
+  # ---------------------------------------------------------------------------
+  #
+  # The narrowest window of the family, and not zero: the three checks at the top
+  # of the method read the in-memory object, and the last of them stats the clone
+  # volume during SIGTERM shutdown — which is a deploy, which is exactly when
+  # somebody is emptying the trash.
+
+  test "auto-continue after a job interruption refuses a session archived underneath it" do
+    stale = stale_session_archived_underneath
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      AgentSessionJob.new.send(:auto_continue_after_interrupt, stale)
+    end
+
+    @session.reload
+    assert_equal "archived", @session.status,
+      "an interrupted job must not resurrect a session a human trashed on the way out"
+    assert_equal @archived_at.to_i, @session.archived_at.to_i
+    assert @session.logs.any? { |log| log.content.include?("it is in the trash") },
+      "expected a session log explaining why nothing happened"
+  end
+
+  test "auto-continue after a job interruption refuses a session that is already running" do
+    stale = Session.find(@session.id)
+    Session.where(id: @session.id).update_all(
+      status: Session.statuses[:running], running_job_id: "held-by-the-live-turn"
+    )
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      AgentSessionJob.new.send(:auto_continue_after_interrupt, stale)
+    end
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_equal "held-by-the-live-turn", @session.running_job_id,
+      "the refused claim must leave the live turn's ownership alone"
+    assert @session.logs.any? { |log| log.content.include?("cannot be resumed") }
+  end
+
+  test "auto-continue after a job interruption still continues a live session" do
+    @session.update!(running_job_id: "the-interrupted-job")
+
+    assert_enqueued_jobs 1, only: AgentSessionJob do
+      AgentSessionJob.new.send(:auto_continue_after_interrupt, @session)
+    end
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_nil @session.metadata["paused_by"], "the stale retry metadata must still be cleared"
+    assert @session.logs.any? { |log| log.content.include?("automatically continued after job interruption") }
   end
 
   # ---------------------------------------------------------------------------

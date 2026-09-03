@@ -222,6 +222,32 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(clone_path)
   end
 
+  # The HTML surface used to flash counts of `retried` and `failed` only, so a
+  # session the claim refused — or one missing its working directory — came back
+  # as "No sessions to retry" to an operator who had just asked for that exact
+  # session by id. Indistinguishable from a bug.
+  test "retry_sessions flashes why a session was skipped" do
+    session = Session.create!(
+      prompt: "Test",
+      agent_runtime: "claude_code",
+      status: :failed,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid,
+      metadata: { "working_directory" => "/nonexistent/clone/path" }
+    )
+
+    post retry_sessions_health_url, params: { session_ids: [ session.id ] }
+
+    assert_redirected_to health_dashboard_path
+    assert_match(/Skipped 1 session/, flash[:notice])
+    assert_match(/Missing required metadata/, flash[:notice])
+    assert_no_match(/No sessions to retry/, flash[:notice],
+      "the operator asked for one specific session and must be told what happened to it")
+    assert_nil flash[:alert], "a skip is not a failure — the bulk sweep skips routinely"
+  end
+
   test "retry_sessions is rate limited" do
     # Pre-populate cache to simulate a recent action
     HealthActionCooldown.new(nil).record("retry_sessions")

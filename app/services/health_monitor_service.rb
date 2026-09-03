@@ -542,17 +542,39 @@ class HealthMonitorService
     sessions.each do |session|
       if can_retry_session?(session)
         begin
+          # The enqueue happens under the row lock claim_system_recovery_turn! takes.
+          # The relation is read once, above, and the loop then works from those
+          # objects: every session past the first waits out a `Dir.exist?` stat on
+          # the clone volume and a full resume-and-enqueue for each session ahead of
+          # it, so the row can say `archived` by the time this iteration reaches it.
+          # Resuming from the loaded object would write `running` straight over the
+          # trash (#554). `with_db_retry` re-running the block after a connection
+          # blip is the same hazard from a second direction: the retry replays the
+          # decision against a row that has moved. See
+          # Session#claim_system_recovery_turn!.
+          outcome = nil
           with_db_retry do
-            # Clear stale retry metadata for fresh execution.
-            # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-            session.update!(
-              metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-            )
-            session.resume_for_system_recovery!
-            AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
+            ActiveRecord::Base.transaction do
+              outcome = session.claim_system_recovery_turn! do
+                # Clear stale retry metadata for fresh execution.
+                # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
+                session.update!(
+                  metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+                )
+              end
+
+              next unless outcome == :claimed
+
+              AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
+            end
           end
-          results[:retried] << session.id
-          @logger.info("Session retry initiated", session_id: session.id)
+
+          if outcome == :claimed
+            results[:retried] << session.id
+            @logger.info("Session retry initiated", session_id: session.id)
+          else
+            results[:skipped] << { session_id: session.id, reason: refuse_retry(session, outcome) }
+          end
         rescue => e
           results[:failed] << { session_id: session.id, reason: e.message }
           @logger.error("Session retry failed", session_id: session.id, error: e.message)
@@ -1094,6 +1116,51 @@ class HealthMonitorService
     session.session_id.present? &&
       session.metadata&.dig("working_directory").present? &&
       Dir.exist?(session.metadata["working_directory"])
+  end
+
+  # Say why a retry did not happen — loudly enough that an operator who asked for
+  # one by id can see the answer.
+  #
+  # A refused claim is a no-op, and a silent no-op is the failure mode here: the
+  # `session_ids:` branch is somebody clicking Retry on a specific session, and
+  # "nothing happened" with an empty result is indistinguishable from a bug. The
+  # reason goes back to the caller in `results[:skipped]` — rendered by the JSON
+  # of `POST /health/retry_sessions` and `POST /api/v1/health/retry_sessions`, by
+  # the `action_health` MCP tool, and (since the HTML surface flashed counts and
+  # dropped this list entirely) in the health dashboard's flash — and onto the
+  # session's own timeline, where "why did nothing happen to this session" is
+  # asked from.
+  #
+  # Neither refusal retries. An archived session is terminal — the trash-cleanup
+  # clock on its clone is already running, and starting an agent against it is
+  # exactly #554. A `running` session is being driven by somebody else, and a
+  # second agent process on one session is its own defect (#400).
+  #
+  # @param session [Session] the session whose claim was refused; already
+  #   reloaded by claim_system_recovery_turn!, so `status` is the row's
+  # @param outcome [Symbol] :archived or :not_resumable
+  # @return [String] the reason, for results[:skipped]
+  def refuse_retry(session, outcome)
+    reason =
+      if outcome == :archived
+        "Not retrying this session: it is in the trash. An archived session takes no turn, " \
+        "so no agent was started."
+      else
+        "Not retrying this session: it is #{session.status} and cannot be resumed. " \
+        "Something else is already driving it, so no second agent was started."
+      end
+
+    @logger.info("Session retry skipped", session_id: session.id, reason: outcome.to_s)
+
+    begin
+      create_log_with_retry(session, reason, level: "info")
+    rescue => e
+      # A timeline write that fails must not turn a clean refusal into a reported
+      # retry failure — the operator still gets the reason in results[:skipped].
+      @logger.warn("Could not record retry refusal on the session", session_id: session.id, error: e.message)
+    end
+
+    reason
   end
 
   # Determine process health status based on orphaned count
