@@ -171,7 +171,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
       "expected the principle to explain why the query string cannot be altered"
     assert_includes prompt, "[text](url)",
       "expected the principle to prescribe a link form nothing can be glued onto"
-    assert_includes prompt, "curl -sS -o /dev/null -w '%{http_code}'",
+    assert_includes prompt, "curl -sSL -o /dev/null -w '%{http_code}'",
       "expected the principle to give the fetch-before-you-send check"
   end
 
@@ -656,6 +656,10 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "avoid asking the user clarifying questions — make your best assumptions and prioritize autonomy."
     assert_includes prompt, "## Autonomous Problem-Solving"
     assert_includes prompt, "## Dynamic Skills and MCP Servers"
+    assert_includes prompt, "Return the URL the tool gave you, verbatim",
+      "signed-URL handling is runtime-agnostic and must reach Codex sessions too"
+    assert_includes prompt, "A 403 on such a link is about the signature, not the store",
+      "signed-URL handling is runtime-agnostic and must reach Codex sessions too"
   end
 
   test "codex runtime swaps CLAUDE.md references for AGENTS.md" do
