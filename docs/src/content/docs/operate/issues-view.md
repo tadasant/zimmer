@@ -62,16 +62,21 @@ first, which is a speed bump, not a boundary. The page says so where the button 
 ## Where "convergent" and "divergent" come from
 
 An issue's **direction** — does it close a gap the fleet already knows about, or open new surface
-area — has three possible sources, and none of them is complete on its own. `Issues::Direction`
-resolves them in order and the pill's tooltip says which one answered:
+area — has three possible sources, none of them complete on its own, and a fourth answer for when
+none of them has one. `Issues::Direction` tries them in order and the pill's tooltip says which one
+answered:
 
-1. **The GitHub label**, `convergent` or `divergent`. GitHub is the source of truth and the issue
-   gate applies the label on every rating, so this is where the answer lives.
+1. **The GitHub label**, `convergent` or `divergent`. GitHub is the source of truth, and this is
+   where the answer is moving to: the issue gate is being changed to apply the label on every
+   rating, and the back-fill across the five repos is in flight. It is not yet where the answer
+   lives for most issues — while this page was being built, `tadasant/zimmer` carried the labels on
+   none of its 208 open issues and `tadasant/strad` carried them on 53 of 55.
 2. **The backlog row's `scope_direction`**, for an issue the gate queued.
 3. **The most recent `issue_work` gate decision** for that issue URL — the ledger covers everything
    the gate ever rated, including issues that never reached the queue.
-4. Otherwise **unrated**, said out loud rather than guessed. That count is the pile the gate has not
-   reached, and it is one of the more useful numbers on the page.
+
+Failing all three, the issue reads **unrated**, said out loud rather than guessed. That count is the
+pile the gate has not reached, and it is one of the more useful numbers on the page.
 
 Label absence is normal and always will be: the labels are applied going forward, and an issue that
 predates the gate has no rating anywhere.
@@ -97,7 +102,8 @@ log of its labels, and doing better would mean a timeline request per issue.
 
 `Issues::GithubSnapshot` shells out to the `gh` CLI through `GithubSearchService` — the same client
 and the same host credential the [PR poller and comment poller](/operate/background-jobs/) use, so
-there is no second token to rotate. Two searches per repo, ten in all, run concurrently:
+there is no second token to rotate. Two searches per repo — ten in all — with the five repos read
+concurrently and each repo's pair run in sequence on its own thread:
 
 ```
 repo:<repo> is:issue is:open
@@ -107,13 +113,20 @@ repo:<repo> is:issue is:closed closed:>=<180 days ago>
 The widest window is always the one fetched, so the 30- and 90-day views are slices of the same read
 rather than three loads of GitHub.
 
-The transformed result goes in `Rails.cache` for **five minutes**, and the page states how old the
+A read in which *every* repo failed is not cached — that is a picture of GitHub being unreachable,
+and holding it for the full TTL would keep the page degraded after the outage cleared. The
+transformed result otherwise goes in `Rails.cache` for **five minutes**, and the page states how old the
 read is with a **Refresh** button beside it. The cache is a request-coalescer, not a mirror: a cold
 load is a few seconds, a cached one is well under a second, and clicking between windows, segments,
 filters and pages costs one GitHub read rather than a dozen. There is deliberately **no mirror table
 of issue state** — a poller writing issue rows into Postgres buys a fast page at the cost of a
 second, always-slightly-wrong copy, and a page showing "open" for an issue closed ten minutes ago is
 worse than a page that takes a second to load.
+
+The two searches fail independently. "Closed in the last 180 days" is the half that grows without
+bound on a fleet's own repo, so it is the one that reaches `GithubSearchService`'s 1000-result
+ceiling first — and losing it must not blank a repo whose open issues were read successfully a
+moment earlier. Whichever half answered is kept, and the error names which half was lost.
 
 A repo whose search fails is **named on the page with the reason**, and the other four still render.
 A repo silently showing zero open issues reads as good news, which is the one thing a failure must

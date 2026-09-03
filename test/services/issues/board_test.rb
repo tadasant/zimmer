@@ -186,6 +186,39 @@ class Issues::BoardTest < ActiveSupport::TestCase
                  board(snapshot: snapshot, filters: { "repo" => "tadasant/motet" }).trend_issues.map(&:repo)
   end
 
+  test "a started item whose session is dead comes back into the loose list" do
+    item = backlog_item(key: "zimmer#7", issue_url: url(7))
+    item.mark_started!(session: sessions(:archived), by: nil)
+    snapshot = github_snapshot(issues: [ github_issue(number: 7) ])
+
+    result = board(snapshot: snapshot)
+    assert_empty result.in_flight_rows, "the session is archived, so nothing is in flight"
+    assert_equal [ 7 ], result.loose_rows.map { |row| row.github.number },
+                 "an issue nobody is working must be visible somewhere"
+  end
+
+  test "a queued item whose issue is closed stays on the queue and out of the loose list" do
+    backlog_item(key: "zimmer#7", issue_url: url(7))
+    snapshot = github_snapshot(issues: [ github_issue(number: 7, state: "closed", closed_at: 1.day.ago) ])
+
+    result = board(snapshot: snapshot)
+    assert result.queued_rows.sole.issue_closed?
+    assert_empty result.loose_rows, "a closed issue is never loose, queued or not"
+  end
+
+  test "per-repo direction counts agree with the pills the rows carry" do
+    snapshot = github_snapshot(issues: [
+      github_issue(repo: "tadasant/zimmer", number: 1, labels: [ "convergent" ]),
+      github_issue(repo: "tadasant/zimmer", number: 2, labels: [ "divergent" ]),
+      github_issue(repo: "tadasant/zimmer", number: 3),
+      github_issue(repo: "tadasant/zimmer", number: 4, state: "closed", closed_at: 1.day.ago, labels: [ "convergent" ])
+    ])
+
+    summary = board(snapshot: snapshot).repo_summaries.find { |r| r.repo == "tadasant/zimmer" }
+    assert_equal 3, summary.open_count, "a closed issue is not open"
+    assert_equal({ "convergent" => 1, "divergent" => 1, "unrated" => 1 }, summary.directions)
+  end
+
   private
 
   def url(number) = "https://github.com/tadasant/zimmer/issues/#{number}"

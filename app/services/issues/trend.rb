@@ -161,7 +161,12 @@ module Issues
       named + residual.reject { |_key, members| members.empty? }
     end
 
-    def residual?(key) = key == Issues::Direction::UNRATED || key == OTHER
+    # Which key is "we could not classify this" depends on the segmentation, and
+    # only one key ever is. Asking `key == UNRATED || key == OTHER` regardless
+    # meant a repo carrying a GitHub label literally named `unrated` rendered two
+    # grey series at once under `segment=label` — the label's own bucket and the
+    # unlabelled one.
+    def residual?(key) = key == (segment == "direction" ? Issues::Direction::UNRATED : OTHER)
 
     def segment_key(issue)
       case segment

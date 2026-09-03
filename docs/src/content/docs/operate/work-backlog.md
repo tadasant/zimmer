@@ -141,8 +141,9 @@ loudly rather than claiming to have imported a queue it never read.
 
 [The Issues view](/operate/issues-view/) is the page in front of this table: the queue in rank
 order joined to live GitHub issue state, a **Promote** button on every queued row, and a trend
-chart of open-issue counts over time. `start_now` is its server half, drawn at the browser surface
-rather than on the API-key surface every agent session holds.
+chart of open-issue counts over time. Promote does not post to `start_now`: it goes to a separate
+browser-only controller that calls the same `WorkBacklog::Start`, deliberately away from the
+API-key surface every agent session holds.
 
 ## What is not here yet
 
