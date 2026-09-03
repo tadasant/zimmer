@@ -298,6 +298,15 @@ module CronSchedule
       description: "Re-enqueue the first turn of a session that has been waiting to start with no job behind it",
       environments: %i[production staging]
     },
+    # Out of development for the same reason as the sweep above: it resumes
+    # sessions, which spends quota, and a developer's database is full of
+    # `waiting` rows that will never have a wake armed against them.
+    stranded_sleep_sweep: {
+      cron: "*/5 * * * *", # Every 5 minutes; StrandedSleepRescue::GRACE is what bounds staleness
+      class: "StrandedSleepSweepJob",
+      description: "Resume a session asleep in waiting on a wake-up that can never fire",
+      environments: %i[production staging]
+    },
     burn_rate_recompute: {
       cron: "*/20 * * * *", # Every 20 minutes — the ledger only lands every 10, so this is not the bound
       class: "BurnRateRecomputeJob",

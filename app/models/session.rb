@@ -471,6 +471,8 @@ class Session < ApplicationRecord
     transcript_reading_started_logged
     interrupted_start_requeue_count
     recovery_continue_attempts
+    stranded_sleep_rescues
+    stranded_sleep_abandoned
   ] + SpotSessionPause::METADATA_KEYS).freeze
 
   # Metadata keys rendered by the session metadata partial. A change to any of them is
