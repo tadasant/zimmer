@@ -316,7 +316,9 @@ find_cgroup() {
 # Emits "<total> <non-init> <known>". `known` is 0 when the subtree could not be
 # enumerated at all -- a scope that vanished mid-run, an unreadable subtree, a missing
 # `find`. That is NOT the same as an empty container, and only the gate can tell the
-# difference, so the count alone must never be the thing it reads.
+# difference, so the count alone must never be the thing it reads. It travels in the
+# payload as `cgroup.census_known` for the same reason: the alert must not read a
+# census that was never taken as proof the worker is idle.
 cgroup_census() {
   local dir="$1" total=0 workload=0 known=0 p comm procs files
   if [ -n "$dir" ] && [ -d "$dir" ]; then
@@ -711,6 +713,7 @@ payload=$(
   },
   "cgroup": {
     "path": "$(json_escape "$cg")",
+    "census_known": $([ "${cg_known:-0}" = "1" ] && printf true || printf false),
     "process_count": ${cg_total:-0},
     "workload_process_count": ${cg_workload:-0},
     "oom_events": ${oom_events:-0},

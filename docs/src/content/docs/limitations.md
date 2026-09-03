@@ -4093,7 +4093,7 @@ healthy ([#502](https://github.com/tadasant/zimmer/issues/502)). `zimmer-worker-
 catches that — a real `docker exec` on a 60-second timer, on the host, outside the thing it
 is watching. See [When the worker wedges](/operate/nested-docker/#when-the-worker-wedges).
 
-What it does **not** do is make the failure survivable, and four gaps are worth stating.
+What it does **not** do is make the failure survivable, and five gaps are worth stating.
 
 **The last rung of recovery is manual.** The watchdog kills the container's shim and
 retries `docker start`, which is where the wedge usually ends: `sysbox-mgr` refuses the
@@ -4115,6 +4115,16 @@ different deploy path needs — `ZIMMER_WATCHDOG_SSH_EXTRA` for how to reach the
 `ZIMMER_WATCHDOG_RECOVER` for whether recovery is armed — but the production deploy workflow
 that would call it lives in the private companion repo, and until it does, production has no
 detection at all, silently.
+
+**The trigger is not always the OOM, and the impact is not measured.** The signature the
+watchdog fires on — running container, failing `docker exec` — is shared by at least one
+condition that is not a cgroup OOM at all: two hosts wedged twelve minutes apart on
+2026-09-02 with `OOMKilled=false`, `oom_kill=0` and five live workload processes each
+([#774](https://github.com/tadasant/zimmer/issues/774)). The alert no longer asserts #502's
+cause or an idle worker on that evidence — it reports both as unknown, and says how many
+processes are alive — but "unknown" is what it is. Nothing here establishes whether jobs are
+still executing inside a wedged worker; answering that still means reading the app's logs and
+the queue's head age by hand.
 
 **Delivery depends on the web container.** The alert reaches Slack by running
 `bin/rails zimmer:worker_wedge_alert` inside the *web* container, because the worker is the

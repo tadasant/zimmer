@@ -43,6 +43,45 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     }
   JSON
 
+  # The two real firings of 2026-09-02 (issue #774): no OOM anywhere, five live workload
+  # processes, on hosts whose memory limits differ 5x. The page used to assert #502's
+  # cgroup OOM and "running no jobs" about exactly this payload; both were false.
+  NO_OOM_BUSY_PAYLOAD = <<~JSON
+    {
+      "schema": 1,
+      "host": "zimmer-prod",
+      "detected_at": "2026-09-02T06:43:53Z",
+      "container": {
+        "id": "a1b2c3d4e5f6",
+        "name": "zimmer-worker-production",
+        "runtime": "sysbox-runc",
+        "running": true,
+        "oom_killed": false,
+        "restart_count": 0,
+        "memory_limit_bytes": 10737418240,
+        "started_at": "2026-09-01T22:10:00Z"
+      },
+      "probe": {
+        "consecutive_failures": 3,
+        "timeout_seconds": 20,
+        "last_error": "unsafe procfs detected: openat2 fsmount:fscontext:proc/thread-self/fd/: operation not permitted"
+      },
+      "cgroup": {
+        "path": "/sys/fs/cgroup/system.slice/docker-a1b2.scope",
+        "census_known": true,
+        "process_count": 6,
+        "workload_process_count": 5,
+        "oom_events": 0,
+        "oom_kills": 0
+      },
+      "recovery": {
+        "attempted": false,
+        "outcome": "skipped",
+        "steps": "5 process(es) other than the init shim are still alive in the cgroup"
+      }
+    }
+  JSON
+
   test "pages with the container in the title and the evidence in the body" do
     captured = capture_alert { WorkerWedgeAlert.report(FULL_PAYLOAD) }
 
@@ -58,6 +97,135 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_includes details, "oom_kill=1"
     assert_includes details, "2.0 GiB"
     assert_includes details, "setns process caused"
+    assert_includes details, "issues/502"
+  end
+
+  # The four combinations that matter. Cause comes from the OOM fields and impact from the
+  # census; each is read independently, and getting either backwards is silent until the
+  # next wedge.
+  test "OOM evidence plus an empty cgroup: names #502 and says the worker is idle" do
+    details = capture_alert { WorkerWedgeAlert.report(FULL_PAYLOAD) }[:details]
+
+    assert_includes details, "An OOM kill is recorded"
+    assert_includes details, "this is the sysbox cgroup-OOM wedge from"
+    assert_includes details, "issues/502"
+    assert_includes details, "no workload processes are left in its cgroup, so it is running no jobs"
+    assert_not_includes details, "is unverified"
+  end
+
+  test "OOM evidence with live processes: names #502 but does not claim the worker is idle" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["cgroup"]["workload_process_count"] = 5
+    payload["cgroup"]["process_count"] = 6
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "An OOM kill is recorded"
+    assert_includes details, "5 processes are still alive in its cgroup"
+    assert_includes details, "is unverified"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+  end
+
+  test "no OOM evidence with an empty cgroup: refuses #502 but still reports the worker idle" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"]["oom_killed"] = false
+    payload["cgroup"]["oom_kills"] = 0
+    payload["cgroup"]["oom_events"] = 0
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "No OOM kill is recorded"
+    assert_includes details, "*not* the cgroup-OOM wedge"
+    assert_includes details, "its cause is unknown"
+    assert_includes details, "no workload processes are left in its cgroup, so it is running no jobs"
+  end
+
+  # The regression the issue was filed for: neither false claim may appear.
+  test "no OOM evidence with live processes: claims neither the cause nor the impact" do
+    details = capture_alert { WorkerWedgeAlert.report(NO_OOM_BUSY_PAYLOAD) }[:details]
+
+    assert_includes details, "No OOM kill is recorded"
+    assert_includes details, "*not* the cgroup-OOM wedge"
+    assert_includes details, "5 processes are still alive in its cgroup"
+    assert_includes details, "says nothing about processes that were already running"
+    assert_includes details, "is unverified"
+
+    assert_not_includes details, "this is the sysbox cgroup-OOM wedge from"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+    assert_not_includes details, "the worker is still not running work"
+  end
+
+  # `docker exec` failing says nothing about what is already running, so the unresolved
+  # trailer cannot inherit the idle claim from the recovery outcome either.
+  test "the unresolved trailer defers to the census rather than to the recovery outcome" do
+    details = capture_alert { WorkerWedgeAlert.report(NO_OOM_BUSY_PAYLOAD) }[:details]
+
+    assert_includes details, "This one is not over"
+    assert_includes details, "5 of its processes are alive"
+    assert_includes details, "establish that it is idle before reaching for the destructive last rung"
+    assert_includes details, WorkerWedgeAlert::RUNBOOK
+  end
+
+  test "one live process is counted in the singular" do
+    payload = JSON.parse(NO_OOM_BUSY_PAYLOAD)
+    payload["cgroup"]["workload_process_count"] = 1
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "1 process is still alive in its cgroup"
+  end
+
+  # A census that could not be taken is not a census that came back empty -- the recovery
+  # gate refuses to conflate them, and the page must not either.
+  test "a census the watchdog could not take is reported as unknown, not as idle" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["cgroup"]["census_known"] = false
+    payload["cgroup"]["workload_process_count"] = 0
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "could not take a census of its cgroup"
+    assert_includes details, "is unknown"
+    assert_includes details, "This one is not over"
+    assert_includes details, "the cgroup census could not be taken"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+  end
+
+  # A watchdog installed before `census_known` existed sends no flag. An unlocatable
+  # cgroup is the case that leaves the path empty, and that is the one worth reading as
+  # unknown.
+  test "an older payload with no census_known flag falls back to the cgroup path" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["cgroup"]["path"] = ""
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "could not take a census of its cgroup"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+  end
+
+  test "a payload carrying no OOM fields at all says the cause is unknown" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"].delete("oom_killed")
+    payload["cgroup"].delete("oom_kills")
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "reported no OOM evidence either way"
+    assert_not_includes details, "An OOM kill is recorded"
+    assert_not_includes details, "No OOM kill is recorded"
+  end
+
+  # `OOMKilled=false` with a non-zero cgroup counter is still an OOM: the kill landed
+  # inside the cgroup, which is exactly #502's shape.
+  test "a cgroup oom_kill counts as OOM evidence even when OOMKilled is false" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"]["oom_killed"] = false
+    payload["cgroup"]["oom_kills"] = 2
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "An OOM kill is recorded"
     assert_includes details, "issues/502"
   end
 
@@ -212,6 +380,20 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
 
     assert_includes details, "(truncated)"
     assert_operator details.length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
+  end
+
+  # The busiest framing is the longest one -- a live census spells out why `docker exec`
+  # proves nothing -- and AlertService truncates from the end, which is where the runbook
+  # link lives. So the worst case has to fit with both long fields at their caps.
+  test "the longest framing still fits inside the details cap with both long fields maxed" do
+    payload = JSON.parse(NO_OOM_BUSY_PAYLOAD)
+    payload["probe"]["last_error"] = "x" * 5_000
+    payload["recovery"]["steps"] = "y" * 5_000
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_operator details.length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
+    assert_includes details, WorkerWedgeAlert::RUNBOOK
   end
 
   private
