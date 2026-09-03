@@ -299,7 +299,8 @@ class SpotSessionHoldSweepTest < ActiveSupport::TestCase
       detail: "Holding spot sessions: the weekly window's spot budget is spent.",
       five_hour: nil, weekly: nil, active_sessions: 5, fleet_cap: 5,
       accounts_read: 1, pool_size: 1,
-      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: nil
     )
   end
 end
