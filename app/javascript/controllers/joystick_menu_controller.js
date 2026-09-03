@@ -435,6 +435,16 @@ export default class extends Controller {
       form.appendChild(m)
     }
     document.body.appendChild(form)
+    // The form is a vehicle, not UI: without this the session page keeps every
+    // one of them, because the turbo_stream response the line above exists to
+    // get leaves the document standing rather than tearing it down. Turbo
+    // dispatches turbo:submit-end from its FormSubmission's `finally`, so it
+    // lands on every settled outcome — success, 4xx/5xx, network error, abort —
+    // and this is the same idiom archive_countdown_controller uses (and Turbo
+    // itself, for the form it synthesizes behind a data-turbo-method link). On
+    // the Turbo-less fallback below the listener never fires and is inert: that
+    // path is a native navigation, which takes the whole document with it.
+    form.addEventListener("turbo:submit-end", () => form.remove(), { once: true })
     if (window.Turbo && typeof window.Turbo.navigator?.submitForm === "function") {
       window.Turbo.navigator.submitForm(form)
     } else {
