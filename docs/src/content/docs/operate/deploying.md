@@ -457,9 +457,10 @@ the first exceeds the second.
 
 ## The Docker images
 
-**`Dockerfile.base` → `ghcr.io/tadasant/zimmer-base`** — the heavy one, rebuilt by
-`release-image.yml` before the app image when `Dockerfile.base` changes, and also rebuilt monthly
-(cron `0 6 1 * *`) or on demand. From `ruby:3.4.6-slim`, it bakes in:
+**`Dockerfile.base` → `ghcr.io/tadasant/zimmer-base`** — the heavy one. Two different workflows
+publish it, and confusing them is a live trap — see
+[Two paths rebuild the base image](#two-paths-rebuild-the-base-image). From `ruby:3.4.6-slim`, it
+bakes in:
 
 - Gems, pre-bundled to `/usr/local/bundle` with bootsnap precompiled
 - Node.js 22, the Docker CLI, `gh`, the 1Password CLI, `uv`/`uvx`
@@ -467,10 +468,52 @@ the first exceeds the second.
 - The npm and Python MCP packages listed in `mcp.json` (`bin/preinstall-mcp-packages`)
 - The AIR CLI `@pulsemcp/air-cli@0.13.0` + adapters → `/opt/air-cli`
 - The Codex CLI `@openai/codex@0.146.0` and Claude Code (via `claude.ai/install.sh`)
+- The Pi CLI `@earendil-works/pi-coding-agent@0.84.4`, and the three Pi extensions Zimmer
+  loads into every Pi session → `/opt/pi-extensions` (see [Agent harness](/extend/agent-harness/))
 
 **`Dockerfile` → `ghcr.io/tadasant/zimmer`** — the app image. Copies the app onto the base, re-runs
 `bundle install` (which catches Gemfile drift against the base), precompiles assets, drops to
 `USER 1000:1000`, and runs `bin/thrust bin/rails server`.
+
+### Two paths rebuild the base image
+
+Nothing depends on a human remembering to rebuild the base, and a base image is not stale merely
+because the "Build base image" workflow has not run since a `Dockerfile.base` change. The two paths
+answer different questions. (A third, `deploy-staging.yml`, builds its own `zimmer-base:staging` and
+never touches either of these tags.)
+
+**`release-image.yml` — the repo declared something new.** On every push to main it hashes the five
+repo inputs `Dockerfile.base` consumes — `Dockerfile.base`, `Gemfile`, `Gemfile.lock`, `mcp.json`,
+`bin/preinstall-mcp-packages` — into a content key, and looks for `zimmer-base:content-<key>`. Absent
+means that exact declaration has never been published, so it builds and pushes the base itself before
+building the app image FROM that tag. Present means reuse. So a `Dockerfile.base` change reaches
+production on the merge that lands it, automatically, and a base build that *failed* cannot be skipped
+by a later commit — the content tag is still absent.
+
+**`build-base-image.yml` — the world outside the repo changed.** A patched `ruby:3.4.6-slim`, an apt
+security update, a newer `claude` from `claude.ai/install.sh`. None of that moves the content key, so
+`release-image.yml` cannot see it; the monthly cron (`0 6 1 * *`) and manual dispatch exist for exactly
+this. It computes the key the same way `release-image.yml` does and promotes to `content-<key>` **and**
+`:latest`, because a refresh published anywhere else is one the app image never picks up. It builds
+uncached for the same reason: the layers a refresh exists to renew are precisely the ones whose cache
+keys have not moved, so a cache hit replays the image it was meant to replace.
+
+**Build, verify, then promote — in that order.** The refresh pushes first to a scratch tag
+(`zimmer-base:unverified`) that nothing resolves. Only after the image has been pulled back from the
+registry and checked does a manifest copy promote it onto `content-<key>` and `:latest`. The ordering
+is load-bearing rather than tidy: `release-image.yml` treats the presence of a content tag as proof
+that declaration built successfully and will not rebuild it, so an unverified image written there
+would be served to every app image until a repo input happened to change.
+
+The check itself (`.github/scripts/verify-base-image.sh`) runs inside the pulled image and asserts two
+things Dockerfile.base declares — that every `name@version` it pins resolves at that version, and that
+every path in its `test -f` smoke checks exists. `test -f` at build time says a layer was produced;
+only this says the tag the release path resolves actually serves it. It refuses an empty expectation
+list, so it cannot pass by checking nothing.
+
+Promotion is gated on `refs/heads/main`. A dispatch from any other ref builds and verifies and then
+stops, leaving the shared tags alone — which is what makes the workflow safe to exercise from a
+feature branch, and a base image built from unreviewed code is worse than a stale one.
 
 ### The docs never ship in the image
 
@@ -583,8 +626,8 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 | `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
-| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:latest` first when `Dockerfile.base` changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) at three of the four points it touches GHCR — the login, the base manifest read, and the app build's pull and push (the base build itself is still single-shot) |
-| `build-base-image.yml` | manual + monthly cron | rebuilds the base image outside the normal release path |
+| `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:content-<key>` first when any of the five base inputs changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) at three of the four points it touches GHCR — the login, the base manifest read, and the app build's pull and push (the base build itself is still single-shot) |
+| `build-base-image.yml` | manual + monthly cron | refreshes the base image for changes that move no repo input — base-OS/apt patches, the unpinned installers. Builds uncached to a scratch tag, verifies the published image against `Dockerfile.base`'s declarations, then (from main only) promotes it onto `zimmer-base:{content-…, latest}`. See [Two paths rebuild the base image](#two-paths-rebuild-the-base-image) |
 | `deploy-staging.yml` | manual only | see below |
 | `teardown-staging.yml` | manual only | `terraform destroy` of the staging droplet. No longer runs nightly — staging is persistent now (see below). Run it when you deliberately want to stop paying for the box; a powered-off droplet still bills, so destroying is the only way to stop the charge. |
 | `ghcr-retention.yml` | weekly cron | prunes GHCR to ≤50 versions |
