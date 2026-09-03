@@ -39,6 +39,8 @@ module Mcp
         - Monitor sessions that need human attention (status: "needs_input")
         - Read the spot queue in the order it will be worked: `status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`
 
+        **Board visibility is NOT a scheduling signal.** Sessions carry a second, entirely separate field — `visibility`: `visible`, `hidden`, or `snoozed` until a time — whose only purpose is letting a human tidy their dashboard. It does not affect whether, when, or in what order Zimmer runs anything, and no scheduler reads it. A result marked `**Visibility:**` is running, queued and ranked exactly as it would be otherwise; the human just is not looking at its card right now. **This search is unfiltered on that axis by default, deliberately** — a session hidden from a board must never be hidden from a duplicate check — so leave `visibility` unset unless you specifically want one side of it.
+
         **Paused sessions.** A result carrying `**Paused:** yes` is asleep until a time somebody chose. It is
         still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
         a pause outranks precedence and scheduling class. Skip it and take the next candidate.
@@ -98,6 +100,11 @@ module Mcp
             type: "string",
             enum: [ "created_desc", "precedence" ],
             description: 'Result ordering. "created_desc" (default) is newest first. "precedence" is the spot queue\'s own order — highest precedence first, oldest first within a tie — which is the order waiting spot sessions are actually started in. Precedence is an absolute scale: 100000 comes before 50.'
+          },
+          visibility: {
+            type: "string",
+            enum: [ "on_board", "off_board" ],
+            description: "Filter by BOARD VISIBILITY — presentation only, and unset by default. \"on_board\" is what a tidied dashboard shows (visible, plus snoozed sessions whose snooze has run out); \"off_board\" is the hidden and snoozed ones. This says nothing about scheduling: a snoozed session runs exactly when it otherwise would. Leave it unset for duplicate checks and any other question about what work exists — filtering here can only hide sessions that do exist."
           },
           show_archived: {
             type: "boolean",
@@ -258,6 +265,20 @@ module Mcp
           scope = scope.priority_classified(klass)
         end
 
+        # Board visibility: applied only when explicitly asked for. The default
+        # result set is unfiltered on this axis on purpose — agents call this tool
+        # to find out whether a piece of work already has a session, and a session
+        # that a human snoozed off their dashboard is still very much that session.
+        # Filtering it out by default would produce duplicate work with no visible
+        # cause.
+        case args["visibility"].to_s
+        when SessionVisibility::FILTER_ON_BOARD then scope = scope.board_visible
+        when SessionVisibility::FILTER_OFF_BOARD then scope = scope.board_hidden
+        when "" then nil
+        else
+          raise ToolError, "Invalid visibility: #{args['visibility']}. Valid: #{SessionVisibility::FILTER_ON_BOARD}, #{SessionVisibility::FILTER_OFF_BOARD}."
+        end
+
         if (genesis = args["genesis"].presence)
           unless SessionGenesis.valid?(genesis)
             raise ToolError, "Invalid genesis: #{genesis}. Valid: #{SessionGenesis::KEYS.join(', ')}"
@@ -310,6 +331,14 @@ module Mcp
           when_phrase = at ? "until #{at.utc.iso8601}" : "on a pending wake-up"
           lines << "- **Paused:** yes — asleep #{when_phrase}. Zimmer will not start it before then, " \
                    "whatever its precedence or scheduling class. Skip it and take the next candidate."
+        end
+
+        # Reported only when it is not the default, and reported with the reminder
+        # attached: the one way this field can do harm is an agent reading it as a
+        # reason not to act on a session.
+        if (tucked = session.visibility_summary)
+          lines << "- **Visibility:** #{tucked} — presentation only. It does not affect scheduling or execution; " \
+                   "this session runs exactly as it would if it were on the board."
         end
 
         lines << "- **Slug:** #{session.slug}" if session.slug.present?

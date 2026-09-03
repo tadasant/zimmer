@@ -13,7 +13,7 @@ class Api::V1::SessionsController < Api::BaseController
   include ApiSessionSerialization
   include SessionTranscriptLookup
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_heartbeat, :set_category ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -22,6 +22,11 @@ class Api::V1::SessionsController < Api::BaseController
   #   - status: Filter by status (waiting, running, needs_input, failed, archived)
   #   - agent_runtime: Filter by agent runtime
   #   - show_archived: Include archived sessions (default: false)
+  #   - visibility: board visibility, the presentation-only axis. "on_board" for the
+  #     sessions a tidied dashboard shows, "off_board" for the hidden and snoozed
+  #     ones. OMITTED BY DEFAULT — this listing is unfiltered on that axis, so an
+  #     agent checking whether work is already in flight is never shown fewer
+  #     sessions because a human tidied their board.
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
@@ -41,6 +46,8 @@ class Api::V1::SessionsController < Api::BaseController
     # Settings moves those sessions here immediately.
     scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
     scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
+
+    scope = apply_visibility_filter(scope)
 
     # Exclude archived unless requested
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
@@ -953,6 +960,36 @@ class Api::V1::SessionsController < Api::BaseController
     render json: { session: session_json(@session), favorited: @session.favorited }
   end
 
+  # PATCH /api/v1/sessions/:id/visibility
+  # Set a session's BOARD VISIBILITY — a presentation-only axis, orthogonal to
+  # `status` and to everything else. It decides whether the session's card is on
+  # the operator's dashboard and NOTHING ELSE: it never starts, stops, sleeps,
+  # wakes or reorders a session, and the scheduler does not read it. If you are
+  # looking for the endpoint that actually puts a session to sleep, that is
+  # POST /api/v1/sessions/:id/sleep.
+  #
+  # Params:
+  #   - visibility: "visible" | "hidden" | "snoozed" (required)
+  #   - snoozed_until: required with "snoozed". A naive wall-clock ISO-8601
+  #     datetime ("2026-09-05T09:00:00") read in `timezone`, and it must be in the
+  #     future. Cleared automatically for the other two values.
+  #   - timezone: IANA name `snoozed_until` is expressed in. Default "UTC".
+  #
+  # A snooze expires by being READ: once `snoozed_until` passes, the session is
+  # back on the board with no request and no background job having touched the row.
+  def update_visibility
+    Sessions::SetVisibility.call(
+      session: @session,
+      visibility: params[:visibility],
+      snoozed_until: params[:snoozed_until],
+      timezone: params[:timezone].presence || "UTC"
+    )
+
+    render json: { session: session_json(@session) }
+  rescue Sessions::SetVisibility::Error => e
+    render_api_error("Visibility update failed", [ e.message ], status: :unprocessable_entity)
+  end
+
   # PATCH /api/v1/sessions/:id/heartbeat
   # Enable/disable the per-session heartbeat and/or set its interval. Both params
   # are optional; omitting a param leaves that setting unchanged.
@@ -1119,6 +1156,8 @@ class Api::V1::SessionsController < Api::BaseController
     scope = scope.priority_classified(params[:priority_class]) if SessionGenesis::CLASSES.include?(params[:priority_class])
     scope = scope.with_genesis(params[:genesis]) if SessionGenesis.valid?(params[:genesis].to_s)
 
+    scope = apply_visibility_filter(scope)
+
     # Exclude archived unless requested
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true"
 
@@ -1244,6 +1283,21 @@ class Api::V1::SessionsController < Api::BaseController
       level: "error"
     )
     render_api_error("Cannot restart", e.message, status: :internal_server_error)
+  end
+
+  # Board visibility — the presentation-only axis — applied to a listing scope.
+  #
+  # OPTIONAL, and unfiltered when the caller says nothing. Both listings are read
+  # by agents as often as by the dashboard, and an agent checking whether a piece
+  # of work already has a session must not have that session hidden from it
+  # because a human tidied their board: that produces duplicate work with no
+  # visible cause. An unrecognized value narrows nothing, for the same reason.
+  def apply_visibility_filter(scope)
+    case params[:visibility].to_s
+    when SessionVisibility::FILTER_ON_BOARD then scope.board_visible
+    when SessionVisibility::FILTER_OFF_BOARD then scope.board_hidden
+    else scope
+    end
   end
 
   def set_session

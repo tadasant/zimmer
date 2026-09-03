@@ -47,7 +47,12 @@
     display: none;
   }
 </style>
+<%# data-board-visibility-filter states which board this is, so that a card
+    snoozed or hidden from its own menu knows whether to leave the page: it
+    disappears from a board showing only on-board sessions, and stays (re-rendered
+    with its badge) on one that is revealing them. %>
 <div class="min-h-screen bg-gray-50"
+     data-board-visibility-filter="<%= @visibility_filter %>"
      data-controller="pull-to-refresh dashboard-notes stream-visibility-recovery session-drawer">
   <%= turbo_stream_from "sessions_index_individual" %>
   <%= turbo_stream_from "notification_badge" %>
@@ -396,6 +401,43 @@
             </div>
           </fieldset>
 
+          <!-- Board visibility -->
+          <%# The reveal affordance for the second axis. It sits here rather than in
+              Advanced because a board that hides cards has to say so where the
+              person looking at it will see it — a session tucked away must never
+              feel lost. The count is the nudge; the radios are the way back.
+
+              This filter narrows what is DRAWN and nothing else. A snoozed session
+              is scheduled, queued and started exactly as it would have been. %>
+          <fieldset>
+            <legend class="flex items-center gap-2 text-sm text-gray-600 mb-1.5">
+              <span>Board visibility</span>
+              <% if @off_board_count.to_i.positive? %>
+                <span class="text-xs text-gray-400" id="off-board-count">
+                  <%= pluralize(@off_board_count, "session") %> tucked away
+                </span>
+              <% end %>
+            </legend>
+            <div class="inline-flex flex-wrap rounded-lg bg-gray-100 p-1 gap-1" role="group" aria-label="Filter by board visibility">
+              <% [ [ SessionsController::VISIBILITY_ON_BOARD, "On board" ],
+                   [ SessionsController::VISIBILITY_OFF_BOARD, "Snoozed & hidden" ],
+                   [ SessionsController::VISIBILITY_ALL, "Both" ] ].each do |(value, label)| %>
+                <% active = @visibility_filter == value %>
+                <label for="visibility-filter-<%= value.dasherize %>"
+                       class="<%= active ? 'bg-white text-slate-800 shadow-sm' : 'text-gray-600 hover:text-gray-900 hover:bg-white/60' %> inline-flex items-center gap-1.5 cursor-pointer px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors">
+                  <%= radio_button_tag :visibility, value, active,
+                        id: "visibility-filter-#{value.dasherize}",
+                        class: "h-3.5 w-3.5 border-gray-300 text-slate-700 focus:ring-slate-500" %>
+                  <%= label %>
+                </label>
+              <% end %>
+            </div>
+            <p class="mt-1.5 text-xs text-gray-400">
+              Snooze and Hide are visual only — they never change whether or when a session runs.
+              A snooze ends by itself and the card comes back.
+            </p>
+          </fieldset>
+
           <!-- Advanced -->
           <% advanced_active = @search_contents || @agent_root_filter.present? || @genesis_filter.present? %>
           <details class="text-sm"<%= " open" if advanced_active %>>
@@ -701,6 +743,7 @@
               section_limit: @ranked_section_limit,
               status_filter: @status_filter,
               priority_class_filter: @priority_class_filter,
+              visibility_filter: @visibility_filter,
               live_insert: !@search_active %>
       <% elsif @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED || @view_mode == SessionsController::VIEW_MODE_CREATED_DESC %>
         <%# Flat sort views: a single list sorted solely by the chosen factor

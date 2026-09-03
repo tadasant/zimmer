@@ -45,6 +45,12 @@ module Mcp
 
       ACTING_SESSION_ID_DESC = 'Optional for "follow_up" and "archive". On "archive" it is provenance and nothing else: the archived session\'s timeline names you as the actor, so a human reading it later can tell an agent archiving that session from a human clicking Trash. Set it whenever an agent session drives an archive — including archiving yourself. On "follow_up", if you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value records no edge, and an undeclared archive is logged as exactly that.'
 
+      VISIBILITY_DESC = 'Required for "set_visibility". One of "visible", "hidden", or "snoozed". Board visibility is a SECOND axis, completely orthogonal to status: it decides whether the session\'s card is on the human\'s dashboard and has no effect on scheduling or execution whatsoever.'
+
+      SNOOZED_UNTIL_DESC = 'Required for "set_visibility" with visibility "snoozed", and ignored otherwise. When the card comes back on the board, as a naive wall-clock ISO-8601 datetime ("2026-09-05T09:00:00") interpreted in "timezone". Must be in the future. The snooze expires on its own — no follow-up call is needed, and nothing is written to the session when it does.'
+
+      TIMEZONE_DESC = 'Optional for "set_visibility": the IANA timezone name (e.g. "America/New_York") that "snoozed_until" is expressed in. Defaults to "UTC". Send the wall-clock time the human means plus their zone, rather than converting to UTC yourself.'
+
       PRECEDENCE_DESC = PrecedenceDocs::ACTION_SESSION
 
       PLACE_DESC = PrecedenceDocs::PLACE
@@ -78,6 +84,7 @@ module Mcp
         update_notes
         update_title
         toggle_favorite
+        set_visibility
         bulk_archive
       ].freeze
 
@@ -134,6 +141,7 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **toggle_favorite**: Toggle favorite status on a session
+        - **set_visibility**: Set a session's BOARD VISIBILITY — whether its card is on the human's dashboard (requires "visibility": "visible", "hidden" or "snoozed"; "snoozed" also requires "snoozed_until", with an optional "timezone"). **This is a visual-organization device and nothing else.** It does not start, stop, pause, sleep, wake, reorder or reschedule anything, no scheduler reads it, and a snoozed session runs exactly when it would have run had nobody touched it. Use it when a human asks you to tidy their board; never use it to try to stop or defer work — `pause`, `pause_into_spot_queue` and `change_precedence` are the actions that do that. A snooze ends by itself: once "snoozed_until" passes the session is back on the board with nothing having been written to it.
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages are reported as errors and left alone unless "force" is set for the batch.
 
         **Interrupting vs queuing a follow_up.** Interrupting is opt-in, and worth reaching for more often than the default suggests. Send with "force_immediate": true whenever the prompt would redirect the agent: a correction, a constraint it does not know about, information that makes its current approach wrong. An agent twenty minutes into the wrong approach cannot see a queued message until it finishes, so the message that would have saved the work arrives after the work is wasted. The cost of interrupting is bounded: the in-flight turn is terminated (an uncommitted tool call is lost, files already written stay written) and the agent picks up from the same conversation with your prompt as the next turn. Queue when the prompt only adds to what the agent is already doing.
@@ -143,7 +151,8 @@ module Mcp
         **Use cases:**
         - Provide additional instructions to an agent
         - Control session lifecycle (pause, restart, fork, refresh)
-        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, update_notes, update_title, change_category, toggle_push_notifications)
+        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, set_visibility, update_notes, update_title, change_category, toggle_push_notifications)
+        - Tidy a human's dashboard without touching their work (set_visibility)
         - Reconfigure session capabilities (MCP servers, skills, hooks, plugins, model, context window)
         - Set or clear a session's goal
       DESC
@@ -181,6 +190,9 @@ module Mcp
           session_notes: { type: "string", description: SESSION_NOTES_DESC },
           session_ids: { type: "array", items: { type: "number" }, description: SESSION_IDS_DESC },
           title: { type: "string", description: TITLE_DESC },
+          visibility: { type: "string", enum: SessionVisibility::VISIBILITIES, description: VISIBILITY_DESC },
+          snoozed_until: { type: "string", description: SNOOZED_UNTIL_DESC },
+          timezone: { type: "string", description: TIMEZONE_DESC },
           acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC }
         },
         required: [ "action" ]
@@ -237,6 +249,7 @@ module Mcp
         when "update_notes" then update_notes(find_session(args["session_id"]), args)
         when "update_title" then update_title(find_session(args["session_id"]), args)
         when "toggle_favorite" then toggle_favorite(find_session(args["session_id"]))
+        when "set_visibility" then set_visibility(find_session(args["session_id"]), args)
         when "bulk_archive" then bulk_archive(args)
         end
       end
@@ -1166,6 +1179,34 @@ module Mcp
           "- **Title:** #{session.title}",
           "- **Favorited:** #{session.favorited ? 'Yes' : 'No'}"
         ].join("\n")
+      end
+
+      # Board visibility. One update to two presentation columns, through the same
+      # service the web UI and the REST API use, so all three agree on what a
+      # snooze time means. Nothing here touches the lifecycle — see
+      # Sessions::SetVisibility.
+      def set_visibility(session, args)
+        Sessions::SetVisibility.call(
+          session: session,
+          visibility: args["visibility"].to_s,
+          snoozed_until: args["snoozed_until"],
+          timezone: args["timezone"].presence || "UTC"
+        )
+
+        [
+          "## Board Visibility Set",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Visibility:** #{session.visibility}",
+          session.snoozed_until ? "- **Snoozed until:** #{session.snoozed_until.utc.iso8601} (UTC)" : nil,
+          "",
+          "This changed what the dashboard shows and nothing else. The session's status, " \
+          "scheduling class, precedence and any armed wake-up are untouched, and it will run " \
+          "exactly when it would have run anyway."
+        ].compact.join("\n")
+      rescue Sessions::SetVisibility::Error => e
+        raise ToolError, e.message
       end
 
       def bulk_archive(args)

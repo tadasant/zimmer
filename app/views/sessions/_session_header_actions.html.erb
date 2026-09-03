@@ -81,6 +81,15 @@
     </svg>
   <% end %>
 
+  <%# Snooze / Hide (board visibility) and Pause Until (a real sleep) sit next to
+      each other on purpose — they are the two "put this away" gestures and an
+      operator reaches for the menu meaning one of them. They are worded and
+      coloured to be told apart at a glance: slate and "Snooze" for the one that
+      only changes what is on screen, indigo and "Pause Until" for the one that
+      stops the session. %>
+  <!-- Snooze / Hide (board visibility only — does NOT pause the session) -->
+  <%= render "sessions/visibility_menu", agent_session: agent_session, variant: :button %>
+
   <!-- Pause Until (sleep now, wake at a chosen time) -->
   <%= render "sessions/pause_until", agent_session: agent_session, variant: :button %>
 

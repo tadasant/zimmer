@@ -15,8 +15,12 @@
       agent_session  - the session
       draggable_row  - true for spot rows (draggable, editable precedence),
                        false for priority rows (no rank to order by) %>
+<%# data-visibility-unit marks the removable row: snoozing or hiding from the ⋮
+    menu below takes this <li> off the queue without a reload, and the list's own
+    MutationObserver re-counts the section header. %>
 <li class="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 text-sm sm:flex-nowrap sm:gap-x-3 <%= "cursor-grab" if draggable_row %>"
     id="ranked_row_<%= agent_session.id %>"
+    data-visibility-unit
     data-ranked-queue-target="row"
     data-session-id="<%= agent_session.id %>"
     data-precedence="<%= agent_session.precedence %>">
@@ -64,12 +68,16 @@
       reason both rank cells are: a promote or a demote has to swap them in place.
 
       `headroom` is the vertical room the menu asks for beyond its own box before it
-      gives up on opening downward. The card's menu opens a Pause Until panel inside
-      itself and needs 400px of it; this menu opens nothing, so it asks for none —
-      otherwise every row in the top two-thirds of the page would open upward. %>
+      gives up on opening downward. The card's menu opens a Pause Until panel and
+      needs 400px of it; this one opens the snooze panel, which is shorter (no
+      "Resume with" box and no spot-queue block), so it asks for 300 — enough that a
+      row near the foot of a long queue flips upward instead of opening a panel off
+      the bottom of the screen, and not so much that every row in the top half of
+      the page opens upward for room it does not need. %>
   <div class="relative shrink-0 sm:order-5"
        data-controller="overflow-menu"
-       data-overflow-menu-headroom-value="0"
+       data-action="visibility:changed->overflow-menu#close"
+       data-overflow-menu-headroom-value="300"
        data-overflow-menu-placement-value="down">
     <button type="button"
             data-overflow-menu-target="button"
@@ -83,9 +91,14 @@
         <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 11.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 17a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
       </svg>
     </button>
+    <%# w-72 rather than the w-56 a row menu would otherwise want, and scrollable:
+        the snooze panel expands INSIDE this box (the same inline trick the card's
+        menu uses so a compact row never has to nest a popover in a popover), and a
+        row near the bottom of a long queue needs the menu to scroll rather than
+        run off the viewport. %>
     <div data-overflow-menu-target="menu"
          role="menu"
-         class="hidden absolute right-0 top-full mt-2 z-30 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+         class="hidden absolute right-0 top-full mt-2 z-30 w-72 max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
       <button type="button"
               role="menuitem"
               data-ranked-queue-target="promoteAction"
@@ -98,6 +111,14 @@
               data-action="ranked-queue#demote overflow-menu#close"
               data-session-id="<%= agent_session.id %>"
               class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 <%= "hidden" if draggable_row %>">Demote to spot</button>
+      <%# Board visibility. The ranked view is a queue of work that has not run
+          yet, which makes it exactly the list an operator wants to thin out — so
+          the compact row carries the same "Snooze until…" / "Hide" rows the cards
+          do, panel and all. Visual only: a snoozed row keeps its precedence and
+          starts when it always would have. %>
+      <div class="border-b border-gray-100">
+        <%= render "sessions/visibility_menu", agent_session: agent_session, variant: :menu_item %>
+      </div>
       <%# Start now: take this session's queued turn immediately rather than
           waiting out the gate's deferred re-check. Rendered on every row rather
           than only on the waiting ones, because the row is not re-rendered when a
@@ -157,4 +178,11 @@
   </div>
 
   <span class="hidden shrink-0 text-xs text-gray-400 sm:order-4 sm:inline"><%= agent_session.agent_root_key.presence || agent_session.genesis_key %></span>
+
+  <%# Only ever seen on a queue that is revealing tucked-away sessions. %>
+  <% unless agent_session.board_visible? %>
+    <span class="shrink-0 text-xs sm:order-4">
+      <%= render "sessions/visibility_badge", agent_session: agent_session %>
+    </span>
+  <% end %>
 </li>
