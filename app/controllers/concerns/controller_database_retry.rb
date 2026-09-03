@@ -4,13 +4,16 @@
 module ControllerDatabaseRetry
   extend ActiveSupport::Concern
 
-  # Exception types that should trigger a retry
-  RETRYABLE_EXCEPTIONS = [
-    defined?(PG::ConnectionBad) ? PG::ConnectionBad : nil,
-    defined?(PG::UnableToSend) ? PG::UnableToSend : nil,
-    ActiveRecord::ConnectionNotEstablished,
-    ActiveRecord::Deadlocked
-  ].compact.freeze
+  # The same exceptions the job-side helper retries. Controllers and jobs differ in
+  # how long they try and what they do when they give up, not in what counts as a
+  # database connection problem — so this is the one list, referenced rather than
+  # copied. `DatabaseRetry` documents why each entry is on it.
+  #
+  # The reason for naming the *narrow* `ActiveRecord::ConnectionFailed` and not its
+  # parent `QueryAborted` is sharper here than it is there: this helper's give-up
+  # path *renders* a friendly 503 instead of re-raising, so a statement timeout on
+  # the list would be swallowed outright rather than merely retried. See #779.
+  RETRYABLE_EXCEPTIONS = DatabaseRetry::RETRYABLE_EXCEPTIONS
 
   # Retry database operations with exponential backoff
   # Lower max_attempts than jobs since users are waiting for HTTP response
