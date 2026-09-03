@@ -332,6 +332,52 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       "the session must stay a candidate for another attempt"
   end
 
+  # --- What the blurb is allowed to assert ----------------------------------
+  #
+  # The defect these guard is written up on SessionStatusSummaryGenerator::
+  # STATE_NOT_INTENT_RULE (#734): a blurb narrated a self-wake nobody had
+  # scheduled, and a stranded session read as a healthy machine wait for 16
+  # hours. Both prompts are asserted, because both write the same panel and the
+  # rule is worthless in whichever one it is missing from.
+
+  def fork_prompt
+    prompts = []
+    Session.any_instance.stubs(:deliver_follow_up!).with do |prompt, *|
+      prompts << prompt
+      true
+    end
+
+    generate
+
+    prompts.sole
+  end
+
+  test "the fork prompt forbids inventing details and claiming unperformed actions" do
+    prompt = fork_prompt
+
+    assert_match(/do not invent a detail it does not contain/i, prompt.squish)
+    assert_includes prompt, SessionStatusSummaryGenerator::STATE_NOT_INTENT_RULE
+  end
+
+  test "the one-shot prompt forbids inventing details and claiming unperformed actions" do
+    _result, inference = generate_headless("The PR is open and CI is green.")
+
+    assert_match(/do not invent a detail it does not contain/i, inference.prompts.sole.squish)
+    assert_includes inference.prompts.sole, SessionStatusSummaryGenerator::STATE_NOT_INTENT_RULE
+  end
+
+  # Guards what the rule says, not just that a rule is there: cut back to "be
+  # accurate", it would keep the two tests above green while leaving the blurb
+  # free to narrate a wake nobody scheduled. Two anchors rather than a
+  # transcription of the rule — enough to catch a gutting, loose enough that
+  # rewording it is not a test failure.
+  test "the rule bars first-person claims and names the wake that started this" do
+    rule = SessionStatusSummaryGenerator::STATE_NOT_INTENT_RULE
+
+    assert_match(/first person/, rule)
+    assert_match(/wake/, rule)
+  end
+
   # The dashboard broadcasts a card from after_create_commit, so a marker
   # stamped afterwards is stamped too late — the card is already on every open
   # dashboard.
