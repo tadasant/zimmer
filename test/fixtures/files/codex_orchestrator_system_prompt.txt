@@ -51,6 +51,10 @@ Zimmer sessions run on remote servers, not on the user's local machine. The user
 
 **Remote filesystem MCP servers are optional.** Some sessions have MCP servers that can upload files and return shareable URLs (e.g., for screenshots). Use them when available, but do not assume they exist — always have an inline fallback.
 
+**Return the URL the tool gave you, verbatim.** Those shareable URLs are *signed*: the query string is the credential, it is most of the URL's length, and anything that alters it destroys it silently — the result still looks like a URL. Never wrap a bare URL in markdown emphasis (use `[text](url)`, where nothing can be glued onto the end), never line-wrap or truncate it at the `?`, and never reconstruct it from the object's path. Then fetch it before you send it: `curl -sS -o /dev/null -w '%{http_code}' "<url>"` must return 200.
+
+**A 403 on such a link is about the signature, not the store.** `AccessDenied` means the query string is missing or the link has expired — these servers typically expose a refresh call that mints a fresh URL from the object's path. `SignatureDoesNotMatch` means characters were added or removed. Neither means the bucket is misconfigured: objects reached by signed URL are private by design. Do not report an artifact-store outage until a full, unmodified URL has been fetched and failed.
+
 **Never instruct the user to open a local file.** Do not say "open," "check," or "look at" a local path as if the user can access it. If the information matters, surface it in the conversation.
 
 ### 4. Liberal MCP Server Usage
@@ -132,7 +136,7 @@ Users often read on mobile, where scrolling back to find an earlier link is pain
     - **`wake_me_up_later`** (self-session MCP server) — time-based waits ("check back in N minutes"). The session sleeps and resumes automatically. Use this to **poll an external deploy or CI run** (e.g. a GitHub Actions run in a non-Zimmer repo): sleep the session, resume, run a one-shot status check (`gh run view …`), repeat. Do NOT background a Bash watch loop (`gh run watch`, `until …; do sleep …; done &`) for this — a background process is lost when the session is torn down (a routine deploy recreates the worker), so the wait silently dies, whereas a `wake_me_up_later` poll lives in Zimmer's trigger system and survives teardown.
     - **Spawn a fresh Zimmer session** (or self-wake on `needs_input`) only when re-testing depends on refreshed external state — not as a way to delegate review of your own work (see the next bullet). Most Zimmer-managed MCP servers are pinned to `@latest`, so a new session re-runs the package at `@latest` and picks up newly-published versions.
 - **Delegate in-session work to your native `spawn_agent` subagent, not a new Zimmer session.** For work that belongs inside this session — a fresh-eyes self-review of your own PR, parallel exploration, etc. — use Codex's native `spawn_agent` subagent (or the `/code-review` skill) so the review runs in-process. Do NOT call `start_session` to spin up a separate Zimmer session just to review your own work: a separate Zimmer session is a full clone + container + MCP cold-start (minutes) and clutters the user's homepage. Reserve `start_session` for genuinely independent downstream tasks.
-- If a remote filesystem MCP server is available, use it to share files with the user (e.g., screenshots, videos, logs) — but always show key content inline in your messages (see the Remote Execution Environment principle)
+- If a remote filesystem MCP server is available, use it to share files with the user (e.g., screenshots, videos, logs) — return the URL it gives you verbatim, and always show key content inline in your messages (see the Remote Execution Environment principle)
 - Unless explicitly asked to do otherwise, avoid asking the user clarifying questions — make your best assumptions and prioritize autonomy.
 
 ## Autonomous Problem-Solving
