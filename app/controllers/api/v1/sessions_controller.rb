@@ -454,15 +454,18 @@ class Api::V1::SessionsController < Api::BaseController
 
     return if refuse_restart_of_paused_session
 
-    # When setup never completed (e.g., git clone failed), re-run the full setup
-    # pipeline instead of trying to send a follow-up prompt to a non-existent clone.
-    if @session.failed_before_initial_prompt? && !@session.setup_complete?
+    # When there is no conversation to prompt into — setup never completed (e.g.
+    # the git clone failed), or the session never ran at all — re-run the full
+    # setup pipeline instead of sending a follow-up prompt into nothing.
+    if @session.needs_restart_from_scratch?
       restart_from_scratch(@session)
       return
     end
 
-    # For sessions with complete setup artifacts, only require session_id.
-    # The job handles clone recreation if the working directory is missing.
+    # Everything past here resumes a conversation, so it needs the id that
+    # conversation is filed under. A session with no id but a transcript to lose
+    # reaches this point (#needs_restart_from_scratch? deliberately does not
+    # claim it), and is refused rather than silently restarted from scratch.
     unless @session.session_id.present?
       render_api_error("Cannot restart", "Session has no session_id", status: :unprocessable_entity)
       return
@@ -1248,8 +1251,9 @@ class Api::V1::SessionsController < Api::BaseController
     # The replacement turn IS the original first turn — same prompt, new clone,
     # new session_id — so it carries the attachments that turn was created with
     # (Sessions::FirstTurnAttachments, which never raises). Replaying all of them
-    # is deliberate: this path is reached only for a pre-prompt failure with setup
-    # incomplete, and a restart from scratch discards the conversation any earlier
+    # is deliberate: this path is reached only when there is no conversation to
+    # prompt into — a pre-prompt failure with setup incomplete, or a session that
+    # never ran — and a restart from scratch discards the conversation any earlier
     # delivery went to. Read outside the transaction.
     images, files = Sessions::FirstTurnAttachments.for(session)
     carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)

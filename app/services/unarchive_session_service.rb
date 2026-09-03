@@ -15,6 +15,11 @@ require "path_sanitizer"
 # 2. Writing the preserved transcript to the correct location for Claude Code to find
 # 3. Regenerating MCP configuration files
 #
+# A session that never ran has no conversation to continue, so none of that
+# applies to it. It takes a separate, much shorter path — see
+# #restore_never_started — that simply returns it to its pre-start state so it
+# can be started fresh from its original configuration.
+#
 # @example
 #   result = UnarchiveSessionService.call(
 #     session: archived_session,
@@ -124,6 +129,8 @@ class UnarchiveSessionService
   end
 
   def unarchive_with_clone
+    return restore_never_started if session.never_ran?
+
     # Check if clone and working directory both exist (quick unarchive within undo window)
     # Must check BOTH paths because for sessions with subdirectories, they differ:
     # - clone_path: /home/rails/.zimmer/clones/repo-main-12345-abcd
@@ -171,6 +178,52 @@ class UnarchiveSessionService
     Result.new(success?: false, error: "Failed to unarchive session: #{e.message}")
   end
 
+  # Restore a session whose agent process never launched.
+  #
+  # There is no conversation to resume, no transcript to write and no clone
+  # worth reviving — the session was created, held at the starting line, and
+  # archived without ever taking a turn. So this path does none of that work. It
+  # drops whatever half-written setup artifacts an aborted spawn left behind and
+  # puts the row back in needs_input, which is the state it was archived out of.
+  # Everything the session needs in order to run — its prompt, agent root,
+  # skills, plugins, lineage — is on the row and untouched.
+  #
+  # Whatever starts it next runs the full setup pipeline rather than a resume: a
+  # follow-up prompt from the UI, a restart, or a trigger following up all land
+  # in AgentSessionJob, which reclassifies a prompt to a session with no
+  # session_id as a fresh start — clone, mint a session_id, spawn.
+  #
+  # Skipping the git clone is the point, not an optimization: cloning here would
+  # leave a clone_path the fresh start does not use and the reapers would have
+  # to sweep.
+  def restore_never_started
+    @logger.info("Session never started — restoring it to its pre-start state instead of resuming a conversation")
+
+    clear_setup_artifacts
+
+    transition_result = transition_to_needs_input(
+      log_message: "Session restored from trash. It never started, so there is no conversation to " \
+                   "resume — it runs its original prompt from a fresh clone when it is next started."
+    )
+    return transition_result unless transition_result.success?
+
+    Result.new(success?: true, session: session, clone_restored: false)
+  end
+
+  # Drop the setup artifacts of a spawn that never completed, so the fresh start
+  # clones rather than trusting a path that was never finished (and has almost
+  # certainly been reaped since). Best-effort: a session that keeps a stale
+  # clone_path still starts correctly — AgentSessionJob recreates a missing
+  # working directory — so this must not fail the restore.
+  def clear_setup_artifacts
+    with_db_retry do
+      session.reload
+      session.update!(metadata: (session.metadata || {}).except(*Session::SETUP_ARTIFACT_KEYS))
+    end
+  rescue => e
+    @logger.warn("Could not clear the setup artifacts of a never-started session", error: e.message)
+  end
+
   def validate_inputs
     # Session must be archived
     return "Session is not in trash" unless session.archived?
@@ -178,8 +231,16 @@ class UnarchiveSessionService
     # Session must have git_root for clone recreation
     return "Session has no git_root" if session.git_root.blank?
 
-    # Session must have a session_id (UUID) for Claude Code to resume
-    return "Session has no session_id" if session.session_id.blank?
+    # Session must have a session_id (UUID) for Claude Code to resume — but only
+    # a session that has something to resume. A session that never ran has no
+    # conversation to bring back, and refusing it here made archiving one
+    # irreversible for exactly the class of session where starting over is
+    # cheapest and most obviously right (zimmer#557). Those are restored fresh
+    # instead; see #restore_never_started.
+    #
+    # A session holding a transcript with no id is NOT that: it has work, this
+    # service genuinely cannot restore it, and that stays a loud failure.
+    return "Session has no session_id" if session.session_id.blank? && !session.never_ran?
 
     nil # No error
   end
@@ -521,7 +582,12 @@ class UnarchiveSessionService
   # the winner already unarchived the session (needs_input, or advanced past it
   # to running/waiting) and returns success rather than raising in
   # Trigger#resuscitate_session!. See issues pulsemcp/pulsemcp#3720 and pulsemcp/pulsemcp#4600.
-  def transition_to_needs_input
+  #
+  # @param log_message [String] what the session's own timeline says about the
+  #   restore. The default describes a resume; #restore_never_started passes the
+  #   never-started wording, because telling a human their session came back
+  #   "with full state restoration" when there was no state is a lie.
+  def transition_to_needs_input(log_message: "Session unarchived with full state restoration - ready for follow-up prompts")
     with_db_retry do
       session.with_lock do
         # A concurrent unarchive caller (e.g. an overlapping recurring-trigger
@@ -571,10 +637,7 @@ class UnarchiveSessionService
         # to proceed.
         session.unarchive_to_needs_input!
 
-        session.logs.create!(
-          content: "Session unarchived with full state restoration - ready for follow-up prompts",
-          level: "info"
-        )
+        session.logs.create!(content: log_message, level: "info")
       end
     end
 
