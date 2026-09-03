@@ -3,6 +3,8 @@
 require "test_helper"
 
 class XOauthBootstrapTest < ActiveSupport::TestCase
+  include XOauthTestHelpers
+
   def with_token_endpoint(code:, body:)
     captured = nil
     response = Net::HTTPResponse.new("1.1", code.to_s, "")
@@ -10,9 +12,18 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
     response.stubs(:body).returns(body.is_a?(String) ? body : body.to_json)
     mock_http = Object.new
     mock_http.define_singleton_method(:use_ssl=) { |_| }
+    mock_http.define_singleton_method(:open_timeout=) { |v| @open_timeout = v }
+    mock_http.define_singleton_method(:read_timeout=) { |v| @read_timeout = v }
+    mock_http.define_singleton_method(:timeouts) { [ @open_timeout, @read_timeout ] }
     mock_http.define_singleton_method(:request) { |req| captured = req; response }
     result = Net::HTTP.stub(:new, mock_http) { yield }
+    @last_http = mock_http
     [ result, captured ]
+  end
+
+  # The connect/read bounds the last with_token_endpoint call observed.
+  def observed_timeouts
+    @last_http.timeouts
   end
 
   def with_env(key, value)
@@ -149,6 +160,53 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
     assert_raises(XOauthBootstrap::ExchangeError) do
       XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
         verifier: "v", client_id: nil, client_secret: nil)
+    end
+  end
+
+  # --- HTTP timeouts (#732) ---
+
+  # exchange_code runs inside a web request, where an unbounded read pins a Puma
+  # thread. It shares XOauthCredential's bounded POST rather than repeating the
+  # Net::HTTP block, so there is one implementation to keep bounded.
+  test "the code exchange bounds both connect and read at TOKEN_REQUEST_TIMEOUT" do
+    with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "ref", expires_in: 7200 }) do
+      XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+        verifier: "v", client_id: "CID", client_secret: "SEC")
+    end
+
+    assert_equal [ XOauthCredential::TOKEN_REQUEST_TIMEOUT, XOauthCredential::TOKEN_REQUEST_TIMEOUT ],
+      observed_timeouts
+  end
+
+  # X rotates the refresh token on every exchange, so the rotated one must land
+  # on the row. complete! saves the identity columns first precisely so
+  # apply_token_response!'s update! has a persisted row to write them to; sharing
+  # only the HTTP call must not disturb that order.
+  test "complete! persists the rotated refresh token on a brand-new row" do
+    cred, = with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "rotated", expires_in: 7200 }) do
+      XOauthBootstrap.complete!(account_key: "tadasayy", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+        verifier: "v", client_id: "CID", client_secret: "SEC")
+    end
+
+    assert_predicate cred, :persisted?
+    assert_equal "rotated", cred.reload.refresh_token
+    assert_equal "tadasayy", cred.account_key
+    assert_equal XOauthCredential::DEFAULT_TOKEN_ENDPOINT, cred.token_endpoint
+  end
+
+  test "a hanging token endpoint raises Net::ReadTimeout instead of pinning the thread" do
+    with_hanging_token_endpoint do |endpoint|
+      with_default_token_endpoint(endpoint) do
+        with_token_request_timeout(1) do
+          elapsed = elapsed_seconds do
+            assert_raises(Net::ReadTimeout) do
+              XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+                verifier: "v", client_id: "CID", client_secret: "SEC")
+            end
+          end
+          assert_operator elapsed, :<, 10, "the code exchange fell back to Net::HTTP's default read timeout"
+        end
+      end
     end
   end
 end
