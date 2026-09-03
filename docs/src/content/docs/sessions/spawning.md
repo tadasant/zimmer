@@ -53,16 +53,26 @@ A refused claim leaves `paused_by` in place on purpose. It is the marker both sw
 an archived session is already invisible to them — so there is no loop to bound, and dropping it
 would sabotage the recovery still owed to the session if a human restores it from the trash.
 
-:::caution[Two selection-time enqueuers route through it, not every caller that resumes]
-`SessionContinuation#continue_recovered_session` (both sweeps) and
-`SessionRecoveryService#auto_restart_session` are the two #554 names, and they are the two that
-claim. Three other callers still resume from an unlocked read and still ignore what
-`resume_for_system_recovery!` returns: `HealthMonitorService#retry_failed_sessions` and
-`AgentSessionJob#auto_continue_after_interrupt`
-([#753](https://github.com/tadasant/zimmer/issues/753)), and `SpotSessionPause.resume!`, which
-locks and re-checks by hand instead. The queued-message branch above the guard
-(`continue_with_queued_user_message`) is unguarded too, but bounded: archiving strands pending
-messages, and `EnqueuedMessageProcessorService` takes its own lock and refuses an archived session.
+Every selection-time enqueuer routes through it: `SessionContinuation#continue_recovered_session`
+(both sweeps and `RecoveryContinuationJob`), `SessionRecoveryService#auto_restart_session`,
+`StrandedSleepRescue`, `HealthMonitorService#retry_failed_sessions` and
+`AgentSessionJob#auto_continue_after_interrupt`. The last two were the tail of the family
+([#753](https://github.com/tadasant/zimmer/issues/753)) — the failed-session retry has the widest
+window of any of them, because its `session_ids:` branch is a human retrying a specific session off
+a failure list they read some time ago, and the auto-continue's is the narrowest, spanning a
+`Dir.exist?` on the clone volume during SIGTERM shutdown. A deploy is when that shutdown happens and
+also when somebody is most likely to be emptying the trash.
+
+The failed-session retry adds one thing the others do not need: it says why. A refused claim comes
+back in the `skipped` list of `POST /health/retry_sessions` and the `action_health` MCP tool, next
+to the reason, because an operator who clicked Retry on one session cannot tell a silent no-op from
+a bug.
+
+:::caution[Two callers that resume without claiming]
+`SpotSessionPause.resume!` locks and re-checks by hand instead of routing through the claim. The
+queued-message branch above the guard (`continue_with_queued_user_message`) is unguarded too, but
+bounded: archiving strands pending messages, and `EnqueuedMessageProcessorService` takes its own
+lock and refuses an archived session.
 :::
 
 ## What gets spawned
