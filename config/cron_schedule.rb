@@ -259,7 +259,7 @@ module CronSchedule
       environments: %i[production staging development]
     },
     status_summary_backstop: {
-      cron: "*/5 * * * *", # Every 5 minutes, capped at 5 sessions a sweep
+      cron: "*/5 * * * *", # Every 5 minutes — StatusSummaryBackstopJob::SWEEP_INTERVAL derives its budget from this
       class: "StatusSummaryBackstopJob",
       description: "Re-run a status-summary generation that never landed, for sessions already at rest",
       environments: %i[production staging]

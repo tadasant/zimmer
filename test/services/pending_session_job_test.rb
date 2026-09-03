@@ -6,6 +6,10 @@ require "test_helper"
 # job: is one already queued and unclaimed for this session? Both jobs read the
 # session at run time, so a second copy behind the first does no extra work and
 # costs an `inference` thread — the bill that stacked 190 of them on 2026-09-02.
+#
+# And the fleet-wide shape of the same question, #queued_count: how deep the
+# lane already is for a class, which is what StatusSummaryBackstopJob sizes its
+# per-sweep budget against instead of a hand-picked number (#776).
 class PendingSessionJobTest < ActiveSupport::TestCase
   setup do
     GoodJob::Job.delete_all
@@ -88,5 +92,30 @@ class PendingSessionJobTest < ActiveSupport::TestCase
     )
 
     assert PendingSessionJob.queued?(SessionStatusSummaryJob, session.id)
+  end
+
+  # --- #queued_count: the same population, across every session ---------------
+
+  test "an empty queue has a depth of zero" do
+    assert_equal 0, PendingSessionJob.queued_count(SessionStatusSummaryJob)
+  end
+
+  test "the depth counts unclaimed rows of the class across sessions" do
+    3.times { queue_a_job_for(a_session.id, job_class: "SessionStatusSummaryJob") }
+    queue_a_job_for(a_session.id) # a SessionTitleJob on the same lane
+
+    assert_equal 3, PendingSessionJob.queued_count(SessionStatusSummaryJob)
+    assert_equal 1, PendingSessionJob.queued_count(SessionTitleJob)
+  end
+
+  # Depth means work a new arrival would wait behind. A claimed row is being
+  # served and a finished row is gone; a row in retry back-off has had
+  # `performed_at` reset and has read nothing yet, so it still counts.
+  test "the depth excludes claimed and finished rows but includes retries" do
+    queue_a_job_for(a_session.id, job_class: "SessionStatusSummaryJob", performed_at: 1.second.ago)
+    queue_a_job_for(a_session.id, job_class: "SessionStatusSummaryJob", finished_at: 1.minute.ago)
+    queue_a_job_for(a_session.id, job_class: "SessionStatusSummaryJob", scheduled_at: 30.seconds.from_now)
+
+    assert_equal 1, PendingSessionJob.queued_count(SessionStatusSummaryJob)
   end
 end

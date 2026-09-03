@@ -35,25 +35,72 @@
 # sustained quota pressure that meant a session at rest never got its blurb at
 # all — the panel said "the summary fork was parked, it will be retried" for
 # hours, and the retry that would have fixed it was the thing standing down.
+#
+# **How much it repairs is the lane's answer, not a constant's** (#776). The
+# sweep then had the same defect one level down: it kept a hand-picked per-sweep
+# budget, and #763 moved the job it enqueues off the wide `default` lane onto the
+# two-thread `inference` lane without the budget being re-derived against it. Ten
+# every five minutes is 120 arrivals an hour aimed at a lane that drains at most
+# 80 — so during the outage the sweep exists to work around, it enqueued faster
+# than the lane could drain, and the backlog it built pushed head-of-line ages
+# past the alert thresholds three times in five hours on 2026-09-02. The budget
+# is now LANE_DEPTH_CEILING minus what the lane already holds: an arrival-side
+# admission check that paces the sweep to the substrate instead of guessing at
+# it. It still repairs during an outage — it repairs at exactly the rate the lane
+# can absorb, which is the fastest any budget could.
 class StatusSummaryBackstopJob < ApplicationJob
   queue_as :default
   include SingletonSweep
 
-  # Sessions repaired per sweep. Each repair costs a fork of a repository and an
-  # agent turn, so the cap is what keeps a bad day — a fleet-wide outage that
-  # failed every generation at once — from becoming a fleet-wide re-fork. In
-  # steady state it is zero: a session drops out of the candidate set as soon as
-  # its summary lands.
+  # Sessions repaired per sweep ON THE FORK PATH — a COST cap, not a throughput
+  # one, and the reason it survives LANE_DEPTH_CEILING below rather than being
+  # folded into it. Each fork copies a repository and takes an account slot, and
+  # the lane's depth says nothing about either, so a healthy lane with room to
+  # spare is still not a reason to turn a fleet-wide outage into a fleet-wide
+  # re-fork. In steady state it is zero: a session drops out of the candidate set
+  # as soon as its summary lands.
   MAX_PER_SWEEP = 5
 
-  # Repairs per sweep on the headless path, which is what an outage uses. Higher
-  # than MAX_PER_SWEEP because the costs are not comparable: a fork copies a
-  # repository and takes an account slot, while this is one small-model
-  # completion. It still has a cap, because an outage makes EVERY session at rest
-  # a candidate at once and a sweep must not turn that into an unbounded burst of
-  # subprocesses. Ten every five minutes clears a backlog of a hundred inside an
-  # hour.
-  MAX_HEADLESS_PER_SWEEP = 10
+  # How often this sweep runs. Kept here because LANE_DEPTH_CEILING is derived
+  # from it, and pinned against `config/cron_schedule.rb` by this job's test — a
+  # cadence changed in one place and not the other would silently resize the
+  # admission gate.
+  SWEEP_INTERVAL = 5.minutes
+
+  # The most unclaimed SessionStatusSummaryJob rows this sweep will leave behind
+  # it on the `inference` lane. It is the sweep's whole enqueue budget, drawn on
+  # by BOTH repair paths, and it is measured rather than chosen: the budget for a
+  # sweep is LANE_DEPTH_CEILING less what the lane already holds.
+  #
+  # WHY A MEASUREMENT AND NOT A NUMBER. The number this replaced was sized in
+  # throughput terms — "ten every five minutes clears a backlog of a hundred
+  # inside an hour" — against the wide `default` lane these enqueues shared when
+  # it was written. #763 then moved SessionStatusSummaryJob onto the dedicated
+  # two-thread `inference` lane and the arithmetic was never redone: 120 arrivals
+  # an hour into a lane whose service rate is at most
+  # 2 x 3600/HEADLESS_TIMEOUT = 80/hour is a queue that grows by 40 an hour for as
+  # long as there is anything to repair. A hand-picked cap cannot survive the
+  # thread count or the timeout changing under it; a headroom read cannot help
+  # but track them.
+  #
+  # THE DERIVATION. One sweep interval of lane time, expressed in jobs: the
+  # lane's threads times how many HEADLESS_TIMEOUT-length calls each can finish
+  # before the next sweep. At 2 threads, a 5-minute cadence and a 90s timeout
+  # that is 6. So the deepest backlog this sweep can be responsible for is one
+  # sweep interval of work — head-of-line wait for a row it enqueues stays under
+  # LANE_DEPTH_CEILING / (threads / HEADLESS_TIMEOUT) = 270s, an order below the
+  # `inference` lane's 60-minute stall threshold in
+  # HealthMonitorService::QUEUE_LANE_CRITICAL_THRESHOLDS.
+  #
+  # THE FLOOR IS NOT DECORATION. A deployment that sets GOOD_JOB_INFERENCE_THREADS
+  # low enough, or a timeout raised past the cadence, would otherwise derive zero
+  # and turn the sweep into the no-op its whole header argues against. One repair
+  # a sweep is slow; none is a different job.
+  LANE_DEPTH_CEILING = [
+    ConnectionBudget.good_job_queue_threads.fetch(:inference) *
+      SWEEP_INTERVAL.to_i / SessionStatusSummaryGenerator::HEADLESS_TIMEOUT,
+    1
+  ].max
 
   # How long to leave a session alone after examining it. Longer than
   # SessionStatusSummary::PENDING_TIMEOUT so an in-flight generation is never
@@ -73,29 +120,44 @@ class StatusSummaryBackstopJob < ApplicationJob
   def perform
     forked = 0
     headless = 0
+    gated = false
+
+    # Read ONCE, before the walk. The sweep's own enqueues land in the same table
+    # this counts, so re-reading it per session would count them twice and shrink
+    # the budget the sweep is in the middle of spending.
+    headroom = lane_headroom
 
     scanned = candidates.to_a
 
     scanned.each do |session|
-      # Only when BOTH budgets are spent is there nothing left this sweep can
-      # do. Breaking as soon as EITHER is spent would starve the other path on a
-      # mixed fleet — one runtime's pool exhausted and another's healthy — by
-      # ending the walk on the first session of whichever kind filled up first.
-      break if forked >= MAX_PER_SWEEP && headless >= MAX_HEADLESS_PER_SWEEP
+      # The lane's admission gate, and the only budget whose exhaustion means
+      # there is nothing left this sweep can do: both repair paths enqueue a
+      # SessionStatusSummaryJob onto `inference`, so a lane already holding
+      # LANE_DEPTH_CEILING unclaimed rows has no room for either of them.
+      # Recorded rather than silently broken out of, because a truncated sweep
+      # otherwise reads as "nothing left to repair".
+      if forked + headless >= headroom
+        gated = true
+        break
+      end
+
       next if session.blocked_on_elicitation?
 
       record = session.status_summary
       next unless due?(record)
 
-      # Which path would repair this session decides which budget it draws on.
-      # #pool_exhausted? is memoized per runtime: one query per sweep, not one
-      # per session.
+      # Which path would repair this session decides which cost cap it answers
+      # to. #pool_exhausted? is memoized per runtime: one query per sweep, not
+      # one per session.
       outage = pool_exhausted?(session.agent_runtime)
 
-      # Asked BEFORE the session is stamped, so a session skipped for a spent
-      # budget does not also spend its retry interval on a cap it never got
-      # past — the next sweep picks it up.
-      next if outage ? headless >= MAX_HEADLESS_PER_SWEEP : forked >= MAX_PER_SWEEP
+      # The fork path's own cost cap. A `next` rather than a `break`, so a mixed
+      # fleet — one runtime's pool exhausted, another's healthy — does not have
+      # the walk ended over the headless repairs behind it, which cost neither a
+      # clone copy nor an account slot. Asked BEFORE the session is stamped, so a
+      # session skipped for a spent cap does not also spend its retry interval on
+      # a cap it never got past.
+      next if !outage && forked >= MAX_PER_SWEEP
 
       stamp_examined(session, record)
       next unless needs_repair?(session, record)
@@ -111,14 +173,40 @@ class StatusSummaryBackstopJob < ApplicationJob
       )
     end
 
+    if gated
+      Rails.logger.warn(
+        "[StatusSummaryBackstopJob] lane admission gate reached: the `inference` lane holds " \
+        "LANE_DEPTH_CEILING=#{LANE_DEPTH_CEILING} unclaimed SessionStatusSummaryJob rows " \
+        "(headroom was #{headroom}); remaining candidates wait for a later sweep"
+      )
+    end
+
     return if forked.zero? && headless.zero?
 
     Rails.logger.info(
-      "[StatusSummaryBackstopJob] enqueued_forks=#{forked} enqueued_headless=#{headless}"
+      "[StatusSummaryBackstopJob] enqueued_forks=#{forked} enqueued_headless=#{headless} " \
+      "lane_headroom=#{headroom}"
     )
   end
 
   private
+
+  # How many repairs the `inference` lane has room for this sweep: the ceiling
+  # less what is already queued and unclaimed for the class, floored at zero.
+  #
+  # It counts EVERY unclaimed SessionStatusSummaryJob, not just the sweep's own,
+  # because a row a transition or a forced Regenerate put there occupies exactly
+  # the same thread — so the sweep yields to the work a person is waiting on
+  # rather than queueing behind it.
+  #
+  # It counts only that class, and not the whole lane, on purpose. SessionTitleJob
+  # shares these threads, and sizing the gate against total lane depth would let a
+  # title burst stand the sweep down completely — which is the failure the header
+  # above is about. Against its own class the sweep always keeps its share: it
+  # paces, and it never stops.
+  def lane_headroom
+    [ LANE_DEPTH_CEILING - PendingSessionJob.queued_count(SessionStatusSummaryJob), 0 ].max
+  end
 
   # Sessions at rest, most recently active first — the order the user's action
   # queue is read in, so the cap spends itself on the sessions most likely to be
