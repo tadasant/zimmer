@@ -170,6 +170,11 @@
       "class": "StalledStartSweepJob",
       "description": "Re-enqueue the first turn of a session that has been waiting to start with no job behind it"
     },
+    "stranded_sleep_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "StrandedSleepSweepJob",
+      "description": "Resume a session asleep in waiting on a wake-up that can never fire"
+    },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
       "class": "BurnRateRecomputeJob",
@@ -401,6 +406,11 @@
       "cron": "*/5 * * * *",
       "class": "StalledStartSweepJob",
       "description": "Re-enqueue the first turn of a session that has been waiting to start with no job behind it"
+    },
+    "stranded_sleep_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "StrandedSleepSweepJob",
+      "description": "Resume a session asleep in waiting on a wake-up that can never fire"
     },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
