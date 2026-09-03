@@ -79,6 +79,93 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert_nil session.reload.scheduling_class
   end
 
+  # Promoting a waiting session starts it, and the response says so. The `start`
+  # object is the only place a REST caller learns what the promotion actually did
+  # to the session — a promotion that started nothing and one that started a turn
+  # are otherwise the same 200.
+
+  def waiting_spot_session(session_id: nil)
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "x",
+      genesis: SessionGenesis::GITHUB_ISSUE, status: :waiting, session_id: session_id
+    )
+  end
+
+  test "promoting a waiting session reports the start it performed" do
+    session = waiting_spot_session
+    assert session.spot?
+
+    patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "priority" }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "priority", json["session"]["priority_class"]
+    assert_equal "started", json["start"]["outcome"]
+    assert_match(/next turn is due now/, json["start"]["message"])
+  end
+
+  # A refusal is reported rather than swallowed: the promotion went through, the
+  # start did not, and a caller that saw only the 200 would think it had.
+  test "a promotion whose start is refused says so instead of staying quiet" do
+    session = waiting_spot_session(session_id: "cli-abc")
+    Sessions::ScheduleWakeUp.call(
+      session: session,
+      wake_at: 2.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+      prompt: "Check the build"
+    )
+
+    patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "priority" }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "priority", json["session"]["priority_class"]
+    assert_equal "refused", json["start"]["outcome"]
+    assert_match(/paused/, json["start"]["message"])
+  end
+
+  # Nothing to pull forward is not a start, and it is not a refusal either — the
+  # promotion leaves a stranded session alone, so there is nothing to report.
+  test "a promotion that starts nothing leaves the start key off" do
+    session = waiting_spot_session(session_id: "cli-abc")
+
+    patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "priority" }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "priority", json["session"]["priority_class"]
+    assert_not json.key?("start"), "a stranded session was not started, so nothing should be reported"
+  end
+
+  # Only the transition INTO priority on a WAITING session starts anything. A
+  # session that is not waiting is not a candidate, so no start is attempted.
+  test "promoting a session that is not waiting starts nothing" do
+    session = Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "x",
+      genesis: SessionGenesis::GITHUB_ISSUE, status: :needs_input, session_id: "cli-abc"
+    )
+
+    patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "priority" }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "priority", json["session"]["priority_class"]
+    assert_not json.key?("start")
+  end
+
+  # An unrelated PATCH must not restart a session that is already priority.
+  test "a patch that does not promote starts nothing" do
+    session = Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::PRIORITY, status: :waiting
+    )
+
+    patch "/api/v1/sessions/#{session.id}", params: { title: "Renamed" }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_not json.key?("start"), "the session was already priority — nothing was promoted"
+  end
+
   test "update moves one session, and null returns it to derived" do
     session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", genesis: SessionGenesis::GITHUB_ISSUE)
     assert session.spot?
