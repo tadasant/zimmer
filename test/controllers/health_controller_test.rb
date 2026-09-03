@@ -241,9 +241,11 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     post retry_sessions_health_url, params: { session_ids: [ session.id ] }
 
     assert_redirected_to health_dashboard_path
-    assert_match(/Skipped 1 session/, flash[:alert])
-    assert_match(/Missing required metadata/, flash[:alert])
-    assert_nil flash[:notice], "a retry that did not happen must not read as success"
+    assert_match(/Skipped 1 session/, flash[:notice])
+    assert_match(/Missing required metadata/, flash[:notice])
+    assert_no_match(/No sessions to retry/, flash[:notice],
+      "the operator asked for one specific session and must be told what happened to it")
+    assert_nil flash[:alert], "a skip is not a failure — the bulk sweep skips routinely"
   end
 
   test "retry_sessions is rate limited" do
