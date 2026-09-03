@@ -11,11 +11,11 @@ import { Controller } from "@hotwired/stimulus"
 // what pushes controls off the right edge of a 375px viewport, so the panel a menu
 // row opens expands the menu itself instead.
 // Vertical room a menu row's expanded panel needs beyond the closed menu box.
-// Sized for a menu whose rows open a panel of presets and inputs inside the menu
-// itself. A menu whose rows expand into nothing — a ranked row's promote/demote,
-// say — overrides it with 0, or every row in the upper two-thirds of the page
+// Sized to the snooze panel, which is the only thing a menu row opens today and
+// is the same panel on both consumers. A menu whose rows expanded into nothing
+// would override this with 0, or every row in the upper two-thirds of the page
 // would open upward for room it never needs.
-const MENU_EXPANSION_HEADROOM = 400
+const MENU_EXPANSION_HEADROOM = 300
 
 export default class extends Controller {
   static targets = ["button", "menu"]

@@ -127,9 +127,10 @@ module Sessions
       false
     end
 
-    # What the session's own timeline calls this, worded off the reason rather
-    # than hardcoded so a future caller parking a session some other way can name
-    # its own gesture.
+    # What the session's own timeline calls this. Every caller today parks into
+    # the spot queue, so the other branch is reachable only from a test — it is
+    # kept so a future caller parking a session some other way names its own
+    # gesture rather than borrowing the queue's.
     def log_prefix
       reason == :pause_into_spot_queue ? "[Spot Queue]" : "[Paused]"
     end

@@ -15,7 +15,8 @@ module Sessions
   class SupersedePendingWakes
     # @param session [Session]
     # @param note [String] what the session's log calls the thing that replaced
-    #   the wake, so a reader can tell a re-scheduled time from a spot-queue park
+    #   the wake. The one caller passes "Spot Queue"; the default is here so a
+    #   future one is not forced to invent a label to call this at all
     # @return [Array<Integer>] ids of the triggers destroyed
     def self.call(session:, note: "Superseded")
       new(session: session, note: note).call

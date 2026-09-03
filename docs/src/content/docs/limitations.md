@@ -3027,9 +3027,12 @@ Also:
   board's **Snooze until…**, which mean different things. Sleeping a session until a wall-clock time
   is now `wake_me_up_later`, and parking one in the spot queue is `action_session`'s
   `pause_into_spot_queue` — both MCP/REST only, so a human with only a browser cannot do either.
-  Snoozing a card is **not** a substitute: it hides the card and never touches the session. What a
-  human can still do is the other direction — **Start now** wakes a sleeping session early, and it
-  is the only human-facing escape hatch a session asleep on an agent-scheduled wake has.
+  Snoozing a card is **not** a substitute: it hides the card and never touches the session. Waking
+  one is narrower than it looks, too: **Start now** resumes a spot-queue park but *refuses* a session
+  asleep on a wall-clock wake (`Sessions::StartNow` treats an armed wake as outranking the queue),
+  and **Restart** refuses anything that is not `failed`. The two routes that do work are a
+  **follow-up** sent from the session page and cancelling the wake at **/triggers** — both consume
+  the pause, because both mean "I am taking this session over".
 - **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and
   the server cannot know which statuses a given browser has ticked, so it only special-cases
   `archived`. With the default `needs_input`-only view, a session that transitions out of

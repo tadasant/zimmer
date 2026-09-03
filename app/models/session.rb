@@ -571,10 +571,14 @@ class Session < ApplicationRecord
     [ "1 hour", 3600 ]
   ].freeze
 
-  # Whether this session can be put to sleep on a schedule or parked in the spot
-  # queue — Sessions::ScheduleWakeUp and Sessions::PauseIntoSpotQueue both ask.
+  # Whether this session can be parked in the spot queue —
+  # Sessions::PauseIntoSpotQueue asks, and is the only caller.
   #
-  # Narrower than Sessions::ScheduleWakeUp::WAKEABLE_STATUSES. A `waiting` session
+  # Narrower than Sessions::ScheduleWakeUp::WAKEABLE_STATUSES, which
+  # ScheduleWakeUp checks directly rather than coming through here. The gap is
+  # real and deliberate: an armed wake fires against a never-started `waiting`
+  # session harmlessly enough, while a spot-queue park writes a queue record over
+  # a session the spawn pipeline still owns. A `waiting` session
   # that has never started is not asleep — it is queued for spawn, and `waiting`
   # is simply the AASM initial state. Arming a wake there parks the session on
   # paper while the spawn pipeline goes right on starting it: `start` (unlike

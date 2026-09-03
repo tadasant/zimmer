@@ -1438,8 +1438,9 @@ than adds is a park into the spot queue, which runs `Sessions::SupersedePendingW
 arms nothing itself — a leftover wake would pull the session straight back out of the queue.
 
 There is **no human-facing control that sleeps a session until a chosen time**. Scheduling a wake is
-an MCP/REST capability. What a human can still do from the web UI is see that a session is asleep
-and *wake it early*, with **Start now**.
+an MCP capability.
+
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
 
 ## Everything is polled
 

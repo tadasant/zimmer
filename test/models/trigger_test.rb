@@ -2005,8 +2005,8 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal trigger.id, Trigger.find(trigger.id).id # trigger persisted
   end
 
-  # Pause-then-Pause-Until is an ordinary sequence in the web UI — the two buttons
-  # sit next to each other — and it used to leave the session asleep forever:
+  # A human hitting Pause and an agent then arming its own wake is an ordinary
+  # sequence, and it used to leave the session asleep forever:
   # #pause writes paused_by "user", and #reusable_session? refuses to deliver into
   # a session carrying it, so the wake this very trigger arms was dropped on
   # arrival. Arming a wake is the moment that marker stops being true.

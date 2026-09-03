@@ -305,13 +305,12 @@ class SpotSessionPause
     # polls, and stops.
     def pause!(session, decision, overrides, logger)
       return false unless session.running?
-      # A session a human just parked into the queue is already on its way here:
-      # it carries the queue record and is either asleep or sleeping at the end of
+      # A session just parked into the queue is already on its way here: it
+      # carries the queue record and is either asleep or sleeping at the end of
       # its turn. Pausing it again would overwrite its story with the ceiling's,
       # and the count below would charge a turn to the ceiling that the ceiling
-      # never took. (The web UI stops such a turn itself — Sessions::HaltRunningTurn
-      # — so a running session reaching here still carrying the queue record is one
-      # parked through the MCP tool's deferred default.)
+      # never took. (A running session reaching here still carrying the queue
+      # record is one parked without `halt`, so its own turn end will sleep it.)
       return false if queued_by_user?(session)
 
       terminate_process(session, logger)

@@ -401,14 +401,13 @@ module Mcp
       # the park lives in the service, including which of `needs_input` /
       # `running` / `waiting` it is being applied to; this is the tool surface.
       #
-      # `halt` is opt-in here and unconditional in the web UI, and the asymmetry
-      # is deliberate rather than an oversight. The UI is a human acting on a
-      # session that is not them, where "pause" means stop. This tool's commonest
-      # caller is a session parking ITSELF (see SelfSessionActionSession, which
-      # does not expose `halt` at all) — and a session that halted itself would
-      # terminate the process waiting on this very call, so the default there has
-      # to stay "sleep when this turn ends". A caller driving somebody else's
-      # running session passes `halt` and gets the UI's behaviour.
+      # `halt` is opt-in, and that default is deliberate rather than timid. This
+      # tool's commonest caller is a session parking ITSELF (see
+      # SelfSessionActionSession, which does not expose `halt` at all) — and a
+      # session that halted itself would terminate the process waiting on this
+      # very call, so the default has to stay "sleep when this turn ends". A
+      # caller driving somebody else's running session passes `halt` and gets the
+      # turn stopped where it stands.
       def pause_into_spot_queue(session, args)
         was = session.priority_class
         was_running = session.running?
