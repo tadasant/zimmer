@@ -4161,22 +4161,32 @@ class SessionTest < ActiveSupport::TestCase
   # rather than one per waiting session. Asking each ao_event condition to look
   # its own watched session up would have put that N+1 straight back.
   test "ids_awaiting_scheduled_wake does not scale its query count with the number of watchers" do
-    watchers = 4.times.map do
-      requester = waiting_session_with_conversation
-      requester.update_columns(status: "waiting")
-      watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
-      watcher_trigger_for(requester, watched_id: watched.id)
-      requester
+    build_watchers = lambda do |count|
+      count.times.map do
+        requester = waiting_session_with_conversation
+        requester.update_columns(status: "waiting")
+        watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+        watcher_trigger_for(requester, watched_id: watched.id)
+        requester
+      end
     end
 
-    queries = 0
-    counter = ->(*, payload) { queries += 1 unless payload[:name].to_s == "SCHEMA" || payload[:cached] }
-    ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
-      Session.ids_awaiting_scheduled_wake(watchers.map(&:id))
+    count_queries = lambda do |ids|
+      queries = 0
+      counter = ->(*, payload) { queries += 1 unless payload[:name].to_s == "SCHEMA" || payload[:cached] }
+      ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+        Session.ids_awaiting_scheduled_wake(ids)
+      end
+      queries
     end
 
-    assert_operator queries, :<=, 4,
-      "the batch form must stay a fixed handful of queries however many watchers it is asked about"
+    few = count_queries.call(build_watchers.call(3).map(&:id))
+    many = count_queries.call(build_watchers.call(12).map(&:id))
+
+    # The slope, not the constant: a per-condition lookup would make `many`
+    # nine queries larger than `few`, which is the regression this guards.
+    assert_equal few, many,
+      "the batch form must cost the same number of queries for 3 watchers as for 12"
   end
 
   test "ids_awaiting_scheduled_wake returns an empty set for no ids" do

@@ -477,9 +477,8 @@ module SessionStateMachine
     # unfireable. A `failed` one is left alone — a human can restart it, and it
     # can still be archived, so a `session_archived` watcher on it is live. Any
     # other status is a session that can still transition. An unreadable row is
-    # treated as fireable, because the cost of a wrong "not fireable" here is a
-    # session woken that meant to sleep, and the cost of a wrong "fireable" is
-    # only the stall this predicate already used to have.
+    # treated as fireable, because a wrong "not fireable" wakes a session that
+    # meant to sleep, while a wrong "fireable" only delays a rescue.
     def ao_event_wake_fireable?(condition, watched_statuses: nil)
       watched_id = condition.watched_session_id
       return true if watched_id.blank?

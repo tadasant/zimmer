@@ -149,10 +149,16 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     assert_includes undelivered.last_error.to_s, "never fired"
   end
 
-  test "a parked undelivered wake stops counting as an armed wake on its requester" do
+  # Parking does NOT change the requester's dormancy, and the test says so
+  # explicitly rather than asserting the post-state alone — asserting only the
+  # post-state would pass without the change and pin nothing. A lapsed unfired
+  # schedule already fails #awaiting_scheduled_wake? via #schedule_due?, so the
+  # requester is visible to StrandedSleepRescue either way. What parking changes
+  # is that the row survives to say a wake was owed.
+  test "parking leaves the requester exactly as stranded as it already was" do
     requester = make_session(status: :waiting)
 
-    Trigger.create!(
+    undelivered = Trigger.create!(
       name: "Deadline backstop that never fired",
       status: "enabled",
       agent_root_name: "zimmer",
@@ -164,10 +170,36 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
       ]
     )
 
+    assert_not requester.reload.awaiting_scheduled_wake?,
+      "guard: a lapsed unfired schedule is already not an armed wake, before anything is parked"
+
     CleanupStaleTriggersJob.perform_now
 
     assert_not requester.reload.awaiting_scheduled_wake?,
-      "a parked wake is not enabled, so the requester reads as stranded rather than resting"
+      "and parking must not accidentally make it read as armed again"
+    assert_equal "failed", undelivered.reload.status
+  end
+
+  test "a lapsed wake the user disabled is destroyed, not parked as failed" do
+    requester = make_session(status: :waiting)
+
+    switched_off = Trigger.create!(
+      name: "Backstop the user switched off",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    switched_off.update!(status: "disabled")
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert_not Trigger.exists?(switched_off.id),
+      "it did not fire because the user turned it off — nothing failed and nobody is asleep on it"
   end
 
   test "a parked undelivered wake is left alone on the next pass" do
@@ -493,11 +525,10 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
   end
 
   test "destroys a consumed ao_event-only wake — the dead-wake ground is not schedule-only" do
-    # This expectation is the flip of the one that used to pin the gap: the
-    # dead-wake ground used to be asked only of triggers carrying a schedule
-    # condition, so a consumed `wake_me_up_when_session_changes_state` watcher
-    # sat in the list reading `enabled` with 0 sessions forever
-    # (tadasant/zimmer#793).
+    # The dead-wake ground is asked of every one-time wake, not only of triggers
+    # carrying a schedule condition — otherwise a consumed
+    # `wake_me_up_when_session_changes_state` watcher sits in the list reading
+    # `enabled` with 0 sessions forever (tadasant/zimmer#793).
     requester = make_session(status: :waiting)
     watched = make_session(status: :running)
 

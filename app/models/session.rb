@@ -473,7 +473,15 @@ class Session < ApplicationRecord
     recovery_continue_attempts
     stranded_sleep_rescues
     stranded_sleep_abandoned
+    deliberate_sleep_at
   ] + SpotSessionPause::METADATA_KEYS).freeze
+
+  # Records that a human (or an API caller) put this session to sleep on purpose
+  # with nothing armed to wake it — the one dormancy that carries no wake trigger
+  # and no other marker. StrandedSleepRescue reads it to tell that apart from a
+  # session whose wake set was destroyed. Listed in STALE_RETRY_METADATA_KEYS
+  # above, so a resume or restart clears it.
+  DELIBERATE_SLEEP_KEY = "deliberate_sleep_at"
 
   # Metadata keys rendered by the session metadata partial. A change to any of them is
   # what makes a metadata write worth broadcasting.

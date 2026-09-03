@@ -1396,12 +1396,16 @@ depends on whether it ever *delivered*. A lapsed schedule that fired is residue 
 lapsed schedule that never fired is the opposite — it is a wake somebody may still be asleep on — and
 deleting it erases the only record that a wake was owed. Those are marked `failed` and left in place:
 visible on `/triggers` with the reason, re-armable, and alerting once. Production trigger 13671 was a
-02:05Z deadline backstop that never fired and was gone without trace by 03:15Z, which is why its
-requester then spent 38.7 hours in `waiting` looking exactly like a session sleeping correctly
-([#855](https://github.com/tadasant/zimmer/issues/855)). Parking has a second effect that matters as
-much as the visibility: every firing path and `Session#awaiting_scheduled_wake?` filter on `enabled`,
-so a parked wake stops making a stranded session read as a resting one, and
-[`StrandedSleepSweepJob`](/operate/background-jobs/) can then resume it.
+02:05Z deadline backstop that never fired and was gone without trace by 03:15Z, which is why nothing
+afterwards could say a wake had been lost at all
+([#855](https://github.com/tadasant/zimmer/issues/855)). A trigger the user *disabled* is not parked —
+it did not fire because they switched it off — and neither is one that fired and only lost its
+auto-delete; both are destroyed as before.
+
+Parking is about the record, not about the sleeper. A lapsed unfired schedule already fails
+`Session#awaiting_scheduled_wake?` — that predicate reads `schedule_due?`, which stays true for it — so
+the stranded requester was always visible to [`StrandedSleepSweepJob`](/operate/background-jobs/)
+whether or not the row survived. What deleting it destroyed was the evidence.
 
 **A wake is only armed while it can still fire.** `Session#awaiting_scheduled_wake?` — the predicate
 the refresh nudge, the start guards and the repair sweeps all read — asks whether a wake *can* fire,

@@ -434,10 +434,20 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
+    # Mark the sleep as deliberate. This endpoint is the one path into `waiting`
+    # that arms nothing and writes none of the dormancy markers the sweeps read —
+    # every other one either creates a wake trigger or records why it parked. Left
+    # unmarked, StrandedSleepRescue cannot tell a session slept on purpose from
+    # one whose wake set was destroyed, and would resume it fifteen minutes later
+    # saying its wake had been lost. The marker is in STALE_RETRY_METADATA_KEYS,
+    # so any resume or restart clears it.
+    metadata = (@session.metadata || {}).merge(Session::DELIBERATE_SLEEP_KEY => Time.current.iso8601)
+
     if @session.needs_input?
+      @session.update!(metadata: metadata)
       @session.sleep!
     else
-      @session.update!(metadata: (@session.metadata || {}).merge("pending_sleep" => true))
+      @session.update!(metadata: metadata.merge("pending_sleep" => true))
     end
 
     render json: { session: session_json(@session) }

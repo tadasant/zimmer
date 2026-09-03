@@ -34,15 +34,22 @@
 #
 #    What is done about them depends on whether the wake was ever DELIVERED, and
 #    that distinction is tadasant/zimmer#855. A lapsed schedule that already fired
-#    is residue and is destroyed. A lapsed schedule that never fired is the
-#    OPPOSITE: it is a wake somebody is still asleep on, and deleting it erases
+#    is residue and is destroyed, and so is one the user DISABLED (it did not fire
+#    because they switched it off; #schedule_due? is false for any non-enabled
+#    trigger, so nothing failed). An enabled lapsed schedule that never fired is
+#    the OPPOSITE: it is a wake somebody is still asleep on, and deleting it erases
 #    the only evidence that the wake was owed — which is exactly what happened to
 #    trigger 13671, a 02:05Z deadline backstop that never fired and was gone
-#    without trace by 03:15Z, leaving its requester in `waiting` for 38.7 hours
-#    looking like a session sleeping correctly. Those are PARKED as `failed`
-#    instead: visible at /triggers, carrying the reason, re-armable, and — because
-#    every firing path and Session#awaiting_scheduled_wake? filter on `enabled` —
-#    no longer able to make a stranded session read as a resting one.
+#    without trace by 03:15Z, leaving nothing behind to say a wake had been owed.
+#    Those are PARKED as `failed` instead: visible at /triggers, carrying the
+#    reason, re-armable by the user, and alerting once.
+#
+#    Parking does NOT change whether the requester reads as asleep — a lapsed
+#    unfired schedule already fails Session#awaiting_scheduled_wake?, because
+#    TriggerCondition#schedule_due? still answers true for it and
+#    .one_time_wake_pending? is its negation. StrandedSleepRescue is what gets
+#    that session moving again. What parking adds is the record: without it the
+#    only evidence that a wake was lost is deleted an hour after it is lost.
 #
 # Triggers in the `failed` status are exempt from ALL of the sweeps. A failed
 # trigger is a deliberate tombstone: ScheduleTriggerJob parked it there precisely
@@ -60,6 +67,12 @@ class CleanupStaleTriggersJob < ApplicationJob
   include SingletonSweep
 
   STALE_SCHEDULE_THRESHOLD = 1.hour
+
+  # Most parks a single pass will do. Parking alerts, and the incident shape this
+  # exists for produces a wave of undelivered wakes at once; the cap keeps one
+  # bad hour from turning into an unbounded run of writes and alerts. The rest
+  # are still there on the next tick — nothing is lost by deferring them.
+  MAX_PARKS_PER_SWEEP = 20
 
   # What #collect_lapsed_one_time_schedules did on one pass. Parking and
   # destroying are different outcomes with different meanings, so they are
@@ -132,9 +145,16 @@ class CleanupStaleTriggersJob < ApplicationJob
   def destroy_dead_one_time_wakes
     destroyed_ids = []
 
+    # Prefiltered to triggers that actually carry a wake-shaped condition, so the
+    # scan stays proportional to the interesting slice rather than to every reuse
+    # trigger in the table. #dead_one_time_wake? still does the real deciding.
     Trigger
       .where(reuse_session: true, sessions_created_count: [ 0, nil ])
       .where.not(status: "failed")
+      .where(
+        "EXISTS (SELECT 1 FROM trigger_conditions WHERE trigger_conditions.trigger_id = triggers.id " \
+        "AND trigger_conditions.condition_type IN ('schedule', 'ao_event'))"
+      )
       .includes(:trigger_conditions)
       .find_each do |trigger|
         next unless trigger.dead_one_time_wake?
@@ -165,11 +185,14 @@ class CleanupStaleTriggersJob < ApplicationJob
   # - The wake DELIVERED and only its auto-delete was lost: residue. Destroy it.
   # - The wake NEVER FIRED: it is not residue, it is an undelivered promise, and
   #   somebody may still be asleep on it. Park it `failed` so it stays on
-  #   /triggers with the reason, re-armable — and so it stops counting as an
-  #   armed wake in Session#awaiting_scheduled_wake?, which filters on `enabled`.
-  #   That second effect is the one that matters: while the row sat there
-  #   `enabled` and unfired it made a stranded session read as a resting one to
-  #   every sweep and every surface.
+  #   /triggers with the reason, re-armable, and alerting once.
+  #
+  # Parking is about the RECORD, not about the requester's dormancy. A lapsed
+  # unfired schedule already fails Session#awaiting_scheduled_wake? — that
+  # predicate reads TriggerCondition#schedule_due?, which stays true for it — so
+  # the requester was always visible to StrandedSleepRescue whether or not this
+  # ran. What deleting the row destroyed was the only evidence that a wake had
+  # been owed at all, which is what made #855 unexplainable after the fact.
   #
   # @return [Lapsed]
   def collect_lapsed_one_time_schedules
@@ -194,28 +217,50 @@ class CleanupStaleTriggersJob < ApplicationJob
 
     return Lapsed.new(destroyed: 0, parked: 0) if candidate_ids.empty?
 
-    Trigger.where(id: candidate_ids).where.not(status: "failed").includes(:trigger_conditions).find_each do |trigger|
-      # The ground insists that EVERY condition on the trigger be a lapsed
-      # one-time schedule, not just the one that made it a candidate. If the
-      # trigger carries any other kind of condition (recurring schedule, slack,
-      # an `ao_event`), leave it alone — those keep the trigger legitimate.
-      next unless all_conditions_stale_one_time_schedules?(trigger, now)
+    # Batched, because the failure this whole change is about produces a WAVE.
+    # A stalled `triggers` queue leaves every wake due during the stall
+    # undelivered at once, so the first pass after it recovers can park dozens —
+    # and an un-batched alert per trigger would be dozens of Slack messages about
+    # one incident. AlertBatcher collapses them, exactly as AoEventTriggerJob
+    # wraps its own fan-out.
+    AlertBatcher.with_batch do
+      Trigger.where(id: candidate_ids).where.not(status: "failed").includes(:trigger_conditions).find_each do |trigger|
+        # The ground insists that EVERY condition on the trigger be a lapsed
+        # one-time schedule, not just the one that made it a candidate. If the
+        # trigger carries any other kind of condition (recurring schedule, slack,
+        # an `ao_event`), leave it alone — those keep the trigger legitimate.
+        next unless all_conditions_stale_one_time_schedules?(trigger, now)
 
-      trigger_id = trigger.id
+        trigger_id = trigger.id
 
-      if undelivered_wake?(trigger)
-        park_undelivered_wake(trigger)
-        parked_ids << trigger_id
-        next
+        # Parking is only ever right for a trigger that was ARMED and did not
+        # fire. A `disabled` one did not fire because the user switched it off —
+        # #schedule_due? returns false for any non-enabled trigger — so nothing
+        # failed, nobody is asleep on it, and parking it `failed` with an alert
+        # saying a wake never fired would be a lie about the user's own action.
+        # It falls through to the destroy below as ordinary residue.
+        if trigger.enabled? && undelivered_wake?(trigger)
+          next if parked_ids.size >= MAX_PARKS_PER_SWEEP
+
+          park_undelivered_wake(trigger)
+          parked_ids << trigger_id
+          next
+        end
+
+        trigger.destroy!
+        destroyed_ids << trigger_id
+        Rails.logger.info "[CleanupStaleTriggersJob] Destroyed lapsed one-time trigger #{trigger_id} — " \
+          "it fired already, or was disabled, and its scheduled_at(s) are all > " \
+          "#{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
+      rescue => e
+        Rails.logger.error "[CleanupStaleTriggersJob] Failed to collect lapsed one-time trigger " \
+          "#{trigger.id}: #{e.class}: #{e.message}"
       end
+    end
 
-      trigger.destroy!
-      destroyed_ids << trigger_id
-      Rails.logger.info "[CleanupStaleTriggersJob] Destroyed lapsed one-time trigger #{trigger_id} — " \
-        "it already fired and its scheduled_at(s) are all > #{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
-    rescue => e
-      Rails.logger.error "[CleanupStaleTriggersJob] Failed to collect lapsed one-time trigger " \
-        "#{trigger.id}: #{e.class}: #{e.message}"
+    if parked_ids.size >= MAX_PARKS_PER_SWEEP
+      Rails.logger.warn "[CleanupStaleTriggersJob] Hit the per-pass park cap " \
+        "(#{MAX_PARKS_PER_SWEEP}); the rest are left for the next tick"
     end
 
     Lapsed.new(destroyed: destroyed_ids.size, parked: parked_ids.size)
@@ -223,17 +268,18 @@ class CleanupStaleTriggersJob < ApplicationJob
 
   # Whether this lapsed trigger still owes a wake nobody ever got.
   #
-  # Any unconsumed one-shot condition is enough: the trigger fires per condition,
-  # so one with `last_triggered_at` still nil is a wake that was never delivered.
-  # `sessions_created_count` is the second half — a trigger that spawned a session
-  # did its job, whatever its conditions say.
+  # Any unconsumed schedule is enough: the trigger fires per condition, so one
+  # with `last_triggered_at` still nil is a wake that was never delivered.
+  # `sessions_created_count` is the second half — a trigger that spawned a
+  # session did its job, whatever its conditions say.
+  #
+  # Only asked of triggers #all_conditions_stale_one_time_schedules? has already
+  # accepted, so every condition here is a one-time schedule by construction —
+  # this deliberately does not mention `ao_event`, which cannot reach it.
   def undelivered_wake?(trigger)
     return false unless trigger.sessions_created_count.to_i.zero?
 
-    trigger.trigger_conditions.any? do |condition|
-      (condition.one_time_schedule? || condition.session_scoped_ao_event?) &&
-        condition.last_triggered_at.nil?
-    end
+    trigger.trigger_conditions.any? { |condition| condition.last_triggered_at.nil? }
   end
 
   # Park an undelivered wake as `failed` and say so, once, out loud.
@@ -257,13 +303,20 @@ class CleanupStaleTriggersJob < ApplicationJob
       "failed — scheduled for #{scheduled}, never fired (requester session " \
       "#{trigger.last_session_id || 'none'})"
 
+    requester_note =
+      if trigger.last_session_id.present?
+        "Requester session: #{trigger.last_session_id}. If it is still in `waiting` with nothing " \
+        "else armed, StrandedSleepRescue resumes it within about twenty minutes."
+      else
+        "This wake had no requester session recorded, so nothing is asleep on it."
+      end
+
     AlertService.raise_alert(
       "A one-time wake never fired",
       details: "Trigger '#{trigger.name}' (ID: #{trigger.id}) was scheduled for #{scheduled} and " \
                "never fired. It has been marked *failed* and left in place at " \
                "#{trigger_url(trigger.id)} so it stays visible and can be re-armed.\n\n" \
-               "Requester session: #{trigger.last_session_id || 'none'}. If that session is still " \
-               "in `waiting`, StrandedSleepRescue will resume it within the hour.",
+               "#{requester_note}",
       source: "CleanupStaleTriggersJob",
       dedup_key: "undelivered_wake_#{trigger.id}"
     )

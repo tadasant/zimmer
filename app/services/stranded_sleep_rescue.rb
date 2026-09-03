@@ -108,15 +108,17 @@ class StrandedSleepRescue
   # scope.
   ABANDONED = "stranded_sleep_abandoned"
 
-  # Markers that mean "asleep on purpose, and somebody else's sweep owns the way
-  # back". Identical to StalledSessionStart::DORMANT_MARKERS, and for the same
-  # reason: waking a session out from under the decision that stopped it undoes
-  # that decision.
+  # Markers that mean "asleep on purpose". The first four are
+  # StalledSessionStart::DORMANT_MARKERS, each owned by a sweep of its own. The
+  # fifth is this sweep's own addition: `POST /api/v1/sessions/:id/sleep` is the
+  # single path into `waiting` that arms nothing and marks nothing, so without it
+  # a deliberate sleep is indistinguishable from a destroyed wake set.
   DORMANT_MARKERS = %w[
     spot_hold_reason
     spot_pause_reason
     auth_outage_reason
     paused_by
+    deliberate_sleep_at
   ].freeze
 
   Sweep = Data.define(:rescued, :abandoned, :refused, :stranded)
@@ -199,22 +201,32 @@ class StrandedSleepRescue
       session.reload
       count = (session.metadata || {})[RESCUE_COUNT].to_i
 
-      return give_up!(session, logger, count) if count >= MAX_RESCUES
-
-      # Re-ask under the reload: the whole point of the sweep is that this
-      # population is invisible, so a wake arriving between the read and here is
-      # exactly the case that must not be trampled.
-      if session.awaiting_scheduled_wake?
-        logger.info("Left a session alone — it acquired a wake", session_id: session.id)
+      # Re-ask under the reload BEFORE consulting the budget, and the order is
+      # load-bearing. A session that armed a wake between the batch read and here
+      # is not stranded at all, and giving up on it first would stamp it
+      # `stranded_sleep_abandoned`, write an error to its timeline and alert —
+      # about a session that had just fixed itself.
+      if session.awaiting_scheduled_wake? || dormant_on_purpose?(session)
+        logger.info("Left a session alone — it is not stranded after all", session_id: session.id)
         return :refused
       end
+
+      return give_up!(session, logger, count) if count >= MAX_RESCUES
 
       outcome = nil
       ActiveRecord::Base.transaction do
         outcome = session.claim_system_recovery_turn! do
+          # The budget is spent in the SAME write that clears the stale keys, and
+          # inside the same transaction as the enqueue. Incrementing afterwards
+          # left a window where a crash — or a raise from the bookkeeping itself —
+          # enqueued a turn without spending anything, which makes MAX_RESCUES a
+          # suggestion rather than a bound. RESCUE_COUNT is itself in
+          # STALE_RETRY_METADATA_KEYS, so it has to be re-added after the except.
           session.update!(
             running_job_id: nil,
-            metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+            metadata: (session.metadata || {})
+              .except(*Session::STALE_RETRY_METADATA_KEYS)
+              .merge(RESCUE_COUNT => count + 1)
           )
         end
 
@@ -245,27 +257,60 @@ class StrandedSleepRescue
         return :refused
       end
 
-      # Written AFTER the claim, so the budget only counts turns actually enqueued.
-      session.merge_metadata!(RESCUE_COUNT => count + 1)
-
       logger.warn("Resumed a session asleep on a wake that could never fire",
         session_id: session.id, rescue_attempt: count + 1)
 
-      AlertService.raise_alert(
-        "A sleeping session had no wake-up left",
-        details: "Session #{session.id} was in `waiting` with no trigger that could ever fire, and " \
-                 "Zimmer resumed it (rescue #{count + 1} of #{MAX_RESCUES}). Something consumed or " \
-                 "deleted its wake set without resuming it — see " \
-                 "https://github.com/tadasant/zimmer/issues/855.",
-        source: "StrandedSleepRescue",
-        dedup_key: "stranded_sleep_#{session.id}"
-      )
+      # Outside the counted region on purpose. The turn is enqueued and the
+      # budget is spent; a Slack failure here must not make the sweep report
+      # `:refused` for a session it demonstrably resumed, because that log line
+      # is the only observability this has.
+      begin
+        AlertService.raise_alert(
+          "A sleeping session had no wake-up left",
+          details: "Session #{session.id} was in `waiting` with no trigger that could ever fire, and " \
+                   "Zimmer resumed it (rescue #{count + 1} of #{MAX_RESCUES}). Its wake set was " \
+                   "consumed, deleted, or left watching a session that will never transition again " \
+                   "— see https://github.com/tadasant/zimmer/issues/855.",
+          source: "StrandedSleepRescue",
+          dedup_key: "stranded_sleep_#{session.id}"
+        )
+      rescue StandardError => e
+        logger.warn("Resumed a stranded session but could not alert about it",
+          session_id: session.id, error: "#{e.class}: #{e.message}")
+      end
 
       :rescued
     rescue StandardError => e
       logger.warn("Could not rescue a stranded session",
         session_id: session.id, error: "#{e.class}: #{e.message}")
       :refused
+    end
+
+    # Whether something OTHER than a one-time wake is going to move this session.
+    #
+    # #awaiting_scheduled_wake? deliberately ignores recurring conditions — they
+    # are not per-session wake-ups — but a recurring trigger aimed at this session
+    # as its reuse target really will follow up into it, on its own schedule. A
+    # heartbeat set with `set_heartbeat`, or any recurring trigger a user pointed
+    # at a session, is a session being driven rather than a session stranded, and
+    # resuming it here would barge a drumbeat that is already coming.
+    #
+    # Asked in Ruby rather than SQL because "recurring" is a property of the
+    # condition's JSON configuration (a schedule with no `scheduled_at`, a Slack
+    # or GitHub feed, a broadcast `ao_event`), not of a column. The candidate set
+    # is bounded at MAX_LOADED_PER_SWEEP, so this is a bounded number of queries.
+    def dormant_on_purpose?(session)
+      TriggerCondition
+        .joins(:trigger)
+        .where(triggers: { last_session_id: session.id, reuse_session: true, status: "enabled" })
+        .any? { |condition| !condition.one_time_schedule? && !condition.session_scoped_ao_event? }
+    rescue ActiveRecord::ActiveRecordError => e
+      # Fail safe in the same direction as #awaiting_scheduled_wake?: an
+      # unreadable trigger table means "leave it alone", which costs a pass.
+      Rails.logger.error(
+        "[StrandedSleepRescue] Could not read recurring triggers for session #{session.id}: #{e.message}"
+      )
+      true
     end
 
     # Stop rescuing, and stop re-reading the same session forever.

@@ -226,6 +226,100 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     end
   end
 
+  # The one path into `waiting` that arms nothing and marked nothing before this
+  # PR: POST /api/v1/sessions/:id/sleep. Without the marker the sweep cannot tell
+  # a deliberate sleep from a destroyed wake set, and would resume it claiming
+  # its wake had been lost.
+  test "a session slept deliberately through the API is left alone" do
+    session = sleeping_session
+    session.merge_metadata!(Session::DELIBERATE_SLEEP_KEY => Time.current.iso8601)
+    back_date(session)
+
+    assert_equal 0, StrandedSleepRescue.sweep!.rescued
+    assert_equal "waiting", session.reload.status
+  end
+
+  # #awaiting_scheduled_wake? ignores recurring conditions by design — they are
+  # not per-session wake-ups — but a recurring trigger pointed at this session as
+  # its reuse target really will follow up into it. That is a session being
+  # driven, not a stranded one.
+  test "a session with a recurring trigger aimed at it is left alone" do
+    session = sleeping_session
+    Trigger.create!(
+      name: "Heartbeat for ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "tick",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "interval" => 1, "unit" => "hours" } }
+      ]
+    )
+    back_date(session)
+
+    assert_not session.reload.awaiting_scheduled_wake?,
+      "guard: a recurring schedule is deliberately not an armed one-time wake"
+    assert_equal 0, StrandedSleepRescue.sweep!.rescued,
+      "but something is still going to wake it, so the sweep must stand down"
+  end
+
+  test "a disabled recurring trigger does not protect a stranded session" do
+    session = sleeping_session
+    trigger = Trigger.create!(
+      name: "Heartbeat for ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "tick",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "interval" => 1, "unit" => "hours" } }
+      ]
+    )
+    trigger.update!(status: "disabled")
+    back_date(session)
+
+    assert_equal 1, StrandedSleepRescue.sweep!.rescued
+  end
+
+  test "the rescue budget is spent in the same write that resumes the session" do
+    session = sleeping_session
+
+    assert_equal 1, StrandedSleepRescue.sweep!.rescued
+    assert_equal 1, session.reload.metadata[StrandedSleepRescue::RESCUE_COUNT],
+      "the counter must survive the STALE_RETRY_METADATA_KEYS clear inside the claim"
+    assert_equal "running", session.status
+  end
+
+  # The budget check must not fire ahead of the re-check: a session that armed a
+  # wake between the batch read and the reload is not stranded, and abandoning it
+  # would stamp it, write an error to its timeline and alert about a session that
+  # had just fixed itself.
+  test "a session at the rescue budget that has re-armed a wake is left alone, not abandoned" do
+    session = sleeping_session
+    session.merge_metadata!(StrandedSleepRescue::RESCUE_COUNT => StrandedSleepRescue::MAX_RESCUES)
+    watched = other_session(status: :running)
+    arm_wake!(session, [ ao_event_condition(watched) ])
+    back_date(session)
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 0, result.abandoned
+    assert_nil session.reload.metadata[StrandedSleepRescue::ABANDONED]
+  end
+
+  test "an alert failure does not make a completed rescue report as refused" do
+    session = sleeping_session
+    AlertService.unstub(:raise_alert)
+    AlertService.stubs(:raise_alert).raises(StandardError, "slack is down")
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 1, result.rescued, "the turn was enqueued; a Slack failure must not misreport that"
+    assert_equal "running", session.reload.status
+  end
+
   test "a session in a frozen category is left alone" do
     frozen = Category.create!(name: "Parked #{SecureRandom.hex(4)}", is_frozen: true)
     session = sleeping_session(category: frozen)
