@@ -1,14 +1,31 @@
 name: Build base image
 
-# Builds the heavy base image (Node.js, Playwright, gh CLI, gems) from
-# Dockerfile.base and publishes it to ghcr.io/tadasant/zimmer-base:latest.
-# The per-commit "Release image" workflow builds the app FROM this base, so the
-# app build stays fast. Rebuild this when Dockerfile.base, the Ruby version, or
-# heavy system deps change. Manual + monthly to pick up base OS security fixes.
+# Refreshes the heavy base image (Node.js, Playwright, gh CLI, gems) from
+# Dockerfile.base and publishes it to ghcr.io/tadasant/zimmer-base.
+#
+# THIS IS NOT HOW A Dockerfile.base CHANGE REACHES PRODUCTION, and reading it that
+# way has already cost a false alarm. `release-image.yml` content-addresses the base
+# on every push to main: it hashes Dockerfile.base, Gemfile, Gemfile.lock, mcp.json
+# and bin/preinstall-mcp-packages, and builds and pushes `zimmer-base:content-<key>`
+# itself whenever that exact declaration has never been published. Changing any of
+# those five inputs therefore rebuilds the base on the merge that lands it, whether
+# or not anybody remembers this workflow exists.
+#
+# What this workflow is for is the half release-image cannot do: fixes that arrive
+# with NO repo input changing — security updates in `ruby:3.4.6-slim` and in the apt
+# packages on top of it, and the unpinned installers Dockerfile.base runs
+# (`claude.ai/install.sh`, `fly.io/install.sh`). Hence the monthly cron.
 on:
   workflow_dispatch: {}
   schedule:
     - cron: "0 6 1 * *" # 06:00 UTC on the 1st of each month
+
+# Two runs would push the same tags. Queue rather than cancel: a cancelled build
+# publishes nothing, but two finishing at once race on tags every session image is
+# built from.
+concurrency:
+  group: build-base-image
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -48,6 +65,53 @@ jobs:
       - name: Set up Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Resolve the tags to publish
+        id: tags
+        run: |
+          set -euo pipefail
+          # The same five inputs, hashed the same way, as release-image.yml's "Resolve
+          # base image" step — image_build_workflows_test pins the two together, because
+          # they have to agree for this workflow to do anything at all. release-image
+          # builds the app FROM `content-<key>` and REUSES that tag for as long as it
+          # exists, so a refresh published under any other name is one production never
+          # sees. Until now this workflow published only `:latest`, which the release
+          # path stopped reading when content addressing landed on 2026-09-01 (#763):
+          # every monthly refresh since has dead-ended in a tag nothing consumes.
+          BASE_KEY=$(git ls-tree HEAD -- Dockerfile.base Gemfile Gemfile.lock mcp.json bin/preinstall-mcp-packages |
+            sha256sum | cut -c1-20)
+
+          # `content-…` is what every app image — and therefore every session container
+          # — is built FROM, and `latest` is the default BASE_IMAGE for a hand-run
+          # `docker build` and the probe target in await-ghcr.sh. Both are shared, so
+          # only main may publish them: a base built from an unreviewed branch is worse
+          # than a stale one. A dispatch from any other ref still builds and still
+          # verifies; it just parks the result under its own tag, which is what makes
+          # this workflow safe to exercise from a pull request.
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            tags=(
+              "ghcr.io/tadasant/zimmer-base:content-${BASE_KEY}"
+              "ghcr.io/tadasant/zimmer-base:latest"
+            )
+            echo "Publishing the shared base tags from main (base key ${BASE_KEY})."
+          else
+            slug=$(printf '%s' "${GITHUB_REF_NAME}" | tr -c 'a-zA-Z0-9_.-' '-' | cut -c1-64)
+            tags=( "ghcr.io/tadasant/zimmer-base:branch-${slug}" )
+            echo "::notice::${GITHUB_REF_NAME} is not main, so this run publishes only ${tags[0]} and leaves :latest and content-${BASE_KEY} alone."
+          fi
+
+          {
+            echo "verify=${tags[0]}"
+            echo "tags<<TAGS_EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Deliberately uncached. This workflow exists to pick up changes that live
+      # OUTSIDE the repo — a patched apt package, a newer `claude` from the install
+      # script — and every one of those sits in a layer whose cache key did not move.
+      # A cached refresh replays the old layers and refreshes nothing, which is the
+      # same shape of do-nothing as publishing to a tag no one reads.
       - name: Build and push base
         uses: docker/build-push-action@v6
         with:
@@ -55,6 +119,32 @@ jobs:
           context: .
           file: Dockerfile.base
           push: true
-          tags: ghcr.io/tadasant/zimmer-base:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.tags.outputs.tags }}
+
+      # Dockerfile.base's own `test -f` lines prove what the BUILD produced. This
+      # proves what the REGISTRY serves, which is the artifact every session image is
+      # built from — it pulls the tag back down and reads the versions out of the
+      # published layers. The two came apart before: `Dockerfile.base` pinned
+      # `@tadasant/pi-hooks@0.1.0` and `@tadasant/pi-plugins@0.1.0` on 2026-09-03 and
+      # nothing downstream ever asserted they arrived.
+      - name: Verify the published image carries every pin
+        run: |
+          set -euo pipefail
+          IMAGE='${{ steps.tags.outputs.verify }}'
+
+          # Comment lines are stripped first: Dockerfile.base's prose names versions it
+          # does NOT install (a puppeteer release it pins away from, the version
+          # chrome-devtools-mcp bundles internally), and matching those would fail the
+          # build on packages that were never supposed to be there.
+          PINS=$(grep -vE '^[[:space:]]*#' Dockerfile.base |
+            grep -oE '(@[a-z0-9.-]+/)?[a-z0-9.-]+@[0-9]+\.[0-9]+\.[0-9]+' |
+            sort -u | tr '\n' ' ')
+          echo "Pins declared by Dockerfile.base: ${PINS}"
+          echo "Checking them against ${IMAGE} as published:"
+
+          docker pull --quiet "$IMAGE"
+          # The script goes in on stdin rather than through a bind mount: the runner and
+          # the Docker daemon do not necessarily share a filesystem.
+          docker run --rm -i --entrypoint bash \
+            -e EXPECTED_PINS="$PINS" \
+            "$IMAGE" -s < .github/scripts/verify-base-image.sh
