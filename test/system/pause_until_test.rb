@@ -137,7 +137,7 @@ class PauseUntilTest < ApplicationSystemTestCase
     assert session.reload.needs_input?
   end
 
-  test "a session the auto-sleep would no-op gets no control at all" do
+  test "a session the auto-sleep would no-op is offered no Pause Until" do
     failed = create_session(title: "Died on a bad clone", status: :failed)
     visit root_path
     # The dashboard defaults to the needs_input slice, so a failed session is not
@@ -146,7 +146,12 @@ class PauseUntilTest < ApplicationSystemTestCase
     click_on "Apply filters"
     assert_text "Died on a bad clone"
 
-    assert_no_selector "##{ActionView::RecordIdentifier.dom_id(failed)} button[aria-label='More actions for session #{failed.id}']"
+    # The card's ⋮ menu is rendered for every session — board visibility is
+    # offered whatever the status — so what has to be absent is the Pause Until
+    # row inside it, not the menu around it.
+    open_card_menu(failed)
+    assert_selector "##{ActionView::RecordIdentifier.dom_id(failed)} [data-controller='visibility']"
+    assert_no_selector "##{ActionView::RecordIdentifier.dom_id(failed)} [data-controller='pause-until']"
 
     visit session_path(failed)
     assert_no_button "Pause Until"
@@ -200,7 +205,11 @@ class PauseUntilTest < ApplicationSystemTestCase
     check "status-filter-waiting", allow_label_click: true
     click_on "Apply filters"
     assert_text "Queued behind the clone"
-    assert_no_selector "##{ActionView::RecordIdentifier.dom_id(queued)} button[aria-label='More actions for session #{queued.id}']"
+    # As above: the ⋮ menu is on every card for board visibility's sake, so the
+    # assertion is about the Pause Until row inside it.
+    open_card_menu(queued)
+    assert_selector "##{ActionView::RecordIdentifier.dom_id(queued)} [data-controller='visibility']"
+    assert_no_selector "##{ActionView::RecordIdentifier.dom_id(queued)} [data-controller='pause-until']"
   end
 
   # The choice in the same panel that is not a time. What makes it worth driving
