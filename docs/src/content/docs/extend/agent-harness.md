@@ -53,6 +53,11 @@ is exactly the inconsistency being tracked — but it still resolves through
 Tracked in [#97](https://github.com/tadasant/zimmer/issues/97).
 :::
 
+`artifact_bridge_class` is the one slot where Pi holds a real class and the other
+two hold a null object: it writes the AIR hooks and plugins config Pi's extensions
+read, which Claude's and Codex's AIR adapters already handle for them. See
+[Pi is the runtime that supplies nothing](#pi-is-the-runtime-that-supplies-nothing).
+
 Two `pi` slots are `nil` for reasons of their own rather than by that convention:
 
 - **`mcp_status_detector_class`** — Pi writes no per-server MCP log files, so
@@ -286,6 +291,53 @@ registry, and `PiRuntimeAdapter` passes each entrypoint with `pi -e <path>` from
 `/opt/pi-extensions`. `pi-mcp-adapter` reads the same `.mcp.json` Claude Code
 does — that file is a cross-vendor convention, not a Claude private format, which
 is why the JSON format hooks live in the shared `McpJsonConfigFormat` module.
+`@tadasant/pi-hooks` runs AIR hooks and `@tadasant/pi-plugins` resolves AIR
+plugins; both are configured by the files `PiAirBridge` generates, described next.
+
+**Loading an extension is not the same as configuring it**, and for hooks and
+plugins Zimmer has to do both. `air prepare pi` ignores hook entries outright and
+honors a plugin only as composition sugar for its skills, so after prepare there
+is nothing on disk carrying the session's hooks. `PiAirBridge` — the `pi` bundle's
+`artifact_bridge_class`, a no-op for every other runtime — writes a generated
+mini-catalog into `<clone>/.pi/zimmer-air/` and `PiRuntimeAdapter` names it
+through `PI_HOOKS_AIR` and `PI_PLUGINS_CONFIG`.
+
+Three decisions in that generation are worth knowing:
+
+- **The generated index *is* the selection.** `@tadasant/pi-hooks` activates every
+  hook in an index it loads — it has no roots concept to filter on — so pointing
+  it at Zimmer's whole `hooks/hooks.json` would run every catalog hook in every Pi
+  session. The same trick selects plugins without a `PI_PLUGINS` env var: the
+  generated `plugins.json` carries `default_in_roots: ["*"]` on exactly the
+  plugins the session chose.
+- **Naming the files shadows discovery.** Both extensions otherwise look for
+  `./air.json` in the working directory — which is a clone of whatever repository
+  the session works on, and a repo root is a normal place for an `air.json` to
+  live (this one has one). Without the explicit variables, cloning a repository
+  would be enough to adopt whatever hooks it declares.
+- **A plugin's skills and MCP servers are left to their real owners.** The
+  generated plugin entries carry `skills: []` and `mcp_servers: []`, because
+  `air prepare pi` already installs plugin skills into `.pi/skills/` and
+  `PiMcpConfigPostProcessor` already writes plugin-bundled servers into
+  `.mcp.json` with secret resolution and retargeting. `pi-mcp-adapter` merges both
+  its config files by name, so letting the extension write its own copy would
+  start a second copy of every plugin server.
+
+Only the hooks the session named directly go in the pi-hooks index; anything a
+selected plugin bundles is subtracted, because `pi-plugins` dispatches those
+through its own runner and a hook reachable both ways would be spawned twice per
+event.
+
+**An AIR hook body has to speak both runtimes.** AIR is vendor-neutral and its
+hook bodies should be too, but the two runtimes disagree about both halves of the
+contract: Claude Code sends `{tool_name, tool_input}` on stdin and takes context
+back through `hookSpecificOutput.additionalContext`, while `@tadasant/pi-hooks`
+sends `{event, toolName, input, content}` and takes `{"content": ...}`, which
+*replaces* the tool result rather than appending to it. `@tadasant/pi-hooks` sets
+`PI_HOOK=1` on every hook process, which is the signal to answer in its dialect.
+The catalog's `git-push-ci-reminder` reads either shape and answers in the
+matching one; a body that only speaks Claude's loads cleanly on Pi, runs, and
+does nothing.
 
 **An extension's entrypoint is a TypeScript source file, and it comes from the
 package.** Pi loads `.ts` extensions directly, so a Pi package's entrypoint is a
@@ -366,16 +418,37 @@ Other known gaps:
   unreachable from Codex, despite the hook receiving a `runtime` context.
 - `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
 
-`PiRetryStrategy` classifies even less than Codex's does — `context_length_error?`,
-`api_error_for_retry?` and `auth_recovery_needed?` all return `false`, and unlike
-Codex there is no failed-resume pattern to match either (Pi's `--session-id`
-*creates* a missing session rather than failing, so the condition cannot arise).
-Every one of those surfaces as an ordinary non-zero exit that is reported rather
-than hidden, and `classifies_exits?` is `false` so the expected shape of a Pi
-failure does not become a standing page. It is still a gap, not a neutral
-default. `PiAuthProvider` pools no accounts — Pi resolves a provider API key from
-the session environment per request — so there is nothing for the auth-recovery
-path to rotate *to*, which is why the missing classifier costs Pi less than it
-costs Codex. Pi is deliberately absent from `RuntimeAuthProvider::RUNTIMES` and
-from `RuntimeLoginDriver.for`: it has no tokens to refresh and no interactive
-login flow.
+`PiRetryStrategy` classifies one thing and declines the rest.
+
+**A failed model call does not fail the Pi process.** Driven against a simulated
+localhost LLM returning 401, 429, 500 and a 400 `context_length_exceeded`, a
+pinned `pi 0.84.4` exited 0 every time and wrote the failure into its transcript
+instead, as an assistant message with `stopReason: "error"` and an `errorMessage`
+led by the HTTP status. Nothing reached stderr. So `pi -p` exits non-zero for
+*Pi's* failures, and 0 for the provider's — and a Pi turn whose model never
+answered used to take `ProcessLifecycleManager`'s success branch and park the
+session in `needs_input` reporting "Process exited successfully".
+
+`PiRetryStrategy#terminal_api_error` closes that: when the last conversational
+entry in the transcript is such an error, the turn is failed with the provider's
+own wording rather than parked as finished. An error followed by more
+conversation is a turn that recovered on its own and is left alone.
+
+`context_length_error?`, `api_error_for_retry?` and `auth_recovery_needed?` still
+return `false`, and now for a different reason than Codex's: the *signature* is
+known, but each names a recovery path that is Claude-shaped.
+`ContextLengthRetryService` recovers by sending Claude Code's `/compact` command,
+which Pi has no equivalent of; `ApiErrorRetryService` detects by Claude's
+`isApiErrorMessage` envelope, which Pi does not write; `AuthRecoveryService`
+recovers by re-writing the active account's credentials, and `PiAuthProvider`
+pools no accounts to re-write. Making those three transcript-format-agnostic is
+tracked in [#856](https://github.com/tadasant/zimmer/issues/856). Until then a Pi
+provider failure is failed and named rather than retried — the same posture Codex
+has. `classifies_exits?` stays `false`, so that failure is loud in the session log
+without becoming a standing page.
+
+There is also no failed-resume pattern to match, and unlike the above that one is
+correct rather than deferred: Pi's `--session-id` *creates* a missing session
+rather than failing, so the condition cannot arise. Pi is deliberately absent from
+`RuntimeAuthProvider::RUNTIMES` and from `RuntimeLoginDriver.for`: it has no
+tokens to refresh and no interactive login flow.

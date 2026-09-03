@@ -32,7 +32,8 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
     transcript_source_class: "TranscriptPollerService, AgentSessionJob",
     transcript_normalizer_class: "TranscriptPollerService",
     mcp_status_detector_class: "TranscriptPollerService#initialize",
-    config_post_processor_class: "AirPrepareService#post_processor"
+    config_post_processor_class: "AirPrepareService#post_processor",
+    artifact_bridge_class: "AirPrepareService#artifact_bridge"
   }.freeze
 
   RuntimeRegistry.registered_runtimes.each do |runtime|

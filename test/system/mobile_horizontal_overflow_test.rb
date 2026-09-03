@@ -636,11 +636,37 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/health-retry-budgets-375.png")
   end
 
+  # The report has to be stubbed, or this measures the LOADING PLACEHOLDER. That
+  # placeholder renders neither status badge and no detail line — the two things
+  # that actually make this page wide — so an unstubbed visit was green while the
+  # real page put the "Authenticated" pill off the right edge of a phone. Stubbed
+  # rather than cached because the test environment's cache is a `:null_store`, so
+  # a write to it is silently a no-op.
   test "CLI tools does not overflow horizontally on a phone" do
+    CliStatusService.stubs(:cached_report).returns(
+      tools: CliStatusService::CLI_TOOLS.transform_values do |config|
+        {
+          name: config[:name], installed: true, authenticated: true, version: "1.2.3",
+          # Pi's is the longest line the page can carry, and it is the realistic
+          # one: this is what an operator sees when the image is missing them.
+          details: config[:check_details] ? PiExtensions.status_summary : nil,
+          install_instructions: config[:install_instructions],
+          auth_instructions: config[:auth_instructions],
+          auth_method: config[:auth_method], env_var_name: config[:env_var_name]
+        }
+      end,
+      all_authenticated: true, unauthenticated_count: 0, generated_at: Time.current
+    )
+
     visit clis_path
     assert_selector "h1"
+    # Both badges present is the precondition: they are the row that overflowed.
+    assert_text "Pi Coding Agent"
+    assert_text "Authenticated"
 
     assert_no_horizontal_overflow("CLI tools")
+
+    page.save_screenshot("tmp/screenshots/clis-375.png")
   end
 
   test "connectors does not overflow horizontally on a phone" do

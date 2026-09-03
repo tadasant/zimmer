@@ -2,15 +2,21 @@
 
 require "test_helper"
 
-# PiRetryStrategy classifies almost nothing, and these tests pin that down as a
-# deliberate, documented state rather than an accident — including the one
-# predicate whose `false` is genuinely CORRECT rather than deferred.
+# PiRetryStrategy answers one question with real evidence — did this turn die on
+# a provider error — and declines the rest. These tests pin down both halves:
+# that the terminal-error backstop reads the shape Pi actually writes, and that
+# every remaining `false` is a deliberate, documented state rather than an
+# accident.
 class PiRetryStrategyTest < ActiveSupport::TestCase
+  WORKING_DIR = "/workspace/clone"
+  PI_SESSION_ID = "22222222-3333-4444-5555-666666666661"
+
   setup do
     @file_system = MockFileSystemAdapter.new
+    @session = Session.new(agent_runtime: "pi", session_id: PI_SESSION_ID)
     @strategy = PiRetryStrategy.new(
       cli_adapter: PiRuntimeAdapter.new,
-      session: Session.new(agent_runtime: "pi"),
+      session: @session,
       file_system: @file_system,
       process_manager: MockProcessManager.new,
       rate_limit_tracker: nil
@@ -36,10 +42,70 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
     assert_not @strategy.failed_resume_recovery_needed?(stderr_log_path: "/tmp/pi_stderr.log")
   end
 
-  # These three are deferred, not correct — the Pi signatures are not
-  # characterized. Each surfaces as an ordinary non-zero exit that
-  # ProcessLifecycleManager reports, so the failure is surfaced rather than
-  # hidden. Recorded in limitations.md.
+  # === The terminal provider error ===
+  #
+  # The fixture is the verbatim transcript of a real pinned Pi 0.84.4 run whose
+  # simulated provider returned 401 (only the header `cwd` rewritten). Pi exited
+  # 0, so without this backstop ProcessLifecycleManager took the success branch
+  # and parked the session as a finished turn the model never answered.
+
+  test "a turn that died on a provider error is reported with the provider's own wording" do
+    write_transcript(file_fixture("pi_session_provider_error.jsonl").read)
+
+    terminal = @strategy.terminal_api_error(working_dir: WORKING_DIR)
+
+    assert_not_nil terminal, "a 401 that ended the turn must not look like a completed turn"
+    assert_includes terminal.text, "401"
+    assert_includes terminal.text, "Incorrect API key provided."
+    assert terminal.line.present?, "the line is the key that stops one dead turn failing twice"
+  end
+
+  # Nothing here classifies a provider error yet, so no wording is "recognized" —
+  # which is what routes it to a loud failure without a page.
+  test "the terminal error is reported as unrecognized" do
+    write_transcript(file_fixture("pi_session_provider_error.jsonl").read)
+
+    assert_not @strategy.terminal_api_error(working_dir: WORKING_DIR).recognized?
+  end
+
+  # An error the session recovered from on its own is not terminal, and failing
+  # the session for it would be wrong.
+  test "an error followed by more conversation is not terminal" do
+    recovered = file_fixture("pi_session_provider_error.jsonl").read +
+      %({"type":"message","id":"later","parentId":"x","timestamp":"2026-09-03T16:41:52.000Z",) +
+      %("message":{"role":"assistant","content":[{"type":"text","text":"recovered"}],) +
+      %("stopReason":"stop"}}\n)
+    write_transcript(recovered)
+
+    assert_nil @strategy.terminal_api_error(working_dir: WORKING_DIR)
+  end
+
+  # Pi appends its own bookkeeping records around messages. A trailing one must
+  # not make a terminal error look non-terminal.
+  test "a trailing bookkeeping record does not mask a terminal error" do
+    trailing = file_fixture("pi_session_provider_error.jsonl").read +
+      %({"type":"model_change","id":"mc2","parentId":"x","timestamp":"2026-09-03T16:41:52.000Z",) +
+      %("provider":"sim","modelId":"sim-model"}\n)
+    write_transcript(trailing)
+
+    assert_not_nil @strategy.terminal_api_error(working_dir: WORKING_DIR)
+  end
+
+  test "a clean transcript reports no terminal error" do
+    write_transcript(file_fixture("pi_session.jsonl").read)
+
+    assert_nil @strategy.terminal_api_error(working_dir: WORKING_DIR)
+  end
+
+  test "a missing transcript or working directory is nil rather than an error" do
+    assert_nil @strategy.terminal_api_error(working_dir: nil)
+    assert_nil @strategy.terminal_api_error(working_dir: WORKING_DIR)
+  end
+
+  # === What is still deferred ===
+  #
+  # Each names a recovery path that is Claude-shaped today (see the class
+  # docstring). The failure is surfaced by the backstop above rather than hidden.
   test "the unclassified predicates all defer to generic failure handling" do
     assert_not @strategy.context_length_error?(stderr_log_path: "/tmp/pi_stderr.log")
     assert_not @strategy.api_error_for_retry?(working_dir: "/tmp")
@@ -70,5 +136,15 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
     )
 
     assert_instance_of PiRetryStrategy, strategy
+  end
+
+  private
+
+  # Write the transcript where PiTranscriptSource locates it: the per-clone
+  # session directory, under the `<timestamp>_<session id>.jsonl` name Pi uses.
+  def write_transcript(contents)
+    dir = PiTranscriptSource.session_directory(working_directory: WORKING_DIR)
+    @file_system.mkdir_p(dir)
+    @file_system.write(File.join(dir, "2026-09-03T16-41-50-237Z_#{PI_SESSION_ID}.jsonl"), contents)
   end
 end

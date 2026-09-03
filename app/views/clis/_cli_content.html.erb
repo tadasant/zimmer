@@ -10,7 +10,10 @@
             <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">v<%= tool[:version] %></span>
           <% end %>
         </div>
-        <div class="flex items-center gap-2">
+        <!-- flex-wrap, not a fixed row: two pill badges plus a gap do not fit a 375px
+             viewport beside the tool name, and without wrapping the right-hand
+             "Authenticated" pill lands off the right edge of a phone screen. -->
+        <div class="flex flex-wrap items-center justify-end gap-2">
           <% if tool[:installed] %>
             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
               Installed
@@ -34,6 +37,9 @@
 
       <!-- Tool Content -->
       <div class="px-6 py-4 space-y-4">
+        <% if tool[:details].present? %>
+          <p class="text-sm text-gray-600 break-words"><%= tool[:details] %></p>
+        <% end %>
         <% unless tool[:installed] %>
           <!-- Installation Instructions -->
           <div>

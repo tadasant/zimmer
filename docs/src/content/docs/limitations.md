@@ -917,27 +917,25 @@ after the servers have already been wired for that run.
 
 ## Agent harness
 
-### The Pi runtime ships with the pi-extensions packages unpublished
+### An AIR hook body written for Claude Code loads on Pi and does nothing
 
-🔴 Pi has no MCP, hooks or plugin support of its own. Zimmer supplies all three as Pi
-extensions listed in `PiExtensions::REGISTRY`, but only one of the three is on npm today:
+🟡 AIR is vendor-neutral, and a `HOOK.json` really is portable — but the *body* it names is
+not, because the two runtimes disagree about both halves of the contract:
 
-| Extension | State | What is missing without it |
+| | stdin payload | how context reaches the model |
 | --- | --- | --- |
-| `pi-mcp-adapter@2.32.1` | published, installed in the base image | — |
-| `@tadasant/pi-hooks@0.1.0` | **not published** (404) | lifecycle hooks do not fire on Pi |
-| `@tadasant/pi-plugins@0.1.0` | **not published** (404) | an AIR plugin's bundled artifacts do not activate on Pi |
+| Claude Code (`PostToolUse`) | `{tool_name, tool_input, tool_response}` | `hookSpecificOutput.additionalContext` |
+| Pi (`@tadasant/pi-hooks`) | `{event, toolName, input, content}` | `{"content": …}`, which **replaces** the tool result |
 
-`npm install` is all-or-nothing, so naming an unpublished package in `Dockerfile.base` would
-404 and fail the whole base image. The two pending packages are therefore marked
-`pending_publish` in the registry, `PiExtensions#resolved_paths` passes `pi -e` only for
-entrypoints that exist on disk, and `PiExtensions.status_summary` reports the gap through
-`CliStatusService` so the answer is reachable without a shell on the box.
+A body that reads `tool_name` gets `undefined` on Pi and returns early; one that writes
+`hookSpecificOutput` has its output ignored, because `parseControl` only acts on keys it
+knows. Both are silent — the hook loads, matches, spawns, exits 0, and changes nothing.
 
-**A Pi session today gets skills and MCP, and does not get hooks or plugins.** When
-`v0.1.0` publishes, the fix is one `Dockerfile.base` line plus dropping the two
-`pending_publish:` flags — no code change, and `pi_extensions_test.rb` asserts the
-Dockerfile and the registry agree.
+`@tadasant/pi-hooks` sets `PI_HOOK=1` on every hook process, so a body *can* tell which
+runtime it is on; the catalog's `git-push-ci-reminder` reads either shape and answers in the
+matching dialect. **A hook adopted from elsewhere will not have been written that way**, and
+nothing checks. Note also that Pi's `content` replaces rather than appends, so a body that
+returns only its own text silently discards the command's real output.
 
 ### A Pi session gets no per-server MCP status, no MCP OAuth, and no token-usage ingestion
 
@@ -974,18 +972,31 @@ provider key the (nonexistent) pool cannot vouch for, so the cheap path is the c
 here. But it is reached by a predicate that means "the pool is empty" being asked of a
 runtime that has no pool, rather than by anything that knows Pi does not pool credentials.
 
-### Pi classifies fewer exits than Codex
+### Pi reports a failed model call but cannot retry one
 
 🟡 `PiRetryStrategy` returns `false` from `context_length_error?`, `api_error_for_retry?` and
 `auth_recovery_needed?`, so a Pi session gets no context-length compaction retry, no
 API-error retry, and no auth recovery — everything the Claude path does to keep a session
-alive, a Pi session does without. Failures are surfaced rather than hidden (they fall through
-to `ProcessLifecycleManager`'s generic failure handling), and `classifies_exits?` is `false`
-so the expected shape of a Pi failure does not raise a standing unclassified-exit page.
+alive, a Pi session does without.
 
-One of the three costs less than it looks: with no pooled accounts there is nothing for the
-auth-recovery path to rotate *to*, so a working `auth_recovery_needed?` would have nowhere to
-go. The other two are real gaps waiting on the Pi failure signatures being characterized.
+That is no longer for want of a signature. Driven against a simulated localhost LLM at 401,
+429, 500 and a 400 `context_length_exceeded`, `pi 0.84.4` exited **0** every time and recorded
+the failure in its transcript as an assistant message with `stopReason: "error"` and an
+`errorMessage` led by the HTTP status. All four look the same, and nothing reaches stderr.
+
+What is missing is the recovery, and each path is Claude-shaped: `ContextLengthRetryService`
+recovers by sending Claude Code's `/compact` command, which Pi has no equivalent of;
+`ApiErrorRetryService` detects by Claude's `isApiErrorMessage` envelope, which Pi does not
+write; `AuthRecoveryService` re-writes the active account's credentials, and `PiAuthProvider`
+pools no accounts to re-write. Tracked in
+[#856](https://github.com/tadasant/zimmer/issues/856).
+
+`PiRetryStrategy#terminal_api_error` covers the worst of it: a turn whose last conversational
+entry is one of those errors is failed with the provider's own wording instead of being
+parked in `needs_input` as "Process exited successfully" — which is what happened before,
+because a provider error is an exit 0 and took the success branch. `classifies_exits?` stays
+`false`, so that failure is loud in the session log without raising a standing
+unclassified-exit page.
 
 `failed_resume_recovery_needed?` is a different case and is *correctly* `false`: Pi's
 `--session-id` creates a missing session rather than exiting non-zero, so the Codex "no
