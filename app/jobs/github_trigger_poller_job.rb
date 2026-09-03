@@ -652,19 +652,74 @@ class GithubTriggerPollerJob < ApplicationJob
     # A repo baseline is spent once the window no longer reaches back past it: `horizon` is
     # exactly where the next tick's query starts, so an entry at or before it can never
     # match another item. Dropping it there bounds the map the same way the horizon bounds
-    # the seen-set, and leaves the steady state carrying none at all.
-    write_state(
+    # the seen-set. A quiet condition whose window holds only pre-baseline issues never
+    # reaches this write at all, so its entries sit until something fires — harmless, and
+    # the reason the map is a few short strings rather than a store.
+    write_new_issue_state(
       condition, scope,
       { "last_issue_at" => newest_at, "seen_issue_keys" => retained_keys,
         "issue_repo_baselines" => baselines.select { |_repo, at| at.to_s > horizon } },
+      fired_items: items.select { |item| fired_keys.include?(item_key(item)) }
+    )
+  end
+
+  # #write_state, plus the one thing a `github_issue` tick may not discard on a mid-poll
+  # re-scope: the keys it has already fired.
+  #
+  # The cursor and the baselines are computed against the scope the tick started with, so a
+  # re-scope invalidates them and the edit has rebased them itself — dropping them is right,
+  # and is what #write_state does. "A session already exists for this issue" is not scope-
+  # dependent, though, and the rebased cursor still re-queries the window those issues sit
+  # in. Discarding their keys with the rest of the write is therefore #759 again through a
+  # seconds-wide door: the tick's own fires come back as duplicates on the next one.
+  #
+  # The label path can discard wholesale because #record_fired_key has already persisted
+  # each key as it fired. This path has no such write, so this is where it is paid.
+  def write_new_issue_state(condition, scope, state, fired_items:)
+    condition.reload
+
+    if condition.github_watch_scope == scope
+      condition.write_github_state!(state, fired: true)
+      return
+    end
+
+    # Bounded by the REBASED cursor's window, on the same rule the discarded write used:
+    # a key for an issue the next query cannot return can never reject anything.
+    cursor = condition.github_last_issue_at
+    horizon = cursor.present? ? (Time.iso8601(cursor) - INDEX_LAG_GRACE).utc.iso8601 : nil
+    keys = fired_items
+      .select { |item| horizon.nil? || item["created_at"].to_s >= horizon }
+      .map { |item| item_key(item) }
+
+    Rails.logger.info "[GithubTriggerPollerJob] Condition #{condition.id} was re-scoped mid-poll; " \
+                      "discarding this tick's cursor but keeping #{keys.size} fired key(s)"
+
+    condition.write_github_state!(
+      { "seen_issue_keys" => (condition.github_seen_issue_keys | keys).sort },
       fired: true
     )
   end
 
   # Every watched repo baselined at the same instant — the shape a first tick stamps,
-  # where nothing that exists yet is an event.
+  # where nothing that existed when the condition did is an event.
+  #
+  # That instant is the condition's own `created_at`, NOT "now". The poll runs up to a
+  # minute after the condition was saved, and an issue opened in between was opened after
+  # the condition existed: it is an event, and baselining at the tick would drop it
+  # silently. Same reasoning as rebasing a widened scope at the edit rather than at the
+  # next tick — see TriggerCondition#rebase_github_issue_cursor.
+  #
+  # Clamped to the window at both ends. The floor, because a condition can reach its first
+  # poll long after it was created (a disabled trigger, a poller outage) and the query never
+  # reaches further back than INDEX_LAG_GRACE anyway — an older baseline suppresses nothing,
+  # so the floor changes no outcome and just keeps the stored instant meaningful. The
+  # ceiling, because a baseline ahead of the tick would suppress issues opened between the
+  # two, and nothing about a clock that disagrees with `created_at` should cost an event.
   def baselines_for_all_watched(condition, at)
-    condition.github_repos.to_h { |repo| [ repo.to_s.downcase, at ] }
+    now = Time.iso8601(at)
+    baseline = condition.created_at.utc.clamp(now - INDEX_LAG_GRACE, now).utc.iso8601
+
+    condition.github_repos.to_h { |repo| [ repo.to_s.downcase, baseline ] }
   end
 
   # Whether this issue was opened before its repo joined the condition's scope. Keyed on

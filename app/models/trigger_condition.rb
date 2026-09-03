@@ -730,7 +730,40 @@ class TriggerCondition < ApplicationRecord
       configuration.delete("labels")
       configuration.delete("target")
       configuration["exclude_labels"] = split_lines(configuration["exclude_labels"])
+      if configuration.key?("issue_repo_baselines")
+        configuration["issue_repo_baselines"] = normalize_issue_repo_baselines(configuration["issue_repo_baselines"])
+      end
     end
+  end
+
+  # `issue_repo_baselines` is compared lexicographically against an issue's `created_at`,
+  # which is only sound while both sides are second-granularity ISO 8601 in UTC. The
+  # poller writes exactly that, but the key is caller-writable — it is in
+  # GITHUB_POLL_STATE_KEYS so a UI save preserves it, which also means an API or MCP
+  # caller can send one — and a value that is not a string sorts ABOVE every timestamp.
+  # That would suppress every issue in the repo forever, silently, and the prune that is
+  # supposed to expire the entry would keep it forever too.
+  #
+  # So the write path is where the shape is settled: repo keys downcased (GitHub repo
+  # names are case-insensitive, and every read downcases), instants re-emitted from
+  # Time.iso8601, and anything that is neither dropped. Dropping is the safe direction —
+  # a missing baseline fires an issue that could have been suppressed, which is visible,
+  # rather than swallowing one, which is not.
+  def normalize_issue_repo_baselines(value)
+    return {} unless value.is_a?(Hash)
+
+    value.filter_map do |repo, at|
+      repo = repo.to_s.strip.downcase
+      next if repo.blank?
+
+      instant = begin
+        Time.iso8601(at.to_s).utc.iso8601
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      [ repo, instant ] if instant
+    end.to_h
   end
 
   # Labels may legitimately contain commas ("needs review, blocked"), so lines are
@@ -864,7 +897,9 @@ class TriggerCondition < ApplicationRecord
   # Suppressing the newly-watched repo's own history is the job of `issue_repo_baselines`
   # instead, which says it per repo and by CREATION time — so it holds however late GitHub
   # indexes an issue, and the grace window stays intact for the repos already watched.
-  # Entries for repos that just left scope are dropped; they can no longer match anything.
+  # Repos this edit also dropped lose their entry, since it can no longer match anything.
+  # A removal on its own does not reach here at all — it is not a widening — so its entry
+  # simply waits for the poller to prune it, or for a re-add to overwrite it.
   def rebase_github_issue_cursor
     return unless configuration_was.key?("last_issue_at")
 
@@ -874,18 +909,6 @@ class TriggerCondition < ApplicationRecord
     configuration["issue_repo_baselines"] =
       github_issue_repo_baselines.slice(*watched).merge(github_issue_repos_added.index_with(now))
     configuration["last_issue_at"] = now
-  end
-
-  def github_watch_scope_changed?
-    scope_of = lambda do |config|
-      [
-        split_lines(config["repos"]).sort,
-        config["target"].to_s,
-        split_lines(config["labels"]).sort
-      ]
-    end
-
-    scope_of.call(configuration) != scope_of.call(configuration_was)
   end
 
   # Whether a never-fired `days`/`weeks` schedule already existed when +target+ —
