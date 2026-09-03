@@ -38,6 +38,14 @@ class RetryBudgetTest < ActiveSupport::TestCase
     context_length: {
       key: "compact_retry_count", max: 2, stamp: "last_compact_at",
       clears: %w[compact_retry_count last_compact_at]
+    },
+    session_id_conflict: {
+      key: "session_id_conflict_count", max: 2, stamp: "last_session_id_conflict_at",
+      clears: %w[session_id_conflict_count last_session_id_conflict_at]
+    },
+    empty_turn: {
+      key: "empty_turn_recovery_count", max: 2, stamp: "last_empty_turn_recovery_at",
+      clears: %w[empty_turn_recovery_count last_empty_turn_recovery_at]
     }
   }.freeze
 
@@ -52,8 +60,38 @@ class RetryBudgetTest < ActiveSupport::TestCase
     end
   end
 
-  test "all declares exactly the five auto-recovery budgets" do
+  test "all declares exactly the seven auto-recovery budgets" do
     assert_equal DECLARED.keys, RetryBudget.all.map(&:name)
+  end
+
+  # The one budget that does NOT share the house window, and the reason it cannot:
+  # its branch fires only while neither transcript store holds a conversation, so
+  # "the process is up" is not evidence it is working. A 60-second window inside a
+  # 180-second MCP startup timeout would hand the budget back before the restarted
+  # process had produced anything, one cycle per timeout, without end.
+  test "only the empty-turn budget departs from the shared 60-second window" do
+    off_default = RetryBudget.all.reject { |budget| budget.reset_after == RetryBudget::DEFAULT_RESET_AFTER }
+
+    assert_equal [ :empty_turn ], off_default.map(&:name)
+    assert_equal 30.minutes.to_i, RetryBudget::EMPTY_TURN.reset_after
+    assert RetryBudget::EMPTY_TURN.reset_after > McpStartupTimeout::SECONDS,
+      "the window has to clear the whole startup dead zone or it manufactures a restart loop"
+  end
+
+  # The negative half of #727: a session-id conflict that repeats inside one turn
+  # must still exhaust its budget. Conflicts are spawn-time refusals seconds apart,
+  # so no reset can land between them.
+  test "a session-id conflict repeating inside one turn is not handed its budget back" do
+    budget = RetryBudget::SESSION_ID_CONFLICT
+    started = Time.utc(2026, 9, 3, 12, 0, 0)
+
+    travel_to(started) { budget.record!(@session) }
+    travel_to(started + 3.seconds) do
+      assert_nil budget.reset_if_stable!(@session, since: budget.last_attempt_at(@session))
+      budget.record!(@session)
+    end
+
+    assert budget.exhausted?(@session), "two conflicts seconds apart must spend the budget"
   end
 
   test "the SIGTERM budget clears the constant the follow-up delivery paths also clear" do

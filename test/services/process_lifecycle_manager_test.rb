@@ -926,7 +926,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     @session.update!(
       transcript: nil,
       metadata: @session.metadata.merge(
-        "empty_turn_recovery_count" => ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES
+        "empty_turn_recovery_count" => ProcessLifecycleManager::EMPTY_TURN_BUDGET.max
       )
     )
     @mock_file_system.write(stderr_path, "")
@@ -958,7 +958,7 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     manager = create_manager
     manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
 
-    ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES.times do |index|
+    ProcessLifecycleManager::EMPTY_TURN_BUDGET.max.times do |index|
       decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
       assert_equal :continue, decision.action, "restart #{index + 1} should have been attempted"
       assert_equal index + 1, @session.reload.metadata["empty_turn_recovery_count"]
@@ -1195,12 +1195,161 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       "the refusal is itself evidence the runtime has a conversation under this id"
   end
 
+  # ===========================================================================
+  # Both recovery budgets are per-incident, not per-lifetime (#727)
+  #
+  # Neither counter was reset anywhere, so on a session that lives for days they
+  # were lifetime caps: two held-id conflicts survived in the first minute left
+  # the session one unrelated conflict away from permanent failure a week later —
+  # and a `failed` session rejects `follow_up`, so the request it was carrying is
+  # simply dropped. They are RetryBudgets now, so step 5 of the monitor loop
+  # (AgentSessionJob#reset_retry_budget) hands them back after a stable stretch.
+  #
+  # The tests below drive that real reset method rather than clearing metadata by
+  # hand, and they come in pairs: the budget comes back after a stable stretch,
+  # and it emphatically does NOT come back inside one.
+  # ===========================================================================
+
+  # Reproduces the reported failure and then the fix: the same session, the same
+  # spent budget, the same refusal — but with the monitor's stability reset having
+  # run in between, it recovers instead of failing permanently.
+  test "a conflict budget spent by an old incident is handed back once the process runs stably" do
+    budget = ProcessLifecycleManager::SESSION_ID_CONFLICT_BUDGET
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    original_session_id = @session.session_id
+    @session.update!(
+      transcript: nil,
+      metadata: @session.metadata.merge(
+        # A week-old incident the session already recovered from.
+        "session_id_conflict_count" => budget.max,
+        "last_session_id_conflict_at" => 7.days.ago.iso8601
+      )
+    )
+
+    # Step 5 of the monitor loop, on a process that has now been up past the window.
+    AgentSessionJob.new.send(
+      :reset_retry_budget, @session, budget, (budget.reset_after + 5).seconds.ago, @log_buffer
+    )
+
+    assert_nil @session.reload.metadata["session_id_conflict_count"],
+      "a budget is a per-incident allowance, not a lifetime cap"
+    assert_nil @session.metadata["last_session_id_conflict_at"]
+
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+    @mock_file_system.write(stderr_path, "Error: Session ID #{@session.reload.session_id} is already in use.\n")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 99999, stderr_log_path: stderr_path } }
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action,
+      "the week-old incident must not be what fails this session"
+    assert_equal 1, @session.reload.metadata["session_id_conflict_count"]
+    assert_not_equal original_session_id, @session.session_id
+  end
+
+  # The failure mode on the other side of the fix, and the reason the threshold is
+  # not lower: a genuinely looping conflict has to still terminate. Every occurrence
+  # in #519's recurrence table reached the cap inside ONE turn, seconds apart, and
+  # the reset check runs between each pair without firing.
+  test "conflicts seconds apart inside one turn still exhaust the budget and fail" do
+    budget = ProcessLifecycleManager::SESSION_ID_CONFLICT_BUDGET
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(transcript: nil)
+
+    pid = 12344
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      pid += 1
+      { pid: pid, stderr_log_path: stderr_path }
+    end
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    budget.max.times do |index|
+      @mock_file_system.write(stderr_path, "Error: Session ID #{@session.reload.session_id} is already in use.\n")
+      decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+      assert_equal :continue, decision.action, "recovery #{index + 1} should have been attempted"
+      assert_equal index + 1, @session.reload.metadata["session_id_conflict_count"]
+
+      # The monitor's reset check, on a process that has been up only as long as the
+      # gap between two spawn-time refusals. It must decline.
+      AgentSessionJob.new.send(:reset_retry_budget, @session, budget, 3.seconds.ago, @log_buffer)
+      assert_equal index + 1, @session.reload.metadata["session_id_conflict_count"],
+        "a few seconds of uptime is not a stable stretch"
+    end
+
+    @mock_file_system.write(stderr_path, "Error: Session ID #{@session.reload.session_id} is already in use.\n")
+    final = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, final.action, "a looping conflict must still terminate"
+    assert_equal :idle, manager.current_state
+  end
+
+  # The empty-turn budget's window is 30 minutes rather than 60 seconds, because
+  # this is the one branch for which "the process is up" is not evidence it is
+  # working: it fires only while neither store holds a conversation, and a runtime
+  # can sit for the whole 180-second MCP startup timeout without writing a line.
+  test "the empty-turn budget is not handed back inside the startup dead zone" do
+    budget = ProcessLifecycleManager::EMPTY_TURN_BUDGET
+    @session.update!(
+      transcript: nil,
+      metadata: @session.metadata.merge(
+        "empty_turn_recovery_count" => budget.max,
+        "last_empty_turn_recovery_at" => 4.minutes.ago.iso8601
+      )
+    )
+
+    AgentSessionJob.new.send(
+      :reset_retry_budget, @session, budget, (McpStartupTimeout::SECONDS + 30).seconds.ago, @log_buffer
+    )
+
+    assert_equal budget.max, @session.reload.metadata["empty_turn_recovery_count"],
+      "handing this budget back inside a startup timeout is what would make the restart loop unbounded"
+  end
+
+  test "an empty-turn budget spent long ago is handed back and the restart is available again" do
+    budget = ProcessLifecycleManager::EMPTY_TURN_BUDGET
+    stderr_path = "/tmp/test-clone/claude_stderr.log"
+    @session.update!(
+      transcript: nil,
+      metadata: @session.metadata.merge(
+        "empty_turn_recovery_count" => budget.max,
+        "last_empty_turn_recovery_at" => 2.days.ago.iso8601
+      )
+    )
+    @mock_file_system.write(stderr_path, "")
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12345, stderr_log_path: stderr_path } }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+    assert_equal :needs_input,
+      manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone").action,
+      "the spent budget is what parks it — this is the state the reset has to clear"
+
+    AgentSessionJob.new.send(
+      :reset_retry_budget, @session, budget, (budget.reset_after + 60).seconds.ago, @log_buffer
+    )
+
+    assert_nil @session.reload.metadata["empty_turn_recovery_count"]
+
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(0), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action,
+      "an incident two days old must not be what stops the next restart"
+    assert_equal 1, @session.reload.metadata["empty_turn_recovery_count"]
+  end
+
   test "handle_exit gives up on a held session id once the budget is spent" do
     stderr_path = "/tmp/test-clone/claude_stderr.log"
     @session.update!(
       transcript: nil,
       metadata: @session.metadata.merge(
-        "session_id_conflict_count" => ProcessLifecycleManager::MAX_SESSION_ID_CONFLICT_RECOVERIES
+        "session_id_conflict_count" => ProcessLifecycleManager::SESSION_ID_CONFLICT_BUDGET.max
       )
     )
 

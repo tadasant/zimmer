@@ -40,12 +40,13 @@ module Sessions
   # both the budget and the counter key deliberately — it is one event seen from two
   # vantage points, and a session that has already burned its restarts in-process
   # should not get a second allowance just because the next failure happened to be a
-  # worker interruption.
+  # worker interruption. Sharing one RetryBudget also means one reset: a stable stretch
+  # hands the restarts back to whichever vantage point needs them next (#727).
   class RestartUnstartedTurn
-    # Shared with ProcessLifecycleManager#handle_empty_turn. See the class comment
-    # for why the budget is one budget rather than two.
-    MAX_RESTARTS = ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES
-    COUNT_KEY = "empty_turn_recovery_count"
+    # Shared with ProcessLifecycleManager#handle_empty_turn — literally the same
+    # RetryBudget object, not a copy of its numbers. See the class comment for why the
+    # budget is one budget rather than two.
+    BUDGET = RetryBudget::EMPTY_TURN
 
     # Records that Zimmer gave up restarting this session, and why, so the park that
     # follows is legible as a decision rather than as the silent empty park this
@@ -84,8 +85,13 @@ module Sessions
       return declined("no prompt to replay") if prompt.blank?
       return declined("the runtime wrote a conversation") if conversation_persisted?
 
-      attempt = restart_count + 1
-      return abandon(attempt - 1) if attempt > MAX_RESTARTS
+      # Reloaded before the budget is read, as ProcessLifecycleManager#
+      # empty_turn_recovery_needed? does with the same key: the caller has written to
+      # this row several times on the way here, and a stale in-memory `metadata` would
+      # under-count the budget.
+      session.reload
+      attempt = BUDGET.next_attempt(session)
+      return abandon(attempt - 1) if BUDGET.exhausted?(session)
 
       restart!(attempt)
     rescue => e
@@ -128,17 +134,10 @@ module Sessions
       )
     end
 
-    # Reloaded before it is read, as ProcessLifecycleManager#empty_turn_recovery_needed?
-    # does with the same key: the caller has written to this row several times on the
-    # way here, and a stale in-memory `metadata` would under-count the budget.
-    def restart_count
-      session.reload.metadata&.dig(COUNT_KEY).to_i
-    end
-
     def restart!(attempt)
       add_log(
         "The process is gone and the runtime never wrote a conversation under it — restarting this " \
-        "turn from the session's own prompt (attempt #{attempt}/#{MAX_RESTARTS}) rather than parking " \
+        "turn from the session's own prompt (attempt #{attempt}/#{BUDGET.max}) rather than parking " \
         "an empty session in the action queue",
         level: "warning"
       )
@@ -178,13 +177,13 @@ module Sessions
         session.deliver_follow_up!(
           prompt,
           clear_metadata_keys: Session::STALE_RETRY_METADATA_KEYS,
-          metadata_updates: { COUNT_KEY => attempt, "runtime_started" => false }
+          metadata_updates: BUDGET.attempt_attributes(attempt).merge("runtime_started" => false)
         )
       end
 
       Rails.logger.info(
         "[Sessions::RestartUnstartedTurn] Restarted session #{session.id} from its own prompt " \
-        "(attempt #{attempt}/#{MAX_RESTARTS})"
+        "(attempt #{attempt}/#{BUDGET.max})"
       )
       Result.new(outcome: :restarted, message: "restarted from the session's own prompt (attempt #{attempt})")
     end
