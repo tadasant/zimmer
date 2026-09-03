@@ -114,8 +114,14 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     create_session(title: "Kestrel session", status: :needs_input,
       transcript: [ { "type" => "assistant", "message" => { "content" => "the kestrel manoeuvre worked" } } ])
 
-    visit root_path(q: "kestrel manoeuvre", search_contents: "1", status: Session.statuses.keys)
+    # Every status, the way the UI asks for it (see every_status_params). A bare
+    # `status:` param is inert, since the controller only reads it alongside the
+    # Filters submit marker.
+    visit root_path(every_status_params(q: "kestrel manoeuvre", search_contents: "1"))
+    # The notice renders whenever q and search_contents are present, match or no
+    # match, so it alone would not prove the result it sits above is non-empty.
     assert_text "Transcript scan complete"
+    assert_text "Kestrel session"
 
     assert_no_horizontal_overflow("sessions index with a completed transcript scan")
     scroll_to_scan_notice
@@ -126,7 +132,10 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     previous = ENV["ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS"]
     ENV["ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS"] = "0"
     begin
-      visit root_path(q: "kestrel manoeuvre", search_contents: "1", status: Session.statuses.keys)
+      # Stated again rather than inherited from the cookie the visit above wrote:
+      # a filter has to be asked for where it is asserted, or dropping it here
+      # would go unnoticed.
+      visit root_path(every_status_params(q: "kestrel manoeuvre", search_contents: "1"))
       assert_text "Transcript scan stopped early"
 
       assert_no_horizontal_overflow("sessions index with an incomplete transcript scan")
