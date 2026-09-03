@@ -13,8 +13,11 @@ namespace :clones do
   #     whole task is a no-op.
   #   * Safe while live — it COPIES each clone to the new base and updates the
   #     metadata; it never moves a directory out from under a session. The old
-  #     directory is left in place by default (a later orphan/stale sweep, or an
-  #     explicit REMOVE_OLD=true run, reclaims it). A live (non-reapable) session
+  #     directory is left in place by default, and only an explicit REMOVE_OLD=true
+  #     run reclaims it: no sweep will: OrphanCloneFilesystemCleanupJob scans only
+  #     ClonesDirectory.base (the NEW base), and it skips any directory whose
+  #     basename a session still references — which a relocated clone's old copy
+  #     always is, since the copy keeps its name. A live (non-reapable) session
   #     — running, waiting, or needs_input — is never touched destructively even
   #     with REMOVE_OLD=true; only archived/failed sessions' old dirs are removed.
   #
@@ -137,8 +140,29 @@ namespace :clones do
           Dir.exist?(new_clone_path) &&
           File.expand_path(old_clone_path) != File.expand_path(new_clone_path)
         if old_removable
-          FileUtils.rm_rf(old_clone_path)
-          log.call "session #{session.id}: removed old clone #{old_clone_path}"
+          # Through GitCloneService, so this delete is atomic (#412) and answers to
+          # CloneReaper like every other reap.
+          #
+          # What makes that safe is `old_removable` above, NOT the path rewrite:
+          # CloneReaper matches an owner on basename as well as path, and a
+          # relocated copy keeps its basename, so the rewrite does not hide the old
+          # directory from the guard. It is `Session::NON_REAPABLE_STATUSES.exclude?`
+          # that does — an archived or failed session is not in `reap_protected`
+          # at all, so the guard finds no owner to protect.
+          #
+          # A refusal is therefore either a session that went live under us or a
+          # database blip, and it is worth shouting about: nothing else will ever
+          # collect this directory (see the header — no sweep scans the old base,
+          # and the basename guard covers it if it is under the new one).
+          case GitCloneService.cleanup_clone(old_clone_path, reason: "clones:relocate (session #{session.id})")
+          when :removed
+            log.call "session #{session.id}: removed old clone #{old_clone_path}"
+          when :absent
+            log.call "session #{session.id}: old clone #{old_clone_path} was already gone"
+          else
+            log.call "session #{session.id}: LEAKED old clone #{old_clone_path} — refused by CloneReaper. " \
+              "Nothing else will reclaim it; delete it by hand once the session is settled."
+          end
         end
       rescue => e
         errors += 1

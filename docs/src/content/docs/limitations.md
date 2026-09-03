@@ -1972,14 +1972,19 @@ Clone deletion goes through `AtomicCloneRemoval`: the clone is renamed to a sibl
 `<clone>.deleting-<hex>` tombstone and the tombstone is deleted. `rename(2)` is atomic within a
 filesystem, so an interrupt — a deploy, a SIGTERM, the worker container being recreated — leaves
 either the whole tree at the clone's path or nothing at it, never a half-tree wearing the clone's
-name. Whatever is left behind is a tombstone, which no consumer resolves and which the hourly sweeps
-in `StaleCloneCleanupJob` and `OrphanCloneFilesystemCleanupJob` reap.
+name. Whatever is left behind is a tombstone, which no consumer resolves and which the sweeps in
+`StaleCloneCleanupJob` (hourly) and `OrphanCloneFilesystemCleanupJob` (six-hourly) reap.
 
 The residue is the case where the rename itself cannot be done — a cross-device rename (`EXDEV`, if
 the clones base were ever a mount point with the clone below it) or a permission error. Skipping the
 delete there would leak the bytes forever and, on the archive path, leave a caller believing the
-clone is gone, so the fallback is the old in-place `rm -rf`, logged at `.warn`. In that narrow case
-an interrupt can still mangle the tree — the pre-existing hazard, taken visibly rather than silently.
+clone is gone, so the fallback is the old in-place `rm -rf`. In that narrow case an interrupt can
+still mangle the tree — the pre-existing hazard, taken visibly rather than silently. Two things make
+it visible: it logs at `.error`, which is loud enough to page; and it drops a sibling
+`<clone>.deleting-<hex>` marker *file* before deleting, so an interrupt leaves a half-tree that is
+labelled and reapable rather than anonymous. The marker is removed when the delete finishes. That
+labelling is also what makes "the fallback did not fire" a checkable claim — it is how #808 was
+triaged, and it is only worth anything if the line is loud enough to have been there.
 
 Two smaller edges remain. The tombstone is only unresolvable by *name*: a process that already holds
 an open path inside the clone keeps reading it as the tree is unlinked. And the per-session
@@ -2305,11 +2310,19 @@ entry. Nothing retries it later.
 
 ### Orphaned clones linger for up to 48 hours unless the disk is actually filling
 
-`OrphanCloneFilesystemCleanupJob` on its hourly cron is patient — `AGE_THRESHOLD = 48.hours`,
+`OrphanCloneFilesystemCleanupJob` on its six-hourly cron is patient — `AGE_THRESHOLD = 48.hours`,
 `BATCH_LIMIT = 20` — so an orphaned clone normally sits on the volume for up to two days. Disk
 pressure is the exception: `CloneDiskGuard` calls the same job's `reclaim_space` entry point before
 each clone, which lowers the age bar to `PRESSURE_AGE_THRESHOLD = 2.hours` and stops as soon as the
 volume has room. See [the second gear](/operate/background-jobs/#clone-pruning-has-a-second-urgent-gear).
+
+That is the *only* orphan sweep over the clones base. A second one on a shorter bar collects
+orphans sooner — and is also why the pressure path could never find a candidate, because the short
+bar had already taken them ([#709](https://github.com/tadasant/zimmer/issues/709)). One owner of the
+question is the trade [#808](https://github.com/tadasant/zimmer/issues/808) made unavoidable, and it
+has a throughput cost worth stating: six-hourly at `BATCH_LIMIT = 20` is a ceiling of **80 orphan
+directories a day**. A box with a real backlog — the 2026-09-02 incident left 48 clones — drains
+over days rather than hours, unless disk pressure opens the urgent gear.
 
 What that does **not** reclaim is anything with an owning session row — a tracked `clone_path` is
 never a pruning candidate, whatever the session's status and whatever the disk pressure. So a host
@@ -2335,7 +2348,7 @@ durable against archive — but not indefinitely. The contract is:
 | Container restart, Kamal deploy | Survives (it is on the `zimmer_data` volume) |
 | Archive, then unarchive | Survives, contents intact |
 | Trash retention expires (`TRASH_RETENTION_PERIOD`, 4 days after archive) | Deleted by `EmptyTrashJob` |
-| Archived >1h with no `trash_after`, or failed >24h, **and** the session recorded a `clone_path` | Deleted by `StaleCloneCleanupJob` |
+| Archived >1h with no `trash_after`, or failed >24h, **and** the session recorded a `clone_path` | Deleted by `StaleCloneCleanupJob`. Both that job and `EmptyTrashJob` re-read the *whole* selection predicate immediately before deleting — status **and** `trash_after` — so an unarchive-then-re-archive, which restarts the four-day deadline, keeps its undo window instead of being reaped an hour later |
 | Any of the above, but the session woke up before the reaper got to it | **Not** deleted — the status is re-read immediately beforehand ([#808](https://github.com/tadasant/zimmer/issues/808)) |
 | The session row is hard-deleted | Deleted with the row, by `Session#reclaim_session_directories` |
 
