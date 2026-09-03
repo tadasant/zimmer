@@ -63,18 +63,19 @@ class SkillsConfigTest < ActiveSupport::TestCase
     assert_includes body, "needs_input"
   end
 
-  test "no vendored skill links a reference the catalog does not carry" do
+  test "no skill links a reference or a heading the catalog does not carry" do
     # A `references/FOO.md` link in a SKILL.md only resolves because AIR bundles
     # the reference at prepare time, which it only does for references the skill
-    # declares. A link to a reference this catalog does not carry is dead prose:
-    # nothing fails to resolve, so nothing catches it but this test.
-    references_by_file = ReferencesConfig.all.index_by(&:file)
+    # declares. A link to a reference this catalog does not carry — or to a heading
+    # that is not in it — is dead prose: nothing fails to resolve, so nothing
+    # catches it but this test.
+    references_by_file = ReferencesConfig.all.index_by(&:file).except(nil)
 
     SkillsConfig.all.each do |skill|
       body_path = File.join(skill.absolute_path, "SKILL.md")
       body = File.read(body_path)
 
-      body.scan(%r{\]\((references/[^)\s#]+)(#[^)\s]+)?\)}).each do |link, anchor|
+      body.scan(%r{\]\((?:\./|\.\./)*(references/[^)\s#]+)(#[^)\s]+)?\)}).each do |link, anchor|
         file = File.basename(link)
         reference = references_by_file[file]
 
@@ -88,12 +89,32 @@ class SkillsConfigTest < ActiveSupport::TestCase
 
         next if anchor.blank?
 
-        slugs = File.readlines(reference_path).grep(/\A#/).map do |heading|
-          heading.sub(/\A#+/, "").strip.delete("`").downcase.gsub(/[^a-z0-9 \-_]/, "").tr(" ", "-")
-        end
-        assert_includes slugs, anchor.delete_prefix("#"),
-          "#{skill.id} links #{link}#{anchor} but #{reference.file} has no such heading"
+        assert_includes markdown_heading_slugs(reference_path), anchor.delete_prefix("#"),
+          "#{skill.id} links #{link}#{anchor} but #{file} has no such heading"
       end
+
+      # Same hazard one level in: a re-vendored skill routinely renames or drops a
+      # section, and its own in-page anchors go stale silently when it does.
+      own_slugs = markdown_heading_slugs(body_path)
+      body.scan(%r{\]\(#([^)\s]+)\)}).flatten.each do |anchor|
+        assert_includes own_slugs, anchor,
+          "#{skill.id} links ##{anchor} but its own body has no such heading"
+      end
+    end
+  end
+
+  test "every skill's frontmatter agrees with its catalog entry" do
+    # The two are read by different surfaces: SkillsConfig (the index) feeds the
+    # session-creation skill picker, while ClaudeSkillsDiscoveryService and
+    # WarmSkillsCacheJob parse the frontmatter for the slash-command typeahead.
+    # Drift between them is the same silent failure class as #682.
+    SkillsConfig.all.each do |skill|
+      frontmatter = YAML.safe_load(File.read(File.join(skill.absolute_path, "SKILL.md")).split(/^---$/)[1].to_s)
+
+      assert_equal skill.id, frontmatter["name"],
+        "#{skill.id}: SKILL.md frontmatter name is #{frontmatter["name"].inspect}"
+      assert_equal skill.user_invocable, frontmatter.fetch("user-invocable", false),
+        "#{skill.id}: skills.json user_invocable disagrees with the frontmatter"
     end
   end
 
@@ -286,5 +307,18 @@ class SkillsConfigTest < ActiveSupport::TestCase
     assert grouped.is_a?(Hash)
     assert grouped.key?("zimmer")
     assert grouped["zimmer"].all? { |s| s.category == "zimmer" }
+  end
+
+  private
+
+  def markdown_heading_slugs(path)
+    in_fence = false
+
+    File.readlines(path).filter_map do |line|
+      in_fence = !in_fence if line.start_with?("```")
+      next if in_fence || !line.start_with?("#")
+
+      line.sub(/\A#+/, "").strip.delete("`").downcase.gsub(/[^a-z0-9 \-_]/, "").tr(" ", "-")
+    end
   end
 end

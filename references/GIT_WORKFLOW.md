@@ -119,13 +119,13 @@ Before committing and creating a PR, run these from the repo root:
 
    Author the body in a file outside the working tree and pass it with `--body-file`. Do NOT type a multi-line body inline with `--body "..."`.
    ```bash
-   BODY="${AO_SESSION_SCRATCH_DIR:-$(mktemp -d)}/pr-body.md"
-   gh pr create --title "Description of changes" --body-file "$BODY"
+   echo "${AO_SESSION_SCRATCH_DIR:-$(mktemp -d)}/pr-body.md"   # write your body to the path this prints
+   gh pr create --title "Description of changes" --body-file <that path>
    ```
 
-   **The path must be unique to your session.** A fixed name like `/tmp/pr-body.md` is shared by every agent session on the host, and concurrent sessions are normal — two of them writing that path means one publishes the other's description, and the command reports success either way. Inside Zimmer use `$AO_SESSION_SCRATCH_DIR`; outside it use `mktemp`; never a fixed name.
+   **The path must be unique to your session.** A fixed name like `/tmp/pr-body.md` is shared by every agent session on the host, and concurrent sessions are normal — two of them writing that path means one publishes the other's description, and the command reports success either way. Inside Zimmer use `$AO_SESSION_SCRATCH_DIR`; outside it use `mktemp`; never a fixed name. Print the path once and then use the literal it gives you: a harness that runs each command in a fresh shell loses the variable between calls, and a second `mktemp -d` is a different directory.
 
-   `--body-file` passes your newlines through exactly as written and sidesteps the shell-quoting mangling that inline `--body "..."` invites when the prose contains quotes, backticks, or `$(...)`. If a file is inconvenient, use `--body "$(cat "$BODY")"` rather than embedding the prose directly on the command line. Either way, how you *author* the body decides how it renders — see [Body Formatting: One Line Per Paragraph](#body-formatting-one-line-per-paragraph) below.
+   `--body-file` passes your newlines through exactly as written and sidesteps the shell-quoting mangling that inline `--body "..."` invites when the prose contains quotes, backticks, or `$(...)`. If a file is inconvenient, use `--body "$(cat <that path>)"` rather than embedding the prose directly on the command line. Either way, how you *author* the body decides how it renders — see [Body Formatting: One Line Per Paragraph](#body-formatting-one-line-per-paragraph) below.
 
 ### Body Formatting: One Line Per Paragraph
 
@@ -207,8 +207,9 @@ E2E test reports are the most common type. Describe the scenario you exercised a
 **How agents capture and embed screenshots:**
 
 1. **Capture** — Use a browser automation MCP server to take a screenshot of the page or component. Save it locally.
-2. **Upload** — Use a remote filesystem MCP server to upload the screenshot. Request public access on upload and use a unique path prefix (e.g., `pr-<number>/screenshot-<name>.png`) to avoid collisions. The upload response includes a public URL.
-3. **Embed** — Reference the returned public URL in the PR description markdown: `![description](returned-url)`.
+2. **Upload** — Use a remote filesystem MCP server to upload the screenshot, under a unique path prefix (e.g., `pr-<number>/screenshot-<name>.png`) so concurrent sessions cannot collide. The response carries a **signed** URL: the query string is the credential, and the link expires (14 days by default on this catalog's store).
+3. **Embed** — Reference the URL the upload returned — not one you assembled from the object's path — in the PR description markdown: `![description](returned-url)`. Since it expires, also say in prose what the screenshot showed.
+4. **Fetch it before you open the PR** — `curl -sS -o /dev/null -w '%{http_code}\n' "<url>"` must print `200`. Use a GET: the HTTP method is signed too, so `curl -I` fails on a perfectly good URL. A `403` is about the signature rather than the store — `AccessDenied` means the query string is missing or the link expired (mint a fresh one from the object's path), `SignatureDoesNotMatch` means characters were added or removed by a line wrap, emphasis around the URL, or truncation at the `?`.
 
 If no remote filesystem MCP server is configured for the session, note in the PR description that screenshots were captured locally but could not be embedded, and describe what the screenshots show.
 
