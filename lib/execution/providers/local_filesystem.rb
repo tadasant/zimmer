@@ -9,9 +9,9 @@ module Execution
     # Uses direct git clone for repository isolation
     # Executes Claude Code CLI in the clone
     #
-    # Where a runtime writes its transcripts is not this provider's concern:
-    # ask TranscriptRuntime.source_for(session) for the directory, so the layout
-    # stays defined once per runtime.
+    # Transcript layout is not this provider's concern: ask
+    # TranscriptRuntime.source_for(session).transcript_directory(working_directory:)
+    # for the directory, so each runtime's layout stays defined in one place.
     class LocalFilesystem < Base
       attr_reader :clone_path, :mcp_config_path
 
