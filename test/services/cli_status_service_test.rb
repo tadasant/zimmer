@@ -360,4 +360,26 @@ class CliStatusServiceTest < ActiveSupport::TestCase
       assert_nothing_raised { JSON.generate(report.as_json) }
     end
   end
+
+  # Pi is the one runtime whose "is it installed" answer is bigger than its
+  # binary: MCP, hooks and plugins are separate npm packages, so a `pi` that is
+  # present with its extensions missing looks healthy in every other field and
+  # every session on it silently runs without them.
+  test "the Pi entry reports its extension state as an operator-facing detail line" do
+    report = CliStatusService.new.full_status_report
+
+    assert_equal PiExtensions.status_summary, report.dig(:tools, :pi, :details)
+  end
+
+  # This report renders the CLIs page and `GET /api/v1/clis`; a detail line that
+  # cannot be computed must degrade to nil rather than take the report down.
+  test "a details callable that raises degrades to nil" do
+    PiExtensions.stub(:status_summary, ->(*) { raise "boom" }) do
+      assert_nil CliStatusService.new.full_status_report.dig(:tools, :pi, :details)
+    end
+  end
+
+  test "the loading placeholder declares the details key so the view never sees a missing one" do
+    assert CliStatusService.loading_placeholder[:tools][:pi].key?(:details)
+  end
 end

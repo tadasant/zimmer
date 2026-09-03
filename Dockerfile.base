@@ -163,25 +163,33 @@ RUN set -eo pipefail; \
 # authoritative list, including the pinned versions, is PiExtensions::REGISTRY;
 # the pi_extensions_test asserts this install line and that registry agree.
 #
-# Only the published packages are named here. `@tadasant/pi-hooks` and
-# `@tadasant/pi-plugins` (tadasant/pi-extensions) are not on npm yet, and
-# `npm install` is all-or-nothing — naming an unpublished package would 404 and
-# fail the whole base image. They are marked `pending_publish` in the registry,
-# PiExtensions#resolved_paths skips what is not on disk, and CliStatusService
-# reports the gap. When v0.1.0 publishes, add them to this line and drop the
-# `pending_publish:` flags.
+# All three are installed in one `npm install`: it is all-or-nothing, so naming a
+# package that 404s would fail the whole base image, which is why the two
+# `@tadasant` ones waited for their 0.1.0 release.
 #
-# The `test -f` is a smoke check on the entrypoint, not on the install: `npm
-# install` reports success as long as the tarball unpacked, so a wrong path
-# would otherwise ship an image where PiExtensions#resolved_paths silently
-# drops the extension and every Pi session runs without MCP. The path is a Pi
-# extension source (`index.ts`, from the package's own `pi.extensions` field),
-# because Pi loads TypeScript directly — pi-mcp-adapter's `dist/` holds only
-# its public-export subset and has no `index.js`. pi_extensions_test asserts
-# this path matches PiExtensions::REGISTRY.
+# `@tadasant/pi-plugins` bundles its own copy of `@tadasant/pi-hooks` (a
+# `bundledDependencies` entry, because Pi requires a package to bundle another
+# whose extension it references by path). Installing pi-hooks at the top level
+# alongside it is deliberate and not redundant: the bundled copy exists so
+# pi-plugins can `import` the hook runner, while the top-level one is the
+# extension Zimmer actually loads with `-e` for the session's directly-selected
+# hooks. Loading both entrypoints would be harmless anyway — pi-hooks marks
+# itself loaded on a process-global symbol so the second load is a no-op — but
+# Zimmer names only one of them.
+#
+# The `test -f` lines are a smoke check on the entrypoints, not on the install:
+# `npm install` reports success as long as the tarballs unpacked, so a wrong path
+# would otherwise ship an image where PiExtensions#resolved_paths silently drops
+# the extension and every Pi session runs without MCP, hooks or plugins. Each
+# path is a Pi extension source (a `.ts`, from the package's own `pi.extensions`
+# field), because Pi loads TypeScript directly — none of the three ships a usable
+# compiled entrypoint. pi_extensions_test asserts these paths and versions match
+# PiExtensions::REGISTRY.
 RUN set -eo pipefail; \
-    for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
-    test -f /opt/pi-extensions/node_modules/pi-mcp-adapter/index.ts
+    for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 @tadasant/pi-hooks@0.1.0 @tadasant/pi-plugins@0.1.0 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
+    test -f /opt/pi-extensions/node_modules/pi-mcp-adapter/index.ts; \
+    test -f /opt/pi-extensions/node_modules/@tadasant/pi-hooks/extensions/hooks.ts; \
+    test -f /opt/pi-extensions/node_modules/@tadasant/pi-plugins/extensions/plugins.ts
 
 # Create rails user for security (non-root runtime)
 # Use --force for groupadd to handle pre-existing GID 1000 in base images

@@ -36,7 +36,9 @@ require "timeout"
 #   Pi treats them as untrusted third-party content and, having no TTY in `-p` mode
 #   to ask about them, would silently ignore everything Zimmer just prepared.
 # - `-e <path>` loads an extension file. Pi has no MCP, hooks, or plugins of its
-#   own; every one of those arrives as an extension (see PiExtensions).
+#   own; every one of those arrives as an extension (see PiExtensions). The hook
+#   and plugin extensions are configured through the environment rather than a
+#   flag — see #apply_air_bridge_env.
 # - `@<path>` attaches a file (including images) to the message.
 # - `--` ends option parsing so a prompt beginning with a dash is not read as a flag.
 #
@@ -291,6 +293,7 @@ class PiRuntimeAdapter
     env_vars = clear_inherited_env_vars(env_vars)
     env_vars = ensure_pi_home(env_vars)
     env_vars = quiet_pi_startup(env_vars)
+    env_vars = apply_air_bridge_env(env_vars, working_dir)
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.
     env_vars = apply_session_scratch_dir(env_vars)
@@ -332,6 +335,25 @@ class PiRuntimeAdapter
     return env_vars if env_vars["PI_CODING_AGENT_DIR"].present?
 
     env_vars.merge("PI_CODING_AGENT_DIR" => PiHome.path)
+  end
+
+  # Point Pi's hook and plugin extensions at the AIR config PiAirBridge generated
+  # for this session, rather than letting them discover one.
+  #
+  # Both extensions look for `./air.json` and then `./.air/air.json` relative to
+  # the working directory when their override variable is unset — and the working
+  # directory is a clone of whatever repository the session works on. `air.json` at
+  # a repo root is a normal thing for a repo to have (this one has one), so
+  # discovery would let a cloned repository decide which hooks run in a Zimmer
+  # session. Naming Zimmer's own generated files closes that, and makes the active
+  # hook set exactly the session's selection.
+  #
+  # Values from the session .env still take precedence, and PiAirBridge.spawn_env
+  # omits a variable whose file is not on disk, so a session prepared without the
+  # bridge falls back to Pi's own behavior instead of pointing at nothing.
+  def apply_air_bridge_env(env_vars, working_dir)
+    bridge_env = PiAirBridge.spawn_env(working_dir, file_system: @file_system)
+    bridge_env.merge(env_vars.select { |key, value| !bridge_env.key?(key) || value.present? })
   end
 
   # Suppress the two Pi startup network calls that can only cost a Zimmer session

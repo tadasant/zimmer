@@ -19,6 +19,13 @@ require "open3"
 # - codex: Uses OAuth authentication (requires manual `codex login` step);
 #   credentials are stored in auth.json under CODEX_HOME (/home/rails/.codex)
 #
+# A tool may also declare `check_details`, a Ruby callable returning one line of
+# operator-facing state that "installed + authenticated" does not cover. Only Pi
+# uses it: its MCP, hooks and plugin support are separate npm packages, so a Pi
+# that is installed and authenticated can still be missing all three, and
+# `PiExtensions.status_summary` is the answer to that reachable without a shell
+# on the box.
+#
 # An auth check must never be able to reach a billable path. `check_auth` is
 # therefore either a Ruby callable returning a boolean, or a shell command whose
 # argv is a REAL subcommand of the binary it invokes. That second condition is
@@ -152,6 +159,14 @@ class CliStatusService
       # env-var tool, not an OAuth one. See PiAuthProvider.
       auth_method: :env_var,
       env_var_name: "ANTHROPIC_API_KEY",
+      # Pi is the one runtime whose "is it installed" answer is bigger than the
+      # binary: it ships no MCP, hooks or plugins, so all three arrive as npm
+      # packages the image installs separately (PiExtensions). A `pi` that is
+      # present with its extensions missing looks completely healthy in every
+      # other field here, and every session on it silently runs without them.
+      # Reported as a line rather than a second tool because there is no separate
+      # thing to authenticate.
+      check_details: -> { PiExtensions.status_summary },
       install_instructions: <<~INSTRUCTIONS,
         # Pre-installed in Docker image (npm i -g @earendil-works/pi-coding-agent)
         # If missing, rebuild the Docker image
@@ -249,6 +264,7 @@ class CliStatusService
           installed: nil, # Unknown - still loading
           authenticated: nil, # Unknown - still loading
           version: nil, # Unknown - still loading
+          details: nil, # Unknown - still loading
           install_instructions: config[:install_instructions],
           auth_instructions: config[:auth_instructions],
           auth_method: config[:auth_method],
@@ -287,11 +303,22 @@ class CliStatusService
       installed: installed,
       authenticated: authenticated,
       version: version,
+      details: tool_details(config),
       install_instructions: config[:install_instructions],
       auth_instructions: config[:auth_instructions],
       auth_method: config[:auth_method],
       env_var_name: config[:env_var_name]
     }
+  end
+
+  # A tool's extra operator-facing line, or nil. Rescued rather than allowed to
+  # escape: this report is what the CLIs page and `GET /api/v1/clis` render, and
+  # a detail line that cannot be computed must not take the whole report down.
+  def tool_details(config)
+    config[:check_details]&.call
+  rescue => e
+    Rails.logger.warn "[CliStatusService] Could not compute details for #{config[:name]}: #{e.message}"
+    nil
   end
 
   def check_command(command)

@@ -472,13 +472,20 @@ class AirPrepareService
   def prepare!
     run_air_prepare!
     post_processor.post_process!
+    artifact_bridge.write!
     write_system_prompt_file!
   end
 
   # Ensure baseline self-session MCP config exists for sessions without explicit
   # MCP servers. Delegates to the runtime's config post-processor.
+  #
+  # The artifact bridge runs on this path too. A session can reach it with hooks
+  # or plugins selected and no MCP servers at all, and for Pi the bridge is the
+  # only thing that writes those to disk — gating it on the MCP branch would make
+  # a hooks-only Pi session silently run no hooks.
   def ensure_baseline_mcp_config!
     post_processor.ensure_baseline!
+    artifact_bridge.write!
     write_system_prompt_file!
   end
 
@@ -508,6 +515,21 @@ class AirPrepareService
   # prepare! / ensure_baseline_mcp_config! injected.
   def post_processor
     @post_processor ||= session.runtime.config_post_processor_class.new(
+      session: session,
+      working_directory: working_directory,
+      file_system: file_system
+    )
+  end
+
+  # The runtime's artifact bridge — what writes the session's AIR hooks and
+  # plugins in a form the runtime can run. A no-op for every runtime whose AIR
+  # adapter already does it (see NullRuntimeArtifactBridge); PiAirBridge for Pi,
+  # whose adapter is skills-only.
+  #
+  # Runs after the post-processor on both entry points, because what it writes has
+  # to agree with the MCP config that step produces.
+  def artifact_bridge
+    @artifact_bridge ||= session.runtime.artifact_bridge_class.new(
       session: session,
       working_directory: working_directory,
       file_system: file_system
