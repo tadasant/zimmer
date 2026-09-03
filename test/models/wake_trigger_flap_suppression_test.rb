@@ -207,6 +207,118 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     assert @watcher.reload.needs_input?
   end
 
+  # === a recovery pause is not a rest, whichever door the wake comes through ===
+  #
+  # The pause callback withholds the wake for a recovery pause (#328/#664). The
+  # immediate-fire path is the second door into the same wake: a watcher armed
+  # while the session is still sitting in that pause used to be fired at once on a
+  # status-only test, delivering exactly the wake the transition declined. These
+  # pin both halves of the argument — the suppression, and the fact that it is a
+  # deferral rather than a deletion.
+
+  test "arming a watcher on a session in a recovery pause does not fire immediately" do
+    @watched.update!(status: :needs_input, metadata: { "paused_by" => "recovery" })
+
+    run_deferred_commit_callbacks_inline
+    trigger = nil
+    assert_no_enqueued_jobs(only: AoEventTriggerJob) do
+      trigger = watch(@watched, "session_needs_input")
+    end
+
+    assert Trigger.exists?(trigger.id), "the watcher must stay armed for the real event"
+    assert_nil trigger.trigger_conditions.sole.reload.last_triggered_at,
+      "the one-shot guard must be unspent — this wake has not happened yet"
+    assert @watcher.reload.needs_input?, "nothing has happened to the child worth waking anybody for"
+  end
+
+  test "the suppressed watcher is woken by the sweep it was deferred to giving up" do
+    # No session_id, so every sweep fails validation and spends an attempt. This is
+    # the strand this suppression could have caused: the watcher was armed inside
+    # the pause window and nothing else will ever re-emit the event for it.
+    @watched.update!(
+      status: :needs_input,
+      running_job_id: nil,
+      session_id: nil,
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    run_deferred_commit_callbacks_inline
+    before = enqueued_jobs.size
+    trigger = watch(@watched, "session_needs_input")
+    assert_empty needs_input_wakes_for(@watched, since: before),
+      "arming inside the pause window must not fire — that is the door this closes"
+
+    (SessionContinuation::MAX_CONTINUE_ATTEMPTS - 1).times { CleanupOrphanedSessionsJob.perform_now }
+    assert_empty needs_input_wakes_for(@watched, since: before),
+      "a recovery-paused session with budget left stays silent"
+
+    # The pass that spends the budget drops the marker and makes the announcement
+    # the pause skipped, via Session#announce_deferred_needs_input!.
+    CleanupOrphanedSessionsJob.perform_now
+    wakes = needs_input_wakes_for(@watched, since: before)
+    assert_equal 1, wakes.size, "giving up must wake the watcher the recovery pause did not"
+
+    travel_to SessionStateMachine::NEEDS_INPUT_SETTLE_WINDOW.from_now do
+      AoEventTriggerJob.perform_now(*wakes.first)
+    end
+
+    assert_not Trigger.exists?(trigger.id), "the armed wake was delivered, not stranded"
+    assert @watcher.reload.running?, "the watcher was resumed once the child became a human's problem"
+  end
+
+  test "arming a watcher on a recovery pause in a frozen category fires at once" do
+    # Nothing sweeps a frozen category (Session.not_in_frozen_category), so there is
+    # no give-up branch coming to make the announcement later. Suppressing here
+    # would delete the wake rather than defer it — the predicate excludes this case,
+    # and the immediate fire has to happen for the same reason the pause announces.
+    @watched.update!(
+      status: :needs_input,
+      category: Category.create!(name: "Parked", is_frozen: true),
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    run_deferred_commit_callbacks_inline
+    trigger = nil
+    perform_enqueued_jobs(only: AoEventTriggerJob) do
+      trigger = watch(@watched, "session_needs_input", reset_watcher: false)
+    end
+
+    assert_not Trigger.exists?(trigger.id), "no sweep is coming — this wake is owed now"
+    assert @watcher.reload.running?
+  end
+
+  test "arming a watcher on a session a human paused still fires immediately" do
+    # The check reads `paused_by == "recovery"` exactly. A human holding the session
+    # is a real stop with no auto-continue behind it, and a watcher wants to know.
+    @watched.update!(status: :needs_input, metadata: { "paused_by" => "user" })
+
+    run_deferred_commit_callbacks_inline
+    trigger = nil
+    perform_enqueued_jobs(only: AoEventTriggerJob) do
+      trigger = watch(@watched, "session_needs_input", reset_watcher: false)
+    end
+
+    assert_not Trigger.exists?(trigger.id)
+    assert @watcher.reload.running?
+  end
+
+  test "a session_failed watcher fires immediately even on a session carrying the recovery marker" do
+    # CleanupOrphanedSessionsJob sweeps `failed` sessions with paused_by "recovery"
+    # too, so the marker really can be present here. `session_failed` announced
+    # itself unconditionally at its own transition and has no deferral behind it —
+    # gating it on this predicate would strand a watcher for a real failure.
+    @watched.update!(status: :failed, metadata: { "paused_by" => "recovery" })
+
+    run_deferred_commit_callbacks_inline
+    trigger = nil
+    perform_enqueued_jobs(only: AoEventTriggerJob) do
+      trigger = watch(@watched, "session_failed", reset_watcher: false)
+    end
+
+    assert_not Trigger.exists?(trigger.id)
+    assert @watcher.reload.running?
+  end
+
   test "a session that churns past the settle window supersedes the earlier event" do
     trigger = watch(@watched, "session_needs_input")
 
@@ -376,6 +488,17 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     end
     assert job, "expected the pause to enqueue a session_needs_input wake"
     ActiveJob::Arguments.deserialize(job[:args])
+  end
+
+  # The settled session_needs_input wakes enqueued for `session` after position
+  # `since` in the queue, deserialized ready to perform.
+  def needs_input_wakes_for(session, since:)
+    enqueued_jobs[since..].to_a.filter_map do |enqueued|
+      next unless enqueued[:job] == AoEventTriggerJob
+
+      args = ActiveJob::Arguments.deserialize(enqueued[:args])
+      args if args.first == "session_needs_input" && args[1] == session.id
+    end
   end
 
   def run_deferred_commit_callbacks_inline
