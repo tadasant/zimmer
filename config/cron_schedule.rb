@@ -346,7 +346,7 @@ module CronSchedule
     cleanup_stale_triggers: {
       cron: "15 * * * *", # Every hour at minute 15 (offset from other hourly jobs)
       class: "CleanupStaleTriggersJob",
-      description: "Destroy dead one-time wake-up triggers (archived target session, consumed-without-firing wake, or lapsed schedule)",
+      description: "Collect dead one-time wake-up triggers (archived target session, consumed-without-firing wake, lapsed schedule that already fired) and park a lapsed one that never fired",
       environments: %i[production staging development]
     },
     zombie_reaper: {

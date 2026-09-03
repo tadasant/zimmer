@@ -67,9 +67,20 @@ class CleanupStaleTriggersJob < ApplicationJob
   Lapsed = Data.define(:destroyed, :parked)
 
   def perform
-    archived_target_count = destroy_archived_target_triggers
-    dead_wake_count = destroy_dead_one_time_wakes
-    lapsed = collect_lapsed_one_time_schedules
+    # One AlertBatcher scope over the whole pass, as every sibling trigger job
+    # does. The incident that produces lapsed-unfired wakes produces them in
+    # numbers — a ScheduleTriggerJob outage of a few hours parks every wake that
+    # came due in it — and one aggregated Slack message about that is what a
+    # human can act on where thirty are noise.
+    archived_target_count = 0
+    dead_wake_count = 0
+    lapsed = Lapsed.new(destroyed: 0, parked: 0)
+
+    AlertBatcher.with_batch do
+      archived_target_count = destroy_archived_target_triggers
+      dead_wake_count = destroy_dead_one_time_wakes
+      lapsed = collect_lapsed_one_time_schedules
+    end
 
     total = archived_target_count + dead_wake_count + lapsed.destroyed
     if total > 0 || lapsed.parked > 0
@@ -132,9 +143,19 @@ class CleanupStaleTriggersJob < ApplicationJob
   def destroy_dead_one_time_wakes
     destroyed_ids = []
 
+    # Pre-filtered in SQL to triggers carrying at least one condition of a
+    # one-shot TYPE. #one_time_reuse_trigger? demands every condition be a
+    # one-time schedule or a session-scoped ao_event, so a trigger with none of
+    # either can never satisfy #dead_one_time_wake? — and without this the scan
+    # loads every reuse trigger in the table to ask.
     Trigger
       .where(reuse_session: true, sessions_created_count: [ 0, nil ])
       .where.not(status: "failed")
+      .where(
+        "EXISTS (SELECT 1 FROM trigger_conditions WHERE trigger_conditions.trigger_id = triggers.id " \
+        "AND trigger_conditions.condition_type IN (?))",
+        %w[schedule ao_event]
+      )
       .includes(:trigger_conditions)
       .find_each do |trigger|
         next unless trigger.dead_one_time_wake?
@@ -223,17 +244,17 @@ class CleanupStaleTriggersJob < ApplicationJob
 
   # Whether this lapsed trigger still owes a wake nobody ever got.
   #
-  # Any unconsumed one-shot condition is enough: the trigger fires per condition,
-  # so one with `last_triggered_at` still nil is a wake that was never delivered.
+  # Only ever asked of a trigger #all_conditions_stale_one_time_schedules? has
+  # already vouched for, so every condition here is a one-time schedule; one with
+  # `last_triggered_at` still nil is a wake that was never delivered.
   # `sessions_created_count` is the second half — a trigger that spawned a session
-  # did its job, whatever its conditions say.
+  # did its job, whatever its conditions say. (It is redundant for a reuse
+  # trigger, which follows up rather than spawning and never increments the
+  # counter, and it is the whole answer for one that did spawn.)
   def undelivered_wake?(trigger)
     return false unless trigger.sessions_created_count.to_i.zero?
 
-    trigger.trigger_conditions.any? do |condition|
-      (condition.one_time_schedule? || condition.session_scoped_ao_event?) &&
-        condition.last_triggered_at.nil?
-    end
+    trigger.trigger_conditions.any? { |condition| condition.last_triggered_at.nil? }
   end
 
   # Park an undelivered wake as `failed` and say so, once, out loud.
@@ -263,7 +284,8 @@ class CleanupStaleTriggersJob < ApplicationJob
                "never fired. It has been marked *failed* and left in place at " \
                "#{trigger_url(trigger.id)} so it stays visible and can be re-armed.\n\n" \
                "Requester session: #{trigger.last_session_id || 'none'}. If that session is still " \
-               "in `waiting`, StrandedSleepRescue will resume it within the hour.",
+               "in `waiting` with nothing else armed, StrandedSleepRescue resumes it on one of its " \
+               "five-minute passes.",
       source: "CleanupStaleTriggersJob",
       dedup_key: "undelivered_wake_#{trigger.id}"
     )

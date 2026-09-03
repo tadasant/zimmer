@@ -3510,10 +3510,13 @@ Three neighbours are **not** covered.
 
 - **A session that has already run.** With a `session_id` there is a conversation and a clone, so
   re-running the start job would re-clone underneath it. Those come back through
-  `metadata["paused_by"] = "recovery"` and the two recovery sweeps — and a session that reaches
-  `waiting` without that marker and without a hold, a pause, a park or an armed wake is stranded
-  with nothing looking for it. `Session#continue_nudge_on_refresh?` is the manual door: a human
-  pressing **Refresh** sends it the continue nudge.
+  `metadata["paused_by"] = "recovery"` and the two recovery sweeps — or, when they reach `waiting`
+  with no marker at all and no wake that can still fire, through `StrandedSleepSweepJob`, which
+  resumes them with a `SYSTEM_RECOVERY` nudge instead of re-running a start job
+  ([#855](https://github.com/tadasant/zimmer/issues/855)). That is a different repair for a
+  different shape, and it is why this sweep does not need to widen. `Session#continue_nudge_on_refresh?`
+  remains the manual door: a human pressing **Refresh** sends the same nudge immediately rather
+  than waiting for the sweep.
 - **A session with no prompt.** That is not a lost job: `POST /api/v1/sessions` enqueues nothing
   when the caller sends no prompt, deliberately, and the session waits in `waiting` for a follow-up.
   Starting one would run an agent nobody asked for. (A clone-only session created in the web UI is

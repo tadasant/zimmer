@@ -434,10 +434,23 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
+    # Stamp the sleep as DELIBERATE. This endpoint arms nothing — it is the one
+    # path that puts a session in `waiting` with no wake-up behind it — and
+    # StrandedSleepRescue resumes exactly that shape, so without a marker the
+    # sweep would wake a session this caller had just asked to park. Every other
+    # route into `waiting` arms a wake (Trigger#sleep_target_session_if_applicable)
+    # or writes a marker of its own (a spot hold, a ceiling pause, an auth park,
+    # a recovery pause), which is why this is the only one that needs it.
+    #
+    # In STALE_RETRY_METADATA_KEYS, so any ordinary resume or restart clears it
+    # and the session comes back under the sweep's care.
+    marker = { Session::DELIBERATE_SLEEP_KEY => Time.current.iso8601 }
+
     if @session.needs_input?
+      @session.update!(metadata: (@session.metadata || {}).merge(marker))
       @session.sleep!
     else
-      @session.update!(metadata: (@session.metadata || {}).merge("pending_sleep" => true))
+      @session.update!(metadata: (@session.metadata || {}).merge(marker).merge("pending_sleep" => true))
     end
 
     render json: { session: session_json(@session) }
