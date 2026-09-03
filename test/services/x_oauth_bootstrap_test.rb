@@ -1,30 +1,10 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class XOauthBootstrapTest < ActiveSupport::TestCase
   include XOauthTestHelpers
-
-  def with_token_endpoint(code:, body:)
-    captured = nil
-    response = Net::HTTPResponse.new("1.1", code.to_s, "")
-    response.stubs(:code).returns(code.to_s)
-    response.stubs(:body).returns(body.is_a?(String) ? body : body.to_json)
-    mock_http = Object.new
-    mock_http.define_singleton_method(:use_ssl=) { |_| }
-    mock_http.define_singleton_method(:open_timeout=) { |v| @open_timeout = v }
-    mock_http.define_singleton_method(:read_timeout=) { |v| @read_timeout = v }
-    mock_http.define_singleton_method(:timeouts) { [ @open_timeout, @read_timeout ] }
-    mock_http.define_singleton_method(:request) { |req| captured = req; response }
-    result = Net::HTTP.stub(:new, mock_http) { yield }
-    @last_http = mock_http
-    [ result, captured ]
-  end
-
-  # The connect/read bounds the last with_token_endpoint call observed.
-  def observed_timeouts
-    @last_http.timeouts
-  end
 
   def with_env(key, value)
     original = ENV[key]
@@ -179,9 +159,7 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
   end
 
   # X rotates the refresh token on every exchange, so the rotated one must land
-  # on the row. complete! saves the identity columns first precisely so
-  # apply_token_response!'s update! has a persisted row to write them to; sharing
-  # only the HTTP call must not disturb that order.
+  # on the row.
   test "complete! persists the rotated refresh token on a brand-new row" do
     cred, = with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "rotated", expires_in: 7200 }) do
       XOauthBootstrap.complete!(account_key: "tadasayy", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
@@ -192,6 +170,25 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
     assert_equal "rotated", cred.reload.refresh_token
     assert_equal "tadasayy", cred.account_key
     assert_equal XOauthCredential::DEFAULT_TOKEN_ENDPOINT, cred.token_endpoint
+  end
+
+  # complete! saves the identity columns before apply_token_response! writes the
+  # rotating ones. Asserting the happy path cannot tell the two orderings apart —
+  # apply_token_response!'s update! would insert the in-memory attributes itself —
+  # so this breaks the second write and asserts the row survives it.
+  test "complete! persists the identity columns before applying the token response" do
+    XOauthCredential.any_instance.stubs(:apply_token_response!).raises(ActiveRecord::RecordInvalid.new(XOauthCredential.new))
+
+    assert_raises(ActiveRecord::RecordInvalid) do
+      with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "rotated", expires_in: 7200 }) do
+        XOauthBootstrap.complete!(account_key: "tadasayy", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
+          verifier: "v", client_id: "CID", client_secret: "SEC")
+      end
+    end
+
+    row = XOauthCredential.find_by(access_token_env_var: "X_OAUTH_ACCESS_TOKEN")
+    assert_not_nil row, "the identity columns were not persisted before the token response was applied"
+    assert_equal "tadasayy", row.account_key
   end
 
   test "a hanging token endpoint raises Net::ReadTimeout instead of pinning the thread" do

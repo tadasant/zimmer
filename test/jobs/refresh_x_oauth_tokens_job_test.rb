@@ -91,11 +91,11 @@ class RefreshXOauthTokensJobTest < ActiveJob::TestCase
 
   # --- the timeout taxonomy against a real hanging endpoint (#732) ---
   #
-  # Before the token request was given bounds, neither of these branches could
-  # fire: Net::HTTP's unbounded-in-practice default meant the job never saw a
-  # Net::ReadTimeout or a Net::OpenTimeout, it just held its `default`-queue
-  # thread. These drive the real refresh! -> post_token_request path (refresh! is
-  # NOT stubbed) so the classification is the one production would make.
+  # Both branches depend on the token request carrying a bound: an unbounded one
+  # holds its `default`-queue thread rather than raising either timeout, and the
+  # classifications never run. These drive the real refresh! ->
+  # XOauthCredential.post_token_request path (refresh! is NOT stubbed), so the
+  # classification is the one production would make.
 
   test "a hanging token endpoint is classified ambiguous, not retried in-band, and does not block" do
     with_hanging_token_endpoint do |endpoint|
@@ -125,8 +125,12 @@ class RefreshXOauthTokensJobTest < ActiveJob::TestCase
     with_hanging_token_endpoint do |endpoint|
       cred = credential(token_endpoint: endpoint)
 
-      error = with_token_request_timeout(1) { assert_raises(Net::ReadTimeout) { cred.refresh! } }
+      error = nil
+      elapsed = elapsed_seconds do
+        error = with_token_request_timeout(1) { assert_raises(Net::ReadTimeout) { cred.refresh! } }
+      end
 
+      assert_operator elapsed, :<, 10, "the read bound did not apply — this fell back to Net::HTTP's default"
       assert_includes RefreshXOauthTokensJob::AMBIGUOUS_REFRESH_ERRORS, error.class
       assert_not_includes RefreshXOauthTokensJob::RETRYABLE_REFRESH_ERRORS, error.class
     end
@@ -145,7 +149,6 @@ class RefreshXOauthTokensJobTest < ActiveJob::TestCase
     end
 
     assert_includes entries.map(&:last).join("\n"), "Transient error refreshing"
-    assert_includes RefreshXOauthTokensJob::RETRYABLE_REFRESH_ERRORS, Net::OpenTimeout
     # Connection never established -> the single-use refresh token was not spent.
     assert_equal "r", cred.reload.refresh_token
   end

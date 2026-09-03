@@ -37,16 +37,27 @@ class XOauthCredential < ApplicationRecord
   DEFAULT_TOKEN_ENDPOINT = "https://api.x.com/2/oauth2/token"
   AUTHORIZE_ENDPOINT = "https://x.com/i/oauth2/authorize"
 
-  # Connect and read bound for every call to X's token endpoint. Net::HTTP's
-  # default is 60s and it applies PER READ, so an endpoint that trickles bytes
-  # never times out at all — it just holds the caller's thread, which here is a
-  # GoodJob `default`-queue thread (RefreshXOauthTokensJob, unattended from
-  # cron), a session-prep thread (XOauthTokenVendor), or a Puma thread
-  # (XOauthBootstrap, inside a web request). Bounding it is also what makes
-  # RefreshXOauthTokensJob's Net::OpenTimeout / Net::ReadTimeout classifications
-  # reachable at all. 10s matches ClaudeAccount's read bound and is generous
-  # against X's observed token-endpoint latency (sub-second in the normal case),
-  # so a slow-but-working refresh is not turned into a retry loop.
+  # Connect and read bound on every request to X's token endpoint. Unset, both
+  # fall back to Net::HTTP's 60-second default, and a token endpoint that
+  # accepts the connection and then goes silent holds the caller's thread for a
+  # full minute — a GoodJob `default`-queue thread (RefreshXOauthTokensJob,
+  # unattended from cron), a session-prep thread (XOauthTokenVendor), or a Puma
+  # thread (XOauthBootstrap, inside a web request). Bounding it is also what
+  # makes RefreshXOauthTokensJob's Net::OpenTimeout / Net::ReadTimeout
+  # classifications reachable rather than dead code.
+  #
+  # Note what a read bound is and is not: Net::HTTP applies it per read, so it
+  # caps how long one wait for bytes lasts, not the whole exchange. A server
+  # that dribbles a byte at a time resets the clock on each one and is bounded
+  # by neither this value nor the default; only an overall deadline would catch
+  # that, and no caller here has one.
+  #
+  # 10s is the read bound ClaudeAccount uses (claude_account.rb:732, :1647) and
+  # is generous against X's token endpoint, which answers in well under a second
+  # normally — a slow-but-working refresh is not turned into a retry loop. The
+  # connect half takes the same value rather than ClaudeAccount's tighter 5s,
+  # matching McpOauthService and QuotaCheckService, which bound both halves with
+  # one REQUEST_TIMEOUT.
   TOKEN_REQUEST_TIMEOUT = 10
 
   # Access tokens live ~2h; refresh when they fall within this window.
@@ -70,6 +81,30 @@ class XOauthCredential < ApplicationRecord
 
   def self.client_secret
     SecretsLoader.get("X_OAUTH_CLIENT_SECRET").presence || ENV["X_OAUTH_CLIENT_SECRET"].presence
+  end
+
+  # POSTs a form-encoded grant to an X token endpoint with HTTP Basic client auth
+  # (X requires the client secret in the Authorization header, not the body).
+  #
+  # The single timeout-bounded implementation for the whole X OAuth path: the
+  # refresh_token grant in #refresh! and XOauthBootstrap's authorization_code
+  # exchange both go through here, so neither can drift back to Net::HTTP's unbounded
+  # defaults. Persistence differs between the two callers and stays with them —
+  # this only speaks HTTP.
+  #
+  # @return [Net::HTTPResponse] the raw response; callers classify the status
+  # @raise network errors (Net::OpenTimeout, Net::ReadTimeout, ...) — callers
+  #   classify these as retryable vs ambiguous.
+  def self.post_token_request(token_endpoint:, client_id:, client_secret:, form:)
+    uri = URI(token_endpoint)
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = (uri.scheme == "https")
+    http.open_timeout = TOKEN_REQUEST_TIMEOUT
+    http.read_timeout = TOKEN_REQUEST_TIMEOUT
+    request = Net::HTTP::Post.new(uri)
+    request.basic_auth(client_id, client_secret)
+    request.set_form_data(form)
+    http.request(request)
   end
 
   # True when the access token will expire within the given threshold.
@@ -136,7 +171,8 @@ class XOauthCredential < ApplicationRecord
     client_secret = self.class.client_secret
     raise "Cannot refresh: missing X_OAUTH_CLIENT_ID/X_OAUTH_CLIENT_SECRET in credentials" if client_id.blank? || client_secret.blank?
 
-    response = post_token_request(
+    response = self.class.post_token_request(
+      token_endpoint: token_endpoint,
       client_id: client_id,
       client_secret: client_secret,
       form: { grant_type: "refresh_token", refresh_token: refresh_token, client_id: client_id }
@@ -173,37 +209,7 @@ class XOauthCredential < ApplicationRecord
     )
   end
 
-  # POSTs a form-encoded grant to an X token endpoint with HTTP Basic client auth
-  # (X requires the client secret in the Authorization header, not the body).
-  #
-  # The single timeout-bounded implementation for the whole X OAuth path: the
-  # refresh_token grant below and XOauthBootstrap's authorization_code exchange
-  # both go through here, so neither can drift back to Net::HTTP's unbounded
-  # defaults. Persistence differs between the two callers and stays with them —
-  # this only speaks HTTP.
-  #
-  # @return [Net::HTTPResponse] the raw response; callers classify the status
-  # @raise network errors (Net::OpenTimeout, Net::ReadTimeout, ...) — callers
-  #   classify these as retryable vs ambiguous.
-  def self.post_token_request(token_endpoint:, client_id:, client_secret:, form:)
-    uri = URI(token_endpoint)
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = (uri.scheme == "https")
-    http.open_timeout = TOKEN_REQUEST_TIMEOUT
-    http.read_timeout = TOKEN_REQUEST_TIMEOUT
-    request = Net::HTTP::Post.new(uri)
-    request.basic_auth(client_id, client_secret)
-    request.set_form_data(form)
-    http.request(request)
-  end
-
   private
-
-  def post_token_request(client_id:, client_secret:, form:)
-    self.class.post_token_request(
-      token_endpoint: token_endpoint, client_id: client_id, client_secret: client_secret, form: form
-    )
-  end
 
   def handle_non_transient_failure!(response)
     if permanent_refresh_failure?(response)
