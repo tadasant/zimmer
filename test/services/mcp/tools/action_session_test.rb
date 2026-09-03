@@ -1386,4 +1386,76 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes output, "Session restarted from scratch"
     assert_equal "running", session.reload.status
   end
+
+  # --- a session that never ran (zimmer#557) ----------------------------------
+  #
+  # `action_session` with "restart" and with "unarchive" both refused a session
+  # whose agent process never launched, with "Session has no session_id" — a
+  # precondition for RESUMING a conversation, applied to a session that never had
+  # one. The web UI's Restart and Restore run the same code, so both front doors
+  # were stuck in the same place.
+
+  def never_ran_session(status: :needs_input, **attrs)
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "Investigate the flaky test",
+      status: status, metadata: { "paused_by" => "recovery" }, **attrs
+    )
+  end
+
+  test "restart starts a session that never ran from scratch" do
+    session = never_ran_session
+    assert session.never_ran?
+
+    output = nil
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      output = @tool.call("action" => "restart", "session_id" => session.id)
+    end
+
+    assert_includes output, "Session restarted from scratch"
+    assert_equal "running", session.reload.status
+    assert_equal "Investigate the flaky test", session.prompt
+  end
+
+  # The inverse guard: a transcript with no session_id is a session that HAS work
+  # — restarting it fresh would discard the conversation — so it stays refused.
+  test "restart still refuses a session with a transcript but no session_id" do
+    session = never_ran_session(
+      status: :failed,
+      transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n)
+    )
+    assert_not session.never_ran?
+
+    error = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      error = assert_raises(Mcp::ToolError) { @tool.call("action" => "restart", "session_id" => session.id) }
+    end
+
+    assert_equal "Session has no session_id", error.message
+    assert_equal "failed", session.reload.status
+  end
+
+  test "unarchive restores a session that never ran" do
+    session = never_ran_session(status: :archived, archived_at: 1.hour.ago)
+
+    output = @tool.call("action" => "unarchive", "session_id" => session.id)
+
+    assert_includes output, "Session Unarchived"
+    session.reload
+    assert_equal "needs_input", session.status
+    assert_nil session.archived_at
+  end
+
+  # The inverse guard on the restore door: this session holds a transcript the
+  # service cannot restore, which is a real failure a human should see.
+  test "unarchive still refuses an archived session with a transcript but no session_id" do
+    session = never_ran_session(
+      status: :archived, archived_at: 1.hour.ago,
+      transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n)
+    )
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "unarchive", "session_id" => session.id) }
+
+    assert_includes error.message, "Session has no session_id"
+    assert session.reload.archived?, "a loud failure must leave the session in trash"
+  end
 end

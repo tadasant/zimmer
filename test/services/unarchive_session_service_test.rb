@@ -172,8 +172,14 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_equal "Session has no git_root", result.error
   end
 
-  test "fails when session has no session_id" do
+  # The inverse guard for zimmer#557. This session HAS work — a transcript with
+  # no id is what a fresh-start recovery leaves behind on a runtime that mints
+  # its own conversation id — so it is not never-run, the service still cannot
+  # restore it, and that failure must stay loud rather than being rerouted into
+  # a fresh start that would discard the conversation.
+  test "fails when session has a transcript but no session_id" do
     @session.update!(session_id: nil)
+    assert @session.transcript.present?
 
     result = UnarchiveSessionService.call(
       session: @session,
@@ -182,6 +188,101 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
     assert_not result.success?
     assert_equal "Session has no session_id", result.error
+    assert @session.reload.archived?, "a loud failure must leave the session in trash"
+  end
+
+  # zimmer#557: a session created but never started — no session_id, no
+  # transcript, no clone — could not be restored at all. The Restore button and
+  # the MCP "unarchive" action both failed with "Session has no session_id",
+  # which made archiving a never-started session irreversible for exactly the
+  # class of session where starting over is cheapest and most obviously right.
+  test "restores a session that never ran instead of refusing it" do
+    never_ran = never_ran_session
+
+    result = UnarchiveSessionService.call(session: never_ran, file_system: @mock_fs)
+
+    assert result.success?, "expected a never-started session to restore, got: #{result.error}"
+    assert_not result.clone_restored, "there is no clone to restore for a session that never ran"
+
+    never_ran.reload
+    assert_equal "needs_input", never_ran.status
+    assert_nil never_ran.archived_at
+    assert_equal "Investigate the flaky test", never_ran.prompt, "the original configuration is what it starts from"
+  end
+
+  # Cloning here would build a clone the fresh start does not use and the reapers
+  # would have to sweep. The setup pipeline clones when the session is next
+  # started, so this path must not.
+  test "does not clone or write a transcript when restoring a session that never ran" do
+    never_ran = never_ran_session
+    clone_attempted = false
+
+    refuse_clone = lambda do |_git_root, **_kwargs|
+      clone_attempted = true
+      { error: "GitCloneService must not be called for a session that never ran" }
+    end
+
+    GitCloneService.stub :create_clone, refuse_clone do
+      result = UnarchiveSessionService.call(session: never_ran, file_system: @mock_fs)
+      assert result.success?, "expected a never-started session to restore, got: #{result.error}"
+    end
+
+    assert_not clone_attempted, "a session that never ran has no conversation to clone a workspace for"
+    assert_empty @mock_fs.files, "nothing should be written to disk for a session that never ran"
+  end
+
+  # The half-written artifacts of an aborted spawn are worse than none: the fresh
+  # start would trust a clone_path that was never finished and has almost
+  # certainly been reaped since.
+  test "clears the setup artifacts of a session that never ran" do
+    never_ran = never_ran_session
+    never_ran.update!(metadata: never_ran.metadata.merge(
+      "clone_path" => "/home/test/.zimmer/clones/half-written",
+      "working_directory" => "/home/test/.zimmer/clones/half-written",
+      "process_pid" => 4242,
+      "runtime_started" => true
+    ))
+
+    result = UnarchiveSessionService.call(session: never_ran, file_system: @mock_fs)
+    assert result.success?, "expected a never-started session to restore, got: #{result.error}"
+
+    never_ran.reload
+    Session::SETUP_ARTIFACT_KEYS.each do |key|
+      assert_nil never_ran.metadata[key], "#{key} must not survive the restore of a never-started session"
+    end
+  end
+
+  # "Restored with full state restoration" is a lie for a session that had no
+  # state. The timeline a human reads has to say what actually happened.
+  test "says the session never started in the log it leaves behind" do
+    never_ran = never_ran_session
+
+    result = UnarchiveSessionService.call(session: never_ran, file_system: @mock_fs)
+    assert result.success?, "expected a never-started session to restore, got: #{result.error}"
+
+    contents = never_ran.reload.logs.map(&:content)
+    assert contents.any? { |c| c.include?("never started") },
+      "expected the restore log to say the session never started, got: #{contents.inspect}"
+    assert_not contents.any? { |c| c.include?("full state restoration") },
+      "a session with no state must not be described as fully restored"
+  end
+
+  # Reproduces sessions 5936, 5988 and 6136: created by a trigger, held by the
+  # spot gate, paused into needs_input by recovery with an empty transcript, then
+  # archived.
+  def never_ran_session
+    Session.create!(
+      prompt: "Investigate the flaky test",
+      agent_runtime: "claude_code",
+      status: :archived,
+      archived_at: 1.hour.ago,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: nil,
+      transcript: nil,
+      metadata: { "paused_by" => "recovery" }
+    )
   end
 
   test "fails when clone recreation fails" do

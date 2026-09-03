@@ -1384,8 +1384,11 @@ class TriggerTest < ActiveSupport::TestCase
     assert_nil session.session_id
     session.update_column(:status, Session.statuses[:archived])
 
-    # The unarchive path is not even attempted: there is nothing to restore, and
-    # asking would only produce the raise this fix removes.
+    # The unarchive path is not even attempted. UnarchiveSessionService restores
+    # such a session now rather than refusing it (zimmer#557), but restoring it
+    # here would not do what the trigger asked: a follow-up into a session with
+    # no session_id is reclassified as a fresh start that runs the session's OWN
+    # prompt, silently dropping this fire's. Spawning is what the trigger meant.
     UnarchiveSessionService.expects(:call).never
 
     fresh = nil
@@ -1436,9 +1439,10 @@ class TriggerTest < ActiveSupport::TestCase
   # (codex) has that id cleared by
   # ProcessLifecycleManager#release_stale_runtime_session_id! on a fresh-start
   # recovery, so a session that ran for hours can be archived holding a full
-  # transcript and no session_id. UnarchiveSessionService still cannot restore
-  # it — and that IS a failure a human should see, not a session to abandon and
-  # silently duplicate.
+  # transcript and no session_id. That session is NOT never-run: it has work, so
+  # UnarchiveSessionService still tries to resume it and still cannot — and that
+  # IS a failure a human should see, not a session to abandon and silently
+  # duplicate.
   test "create_session! still raises for an archived session with a transcript but no session_id" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",

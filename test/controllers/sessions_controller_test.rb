@@ -1428,6 +1428,31 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Session restored from trash\. Ready to continue\./, response.body)
   end
 
+  # zimmer#557: the web UI's Restore button runs the same code as the MCP
+  # "unarchive" action, and a session archived before its agent process ever
+  # launched failed on both with "Failed to restore: Session has no session_id".
+  # Trash presents itself as reversible; for these sessions it was not.
+  test "unarchive restores a session that never ran rather than refusing it" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Investigate the flaky test",
+      status: :archived,
+      archived_at: 1.hour.ago,
+      metadata: { "paused_by" => "recovery" }
+    )
+    assert session.never_ran?
+
+    post unarchive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/Session restored from trash\. Ready to continue\./, response.body)
+    assert_no_match(/Failed to restore/, response.body)
+
+    session.reload
+    assert_equal "needs_input", session.status
+    assert_nil session.archived_at
+  end
+
   test "unarchive turbo_stream streams the not-in-trash refusal" do
     session = sessions(:running)
 
@@ -3135,11 +3160,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(clone_path)
   end
 
-  test "should not restart failed session without session_id" do
+  # The inverse guard for zimmer#557. A transcript with no session_id is a
+  # session that HAS work — that is what a fresh-start recovery leaves behind on
+  # a runtime that mints its own conversation id — so the refusal stays loud
+  # rather than being rerouted into a fresh start that would discard it.
+  test "should not restart failed session with a transcript but no session_id" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git",
       prompt: "Test prompt",
-      status: :failed
+      status: :failed,
+      transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n)
     )
 
     clone_path = Rails.root.join("tmp", "test_clone_no_session_id_restart_#{session.id}")
@@ -3152,7 +3182,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       }
     )
 
-    post restart_session_url(session)
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      post restart_session_url(session)
+    end
 
     session.reload
     assert_equal "failed", session.status
@@ -3162,6 +3194,28 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # Cleanup
     FileUtils.rm_rf(clone_path)
+  end
+
+  # zimmer#557: a session whose agent process never launched has no conversation
+  # to prompt into, so the Restart button re-runs the full setup pipeline instead
+  # of refusing with a precondition that only makes sense for a resume.
+  test "should restart a failed session that never ran by starting it from scratch" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Investigate the flaky test",
+      status: :failed
+    )
+    assert session.never_ran?
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      post restart_session_url(session)
+    end
+
+    session.reload
+    assert_equal "running", session.status
+    assert_equal "Investigate the flaky test", session.prompt
+    assert_match /Attempting to restart failed session/, flash[:notice]
+    assert session.logs.where("content LIKE ?", "%Restarting session from scratch%").exists?
   end
 
   test "should restart failed session without working directory by letting job handle clone recreation" do
@@ -4018,11 +4072,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # First archive all existing sessions so we only test our new one
     Session.where.not(status: :archived).each { |s| s.update!(status: :archived) }
 
-    # Create failed session without required metadata (will fail to restart)
+    # A session that HAS a conversation but no session_id to resume it under:
+    # the one shape restart genuinely cannot handle. A session with no
+    # transcript either has simply never run, and is restarted from scratch
+    # rather than counted as an error (zimmer#557).
     failed1 = Session.create!(
       git_root: "https://github.com/test/repo.git",
       prompt: "Failed test",
       status: :failed,
+      transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n),
       # Missing session_id and working_directory
       metadata: {}
     )

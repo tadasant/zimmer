@@ -854,6 +854,29 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # zimmer#557, reproducing sessions 5936, 5988 and 6136: a session created by a
+  # trigger, held by the spot gate, then archived without its agent process ever
+  # launching. Restore failed with "Failed to restore: Session has no session_id"
+  # on both front doors, which made Trash irreversible for it.
+  test "should unarchive a session that never ran" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Investigate the flaky test",
+      status: :archived,
+      archived_at: 1.hour.ago,
+      metadata: { "paused_by" => "recovery" }
+    )
+    assert session.never_ran?
+
+    post unarchive_api_v1_session_path(session.id), headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "needs_input", json["session"]["status"]
+    assert_not json["clone_restored"], "there is no clone to restore for a session that never ran"
+    assert_nil session.reload.archived_at
+  end
+
   test "should not unarchive non-archived session" do
     session = sessions(:running)
     post unarchive_api_v1_session_path(session.id), headers: @headers
@@ -1517,14 +1540,50 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Cannot restart", json["error"]
   end
 
-  test "should not restart session without session_id" do
+  # The inverse guard for zimmer#557. A session holding a transcript with no
+  # session_id HAS work — that is what a fresh-start recovery leaves behind on a
+  # runtime that mints its own conversation id — so it must stay refused rather
+  # than being restarted from scratch, which would discard the conversation.
+  test "should not restart session with a transcript but no session_id" do
     session = sessions(:failed)
-    # The failed fixture has no session_id
-    post restart_api_v1_session_path(session.id), headers: @headers
+    session.update!(transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n))
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      post restart_api_v1_session_path(session.id), headers: @headers
+    end
 
     assert_response :unprocessable_entity
     json = JSON.parse(response.body)
     assert_equal "Cannot restart", json["error"]
+    assert_equal "Session has no session_id", json["message"]
+    assert_equal "failed", session.reload.status
+  end
+
+  # zimmer#557, reproducing session 6026: created by a trigger, held by the spot
+  # gate, paused into needs_input by recovery — no session_id, no transcript, no
+  # clone. Restarting it was refused with "Session has no session_id", which is a
+  # precondition for RESUMING a conversation and says nothing about a session
+  # that never had one. Its prompt and configuration are intact, so it starts.
+  test "should restart a session that never ran by starting it from scratch" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Investigate the flaky test",
+      status: :needs_input,
+      metadata: { "paused_by" => "recovery" }
+    )
+    assert session.never_ran?
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      post restart_api_v1_session_path(session.id), headers: @headers
+    end
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "Session restarted from scratch", json["message"]
+
+    session.reload
+    assert_equal "running", session.status
+    assert_equal "Investigate the flaky test", session.prompt
   end
 
   test "should restart session without working directory by letting job handle clone recreation" do
