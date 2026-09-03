@@ -1021,6 +1021,25 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       "a server that collides with nothing must still resolve inside the clone, not ~/.npm/_npx"
   end
 
+  # The MCP startup budget reaches a Claude server through MCP_TIMEOUT on the
+  # agent process (ClaudeSpawnEnv#configure_mcp_env), so the shared pipeline's
+  # #apply_startup_timeouts! step must stay a no-op here. Writing the budget in
+  # both places would give one server two sources for it, and `.mcp.json` has no
+  # such key for Claude to read anyway.
+  test "post_process! writes no startup timeout into .mcp.json" do
+    write_config(
+      "context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] },
+      "an-http-server" => { "type" => "http", "url" => "https://example.com/mcp" }
+    )
+
+    build_processor.post_process!
+
+    read_config["mcpServers"].each do |name, entry|
+      assert_nil entry["startup_timeout_sec"], "#{name} must carry no Codex timeout key"
+      assert_nil entry["startup_timeout_ms"], "#{name} must carry no Codex timeout key"
+    end
+  end
+
   # The isolated roots must stay strictly *below* the shared one, or a colliding
   # server would be handed the very cache the isolation exists to keep it off.
   test "post_process! keeps isolated caches distinct from the shared per-clone cache" do

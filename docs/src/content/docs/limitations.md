@@ -1402,14 +1402,20 @@ tarball store, comes with it. So the packages `bin/preinstall-mcp-packages` warm
 `~/.npm` at build time are not read by any MCP server, and the first launch in a fresh clone fetches
 every one of them from the registry.
 
-That has been the case on Claude since the per-clone cache landed, and Claude absorbs it with
-`MCP_TIMEOUT=180000` (3 minutes). Zimmer sets no equivalent for Codex, whose own default startup
-timeout is much shorter, so a Codex session on a cold clone is the case most likely to time out on a
-large package. Tracked in [#702](https://github.com/tadasant/zimmer/issues/702).
+Claude and Codex both have room to absorb it — three minutes, from `MCP_TIMEOUT=180000` on Claude
+and `startup_timeout_sec = 180` on every Codex stdio entry
+([#702](https://github.com/tadasant/zimmer/issues/702)) — so on those two the cost is a delay
+rather than a dropped server. The price of the wider budget is that a genuinely hung server holds
+the handshake for three minutes instead of Codex's 30-second default. Pi has no such budget at all
+([#844](https://github.com/tadasant/zimmer/issues/844)).
 
-The fix is not to un-pin the cache — a host-shared cache is what
-[#595](https://github.com/tadasant/zimmer/issues/595) was — but either to warm the clone's cache at
-prepare time or to give Codex entries an explicit startup timeout.
+The download itself is still paid, and un-pinning the cache is not the fix — a host-shared cache is
+what [#595](https://github.com/tadasant/zimmer/issues/595) was. Seeding the clone from the image's
+`_cacache` is the obvious alternative and is worse than it looks: hardlinking a 173MB
+content-addressed store into every live clone shares inodes that all of them would then be writing
+through, so one bad write corrupts the store every session depends on, and copying it outright
+roughly doubles what the clones directory holds. Warming the clone at prepare time, by running the
+npx installs during `air prepare` rather than at the first MCP handshake, remains open.
 
 ### No extension can ship in a built image
 
