@@ -252,6 +252,37 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # zimmer#808's reap-protection stamp must survive the never-ran path too. The
+  # setup artifacts are cleared inside transition_to_needs_input's locked write
+  # rather than by a second write of our own, so the clearing is atomic with
+  # leaving `archived` — and it must not take the in-flight marker with it, nor
+  # leave it behind once the restore is over.
+  test "keeps the unarchive-in-flight marker intact through a never-ran restore" do
+    never_ran = never_ran_session
+    never_ran.update!(metadata: never_ran.metadata.merge("clone_path" => "/home/test/.zimmer/clones/half-written"))
+
+    # Sampled from inside the run, at the status transition — the only step this
+    # path takes, and the same write that clears the setup artifacts. If that
+    # write dropped the marker along with them, this would read false.
+    protected_during_run = nil
+    session_id = never_ran.id
+    never_ran.define_singleton_method(:unarchive_to_needs_input!) do |*args|
+      protected_during_run = Session.reap_protected?(session_id)
+      super(*args)
+    end
+
+    result = UnarchiveSessionService.call(session: never_ran, file_system: @mock_fs)
+    assert result.success?, "expected a never-started session to restore, got: #{result.error}"
+
+    assert protected_during_run, "the session must stay reap-protected while the restore runs"
+
+    never_ran.reload
+    assert_nil never_ran.metadata[Session::UNARCHIVE_IN_FLIGHT_KEY],
+      "the marker must be dropped once the restore is over"
+    assert_nil never_ran.metadata["clone_path"],
+      "and the setup artifacts must be gone with it"
+  end
+
   # "Restored with full state restoration" is a lie for a session that had no
   # state. The timeline a human reads has to say what actually happened.
   test "says the session never started in the log it leaves behind" do

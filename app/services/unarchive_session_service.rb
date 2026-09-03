@@ -199,29 +199,18 @@ class UnarchiveSessionService
   def restore_never_started
     @logger.info("Session never started — restoring it to its pre-start state instead of resuming a conversation")
 
-    clear_setup_artifacts
-
+    # The setup artifacts go in the transition's own write rather than a second
+    # one of ours: that write is inside the row lock, so clearing them there is
+    # atomic with leaving `archived` and cannot half-apply to a session whose
+    # transition then fails, or race the concurrent caller the lock exists for.
     transition_result = transition_to_needs_input(
       log_message: "Session restored from trash. It never started, so there is no conversation to " \
-                   "resume — it runs its original prompt from a fresh clone when it is next started."
+                   "resume — it runs its original prompt from a fresh clone when it is next started.",
+      also_clear: Session::SETUP_ARTIFACT_KEYS
     )
     return transition_result unless transition_result.success?
 
     Result.new(success?: true, session: session, clone_restored: false)
-  end
-
-  # Drop the setup artifacts of a spawn that never completed, so the fresh start
-  # clones rather than trusting a path that was never finished (and has almost
-  # certainly been reaped since). Best-effort: a session that keeps a stale
-  # clone_path still starts correctly — AgentSessionJob recreates a missing
-  # working directory — so this must not fail the restore.
-  def clear_setup_artifacts
-    with_db_retry do
-      session.reload
-      session.update!(metadata: (session.metadata || {}).except(*Session::SETUP_ARTIFACT_KEYS))
-    end
-  rescue => e
-    @logger.warn("Could not clear the setup artifacts of a never-started session", error: e.message)
   end
 
   def validate_inputs
@@ -587,7 +576,12 @@ class UnarchiveSessionService
   #   restore. The default describes a resume; #restore_never_started passes the
   #   never-started wording, because telling a human their session came back
   #   "with full state restoration" when there was no state is a lie.
-  def transition_to_needs_input(log_message: "Session unarchived with full state restoration - ready for follow-up prompts")
+  # @param also_clear [Array<String>] extra metadata keys to drop in the same
+  #   locked write. #restore_never_started passes Session::SETUP_ARTIFACT_KEYS:
+  #   a spawn that never completed leaves a clone_path that was never finished
+  #   and has almost certainly been reaped since, and the fresh start must clone
+  #   rather than trust it.
+  def transition_to_needs_input(log_message: "Session unarchived with full state restoration - ready for follow-up prompts", also_clear: [])
     with_db_retry do
       session.with_lock do
         # A concurrent unarchive caller (e.g. an overlapping recurring-trigger
@@ -625,7 +619,8 @@ class UnarchiveSessionService
         cleaned_metadata = (session.metadata || {}).except(
           "process_pid",
           "exception_class",
-          *Session::STALE_RETRY_METADATA_KEYS
+          *Session::STALE_RETRY_METADATA_KEYS,
+          *also_clear
         )
         session.update!(archived_at: nil, metadata: cleaned_metadata)
 

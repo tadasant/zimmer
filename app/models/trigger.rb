@@ -451,14 +451,11 @@ class Trigger < ApplicationRecord
       end
 
       # Resuscitate archived sessions: unarchive and then follow up — but only
-      # when there is a conversation to bring back. A session archived before it
-      # ever took a turn is not a reuse candidate at all (see
-      # #resuscitatable_session?), and treating it as one bricks the trigger:
-      # UnarchiveSessionService refuses it, #resuscitate_session! raises,
-      # ScheduleTriggerJob advances last_triggered_at to stop the retry loop, and
-      # the recurring trigger creates nothing — on that fire and on every fire
-      # after it, since the candidate never changes. That is the "Daily Fleet
-      # Cleanup" incident of 2026-08-23.
+      # when there is a conversation to follow up INTO. A session archived before
+      # it ever took a turn is not a reuse candidate at all (see
+      # #resuscitatable_session?), because a follow-up to a session with no
+      # session_id is reclassified as a fresh start that runs the session's own
+      # prompt, dropping the one this fire carries.
       if session && resuscitate_archived && session.archived?
         if resuscitatable_session?(session)
           resuscitate_session!(session)
@@ -471,9 +468,10 @@ class Trigger < ApplicationRecord
         # while a one-time reuse trigger skips silently, because it means THAT
         # session and a fresh stranger would be no use to it.
         Rails.logger.warn(
-          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) cannot resuscitate archived session " \
+          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) will not reuse archived session " \
           "#{session.id} — it has no runtime session id and no transcript, so it was archived before it " \
-          "ever started and there is nothing to restore. Treating it as no reuse candidate: a recurring " \
+          "ever started and there is no conversation to follow up into. Restoring it would start it over " \
+          "on its own original prompt rather than this one. Treating it as no reuse candidate: a recurring " \
           "trigger spawns a fresh session, a one-time reuse trigger skips."
         )
       end

@@ -1434,6 +1434,23 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "failed", session.reload.status
   end
 
+  # A `waiting` never-run session is not stranded, it is queued: the spawn
+  # pipeline still owns it and StalledSessionStart is what rescues one whose job
+  # was really lost. Restarting it here would enqueue a second setup pipeline
+  # alongside the first and clone the repository twice.
+  test "restart refuses a waiting session that never ran rather than racing its spawn" do
+    session = never_ran_session(status: :waiting)
+    assert session.never_ran?
+
+    error = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      error = assert_raises(Mcp::ToolError) { @tool.call("action" => "restart", "session_id" => session.id) }
+    end
+
+    assert_equal "Session has no session_id", error.message
+    assert_equal "waiting", session.reload.status
+  end
+
   test "unarchive restores a session that never ran" do
     session = never_ran_session(status: :archived, archived_at: 1.hour.ago)
 

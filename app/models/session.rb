@@ -1415,8 +1415,20 @@ class Session < ApplicationRecord
   # The transcript is checked as well as the id because the two can come apart:
   # a runtime that mints its own conversation id (codex) has that id cleared by
   # ProcessLifecycleManager#release_stale_runtime_session_id! on a fresh-start
-  # recovery, so a long-running session can hold a full transcript with no id.
-  # That session HAS work, and starting it over would silently discard it.
+  # recovery, so a session that has been running for hours can hold a full
+  # transcript with no id. That session HAS work, and starting it over would
+  # silently discard it.
+  #
+  # That release leaves a gap this predicate does not close: on a fresh-start
+  # recovery during the FIRST turn, the transcript column can still be empty, so
+  # a codex session reads as never-run while it has a clone and a live process.
+  # Nothing acts on it in that window — the session is `running`, which
+  # `may_resume?` excludes and `archived?` is not — so no restart or restore can
+  # reach it until the process is gone. Once it is, restarting from scratch is
+  # the better of the two answers available: the alternative is the refusal this
+  # predicate exists to remove, which left the session permanently unstartable,
+  # and codex has no single-file resume path to restore it from anyway (see
+  # UnarchiveSessionService#write_transcript_file).
   #
   # Deliberately narrow for that reason: the dangerous mistake is the inverse
   # one, so BOTH signals must be blank before anything treats this session as
@@ -1440,9 +1452,19 @@ class Session < ApplicationRecord
   #   half, restarting a never-started session was refused outright with
   #   "Session has no session_id" — see zimmer#557.
   #
+  # A `waiting` session is excluded from the second half, and that exclusion is
+  # the same one `#continue_nudge_on_refresh?` and `StalledSessionStart` already
+  # make: a `waiting` session with no session_id has not been abandoned, it is
+  # still owned by the spawn pipeline, and its first job may simply not have been
+  # picked up yet. Starting it here would race that job and clone the repository
+  # twice. A `waiting` session whose job really was lost is `StalledSessionStart`'s
+  # to rescue, after a grace period long enough to tell the two apart.
+  #
   # @return [Boolean]
   def needs_restart_from_scratch?
-    (failed_before_initial_prompt? && !setup_complete?) || never_ran?
+    return true if failed_before_initial_prompt? && !setup_complete?
+
+    never_ran? && !waiting?
   end
 
   # How many slug candidates to try before giving up. Each rejected write costs

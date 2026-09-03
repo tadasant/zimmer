@@ -3417,6 +3417,23 @@ class SessionTest < ActiveSupport::TestCase
     assert_not session.needs_restart_from_scratch?
   end
 
+  # A `waiting` session with no session_id has not been abandoned — the spawn
+  # pipeline still owns it, and its first job may simply not have been picked up
+  # yet. Restarting it would race that job and clone the repository twice. This
+  # is the same exclusion #continue_nudge_on_refresh? and StalledSessionStart
+  # already make, and it is the one shape of never-run session restart must not
+  # claim.
+  test "needs_restart_from_scratch? is false for a waiting session that never ran" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", status: :waiting)
+    assert session.never_ran?
+    assert_not session.needs_restart_from_scratch?
+  end
+
+  test "needs_restart_from_scratch? is true for a failed session that never ran" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed)
+    assert session.needs_restart_from_scratch?
+  end
+
   test "needs_restart_from_scratch? is false for a session with complete setup artifacts" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
