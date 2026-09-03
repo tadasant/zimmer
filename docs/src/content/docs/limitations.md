@@ -3308,7 +3308,12 @@ Heuristics have two failure directions and neither announces itself:
   is the exposed edge here — an agent that writes "opened the PR at `<url>`" about someone else's
   same-repo PR would be believed. Requiring an inflected verb keeps the common "the open PR:
   `<url>`" reference out, but a genuine first-person claim about someone else's PR is
-  indistinguishable from a true one.
+  indistinguishable from a true one. The shell path has the same shape of edge, narrower since
+  [#772](https://github.com/tadasant/zimmer/issues/772): a create now has to *start* its command
+  segment, and the segment split no longer breaks quoted strings apart, so `gh pr create` inside a
+  `grep` pattern or an `echo` is data rather than an invocation. What still reads as one is a line of
+  a **heredoc body** that begins with `gh pr create` — the split is not a shell parser, and it does
+  not know where a heredoc starts or ends.
 - **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
   `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
   opened through a path the hook can't see — an MCP GitHub tool's `create_pull_request`, which is a

@@ -116,6 +116,70 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/other/proj/pull/42" ], tracked_urls
   end
 
+  # --- The shapes a real `gh pr create` arrives in -----------------------------
+  #
+  # A create is read only where it starts its command segment (#772). Every shape
+  # below puts something in front of it, and every one of them still counts —
+  # narrowing this far enough to miss a real create is the worse failure (#89),
+  # because it switches every GitHub integration off for that session in silence.
+
+  test "records a PR opened by gh pr create after a cd into the clone" do
+    run_hook claude_pr_create(
+      "https://github.com/owner/repo/pull/50",
+      command: "cd /home/rails/clones/repo && gh pr create --fill"
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/50" ], tracked_urls
+  end
+
+  test "records a PR opened by gh pr create behind an environment prefix" do
+    run_hook claude_pr_create(
+      "https://github.com/owner/repo/pull/51",
+      command: "GH_TOKEN=ghp_token GH_HOST=github.com gh pr create --fill"
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/51" ], tracked_urls
+  end
+
+  test "records a PR opened by gh pr create inside a retry loop" do
+    # `do` sits in front of the command it runs, on the same line as it.
+    run_hook claude_pr_create(
+      "https://github.com/owner/repo/pull/52",
+      command: "for i in 1 2 3; do gh pr create --fill && break; done"
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/52" ], tracked_urls
+  end
+
+  test "records a PR opened by gh pr create whose title carries a shell separator" do
+    # The pipe is inside the quoted title, so it is part of the title rather than
+    # a command boundary — and the create is still the front of its own segment.
+    run_hook claude_pr_create(
+      "https://github.com/owner/repo/pull/53",
+      command: %q(gh pr create --title "fix: read a|b as one token" --body B)
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/53" ], tracked_urls
+  end
+
+  test "records a PR opened by gh pr create after a heredoc body that leaves a quote unclosed" do
+    # The apostrophe in the body opens a quote nothing closes, so the segment scan
+    # cannot resolve the script's quoting and falls back to the crude split. That
+    # fallback is the safe direction on purpose: over-splitting still leaves the
+    # create at the front of a segment of its own, where a wrong merge would bury
+    # it behind the `cat` in front of it.
+    command = <<~SH
+      cat > /tmp/body.md <<'EOF'
+      It's ready for review.
+      EOF
+      gh pr create --title T --body-file /tmp/body.md
+    SH
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/54", command: command)
+
+    assert_equal [ "https://github.com/owner/repo/pull/54" ], tracked_urls
+  end
+
   # --- REST API creates -------------------------------------------------------
   #
   # `gh pr create` goes through GraphQL, so a GraphQL outage sends agents to the
@@ -351,6 +415,54 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     )
 
     assert_nil tracked_urls
+  end
+
+  test "ignores a PR URL in the output of a grep for the gh pr create literal" do
+    # #772, session 11898 verbatim: a read-only grep over this hook's own source,
+    # whose result is therefore the header above GH_PR_CREATE_PATTERN — example
+    # URL included. Two things had to be true for that to be read as a create:
+    # `gh pr create` counted anywhere in a segment, and the grep pattern's own
+    # escaped pipes were split on, which handed the matcher a segment starting
+    # `gh pr create`. The URL went into the session's list beside its real PR, and
+    # GitHubPullRequestPollerJob ran `gh pr view` against a repo that does not
+    # exist on every poll from then on.
+    @session.update!(git_root: "https://github.com/tadasant/zimmer.git")
+
+    run_hook(
+      claude_shell_call(
+        id: "toolu_grep",
+        command: %q(grep -n "def \|pull/\|gh pr create\|GH_PR_CREATE\|REPO_FLAG" app/services/transcript_hooks/github_pr_url_hook.rb)
+      ),
+      claude_tool_result(
+        id: "toolu_grep",
+        content: "12:  # Captures URLs like: https://github.com/owner/repo/pull/123\n" \
+                 "18:  GH_PR_CREATE_PATTERN = /\\Agh\\s+pr\\s+create\\b/\n"
+      )
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores a PR URL in the output of commands that merely quote gh pr create" do
+    # The same shape as the grep above, in the other spellings of it: the literal
+    # is an argument, so the command it belongs to is a read, not a create. The
+    # URL here is on the session's *own* repo, which is what the create path would
+    # not have caught it by — a create vouches for any repo.
+    [
+      "rg -n 'gh pr create' app/services",
+      %q(grep -rE "gh pr create|gh api" app/),
+      %q(echo "reminder: gh pr create once CI is green" >> notes.md),
+      %q(sed -i 's/gh pr create/gh pr create --draft/' script.sh)
+    ].each_with_index do |command, index|
+      @session.update!(custom_metadata: {})
+
+      run_hook(
+        claude_shell_call(id: "toolu_read_#{index}", command: command),
+        claude_tool_result(id: "toolu_read_#{index}", content: "https://github.com/owner/repo/pull/123")
+      )
+
+      assert_nil tracked_urls, "#{command} does not open a pull request"
+    end
   end
 
   test "ignores same-repo PRs listed by gh pr list" do
@@ -791,6 +903,36 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     )
 
     assert_equal [ "https://github.com/other/proj/pull/9" ], tracked_urls
+  end
+
+  test "codex: records a PR opened by a gh pr create behind a cd in the joined argv" do
+    # Codex's argv array joins back into `bash -lc cd ... && gh pr create ...`:
+    # the wrapper is stripped and the `cd` is a segment of its own, so the create
+    # still starts the segment it runs in.
+    @session.update!(agent_runtime: "codex")
+
+    run_hook(
+      codex_shell_call(call_id: "call_1", command: [ "bash", "-lc", "cd /workspace/repo && gh pr create --fill" ]),
+      codex_exec_end(call_id: "call_1", exit_code: 0),
+      codex_output(call_id: "call_1", output: "https://github.com/owner/repo/pull/4051\n")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/4051" ], tracked_urls
+  end
+
+  test "codex: ignores a PR URL in the output of a grep for the gh pr create literal" do
+    @session.update!(agent_runtime: "codex")
+
+    run_hook(
+      codex_shell_call(
+        call_id: "call_1",
+        command: [ "bash", "-lc", %q(grep -n "def \|gh pr create\|pull/" app/services/transcript_hooks/github_pr_url_hook.rb) ]
+      ),
+      codex_exec_end(call_id: "call_1", exit_code: 0),
+      codex_output(call_id: "call_1", output: "12:  # Captures URLs like: https://github.com/owner/repo/pull/123\n")
+    )
+
+    assert_nil tracked_urls
   end
 
   test "codex: records a PR opened via the local_shell_call argv variant" do
