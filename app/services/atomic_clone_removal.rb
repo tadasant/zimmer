@@ -25,9 +25,13 @@
 # ----------------------------
 # A cross-device rename (EXDEV) or a permission error must NOT silently skip the
 # delete: the bytes would leak forever and, on the archive path, the caller
-# believes the clone is gone. The fallback is therefore an in-place `rm_rf`,
-# logged at `.warn` — one narrow case that keeps the hazard described above,
-# taken deliberately and visibly, rather than a different one taken silently.
+# believes the clone is gone. The fallback is therefore an in-place `rm_rf` —
+# one narrow case that keeps the hazard described above, taken deliberately and
+# visibly, rather than a different one taken silently. Two things make it
+# visible: it logs at `.error`, which is loud enough to page; and it drops a
+# sibling `<clone>.deleting-<hex>` marker file first, so an in-place delete
+# interrupted halfway through leaves a tombstone naming the clone rather than a
+# half-tree nothing can tell from a healthy one.
 module AtomicCloneRemoval
   # Marker for a directory that is mid-deletion. Chosen so it cannot collide with
   # a clone name (`<repo>-<branch>-<timestamp>-<random>`) — the hex run is
@@ -80,9 +84,7 @@ module AtomicCloneRemoval
       # Another reaper got there first. Nothing to report.
       return false
     rescue SystemCallError => e
-      Rails.logger.warn "[AtomicCloneRemoval] Could not rename #{path} aside before deleting " \
-        "(#{e.class}: #{e.message}); falling back to a non-atomic in-place delete"
-      file_system.rm_rf(path)
+      remove_in_place(path, tombstone, file_system: file_system, error: e)
       return true
     end
 
@@ -130,6 +132,13 @@ module AtomicCloneRemoval
     tombstones.first(limit).each do |entry|
       full_path = File.join(base, entry)
 
+      # An in-place-delete marker whose clone is still on disk is doing its job:
+      # it names a directory that may be a half-tree. Reaping it would delete the
+      # label and leave the unlabelled tree, which is the state this whole module
+      # exists to prevent. A real tombstone — the renamed copy — has no surviving
+      # clone at its original name, so this only ever spares a marker.
+      next if marker_for_surviving_clone?(base, entry, full_path)
+
       # No `File.directory?` guard: a tombstone can be a file or a dangling symlink
       # (ForkSessionService disposes of a destination that may be "a partially
       # written tree, a bare directory, or nothing"), and skipping those would leak
@@ -156,6 +165,68 @@ module AtomicCloneRemoval
       "#{remaining > 0 ? " (#{remaining} left for the next sweep)" : ""}"
 
     reaped
+  end
+
+  # The fallback for a clone that cannot be renamed aside (EXDEV, a permission
+  # error). Deleting it in place keeps the hazard AtomicCloneRemoval exists to
+  # remove — an interrupt leaves a half-tree still wearing the clone's name — so
+  # the point here is to make that state *nameable* rather than to pretend it
+  # cannot happen:
+  #
+  #   * A sibling `<clone>.deleting-<hex>` marker FILE goes down first. It is what
+  #     a tombstone would have been had the rename worked, so an operator reading
+  #     `ls`, and `reap_tombstones`, both recognise it — and an interrupt between
+  #     the marker and the end of the delete leaves the half-tree labelled
+  #     instead of anonymous.
+  #   * `.error`, not `.warn`. The Grafana rule that pages on production ERROR
+  #     records is the only thing that will tell anyone this path ran, and the
+  #     absence of that line is evidence that a markerless in-place strip came
+  #     from somewhere else — which is exactly how #808 was triaged. That
+  #     evidence is only worth anything if the line is loud enough to have been
+  #     there.
+  #
+  # The marker is removed on the way out, so a completed fallback leaves nothing
+  # behind. `rm_rf` swallows its own errors, so "completed" is checked against the
+  # disk rather than taken from the call.
+  def remove_in_place(path, marker, file_system:, error:)
+    marker_written = write_fallback_marker(marker, path, file_system: file_system)
+
+    Rails.logger.error "[AtomicCloneRemoval] Could not rename #{path} aside before deleting " \
+      "(#{error.class}: #{error.message}); falling back to a non-atomic in-place delete. An interrupt " \
+      "now leaves a half-tree wearing the clone's name" \
+      "#{marker_written ? ", marked by #{File.basename(marker)}" : " and the marker could not be written"}"
+
+    file_system.rm_rf(path)
+
+    file_system.rm_rf(marker) if marker_written && !file_system.exists?(path)
+  end
+
+  # @return [Boolean] whether the marker landed
+  def write_fallback_marker(marker, path, file_system:)
+    file_system.write(
+      marker,
+      "In-place (non-atomic) delete of #{path} started at #{Time.current.utc.iso8601}. " \
+      "If this file is still here, that delete did not finish and the directory it names " \
+      "may be a half-tree.\n"
+    )
+    true
+  rescue StandardError => e
+    Rails.logger.error "[AtomicCloneRemoval] Could not write the in-place-delete marker #{marker}: " \
+      "#{e.class} - #{e.message}"
+    false
+  end
+
+  # Whether `entry` is an in-place-delete marker (a FILE) whose named clone is
+  # still on disk. See the call site in .reap_tombstones.
+  def marker_for_surviving_clone?(base, entry, full_path)
+    return false if File.directory?(full_path)
+
+    clone_name = entry.sub(TOMBSTONE_PATTERN, "")
+    return false if clone_name.empty? || clone_name == entry
+
+    File.directory?(File.join(base, clone_name))
+  rescue SystemCallError
+    false
   end
 
   # A sibling of `path` — same directory, therefore same filesystem, therefore an

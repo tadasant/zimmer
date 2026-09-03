@@ -6,11 +6,12 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
   setup do
     @session = sessions(:running)
     @session.logs.destroy_all
-    # Create a temp clones directory for the orphan sweep
+    # Create a temp clones directory for the tombstone reap
     @clones_base = Dir.mktmpdir("stale-clone-test-clones")
 
     @clone_path = File.join(@clones_base, "test-stale-clone-#{SecureRandom.hex(4)}")
     FileUtils.mkdir_p(@clone_path)
+    File.write(File.join(@clone_path, "keep.txt"), "uncommitted work\n")
 
     # Archive the session with a timestamp older than the stale threshold
     @stale_archived_at = (StaleCloneCleanupJob::STALE_THRESHOLD + 1.minute).ago
@@ -21,7 +22,7 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
       metadata: { "clone_path" => @clone_path }
     )
 
-    # Override the clones_directory so orphan sweep uses our temp dir
+    # Override the clones_directory so the tombstone reap uses our temp dir
     StaleCloneCleanupJob.clones_directory_override = @clones_base
   end
 
@@ -115,19 +116,6 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
   # The headline regression: every snapshot guard the orphan sweep builds before
   # its loop is deliberately blinded here, so what is left is the one guard that
   # asks at the instant of deletion.
-  test "the orphan sweep still refuses a live session's clone with its snapshot guards blinded" do
-    @session.update_columns(status: Session.statuses[:running])
-    FileUtils.touch(@clone_path, mtime: (StaleCloneCleanupJob::ORPHAN_AGE_THRESHOLD + 1.hour).ago.to_time)
-
-    Session.stubs(:live_clone_paths).returns(Set.new)
-    StaleCloneCleanupJob.any_instance.stubs(:active_session_clone_paths).returns(Set.new)
-    StaleCloneCleanupJob.any_instance.stubs(:referenced_clone_owners_by_basename).returns({})
-
-    StaleCloneCleanupJob.perform_now
-
-    assert File.directory?(@clone_path), "a live session's clone must survive the orphan sweep"
-  end
-
   test "reclaims the durable per-session scratch dir alongside the stale clone" do
     original = ENV["AGENT_SCRATCH_DIR"]
     Dir.mktmpdir("stale-scratch") do |scratch_base|
@@ -381,258 +369,58 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     assert_nothing_raised { job.perform }
   end
 
-  # --- Orphan sweep tests ---
+  # --- The clones base: tombstones only (#709) ---
+  #
+  # This job used to run its own orphan sweep over the clones base on a one-hour
+  # age bar, in parallel with OrphanCloneFilesystemCleanupJob's 48-hour one. Two
+  # owners of "which directory here is safe to delete" is #709, and the short bar
+  # reached every candidate first, so the disk-pressure reclamation could never
+  # find one. What is left here is the tombstone reap, which needs no owner.
 
-  test "sweep removes orphaned directories not referenced by any session" do
+  test "does not sweep an unreferenced clone directory — that is OrphanCloneFilesystemCleanupJob's" do
     orphan_dir = Dir.mktmpdir("orphan-clone-", @clones_base)
-    # Backdate mtime so it passes the age threshold
     FileUtils.touch(orphan_dir, mtime: 2.hours.ago.to_time)
 
     StaleCloneCleanupJob.new.perform
 
-    assert_not File.directory?(orphan_dir), "Orphaned directory should be swept"
+    assert File.directory?(orphan_dir),
+      "the clones base has one orphan sweep, and it is not this job's (#709)"
+  ensure
+    FileUtils.rm_rf(orphan_dir) if orphan_dir && File.directory?(orphan_dir)
   end
 
-  test "sweep does not remove directories referenced by active sessions" do
-    active_clone = Dir.mktmpdir("active-clone-", @clones_base)
-    FileUtils.touch(active_clone, mtime: 2.hours.ago.to_time)
-
-    # Use a session that isn't @session, and set it to an active status
-    active_session = sessions(:active_session)
-    active_session.update!(status: :needs_input, metadata: { "clone_path" => active_clone })
+  test "does not sweep a very old unreferenced clone directory either" do
+    ancient = Dir.mktmpdir("ancient-clone-", @clones_base)
+    FileUtils.touch(ancient, mtime: 21.days.ago.to_time)
 
     StaleCloneCleanupJob.new.perform
 
-    assert File.directory?(active_clone), "Directory referenced by active session should NOT be swept"
+    assert File.directory?(ancient), "age is not this job's business in the clones base"
   ensure
-    FileUtils.rm_rf(active_clone) if active_clone && File.directory?(active_clone)
+    FileUtils.rm_rf(ancient) if ancient && File.directory?(ancient)
   end
 
-  test "sweep does not remove directories younger than orphan age threshold" do
-    young_orphan = Dir.mktmpdir("young-orphan-", @clones_base)
-    # mtime is now — well within the threshold
+  test "leaves a live session's clone alone" do
+    live_clone = Dir.mktmpdir("running-clone-", @clones_base)
+    FileUtils.touch(live_clone, mtime: 21.days.ago.to_time)
+
+    live = sessions(:active_session)
+    live.update!(status: :running, metadata: { "clone_path" => live_clone })
 
     StaleCloneCleanupJob.new.perform
 
-    assert File.directory?(young_orphan), "Young directory should NOT be swept even if unreferenced"
+    assert File.directory?(live_clone), "a live session's clone must never be reaped"
   ensure
-    FileUtils.rm_rf(young_orphan) if young_orphan && File.directory?(young_orphan)
+    FileUtils.rm_rf(live_clone) if live_clone && File.directory?(live_clone)
   end
 
-  test "sweep skips non-directory entries in clones directory" do
-    file_path = File.join(@clones_base, "stray-file.txt")
-    File.write(file_path, "not a directory")
-    FileUtils.touch(file_path, mtime: 2.hours.ago.to_time)
-
-    assert_nothing_raised { StaleCloneCleanupJob.new.perform }
-
-    assert File.exist?(file_path), "Non-directory entries should be ignored"
-  ensure
-    FileUtils.rm_f(file_path) if file_path
-  end
-
-  test "sweep handles missing clones directory gracefully" do
-    # Override to nil (simulates no clones dir found)
+  test "handles a missing clones directory gracefully" do
     StaleCloneCleanupJob.clones_directory_override = "/tmp/nonexistent-#{SecureRandom.hex(4)}"
 
     assert_nothing_raised { StaleCloneCleanupJob.new.perform }
   end
 
-  test "sweep preserves running session clones" do
-    running_clone = Dir.mktmpdir("running-clone-", @clones_base)
-    FileUtils.touch(running_clone, mtime: 2.hours.ago.to_time)
-
-    running_session = sessions(:active_session)
-    running_session.update!(status: :running, metadata: { "clone_path" => running_clone })
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(running_clone), "Clone for running session must not be swept"
-  ensure
-    FileUtils.rm_rf(running_clone) if running_clone && File.directory?(running_clone)
-  end
-
-  test "sweep preserves waiting session clones" do
-    waiting_clone = Dir.mktmpdir("waiting-clone-", @clones_base)
-    FileUtils.touch(waiting_clone, mtime: 2.hours.ago.to_time)
-
-    waiting_session = sessions(:needs_input)
-    waiting_session.update!(status: :waiting, metadata: { "clone_path" => waiting_clone })
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(waiting_clone), "Clone for waiting session must not be swept"
-  ensure
-    FileUtils.rm_rf(waiting_clone) if waiting_clone && File.directory?(waiting_clone)
-  end
-
-  test "sweep preserves failed session clones within grace period" do
-    failed_clone = Dir.mktmpdir("failed-clone-", @clones_base)
-    FileUtils.touch(failed_clone, mtime: 2.hours.ago.to_time)
-
-    failed_session = sessions(:failed)
-    failed_session.update!(
-      status: :failed,
-      updated_at: 2.hours.ago,
-      metadata: { "clone_path" => failed_clone }
-    )
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(failed_clone), "Clone for failed session within 24hr grace period must not be swept"
-  ensure
-    FileUtils.rm_rf(failed_clone) if failed_clone && File.directory?(failed_clone)
-  end
-
-  test "sweep preserves archived session clones in trash pipeline" do
-    trash_clone = Dir.mktmpdir("trash-clone-", @clones_base)
-    FileUtils.touch(trash_clone, mtime: 2.hours.ago.to_time)
-
-    archived_session = sessions(:archived)
-    archived_session.update!(
-      status: :archived,
-      trash_after: 5.days.from_now,
-      metadata: { "clone_path" => trash_clone }
-    )
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(trash_clone), "Clone for archived session with trash_after must not be swept"
-  ensure
-    FileUtils.rm_rf(trash_clone) if trash_clone && File.directory?(trash_clone)
-  end
-
-  # --- Long-lived active session invariant (the core hardening) ---
-  #
-  # A session can sit idle in needs_input for up to ~3 weeks and must still find
-  # its clone intact when resumed. The sweep must NEVER reap a live session's
-  # clone, no matter how old the directory or the session row is.
-
-  test "sweep never reaps a 3-week-old idle needs_input session's clone" do
-    long_lived_clone = Dir.mktmpdir("long-lived-clone-", @clones_base)
-    # Backdate both the directory mtime AND the session row far past every
-    # threshold to prove age-independence.
-    FileUtils.touch(long_lived_clone, mtime: 21.days.ago.to_time)
-
-    long_lived = sessions(:active_session)
-    long_lived.update!(
-      status: :needs_input,
-      updated_at: 21.days.ago,
-      metadata: { "clone_path" => long_lived_clone }
-    )
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(long_lived_clone),
-      "A 3-week-old idle needs_input session's clone must NEVER be swept"
-  ensure
-    FileUtils.rm_rf(long_lived_clone) if long_lived_clone && File.directory?(long_lived_clone)
-  end
-
-  test "sweep matches live clones even when stored path is non-canonical" do
-    live_clone = Dir.mktmpdir("noncanon-clone-", @clones_base)
-    FileUtils.touch(live_clone, mtime: 21.days.ago.to_time)
-
-    # Store a non-canonical form of the same path (trailing-slash + redundant
-    # segment) to prove the normalized comparison protects it from reaping.
-    noncanonical = File.join(live_clone, ".", "")
-    live = sessions(:active_session)
-    live.update!(status: :running, metadata: { "clone_path" => noncanonical })
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(live_clone),
-      "Live clone must be protected even when its stored clone_path is non-canonical"
-  ensure
-    FileUtils.rm_rf(live_clone) if live_clone && File.directory?(live_clone)
-  end
-
-  # --- Normalization-immune basename catch-all (the symmetric gap closure) ---
-  #
-  # The path guards compare File.expand_path'd strings. expand_path normalizes
-  # "./" and trailing slashes but does NOT resolve symlinks or reconcile a path
-  # stored under a different/relocated base. If a referencing session's stored
-  # clone_path can't be reconciled with the scan path, the directory must still
-  # be protected by its globally-unique basename — and the near-miss must be
-  # recorded durably on the owning session so a recurring canonicalization bug
-  # is visible instead of silently destroying the clone.
-
-  test "sweep keeps a live clone whose stored path is under a divergent base (basename match) and flags it durably" do
-    # The real directory lives in the scan base...
-    basename = "pulsemcp-main-1781471390-divergent1"
-    real_dir = File.join(@clones_base, basename)
-    FileUtils.mkdir_p(real_dir)
-    FileUtils.touch(real_dir, mtime: 21.days.ago.to_time)
-
-    # ...but the session stored its clone_path under a DIFFERENT base, so neither
-    # path guard can reconcile it with real_dir. Only the basename guard can.
-    divergent_path = File.join("/some/other/relocated/base", basename)
-    live = sessions(:active_session)
-    live.logs.destroy_all
-    live.update!(status: :needs_input, metadata: { "clone_path" => divergent_path })
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(real_dir),
-      "Clone referenced by a session via a divergent-base path must NOT be swept (basename guard)"
-
-    flag = live.reload.logs.find_by("content LIKE ?", "%Orphan sweep skipped deleting%")
-    assert_not_nil flag, "Expected a durable warning log on the owning session"
-    assert_equal "warning", flag.level
-    assert_includes flag.content, basename
-  ensure
-    FileUtils.rm_rf(real_dir) if real_dir && File.directory?(real_dir)
-  end
-
-  test "sweep keeps a terminal (archived, no trash) session's clone matched only by basename" do
-    # An archived session NOT in the trash pipeline is a candidate for the
-    # DB-driven scopes, which reap by stored path. If its stored path diverges
-    # from the on-disk base, the DB scope's File.directory? check misses it and
-    # the orphan sweep used to delete it by age. The basename catch-all must keep
-    # it instead — terminal-clone reclamation belongs to the dedicated scopes,
-    # not the blunt age-based sweep.
-    basename = "pulsemcp-main-1781471390-divergent2"
-    real_dir = File.join(@clones_base, basename)
-    FileUtils.mkdir_p(real_dir)
-    FileUtils.touch(real_dir, mtime: 2.hours.ago.to_time)
-
-    divergent_path = File.join("/some/other/relocated/base", basename)
-    terminal = sessions(:waiting)
-    terminal.logs.destroy_all
-    terminal.update!(
-      status: :archived,
-      archived_at: @stale_archived_at,
-      trash_after: nil,
-      metadata: { "clone_path" => divergent_path }
-    )
-
-    StaleCloneCleanupJob.new.perform
-
-    assert File.directory?(real_dir),
-      "A referenced clone must not be swept by the orphan sweep just because its stored path diverged"
-  ensure
-    FileUtils.rm_rf(real_dir) if real_dir && File.directory?(real_dir)
-  end
-
-  # --- interrupted-delete tombstones (#412) --------------------------------
-
-  test "a deletion tombstone the reap did not take is still not swept as an orphaned clone" do
-    # The skip guard is load-bearing for the tombstones the reap does NOT take:
-    # one past REAP_LIMIT, or one a concurrent delete created after the reap ran.
-    # So the reap is stubbed out and the tombstone is aged past the orphan cutoff,
-    # which is the only shape in which the guard is what decides the outcome.
-    AtomicCloneRemoval.stubs(:reap_tombstones).returns(0)
-    tombstone = File.join(@clones_base, "test-clone-1770000000-abcd1234.deleting-0123abcd")
-    FileUtils.mkdir_p(tombstone)
-    FileUtils.touch(tombstone, mtime: 2.hours.ago.to_time)
-
-    result = StaleCloneCleanupJob.new.send(:sweep_orphaned_clones)
-
-    assert_equal 0, result[:cleaned], "a tombstone is not an orphaned clone and must not be counted as one"
-    assert File.directory?(tombstone), "and the orphan sweep must not have deleted it as one either"
-  end
-
-  test "the orphan sweep reaps leftover tombstones without touching live clones" do
+  test "reaps leftover tombstones without touching live clones" do
     tombstone = File.join(@clones_base, "test-clone-1770000001-abcd1234.deleting-0123abcd")
     FileUtils.mkdir_p(File.join(tombstone, "app"))
 
@@ -648,11 +436,40 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     assert File.directory?(live_dir), "a live session's clone must survive the reap"
   end
 
-  test "referenced_clone_owners_by_basename maps unique basenames to session ids" do
-    @session.update!(status: :needs_input, metadata: { "clone_path" => "/a/base/zzz-clone-aaa" })
+  # --- A restarted trash window is the third way the answer goes stale ---
 
-    map = StaleCloneCleanupJob.new.send(:referenced_clone_owners_by_basename)
+  test "does not reap a session re-archived into a fresh trash window" do
+    # `reap_protected?` says no (it is archived, not live, not mid-unarchive) and
+    # the status re-read says "archived", so a status-only check waves this
+    # through. It is mid-undo-window and belongs to EmptyTrashJob.
+    Session.where(id: @session.id).update_all(trash_after: 4.days.from_now)
 
-    assert_equal @session.id, map["zzz-clone-aaa"]
+    assert_not StaleCloneCleanupJob.new.send(:cleanup_session_clone, @session)
+
+    assert File.directory?(@clone_path)
+    assert File.exist?(File.join(@clone_path, "keep.txt")), "and not partially deleted either"
+  end
+
+  test "a failed session carrying a trash deadline is still reapable" do
+    # The failed scope does not filter on trash_after, so gating on it globally
+    # would strand this row forever — EmptyTrashJob only looks at `archived`, so
+    # nothing else would ever collect it. Reachable via an unarchive-to-failed
+    # whose swallowed clear_trash_expiry raised.
+    @session.update!(
+      status: :failed,
+      archived_at: nil,
+      trash_after: 4.days.from_now,
+      updated_at: (StaleCloneCleanupJob::FAILED_SESSION_STALE_THRESHOLD + 1.hour).ago
+    )
+
+    assert StaleCloneCleanupJob.new.send(:cleanup_session_clone, @session)
+
+    assert_not File.directory?(@clone_path)
+  end
+
+  test "still reaps a session that is genuinely still a stale candidate" do
+    assert StaleCloneCleanupJob.new.send(:cleanup_session_clone, @session)
+
+    assert_not File.directory?(@clone_path)
   end
 end
