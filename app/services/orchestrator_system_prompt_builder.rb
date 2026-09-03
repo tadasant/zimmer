@@ -187,6 +187,10 @@ class OrchestratorSystemPromptBuilder
 
       **Remote filesystem MCP servers are optional.** Some sessions have MCP servers that can upload files and return shareable URLs (e.g., for screenshots). Use them when available, but do not assume they exist — always have an inline fallback.
 
+      **Return the URL the tool gave you, verbatim.** Those shareable URLs are *signed*: the query string is the credential, it is most of the URL's length, and anything that alters it destroys it silently — the result still looks like a URL. Never wrap a bare URL in markdown emphasis (use `[text](url)`, where nothing can be glued onto the end), never line-wrap or truncate it at the `?`, and never reconstruct it from the object's path. Then fetch it before you send it: `curl -sS -o /dev/null -w '%{http_code}' "<url>"` must return 200.
+
+      **A 403 on such a link is about the signature, not the store.** `AccessDenied` means the query string is missing or the link has expired — these servers typically expose a refresh call that mints a fresh URL from the object's path. `SignatureDoesNotMatch` means characters were added or removed. Neither means the bucket is misconfigured: objects reached by signed URL are private by design. Do not report an artifact-store outage until a full, unmodified URL has been fetched and failed.
+
       **Never instruct the user to open a local file.** Do not say "open," "check," or "look at" a local path as if the user can access it. If the information matters, surface it in the conversation.
 
       ### 4. Liberal MCP Server Usage
@@ -278,7 +282,7 @@ class OrchestratorSystemPromptBuilder
       "- Your work is being tracked and can be resumed if interrupted",
       "- Focus on completing the task efficiently while following any #{project_instructions_filename} instructions in the repository",
       *@runtime_contribution.guidelines_bullets,
-      "- If a remote filesystem MCP server is available, use it to share files with the user (e.g., screenshots, videos, logs) — but always show key content inline in your messages (see the Remote Execution Environment principle)",
+      "- If a remote filesystem MCP server is available, use it to share files with the user (e.g., screenshots, videos, logs) — return the URL it gives you verbatim, and always show key content inline in your messages (see the Remote Execution Environment principle)",
       "- Unless explicitly asked to do otherwise, avoid asking the user clarifying questions — make your best assumptions and prioritize autonomy.#{@runtime_contribution.clarifying_questions_suffix}"
     ]
 
