@@ -128,7 +128,10 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   # the account pool come back" and the tool could only say "it is down". An agent
   # deciding between sleeping on a wake and escalating needs the duration.
 
-  def blocked_pool(reset_5h:, utilization_5h: 1.0, utilization_7d: 0.10, reset_7d: 2.days.from_now)
+  # One account with a reading, and nothing else in the pool with anything to say.
+  # Defaults to a spent 5-hour window, which is the state the new lines are about;
+  # every case below varies one field off that.
+  def seed_pool(reset_5h:, utilization_5h: 1.0, utilization_7d: 0.10, reset_7d: 2.days.from_now)
     ClaudeAccountQuotaSnapshot.delete_all
     account = ClaudeAccount.create!(email: "mcp-pool-#{SecureRandom.hex(4)}@example.com",
                                     runtime: "claude_code", oauth_config: { "x" => 1 }, is_current: true)
@@ -142,7 +145,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
   test "get_spot_policy says when the account pool comes back, as a countdown and a wall clock" do
     reset = 90.minutes.from_now
-    blocked_pool(reset_5h: reset)
+    seed_pool(reset_5h: reset)
 
     output = get_policy
 
@@ -155,7 +158,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   # measured. A second computation on the reporting side is what would let the
   # page and the tool drift.
   test "get_spot_policy reports the same moment ClaudeAccountPool measured" do
-    blocked_pool(reset_5h: 4.hours.from_now)
+    seed_pool(reset_5h: 4.hours.from_now)
 
     measured = ClaudeAccountPool.measure.next_capacity_at
     refute_nil measured
@@ -165,18 +168,18 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   end
 
   test "get_spot_policy says the pool has capacity now rather than printing a blank time" do
-    blocked_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10)
+    seed_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10)
 
     output = get_policy
 
     assert_match(/Account pool capacity:\*\* available now — at least one account has room on both/, output)
-    refute_match(/Account pool capacity:\*\*\s*$/, output)
+    refute_match(/Account pool capacity:\*\*\s*\n/, output, "a nil timestamp must never render as an empty answer")
   end
 
   # The other nil: everything is out, and nothing recorded a way back. Saying
   # "unknown" out loud beats a blank, which reads as "no problem".
   test "get_spot_policy names the absence when nothing recorded a reset time" do
-    blocked_pool(reset_5h: nil, reset_7d: nil)
+    seed_pool(reset_5h: nil, reset_7d: nil)
 
     assert_match(/none of them recorded a reset time — nothing here says when the pool comes back/,
                  get_policy)
@@ -184,7 +187,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
   test "get_spot_policy reports the 7-day rollover under the weekly window" do
     reset = 3.days.from_now
-    blocked_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10, utilization_7d: 1.0, reset_7d: reset)
+    seed_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10, utilization_7d: 1.0, reset_7d: reset)
 
     output = get_policy
 
@@ -195,13 +198,13 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   end
 
   test "get_spot_policy says nothing is waiting on a 7-day reset when no week is spent" do
-    blocked_pool(reset_5h: 90.minutes.from_now)
+    seed_pool(reset_5h: 90.minutes.from_now)
 
     assert_match(/Next 7-day reset:\*\* no account's 7-day window is spent/, get_policy)
   end
 
   test "get_spot_policy names a spent week that recorded no rollover" do
-    blocked_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10, utilization_7d: 1.0, reset_7d: nil)
+    seed_pool(reset_5h: 2.hours.from_now, utilization_5h: 0.10, utilization_7d: 1.0, reset_7d: nil)
 
     assert_match(/Next 7-day reset:\*\* unknown — no reset time is recorded for the 1 account/, get_policy)
   end
@@ -222,7 +225,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   # not something the readonly variant can be missing — asserted rather than
   # assumed, because a divergent readonly surface is the parity bug one level up.
   test "the readonly health group serves the same reset information" do
-    blocked_pool(reset_5h: 90.minutes.from_now)
+    seed_pool(reset_5h: 90.minutes.from_now)
 
     readonly = Mcp::Registry.tools_for(%w[health_readonly]).find { |t| t.tool_name == "get_spot_policy" }
     assert_equal Mcp::Tools::GetSpotPolicy, readonly
