@@ -491,7 +491,12 @@ module SessionStateMachine
         end
       return false if status.nil?
 
-      status.to_s != "archived"
+      # Through Session.status_label rather than #to_s, for the reason that method
+      # documents: Rails casts an enum column to its label on `pluck`, so this is
+      # normally the identity — but if it ever were not, a raw integer would
+      # compare unequal to "archived", every watcher would read fireable, and #855
+      # would come back silently.
+      Session.status_label(status) != "archived"
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.error(
         "[SessionStateMachine] Could not read watched session #{condition.watched_session_id} " \
@@ -1622,7 +1627,13 @@ module SessionStateMachine
   # visible on the operator's homepage, with the watchers still armed, because
   # Trigger#follow_up_session! delivers to a needs_input session just as well.
   def preserve_pending_one_time_wakes(conditions)
-    backstopped = conditions.any?(&:one_time_schedule?)
+    # A one-time schedule only backstops the re-sleep if it can still fire. One
+    # whose moment passed unfired is the shape that strands a session rather than
+    # waking it, and treating it as a guarantee is what would put the session
+    # straight back to sleep on nothing.
+    backstopped = conditions.any? do |condition|
+      condition.one_time_schedule? && self.class.one_time_wake_pending?(condition)
+    end
 
     if backstopped
       # Paired with PENDING_SLEEP_REQUIRES_WAKE: this sleep intent is only good
@@ -1649,18 +1660,43 @@ module SessionStateMachine
     )
   end
 
+  # Whether any one-time wake-up is still armed against this session — asked with
+  # the same "can it fire" reading as #awaiting_scheduled_wake?, not the looser
+  # "is there an unfired row".
+  #
+  # #execute_pending_sleep gates a preserved sleep intent on this, and the two
+  # readings differ exactly where it matters: a session stranded on a wake that
+  # has lapsed, or that watches a session which will never transition again, would
+  # answer true to the looser one, re-sleep on the strength of it, and be stranded
+  # again by the very resume sent to rescue it. That is the loop StrandedSleepRescue
+  # would otherwise spend its whole budget on.
+  #
+  # Rescued to FALSE, which is the opposite direction from #awaiting_scheduled_wake?
+  # and deliberately so. That one is asked about a session already at rest, where
+  # "asleep on purpose" is the answer that leaves it alone; this one gates a
+  # re-sleep, where the safe answer is to not go back to sleep. A session that
+  # comes to rest in `needs_input` because the trigger table was briefly
+  # unreadable is visible on the homepage; one that sleeps on a wake nobody could
+  # confirm is not.
+  def armed_one_time_wake?
+    conditions = pending_one_time_wake_conditions.to_a
+    watched = self.class.watched_session_statuses(conditions)
+    conditions.any? do |condition|
+      (condition.one_time_schedule? || condition.session_scoped_ao_event?) &&
+        self.class.one_time_wake_pending?(condition, watched_statuses: watched)
+    end
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.error(
+      "[SessionStateMachine] Failed to check armed wake-ups for session #{id}: #{e.message}"
+    )
+    false
+  end
+
   # Unfired trigger conditions that could still wake this session: conditions on
   # triggers where this session is the reuse target, that haven't fired yet.
   # Callers still filter to the one-time shapes (one-time schedule or
   # session-scoped ao_event) — recurring schedules and broadcast ao_events are
   # not per-session wake-ups and are left alone.
-  # Whether any one-time wake-up is still armed against this session.
-  def armed_one_time_wake?
-    pending_one_time_wake_conditions.any? do |condition|
-      condition.one_time_schedule? || condition.session_scoped_ao_event?
-    end
-  end
-
   def pending_one_time_wake_conditions
     TriggerCondition
       .joins(:trigger)

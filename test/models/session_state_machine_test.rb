@@ -1888,6 +1888,24 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     conditions.each { |condition| assert_nil condition.reload.last_triggered_at }
   end
 
+  # A lapsed backstop is not a backstop. #preserve_pending_one_time_wakes used to
+  # ask only `one_time_schedule?`, so a schedule whose moment had already passed
+  # unfired counted as a guarantee and the session was put back to sleep on it —
+  # stranded again by the very resume sent to rescue it, which is the loop
+  # StrandedSleepRescue would then spend its whole budget on.
+  test "system-recovery resume does not re-sleep on a backstop whose moment already passed" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    wake_set_for(session, watched: [ child ], scheduled_at: 2.hours.ago.utc.iso8601)
+
+    session.reload
+    session.resume_for_system_recovery!
+
+    assert_not session.reload.metadata["pending_sleep"],
+      "a schedule that already lapsed unfired guarantees nothing, so it must not back a re-sleep"
+  end
+
   # Without a scheduled backstop there is nothing guaranteed to fire, and a
   # watched transition that happened during the outage is not replayed. Resting
   # in needs_input keeps the session visible rather than trading a long stall for
