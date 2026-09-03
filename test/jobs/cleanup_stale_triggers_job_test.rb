@@ -97,7 +97,7 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     assert Trigger.exists?(recurring.id), "recurring/broadcast trigger must not be destroyed"
   end
 
-  test "destroys triggers whose only conditions are lapsed one-time schedules" do
+  test "destroys a lapsed one-time schedule that already fired" do
     requester = make_session(status: :waiting)
 
     lapsed = Trigger.create!(
@@ -111,10 +111,85 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
         { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
       ]
     )
+    # It delivered; only the auto-delete behind it was lost. That is residue.
+    lapsed.trigger_conditions.sole.update!(last_triggered_at: 2.hours.ago)
+    lapsed.update!(sessions_created_count: 1)
 
     CleanupStaleTriggersJob.perform_now
 
-    assert_not Trigger.exists?(lapsed.id), "lapsed one-time schedule trigger should be destroyed"
+    assert_not Trigger.exists?(lapsed.id), "lapsed one-time schedule that fired should be destroyed"
+  end
+
+  # === An undelivered wake is evidence, not residue (issue #855) ===
+  #
+  # Production trigger 13671 was a 02:05Z deadline backstop that never fired. An
+  # hour later this sweep deleted it, and its requester spent 38.7 hours in
+  # `waiting` looking exactly like a session sleeping correctly, because the only
+  # record that a wake had been owed was gone.
+
+  test "parks a lapsed one-time schedule that never fired instead of destroying it" do
+    requester = make_session(status: :waiting)
+
+    undelivered = Trigger.create!(
+      name: "Deadline backstop that never fired",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(undelivered.id), "an undelivered wake must not be deleted"
+    assert_equal "failed", undelivered.reload.status
+    assert_includes undelivered.last_error.to_s, "never fired"
+  end
+
+  test "a parked undelivered wake stops counting as an armed wake on its requester" do
+    requester = make_session(status: :waiting)
+
+    Trigger.create!(
+      name: "Deadline backstop that never fired",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert_not requester.reload.awaiting_scheduled_wake?,
+      "a parked wake is not enabled, so the requester reads as stranded rather than resting"
+  end
+
+  test "a parked undelivered wake is left alone on the next pass" do
+    requester = make_session(status: :waiting)
+
+    undelivered = Trigger.create!(
+      name: "Deadline backstop that never fired",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    CleanupStaleTriggersJob.perform_now
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(undelivered.id), "a parked trigger is a tombstone the user clears"
+    assert_equal "failed", undelivered.reload.status
   end
 
   # === Failed triggers are tombstones, not litter (issue #76) ===
@@ -417,11 +492,12 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
     assert Trigger.exists?(preserved.id), "a recovered session's wake is still going to fire"
   end
 
-  test "leaves a consumed ao_event-only wake alone — this sweep only reaches one-time schedules" do
-    # Pins the known gap rather than hiding it: Trigger#dead_one_time_wake? is
-    # true for this trigger, but the candidate query asks for a schedule
-    # condition, so the sweep never sees it. Tracked in tadasant/zimmer#793 —
-    # if that is fixed, this expectation flips deliberately.
+  test "destroys a consumed ao_event-only wake — the dead-wake ground is not schedule-only" do
+    # This expectation is the flip of the one that used to pin the gap: the
+    # dead-wake ground used to be asked only of triggers carrying a schedule
+    # condition, so a consumed `wake_me_up_when_session_changes_state` watcher
+    # sat in the list reading `enabled` with 0 sessions forever
+    # (tadasant/zimmer#793).
     requester = make_session(status: :waiting)
     watched = make_session(status: :running)
 
@@ -441,7 +517,28 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
 
     CleanupStaleTriggersJob.perform_now
 
-    assert Trigger.exists?(watcher.id), "out of this sweep's candidate set — see #793"
+    assert_not Trigger.exists?(watcher.id), "a consumed one-time wake can never fire again — see #793"
+  end
+
+  test "leaves an UNCONSUMED ao_event-only wake alone" do
+    requester = make_session(status: :waiting)
+    watched = make_session(status: :running)
+
+    watcher = Trigger.create!(
+      name: "Watch that session",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go {{event}}",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "ao_event", configuration: { "event_name" => "session_needs_input", "watched_session_id" => watched.id } }
+      ]
+    )
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert Trigger.exists?(watcher.id), "an unfired watcher is still going to fire"
   end
 
   test "does not destroy triggers whose one-time schedule lapsed under the threshold" do
@@ -511,6 +608,11 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
         { condition_type: "schedule", configuration: { "scheduled_at" => plus_twelve.iso8601, "timezone" => "Etc/GMT-12" } }
       ]
     )
+
+    # Delivered, so the collectable-residue branch applies rather than the
+    # park-the-undelivered-wake one; the point of the test is the parsing.
+    weird_tz_lapsed.trigger_conditions.sole.update!(last_triggered_at: 2.hours.ago)
+    weird_tz_lapsed.update!(sessions_created_count: 1)
 
     CleanupStaleTriggersJob.perform_now
 

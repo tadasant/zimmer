@@ -364,12 +364,21 @@ module SessionStateMachine
       ids = Array(session_ids).compact
       return Set.new if ids.empty?
 
-      TriggerCondition
+      conditions = TriggerCondition
         .joins(:trigger)
         .includes(:trigger)
         .where(condition_type: %w[schedule ao_event], last_triggered_at: nil)
         .where(triggers: { last_session_id: ids, reuse_session: true, status: "enabled" })
-        .select { |condition| one_time_wake_pending?(condition) }
+        .to_a
+
+      # Third query, and it keeps the promise the doc comment above makes. Asking
+      # #ao_event_wake_fireable? to look its own watched session up would put one
+      # SELECT per ao_event condition inside a synchronous bulk refresh, which is
+      # the N+1 this method exists to avoid.
+      watched = watched_session_statuses(conditions)
+
+      conditions
+        .select { |condition| one_time_wake_pending?(condition, watched_statuses: watched) }
         .map { |condition| condition.trigger.last_session_id }
         .to_set
     rescue ActiveRecord::ActiveRecordError => e
@@ -413,16 +422,83 @@ module SessionStateMachine
 
     # Whether +condition+ is a per-session wake-up this session is still waiting on.
     #
-    # A session-scoped ao_event has no time component — it fires whenever the
-    # watched session transitions — so an unfired one is always still ahead.
-    # A one-time schedule is only still ahead while it has not come due;
-    # TriggerCondition#schedule_due? is the same reading the firing path uses, so
-    # "sleeping" here means exactly "the scheduler has yet to reach it".
-    def one_time_wake_pending?(condition)
-      return true if condition.session_scoped_ao_event?
+    # A session-scoped ao_event fires whenever the watched session transitions, so
+    # an unfired one is still ahead — unless the watched session can no longer
+    # make the transition, which is the case this asks about. A one-time schedule
+    # is only still ahead while it has not come due; TriggerCondition#schedule_due?
+    # is the same reading the firing path uses, so "sleeping" here means exactly
+    # "the scheduler has yet to reach it".
+    # @param watched_statuses [Hash{Integer=>String}, nil] preloaded watched-session
+    #   statuses, for a caller asking about many conditions at once. Nil means
+    #   "look it up", which is right for the one-or-two conditions a single
+    #   session carries and wrong for a dashboard full of them.
+    def one_time_wake_pending?(condition, watched_statuses: nil)
+      if condition.session_scoped_ao_event?
+        return ao_event_wake_fireable?(condition, watched_statuses: watched_statuses)
+      end
       return false unless condition.one_time_schedule?
 
       !condition.schedule_due?
+    end
+
+    # The statuses of every session watched by the session-scoped `ao_event`
+    # conditions in +conditions+, keyed by id. A watched session that no longer
+    # exists is simply absent, which #ao_event_wake_fireable? reads as unfireable
+    # — the same answer a lookup would give.
+    def watched_session_statuses(conditions)
+      ids = conditions.filter_map do |condition|
+        condition.watched_session_id.to_i if condition.session_scoped_ao_event? && condition.watched_session_id.present?
+      end.uniq
+      return {} if ids.empty?
+
+      Session.where(id: ids).pluck(:id, :status).to_h
+    end
+
+    # Whether a session-scoped `ao_event` wake can still fire at all.
+    #
+    # An unfired wake row is not the same thing as a wake that will happen, and
+    # tadasant/zimmer#855 is what the difference costs. A router slept on a
+    # three-event watcher; the watched session archived; the archive callback
+    # (#cleanup_watched_session_ao_event_triggers) removed the two conditions that
+    # could no longer fire and left the `session_archived` one — which had already
+    # missed its only chance. The row survived, `enabled`, `last_triggered_at`
+    # nil, and every reader of it — the trigger list, `search_triggers`,
+    # #awaiting_scheduled_wake? and so every sweep built on it — reported a
+    # session sleeping on purpose. It slept for 38.7 hours and a human found it.
+    #
+    # So the question is not "has this fired" but "can it". The firing path keys
+    # on TRANSITIONS into the watched state (see
+    # Mcp::Tools::WakeMeUpWhenSessionChangesState#reject_unfireable_watched_state!,
+    # which refuses to arm one of these for the same reason), and an archived
+    # session makes no more of them.
+    #
+    # Deliberately narrow, and it fails SAFE in every direction it is unsure
+    # about: only a watched session that is gone or `archived` counts as
+    # unfireable. A `failed` one is left alone — a human can restart it, and it
+    # can still be archived, so a `session_archived` watcher on it is live. Any
+    # other status is a session that can still transition. An unreadable row is
+    # treated as fireable, because the cost of a wrong "not fireable" here is a
+    # session woken that meant to sleep, and the cost of a wrong "fireable" is
+    # only the stall this predicate already used to have.
+    def ao_event_wake_fireable?(condition, watched_statuses: nil)
+      watched_id = condition.watched_session_id
+      return true if watched_id.blank?
+
+      status =
+        if watched_statuses
+          watched_statuses[watched_id.to_i]
+        else
+          Session.where(id: watched_id).pick(:status)
+        end
+      return false if status.nil?
+
+      status.to_s != "archived"
+    rescue ActiveRecord::ActiveRecordError => e
+      Rails.logger.error(
+        "[SessionStateMachine] Could not read watched session #{condition.watched_session_id} " \
+        "for trigger condition #{condition.id}: #{e.message}"
+      )
+      true
     end
   end
 
@@ -538,12 +614,15 @@ module SessionStateMachine
   #
   # Note the asymmetry with that cancel path, which is deliberate: cancelling
   # takes every unfired one-time wake, while sleeping takes only the ones that
-  # have not come due. A one-time schedule whose moment has already passed
-  # without firing (a stopped scheduler, a crashed trigger job) describes a
-  # session that is stuck, not one that is resting — and that is exactly the
-  # session a refresh exists to rescue.
+  # can still fire. A one-time schedule whose moment has already passed without
+  # firing (a stopped scheduler, a crashed trigger job), or an `ao_event` watcher
+  # whose watched session is archived and will never transition again, describes
+  # a session that is stuck, not one that is resting — and that is exactly the
+  # session a refresh, and StrandedSleepRescue, exist to rescue.
   def awaiting_scheduled_wake?
-    pending_one_time_wake_conditions.any? { |condition| self.class.one_time_wake_pending?(condition) }
+    conditions = pending_one_time_wake_conditions.to_a
+    watched = self.class.watched_session_statuses(conditions)
+    conditions.any? { |condition| self.class.one_time_wake_pending?(condition, watched_statuses: watched) }
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error(
       "[SessionStateMachine] Failed to check pending wake-up triggers for session #{id}: #{e.message}"

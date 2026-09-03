@@ -3997,6 +3997,90 @@ class SessionTest < ActiveSupport::TestCase
     assert_not session.reload.awaiting_scheduled_wake?
   end
 
+  # An `ao_event` wake is only "still ahead" while the session it watches can
+  # still reach the state it is watching for. In tadasant/zimmer#855 the surviving
+  # condition on trigger 13670 watched a session that had already archived, and
+  # because an unfired ao_event condition was treated as pending unconditionally,
+  # the requester read as sleeping on purpose to every surface and every sweep
+  # while it sat there for 38.7 hours.
+
+  # Build the per-session state-change watcher wake_me_up_when_session_changes_state
+  # creates. Persisted without the after_create hooks, which would sleep the
+  # requester and try to fire against the watched session's current state.
+  def watcher_trigger_for(session, watched_id:, event_name: "session_archived")
+    trigger = Trigger.new(
+      name: "Watch session ##{watched_id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "ao_event",
+          configuration: { "event_name" => event_name, "watched_session_id" => watched_id } }
+      ]
+    )
+    trigger.save!
+    trigger
+  end
+
+  test "awaiting_scheduled_wake? is true while the watched session can still transition" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+    watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    watcher_trigger_for(session, watched_id: watched.id)
+
+    assert session.reload.awaiting_scheduled_wake?
+  end
+
+  test "awaiting_scheduled_wake? is false when the watched session is already archived" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+    watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    trigger = watcher_trigger_for(session, watched_id: watched.id)
+    Session.where(id: watched.id).update_all(status: Session.statuses[:archived])
+
+    assert_equal "enabled", trigger.reload.status
+    assert_nil trigger.trigger_conditions.sole.last_triggered_at
+    assert_not session.reload.awaiting_scheduled_wake?,
+      "an archived session makes no more transitions, so this wake can never fire"
+    assert session.continue_nudge_on_refresh?
+  end
+
+  test "awaiting_scheduled_wake? is false when the watched session no longer exists" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+    watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    watcher_trigger_for(session, watched_id: watched.id)
+    watched.destroy!
+
+    assert_not session.reload.awaiting_scheduled_wake?
+  end
+
+  # Deliberately narrow: a failed session can be restarted by hand, and it can
+  # still be archived, so a watcher on one is live.
+  test "awaiting_scheduled_wake? is still true when the watched session merely failed" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+    watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :failed)
+    watcher_trigger_for(session, watched_id: watched.id)
+
+    assert session.reload.awaiting_scheduled_wake?
+  end
+
+  test "awaiting_scheduled_wake? is true when one of several watched sessions is still live" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+    archived = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    live = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    watcher_trigger_for(session, watched_id: archived.id)
+    watcher_trigger_for(session, watched_id: live.id, event_name: "session_needs_input")
+    Session.where(id: archived.id).update_all(status: Session.statuses[:archived])
+
+    assert session.reload.awaiting_scheduled_wake?,
+      "a trigger ORs its conditions — one fireable wake is enough"
+  end
+
   # Recurring schedules are not per-session wake-ups and must not make a session look asleep.
   test "awaiting_scheduled_wake? ignores a recurring schedule condition" do
     session = waiting_session_with_conversation
@@ -4049,6 +4133,50 @@ class SessionTest < ActiveSupport::TestCase
       assert_equal Session.find(id).awaiting_scheduled_wake?, sleeping_ids.include?(id),
         "batch and per-session answers must agree for session #{id}"
     end
+  end
+
+  test "ids_awaiting_scheduled_wake agrees with the per-session predicate on ao_event fireability" do
+    live_watcher = waiting_session_with_conversation
+    live_watcher.update_columns(status: "waiting")
+    live = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    watcher_trigger_for(live_watcher, watched_id: live.id)
+
+    dead_watcher = waiting_session_with_conversation
+    dead_watcher.update_columns(status: "waiting")
+    doomed = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    watcher_trigger_for(dead_watcher, watched_id: doomed.id)
+    Session.where(id: doomed.id).update_all(status: Session.statuses[:archived])
+
+    ids = [ live_watcher.id, dead_watcher.id ]
+    sleeping_ids = Session.ids_awaiting_scheduled_wake(ids)
+
+    assert_equal [ live_watcher.id ].to_set, sleeping_ids
+    ids.each do |id|
+      assert_equal Session.find(id).awaiting_scheduled_wake?, sleeping_ids.include?(id),
+        "batch and per-session answers must agree for session #{id}"
+    end
+  end
+
+  # The batch form exists so that a bulk refresh is a fixed number of queries
+  # rather than one per waiting session. Asking each ao_event condition to look
+  # its own watched session up would have put that N+1 straight back.
+  test "ids_awaiting_scheduled_wake does not scale its query count with the number of watchers" do
+    watchers = 4.times.map do
+      requester = waiting_session_with_conversation
+      requester.update_columns(status: "waiting")
+      watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+      watcher_trigger_for(requester, watched_id: watched.id)
+      requester
+    end
+
+    queries = 0
+    counter = ->(*, payload) { queries += 1 unless payload[:name].to_s == "SCHEMA" || payload[:cached] }
+    ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+      Session.ids_awaiting_scheduled_wake(watchers.map(&:id))
+    end
+
+    assert_operator queries, :<=, 4,
+      "the batch form must stay a fixed handful of queries however many watchers it is asked about"
   end
 
   test "ids_awaiting_scheduled_wake returns an empty set for no ids" do
