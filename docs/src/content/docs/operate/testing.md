@@ -345,6 +345,12 @@ by convention:
   and `resume` signatures — checked via `instance_method(:execute).parameters`, so a renamed kwarg fails
   the build rather than failing at spawn time.
 - **`test/contracts/runtime_mcp_credential_writer_contract_test.rb`** does the same for credential writers.
+- **`test/contracts/ostruct_require_contract_test.rb`** asserts every file under `test/` that names
+  `OpenStruct` also requires `ostruct` itself. `ostruct` is a bundled gem, so nothing requires it for
+  you; the whole suite shares one process, so the first file that requires it silently covers every
+  file loaded after it. Without the contract, whether a file works on its own is decided by the order
+  the runner loads files in — which is why the targeted run below is what breaks, and never CI. See
+  [#787](https://github.com/tadasant/zimmer/issues/787).
 
 :::caution[The contract test doesn't cover the whole contract]
 It checks three of the retry strategy's five predicates. `auth_recovery_needed?`, which
@@ -363,6 +369,12 @@ bin/brakeman
 ```
 
 The convention in `AGENTS.md`: run **targeted** tests locally, let CI run the full suite.
+
+A targeted run loads only the files you name, so it is the run that exposes a missing `require`. A
+test file has to require the bundled gems it uses — `ostruct` today — rather than inheriting them
+from whatever the full suite happened to load first. The contract test above enforces that for
+`ostruct`; `mocha/minitest` is the same hazard and is not yet covered
+([#764](https://github.com/tadasant/zimmer/issues/764)).
 
 ## The philosophy, such as it is
 
