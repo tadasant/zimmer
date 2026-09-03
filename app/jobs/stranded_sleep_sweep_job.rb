@@ -12,9 +12,10 @@
 #
 # Every rule about what counts as stranded, and what is done about it, lives in
 # StrandedSleepRescue — including the logging, so this job adds no line of its
-# own. Cadence is five minutes, matching the other repair sweeps; a pass with
-# nothing to do is one indexed query over the waiting population plus one trigger
-# lookup per candidate.
+# own. Cadence is five minutes, matching the other repair sweeps. A pass reads
+# the waiting population in pages and asks two batched trigger questions per
+# page, so a quiet fleet costs a handful of indexed queries and a busy one is
+# bounded by StrandedSleepRescue::MAX_EXAMINED_PER_SWEEP.
 class StrandedSleepSweepJob < ApplicationJob
   include SingletonSweep
 

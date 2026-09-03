@@ -2678,6 +2678,16 @@ there is no backstop, nothing wakes it, and the sweep will not either.
 `wake_me_up_when_session_changes_state` and `wake_me_up_later` are documented as a pair for exactly
 this reason. Two calls, not one.
 
+### The stranded-sleep sweep has a hard visibility ceiling
+
+`StrandedSleepRescue` answers its last two questions — can any of this session's wakes still fire, and is a recurring trigger driving it — in Ruby against the trigger rows, because neither is expressible as a `WHERE` clause. So the sweep cannot ask the database how many stranded sessions exist; it has to walk the candidate set and look.
+
+It walks it in pages, oldest-first, and stops at `MAX_EXAMINED_PER_SWEEP` (1000) candidates. **Past that point it is blind by construction.** The paging is what makes the ceiling high rather than fifty — before it, a single `ORDER BY updated_at LIMIT 50` filled with legitimately sleeping sessions, which do not advance `updated_at` while they sleep and therefore sit at the head of that ordering for as long as they are asleep. A pass that hits the budget with candidates still behind it now says so at WARN, so the ceiling is observable rather than silent, but it is still a ceiling.
+
+There is a second, tighter bound on the other side: `MAX_ACTIONS_PER_SWEEP` (5) rescues per pass, at a five-minute cadence, so the fleet-wide rate is 60 rescues an hour. Each one spends an agent turn, which is why it is deliberately smaller than `StalledStartSweepJob`'s ten. A mass-stranding event is drained over hours rather than in one pass.
+
+Neither number is load-bearing against anything seen in production — the population this sweep exists for is a handful of sessions, not a thousand. They are written down because the failure they bound is the one the sweep was built to end, and a limit nobody has recorded is a limit nobody notices reaching.
+
 ### After three rescues Zimmer stops and leaves the session asleep
 
 `StrandedSleepRescue` gives up on a session after `MAX_RESCUES` (3) — a session that has been resumed
