@@ -682,6 +682,27 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", trigger.name
   end
 
+  # The badge is asserted by its text: a `system_event` condition that fell
+  # through to the fallback would still render *a* pill, carrying the raw enum
+  # value, which is the shape of the bug this pins.
+  test "show badges a system_event condition with words rather than its raw enum value" do
+    trigger = Trigger.create!(
+      name: "Quota available — wake waiting sessions",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Quota is back. {{event}}",
+      trigger_conditions_attributes: [
+        { condition_type: "system_event", configuration: { "event_name" => "quota_available" } }
+      ]
+    )
+
+    get trigger_path(trigger)
+    assert_response :success
+    assert_select "span", text: "System Event", count: 1
+    assert_select "span", text: "Quota available again", count: 1
+    assert_select "span", text: "system_event", count: 0
+  end
+
   test "should get edit" do
     get edit_trigger_path(@trigger)
     assert_response :success
