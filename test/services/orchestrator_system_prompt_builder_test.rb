@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   setup do
