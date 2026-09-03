@@ -418,6 +418,15 @@ executing setns process caused: exit status 1
 That combination is the whole problem: the worker keeps its slot, reports healthy, and
 runs no jobs and no agent sessions. Nothing about its shape says so.
 
+The combination is also *shared*. A container that reports `running` while `docker exec`
+fails is the signature the watchdog triggers on, and more than one thing produces it — the
+OOM above, a `docker pause`, and at least one condition that is neither. On 2026-09-02 both
+hosts wedged twelve minutes apart with `OOMKilled=false`, `oom_kill=0`, five live processes
+in the cgroup, and an identical `unsafe procfs detected: openat2 … operation not permitted`
+from exec, on hosts whose memory limits differ 5x
+([#774](https://github.com/tadasant/zimmer/issues/774)). So the signature says the worker is
+unreachable by `exec`. It does not say why, and it does not say what that cost.
+
 ### What watches for it
 
 `zimmer-worker-watchdog`, a systemd timer on the host. It does not read container state —
@@ -447,6 +456,27 @@ worker there would kill every in-flight agent session — so it converges the sa
 than reimplementing it. That step has not landed in the companion repo yet, so production has
 no watchdog today. Both variables are inert when unset. See
 [Calling it from a deploy that is not this one](/operate/deploying/#calling-it-from-a-deploy-that-is-not-this-one).
+
+### What the page may claim
+
+The alert is written from the payload's evidence, not from the shape that triggered it. Two
+fields decide two sentences, and each says "unknown" rather than guessing when its evidence
+is missing:
+
+| Sentence | Read from | Says |
+| --- | --- | --- |
+| The cause | `State.OOMKilled`, the cgroup's `oom_kill` counter | "the cgroup-OOM wedge from #502" only when one of them records a kill; otherwise that it is *not* #502 and the cause is unknown |
+| The impact | `cgroup.workload_process_count`, `cgroup.census_known` | "running no jobs and no agent sessions" only when the census came back and came back empty; with live processes, that N are alive and impact is unverified |
+
+`docker exec` failing is why this reads the way it does. Exec sets up a *new* process in the
+container's namespaces, so its failure is a statement about starting processes, not about the
+ones already running. The census is the only thing in the payload that speaks to impact, and
+a census that could not be taken is not a census that came back empty — the same distinction
+the recovery gate makes below, for the same reason.
+
+Both sentences were once printed unconditionally, which is how two pages in 2026 asserted an
+OOM that had not happened and an idle worker whose queue never stalled, and recommended a
+destructive remedy on the strength of it.
 
 ### What it will and will not do on its own
 
