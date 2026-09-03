@@ -117,12 +117,15 @@ Before committing and creating a PR, run these from the repo root:
 
 2. **Open PR via GitHub CLI**
 
-   Author the body in a file (use a temp path like `/tmp/pr-body.md` so a stray file never lands in the working tree) and pass it with `--body-file`. Do NOT type a multi-line body inline with `--body "..."`.
+   Author the body in a file outside the working tree and pass it with `--body-file`. Do NOT type a multi-line body inline with `--body "..."`.
    ```bash
-   gh pr create --title "Description of changes" --body-file /tmp/pr-body.md
+   BODY="${AO_SESSION_SCRATCH_DIR:-$(mktemp -d)}/pr-body.md"
+   gh pr create --title "Description of changes" --body-file "$BODY"
    ```
 
-   `--body-file` passes your newlines through exactly as written and sidesteps the shell-quoting mangling that inline `--body "..."` invites when the prose contains quotes, backticks, or `$(...)`. If a file is inconvenient, use `--body "$(cat /tmp/pr-body.md)"` rather than embedding the prose directly on the command line. Either way, how you *author* the body decides how it renders — see [Body Formatting: One Line Per Paragraph](#body-formatting-one-line-per-paragraph) below.
+   **The path must be unique to your session.** A fixed name like `/tmp/pr-body.md` is shared by every agent session on the host, and concurrent sessions are normal — two of them writing that path means one publishes the other's description, and the command reports success either way. Inside Zimmer use `$AO_SESSION_SCRATCH_DIR`; outside it use `mktemp`; never a fixed name.
+
+   `--body-file` passes your newlines through exactly as written and sidesteps the shell-quoting mangling that inline `--body "..."` invites when the prose contains quotes, backticks, or `$(...)`. If a file is inconvenient, use `--body "$(cat "$BODY")"` rather than embedding the prose directly on the command line. Either way, how you *author* the body decides how it renders — see [Body Formatting: One Line Per Paragraph](#body-formatting-one-line-per-paragraph) below.
 
 ### Body Formatting: One Line Per Paragraph
 
