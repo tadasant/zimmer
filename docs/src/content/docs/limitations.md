@@ -218,6 +218,24 @@ alert rules scope to `deployment.environment=production` — so this is noise an
 not false alerting. Scrubbing them too would stop agent-session log export outright, which is a
 bigger decision than it looks; it has not been made.
 
+### A real bug found from an interactive `rails runner` is not recorded anywhere
+
+`config/initializers/sentry.rb` drops any event tagged `source: runner` when the process has a
+controlling terminal, so an operator's console typo stops paging `#alerts`
+([#767](https://github.com/tadasant/zimmer/issues/767)). The filter cannot tell a typo from a
+genuine app bug an operator happens to trip over at that prompt: both are dropped, and no
+GlitchTip issue is opened for either. What survives is a `[sentry] dropped an interactive rails
+runner event: <class>` line in the container log — greppable, but nothing alerts on it, and the
+exception message is deliberately not included. An operator who wants the event recorded runs
+the command without a terminal.
+
+The filter's correctness also rests on an assumption enforced in a **different repository**: that
+`tadasant-internal`'s `scripts/verify-job-drain-remote.sh` never allocates a TTY for its two
+`bin/rails runner` invocations. It does not today (`docker exec` and `docker exec -i`, both with
+output captured), but nothing on that side guards it. Switching to `docker exec -t` for colored
+output, or to `docker compose exec` — which allocates a TTY unless given `-T` — would silently
+stop the drain gate's exceptions from reporting, with no error in either repo.
+
 ### Staging cannot have its own OTLP ingest token
 
 The obs stack's ingest gateway matches the `Authorization` header against a **single** shared token,
