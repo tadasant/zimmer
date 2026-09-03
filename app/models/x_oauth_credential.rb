@@ -37,6 +37,18 @@ class XOauthCredential < ApplicationRecord
   DEFAULT_TOKEN_ENDPOINT = "https://api.x.com/2/oauth2/token"
   AUTHORIZE_ENDPOINT = "https://x.com/i/oauth2/authorize"
 
+  # Connect and read bound for every call to X's token endpoint. Net::HTTP's
+  # default is 60s and it applies PER READ, so an endpoint that trickles bytes
+  # never times out at all — it just holds the caller's thread, which here is a
+  # GoodJob `default`-queue thread (RefreshXOauthTokensJob, unattended from
+  # cron), a session-prep thread (XOauthTokenVendor), or a Puma thread
+  # (XOauthBootstrap, inside a web request). Bounding it is also what makes
+  # RefreshXOauthTokensJob's Net::OpenTimeout / Net::ReadTimeout classifications
+  # reachable at all. 10s matches ClaudeAccount's read bound and is generous
+  # against X's observed token-endpoint latency (sub-second in the normal case),
+  # so a slow-but-working refresh is not turned into a retry loop.
+  TOKEN_REQUEST_TIMEOUT = 10
+
   # Access tokens live ~2h; refresh when they fall within this window.
   DEFAULT_REFRESH_THRESHOLD = 15.minutes
 
@@ -161,16 +173,36 @@ class XOauthCredential < ApplicationRecord
     )
   end
 
-  private
-
-  def post_token_request(client_id:, client_secret:, form:)
+  # POSTs a form-encoded grant to an X token endpoint with HTTP Basic client auth
+  # (X requires the client secret in the Authorization header, not the body).
+  #
+  # The single timeout-bounded implementation for the whole X OAuth path: the
+  # refresh_token grant below and XOauthBootstrap's authorization_code exchange
+  # both go through here, so neither can drift back to Net::HTTP's unbounded
+  # defaults. Persistence differs between the two callers and stays with them —
+  # this only speaks HTTP.
+  #
+  # @return [Net::HTTPResponse] the raw response; callers classify the status
+  # @raise network errors (Net::OpenTimeout, Net::ReadTimeout, ...) — callers
+  #   classify these as retryable vs ambiguous.
+  def self.post_token_request(token_endpoint:, client_id:, client_secret:, form:)
     uri = URI(token_endpoint)
     http = Net::HTTP.new(uri.host, uri.port)
     http.use_ssl = (uri.scheme == "https")
+    http.open_timeout = TOKEN_REQUEST_TIMEOUT
+    http.read_timeout = TOKEN_REQUEST_TIMEOUT
     request = Net::HTTP::Post.new(uri)
     request.basic_auth(client_id, client_secret)
     request.set_form_data(form)
     http.request(request)
+  end
+
+  private
+
+  def post_token_request(client_id:, client_secret:, form:)
+    self.class.post_token_request(
+      token_endpoint: token_endpoint, client_id: client_id, client_secret: client_secret, form: form
+    )
   end
 
   def handle_non_transient_failure!(response)

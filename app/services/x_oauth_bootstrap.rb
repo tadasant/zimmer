@@ -95,20 +95,23 @@ class XOauthBootstrap
   # POST the authorization_code grant with HTTP Basic client auth. Returns the
   # parsed token response hash (access_token, refresh_token, expires_in, scope).
   def self.exchange_code(code:, verifier:, redirect_uri:, client_id:, client_secret:)
-    uri = URI(XOauthCredential::DEFAULT_TOKEN_ENDPOINT)
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = (uri.scheme == "https")
-    request = Net::HTTP::Post.new(uri)
-    request.basic_auth(client_id, client_secret)
-    request.set_form_data(
-      grant_type: "authorization_code",
-      code: code,
-      redirect_uri: redirect_uri,
-      code_verifier: verifier,
-      client_id: client_id
+    # Shares XOauthCredential's timeout-bounded POST rather than repeating the
+    # Net::HTTP block: this runs inside a web request, where an unbounded read
+    # pins a Puma thread. Only the HTTP call is shared — complete! keeps its own
+    # persistence order, since the identity columns must be saved before
+    # apply_token_response! writes the rotating tokens.
+    response = XOauthCredential.post_token_request(
+      token_endpoint: XOauthCredential::DEFAULT_TOKEN_ENDPOINT,
+      client_id: client_id,
+      client_secret: client_secret,
+      form: {
+        grant_type: "authorization_code",
+        code: code,
+        redirect_uri: redirect_uri,
+        code_verifier: verifier,
+        client_id: client_id
+      }
     )
-
-    response = http.request(request)
     unless response.code.start_with?("2")
       raise ExchangeError, "token exchange failed (HTTP #{response.code}): #{response.body}"
     end
