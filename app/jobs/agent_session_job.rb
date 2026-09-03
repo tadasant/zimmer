@@ -2791,6 +2791,12 @@ class AgentSessionJob < ApplicationJob
   def auto_continue_after_interrupt(session)
     require "automated_prompts"
 
+    # A cheap early-out on the object in hand, not the decision. The three checks
+    # below read the in-memory session, and the row can move under any of them —
+    # `Dir.exist?` in particular is a filesystem call on the clone volume, taken
+    # during SIGTERM shutdown, and a deploy is exactly when somebody is most
+    # likely to be emptying the trash. The authoritative read is the locked one in
+    # claim_system_recovery_turn! below.
     unless session.needs_input?
       Rails.logger.warn "[AgentSessionJob] Cannot auto-continue session #{session.id}: not in needs_input (#{session.status})"
       return
@@ -2807,13 +2813,23 @@ class AgentSessionJob < ApplicationJob
       return
     end
 
+    # The transaction is here for the LOCK, not for a rollback.
+    # claim_system_recovery_turn! re-reads the row `FOR UPDATE` and holds it until
+    # this block commits, so the enqueue below cannot straddle an archive that
+    # landed while the checks above were running. A refused claim writes nothing,
+    # so there is nothing to undo. See Session#claim_system_recovery_turn!.
+    outcome = nil
     ActiveRecord::Base.transaction do
-      session.update!(
-        running_job_id: nil,
-        metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-      )
+      outcome = session.claim_system_recovery_turn! do
+        # Clear stale retry metadata before resuming.
+        # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
+        session.update!(
+          running_job_id: nil,
+          metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+        )
+      end
 
-      session.resume_for_system_recovery!
+      next unless outcome == :claimed
 
       AgentSessionJob.enqueue_with_prompt(
         session.id,
@@ -2829,10 +2845,50 @@ class AgentSessionJob < ApplicationJob
       )
     end
 
+    return refuse_auto_continue(session, outcome) unless outcome == :claimed
+
     Rails.logger.info "[AgentSessionJob] Session #{session.id} auto-continued after job interruption"
   rescue => e
     Rails.logger.error "[AgentSessionJob] Failed to auto-continue session #{session.id}: #{e.message}. " \
                         "Session remains in needs_input for cron-based recovery."
+  end
+
+  # Say why the auto-continue did not happen, on the session's own timeline.
+  #
+  # Neither refusal retries and neither is an error. An archived session is
+  # terminal — the trash-cleanup clock on its clone is already running, and
+  # starting an agent against it is exactly #554. A session that is already
+  # `running` is being driven by somebody else, and a second agent process on one
+  # session is its own defect (#400). The recovery pause the caller left behind
+  # stays in place either way, so a session that is later restored from the trash
+  # is still swept by the cron.
+  #
+  # @param session [Session] the session whose claim was refused; already
+  #   reloaded by claim_system_recovery_turn!, so `status` is the row's
+  # @param outcome [Symbol] :archived or :not_resumable
+  # @return [nil]
+  def refuse_auto_continue(session, outcome)
+    message =
+      if outcome == :archived
+        "Not auto-continuing this session after the job interruption: it is in the trash. " \
+        "An archived session takes no turn, so no agent was started."
+      else
+        "Not auto-continuing this session after the job interruption: it is #{session.status} " \
+        "and cannot be resumed. Something else is already driving it, so no second agent was started."
+      end
+
+    Rails.logger.info "[AgentSessionJob] Session #{session.id} not auto-continued after job interruption: #{outcome}"
+    # A session log rather than only a Rails log: "why did nothing happen to this
+    # session" is asked from the session page. Rescued here rather than left to
+    # the caller's rescue, which would report a deliberate refusal as a failed
+    # auto-continue and promise a cron recovery that an archived session will
+    # never get.
+    begin
+      session.logs.create!(content: message, level: "info")
+    rescue => e
+      Rails.logger.warn "[AgentSessionJob] Could not record the refusal on session #{session.id}: #{e.message}"
+    end
+    nil
   end
 
   # Validate session state before attempting to resume Claude CLI session
