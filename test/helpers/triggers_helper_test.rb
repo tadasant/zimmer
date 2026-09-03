@@ -50,9 +50,20 @@ class TriggersHelperTest < ActionView::TestCase
     end
   end
 
+  # One representative condition per declared type, so the assertions below run
+  # over the whole enum rather than the types someone remembered to list.
+  CONDITION_CONFIGURATIONS = {
+    "slack" => { "event_type" => "bot_mention", "channel_name" => "engineering" },
+    "schedule" => { "unit" => "hours", "interval" => 2, "timezone" => "UTC" },
+    "ao_event" => { "event_name" => "session_needs_input" },
+    "github_label" => { "repos" => [ "tadasant/zimmer" ], "target" => "pull_request", "labels" => [ "ready to merge" ] },
+    "github_issue" => { "repos" => [ "tadasant/zimmer" ], "exclude_labels" => [ "hold issue work gate" ] },
+    "system_event" => { "event_name" => "quota_available" }
+  }.freeze
+
   # The detail page's badge is the same drift hazard as the row's icon: a type
-  # added to CONDITION_TYPES without an entry here used to print its raw enum
-  # value in a gray pill.
+  # added to CONDITION_TYPES without an entry here prints its raw enum value in
+  # a gray pill.
   test "every condition type maps to a badge label and colours of its own" do
     TriggerCondition::CONDITION_TYPES.each do |condition_type|
       badge = trigger_condition_badge(condition_type)
@@ -74,6 +85,25 @@ class TriggersHelperTest < ActionView::TestCase
 
     assert_equal "Some Future Condition Type", badge[:label]
     assert_equal TriggersHelper::FALLBACK_CONDITION_BADGE_CSS, badge[:css]
+  end
+
+  # The badge and the description are two halves of one sentence, and nothing
+  # else pins them together. Reword a `description` branch so it no longer opens
+  # with the words its badge carries — "Slack channel: …" — and the strip
+  # silently does nothing while the page reads "Slack Slack channel: …".
+  test "no condition type says the words its badge already carries" do
+    assert_equal TriggerCondition::CONDITION_TYPES.sort, CONDITION_CONFIGURATIONS.keys.sort,
+      "every declared condition type needs a sample configuration in CONDITION_CONFIGURATIONS"
+
+    CONDITION_CONFIGURATIONS.each do |condition_type, configuration|
+      condition = TriggerCondition.new(condition_type: condition_type, configuration: configuration)
+      label = trigger_condition_badge(condition_type)[:label]
+      detail = trigger_condition_detail(condition)
+
+      assert detail.present?, "#{condition_type} should leave a detail line beside its badge"
+      assert_not detail.start_with?(label),
+        "#{condition_type} repeats its badge's words: #{label.inspect} then #{detail.inspect}"
+    end
   end
 
   test "the detail line drops the prefix the badge already carries" do
