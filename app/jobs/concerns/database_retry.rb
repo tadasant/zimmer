@@ -13,11 +13,11 @@ module DatabaseRetry
   # covers `StatementTimeout`, `QueryCanceled` and `AdapterTimeout`, which say the
   # database is alive and the query was too slow. Those must keep propagating —
   # `ApplicationJob` already has `retry_on ActiveRecord::StatementTimeout`, and
-  # swallowing them here would spend three more timeouts in-process before it ever
+  # swallowing them here would spend two more timeouts in-process before it ever
   # saw one. See #779.
   #
-  # Kept identical to `ControllerDatabaseRetry::RETRYABLE_EXCEPTIONS`; a test
-  # asserts the two lists stay equal.
+  # This is the canonical list for both helpers — `ControllerDatabaseRetry` points
+  # its own constant at this one rather than keeping a copy.
   RETRYABLE_EXCEPTIONS = [
     defined?(PG::ConnectionBad) ? PG::ConnectionBad : nil,
     defined?(PG::UnableToSend) ? PG::UnableToSend : nil,

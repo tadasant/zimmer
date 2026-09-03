@@ -152,6 +152,8 @@ class ControllerDatabaseRetryTest < ActiveSupport::TestCase
   test "a connection that dies mid-statement is not a ConnectionNotEstablished" do
     refute_kind_of ActiveRecord::ConnectionNotEstablished,
                    ActiveRecord::ConnectionFailed.new("PQconsumeInput() FATAL: terminating connection")
+    assert_kind_of ActiveRecord::QueryAborted,
+                   ActiveRecord::ConnectionFailed.new("PQconsumeInput() FATAL: terminating connection")
     assert_includes ControllerDatabaseRetry::RETRYABLE_EXCEPTIONS, ActiveRecord::ConnectionFailed
   end
 
@@ -195,6 +197,22 @@ class ControllerDatabaseRetryTest < ActiveSupport::TestCase
       assert_empty @host.delays
       assert_empty @host.rendered, "a timeout must not be masked by the friendly 503"
     end
+  end
+
+  test "a connection death that outlives the budget renders the friendly 503" do
+    # The other half of the mid-flight case: a failover lasting longer than
+    # 0.3s + 0.6s of backoff takes the give-up path, which renders rather than
+    # re-raising — so the caller sees a 503 and false, not a ConnectionFailed.
+    attempts = 0
+    result = @host.with_db_retry do
+      attempts += 1
+      raise ActiveRecord::ConnectionFailed, "PQconsumeInput() FATAL:  terminating connection"
+    end
+
+    assert_equal false, result
+    assert_equal 3, attempts
+    assert_equal [ 0.3, 0.6 ], @host.delays
+    assert_equal [ :service_unavailable ], @host.rendered.map { |r| r[:status] }
   end
 
   test "a lock wait timeout is still not retried" do
