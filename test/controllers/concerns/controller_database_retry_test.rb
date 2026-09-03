@@ -145,4 +145,75 @@ class ControllerDatabaseRetryTest < ActiveSupport::TestCase
     assert_equal 1, attempts
     assert_empty @host.delays
   end
+
+  # #779, the controller-side twin: a connection that dies mid-statement arrives as
+  # ActiveRecord::ConnectionFailed, a sibling of ConnectionNotEstablished rather
+  # than a descendant, so it only reaches the rescue because it is named.
+  test "a connection that dies mid-statement is not a ConnectionNotEstablished" do
+    refute_kind_of ActiveRecord::ConnectionNotEstablished,
+                   ActiveRecord::ConnectionFailed.new("PQconsumeInput() FATAL: terminating connection")
+    assert_includes ControllerDatabaseRetry::RETRYABLE_EXCEPTIONS, ActiveRecord::ConnectionFailed
+  end
+
+  test "a connection that dies mid-statement is retried" do
+    ActiveRecord::Base.expects(:connection).never
+
+    attempts = 0
+    result = @host.with_db_retry do
+      attempts += 1
+      if attempts == 1
+        raise ActiveRecord::ConnectionFailed,
+              "PQconsumeInput() FATAL:  terminating connection due to administrator command"
+      end
+
+      :recovered
+    end
+
+    assert_equal :recovered, result
+    assert_equal 2, attempts
+    assert_equal [ 0.3 ], @host.delays
+    assert_empty @host.rendered, "a recovered request must not render the 503"
+  end
+
+  # Sharper here than on the job side: this helper's give-up path renders instead
+  # of re-raising, so putting ConnectionFailed's parent QueryAborted on the list
+  # would turn a statement timeout into a friendly 503 and lose the reason entirely.
+  [ ActiveRecord::StatementTimeout, ActiveRecord::QueryCanceled, ActiveRecord::AdapterTimeout ].each do |aborted_class|
+    test "#{aborted_class}, a QueryAborted sibling of ConnectionFailed, is still not retried" do
+      assert_kind_of ActiveRecord::QueryAborted, aborted_class.new("timed out"),
+                     "this pins the narrow class only if it really shares ConnectionFailed's parent"
+
+      attempts = 0
+      assert_raises(aborted_class) do
+        @host.with_db_retry do
+          attempts += 1
+          raise aborted_class, "timed out"
+        end
+      end
+
+      assert_equal 1, attempts, "a timeout must propagate on the first attempt"
+      assert_empty @host.delays
+      assert_empty @host.rendered, "a timeout must not be masked by the friendly 503"
+    end
+  end
+
+  test "a lock wait timeout is still not retried" do
+    # LockWaitTimeout descends straight from StatementInvalid rather than through
+    # QueryAborted, so this widening could not have reached it — asserted anyway,
+    # because lock contention is answered by name elsewhere in the controllers
+    # (reorder_precedence renders a 422) rather than by the generic 503 below.
+    refute_kind_of ActiveRecord::QueryAborted, ActiveRecord::LockWaitTimeout.new("lock wait")
+
+    attempts = 0
+    assert_raises(ActiveRecord::LockWaitTimeout) do
+      @host.with_db_retry do
+        attempts += 1
+        raise ActiveRecord::LockWaitTimeout, "lock wait"
+      end
+    end
+
+    assert_equal 1, attempts
+    assert_empty @host.delays
+    assert_empty @host.rendered
+  end
 end

@@ -4,11 +4,23 @@
 module ControllerDatabaseRetry
   extend ActiveSupport::Concern
 
-  # Exception types that should trigger a retry
+  # Exception types that should trigger a retry.
+  #
+  # `ActiveRecord::ConnectionFailed` is a connection that died mid-statement — the
+  # common shape of a Postgres restart or failover, and a sibling of
+  # `ConnectionNotEstablished` rather than a descendant, so it has to be named.
+  # Name it and not its parent `QueryAborted`, which also covers
+  # `StatementTimeout`, `QueryCanceled` and `AdapterTimeout`: this helper's give-up
+  # path *renders* rather than re-raises, so a timeout on the list would become a
+  # friendly 503 the caller never learns the real reason for. See #779.
+  #
+  # Kept identical to `DatabaseRetry::RETRYABLE_EXCEPTIONS`; a test asserts the two
+  # lists stay equal.
   RETRYABLE_EXCEPTIONS = [
     defined?(PG::ConnectionBad) ? PG::ConnectionBad : nil,
     defined?(PG::UnableToSend) ? PG::UnableToSend : nil,
     ActiveRecord::ConnectionNotEstablished,
+    ActiveRecord::ConnectionFailed,
     ActiveRecord::Deadlocked
   ].compact.freeze
 
