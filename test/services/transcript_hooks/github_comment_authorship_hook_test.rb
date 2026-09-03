@@ -236,6 +236,35 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 9999)
   end
 
+  test "records a gh api post inside a quoted shell wrapper" do
+    # The same wrapper with its script quoted. What a shell is handed is more
+    # commands, so the `cd` in front of the post does not hide it.
+    output = { "id" => 9998, "html_url" => "https://github.com/o/r/pull/7#issuecomment-9998" }.to_json
+
+    run_hook(claude_transcript(
+      command: %q(bash -lc "cd /repo && gh api repos/o/r/issues/7/comments -f body=hi"),
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 9998)
+  end
+
+  test "does NOT record a comments READ inside a quoted shell wrapper that also runs rm -f" do
+    # The unrelated-`-f` case, wrapped. Reading the wrapped script as one command
+    # lets `rm -f` supply the write flag and records the whole thread — the human's
+    # comment included, permanently and fleet-wide.
+    output = [
+      { "id" => 5145406778, "html_url" => POSTED_URL, "user" => { "login" => "tadasant" } }
+    ].to_json
+
+    run_hook(claude_transcript(
+      command: %q(bash -lc "gh api repos/tadasant/tadasant-internal/issues/281/comments --paginate && rm -f /tmp/x"),
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
   test "records a gh api post whose output the command captures" do
     output = { "id" => 10101, "html_url" => "https://github.com/o/r/pull/7#issuecomment-10101" }.to_json
 

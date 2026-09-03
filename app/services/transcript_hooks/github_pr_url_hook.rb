@@ -495,6 +495,11 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # so a `--repo` belonging to some other subcommand on the line cannot bound a
   # create, and a create in one segment cannot vouch for a list in another.
   #
+  # The flag is read off the raw segment while the create is read off the unquoted
+  # one, and the asymmetry is deliberate: `--repo "owner/name"` is a quoted *value*
+  # that the create needs, where `gh pr create` inside quotes is somebody else's
+  # argument.
+  #
   # @return [Array<String>] downcased `owner/repo`, possibly empty
   def create_repos(command)
     return [] unless command.match?(GH_CREATE_INVOCATION_PATTERN)

@@ -119,11 +119,37 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
     assert_equal [ "gh api repos/o/r/pulls`" ], segments("`gh api repos/o/r/pulls`")
   end
 
-  test "strips a shell wrapper, which is the front of every joined Codex argv" do
+  # --- Wrapped scripts ---------------------------------------------------------
+  #
+  # What a shell is handed is more commands, not data, so it is split rather than
+  # kept whole. Codex writes the unquoted spelling in front of every command it
+  # runs; an agent writing the quoted one by hand gets the same reading.
+
+  test "splits the script a shell is handed" do
     assert_equal [ "cd /repo", "gh pr create --fill" ], segments("bash -lc cd /repo && gh pr create --fill")
-    # The wrapper's own opening quote goes with it; the closing one is left, which
-    # is what keeps #unquoted from reading the script it wrapped as data.
-    assert_equal [ %q(gh api repos/o/r/pulls -X POST") ], segments(%q(sh -c "gh api repos/o/r/pulls -X POST"))
+    assert_equal [ "cd /repo", "gh pr create --fill" ], segments(%q(bash -lc "cd /repo && gh pr create --fill"))
+    assert_equal [ "cd /repo", "gh pr create --fill" ], segments(%q(sh -c 'cd /repo && gh pr create --fill'))
+    assert_equal [ "gh pr create --fill" ], segments(%q(eval "gh pr create --fill"))
+  end
+
+  test "splits a wrapped script so one of its commands cannot vouch for another" do
+    # The module header's worked example, wrapped: read as one command, `rm -f`
+    # supplies the write flag for the read in front of it and every comment that
+    # read printed is recorded as the agent's own (#214).
+    assert_equal [ "gh api repos/o/r/issues/1/comments --paginate", "rm -f /tmp/x" ],
+                 segments(%q(bash -lc "gh api repos/o/r/issues/1/comments --paginate && rm -f /tmp/x"))
+  end
+
+  test "finds a wrapper behind whatever runs it" do
+    assert_equal [ "cd /repo", "gh pr create --fill" ],
+                 segments(%q(timeout 300 bash -lc "cd /repo && gh pr create --fill"))
+    assert_equal [ "gh pr create --fill" ], segments(%q(sudo -E bash -c "gh pr create --fill"))
+    assert_equal [ "echo x", "gh pr create --title {}" ],
+                 segments(%q(echo x | xargs -I{} sh -c "gh pr create --title {}"))
+  end
+
+  test "does not read a wrapper that a command merely names" do
+    assert_equal [ %q(echo "bash -c gh pr create") ], segments(%q(echo "bash -c gh pr create"))
   end
 
   test "strips a compound-statement keyword from the command it runs" do
@@ -141,16 +167,24 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
   # --- #unquoted ---------------------------------------------------------------
 
   test "blanks out what a command was handed, leaving what it runs" do
-    assert_equal "grep -n   hook.rb", @splitter.unquoted(%q(grep -n "gh pr create" hook.rb))
-    assert_equal "rg -n   app/", @splitter.unquoted(%q(rg -n 'gh pr create' app/))
+    # Blanked to the same width, so a position in the result is a position in the
+    # segment — which is what tells a wrapper from the mention of one.
+    assert_equal "grep -n                hook.rb", @splitter.unquoted(%q(grep -n "gh pr create" hook.rb))
+    assert_equal "rg -n                app/", @splitter.unquoted(%q(rg -n 'gh pr create' app/))
   end
 
-  test "leaves an unterminated quote alone, which is what a stripped wrapper leaves" do
-    assert_equal %q(cd /r && gh pr create --fill"), @splitter.unquoted(%q(cd /r && gh pr create --fill"))
+  test "leaves a quote with no partner alone" do
+    # Blanking to the end of the line on the strength of one stray apostrophe
+    # would delete the command after it.
+    assert_equal %q(echo don't && gh pr create --fill), @splitter.unquoted(%q(echo don't && gh pr create --fill))
   end
 
   test "does not end a double-quoted string on an escaped quote" do
-    assert_equal "echo   done", @splitter.unquoted(%q(echo "she said \"gh pr create\"" done))
+    assert_equal "echo                             done", @splitter.unquoted(%q(echo "she said \"gh pr create\"" done))
+  end
+
+  test "reads nil as nothing rather than raising" do
+    assert_equal "", @splitter.unquoted(nil)
   end
 
   test "leaves an unquoted command untouched" do
