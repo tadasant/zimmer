@@ -459,24 +459,32 @@ no watchdog today. Both variables are inert when unset. See
 
 ### What the page may claim
 
-The alert is written from the payload's evidence, not from the shape that triggered it. Two
-fields decide two sentences, and each says "unknown" rather than guessing when its evidence
-is missing:
+The alert is written from the payload's evidence, not from the shape that triggered it. Three
+sentences branch — the cause, the impact, and the "this one is not over" trailer, which takes
+its wording from the census rather than from the recovery outcome — and each says "unknown"
+rather than guessing when its evidence is missing or unread:
 
 | Sentence | Read from | Says |
 | --- | --- | --- |
-| The cause | `State.OOMKilled`, the cgroup's `oom_kill` counter | "the cgroup-OOM wedge from #502" only when one of them records a kill; otherwise that it is *not* #502 and the cause is unknown |
-| The impact | `cgroup.workload_process_count`, `cgroup.census_known` | "running no jobs and no agent sessions" only when the census came back and came back empty; with live processes, that N are alive and impact is unverified |
+| The cause | the cgroup's `oom_kill` counter, `State.OOMKilled` | "the cgroup-OOM wedge from #502" when either records a kill; "not #502, cause unknown" when the counter was read and is 0; "unknown" when it could not be read |
+| The impact | `cgroup.workload_process_count`, `cgroup.census_known` | "running no jobs and no agent sessions" only when the census ran and came back empty; with live processes, that N are alive and impact is unverified; "unknown" when the census could not be taken |
 
-`docker exec` failing is why this reads the way it does. Exec sets up a *new* process in the
-container's namespaces, so its failure is a statement about starting processes, not about the
-ones already running. The census is the only thing in the payload that speaks to impact, and
-a census that could not be taken is not a census that came back empty — the same distinction
-the recovery gate makes below, for the same reason.
+Two asymmetries in there are load-bearing. `OOMKilled` is set when the container's *init*
+process is the one killed, and #502's kill lands on a child inside the cgroup — so
+`OOMKilled=false` on its own rules nothing out, and only the counter can say no OOM happened.
+And a count of zero is what both an empty container and a failed walk produce, so calling the
+container empty takes `census_known`, the flag the recovery gate reads for the same reason. A
+counter or a census that was never read is reported as `unread` / `census unavailable` in the
+evidence block rather than as the zero it defaulted to.
 
-Both sentences were once printed unconditionally, which is how two pages in 2026 asserted an
-OOM that had not happened and an idle worker whose queue never stalled, and recommended a
-destructive remedy on the strength of it.
+`docker exec` failing is why the impact sentence reads the way it does. Exec sets up a *new*
+process in the container's namespaces, so its failure is a statement about starting processes,
+not about the ones already running. The census is the only thing in the payload that speaks to
+impact.
+
+Printing those sentences unconditionally is how two pages in 2026 asserted an OOM that had not
+happened and an idle worker whose queue never stalled, and recommended a destructive remedy on
+the strength of it.
 
 ### What it will and will not do on its own
 
