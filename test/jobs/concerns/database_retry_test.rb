@@ -109,14 +109,10 @@ class DatabaseRetryTest < ActiveSupport::TestCase
     )
 
     begin
-      pid = adapter.select_value("SELECT pg_backend_pid()")
-
       # Terminate that backend from another session, the way a Postgres restart or
       # an admin disconnect does: the client-side handle survives, the server-side
       # session does not.
-      ActiveRecord::Base.connection_pool.with_connection do |c|
-        c.select_value("SELECT pg_terminate_backend(#{pid.to_i})")
-      end
+      terminate_backend_of(adapter)
 
       ActiveRecord::Base.expects(:connection).never
 
@@ -248,17 +244,18 @@ class DatabaseRetryTest < ActiveSupport::TestCase
   end
 
   test "the two retry helpers rescue exactly the same exceptions" do
-    # DatabaseRetry and ControllerDatabaseRetry are hand-maintained copies of one
-    # list. This is the guard that stops them drifting apart.
-    assert_equal DatabaseRetry::RETRYABLE_EXCEPTIONS,
-                 ControllerDatabaseRetry::RETRYABLE_EXCEPTIONS
+    # ControllerDatabaseRetry references this list rather than copying it. assert_same
+    # rather than assert_equal on purpose: an equal-but-separate array would mean
+    # someone reintroduced the copy, which is the drift this guards against.
+    assert_same DatabaseRetry::RETRYABLE_EXCEPTIONS,
+                ControllerDatabaseRetry::RETRYABLE_EXCEPTIONS
   end
 
   test "with_db_retry recovers a real terminated Postgres backend" do
     # The end-to-end proof for #779, against a real server: kill the backend from
-    # another session, then run a statement through the helper. Before the fix the
-    # ConnectionFailed escaped on attempt 1; now the adapter reconnects itself and
-    # the helper's second attempt succeeds.
+    # another session, then run a statement through the helper. Attempt 1 hits the
+    # dead backend and raises ConnectionFailed; the adapter reconnects itself and
+    # attempt 2 succeeds.
     #
     # Standalone adapter rather than a pooled connection for the same reason as the
     # upstream-behaviour test above: transactional fixtures pin every pool
@@ -268,10 +265,7 @@ class DatabaseRetryTest < ActiveSupport::TestCase
     )
 
     begin
-      pid = adapter.select_value("SELECT pg_backend_pid()")
-      ActiveRecord::Base.connection_pool.with_connection do |c|
-        c.select_value("SELECT pg_terminate_backend(#{pid.to_i})")
-      end
+      terminate_backend_of(adapter)
 
       ActiveRecord::Base.expects(:connection).never
 
@@ -286,6 +280,43 @@ class DatabaseRetryTest < ActiveSupport::TestCase
       assert_equal [ 0.5 ], @host.delays
     ensure
       adapter.disconnect!
+    end
+  end
+
+  test "a connection death that outlives the budget still raises" do
+    # The other half of the mid-flight case: a failover that lasts longer than
+    # 0.5s + 1s of backoff. The helper spends its attempts and re-raises rather
+    # than returning something the caller would mistake for success.
+    attempts = 0
+    error = assert_raises(ActiveRecord::ConnectionFailed) do
+      @host.with_db_retry do
+        attempts += 1
+        raise ActiveRecord::ConnectionFailed, "PQconsumeInput() FATAL:  terminating connection"
+      end
+    end
+
+    assert_equal 3, attempts
+    assert_equal [ 0.5, 1.0 ], @host.delays
+    assert_match(/terminating connection/, error.message)
+  end
+
+  private
+
+  # `pg_terminate_backend` signals the backend and returns without waiting for it to
+  # die, so a statement issued immediately afterwards can still land on a live
+  # session. Wait for the backend to actually be gone, so "the next statement fails"
+  # is a fact rather than a race.
+  def terminate_backend_of(adapter)
+    pid = adapter.select_value("SELECT pg_backend_pid()").to_i
+
+    ActiveRecord::Base.connection_pool.with_connection do |c|
+      c.select_value("SELECT pg_terminate_backend(#{pid})")
+
+      50.times do
+        break if c.select_value("SELECT count(*) FROM pg_stat_activity WHERE pid = #{pid}").to_i.zero?
+
+        sleep 0.02
+      end
     end
   end
 end
