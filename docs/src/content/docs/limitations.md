@@ -4326,6 +4326,37 @@ yet on a fresh worker, or the current row's stored pair is incomplete and
 the same narrowing is already what the `/health` Agent Authentication card reports, so the two
 surfaces agree; `/quotas` is the page that shows the whole pool.
 
+## An empty-turn restart is bounded per incident, not per lifetime
+
+`RetryBudget::EMPTY_TURN` bounds the two vantage points that restart a turn the runtime ended
+without writing a conversation — `ProcessLifecycleManager#handle_empty_turn` and
+`Sessions::RestartUnstartedTurn`. Until [#727](https://github.com/tadasant/zimmer/issues/727) it
+was reset nowhere, which made it a hard cap of two restarts for a session's whole life. It is a
+budget now, so the monitor loop hands it back after the process has run stably for
+`RetryBudget::EMPTY_TURN_RESET_AFTER` (30 minutes) — thirty times the window every other budget
+takes, chosen to clear the 180-second `McpStartupTimeout` dead zone in which a healthy runtime is
+up and has legitimately written nothing.
+
+The residual is that the reset measures **uptime**, not output. It never asks whether the process
+has produced a line. So a cause that keeps a process alive and silent for more than half an hour
+and then exits normally — a hung agent, a tool call that blocks forever, a runtime with no startup
+timeout of its own — is restarted about twice an hour indefinitely, where before it was stopped
+after two attempts. It is a slow loop rather than a spin, each cycle is a line in the session log,
+and the `needs_input` park at the end of a spent budget still happens within any 30-minute window;
+but there is no longer a lifetime ceiling on it.
+
+The counter's exhaustion count on `/health` also under-reports the history, because the reset
+deletes the counter and its stamp: the fleet-wide `total_retries_attempted` for this budget resets
+with each cycle, so a session in the slow loop contributes at most two attempts to the number at
+any moment. The reset line in the session's own log (`"Empty-turn restart counter reset (was N) -
+process stable for Ns"`) is the durable record.
+
+The narrower fix is to key this one budget's reset on `RuntimeConversationPresence` — hand it back
+once the runtime has written a conversation, which is by construction "the incident is over" for a
+branch whose whole predicate is that neither store holds one — and let the window drop back to the
+house 60 seconds. That needs a reset that can ask a question about the filesystem, which
+`RetryBudget` deliberately cannot; it is a value object over `session.metadata`.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

@@ -609,8 +609,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("health dashboard (pool recovering)")
   end
 
-  # The retry-budget panel is a five-row list of counter keys — `signal_death_retry_count`
-  # is 24 unbreakable characters — next to a four-up figure grid. Both are the shapes that
+  # The retry-budget panel is a seven-row list of counter keys — `session_id_conflict_count`
+  # is 25 unbreakable characters — next to a four-up figure grid. Both are the shapes that
   # run off a phone, and the panel renders whether or not any budget has been spent.
   test "the retry budget panel does not overflow horizontally on a phone" do
     create_session(status: :running, metadata: {
@@ -625,7 +625,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     visit health_dashboard_path
     assert_text "Retry Budgets"
-    # All five, including the three no health surface reported before #527.
+    # Every declared budget, including the two the surface did not reach until #727.
     RetryBudget.all.each { |budget| assert_text budget.key }
 
     assert_no_horizontal_overflow("health dashboard (retry budgets)")

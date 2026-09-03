@@ -2,18 +2,19 @@
 
 # One auto-recovery retry budget, declared once and read everywhere.
 #
-# Zimmer bounds five distinct auto-recovery loops — SIGTERM retry, API-error retry,
-# signal-death resume, MCP connection retry, context-length compact. Each one counts
-# its attempts in a `session.metadata` key, stamps when it last fired, has a maximum,
-# and clears a set of keys once the process has been stable again for a while. Those
-# four facts used to live in five different classes, in three naming conventions, with
-# the reset logic written out three times and the metadata keys re-typed a fourth time
-# as SQL inside HealthMonitorService.
+# Zimmer bounds seven distinct auto-recovery loops — SIGTERM retry, API-error retry,
+# signal-death resume, MCP connection retry, context-length compact, session-id
+# conflict recovery, empty-turn restart. Each one counts its attempts in a
+# `session.metadata` key, stamps when it last fired, has a maximum, and clears a set of
+# keys once the process has been stable again for a while. Those four facts used to
+# live in five different classes, in three naming conventions, with the reset logic
+# written out three times and the metadata keys re-typed a fourth time as SQL inside
+# HealthMonitorService.
 #
 # A budget is a declaration, not state: the state is the session's metadata, and every
 # method here takes the session it is reading or writing. `RetryBudget.all` is the list
-# the monitoring loop resets and the health surface enumerates, so a sixth failure class
-# is one declaration rather than twenty copied lines plus two forgotten surfaces.
+# the monitoring loop resets and the health surface enumerates, so an eighth failure
+# class is one declaration rather than twenty copied lines plus two forgotten surfaces.
 #
 # It lives here rather than under `app/models/` because it is a value object over another
 # model's column, not a record: `app/models/*.rb` is exclusively ActiveRecord, and
@@ -29,6 +30,23 @@ class RetryBudget
   # stretch are separate incidents, not one crash-loop, and a session that OOMs once
   # every few hours should not accumulate toward its cap over its whole lifetime.
   DEFAULT_RESET_AFTER = 60
+
+  # The empty-turn budget's own window, deliberately far above DEFAULT_RESET_AFTER.
+  #
+  # Every other budget is spent by a process that got going and then broke, so "this
+  # process has been up for a minute" is real evidence the incident is over. The
+  # empty-turn branch is the mirror image: it fires only while NEITHER transcript store
+  # holds a conversation, so a process that is merely up proves nothing. A runtime can
+  # sit for minutes bringing MCP servers up before it writes its first line — the
+  # startup timeout Zimmer grants one is McpStartupTimeout::SECONDS — and handing
+  # the budget back inside that window is exactly what would turn a bounded
+  # empty-session failure into an unbounded restart loop, one cycle per startup
+  # timeout, forever.
+  #
+  # 30 minutes clears the whole startup dead zone with room to spare, and is still
+  # nothing against the case the resets exist for: a session that ran for a week and
+  # then hit one unrelated incident (#727).
+  EMPTY_TURN_RESET_AFTER = 30.minutes.to_i
 
   # What #reset_if_stable! reports when it actually cleared a counter, so the caller can
   # log what it was and how long the process had been up. nil means "nothing to do".
@@ -47,12 +65,16 @@ class RetryBudget
     # @param label [String] human name of the failure class, for health output
     # @param counter_label [String] how the reset reads in a session log
     # @param reset_after [Integer] seconds of stability before the reset fires
-    def define(name:, key:, max:, stamp:, clears:, label:, counter_label:, reset_after: DEFAULT_RESET_AFTER)
+    # @param terminal_status [Symbol] the status a session comes to rest in when this
+    #   budget runs out, which is what #exhausted_sessions counts
+    def define(name:, key:, max:, stamp:, clears:, label:, counter_label:,
+               reset_after: DEFAULT_RESET_AFTER, terminal_status: :failed)
       raise ArgumentError, "retry budget #{name} is already declared" if @registry.key?(name)
 
       @registry[name] = new(
         name: name, key: key, max: max, stamp: stamp, clears: clears.dup.freeze,
-        label: label, counter_label: counter_label, reset_after: reset_after
+        label: label, counter_label: counter_label, reset_after: reset_after,
+        terminal_status: terminal_status
       )
     end
 
@@ -70,9 +92,11 @@ class RetryBudget
     end
   end
 
-  attr_reader :name, :key, :max, :stamp, :clears, :label, :counter_label, :reset_after
+  attr_reader :name, :key, :max, :stamp, :clears, :label, :counter_label, :reset_after,
+    :terminal_status
 
-  def initialize(name:, key:, max:, stamp:, clears:, label:, counter_label:, reset_after:)
+  def initialize(name:, key:, max:, stamp:, clears:, label:, counter_label:, reset_after:,
+                 terminal_status:)
     @name = name
     @key = key
     @max = max
@@ -81,6 +105,7 @@ class RetryBudget
     @label = label
     @counter_label = counter_label
     @reset_after = reset_after
+    @terminal_status = terminal_status
     freeze
   end
 
@@ -174,15 +199,30 @@ class RetryBudget
     Session.where("metadata->>? IS NOT NULL", stamp)
   end
 
-  # Sessions that failed with the budget fully spent — the "this session ran out of
-  # attempts" number, which is the one an operator asking "why did it fail permanently"
-  # is looking for.
+  # Sessions that came to rest with the budget fully spent — the "this session ran out
+  # of attempts" number, which is the one an operator asking "why did it stop" is
+  # looking for.
+  #
+  # `terminal_status` rather than a hardcoded `:failed`, because running out is not the
+  # same ending for every loop: five of them fail the session, and the empty-turn
+  # restart parks it in `needs_input` instead (ProcessLifecycleManager#handle_exit and
+  # Sessions::RestartUnstartedTurn#abandon both come to rest rather than failing). A
+  # `:failed` filter would report zero exhaustions for that budget no matter how many
+  # sessions Zimmer gave up restarting.
   # @return [ActiveRecord::Relation]
   def exhausted_sessions
-    sessions.where(status: :failed).where("(metadata->>?)::int >= ?", key, max)
+    sessions.where(status: terminal_status).where("(metadata->>?)::int >= ?", key, max)
   end
 
-  # --- The five budgets -------------------------------------------------------------
+  # Sessions that spent the budget and did NOT come to rest in its terminal status —
+  # the recovery worked. The complement of #exhausted_sessions' status filter, for the
+  # same reason.
+  # @return [ActiveRecord::Relation]
+  def recovered_sessions
+    sessions.where.not(status: terminal_status)
+  end
+
+  # --- The seven budgets ------------------------------------------------------------
   #
   # Key strings and maxima are exactly what each loop used before this object existed.
 
@@ -246,5 +286,46 @@ class RetryBudget
     clears: %w[compact_retry_count last_compact_at],
     label: "Context-length compact",
     counter_label: "Context-length compact counter"
+  )
+
+  # --- The two recovery budgets (#727) -----------------------------------------------
+  #
+  # Both bound a recovery that can recur across a session's whole life, so both need a
+  # per-incident reset for the same reason the five above it do. Without one they are
+  # lifetime caps: a session that survives two held-id conflicts in its first minute,
+  # recovers and then works for a week fails permanently on the next unrelated conflict,
+  # dropping the request it carries — `failed` rejects `follow_up`, so it cannot even be
+  # resumed in place.
+
+  # Left on DEFAULT_RESET_AFTER, and 60s is enough to terminate the looping case: the
+  # refusal is a SPAWN-time one, reported and exited within seconds, so two conflicts in
+  # one turn arrive seconds apart and no reset can land between them — every occurrence
+  # in #519's recurrence table reached 2 inside a single turn. A process that has been up
+  # for a full minute has, by construction, got past the spawn this budget bounds.
+  SESSION_ID_CONFLICT = define(
+    name: :session_id_conflict,
+    key: "session_id_conflict_count",
+    max: 2,
+    stamp: "last_session_id_conflict_at",
+    clears: %w[session_id_conflict_count last_session_id_conflict_at],
+    label: "Session-id conflict recovery",
+    counter_label: "Session-id conflict recovery counter"
+  )
+
+  # `unstarted_turn_restart_abandoned` is deliberately NOT cleared: it is the record of
+  # a park Zimmer already announced, which is diagnosis rather than budget — the same
+  # split that keeps `mcp_failed_servers` and the transcript scan positions.
+  EMPTY_TURN = define(
+    name: :empty_turn,
+    key: "empty_turn_recovery_count",
+    max: 2,
+    stamp: "last_empty_turn_recovery_at",
+    clears: %w[empty_turn_recovery_count last_empty_turn_recovery_at],
+    label: "Empty-turn restart",
+    counter_label: "Empty-turn restart counter",
+    reset_after: EMPTY_TURN_RESET_AFTER,
+    # The one budget whose exhaustion is a park, not a failure: both vantage points come
+    # to rest in `needs_input` with the transcript empty rather than failing the session.
+    terminal_status: :needs_input
   )
 end

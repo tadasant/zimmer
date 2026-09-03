@@ -333,19 +333,26 @@ It prints the marker it emitted and the exact LogsQL query that confirms the rec
 
 `HealthMonitorService#retry_budget_health` reports every bounded auto-recovery loop
 Zimmer runs — SIGTERM retry, API-error retry, signal-death resume, MCP connection retry,
-context-length compact — as one uniform section, rendered on `/health`, returned by
-`GET /api/v1/health`, and included in the `get_system_health` MCP tool's JSON. Per budget
-it carries the declared counter key, the maximum, how many sessions have spent any of it,
-total attempts, how many recovered, how many **failed with the budget fully spent**, and
-how many attempts happened in the last 24 hours.
+context-length compact, session-id conflict recovery, empty-turn restart — as one uniform
+section, rendered on `/health`, returned by `GET /api/v1/health`, and included in the
+`get_system_health` MCP tool's JSON. Per budget it carries the declared counter key, the
+maximum, how many sessions have spent any of it, total attempts, how many recovered, how
+many **came to rest with the budget fully spent**, and how many attempts happened in the
+last 24 hours.
 
-That last number is the one to reach for when the question is "why did this session fail
-permanently": it is answerable for all five loops. It was answerable for two of them
-until #527 — the section was built by naming metadata keys in SQL, and only SIGTERM and
-API-error had ever been wired, so a session that burned through its MCP-connection or
-compact budget was invisible to every health surface while the dashboard read as
-complete. The section is now built by enumerating `RetryBudget.all`, so a budget appears
-because it was declared. See [Retry budgets](/sessions/spawning/#retry-budgets).
+"Came to rest" rather than "failed", because running out is not the same ending for every
+loop: six of them fail the session, and the empty-turn restart parks it in `needs_input`
+with an empty transcript instead. Each budget declares its own `terminal_status`, so the
+exhausted count means the same thing on every row.
+
+That count is the one to reach for when the question is "why did this session stop": it is
+answerable for all seven loops. It was answerable for two of them until #527 — the section
+was built by naming metadata keys in SQL, and only SIGTERM and API-error had ever been
+wired, so a session that burned through its MCP-connection or compact budget was invisible
+to every health surface while the dashboard read as complete. The section is now built by
+enumerating `RetryBudget.all`, so a budget appears because it was declared, which is what
+brought the last two onto the surface in #727. See
+[Retry budgets](/sessions/spawning/#retry-budgets).
 
 The SIGTERM and API-error panels remain alongside it: they carry rate-limit pressure and
 account-quota detail the generic section has no equivalent of. They read their numbers

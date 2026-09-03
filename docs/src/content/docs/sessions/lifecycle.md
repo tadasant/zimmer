@@ -488,14 +488,16 @@ merely lagging poller can never be enough to conclude that nothing was written.
 | --- | --- |
 | a conversation | Park with `paused_by: "recovery"`, as before. The session is mid-turn; a resume picks up where it left off. |
 | nothing | `Sessions::RestartUnstartedTurn` replays the session's own prompt into a fresh spawn. Nothing was consumed and no partial work exists, so the stored prompt is exactly what should run. |
-| nothing, `MAX_RESTARTS` times | Come to rest in `needs_input` with `failure_reason: "unstarted_turn_not_recoverable"`, `metadata["unstarted_turn_restart_abandoned"]` naming the reason, and **no** recovery marker — no sweep can do anything a third restart would not. The pause announces itself. |
+| nothing, `RetryBudget::EMPTY_TURN.max` times | Come to rest in `needs_input` with `failure_reason: "unstarted_turn_not_recoverable"`, `metadata["unstarted_turn_restart_abandoned"]` naming the reason, and **no** recovery marker — no sweep can do anything a third restart would not. The pause announces itself. |
 
 This is the same judgement [`ProcessLifecycleManager#handle_empty_turn`](/sessions/spawning/) makes
 when a process exits under a live monitor, arriving from the other direction: there the turn ended in
 front of us, here it ended while nobody was watching. They share both the budget and the
 `empty_turn_recovery_count` key deliberately — it is one event seen from two vantage points, and a
 session that has already burned its restarts in-process does not get a second allowance because the
-next failure happened to be a worker interruption.
+next failure happened to be a worker interruption. It is one `RetryBudget` object
+(`RetryBudget::EMPTY_TURN`), so it is also one reset: a stable stretch hands the restarts back to
+whichever vantage point needs them next, rather than either one being a lifetime cap.
 
 The restart takes a **new runtime session id** (or, for a runtime that mints its own, drops the
 stored one) and turns `runtime_started` off, so the replacement spawn builds `--session-id` rather
