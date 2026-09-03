@@ -618,8 +618,8 @@ module SessionStateMachine
   #   nudging it would fire the work early;
   # - a session dormant in the spot queue is also asleep on purpose, and it has
   #   no wake-up to give it away: nudging one the ceiling paused puts it straight
-  #   back on the window that stopped it, and nudging one a human parked there
-  #   from "Pause Until" undoes the thing they just asked for. Both come back
+  #   back on the window that stopped it, and nudging one that was parked there
+  #   deliberately undoes the thing that park asked for. Both come back
   #   through SpotSessionPause's sweep — or immediately, on "Make this session
   #   priority". The bulk-refresh path already excluded these; this is the same
   #   rule for a single session.

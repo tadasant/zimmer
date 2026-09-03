@@ -47,11 +47,11 @@ module Sessions
   # than claiming a start it cannot promise; promotion, which the hold banner
   # already points at, is what removes the gate.
   #
-  # == Paused mid-run, or parked from "Pause Until → Spot Queue": resume it
+  # == Paused mid-run, or parked in the spot queue: resume it
   #
   # Those sessions have no queued job at all — the ceiling took their turn away
   # and the resume sweep is what gives it back, on a locked re-check that also
-  # restores the prompt a human left with the park. Starting one is that same
+  # restores the prompt left with the park. Starting one is that same
   # resume, asked for by hand, so it goes through SpotSessionPause rather than
   # being reimplemented here. Clearing the pause record without resuming would be
   # the worst of both: it is the marker the sweep's population is keyed on, so

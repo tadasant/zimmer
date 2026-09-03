@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 module Sessions
-  # "Pause Until → Spot Queue": sleep a session now and leave it for the spot
-  # scheduler, with no wake trigger and no wall-clock time attached.
+  # Sleep a session now and leave it for the spot scheduler, with no wake trigger
+  # and no wall-clock time attached.
   #
-  # This is the sibling of Sessions::ScheduleWakeUp — the other half of the same
-  # web-UI control — and the difference is the whole point. ScheduleWakeUp arms a
-  # one-time trigger that fires at a time a human picked. This arms nothing: the
+  # This is the sibling of Sessions::ScheduleWakeUp, and the difference is the
+  # whole point. ScheduleWakeUp arms a one-time trigger that fires at a time the
+  # caller picked. This arms nothing: the
   # session goes dormant in `waiting` carrying the same metadata a ceiling pause
   # writes (SpotSessionPause), so the sweep that already resumes spot work picks
   # it up on the next pass where a Claude Code account is under both quota
@@ -37,21 +37,21 @@ module Sessions
   #
   # Reversing it is the button the session page already carries: "Make this
   # session priority" promotes it and the next sweep resumes it, which is exactly
-  # what a human who changed their mind wants. The panel says so before the
-  # click.
+  # what a human who changed their mind wants. The `action_session` tool
+  # description says so before the call.
   #
   # == Precedence is left alone
   #
   # Every session already carries a rank, and a session promoted to priority
   # keeps it for exactly this moment. Assigning one here would silently overwrite
   # a placement someone made on the Ranked view, and the Ranked view (`?view=
-  # ranked`) is where the queue is ordered — this control decides that the
-  # session waits, not where in the line it waits.
+  # ranked`) is where the queue is ordered — this park decides that the session
+  # waits, not where in the line it waits.
   class PauseIntoSpotQueue
     class Error < StandardError; end
 
     # What the session's banner and log say it is waiting on.
-    DETAIL = "Parked in the spot queue from \"Pause Until\". No wake-up time is set: " \
+    DETAIL = "Parked in the spot queue on request. No wake-up time is set: " \
              "it resumes when a Claude Code account is under both quota targets and a " \
              "session slot is free, in precedence order."
 
@@ -74,14 +74,12 @@ module Sessions
     attr_reader :session, :prompt
 
     def call
-      # Session#pausable_until? rather than the service's own WAKEABLE_STATUSES,
-      # and deliberately: a `waiting` session that has never started is queued
-      # for SPAWN, not asleep, and parking one writes a queue record over a
-      # session the spawn pipeline still owns — the sweep would then "resume" a
-      # session that has no runtime session to resume. The web UI checks the same
-      # predicate before it gets here; keeping it in the service is what stops
-      # the MCP surface from being the one path that skips it.
-      unless session.pausable_until?
+      # Session#sleepable? rather than the service's own WAKEABLE_STATUSES, and
+      # deliberately: a `waiting` session that has never started is queued for
+      # SPAWN, not asleep, and parking one writes a queue record over a session
+      # the spawn pipeline still owns — the sweep would then "resume" a session
+      # that has no runtime session to resume.
+      unless session.sleepable?
         raise Error, "Session #{session.id} is in \"#{session.status}\" state and cannot be put in the " \
                      "spot queue. Only a session that has started and is in " \
                      "#{ScheduleWakeUp::WAKEABLE_STATUSES.join(', ')} can be."
@@ -93,9 +91,9 @@ module Sessions
       # the old wake and parking the session are a single act, and a failure
       # after the drop would leave an awake session with nothing armed at all.
       Session.transaction do
-        # "Not at that time, THIS instead" — the same gesture as picking a second
-        # time in the panel, so it supersedes an earlier Pause Until the same way.
-        SupersedePendingWakes.call(session: session, note: "Pause Until → Spot Queue")
+        # "Not at that time, THIS instead" — the same gesture as arming a second
+        # wake, so it supersedes an earlier one the same way.
+        SupersedePendingWakes.call(session: session, note: "Spot Queue")
 
         pinned = pin_to_spot!
         park!
@@ -131,10 +129,10 @@ module Sessions
     # needs the record.
     #
     # Whether that turn is allowed to end is the CALLER's choice, not this
-    # service's: the web UI's "Pause Until" stops it immediately
-    # (Sessions::HaltRunningTurn, invoked after this returns), while the MCP tool
-    # defers by default because its commonest caller is a session parking itself.
-    # Either way the deferral written here is what the session falls back on.
+    # service's: `action_session` with "halt": true stops it immediately
+    # (Sessions::HaltRunningTurn, invoked after this returns), and defers by
+    # default because its commonest caller is a session parking itself. Either
+    # way the deferral written here is what the session falls back on.
     #
     # `merge_metadata!` rather than a whole-column write: the session may be
     # RUNNING, and AgentSessionJob is writing its own keys to the same column
@@ -171,7 +169,7 @@ module Sessions
 
     def log_line(pinned)
       [
-        "[Pause Until] Parked in the spot queue — no wake-up time is set.",
+        "[Spot Queue] Parked in the spot queue — no wake-up time is set.",
         pinned ? "This session is now spot (it was priority); make it priority again to resume it on the next sweep." : nil,
         "Queue position: precedence #{session.precedence}."
       ].compact.join(" ")

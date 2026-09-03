@@ -192,12 +192,12 @@ module Mcp
         ]
       end
 
-      # The same dormancy reached deliberately: a human chose "Spot Queue" in the
-      # web UI's "Pause Until". Nothing interrupted this session, so an agent
+      # The same dormancy reached deliberately, through `action_session`'s
+      # "pause_into_spot_queue". Nothing interrupted this session, so an agent
       # reading it must not go looking for the turn it lost — there isn't one.
       def user_queued_lines(session, detail)
         [
-          "- **Parked in the spot queue by a human:** #{detail}",
+          "- **Parked in the spot queue deliberately:** #{detail}",
           "- **Parked at:** #{session.metadata&.dig(SpotSessionPause::PAUSED_AT).presence || 'unknown'}",
           "- **Queue position:** precedence #{session.precedence} (higher is handled sooner)",
           "- **Resumes when:** a Claude Code account is under both quota targets and a session slot " \

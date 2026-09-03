@@ -12,7 +12,7 @@
 # or the quota gate, and nothing in those places reads these two columns. A
 # snoozed session runs exactly when it would have run had nobody snoozed it — the
 # card simply is not on screen. The control that genuinely sleeps a session is
-# "Pause Until" (Sessions::ScheduleWakeUp / Sessions::PauseIntoSpotQueue), which
+# Sleeping a session (Sessions::ScheduleWakeUp / Sessions::PauseIntoSpotQueue), which
 # is a different control, doing a different thing, that happens to sit in the same
 # menu. If a change here ever needs to consult the lifecycle, that is a bug in the
 # change rather than a gap here.

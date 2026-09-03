@@ -279,11 +279,11 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     assert_select "#pinned_section ##{ActionView::RecordIdentifier.dom_id(session)} [data-controller='visibility']", 1
   end
 
-  test "a card whose session cannot be paused still gets the visibility menu" do
-    # An archived session is the case Pause Until has nothing to offer, so the
-    # menu holding it must still be rendered for the visibility rows alone.
+  test "a card whose session cannot be slept still gets the visibility menu" do
+    # An archived session cannot be slept at all, and its card still has to carry
+    # the menu: board visibility is offered in every state.
     session = make_session(title: "Trashed", status: :archived)
-    assert_not session.pausable_until?
+    assert_not session.sleepable?
 
     get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: [ "archived" ] }
 

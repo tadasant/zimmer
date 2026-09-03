@@ -628,32 +628,33 @@ The "wake me up later" path. The session goes dormant and a one-time schedule tr
 resume it. If the wake-up is scheduled while the session is *running*,
 `metadata["pending_sleep"] = true` is set and the actual transition happens on the next `pause`.
 
-A human clicking **Pause Until** on a running session does not wait for that next `pause` — the
-control stops the turn itself (`Sessions::HaltRunningTurn` terminates the process and pauses the
-session), so the session is dormant in `waiting` before the request returns. The deferred sleep
-remains the fallback for a halt that cannot land. See
-[Pausing a session that is still running](/sessions/triggers/#pausing-a-session-that-is-still-running).
+A park that passes `"halt": true` does not wait for that next `pause` — it stops the turn itself
+(`Sessions::HaltRunningTurn` terminates the process and pauses the session), so the session is
+dormant in `waiting` before the tool call returns. The deferred sleep remains the fallback for a
+halt that cannot land. See
+[Parking a session that is still running](/sessions/triggers/#parking-a-session-that-is-still-running).
 
-Agents reach this through the `wake_me_up_later` MCP tool, and humans through the **Pause Until**
-control on a session card's overflow menu or in the session detail header. Both go through
-`Sessions::ScheduleWakeUp`, so both refuse the same wakes — a time in the past, or inside the
-30-second grace window, would fire-and-drop in the scheduler and leave the session asleep forever.
-Only `needs_input`, `running` and `waiting` sessions are offered the control; from `failed` or
-`archived` the auto-sleep silently no-ops and the trigger would point at a session nothing can wake.
+Agents reach this through the `wake_me_up_later` MCP tool, which goes through
+`Sessions::ScheduleWakeUp` — a time in the past, or inside the 30-second grace window, would
+fire-and-drop in the scheduler and leave the session asleep forever, so the service refuses it.
+Only `needs_input`, `running` and `waiting` sessions can be scheduled; from `failed` or `archived`
+the auto-sleep silently no-ops and the trigger would point at a session nothing can wake.
 
-**Spot Queue — the same sleep with no wake-up.** The last choice in that panel is not a time.
-It sleeps the session and hands it to the spot scheduler instead of arming anything:
+There is no human-facing control that sleeps a session until a chosen time. A human's lever on a
+sleeping session is the other direction: **Start now** wakes it early.
+
+**The spot queue — the same sleep with no wake-up.** `action_session`'s `pause_into_spot_queue`
+sleeps the session and hands it to the spot scheduler instead of arming anything:
 `Sessions::PauseIntoSpotQueue` writes the same dormancy record a mid-run ceiling pause writes
 (`SpotSessionPause`), so the sweep that already resumes spot work picks this session up on the
 next pass where a Claude Code account is under both quota targets and a session slot is free —
-highest precedence first. `pause_into_spot_queue` on `action_session` is the same thing for an
-agent. Two consequences worth knowing before you click it:
+highest precedence first. Two consequences worth knowing before calling it:
 
 - **It makes the session spot**, if it was not already, because the sweep resumes a non-spot
   sleeper on its very next pass. That is reversible and it is the way back out: *Make this session
   priority* on the banner promotes it, and the next sweep resumes it.
-- **It replaces any wake-up you had already armed** from the same control — picking the queue
-  after picking a time means "not then, this instead".
+- **It replaces any wake-up the session had already armed** — parking with no wake-up means "not
+  then, this instead", and a leftover wake would pull the session straight back out of the queue.
 
 Its queue position is whatever `precedence` the session is already carrying; the
 [Ranked view](/sessions/spot-and-priority/) is where that is changed.
@@ -663,7 +664,7 @@ its precedence, its scheduling class, a recovered quota pool, a freed fleet slot
 would otherwise have started it are listed in
 [A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence), along with
 the limit of what a pause claims: it is a floor under when the session may run, not a promotion past
-the spot queue when the moment arrives. A Spot Queue park is the deliberate exception to the whole
+the spot queue when the moment arrives. A spot-queue park is the deliberate exception to the whole
 thing — it arms nothing, so the spot sweep resuming it is the point.
 
 Zimmer also uses this path on its own behalf: `AuthOutageParkService` parks a session here when the

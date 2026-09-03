@@ -68,12 +68,11 @@
       reason both rank cells are: a promote or a demote has to swap them in place.
 
       `headroom` is the vertical room the menu asks for beyond its own box before it
-      gives up on opening downward. The card's menu opens a Pause Until panel and
-      needs 400px of it; this one opens the snooze panel, which is shorter (no
-      "Resume with" box and no spot-queue block), so it asks for 300 — enough that a
-      row near the foot of a long queue flips upward instead of opening a panel off
-      the bottom of the screen, and not so much that every row in the top half of
-      the page opens upward for room it does not need. %>
+      gives up on opening downward. The controller's default budgets for the tallest
+      panel a menu row opens; this one opens the snooze panel, which is shorter, so it
+      asks for 300 — enough that a row near the foot of a long queue flips upward
+      instead of opening a panel off the bottom of the screen, and not so much that
+      every row in the top half of the page opens upward for room it does not need. %>
   <div class="relative shrink-0 sm:order-5"
        data-controller="overflow-menu"
        data-action="visibility:changed->overflow-menu#close"

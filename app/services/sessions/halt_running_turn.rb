@@ -5,17 +5,15 @@ module Sessions
   #
   # == Why this exists
   #
-  # "Pause Until" arms a wake and expects the session to go to sleep. On a
-  # `needs_input` session that is one step — Trigger's after_create callback
-  # calls `sleep!` and the session is dormant before the request finishes. On a
-  # RUNNING session the same callback could only set `pending_sleep`, a note the
-  # pause callback reads whenever the current turn happens to end. An agent turn
-  # runs for minutes or hours, so from the operator's chair the control did
-  # nothing at all: the session kept running, the badge never changed, and the
-  # only evidence anything had happened was a trigger row they could not see.
+  # Parking a session expects it to go to sleep. On a `needs_input` session that
+  # is one step — the sleep lands before the request finishes. On a RUNNING
+  # session the same path could only set `pending_sleep`, a note the pause
+  # callback reads whenever the current turn happens to end. An agent turn runs
+  # for minutes or hours, so from the caller's chair the park did nothing at all:
+  # the session kept running and the badge never changed.
   #
-  # A human pausing someone else's running session means stop. So the deferral
-  # is replaced by the thing the "Pause" button already does — terminate the CLI
+  # Parking someone else's running session can mean stop now. So the deferral is
+  # replaced by the thing the "Pause" button already does — terminate the CLI
   # process — and the session lands in `waiting` in the same gesture.
   #
   # == What it costs
@@ -23,8 +21,8 @@ module Sessions
   # The same cost SpotSessionPause pays, and for the same reason it is worth
   # paying: whatever the agent wrote to disk stays written, the tool call in
   # flight is lost, and so is any reasoning not yet flushed to the transcript.
-  # That is what "halt continuation" means, and the panel says so before the
-  # click rather than after it.
+  # That is what "halt continuation" means, and the caller is told so before it
+  # asks rather than after.
   #
   # == Order of operations
   #
@@ -34,20 +32,19 @@ module Sessions
   # losing the agent's last message. Killing first means the job sees the exit,
   # polls, and stops.
   #
-  # Callers arm the wake BEFORE calling this, never after. Arming first means a
-  # rejected wake time (a past date, a malformed zone) costs nothing — no turn
-  # has been taken away yet — and it means a halt that only partly succeeds
-  # degrades to the old deferred behaviour rather than to a session dozing with
-  # nothing armed: `pending_sleep` is already written, so the turn's own end
-  # still puts the session to sleep.
+  # Callers park the session BEFORE calling this, never after. Parking first
+  # means a rejected park costs nothing — no turn has been taken away yet — and
+  # it means a halt that only partly succeeds degrades to the old deferred
+  # behaviour rather than to a session dozing with nothing armed: `pending_sleep`
+  # is already written, so the turn's own end still puts the session to sleep.
   #
   # == Why it does not write `paused_by`
   #
   # SessionsController#pause writes `paused_by: "user"`, and that marker means
   # "a human has taken this session over" — Trigger#reusable_session? refuses to
-  # deliver into a session carrying it. Writing it here would arm a wake and
-  # then guarantee it was dropped on arrival. A Pause Until is the opposite of
-  # taking a session over: it says come back at this time, by yourself.
+  # deliver into a session carrying it. Writing it here would park a session and
+  # then guarantee its resume was dropped on arrival. A park is the opposite of
+  # taking a session over: it says come back later, by yourself.
   class HaltRunningTurn
     # @!attribute [r] halted
     #   @return [Boolean] whether the turn was actually stopped
@@ -59,11 +56,11 @@ module Sessions
     # @param reason [Symbol] passed through to ProcessLifecycleManager#terminate
     #   for the log line
     # @return [Result]
-    def self.call(session:, reason: :pause_until)
+    def self.call(session:, reason: :pause_into_spot_queue)
       new(session: session, reason: reason).call
     end
 
-    def initialize(session:, reason: :pause_until)
+    def initialize(session:, reason: :pause_into_spot_queue)
       @session = session
       @reason = reason
     end
@@ -130,18 +127,18 @@ module Sessions
       false
     end
 
-    # What the session's own timeline calls this. A halt reached from the MCP
-    # tool is not "Pause Until" — that is a web-UI control its caller never
-    # touched — so the line is worded off the reason rather than hardcoded.
+    # What the session's own timeline calls this, worded off the reason rather
+    # than hardcoded so a future caller parking a session some other way can name
+    # its own gesture.
     def log_prefix
-      reason == :pause_into_spot_queue ? "[Spot Queue]" : "[Pause Until]"
+      reason == :pause_into_spot_queue ? "[Spot Queue]" : "[Paused]"
     end
 
     # Written after the pause lands, and unconditionally: a session whose process
     # had already gone gets no line from #terminate_process, and would otherwise
     # have nothing on its timeline saying why its turn stopped.
     def halted_message
-      "#{log_prefix} A human stopped this turn and put the session to sleep " \
+      "#{log_prefix} This turn was stopped and the session put to sleep " \
         "(now #{session.status}). Work already written to disk survives; the tool call in flight does not."
     end
 

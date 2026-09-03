@@ -2,8 +2,7 @@
 
 require "test_helper"
 
-# The shared scheduler behind both wake surfaces: the wake_me_up_later MCP tool
-# and the web UI's "Pause Until" control.
+# The scheduler behind the wake_me_up_later MCP tool.
 class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
   def future_wake_at(offset = 1.hour)
     offset.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S")
@@ -160,86 +159,15 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
 
     assert session.reload.waiting?
   end
-  test "replace_existing cancels this session's unfired one-time wake first" do
-    session = sessions(:needs_input)
-    first = Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(1.hour), prompt: "early")
 
-    second = assert_no_difference "Trigger.count" do
-      Sessions::ScheduleWakeUp.call(
-        session: session, wake_at: future_wake_at(3.hours), prompt: "later", replace_existing: true
-      )
-    end
-
-    # Not merely "a trigger exists": the one that would have fired at the replaced
-    # time has to be gone, or the session wakes an hour early.
-    assert_not Trigger.exists?(first.id)
-    assert Trigger.exists?(second.id)
-  end
-
-  test "without replace_existing both wakes stay armed" do
+  # Additive, and deliberately: an agent routinely arms a wall-clock backstop
+  # beside a state-change watcher, whichever fires first wins, and
+  # Trigger#destroy_sibling_wakes! cleans up the rest.
+  test "a second wake leaves the first one armed" do
     session = sessions(:needs_input)
     first = Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(1.hour), prompt: "early")
     Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(3.hours), prompt: "later")
 
     assert Trigger.exists?(first.id), "the agent-facing path must stay additive — the triple-wake pattern depends on it"
-  end
-
-  test "replace_existing leaves another session's wake and this session's state-change watchers alone" do
-    session = sessions(:needs_input)
-    other_wake = Sessions::ScheduleWakeUp.call(session: sessions(:waiting), wake_at: future_wake_at(1.hour), prompt: "other")
-
-    watcher = Trigger.create!(
-      name: "Watch session #{sessions(:running).id}",
-      agent_root_name: session.agent_runtime,
-      prompt_template: "it moved",
-      reuse_session: true,
-      last_session_id: session.id,
-      trigger_conditions_attributes: [ {
-        condition_type: "ao_event",
-        configuration: { "event_name" => "session_needs_input", "watched_session_id" => sessions(:running).id }
-      } ]
-    )
-
-    Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(3.hours), prompt: "mine", replace_existing: true)
-
-    assert Trigger.exists?(other_wake.id), "another session's wake is not this session's to cancel"
-    assert Trigger.exists?(watcher.id), "\"wake when X happens\" is a different question from \"wake at 9am\""
-  end
-  test "replace_existing spares a trigger that carries conditions beyond the wake" do
-    session = sessions(:needs_input)
-    multi = Trigger.create!(
-      name: "Nightly sweep with a one-off",
-      agent_root_name: session.agent_runtime,
-      prompt_template: "sweep",
-      reuse_session: true,
-      last_session_id: session.id,
-      trigger_conditions_attributes: [
-        { condition_type: "schedule", configuration: { "scheduled_at" => future_wake_at(2.hours), "timezone" => "UTC" } },
-        { condition_type: "schedule", configuration: { "unit" => "hours", "interval" => 6, "timezone" => "UTC" } }
-      ]
-    )
-
-    Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(5.hours), prompt: "mine", replace_existing: true)
-
-    # The filtered join matches only ONE of this trigger's two conditions. Loading
-    # the association through that join would make it look single-purpose and
-    # destroy it, taking the recurring sweep with it.
-    assert Trigger.exists?(multi.id), "a trigger doing other work is not this gesture's to destroy"
-    assert_equal 2, multi.reload.trigger_conditions.count, "its conditions must survive intact"
-  end
-
-  test "a failed create leaves the previous wake armed rather than nothing at all" do
-    session = sessions(:needs_input)
-    first = Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(1.hour), prompt: "early")
-
-    Trigger.stub(:create!, ->(*) { raise ActiveRecord::RecordInvalid.new(Trigger.new) }) do
-      assert_raises(Sessions::ScheduleWakeUp::Error) do
-        Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(3.hours), prompt: "later", replace_existing: true)
-      end
-    end
-
-    # The error says no changes were made. An already-sleeping session left with
-    # zero armed wakes would make that a lie, and would never wake again.
-    assert Trigger.exists?(first.id)
   end
 end

@@ -1875,7 +1875,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   test "handle_interrupt_error stands down for a session dormant in the spot queue" do
-    # A session parked by "Pause Until → Spot Queue" is `waiting` with NOTHING
+    # A session parked in the spot queue is `waiting` with NOTHING
     # armed to wake it — that is the design, not a stall. Without its own signal
     # the recovery path reads it as case 3 ("waiting, has run, nothing armed"),
     # resumes it, and pulls it straight back out of the queue.
