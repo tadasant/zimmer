@@ -201,7 +201,7 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
     assert_not session.reload.waiting?,
       "the wake should have resumed its session, not left it asleep"
     assert_equal "Resume", session.metadata["pending_follow_up_prompt"]
-    assert_not_equal "failed", Trigger.find_by(id: trigger.id)&.status,
-      "the wake must not park itself failed on a root it never uses"
+    assert_not Trigger.exists?(trigger.id),
+      "a one-time wake that fires is auto-deleted — a surviving trigger means it was parked instead"
   end
 end

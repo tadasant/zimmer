@@ -442,12 +442,26 @@ class Trigger < ApplicationRecord
     # These four run on BOTH paths because #follow_up_session! syncs all four
     # onto the reused session (see its sync_* calls), so a stale reference is
     # load-bearing on a reuse just as much as on a spawn.
-    #
-    # #heal_stale_agent_root! is deliberately NOT here — see the spawn path below.
     heal_stale_mcp_servers!
     heal_stale_catalog_skills!
     heal_stale_catalog_hooks!
     heal_stale_catalog_plugins!
+
+    # The agent root heals here too, but it does NOT raise here — the raising
+    # call is on the spawn path below, and the difference is the whole of
+    # https://github.com/tadasant/zimmer/issues/600.
+    #
+    # Repointing a RENAMED root still belongs on every fire. `agent_root_name`
+    # is read outside this method: Mcp::Tools::SearchTriggers and
+    # Mcp::Tools::ActionTrigger gate a restricted connection on it, and the
+    # trigger page and REST payload display it. A reuse trigger that never
+    # spawns would otherwise keep a vanished name forever and drop out of a
+    # scoped agent's view of its own triggers.
+    #
+    # RAISING here is what was wrong. An unhealable name is only a problem for a
+    # fire that was about to hand it to Session.create_from_agent_root!, and
+    # this call runs before we know whether this is one.
+    heal_stale_agent_root!(raise_when_unhealable: false)
 
     if reuse_session && last_session_id.present?
       session = Session.find_by(id: last_session_id)
@@ -490,26 +504,22 @@ class Trigger < ApplicationRecord
       end
     end
 
-    # `agent_root_name` is consulted on the SPAWN path and nowhere else — both
-    # #create_new_session! and #spawn_burst_notice_session! pass it to
+    # The raising half of the agent-root heal, deliberately placed after every
+    # reuse path has returned. Only a spawn consumes `agent_root_name` —
+    # #create_new_session! and #spawn_burst_notice_session! hand it to
     # Session.create_from_agent_root!, while a reuse keeps whatever root the
-    # existing session was created with. So the heal belongs here, after every
-    # reuse path has returned, and not at the top of this method.
+    # existing session was created with — so only a spawn is entitled to fail on
+    # a name that cannot be resolved.
     #
-    # Placement is the fix for https://github.com/tadasant/zimmer/issues/600, not
-    # a tidy-up. An unhealable root RAISES, and from the top of the method that
-    # raise reached fires that would never have used the name: every per-session
-    # wake (Sessions::ScheduleWakeUp, behind Pause Until and `wake_me_up_later`)
-    # names the root of the session it reuses, so a session whose root is not in
-    # the catalog — a legacy session, or one whose root has since left — armed a
-    # wake that could only ever raise. ScheduleTriggerJob then parked the trigger
-    # `failed`, every firing path filters on `enabled`, and the session slept
-    # forever. Healing here means such a wake fires and resumes its session, and
-    # the raise still reaches the fires that genuinely cannot spawn.
-    #
-    # The cost is that a stale root on a reuse trigger is now repaired lazily, on
-    # the first fire that actually spawns, rather than eagerly on any fire. That
-    # is the same repair at the moment it is needed.
+    # That placement is the fix for https://github.com/tadasant/zimmer/issues/600.
+    # Raising from the top of this method reached fires that would never have
+    # read the name: every per-session wake (Sessions::ScheduleWakeUp behind the
+    # `wake_me_up_later` MCP tool, and Mcp::Tools::WakeMeUpWhenSessionChangesState)
+    # labels itself with the root of the session it reuses, falling back to the
+    # runtime name for a session that resolves to no catalog root — a legacy one,
+    # or one whose root has since left. `"claude_code"` is not a root, so such a
+    # wake could only ever raise: ScheduleTriggerJob parked it `failed`, every
+    # firing path filters on `enabled`, and the session slept forever.
     heal_stale_agent_root!
 
     spawned = spawn_unless_pending_session!(prompt: prompt)
@@ -1637,10 +1647,16 @@ class Trigger < ApplicationRecord
   # and attempts to find a successor by matching the last session's git_root
   # and subdirectory. Persists the fix so subsequent fires use the new name.
   #
-  # Called from the SPAWN path of #create_session! only — see the comment there.
-  # It raises when no successor can be found, and that raise is only correct for
-  # a fire that was about to hand the name to Session.create_from_agent_root!.
-  def heal_stale_agent_root!
+  # Called TWICE from #create_session! and the difference is
+  # `raise_when_unhealable` — see both comments there. The repointing half runs
+  # on every fire; the raise is reserved for a fire that was about to hand the
+  # name to Session.create_from_agent_root!.
+  #
+  # `raise_when_unhealable: false` leaves an unhealable name in place silently
+  # and on purpose. A reuse fire has nothing to say about it — it never reads the
+  # name — and a per-session wake fires on a schedule, so a log line here would
+  # repeat for every sleeping session that resolves to no catalog root.
+  def heal_stale_agent_root!(raise_when_unhealable: true)
     # Safety: if the catalog failed to load (AirCatalogService raised and
     # AgentRootsConfig rescued to `[]`), every name would appear stale. Skip
     # healing in that case — the session-creation path below will surface any
@@ -1671,7 +1687,7 @@ class Trigger < ApplicationRecord
         "[Trigger#heal_stale_agent_root!] Updated agent root from '#{old_name}' to '#{successor.name}' " \
         "on trigger '#{name}' (ID: #{id})"
       )
-    else
+    elsif raise_when_unhealable
       raise AgentRootsConfig::AgentRootNotFoundError,
         "Agent root '#{old_name}' not found in catalog and no successor could be identified. " \
         "Update trigger '#{name}' (ID: #{id}) manually at #{AppUrl.base_url}/triggers/#{id}"
