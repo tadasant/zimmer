@@ -6,9 +6,8 @@
   <% summaries.each do |summary| %>
     <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
       <div class="flex items-baseline justify-between gap-2">
-        <%= link_to issue_repo_short(summary.repo), "https://github.com/#{summary.repo}/issues",
-            target: "_blank", rel: "noopener noreferrer",
-            class: "text-sm font-semibold text-gray-900 hover:text-indigo-700 truncate" %>
+        <%= issue_safe_link("https://github.com/#{summary.repo}/issues", issue_repo_short(summary.repo),
+            class: "text-sm font-semibold text-gray-900 hover:text-indigo-700 truncate") %>
         <span class="text-sm font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(summary.open_count) %> open</span>
       </div>
       <% if summary.error %>

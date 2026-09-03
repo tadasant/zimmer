@@ -19,9 +19,7 @@ module IssuesHelpers
   end
 
   def github_snapshot(issues: [], fetched_at: Time.current, errors: {})
-    Issues::GithubSnapshot::Snapshot.new(
-      issues: issues, fetched_at: fetched_at, errors: errors, credential_detail: nil
-    )
+    Issues::GithubSnapshot::Snapshot.new(issues: issues, fetched_at: fetched_at, errors: errors)
   end
 
   # Runs the block with Issues::GithubSnapshot.fetch answering with `snapshot`,

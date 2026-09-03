@@ -46,7 +46,10 @@ class IssuesController < ApplicationController
     # from one. Checked against the table rather than trusted from the URL: the
     # banner is a link, and a link to a session that is not there is worse than
     # no banner.
-    @promoted_session = Session.find_by(id: params[:promoted_session_id])
+    # `.to_s` because a nested param (`?promoted_session_id[a]=1`) arrives as
+    # ActionController::Parameters, which `find_by` raises on rather than
+    # ignoring — a 500 from a hand-edited URL.
+    @promoted_session = Session.find_by(id: params[:promoted_session_id].to_s.presence)
   end
 
   # POST /issues/refresh — drop the cached GitHub read and load it again.

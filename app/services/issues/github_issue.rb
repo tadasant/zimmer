@@ -14,8 +14,6 @@ module Issues
 
     def open? = state == "open"
 
-    def label?(name) = labels.include?(name)
-
     # The day this issue first counted as open.
     def opened_on = created_at&.to_date
 

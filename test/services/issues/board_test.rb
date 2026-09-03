@@ -54,6 +54,19 @@ class Issues::BoardTest < ActiveSupport::TestCase
     assert_equal [ 7 ], board(snapshot: snapshot).loose_rows.map { |row| row.github.number }
   end
 
+  test "a started item whose session died comes back to the loose list rather than vanishing" do
+    item = backlog_item(key: "zimmer#7", issue_url: url(7))
+    item.mark_started!(session: sessions(:archived), by: nil)
+    snapshot = github_snapshot(issues: [ github_issue(number: 7) ])
+
+    result = board(snapshot: snapshot)
+
+    assert_empty result.queued_rows
+    assert_empty result.in_flight_rows, "the session is archived, so nothing is in flight"
+    assert_equal [ 7 ], result.loose_rows.map { |row| row.github.number },
+                 "the issue is open and nobody is working it — it must not disappear from the page"
+  end
+
   test "closed GitHub issues never appear in the loose list" do
     snapshot = github_snapshot(issues: [ github_issue(number: 8, state: "closed", closed_at: 1.day.ago) ])
 
@@ -118,6 +131,34 @@ class Issues::BoardTest < ActiveSupport::TestCase
 
     assert_equal 1, board(snapshot: snapshot).queued_by_direction["divergent"]
     assert_equal 0, board(snapshot: snapshot).queued_by_direction["convergent"]
+  end
+
+  test "the direction filter reads the resolved direction on the queue, not the raw column" do
+    # The column says convergent; the GitHub label — which wins — says divergent.
+    backlog_item(key: "zimmer#1", issue_url: url(1), scope_direction: "convergent")
+    snapshot = github_snapshot(issues: [ github_issue(number: 1, labels: [ "divergent" ]) ])
+
+    divergent = board(snapshot: snapshot, filters: { "scope_direction" => "divergent" })
+    assert_equal %w[zimmer#1], divergent.queued_rows.map(&:key),
+                 "the pill reads divergent, so the divergent filter has to keep the row"
+
+    convergent = board(snapshot: snapshot, filters: { "scope_direction" => "convergent" })
+    assert_empty convergent.queued_rows,
+                 "filtering on the column while the pill shows the resolved value is how the two disagree"
+  end
+
+  test "a page past the end is clamped rather than rendering an empty page 999 of 3" do
+    issues = (1..(Issues::Board::GITHUB_PER_PAGE + 3)).map { |n| github_issue(number: n) }
+    result = board(snapshot: github_snapshot(issues: issues), page: 999)
+
+    assert_equal 2, result.github_page
+    assert_equal 3, result.loose_page_rows.length
+  end
+
+  test "a page below the first is clamped too" do
+    result = board(snapshot: github_snapshot(issues: [ github_issue(number: 1) ]), page: -4)
+
+    assert_equal 1, result.github_page
   end
 
   test "the loose list is paginated" do

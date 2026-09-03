@@ -19,8 +19,7 @@
             <td class="px-2 sm:px-3 py-2 min-w-0">
               <div class="text-gray-900 font-medium wrap-anywhere line-clamp-2"><%= row.item.title %></div>
               <% if row.issue_url.present? %>
-                <%= link_to row.key, row.issue_url, target: "_blank", rel: "noopener noreferrer",
-                    class: "text-xs text-indigo-600 hover:text-indigo-800" %>
+                <%= issue_safe_link(row.issue_url, row.key, class: "text-xs text-indigo-600 hover:text-indigo-800") %>
               <% else %>
                 <span class="text-xs text-gray-400"><%= row.key %></span>
               <% end %>

@@ -7,7 +7,7 @@ class IssuesHelperTest < ActionView::TestCase
 
   test "the y axis climbs in round steps under the top of the plot" do
     assert_equal [ 0, 100, 200, 300, 400, 500 ], issue_trend_y_ticks(500)
-    assert_equal [ 0, 125, 250, 375, 500 ], issue_trend_y_ticks(502)
+    assert_equal [ 0, 150, 300, 450 ], issue_trend_y_ticks(502)
     assert_equal [ 0, 10, 20, 30 ], issue_trend_y_ticks(39)
     assert_equal [ 0, 30, 60, 90, 120 ], issue_trend_y_ticks(137)
   end
@@ -32,12 +32,45 @@ class IssuesHelperTest < ActionView::TestCase
     assert_equal "0,10 1,8 2,4", issue_trend_points([ 0, 2, 6 ], 10)
   end
 
+  test "every axis step is a number a reader can add up" do
+    # 1.25 x 10 rounds to 13, which is what an axis reading 0/13/26/39/52 was.
+    readable = [ 1r, 3r/2, 2r, 5r/2, 3r, 4r, 5r, 10r ]
+    (1..600).each do |max|
+      ticks = issue_trend_y_ticks(max)
+      next if ticks.length < 3
+
+      step = ticks[1]
+      leading = Rational(step, 10**Math.log10(step).floor)
+      assert_includes readable, leading, "a plot topping out at #{max} ticks in #{step}s"
+    end
+  end
+
   test "a gate session is linked only when it is an http(s) URL" do
     assert_match "https://zimmer.example.com/sessions/1",
                  issue_gate_session_link("https://zimmer.example.com/sessions/1")
     assert_nil issue_gate_session_link("javascript:alert(1)")
     assert_nil issue_gate_session_link("the groomer ran it by hand")
     assert_nil issue_gate_session_link(nil)
+  end
+
+  test "a url is linked only when it is an http(s) url, and is text otherwise" do
+    assert_match 'href="https://github.com/tadasant/zimmer/issues/1"',
+                 issue_safe_link("https://github.com/tadasant/zimmer/issues/1", "zimmer#1")
+    assert_match "zimmer#1", issue_safe_link("https://github.com/tadasant/zimmer/issues/1", "zimmer#1")
+
+    [ "javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,<script>x</script>",
+      "the groomer ran it by hand", "", nil ].each do |hostile|
+      rendered = issue_safe_link(hostile, "zimmer#1")
+      assert_no_match(/<a /, rendered, "#{hostile.inspect} must not become a link")
+      assert_match "zimmer#1", rendered
+    end
+  end
+
+  test "a linked url opens in a new tab without leaking the referrer" do
+    rendered = issue_safe_link("https://github.com/tadasant/zimmer/issues/1", "zimmer#1")
+
+    assert_match 'target="_blank"', rendered
+    assert_match 'rel="noopener noreferrer"', rendered
   end
 
   test "an issue URL reads as repo#number" do
