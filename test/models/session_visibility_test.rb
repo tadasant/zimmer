@@ -100,6 +100,7 @@ class SessionVisibilityTest < ActiveSupport::TestCase
     make_session(visibility: SessionVisibility::HIDDEN)
     make_session(visibility: SessionVisibility::SNOOZED, snoozed_until: 1.day.from_now)
     make_session(visibility: SessionVisibility::SNOOZED, snoozed_until: 1.day.ago)
+    make_session.update_columns(visibility: SessionVisibility::SNOOZED, snoozed_until: nil)
     # Fixture sessions count too — every row in the table has to land in exactly
     # one of the two scopes, which is the property being asserted.
 
@@ -107,15 +108,38 @@ class SessionVisibilityTest < ActiveSupport::TestCase
     assert_empty Session.board_visible.where(id: Session.board_hidden.select(:id))
   end
 
-  # A row that Sessions::SetVisibility cannot produce, but which the scopes must
-  # still classify one way rather than falling through both.
-  test "a snoozed row with no time is treated as off the board" do
-    session = make_session(visibility: SessionVisibility::SNOOZED)
+  test "a snooze with no end time is refused on write" do
+    session = make_session
+    session.visibility = SessionVisibility::SNOOZED
+
+    assert_not session.valid?
+    assert_includes session.errors.full_messages.join, "required when a session is snoozed"
+  end
+
+  # The row the validation above now forbids, as it would exist having been
+  # written before that validation. The scopes must still classify it one way
+  # rather than letting it fall through both, and every read surface must render
+  # it rather than raising — one such row must not take a whole page with it.
+  test "a legacy snoozed row with no time is off the board and still renders" do
+    session = make_session
+    session.update_columns(visibility: SessionVisibility::SNOOZED, snoozed_until: nil)
+    session.reload
 
     assert_not session.board_visible?
     assert_includes Session.board_hidden.pluck(:id), session.id
     assert_not_includes Session.board_visible.pluck(:id), session.id
     assert_equal SessionVisibility::SNOOZED, session.effective_visibility
+    assert_equal "Snoozed with no end time", session.visibility_summary
+  end
+
+  # The boundary the scope and the predicate could most easily disagree on.
+  test "a snooze is over at exactly its own time, scope and predicate alike" do
+    at = 1.hour.from_now
+    session = make_session(visibility: SessionVisibility::SNOOZED, snoozed_until: at)
+
+    assert session.board_visible?(at), "the predicate should treat snoozed_until == now as over"
+    assert_includes Session.board_visible(at).pluck(:id), session.id
+    assert_not_includes Session.board_hidden(at).pluck(:id), session.id
   end
 
   test "the scopes take an explicit now" do

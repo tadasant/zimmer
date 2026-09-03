@@ -127,7 +127,6 @@
       </div>
     <% end %>
 
-    <p data-visibility-target="status" class="mt-2 text-xs text-gray-500 empty:hidden" role="status" aria-live="polite"></p>
   </div>
 
   <%# ---- Flat rows the menu variants carry alongside the panel ---- %>
@@ -178,4 +177,12 @@
       </button>
     <% end %>
   <% end %>
+
+  <%# Outside the panel on purpose. "Hide" and "Put back on the board" are flat
+      rows that never open the panel, so a status line living inside it would
+      report their failures into a hidden element — the operator would see a
+      button that silently does nothing. %>
+  <p data-visibility-target="status"
+     class="<%= inline_variant ? "px-3 pb-2" : "absolute right-0 top-full mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-md bg-white px-2 py-1 shadow" %> text-xs text-gray-500 empty:hidden"
+     role="status" aria-live="polite"></p>
 </div>

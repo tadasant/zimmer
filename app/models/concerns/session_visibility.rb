@@ -29,6 +29,16 @@ module SessionVisibility
   SNOOZED = "snoozed"
   VISIBILITIES = [ VISIBLE, HIDDEN, SNOOZED ].freeze
 
+  # How a listing may narrow on this axis: the sessions a tidied board shows, the
+  # ones it is holding back, or both. They live here rather than on the dashboard
+  # controller because every surface filters on them — the dashboard, the REST
+  # listings and the MCP search — and an MCP tool should not have to autoload a
+  # web controller to name a filter value.
+  FILTER_ON_BOARD = "on_board"
+  FILTER_OFF_BOARD = "off_board"
+  FILTER_ALL = "all"
+  FILTER_OPTIONS = [ FILTER_ON_BOARD, FILTER_OFF_BOARD, FILTER_ALL ].freeze
+
   # Choices offered by the "Snooze until…" menu, in order. `key` is the contract
   # with visibility_controller.js, which resolves each one to an absolute time in
   # the BROWSER's timezone — "Tomorrow, 9 AM" means the operator's morning, not
@@ -55,6 +65,11 @@ module SessionVisibility
 
   included do
     validates :visibility, inclusion: { in: VISIBILITIES, message: "%{value} is not a valid visibility" }
+    # A snooze with no end time is a snooze that cannot end. Sessions::SetVisibility
+    # already refuses to write one, but nothing stopped a direct `update!` from
+    # creating a row every read surface would then have to special-case.
+    validates :snoozed_until, presence: { message: "is required when a session is snoozed" },
+              if: -> { visibility == SNOOZED }
 
     # Sessions the board shows by default: plainly visible, or snoozed to a time
     # that has already passed. The second clause is what makes a snooze expire on
@@ -67,10 +82,10 @@ module SessionVisibility
     }
 
     # The complement: everything tucked away right now — hidden, or snoozed to a
-    # time still in the future. A `snoozed` row with a NULL `snoozed_until` cannot
-    # be written through Sessions::SetVisibility, but if one ever existed it counts
-    # as tucked away here and is excluded by `board_visible` above, so the two
-    # scopes stay exact complements of each other.
+    # time still in the future. The validation above stops a `snoozed` row with a
+    # NULL `snoozed_until` being written, but rows predating it are still counted
+    # as tucked away here and excluded by `board_visible` above, so the two scopes
+    # stay exact complements whatever is in the table.
     scope :board_hidden, ->(now = Time.current) {
       where(
         "sessions.visibility = :hidden OR (sessions.visibility = :snoozed AND (sessions.snoozed_until IS NULL OR sessions.snoozed_until > :now))",
@@ -115,6 +130,10 @@ module SessionVisibility
   def visibility_summary(now = Time.current)
     return nil if board_visible?(now)
     return "Hidden from the board" if visibility == HIDDEN
+    # Only reachable for a row written before snoozed_until became required. It
+    # renders rather than raising, because the surfaces that call this are a card
+    # badge and two MCP listings — one such row must not take a whole page with it.
+    return "Snoozed with no end time" if snoozed_until.blank?
 
     "Snoozed until #{snoozed_until.utc.iso8601}"
   end

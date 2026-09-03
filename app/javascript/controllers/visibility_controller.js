@@ -47,7 +47,14 @@ export default class extends Controller {
     event.preventDefault()
     event.stopPropagation()
     const at = this._presetDate(event.currentTarget.dataset.preset)
-    if (at) this._snooze(this._naiveLocal(at))
+    // SNOOZE_PRESETS and _presetDate's switch are two hand-kept lists of the same
+    // keys. A key added to one and not the other renders a row with a blank time
+    // that does nothing when clicked; say so rather than swallowing the click.
+    if (!at) {
+      this._setStatus("Could not work out that time.", true)
+      return
+    }
+    this._snooze(this._naiveLocal(at))
   }
 
   chooseCustom(event) {

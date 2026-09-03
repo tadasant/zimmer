@@ -47,7 +47,10 @@ snooze whose time has passed simply reads as visible:
 
 ```ruby
 scope :board_visible, ->(now = Time.current) {
-  where("visibility = 'visible' OR (visibility = 'snoozed' AND snoozed_until <= :now)", now: now)
+  where(
+    "sessions.visibility = :visible OR (sessions.visibility = :snoozed AND sessions.snoozed_until IS NOT NULL AND sessions.snoozed_until <= :now)",
+    visible: VISIBLE, snoozed: SNOOZED, now: now
+  )
 }
 ```
 
@@ -60,6 +63,10 @@ something the design guarantees rather than something the code has to remember.
 The stored choice is left alone. A session whose snooze ran out last week still reads `"snoozed"` in
 the column; it is `effective_visibility` that reports `"visible"`. Read the first to know whether a
 snooze was ever set, the second to decide whether to draw something.
+
+`board_hidden` is the exact complement, and `Session#board_visible?` is the row-level counterpart
+that must answer identically — the dashboard filters with the scope and draws badges with the
+predicate, and the two disagreeing would put a card on screen that the page believes is not there.
 
 ## Using it
 

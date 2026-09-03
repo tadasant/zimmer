@@ -167,10 +167,9 @@
               Sits immediately left of Trash / Restore, opens upward (bottom-full) so
               a card low on the page does not push its menu off the bottom.
 
-              Rendered on every card. It used to be omitted for a session Pause
-              Until could not sleep (an archived or failed one), since that left it
-              empty; board visibility is offered for every session in every state,
-              so there is no longer such a card. %>
+              Rendered on every card: board visibility is offered for every session
+              in every state, including the archived and failed ones Pause Until
+              cannot sleep, so the menu is never empty. %>
           <div data-controller="overflow-menu"
                data-action="pause-until:scheduled->overflow-menu#close visibility:changed->overflow-menu#close">
             <button type="button"

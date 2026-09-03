@@ -135,6 +135,33 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     assert_select "##{ActionView::RecordIdentifier.dom_id(on_board)}", 0
   end
 
+  # Would have caught a badge that raises on the row shape it is asked to render.
+  test "a revealed card renders its badge and a way back" do
+    hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
+    snoozed = make_session(title: "Back on Friday", visibility: SessionVisibility::SNOOZED,
+                           snoozed_until: 3.days.from_now)
+
+    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
+
+    assert_response :success
+    assert_select "##{ActionView::RecordIdentifier.dom_id(hidden)}", text: /Hidden/
+    assert_select "##{ActionView::RecordIdentifier.dom_id(snoozed)}", text: /Snoozed/
+    assert_select "##{ActionView::RecordIdentifier.dom_id(hidden)} [data-action='visibility#restore']",
+      minimum: 1, message: "a tucked-away card must offer a way back"
+  end
+
+  # The badge and the menu must survive a row written before snoozed_until became
+  # required, rather than 500ing the whole revealed board.
+  test "a legacy snoozed row with no end time still renders" do
+    legacy = make_session(title: "Legacy snooze")
+    legacy.update_columns(visibility: SessionVisibility::SNOOZED, snoozed_until: nil)
+
+    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
+
+    assert_response :success
+    assert_select "##{ActionView::RecordIdentifier.dom_id(legacy)}", text: /Snoozed/
+  end
+
   test "the both filter shows everything" do
     on_board = make_session(title: "On the board")
     hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
@@ -154,6 +181,18 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "#off-board-count", text: /2 sessions tucked away/
+  end
+
+  # The count is the nudge to reveal, so it has to name sessions revealing would
+  # actually produce — not every tucked-away row in the table.
+  test "the tucked-away count is narrowed by the other filters too" do
+    make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN, status: :needs_input)
+    make_session(title: "Also tidied", visibility: SessionVisibility::HIDDEN, status: :failed)
+
+    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: [ "needs_input" ] }
+
+    assert_response :success
+    assert_select "#off-board-count", text: /1 session tucked away/
   end
 
   test "the choice persists across a bare visit" do
@@ -241,8 +280,8 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
   end
 
   test "a card whose session cannot be paused still gets the visibility menu" do
-    # An archived session is exactly the case the old overflow menu omitted
-    # entirely, because Pause Until had nothing to offer it.
+    # An archived session is the case Pause Until has nothing to offer, so the
+    # menu holding it must still be rendered for the visibility rows alone.
     session = make_session(title: "Trashed", status: :archived)
     assert_not session.pausable_until?
 
