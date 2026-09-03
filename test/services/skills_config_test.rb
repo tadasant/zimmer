@@ -48,6 +48,55 @@ class SkillsConfigTest < ActiveSupport::TestCase
     assert_includes SkillsConfig.find("open-pr").references, "git-workflow"
   end
 
+  test "the vendored open-pr skill carries both terminal steps" do
+    # Three places tell a session to "follow the open-pr skill's terminal steps"
+    # when coming to rest on an open PR: OrchestratorSystemPromptBuilder's
+    # sanctioned needs_input reason 2, config/goals.json, and the action_session
+    # MCP tool description. A session on a root that resolves this vendored copy
+    # must actually find them there. The copy drifted behind once already (#682).
+    body = File.read(File.join(SkillsConfig.find("open-pr").absolute_path, "SKILL.md"))
+
+    assert_includes body, "## Terminal Step 1", "open-pr lost the ready-to-merge label step"
+    assert_includes body, "## Terminal Step 2", "open-pr lost the bounded self-wake step"
+    assert_includes body, "ready to merge"
+    assert_includes body, "wake_me_up_later"
+    assert_includes body, "needs_input"
+  end
+
+  test "no vendored skill links a reference the catalog does not carry" do
+    # A `references/FOO.md` link in a SKILL.md only resolves because AIR bundles
+    # the reference at prepare time, which it only does for references the skill
+    # declares. A link to a reference this catalog does not carry is dead prose:
+    # nothing fails to resolve, so nothing catches it but this test.
+    references_by_file = ReferencesConfig.all.index_by(&:file)
+
+    SkillsConfig.all.each do |skill|
+      body_path = File.join(skill.absolute_path, "SKILL.md")
+      body = File.read(body_path)
+
+      body.scan(%r{\]\((references/[^)\s#]+)(#[^)\s]+)?\)}).each do |link, anchor|
+        file = File.basename(link)
+        reference = references_by_file[file]
+
+        assert_not_nil reference,
+          "#{skill.id} links #{link} but no catalog reference has file #{file}"
+        assert_includes skill.references, reference.id,
+          "#{skill.id} links #{link} but does not declare reference #{reference.id.inspect}"
+
+        reference_path = reference.path || Rails.root.join("references", reference.file).to_s
+        assert File.exist?(reference_path), "reference #{reference.id} missing at #{reference_path}"
+
+        next if anchor.blank?
+
+        slugs = File.readlines(reference_path).grep(/\A#/).map do |heading|
+          heading.sub(/\A#+/, "").strip.delete("`").downcase.gsub(/[^a-z0-9 \-_]/, "").tr(" ", "-")
+        end
+        assert_includes slugs, anchor.delete_prefix("#"),
+          "#{skill.id} links #{link}#{anchor} but #{reference.file} has no such heading"
+      end
+    end
+  end
+
   # Test finding skills
   test "should find skill by name" do
     skill = SkillsConfig.find("zimmer-start-dev-server")

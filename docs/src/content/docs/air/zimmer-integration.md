@@ -55,6 +55,27 @@ catalogs, no network), so the app's config services always resolve non-empty dat
 `wait-for-ci`, `recover-from-compaction-thrashing`) — 14 MCP servers (only `playwright-custom`
 default-on), 10 roots, 4 plugins, 1 hook, 5 references.
 
+### Vendored generic skills are adapted, not mirrored
+
+A generic skill vendored here is the current revision of that skill with its links made to resolve
+against *this* catalog. The two reasons a link cannot come across verbatim are the same two the
+self-contained property implies:
+
+- **The reference is not in this catalog.** `open-pr` upstream deep-links four references Zimmer
+  does not carry. Three of them describe Tadas's private production deployment and live in a
+  private repo; `tadasant/zimmer` is public, so copying them in would leak deployment detail *and*
+  break the offline-resolve promise. The substance those passages needed is written inline in the
+  vendored body instead, and the links are gone.
+- **The anchor is not in the vendored reference.** A `references/GIT_WORKFLOW.md#some-heading` link
+  resolves only if this catalog's copy of `GIT_WORKFLOW.md` has that heading. Where it does not, the
+  pointer is dropped rather than left dangling — the skill states the rule in full either way.
+
+Neither kind of breakage fails `air resolve`: the artifact resolves fine and just points at prose
+that is not there. The `no vendored skill links a reference the catalog does not carry` test in
+`test/services/skills_config_test.rb` is what catches it — it walks every `references/*.md` link in
+every vendored `SKILL.md` and checks the file exists, the skill declares it, and the anchor is a
+real heading.
+
 ### `air.json` vs `air.production.json`
 
 They are content-identical today. The split is a *seam* — it lets the
