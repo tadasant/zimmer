@@ -808,11 +808,16 @@ module SessionStateMachine
     announce_needs_input(bump_needs_input_transition_counter)
   end
 
-  private
-
-  # Whether this pause's announcement is being DEFERRED to a recovery sweep, rather
-  # than skipped outright. That distinction is the whole safety argument, so it is
-  # the question the callback asks.
+  # Whether a `needs_input` announcement for this session is being DEFERRED to a
+  # recovery sweep, rather than skipped outright. That distinction is the whole
+  # safety argument, so it is the question every caller asks.
+  #
+  # Public because there are two doors into the same wake, and both have to answer
+  # it the same way. The `pause` callback asks it at the transition. Trigger's
+  # #fire_ao_event_immediately_if_state_matches asks it when a watcher is armed on a
+  # session that is ALREADY sitting in the pause — a status-only test there fires the
+  # wake the callback just declined to fire, which is the same spurious wake reached
+  # a few seconds later.
   #
   # A recovery pause qualifies only when a sweep will actually reach the session.
   # Both CleanupOrphanedSessionsJob and DeploymentRecoveryJob scope every query
@@ -828,6 +833,8 @@ module SessionStateMachine
   def announcement_deferred_to_recovery_sweep?
     recovery_pause? && !category&.is_frozen?
   end
+
+  private
 
   # The pause's announcement: the settled `session_needs_input` wake fan-out, and
   # the human's debounced push. Both gate on the same marker — see the "one bump,

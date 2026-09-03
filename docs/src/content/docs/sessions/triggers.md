@@ -471,13 +471,27 @@ its whole backstop interval.
 
 #### What is and is not covered
 
-The **immediate-fire path** (`Trigger#fire_ao_event_immediately_if_state_matches`) is unchanged in
-code but not in behaviour: it enqueues the same job, so it now runs through the same rest check.
-Registering a watcher on a session sitting in `needs_input` still fires at once — but if that
-session gets going again before the job runs, the fire is dropped rather than delivered against a
-session that has moved on. It carries no marker and no wait, which is also how
-`DISPATCH_LATENCY_WARN_THRESHOLD` tells it apart from a settled job and declines to discount its
-latency.
+The **immediate-fire path** (`Trigger#fire_ao_event_immediately_if_state_matches`) enqueues the same
+job, so it runs through the same rest check. Registering a watcher on a session sitting in
+`needs_input` still fires at once — but if that session gets going again before the job runs, the
+fire is dropped rather than delivered against a session that has moved on. It carries no marker and
+no wait, which is also how `DISPATCH_LATENCY_WARN_THRESHOLD` tells it apart from a settled job and
+declines to discount its latency.
+
+The one thing the rest check cannot do for it is recognise a **recovery pause**. That path enqueues
+with no marker and no wait, so the settle window never applies, and `resting_in_needs_input?` — status
+and nothing else, by design — is true for a session parked by a recovery sweep. So the immediate-fire
+path asks the same question the `pause` callback asks,
+[`announcement_deferred_to_recovery_sweep?`](/sessions/lifecycle/#which-pauses-announce-themselves),
+and leaves the watcher armed instead of firing it. A frozen category still fires at once, because no
+sweep is coming to make the announcement later.
+
+What that buys is the wake *set*, not a promise that a lone `session_needs_input` condition is
+enough. The continued session can go on to archive — which prunes every non-`session_archived`
+condition watching it — or to fail, and a recovery that keeps succeeding clears the attempt counter
+along with the rest of `Session::STALE_RETRY_METADATA_KEYS`, so the give-up branch may never be
+reached. Those outcomes are what the other two events and the `wake_me_up_later` deadline are for,
+and keeping that set intact is the whole point of not firing here.
 
 **Broadcast (unscoped) `session_needs_input` conditions are settled too.** They ride the same job, so
 a broadcast trigger no longer fires on a turn boundary either — and it inherits the 30-second delay.
@@ -1365,7 +1379,11 @@ the wake is undeliverable for reasons the marker has nothing to do with.
 **Immediate fire on already-matched state.** `Trigger#fire_ao_event_immediately_if_state_matches`
 row-locks each watched session *inside the creation transaction* and enqueues the job immediately
 if the watched session is already in the target state. This closes the footgun where you
-register a watcher after the transition already happened and then sleep forever.
+register a watcher after the transition already happened and then sleep forever. One state does not
+count as a match: a session in a recovery pause is on its way back to `running`, and firing there
+would deliver the wake [the pause itself
+declined](/sessions/lifecycle/#which-pauses-announce-themselves). The watcher is left armed for the
+announcement that follows the sweep.
 
 **Sibling cleanup.** After a successful one-time fire, `destroy_sibling_wakes!` deletes the other
 one-time wakes pointing at the same requester — they are moot, since the requester has already been
