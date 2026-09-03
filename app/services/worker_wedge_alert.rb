@@ -13,14 +13,18 @@
 #
 # WHAT THIS PAGE MAY CLAIM
 # ------------------------
-# Only what the payload measured. Two claims were once printed unconditionally and were
-# false on the two real firings of 2026-09-02 (issue #774): that the wedge was #502's
-# cgroup OOM (both hosts reported `OOMKilled=false` and `oom_kill=0`), and that the
-# worker was therefore running nothing (both hosts had five live workload processes in
-# the cgroup, and production's job queue never stalled). `docker exec` sets up a *new*
-# process in the container's namespaces, so its failure says nothing about processes
-# already running -- the census does, and only the census. Cause comes from the OOM
-# fields, impact from the census, and each says "unknown" when its evidence is missing.
+# Only what the payload measured. Cause comes from the cgroup's `oom_kill` counter and
+# the container's `OOMKilled` flag; impact comes from the live-process census; and each
+# says "unknown" rather than guessing when its evidence is missing or unread.
+#
+# Both halves matter because both were got wrong (issue #774). On 2026-09-02 two hosts
+# wedged twelve minutes apart with `OOMKilled=false`, `oom_kill=0` and five live workload
+# processes each, on memory limits 5x apart -- and the page called it #502's cgroup OOM
+# and called the worker idle, while production's job queue went on dequeuing throughout.
+# `docker exec` sets up a *new* process in the container's namespaces, so its failure is
+# a statement about starting processes, not about the ones already running. The census is
+# the only field here that speaks to impact, and a census that could not be taken is not
+# a census that came back empty.
 #
 # WHY THE ALERT ARRIVES THIS WAY
 # ------------------------------
@@ -151,8 +155,7 @@ class WorkerWedgeAlert
       "#{", limit #{human_bytes(container["memory_limit_bytes"])}" if container["memory_limit_bytes"].to_i.positive?}",
       "*Probe:* #{probe["consecutive_failures"] || "?"} consecutive `docker exec` failures " \
       "(#{probe["timeout_seconds"] || "?"}s timeout)",
-      "*Cgroup:* #{cgroup["workload_process_count"] || "?"} live workload processes " \
-      "(#{cgroup["process_count"] || "?"} total), oom_kill=#{cgroup["oom_kills"] || "?"}",
+      "*Cgroup:* #{census_summary}, oom_kill=#{oom_kill_summary}",
       "*Recovery:* #{recovery_description}"
     ]
 
@@ -235,12 +238,13 @@ class WorkerWedgeAlert
       "An OOM kill is recorded against the container or its cgroup, so this is the sysbox " \
       "cgroup-OOM wedge from #{ISSUE_502}."
     when :absent
-      "No OOM kill is recorded against the container or its cgroup, so this is *not* the " \
+      "The cgroup's `oom_kill` counter is 0, so no OOM kill landed in it: this is *not* the " \
       "cgroup-OOM wedge from #{ISSUE_502} and its cause is unknown. #502's ladder may still " \
       "clear it -- clearing it is not a diagnosis."
     else
-      "The watchdog reported no OOM evidence either way, so whether this is the cgroup-OOM " \
-      "wedge from #{ISSUE_502} is unknown."
+      "The cgroup's `oom_kill` counter is not in this payload, so whether this is the " \
+      "cgroup-OOM wedge from #{ISSUE_502} is unknown -- a kill inside the cgroup does not " \
+      "have to set `OOMKilled` on the container."
     end
   end
 
@@ -283,39 +287,55 @@ class WorkerWedgeAlert
     end
   end
 
-  # :present / :absent / :unknown. Either field alone is enough to say an OOM happened;
-  # it takes at least one of them reading negative to say one did not, and neither
-  # present at all is unknown rather than "no".
+  # :present / :absent / :unknown.
+  #
+  # Either signal alone is enough to say an OOM happened. Only the cgroup counter can say
+  # one did NOT: `OOMKilled` is set when the container's init process is the one killed,
+  # and #502's kill lands on a child inside the cgroup, so `OOMKilled=false` on its own
+  # rules nothing out. And the counter speaks only when the scope was located -- the
+  # payload carries `null` for a counter nobody could read.
   def oom_evidence
-    killed = container["oom_killed"]
-    kills = cgroup["oom_kills"]
+    kills = cgroup_located? ? cgroup["oom_kills"] : nil
 
-    return :present if killed == true || kills.to_i.positive?
-    return :absent if killed == false || kills.present?
+    return :present if container["oom_killed"] == true || kills.to_i.positive?
+    return :absent if kills.present?
 
     :unknown
   end
 
-  # :busy / :empty / :unknown. The census is what the recovery gate reads, and it refuses
-  # to treat "could not enumerate" as "empty" -- so neither does this page. `census_known`
-  # is what the script sends to say the walk succeeded; payloads from a watchdog installed
-  # before that field existed are read through the cgroup path, which is empty exactly when
-  # the scope could not be located at all.
+  # :busy / :empty / :unknown. The recovery gate refuses to read "could not enumerate" as
+  # "empty", and so does this page. A positive count can only come from a walk that
+  # worked, so it stands on its own; calling the container EMPTY takes the script's
+  # `census_known`, which is the only thing that distinguishes a walk that found nothing
+  # from one that never ran.
   def workload_census
-    return :unknown unless census_known?
-    return :unknown if cgroup["workload_process_count"].nil?
+    count = cgroup["workload_process_count"]
 
-    workload_process_count.positive? ? :busy : :empty
+    return :unknown if count.nil?
+    return :busy if count.to_i.positive?
+
+    cgroup["census_known"] == true ? :empty : :unknown
   end
 
-  def census_known?
-    known = cgroup["census_known"]
-    return known == true unless known.nil?
-
-    cgroup["path"].present?
-  end
+  # Nothing under the cgroup was read when the scope could not be located, and `path` is
+  # empty exactly then -- so its counters are defaults rather than readings.
+  def cgroup_located? = cgroup["path"].present?
 
   def workload_process_count = cgroup["workload_process_count"].to_i
+
+  # The evidence block prints readings. An unread field says so rather than rendering the
+  # zero it was defaulted to, which would contradict the sentences above it.
+  def census_summary
+    return "census unavailable" if workload_census == :unknown
+
+    "#{workload_process_count} live workload processes (#{cgroup["process_count"] || "?"} total)"
+  end
+
+  def oom_kill_summary
+    kills = cgroup_located? ? cgroup["oom_kills"] : nil
+
+    kills.nil? ? "unread" : kills
+  end
 
   def truncate(value, limit)
     text = value.to_s

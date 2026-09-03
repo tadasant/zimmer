@@ -4120,11 +4120,11 @@ detection at all, silently.
 watchdog fires on — running container, failing `docker exec` — is shared by at least one
 condition that is not a cgroup OOM at all: two hosts wedged twelve minutes apart on
 2026-09-02 with `OOMKilled=false`, `oom_kill=0` and five live workload processes each
-([#774](https://github.com/tadasant/zimmer/issues/774)). The alert no longer asserts #502's
-cause or an idle worker on that evidence — it reports both as unknown, and says how many
-processes are alive — but "unknown" is what it is. Nothing here establishes whether jobs are
-still executing inside a wedged worker; answering that still means reading the app's logs and
-the queue's head age by hand.
+([#774](https://github.com/tadasant/zimmer/issues/774)). The alert does not assert #502's
+cause or an idle worker on that evidence — it reports the cause as unknown, and reports impact
+as unverified with N processes alive — but that is as far as the payload goes. Nothing here
+establishes whether jobs are still executing inside a wedged worker; answering that still means
+reading the app's logs and the queue's head age by hand.
 
 **Delivery depends on the web container.** The alert reaches Slack by running
 `bin/rails zimmer:worker_wedge_alert` inside the *web* container, because the worker is the
