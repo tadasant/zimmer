@@ -285,9 +285,18 @@ keys on is a **controlling terminal**:
 
 ```ruby
 config.before_send = lambda do |event, _hint|
-  source = event.tags[:source]
-  attached_to_terminal = [ $stdin, $stdout, $stderr ].any? { |io| io.tty? }
-  next nil if source.to_s == "runner" && attached_to_terminal
+  begin
+    source = event.tags[:source]
+    attached_to_terminal = [ $stdin, $stdout, $stderr ].any?(&:tty?)
+
+    if source.to_s == "runner" && attached_to_terminal
+      Rails.logger.info("[sentry] dropped an interactive rails runner event: …")
+      next nil
+    end
+  rescue StandardError
+    # fail open — see below
+  end
+
   event
 end
 ```
@@ -302,14 +311,21 @@ does.
 :::caution[Draw this filter wider and it fails silently]
 Dropping every `source: runner` event, or adding a global `SENTRY_SUPPRESS` off-switch, would
 also drop the drain gate's exceptions — and nothing would tell you. There is no error when an
-alert that should have paged does not. The same reasoning is why the predicate lives inline in
-the initializer with no autoloaded constant to fail to resolve, and why it **fails open**:
-`Sentry::Client#capture_event` rescues anything raised inside `before_send` and drops the
-event, so a bug in the filter would be exactly the project-wide mute it exists to avoid.
+alert that should have paged does not.
 
-`test/initializers/sentry_test.rb` pins all three directions — the console typo drops, the
-non-interactive runner still reports, non-runner events are untouched — because those tests
-are the only thing that would notice.
+Three things follow from that, and all three are in the code above. The predicate lives inline
+in the initializer, with no autoloaded constant that could fail to resolve. It **logs what it
+drops** (exception class only — a console one-liner's message can carry row data), so the
+decision is greppable in the container log instead of invisible. And it **fails open**, because
+the SDK does not: a raise inside `before_send` loses the event either way — swallowed by
+`Sentry::Client#capture_event`'s rescue on the synchronous path, which is the one `rails runner`
+takes since sentry-rails' runner hook forces `background_worker_threads = 0`, and by the
+background worker thread in Puma and GoodJob. A bug in this filter would therefore be exactly
+the project-wide mute it exists to avoid, so anything unexpected reports the event instead.
+
+`test/initializers/sentry_test.rb` pins all four claims — the console typo drops, the
+non-interactive runner still reports, non-runner events are untouched, a predicate that raises
+still reports — because those tests are the only thing that would notice.
 :::
 
 An operator who *wants* a console exception recorded still has one: run it without a terminal
