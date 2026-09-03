@@ -162,6 +162,32 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "surface it in the conversation"
   end
 
+  test "remote execution environment principle requires returning a signed URL verbatim" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "Return the URL the tool gave you, verbatim",
+      "expected the principle to name verbatim-return of the URL the tool returned"
+    assert_includes prompt, "the query string is the credential",
+      "expected the principle to explain why the query string cannot be altered"
+    assert_includes prompt, "[text](url)",
+      "expected the principle to prescribe a link form nothing can be glued onto"
+    assert_includes prompt, "curl -sSL -o /dev/null -w '%{http_code}'",
+      "expected the principle to give the fetch-before-you-send check"
+  end
+
+  test "remote execution environment principle explains a 403 on a signed URL" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "A 403 on such a link is about the signature, not the store",
+      "expected the principle to name the correct first hypothesis for a 403"
+    assert_includes prompt, "`AccessDenied` means the query string is missing or the link has expired",
+      "expected the principle to name the AccessDenied error code and its cause"
+    assert_includes prompt, "`SignatureDoesNotMatch` means characters were added or removed",
+      "expected the principle to name the SignatureDoesNotMatch error code and its cause"
+    assert_includes prompt, "Do not report an artifact-store outage until a full, unmodified URL has been fetched and failed",
+      "expected the principle to bar escalating a 403 as an artifact-store outage"
+  end
+
   test "includes liberal MCP server usage principle" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
@@ -480,6 +506,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
 
     assert_includes prompt, "remote filesystem MCP server is available, use it to share files with the user"
     assert_includes prompt, "see the Remote Execution Environment principle"
+    assert_includes prompt, "return the URL it gives you verbatim"
   end
 
   test "includes autonomy over clarifying questions guideline" do
@@ -629,6 +656,10 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "avoid asking the user clarifying questions — make your best assumptions and prioritize autonomy."
     assert_includes prompt, "## Autonomous Problem-Solving"
     assert_includes prompt, "## Dynamic Skills and MCP Servers"
+    assert_includes prompt, "Return the URL the tool gave you, verbatim",
+      "signed-URL handling is runtime-agnostic and must reach Codex sessions too"
+    assert_includes prompt, "A 403 on such a link is about the signature, not the store",
+      "signed-URL handling is runtime-agnostic and must reach Codex sessions too"
   end
 
   test "codex runtime swaps CLAUDE.md references for AGENTS.md" do
