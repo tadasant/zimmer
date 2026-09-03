@@ -48,6 +48,26 @@ class SessionStatusSummaryGenerator
   FORK_MARKER = "status_summary_for_session_id"
   INLINE_TRANSCRIPT_MAX_CHARS = 80.kilobytes
 
+  # Carried by BOTH summary prompts, which is the point of hoisting it into a
+  # constant: the fork and the one-shot path write the same panel, so a rule
+  # about what the panel may assert cannot live in only one of them.
+  #
+  # THE DEFECT THIS EXISTS FOR (#734). A blurb once said, in the first person,
+  # "I've scheduled a self-wake to re-poll at 22:45Z and apply the label once it
+  # turns green" for a session that had scheduled no wake and had no trigger of
+  # any kind. It sat stranded for 16 hours reading, on the homepage, as a
+  # healthy machine wait — the exact inversion of what the panel is for. The
+  # summary is a description of state, not a plan: the summarizer cannot
+  # schedule anything, so a future-tense first-person commitment is not a claim
+  # it is ever in a position to make truthfully.
+  STATE_NOT_INTENT_RULE = <<~RULE.strip
+    - Describe state, not intent. Never claim in the first person an action the
+      session has not already taken — a scheduled wake, a follow-up, a retry, a
+      label about to be applied. Only say a session is waiting on something if
+      the conversation shows it actually arranged that wait; if it stopped
+      without arranging one, say that instead.
+  RULE
+
   # --- The pool-independent path (see #run_headless) --------------------------
 
   # Wall-clock budget for the one-shot completion. Generous enough for a long
@@ -571,6 +591,7 @@ class SessionStatusSummaryGenerator
         trailing offer to help.
       - Answer only from the conversation below. Do not invent a detail it does
         not contain.
+      #{STATE_NOT_INTENT_RULE}
 
       Links you can use:
       - Any pull request, issue, or run URL that appears in the conversation,
@@ -593,7 +614,9 @@ class SessionStatusSummaryGenerator
         to where it lives rather than spending a sentence on it.
       - Markdown links only, no headings, no bullet lists, no preamble, no
         trailing offer to help.
-      - Do not run any tools. Answer from the conversation you already have.
+      - Do not run any tools. Answer only from the conversation you already have,
+        and do not invent a detail it does not contain.
+      #{STATE_NOT_INTENT_RULE}
 
       Links you can use:
       - A specific message in this session's transcript:
