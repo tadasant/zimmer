@@ -617,11 +617,15 @@ user message, it delivers that instead of the recovery prompt, via a normal `res
 user message means someone has taken the session over, which is the case the cancelling semantics
 are for.
 
-The sweeps do not call `resume_for_system_recovery!` directly. They go through
+The automatic recovery paths do not call `resume_for_system_recovery!` directly — not the two
+sweeps, not the hung-process auto-restart, not the stranded-sleep rescue, not the failed-session
+retry, not the auto-continue after a job interruption. They go through
 `Session#claim_system_recovery_turn!`, which takes the row lock, refuses a session the trash
-swallowed since the sweep read it, and calls the preserving resume only on the way to `:claimed` —
-see [Spawning and monitoring](/sessions/spawning/) for both halves of that guard
-and [#554](https://github.com/tadasant/zimmer/issues/554) for what it costs when it is missing.
+swallowed since the caller read it, and calls the preserving resume only on the way to `:claimed` —
+see [Spawning and monitoring](/sessions/spawning/) for both halves of that guard and for the two
+callers that still resume without claiming, [#554](https://github.com/tadasant/zimmer/issues/554)
+for what it costs when it is missing, and
+[#753](https://github.com/tadasant/zimmer/issues/753) for the tail of the family.
 
 The invariant this restores: a session that was in `waiting` with wake-ups registered does not
 silently end up in `needs_input` with none.
