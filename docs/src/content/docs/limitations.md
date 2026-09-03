@@ -2654,30 +2654,42 @@ exempt from `CleanupStaleTriggersJob` and from sibling-wake cleanup, because del
 the bug. One systemic fault — a catalog rename that strands every trigger's agent root — therefore
 parks every pending wake at once and leaves you a list to clear by hand.
 
-### An `ao_event`-only wake consumed by a resume is never reaped on a timer
+### A stranded sleeper is rescued within ~20 minutes, not immediately
 
-Deliberately resuming a session consumes every pending one-time wake aimed at it — both kinds.
-`SessionStateMachine#cancel_pending_one_time_wake_triggers` stamps `last_triggered_at` on a one-time
-`schedule` condition and on a session-scoped `ao_event` condition alike, and either stamp is
-permanent: the trigger can never fire again.
+`waiting` is one word for two states: a session resting on a wake it will get, and a session resting
+on a wake it will not. Zimmer can now tell them apart —
+`SessionStateMachine.one_time_wake_pending?` asks whether a wake *can* fire rather than whether an
+unfired row exists, and `StrandedSleepSweepJob` resumes the ones that cannot — but the telling apart
+happens on a five-minute cron behind a fifteen-minute grace, not at the moment the wake is lost.
 
-`CleanupStaleTriggersJob` collects the consumed row, but only when the trigger carries a one-time
-schedule — its candidate query asks for a `schedule` condition with a `scheduled_at`. A wake built
-purely from session-scoped `ao_event` conditions, which is what
-`wake_me_up_when_session_changes_state` creates, is not a candidate, and it has no `scheduled_at` to
-lapse either. It survives as `enabled` with 0 sessions until its target session is archived, at
-which point the archived-target sweep takes it — unless it set `resuscitate_archived`, which is
-exempt from that sweep too.
+So a session whose wake set is destroyed without it being resumed still sits idle for up to about
+twenty minutes. That is the deliberate trade: the grace is what stops the sweep from mistaking a fire
+in flight on a congested `triggers` queue for a lost one, and an extra idle twenty minutes is much
+cheaper than a spurious wake, which costs a whole agent turn and destroys whatever wake set the woken
+turn had just armed.
 
-So in the recommended two-row wait — one `event_names` watcher plus a `wake_me_up_later` deadline
-backstop — a manual resume consumes both, the backstop clears within the hour, and the watcher stays
-in the list looking armed. `Trigger#dead_one_time_wake?` already answers correctly for that shape;
-it is the sweep's candidate set that does not reach it, and broadening that set would also newly
-collect the triggers `AoEventTriggerJob` preserves on purpose behind a dropped follow-up. Tracked in
-[#793](https://github.com/tadasant/zimmer/issues/793).
+The fireability test is narrow on purpose, and the narrowness has a cost of its own. Only a watched
+session that is **archived or deleted** counts as unable to transition again. A watched session that
+`failed` still counts as live — it can be restarted by hand, and it can still be archived, so a
+`session_archived` watcher on it is real — which means a watcher whose watched session failed and
+will in fact never be touched again keeps its requester asleep until the deadline backstop fires. If
+there is no backstop, nothing wakes it, and the sweep will not either.
 
-Nothing is stranded by it: the rows are inert and no session waits on them. The cost is that
-`/triggers` and `search_triggers` overstate what is actually armed.
+`wake_me_up_when_session_changes_state` and `wake_me_up_later` are documented as a pair for exactly
+this reason. Two calls, not one.
+
+### After three rescues Zimmer stops and leaves the session asleep
+
+`StrandedSleepRescue` gives up on a session after `MAX_RESCUES` (3) — a session that has been resumed
+three times and gone straight back to `waiting` with nothing armed each time is not a stall more
+turns will fix. Giving up writes a `stranded_sleep_abandoned` marker, records the reason on the
+session's own timeline, and alerts.
+
+What it does **not** do is move the session anywhere a human will trip over it. There is no
+`waiting → needs_input` transition in the state machine, and adding one for a branch that should
+almost never run would be a change to the lifecycle made for an edge case. So the session stays in
+`waiting`, off the homepage action queue, and the alert is the only thing that reaches a person. Any
+ordinary resume or restart clears the marker and puts the session back under the sweep's care.
 
 ### While Slack is rate-limiting you, Slack triggers fire late
 

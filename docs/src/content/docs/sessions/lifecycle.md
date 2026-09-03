@@ -644,6 +644,14 @@ fire-and-drop in the scheduler and leave the session asleep forever, so the serv
 Only `needs_input`, `running` and `waiting` sessions can be scheduled; from `failed` or `archived`
 the auto-sleep silently no-ops and the trigger would point at a session nothing can wake.
 
+A wake is only a wake while it can still fire, and `Session#awaiting_scheduled_wake?` is where that
+is decided — for the refresh nudge, for the start guards, and for the repair sweeps. A one-time
+schedule stops counting once its moment passes unfired; a session-scoped `ao_event` watcher stops
+counting once the session it watches is archived or deleted, because the firing path keys on
+*transitions* into the watched state and an archived session makes no more of them. A watched session
+that merely `failed` still counts, deliberately: it can be restarted, and it can still be archived.
+See [A wake is only armed while it can still fire](/sessions/triggers/).
+
 A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
 
 **The spot queue — the same sleep with no wake-up.** `action_session`'s `pause_into_spot_queue`
@@ -1240,6 +1248,18 @@ The state machine is not the only actor:
   marker saying so, so a lost start job leaves a plain `waiting` row that looks exactly like a
   session created a second ago. `StalledSessionStart` re-enqueues it, and fails it after three
   attempts rather than re-queuing forever. See
+  [Background jobs](/operate/background-jobs/#the-cron-schedule).
+- **`StrandedSleepSweepJob`** (every 5 min) covers the other half of the same hole: a session
+  that *did* run, went to sleep on a wake, and lost the wake. `waiting` is one word for two
+  states — a session resting on a wake it will get, and a session resting on a wake it will not —
+  and nothing distinguished them, because a legitimate sleep carries no marker either. The
+  predicate is **no fireable wake**, not *no wake*: an `ao_event` watcher whose watched session
+  is already archived is an `enabled` row that will never fire, so a sweep keyed on the absence
+  of trigger rows would walk straight past it. `StrandedSleepRescue` resumes the session with a
+  `SYSTEM_RECOVERY` nudge through the same `claim_system_recovery_turn!` door orphan cleanup
+  uses, and stops after three rescues rather than resuming forever. Production session 6412 sat
+  in `waiting` for 38.7 hours before this existed
+  ([#855](https://github.com/tadasant/zimmer/issues/855)). See
   [Background jobs](/operate/background-jobs/#the-cron-schedule).
 - **`ZombieReaperJob`** (every 5 min) reaps dead child processes that nothing is waiting on. It
   deliberately leaves alone any pid a live waiter has claimed — see

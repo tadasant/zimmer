@@ -1389,6 +1389,34 @@ announcement that follows the sweep.
 one-time wakes pointing at the same requester — they are moot, since the requester has already been
 resumed. Unless the follow-up was *dropped*, in which case siblings are preserved.
 
+**A wake that lapses unfired is parked, not deleted.** `CleanupStaleTriggersJob` also collects
+one-time schedules whose moment passed more than an hour ago, on the reasoning that
+`ScheduleTriggerJob` should have fired and destroyed them on its next tick. What happens to one
+depends on whether it ever *delivered*. A lapsed schedule that fired is residue and is destroyed. A
+lapsed schedule that never fired is the opposite — it is a wake somebody may still be asleep on — and
+deleting it erases the only record that a wake was owed. Those are marked `failed` and left in place:
+visible on `/triggers` with the reason, re-armable, and alerting once. Production trigger 13671 was a
+02:05Z deadline backstop that never fired and was gone without trace by 03:15Z, which is why nothing
+afterwards could say a wake had been lost at all
+([#855](https://github.com/tadasant/zimmer/issues/855)). A trigger the user *disabled* is not parked —
+it did not fire because they switched it off — and neither is one that fired and only lost its
+auto-delete; both are destroyed as before.
+
+Parking is about the record, not about the sleeper. A lapsed unfired schedule already fails
+`Session#awaiting_scheduled_wake?` — that predicate reads `schedule_due?`, which stays true for it — so
+the stranded requester was always visible to [`StrandedSleepSweepJob`](/operate/background-jobs/)
+whether or not the row survived. What deleting it destroyed was the evidence.
+
+**A wake is only armed while it can still fire.** `Session#awaiting_scheduled_wake?` — the predicate
+the refresh nudge, the start guards and the repair sweeps all read — asks whether a wake *can* fire,
+not whether an unfired row exists. A one-time schedule stops counting once its moment passes; a
+session-scoped `ao_event` watcher stops counting once the session it watches is archived or gone,
+because the firing path keys on *transitions* into the watched state and an archived session makes no
+more of them. This is deliberately narrow and fails safe in every direction it is unsure about: a
+watched session that merely `failed` still counts (it can be restarted, and it can still be
+archived), and a watched row that cannot be read counts too. Before it, an `ao_event` condition that
+had missed its only chance kept reporting itself as an armed wake forever.
+
 **A resume consumes a pending wake, and the dead row is collected on sight.** Any deliberate resume
 of the target session — a user follow-up, a restart, `force_immediate`, the wake itself firing —
 runs `cancel_pending_one_time_wake_triggers`, which stamps `last_triggered_at` on every pending
@@ -1405,14 +1433,20 @@ much longer — `scheduled_at` more than an hour in the past is a function of wh
 scheduled rather than of when it died, so a wake set 12 hours out and consumed five minutes later
 would sit there for another thirteen hours.
 
-**The sweep reaches this only for a trigger carrying a one-time schedule.** Its candidate query asks
-for a `schedule` condition with a `scheduled_at`, so a wake built purely from session-scoped
-`ao_event` conditions — what `wake_me_up_when_session_changes_state` creates — is consumed by the
-same resume, satisfies `dead_one_time_wake?` just as squarely, and is still not collected. It has no
-`scheduled_at` to lapse either, so it survives until its target session is archived. In the
-recommended two-row pattern below, that means the deadline backstop is cleared and the watcher
-beside it is not
-([Limitations](/limitations/#an-ao_event-only-wake-consumed-by-a-resume-is-never-reaped-on-a-timer)).
+**The sweep asks this of every one-time wake, not only of those carrying a schedule.** A wake built
+purely from session-scoped `ao_event` conditions — what `wake_me_up_when_session_changes_state`
+creates — is consumed by the same resume and satisfies `dead_one_time_wake?` just as squarely. It has
+no `scheduled_at` to lapse, so for a long time nothing reached it and it survived as `enabled` with 0
+sessions until its target session was archived; in the recommended two-row pattern below, that meant
+the deadline backstop cleared within the hour and the watcher beside it did not
+([#793](https://github.com/tadasant/zimmer/issues/793)). Both are now collected on the same tick.
+
+Widening the ground is safe because `dead_one_time_wake?` is the narrow part: it demands that
+**every** one-shot condition on the trigger be consumed. The multi-condition watcher
+`wake_me_up_when_session_changes_state` builds fails that the moment one of its three events is still
+unfired, and so does the trigger `AoEventTriggerJob` deliberately preserves behind a *dropped*
+follow-up — unless that trigger's only condition is the one already consumed, in which case it can
+never fire again and collecting it is the whole point.
 
 The predicate is deliberately narrow, because destroying an armed wake fails silently: the symptom
 is a session that simply never wakes up. A wake whose condition has *not* been consumed is never
@@ -1518,7 +1552,8 @@ offer; polling needs nothing but the outbound `gh` credential that is already th
 | `GithubCommentPollerJob` | every 30 seconds |
 | `GitHubMergeConflictPollerJob` | every 2 minutes |
 | `SlackTriggerHealthCheckJob` | hourly at :45 |
-| `CleanupStaleTriggersJob` | reaps leftovers |
+| `CleanupStaleTriggersJob` | hourly at :15 — reaps leftovers, parks undelivered wakes |
+| `StrandedSleepSweepJob` | every 5 minutes — resumes a session asleep on a wake that can never fire |
 
 :::caution[While Slack is rate-limiting you, Slack triggers fire late]
 `SlackTriggerPollerJob` is confined to a `pollers` queue with `total_limit: 1`, so while it runs it
