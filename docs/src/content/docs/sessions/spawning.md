@@ -500,9 +500,9 @@ signal death:
 flowchart TD
     E["Process exited"] --> N{"normal_completion_exit?"}
     N -->|yes| SI{"session_id_conflict?<br/>(stderr)"}
-    SI -->|yes| SIR["new session id +<br/>restart from scratch<br/>(MAX_SESSION_ID_CONFLICT_RECOVERIES = 2)"]
+    SI -->|yes| SIR["new session id +<br/>restart from scratch<br/>(RetryBudget::SESSION_ID_CONFLICT, 2)"]
     SI -->|no| ET{"both transcript stores<br/>still completely empty?"}
-    ET -->|yes| ETR["restart from scratch<br/>(MAX_EMPTY_TURN_RECOVERIES = 2)"]
+    ET -->|yes| ETR["restart from scratch<br/>(RetryBudget::EMPTY_TURN, 2)"]
     ET -->|no| P["pause! → needs_input"]
     N -->|no| C{"context_length_error?<br/>(stderr)"}
     C -->|yes| CR["ContextLengthRetryService<br/>compact + retry (budget: 2)"]
@@ -605,7 +605,7 @@ A turn that ends with the runtime having written **no conversation at all** is t
 behind every specific branch above. A normal-looking exit over a transcript with no message in it is
 not a completed turn — it is what "the agent never got going" looks like from the outside — so
 Zimmer restarts it from scratch under a new runtime session id, bounded by
-`MAX_EMPTY_TURN_RECOVERIES`. "No conversation" is asked of both stores
+`RetryBudget::EMPTY_TURN`. "No conversation" is asked of both stores
 (`RuntimeConversationPresence`): Zimmer's polled `session.transcript` *and* the runtime's own file on
 disk, so a lagging poller can never be enough to abandon a real conversation. The invariant it restores: a failure Zimmer chose to retry never leaves the session at
 rest with an empty transcript and nothing driving it forward. Before it existed, a five-second npm
@@ -701,7 +701,7 @@ Three places act on that answer:
   leaves `runtime_started` off to match, so the fork spawns fresh instead of inheriting an
   unresumable-but-existing transcript under a brand-new id.
 
-Without those, the session burned its `MAX_SESSION_ID_CONFLICT_RECOVERIES` budget and failed
+Without those, the session burned its `RetryBudget::SESSION_ID_CONFLICT` budget and failed
 permanently, dropping whatever request it carried: `failed` sessions reject `follow_up`, the
 status-summary fork died of the same fault on its own new id, and nothing in any queue read as "a
 request was lost" ([#519](https://github.com/tadasant/zimmer/issues/519)).
@@ -748,7 +748,7 @@ the defect. One concrete instance of the general problem in
 
 ## Retry budgets
 
-Five of those recovery branches are bounded, and every one of them is bounded the same
+Seven of those recovery branches are bounded, and every one of them is bounded the same
 way: a counter in `session.metadata`, a maximum, a timestamp of the last attempt, and a
 set of keys a reset clears. `RetryBudget` (`app/services/retry_budget.rb`) is where each
 of those is declared, once:
@@ -760,13 +760,29 @@ of those is declared, once:
 | `RetryBudget::SIGNAL_DEATH` | `signal_death_retry_count` | 3 | `last_signal_death_at` | `ProcessLifecycleManager#handle_signal_death` |
 | `RetryBudget::MCP_CONNECTION` | `mcp_retry_count` | 3 | `mcp_last_retry_at` | `AgentSessionJob#schedule_mcp_retry` |
 | `RetryBudget::CONTEXT_LENGTH` | `compact_retry_count` | 2 | `last_compact_at` | `ContextLengthRetryService` |
+| `RetryBudget::SESSION_ID_CONFLICT` | `session_id_conflict_count` | 2 | `last_session_id_conflict_at` | `ProcessLifecycleManager#handle_session_id_conflict` |
+| `RetryBudget::EMPTY_TURN` | `empty_turn_recovery_count` | 2 | `last_empty_turn_recovery_at` | `ProcessLifecycleManager#handle_empty_turn`, `Sessions::RestartUnstartedTurn` |
 
 **A budget is per-incident, not per-lifetime.** Step 5 of the monitor loop walks
 `RetryBudget.all` every iteration and hands back any budget whose process has run for
 `RetryBudget::DEFAULT_RESET_AFTER` (60 s) without a fresh attempt, logging
 `"<budget> reset (was N) - process stable for Ns"` into the session log. Without that, a
 session alive for days accumulates toward its maximum across unrelated incidents hours
-apart and then fails permanently on one it should have survived.
+apart and then fails permanently on one it should have survived — which is exactly what
+`session_id_conflict_count` and `empty_turn_recovery_count` did until they became budgets
+([#727](https://github.com/tadasant/zimmer/issues/727)).
+
+**One budget does not take the 60-second window: `RetryBudget::EMPTY_TURN`, which waits
+`RetryBudget::EMPTY_TURN_RESET_AFTER` (30 min).** Every other budget is spent by a process
+that got going and then broke, so "this process has been up a minute" is real evidence the
+incident is over. The empty-turn branch is the mirror image — it fires only while *neither*
+transcript store holds a conversation, so a process that is merely up proves nothing, and a
+runtime can spend the whole `McpStartupTimeout::SECONDS` (180 s) bringing MCP servers up
+before it writes its first line. Handing that budget back inside the startup window is what
+would turn a bounded empty-session failure into an unbounded restart loop, one cycle per
+timeout. The session-id conflict budget needs no such widening: the refusal is a *spawn-time*
+one, reported and exited within seconds, so two conflicts in one turn arrive seconds apart and
+no reset can land between them.
 
 A reset clears the counter and the stamp and nothing else. State that is *diagnosis* or
 *position* rather than budget survives it deliberately: `mcp_failed_servers` (which

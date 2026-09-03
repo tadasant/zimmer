@@ -1536,7 +1536,13 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     report = @service.full_health_report
 
     assert report.key?(:retry_budget_health)
-    assert_equal 5, report[:retry_budget_health][:budgets].size
+    # The claim is that DECLARING a budget is what puts it on the health surface — so
+    # name the two most recently declared rather than counting rows, which a section
+    # built from RetryBudget.all can never get wrong.
+    names = report[:retry_budget_health][:budgets].map { |budget| budget[:name] }
+    assert_equal RetryBudget.all.map(&:name), names
+    assert_includes names, :session_id_conflict
+    assert_includes names, :empty_turn
   end
 
   # === API Error Retry Health Tests ===

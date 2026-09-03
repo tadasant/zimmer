@@ -50,7 +50,7 @@ class Sessions::RestartUnstartedTurnTest < ActiveJob::TestCase
       "the restart must carry the session's own prompt, not a generic recovery nudge"
     assert_not_nil @session.running_job_id,
       "a restart that leaves no tracked job is the stall this service is fixing"
-    assert_equal 1, @session.metadata[Sessions::RestartUnstartedTurn::COUNT_KEY]
+    assert_equal 1, @session.metadata[Sessions::RestartUnstartedTurn::BUDGET.key]
   end
 
   test "the restarted spawn is told to start fresh rather than resume a conversation that does not exist" do
@@ -119,7 +119,7 @@ class Sessions::RestartUnstartedTurnTest < ActiveJob::TestCase
 
   test "gives up once the restart budget is spent rather than respawning forever" do
     @session.merge_metadata!(
-      Sessions::RestartUnstartedTurn::COUNT_KEY => Sessions::RestartUnstartedTurn::MAX_RESTARTS
+      Sessions::RestartUnstartedTurn::BUDGET.key => Sessions::RestartUnstartedTurn::BUDGET.max
     )
 
     result = nil
@@ -132,18 +132,29 @@ class Sessions::RestartUnstartedTurnTest < ActiveJob::TestCase
   end
 
   test "the budget is shared with the in-process empty-turn recovery" do
-    assert_equal ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES,
-      Sessions::RestartUnstartedTurn::MAX_RESTARTS
-    assert_equal "empty_turn_recovery_count", Sessions::RestartUnstartedTurn::COUNT_KEY,
+    assert_same RetryBudget::EMPTY_TURN, Sessions::RestartUnstartedTurn::BUDGET,
       "one event seen from two vantage points must not get two allowances"
+    assert_same Sessions::RestartUnstartedTurn::BUDGET, ProcessLifecycleManager::EMPTY_TURN_BUDGET
+    assert_equal "empty_turn_recovery_count", Sessions::RestartUnstartedTurn::BUDGET.key
+  end
+
+  test "a restart stamps the budget so a stable stretch can hand it back" do
+    frozen = Time.utc(2026, 9, 3, 12, 0, 0)
+
+    travel_to(frozen) { restart }
+
+    metadata = @session.reload.metadata
+    assert_equal 1, metadata["empty_turn_recovery_count"]
+    assert_equal frozen.iso8601, metadata["last_empty_turn_recovery_at"],
+      "without the stamp reset_stable_retry_budgets has nothing to measure stability from"
   end
 
   test "restarts up to the cap and no further" do
-    outcomes = (Sessions::RestartUnstartedTurn::MAX_RESTARTS + 1).times.map do
+    outcomes = (Sessions::RestartUnstartedTurn::BUDGET.max + 1).times.map do
       Sessions::RestartUnstartedTurn.call(@session.reload, working_directory: @clone_path).outcome
     end
 
-    expected = ([ :restarted ] * Sessions::RestartUnstartedTurn::MAX_RESTARTS) + [ :abandoned ]
+    expected = ([ :restarted ] * Sessions::RestartUnstartedTurn::BUDGET.max) + [ :abandoned ]
     assert_equal expected, outcomes
   end
 
