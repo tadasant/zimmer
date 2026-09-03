@@ -96,10 +96,10 @@ class XOauthBootstrap
   # parsed token response hash (access_token, refresh_token, expires_in, scope).
   def self.exchange_code(code:, verifier:, redirect_uri:, client_id:, client_secret:)
     # Shares XOauthCredential's timeout-bounded POST rather than repeating the
-    # Net::HTTP block: this runs inside a web request, where an unbounded read
-    # pins a Puma thread. Only the HTTP call is shared — complete! keeps its own
-    # persistence order, since the identity columns must be saved before
-    # apply_token_response! writes the rotating tokens.
+    # Net::HTTP block, so there is one place the bound has to be right. Only the
+    # HTTP call is shared — complete! keeps its own persistence order, since the
+    # identity columns must be saved before apply_token_response! writes the
+    # rotating tokens.
     response = XOauthCredential.post_token_request(
       token_endpoint: XOauthCredential::DEFAULT_TOKEN_ENDPOINT,
       client_id: client_id,

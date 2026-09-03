@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "socket"
+require "mocha/minitest"
 
 # Helpers for exercising the X (Twitter) OAuth token path: a stubbed token
 # endpoint for the ordinary response cases, and a real listening socket for the
@@ -9,6 +10,10 @@ require "socket"
 #
 # The silent case cannot be reproduced by stubbing Net::HTTP, because the bound
 # is enforced by the socket rather than by anything Ruby-visible on the request.
+#
+# mocha is required here rather than left to the including file: with_token_endpoint
+# stubs the response, so a test file that includes this module and nothing else
+# would fail with an undefined `stubs` unless a sibling file happened to load it.
 module XOauthTestHelpers
   # Runs the block with the URL of a TCP server that accepts connections and
   # sends nothing back, so a read against it blocks until the read timeout fires.
