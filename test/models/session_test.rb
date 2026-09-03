@@ -4189,6 +4189,34 @@ class SessionTest < ActiveSupport::TestCase
       "the batch form must cost the same number of queries for 3 watchers as for 12"
   end
 
+  # #execute_pending_sleep gates a preserved sleep intent on this, so it has to
+  # ask the same "can it fire" question as #awaiting_scheduled_wake?. A looser
+  # reading lets a session re-sleep on a wake that has already lapsed — stranded
+  # again by the very resume sent to rescue it.
+  test "armed_one_time_wake? is false for a one-time schedule whose moment has passed unfired" do
+    session = waiting_session_with_conversation
+    wake_trigger_for(session, scheduled_at: 2.days.ago.utc.iso8601)
+
+    assert_not session.reload.send(:armed_one_time_wake?)
+  end
+
+  test "armed_one_time_wake? is false for an ao_event watcher whose watched session is archived" do
+    session = waiting_session_with_conversation
+    session.update_columns(status: "waiting")
+    watched = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "child", status: :running)
+    watcher_trigger_for(session, watched_id: watched.id)
+    Session.where(id: watched.id).update_all(status: Session.statuses[:archived])
+
+    assert_not session.reload.send(:armed_one_time_wake?)
+  end
+
+  test "armed_one_time_wake? is true while the wake can still fire" do
+    session = waiting_session_with_conversation
+    wake_trigger_for(session, scheduled_at: 3.hours.from_now.utc.iso8601)
+
+    assert session.reload.send(:armed_one_time_wake?)
+  end
+
   test "ids_awaiting_scheduled_wake returns an empty set for no ids" do
     assert_equal Set.new, Session.ids_awaiting_scheduled_wake([])
     assert_equal Set.new, Session.ids_awaiting_scheduled_wake(nil)
