@@ -543,14 +543,15 @@ class HealthMonitorService
       if can_retry_session?(session)
         begin
           # The enqueue happens under the row lock claim_system_recovery_turn! takes.
-          # The relation above was read before this loop started, and on the
-          # `session_ids:` branch it was read from a failure list an operator was
-          # looking at — so the row can already say `archived` by the time this
-          # iteration reaches it, and resuming from the loaded object would write
-          # `running` straight over the trash (#554). `with_db_retry` re-running the
-          # block after a connection blip is the same hazard from a second
-          # direction: the retry replays the decision against a row that has moved.
-          # See Session#claim_system_recovery_turn!.
+          # The relation is read once, above, and the loop then works from those
+          # objects: every session past the first waits out a `Dir.exist?` stat on
+          # the clone volume and a full resume-and-enqueue for each session ahead of
+          # it, so the row can say `archived` by the time this iteration reaches it.
+          # Resuming from the loaded object would write `running` straight over the
+          # trash (#554). `with_db_retry` re-running the block after a connection
+          # blip is the same hazard from a second direction: the retry replays the
+          # decision against a row that has moved. See
+          # Session#claim_system_recovery_turn!.
           outcome = nil
           with_db_retry do
             ActiveRecord::Base.transaction do
@@ -1123,10 +1124,12 @@ class HealthMonitorService
   # A refused claim is a no-op, and a silent no-op is the failure mode here: the
   # `session_ids:` branch is somebody clicking Retry on a specific session, and
   # "nothing happened" with an empty result is indistinguishable from a bug. The
-  # reason goes back to the caller in `results[:skipped]`, which is what
-  # `/health`, `POST /api/v1/health/retry_sessions` and the `action_health` MCP
-  # tool render, and onto the session's own timeline, where "why did nothing
-  # happen to this session" is asked from.
+  # reason goes back to the caller in `results[:skipped]` — rendered by the JSON
+  # of `POST /health/retry_sessions` and `POST /api/v1/health/retry_sessions`, by
+  # the `action_health` MCP tool, and (since the HTML surface flashed counts and
+  # dropped this list entirely) in the health dashboard's flash — and onto the
+  # session's own timeline, where "why did nothing happen to this session" is
+  # asked from.
   #
   # Neither refusal retries. An archived session is terminal — the trash-cleanup
   # clock on its clone is already running, and starting an agent against it is

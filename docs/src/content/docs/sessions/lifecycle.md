@@ -622,9 +622,9 @@ sweeps, not the hung-process auto-restart, not the stranded-sleep rescue, not th
 retry, not the auto-continue after a job interruption. They go through
 `Session#claim_system_recovery_turn!`, which takes the row lock, refuses a session the trash
 swallowed since the caller read it, and calls the preserving resume only on the way to `:claimed` —
-see [Spawning and monitoring](/sessions/spawning/) for both halves of that guard and for the two
-callers that still resume without claiming, [#554](https://github.com/tadasant/zimmer/issues/554)
-for what it costs when it is missing, and
+see [Spawning and monitoring](/sessions/spawning/) for both halves of that guard and for the
+resumers outside this family that lock by hand instead,
+[#554](https://github.com/tadasant/zimmer/issues/554) for what it costs when it is missing, and
 [#753](https://github.com/tadasant/zimmer/issues/753) for the tail of the family.
 
 The invariant this restores: a session that was in `waiting` with wake-ups registered does not

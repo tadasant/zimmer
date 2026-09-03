@@ -98,13 +98,7 @@ class HealthController < ApplicationController
 
     respond_to do |format|
       format.html do
-        if results[:retried].any?
-          flash[:notice] = "Retry initiated for #{results[:retried].size} session(s)"
-        elsif results[:failed].any?
-          flash[:alert] = "Failed to retry #{results[:failed].size} session(s)"
-        else
-          flash[:notice] = "No sessions to retry"
-        end
+        flash_for_retry(results)
         redirect_to health_dashboard_path
       end
       format.json { render json: results }
@@ -209,6 +203,37 @@ class HealthController < ApplicationController
   end
 
   private
+
+  # Report every bucket of a retry, not just the two that used to be flashed.
+  #
+  # `skipped` carries a reason per session — a missing working directory, or a
+  # recovery turn `Session#claim_system_recovery_turn!` refused because the row is
+  # in the trash or already running. Flashing counts and dropping that list left
+  # the dashboard saying "No sessions to retry" to an operator who had just asked
+  # for one specific session by id, which is indistinguishable from a bug. The
+  # JSON surfaces have always returned the whole hash; this is the HTML one
+  # catching up.
+  #
+  # @param results [Hash] from HealthMonitorService#retry_failed_sessions
+  def flash_for_retry(results)
+    parts = []
+    parts << "Retry initiated for #{results[:retried].size} session(s)" if results[:retried].any?
+    parts << "Failed to retry #{results[:failed].size} session(s)" if results[:failed].any?
+    if results[:skipped].any?
+      reasons = results[:skipped].map { |entry| entry[:reason] }.uniq.join(" ")
+      parts << "Skipped #{results[:skipped].size} session(s). #{reasons}"
+    end
+
+    if parts.empty?
+      flash[:notice] = "No sessions to retry"
+    elsif results[:failed].any? || results[:retried].empty?
+      # Nothing was retried, or something outright failed: the operator asked for
+      # an action that did not happen, so it does not get to look like success.
+      flash[:alert] = parts.join(". ")
+    else
+      flash[:notice] = parts.join(". ")
+    end
+  end
 
   # Minutes from the form, converted to a Duration. Blank means the default;
   # QueueRecoveryMode clamps whatever arrives into MIN_TTL..MAX_TTL, so a hand-typed
