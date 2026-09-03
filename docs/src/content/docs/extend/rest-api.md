@@ -126,8 +126,8 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/sessions` | filters: `status`, `agent_runtime`, `priority_class`, `genesis`, `show_archived`, `page`, `per_page`. Zimmer's own status-summary forks are never listed |
-| `GET` | `/sessions/search` | `q` (or `query`) required (≤1000 chars), `search_contents` (`true` or `1`), `scan_cursor`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` filters as `/sessions`. Missing/oversized query → 400 (the only 400 in the API). Status-summary forks are never listed. See [Searching transcript contents](#searching-transcript-contents) for what `search_contents` changes about the response |
+| `GET` | `/sessions` | filters: `status`, `agent_runtime`, `priority_class`, `genesis`, `show_archived`, `visibility`, `page`, `per_page`. `visibility` (`on_board` / `off_board`) is **unset by default** — see [Board visibility](#board-visibility). Zimmer's own status-summary forks are never listed |
+| `GET` | `/sessions/search` | `q` (or `query`) required (≤1000 chars), `search_contents` (`true` or `1`), `scan_cursor`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` / `visibility` filters as `/sessions`. Missing/oversized query → 400 (the only 400 in the API). Status-summary forks are never listed. See [Searching transcript contents](#searching-transcript-contents) for what `search_contents` changes about the response |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201, or **200 with `idempotent_replay: true`** when `idempotency_key` matches an earlier create. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `custom_metadata`. Promoting a **waiting** session to `priority` also [starts it now](/sessions/spot-and-priority/#starting-a-queued-session-now), which is what makes "moved to priority and started" true rather than aspirational — the deferred re-check it was carrying can be an hour out. Only the transition into `priority` does it, so a PATCH that touches the title cannot restart a session. When it acts, the response carries a `start` object (`outcome`: `started` / `refused`, plus a `message`); it is absent when the promotion started nothing |
@@ -150,6 +150,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
 | `PATCH` | `/sessions/:id/set_category` | `category_id`; blank or omitted clears. Unknown id → 404 |
 | `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard |
+| `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
 
 `force_immediate: true` on `follow_up` interrupts a running session and delivers the prompt now,
@@ -159,6 +160,52 @@ left half-queued, and the call answers 404, 409, 422, or 500.
 
 `goal` on `follow_up` lands on every path — see
 [Following up, and the `goal` that rides along](#following-up-and-the-goal-that-rides-along) below.
+
+### Board visibility
+
+A session has a second field beside `status`, and the two have nothing to do with each other.
+`status` is where the session is in its lifecycle. `visibility` is whether its card is on the
+operator's dashboard: `visible`, `hidden`, or `snoozed` until `snoozed_until`.
+
+**It is a visual-organization device with no effect on scheduling or execution.** No scheduler,
+queue, gate or state machine reads it. A snoozed session starts, runs, ranks and finishes exactly as
+it would have if nobody had touched it — the human simply is not looking at its card. If you want to
+defer *work*, `POST /sessions/:id/sleep` and `PATCH /sessions/:id` (`precedence`) are the endpoints
+that do that.
+
+A snooze **expires by being read**. Once `snoozed_until` passes, the session is back on the board
+with no request having been made and no background job having written to the row. That is why the
+serializer reports two fields:
+
+- `visibility` — the stored choice, unchanged until somebody changes it. A session whose snooze ran
+  out last week still reads `"snoozed"` here.
+- `effective_visibility` — that choice with an expired snooze already resolved to `"visible"`. This
+  is what every human-facing board reads, and what a consumer deciding whether to *draw* something
+  wants.
+
+`GET /sessions` and `GET /sessions/search` take an **optional** `visibility` filter: `on_board`
+(what a tidied dashboard shows) or `off_board` (the hidden and snoozed ones). **They are unfiltered
+on this axis by default, deliberately.** Agents read these endpoints to check whether a piece of work
+already has a session; a session a human tidied off their board is still that session, and hiding it
+from a duplicate check would produce duplicate work with no visible cause. Pass the filter only when
+the question you are asking is genuinely about the board.
+
+```bash
+# Snooze a card until 9am on the 5th, Pacific time. Nothing about the session's
+# scheduling changes — only whether it is drawn.
+curl -X PATCH "$ZIMMER/api/v1/sessions/4242/visibility" \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"visibility":"snoozed","snoozed_until":"2026-09-05T09:00:00","timezone":"America/Los_Angeles"}'
+
+# Put it back by hand (it would have come back on its own at 9am).
+curl -X PATCH "$ZIMMER/api/v1/sessions/4242/visibility" \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" -d '{"visibility":"visible"}'
+```
+
+`snoozed_until` is a **naive wall-clock** ISO-8601 datetime read in `timezone` (an IANA name,
+default `UTC`) — send the time the human means plus their zone rather than converting to UTC
+yourself. A value carrying its own offset is rejected, as is one in the past. The MCP counterpart is
+`action_session`'s `set_visibility` action, with the same parameters and the same rules.
 
 ### Searching transcript contents
 
@@ -381,7 +428,7 @@ semantics.
 `is_autonomous`, `heartbeat_enabled`, `heartbeat_interval_seconds`, `auto_compact_window`,
 `genesis`, `scheduling_class`, `priority_class`, `category_id`, `category{}`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
-`session_notes_updated_at`, `favorited`.
+`session_notes_updated_at`, `favorited`, `visibility`, `effective_visibility`, `snoozed_until`.
 
 Every response with a `session` key renders it through the same serializer
 (`ApiSessionSerialization`), including `POST /enqueued_messages/:id/interrupt` — `session` means one
