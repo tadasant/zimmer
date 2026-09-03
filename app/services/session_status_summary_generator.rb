@@ -52,20 +52,26 @@ class SessionStatusSummaryGenerator
   # constant: the fork and the one-shot path write the same panel, so a rule
   # about what the panel may assert cannot live in only one of them.
   #
-  # THE DEFECT THIS EXISTS FOR (#734). A blurb once said, in the first person,
-  # "I've scheduled a self-wake to re-poll at 22:45Z and apply the label once it
-  # turns green" for a session that had scheduled no wake and had no trigger of
-  # any kind. It sat stranded for 16 hours reading, on the homepage, as a
+  # THE DEFECT THIS EXISTS FOR (#734). A blurb said, in the first person, "I've
+  # scheduled a self-wake to re-poll at 22:45Z and apply the label once it turns
+  # green" for a session that had scheduled no wake and had no trigger of any
+  # kind. The session sat stranded for 16 hours reading, on the homepage, as a
   # healthy machine wait — the exact inversion of what the panel is for. The
-  # summary is a description of state, not a plan: the summarizer cannot
-  # schedule anything, so a future-tense first-person commitment is not a claim
-  # it is ever in a position to make truthfully.
+  # summary is a description of state, not a plan: the summarizer is told not to
+  # run tools, so an action it narrates in the future tense has nothing behind
+  # it and no reader can check it.
+  #
+  # The second half is what keeps the rule from eating the panel's most useful
+  # sentence. Waiting on a HUMAN is the commonest resting state there is, and no
+  # transcript ever shows a session "arranging" it — so the rule bounds itself to
+  # machine waits, and "waiting for your review" stays sayable.
   STATE_NOT_INTENT_RULE = <<~RULE.strip
     - Describe state, not intent. Never claim in the first person an action the
       session has not already taken — a scheduled wake, a follow-up, a retry, a
-      label about to be applied. Only say a session is waiting on something if
-      the conversation shows it actually arranged that wait; if it stopped
-      without arranging one, say that instead.
+      label about to be applied. Say it is waiting on a machine event — a wake,
+      a trigger, a check it is polling — only where the conversation shows it
+      arranged that wait; a session that stopped without arranging one is
+      waiting on a person, so say that instead.
   RULE
 
   # --- The pool-independent path (see #run_headless) --------------------------
