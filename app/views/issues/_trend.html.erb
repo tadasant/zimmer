@@ -1,0 +1,155 @@
+<%# The trend chart: open-issue count per day across the window, segmented.
+    Reconstructed from each issue's created/closed timestamps — see Issues::Trend
+    — so it is a true history with no snapshot table behind it.
+
+    WHY THE PLOT IS SVG AND THE LABELS ARE HTML. The plot stretches to whatever
+    width the container has (`preserveAspectRatio="none"`), which is what makes it
+    read at 375px and at 1600px without a horizontal scrollbar. Text inside such a
+    viewBox stretches with it, so every axis label, direct label and readout here
+    is HTML positioned over the plot box in percentages. The strokes carry
+    `vector-effect="non-scaling-stroke"` for the same reason: 2px is 2px at both
+    widths.
+
+    WHY NO CHARTING LIBRARY. Zimmer serves JS through importmap with no bundler
+    and no npm dependency graph — the only vendored package is sortablejs, pinned
+    because a CDN import that failed took a whole controller with it. The two
+    charts already in the app (Costs, the outcome flamegraph) are server-rendered
+    markup driven by a small Stimulus controller, and this is the third. %>
+<% max = trend.max_value %>
+<% y_ticks = issue_trend_y_ticks(max) %>
+<% count = trend.dates.length %>
+<div class="bg-white border border-gray-200 rounded-lg p-3 sm:p-4 mb-4"
+     data-controller="issue-trend"
+     data-issue-trend-values-value="<%= ({ "all open" => trend.totals }.merge(trend.series.to_h { |s| [ s.key, s.values ] })).to_json %>"
+     data-issue-trend-dates-value="<%= trend.dates.map { |d| d.strftime("%b %-d") }.to_json %>"
+     data-issue-trend-max-value="<%= max %>">
+
+  <div class="flex flex-wrap items-start justify-between gap-2 mb-3">
+    <div class="min-w-0">
+      <h2 class="text-sm font-semibold text-gray-900">Open issues over time</h2>
+      <p class="text-xs text-gray-500">
+        Across <%= filters.repo ? issue_repo_short(filters.repo) : "all five repos" %>, reconstructed from when each issue
+        was opened and closed. Segment membership is the issue's classification <em>today</em>, applied to its whole history.
+      </p>
+    </div>
+    <div class="flex flex-wrap items-center gap-1">
+      <%# Window and segmentation are links rather than a form: both are one
+          value, both belong in the URL so a view can be shared, and the GitHub
+          read they redraw is already cached. %>
+      <div class="inline-flex rounded-md border border-gray-300 overflow-hidden" role="group" aria-label="Trend window">
+        <% Issues::GithubSnapshot::WINDOWS.each do |days| %>
+          <%= link_to "#{days}d", issues_path(query_params.merge("window" => days).except("gh_page")),
+              class: "px-2.5 py-1 text-xs font-medium #{trend.window_days == days ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}",
+              "aria-current": (trend.window_days == days ? "true" : nil) %>
+        <% end %>
+      </div>
+      <div class="inline-flex rounded-md border border-gray-300 overflow-hidden" role="group" aria-label="Segment by">
+        <% Issues::Trend::SEGMENTS.each do |name| %>
+          <%= link_to name, issues_path(query_params.merge("segment" => name).except("gh_page")),
+              class: "px-2.5 py-1 text-xs font-medium #{trend.segment == name ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}",
+              "aria-current": (trend.segment == name ? "true" : nil) %>
+        <% end %>
+      </div>
+    </div>
+  </div>
+
+  <% if trend.empty? %>
+    <p class="text-sm text-gray-500 py-8 text-center">No issue history to chart — GitHub returned nothing for this window.</p>
+  <% else %>
+    <div class="flex gap-2">
+      <%# Y axis. Its own column so the plot box below is exactly the box the
+          percentage-positioned overlay is measured against. %>
+      <div class="relative w-8 shrink-0 h-48 sm:h-64" aria-hidden="true">
+        <% y_ticks.each do |tick| %>
+          <span class="absolute right-0 -translate-y-1/2 text-[10px] tabular-nums text-gray-400"
+                style="top: <%= issue_trend_y_percent(tick, max).round(2) %>%"><%= tick %></span>
+        <% end %>
+      </div>
+
+      <div class="flex-1 min-w-0">
+        <div class="relative h-48 sm:h-64" data-issue-trend-target="plot">
+          <svg viewBox="0 0 <%= [ count - 1, 1 ].max %> <%= max %>" preserveAspectRatio="none"
+               class="absolute inset-0 w-full h-full overflow-visible" role="img"
+               aria-label="Open issue count per day, segmented by <%= trend.segment %>">
+            <% y_ticks.each do |tick| %>
+              <line x1="0" x2="<%= [ count - 1, 1 ].max %>" y1="<%= max - tick %>" y2="<%= max - tick %>"
+                    stroke="#e5e7eb" stroke-width="1" vector-effect="non-scaling-stroke" />
+            <% end %>
+            <%# The population line first, so the per-segment lines sit on top of
+                it rather than under. Dashed and neutral: it is the sum of the
+                others, not a fourth category competing with them. %>
+            <g data-issue-trend-target="series" data-series-key="all open">
+              <polyline fill="none" stroke="#374151" stroke-width="2" stroke-dasharray="5 4"
+                        vector-effect="non-scaling-stroke" stroke-linejoin="round"
+                        points="<%= issue_trend_points(trend.totals, max) %>" />
+            </g>
+            <% trend.series.each do |s| %>
+              <g data-issue-trend-target="series" data-series-key="<%= s.key %>">
+                <polyline fill="none" stroke="<%= s.color %>" stroke-width="2" vector-effect="non-scaling-stroke"
+                          stroke-linejoin="round" stroke-linecap="round"
+                          points="<%= issue_trend_points(s.values, max) %>" />
+              </g>
+            <% end %>
+          </svg>
+
+          <%# The crosshair and one dot per series, moved by the controller. HTML
+              rather than SVG so they keep their size in the stretched plot. %>
+          <div class="absolute inset-y-0 w-px bg-gray-400 pointer-events-none hidden"
+               data-issue-trend-target="crosshair" aria-hidden="true"></div>
+          <% ({ "all open" => "#374151" }.merge(trend.series.to_h { |s| [ s.key, s.color ] })).each do |key, color| %>
+            <div class="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white pointer-events-none hidden"
+                 style="background-color: <%= color %>" data-issue-trend-target="dot" data-series-key="<%= key %>" aria-hidden="true"></div>
+          <% end %>
+
+          <%# NO direct end-labels. Three of the categorical hues sit below 3:1 on
+              a white surface, which obliges relief — visible labels or a table
+              view — and the readout strip below IS the table view: every number
+              the chart encodes in colour is written there as text beside a named
+              swatch, so identity is never colour alone. Labels floated past the
+              plot's right edge would buy the same thing and cost a horizontal
+              overflow on the narrow screens this page is read on. %>
+
+          <%# The scrubber. An opacity-0 range input over the plot is the one
+              control that is a mouse hover, a touch drag AND a keyboard arrow at
+              the same time — a pointer-only tooltip is invisible on a phone. It
+              comes before the ring so `peer-focus-visible` can reach it. %>
+          <%= range_field_tag :trend_scrub, count - 1, min: 0, max: [ count - 1, 1 ].max, step: 1,
+              class: "peer absolute inset-0 w-full h-full opacity-0 cursor-crosshair",
+              "aria-label": "Scrub the trend chart by day",
+              data: { issue_trend_target: "scrub", action: "input->issue-trend#scrub" } %>
+          <div class="absolute -inset-1 pointer-events-none rounded peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500" aria-hidden="true"></div>
+        </div>
+
+        <%# X axis. %>
+        <div class="relative h-4 mt-1" aria-hidden="true">
+          <% trend.tick_indexes.each do |i| %>
+            <span class="absolute -translate-x-1/2 text-[10px] text-gray-400 whitespace-nowrap"
+                  style="left: <%= issue_trend_x_percent(i, count).round(2) %>%"><%= trend.dates[i].strftime("%-m/%-d") %></span>
+          <% end %>
+        </div>
+      </div>
+    </div>
+
+    <%# The readout: the day under the scrubber, and every series' value on it.
+        This is also the table view the contrast rule obliges — every number the
+        chart encodes in colour is legible here as text. The controller only ever
+        writes textContent into these spans; it never builds markup. %>
+    <div class="mt-3 pt-3 border-t border-gray-100">
+      <p class="text-xs font-medium text-gray-700 mb-1.5">
+        <span data-issue-trend-target="readoutDate"><%= trend.dates.last.strftime("%b %-d") %></span>
+      </p>
+      <div class="flex flex-wrap gap-x-4 gap-y-1.5">
+        <% [ [ "all open", "#374151", trend.totals ] ].concat(trend.series.map { |s| [ s.key, s.color, s.values ] }).each do |key, color, values| %>
+          <button type="button" class="inline-flex items-center gap-1.5 text-xs text-gray-700 hover:text-gray-900"
+                  data-issue-trend-target="legend" data-series-key="<%= key %>"
+                  data-action="click->issue-trend#toggle" aria-pressed="true">
+            <span class="h-2.5 w-2.5 rounded-sm shrink-0" style="background-color: <%= color %>"></span>
+            <span><%= key %></span>
+            <span class="font-semibold tabular-nums" data-issue-trend-target="value" data-series-key="<%= key %>"><%= values.last %></span>
+          </button>
+        <% end %>
+      </div>
+      <p class="text-[11px] text-gray-400 mt-2">Drag or arrow-key across the chart to read any day. Click a series to hide it.</p>
+    </div>
+  <% end %>
+</div>
