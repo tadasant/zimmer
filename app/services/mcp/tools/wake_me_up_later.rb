@@ -6,10 +6,9 @@ module Mcp
     # existing session (reuse_session + last_session_id).
     #
     # The scheduling itself — validation, the trigger, and the sleep that trigger
-    # creation performs as a side effect — lives in Sessions::ScheduleWakeUp, which
-    # the web UI's "Pause Until" control shares. This class is the MCP-shaped
-    # wrapper around it: argument coercion, the rendered description, and the
-    # markdown receipt.
+    # creation performs as a side effect — lives in Sessions::ScheduleWakeUp.
+    # This class is the MCP-shaped wrapper around it: argument coercion, the
+    # rendered description, and the markdown receipt.
     class WakeMeUpLater < Tool
       tool_name "wake_me_up_later"
 
@@ -143,8 +142,8 @@ module Mcp
 
       # The scheduler's rejection, plus the one remediation sentence that only
       # makes sense to a model: recompute against the server time the description
-      # renders. The web UI's remediation is different, which is why it is spliced
-      # on here rather than baked into Sessions::ScheduleWakeUp.
+      # renders. Spliced on here rather than baked into Sessions::ScheduleWakeUp,
+      # which has no idea it is being called by a model.
       def tool_error_message(error)
         return error.message unless error.code == :wake_at_too_soon
 

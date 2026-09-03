@@ -1109,7 +1109,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       assert_nil failed.reload.transcript, "the restarted session's transcript must be left for its new job"
     end
   end
-  # MCP parity for the web UI's "Pause Until → Spot Queue": an agent that has no
+  # Parking a session in the spot queue from MCP: an agent that has no
   # time worth naming can park itself in the queue instead of inventing one.
   test "pause_into_spot_queue parks a session with no wake trigger" do
     session = sessions(:needs_input)

@@ -32,12 +32,11 @@ Setting it never starts, stops, sleeps, wakes or reorders a session. It is a sin
 presentation columns, through `Sessions::SetVisibility`, which is the one writer behind all three
 surfaces.
 
-:::caution[It is not Pause Until]
-The card's ⋮ menu carries both **Snooze until…** and **Pause Until**, next to each other, and they do
-opposite things. Pause Until genuinely sleeps the session and schedules a wake
-([Triggers and schedules](/sessions/triggers/)); Snooze only takes the card off your board. Confusing
-them either stalls work you meant to merely tidy away, or leaves work on screen you meant to hide.
-The panels say which is which before you click.
+:::caution[Snoozing a card is not sleeping a session]
+A snoozed session runs exactly when it would have run anyway — it is simply not on screen. Nothing in
+the web UI sleeps a session: that is `wake_me_up_later` and `action_session`'s `pause_into_spot_queue`
+over MCP ([Triggers and schedules](/sessions/triggers/)). Reading a snooze as a pause is how work you
+meant to merely tidy away looks like work you stopped, so the panel says so before you click.
 :::
 
 ## A snooze ends by being read
@@ -81,8 +80,7 @@ The ranked queue is a list of work that has not started, which makes it exactly 
 thinning out — and snoozing a row there leaves its precedence untouched, so the queue behind it does
 not move.
 
-**On the session page.** A *Snooze* pill in the header, beside Pause Until; on a phone, a row in the
-bottom sheet.
+**On the session page.** A *Snooze* pill in the header; on a phone, a row in the bottom sheet.
 
 ## Finding a session you hid
 

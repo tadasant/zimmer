@@ -573,7 +573,7 @@ class AgentSessionJob < ApplicationJob
 
       # A pause outranks every reason there is to start this session.
       #
-      # This is the backstop the whole "Pause Until wins" contract rests on. Above
+      # This is the backstop the whole "an armed wake wins" contract rests on. Above
       # it sit callers that each decide, on their own evidence, that a `waiting`
       # session should run now: the spot-hold re-check timer, the ceiling sweep,
       # the auth-outage un-park, a fleet-maintenance agent working the ranked
@@ -2504,8 +2504,8 @@ class AgentSessionJob < ApplicationJob
     # A session dormant in the spot queue is case 2 as well and needs its own
     # signal, because it deliberately arms nothing: SpotSessionPause's record is
     # what says "asleep on purpose, waiting on the gate". Recovering one would
-    # resume it into the very window that paused it — or, for a session a human
-    # parked there from "Pause Until", straight out of the queue they put it in.
+    # resume it into the very window that paused it — or, for a session parked
+    # there deliberately, straight out of the queue it was put in.
     #
     # A session HELD by the gate is a fourth dormant shape, and it is a different
     # population from the paused one: a pause writes `spot_pause_reason` and is

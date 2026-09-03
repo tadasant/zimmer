@@ -11,11 +11,11 @@
 # `status`, `scheduling_class`, `precedence`, the spot queue, triggers, wake-ups
 # or the quota gate, and nothing in those places reads these two columns. A
 # snoozed session runs exactly when it would have run had nobody snoozed it — the
-# card simply is not on screen. The control that genuinely sleeps a session is
-# "Pause Until" (Sessions::ScheduleWakeUp / Sessions::PauseIntoSpotQueue), which
-# is a different control, doing a different thing, that happens to sit in the same
-# menu. If a change here ever needs to consult the lifecycle, that is a bug in the
-# change rather than a gap here.
+# card simply is not on screen. What genuinely sleeps a session is
+# Sessions::ScheduleWakeUp / Sessions::PauseIntoSpotQueue, reached only over MCP —
+# a different thing entirely, and no web-UI control does it. If a change here ever
+# needs to consult the lifecycle, that is a bug in the change rather than a gap
+# here.
 #
 # A snooze ENDS BY BEING READ, not by being swept. `board_visible` treats a
 # `snoozed` row whose `snoozed_until` has passed as visible, so a session comes

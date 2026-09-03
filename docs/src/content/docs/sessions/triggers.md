@@ -1299,8 +1299,7 @@ Neither auto-deletes a one-time trigger on a suppressed fire.
 ## Wake-up semantics
 
 Triggers are the backing store for two MCP tools Zimmer gives its own agents: "wake me up later"
-and "wake me up when that other session changes state." A human clicking **Pause Until** in the web
-UI creates the same one-time shape. Four mechanisms make this reliable:
+and "wake me up when that other session changes state." Four mechanisms make this reliable:
 
 **Auto-sleep.** `Trigger#sleep_target_session_if_applicable` runs on trigger creation. If the
 target session is `needs_input`, it sleeps immediately (`needs_input → waiting`). If it's
@@ -1377,11 +1376,10 @@ wait — one `event_names` watcher plus a `wake_me_up_later` deadline backstop �
 four, and a woken turn that decides to keep waiting re-registers two things rather than four. The
 singular `event_name` is still accepted and still builds a single-condition trigger.
 
-**A sleep with no trigger at all.** "Pause Until" has one choice that creates nothing: **Spot
-Queue** sleeps the session and leaves it for the spot scheduler
-(`Sessions::PauseIntoSpotQueue`), which is the right shape whenever the honest answer to "when
-should this come back" is "whenever there is quota headroom for it" rather than a wall-clock
-time. It is also what stops the trigger table filling up with guesses — the same reasoning that
+**A sleep with no trigger at all.** `action_session`'s `pause_into_spot_queue` creates nothing: it
+sleeps the session and leaves it for the spot scheduler (`Sessions::PauseIntoSpotQueue`), which is
+the right shape whenever the honest answer to "when should this come back" is "whenever there is
+quota headroom for it" rather than a wall-clock time. It is also what stops the trigger table filling up with guesses — the same reasoning that
 replaced the per-session auth-outage retry triggers with a `quota_available` event. See
 [Spot and priority](/sessions/spot-and-priority/).
 
@@ -1397,55 +1395,52 @@ it, whatever its precedence or scheduling class. Without that, the ranked spot q
 pause on the way past, since `resume!` cancels pending one-time wakes. See
 [A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence).
 
-### Pausing a session that is still running
+### Parking a session that is still running
 
-A human clicking **Pause Until** on a `running` session gets something an agent scheduling its own
-wake-up does not: the turn is **stopped**. `Sessions::HaltRunningTurn` terminates the CLI process
-and pauses the session, and the `pending_sleep` the trigger just wrote is what carries it
-`needs_input → waiting` on the way through. All of it lands before the request returns, so the
-badge says `waiting` on the next paint.
+A park normally waits for the turn to end. Passing `"halt": true` to `action_session`'s
+`pause_into_spot_queue` **stops** it instead: `Sessions::HaltRunningTurn` terminates the CLI process
+and pauses the session, and the `pending_sleep` the park just wrote is what carries it
+`needs_input → waiting` on the way through. All of it lands before the tool call returns.
 
-The deferral is still the fallback rather than the behaviour. The wake is armed *first* and the
-halt attempted second, which buys two things: a rejected time costs no turn, and a halt that cannot
+The deferral is still the fallback rather than the behaviour. The park is written *first* and the
+halt attempted second, which buys two things: a rejected park costs no turn, and a halt that cannot
 land (no process, a turn that ended during SIGTERM grace) leaves the session running with its
-`pending_sleep` intact — degraded to the old end-of-turn sleep, never awake with nothing armed. The
-panel reads the `halted_turn` and `pending_sleep` fields off the response and says which happened.
+`pending_sleep` intact — degraded to the end-of-turn sleep, never awake with nothing armed. The tool
+returns `halted_turn` and `pending_sleep` so the caller can say which happened.
 
 Halting costs a turn: work already written to disk survives, the tool call in flight does not. The
-panel says so above the presets before the click, not after it.
+tool description says so before the call, not after it.
 
-The MCP side keeps the deferral as its default, and that asymmetry is deliberate. `action_session`'s
-`pause_into_spot_queue` is most often a session parking **itself** — and a session that halted
-itself would terminate the process waiting for the tool call to return. A caller driving somebody
-*else's* running session passes `"halt": true` and gets the web UI's behaviour. `SelfSessionActionSession`
-both omits the option from its schema and strips it from the arguments, so passing it anyway is a
-refusal rather than a loophole.
+The deferral is the default, and that asymmetry is deliberate. `pause_into_spot_queue` is most often
+a session parking **itself** — and a session that halted itself would terminate the process waiting
+for the tool call to return. A caller driving somebody *else's* running session passes `"halt": true`.
+`SelfSessionActionSession` both omits the option from its schema and strips it from the arguments, so
+passing it anyway is a refusal rather than a loophole.
 
 Stopping a turn skips the queue drain that a turn allowed to end performs, so a message queued behind
-the session waits with it. On the timed path the wake bounds that wait; **Spot Queue arms nothing, so
-nothing bounds it** — the panel names the pending count when there is one.
+the session waits with it. On the timed path a wake bounds that wait; **the spot queue arms nothing,
+so nothing bounds it** — drain the queue first if that matters.
 
-### One scheduler, two front doors
+### One scheduler, one front door
 
 `Sessions::ScheduleWakeUp` is the whole of it: validate the time, create the trigger, and let
-`Trigger`'s `after_create` do the sleeping. `Mcp::Tools::WakeMeUpLater` and
-`SessionsController#pause_until` are both thin wrappers over it — the tool adds a rendered
-description and a markdown receipt, the controller adds JSON and a redirect.
+`Trigger`'s `after_create` do the sleeping. `Mcp::Tools::WakeMeUpLater` is a thin wrapper over it,
+adding a rendered description and a markdown receipt.
 
 That matters because of what the validation prevents. A `wake_at` in the past, or inside the
 30-second grace window, is not merely ignored: `TriggerCondition#schedule_due?` sees it as due on
 the next tick, the fire consumes the one-shot, and the session it just put to sleep is never woken.
-Splitting the check across two surfaces would mean one of them eventually drifts, so neither owns it.
+The check lives in the service rather than the tool so a second surface cannot drift from it.
 
-The web surface adds one thing the tool does not need: a **timezone**. A browser's
-`datetime-local` yields a naive local wall-clock string, and "Tomorrow, 9:00 AM" means the
-operator's morning. `pause_until_controller.js` sends
-`Intl.DateTimeFormat().resolvedOptions().timeZone` alongside it; reading the naive value as UTC
-would silently offset every pause by the operator's UTC offset.
+Wakes are **additive**: a second `wake_me_up_later` leaves the first armed, whichever fires first
+wins, and `Trigger#destroy_sibling_wakes!` cleans up the rest. The one gesture that replaces rather
+than adds is a park into the spot queue, which runs `Sessions::SupersedePendingWakes` because it
+arms nothing itself — a leftover wake would pull the session straight back out of the queue.
 
-The resume prompt defaults to `AutomatedPrompts::PAUSE_UNTIL_WAKE`, which says plainly that Zimmer
-resumed the session on a schedule a human set earlier and that no human is present now. The panel
-takes a replacement if the operator wants to be specific about what to come back to.
+There is **no human-facing control that sleeps a session until a chosen time**. Scheduling a wake is
+an MCP capability.
+
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
 
 ## Everything is polled
 
