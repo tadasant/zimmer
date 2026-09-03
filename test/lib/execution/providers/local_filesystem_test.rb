@@ -42,7 +42,6 @@ module Execution
         assert_respond_to provider, :cleanup
         assert_respond_to provider, :status
         assert_respond_to provider, :provider_type
-        assert_respond_to provider, :transcript_directory
       end
 
       test "status returns expected structure" do
@@ -52,20 +51,6 @@ module Execution
         assert status.key?(:ready)
         assert status.key?(:provider)
         assert_equal :local_filesystem, status[:provider]
-      end
-
-      test "transcript_directory returns nil before setup" do
-        assert_nil build_provider.transcript_directory
-      end
-
-      test "transcript_directory returns path after clone_path is set" do
-        provider = build_provider
-        provider.instance_variable_set(:@clone_path, Pathname.new("/tmp/test-clone"))
-
-        transcript_dir = provider.transcript_directory
-        assert transcript_dir
-        assert_includes transcript_dir, ".claude/projects/"
-        assert_includes transcript_dir, "-tmp-test-clone"
       end
 
       test "provider accepts context with all optional parameters" do
