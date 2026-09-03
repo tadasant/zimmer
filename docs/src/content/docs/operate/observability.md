@@ -263,6 +263,58 @@ environment gate holds. Two layers now enforce it:
   key. The agent's shell never sees the production DSN at all, for any tool an agent session
   spawns — not just Rails ones. A clone that wants its own DSN can still set one in its `.env`.
 
+## An interactive `rails runner` on the box does not page
+
+sentry-rails ships a `runner` hook that reports every uncaught `bin/rails runner` exception
+with the tag `source: runner`. On the production droplet that one tag covers two things that
+have nothing in common.
+
+One is the deploy workflow's job-drain gate, which shells into the web container twice — once
+with an inline one-liner to ask the *deployed* image which queues it knows about, and once
+with `bin/rails runner -` to feed it the canary script on stdin. An exception there means the
+deploy is unverified, and it should page.
+
+The other is an operator typing a one-liner by hand. On 2026-09-02, five attempts at guessing
+a column name (`initial_prompt`, `error`, `last_error_class`, `arguments`, `completed_at` —
+none of which exists) raised five `PG::UndefinedColumn`s, which opened five GlitchTip issues,
+which paged `#alerts` five times, which spawned four priority router sessions in one hour
+([#767](https://github.com/tadasant/zimmer/issues/767)). Nothing was wrong with the app.
+
+`config/initializers/sentry.rb` drops the second and keeps the first, and the only thing it
+keys on is a **controlling terminal**:
+
+```ruby
+config.before_send = lambda do |event, _hint|
+  source = event.tags[:source]
+  attached_to_terminal = [ $stdin, $stdout, $stderr ].any? { |io| io.tty? }
+  next nil if source.to_s == "runner" && attached_to_terminal
+  event
+end
+```
+
+A terminal is the *only* signal that separates them. In particular the shape of the code does
+not: the drain gate uses both an inline argument and a stdin-fed script, so a filter keyed on
+"the code was typed as an argument" would silence its queue-capability probe. Neither of its
+invocations allocates a TTY — no `docker exec -t`, and both capture their output into a shell
+variable — and no GitHub Actions step has one either. A human at a `docker exec -it` prompt
+does.
+
+:::caution[Draw this filter wider and it fails silently]
+Dropping every `source: runner` event, or adding a global `SENTRY_SUPPRESS` off-switch, would
+also drop the drain gate's exceptions — and nothing would tell you. There is no error when an
+alert that should have paged does not. The same reasoning is why the predicate lives inline in
+the initializer with no autoloaded constant to fail to resolve, and why it **fails open**:
+`Sentry::Client#capture_event` rescues anything raised inside `before_send` and drops the
+event, so a bug in the filter would be exactly the project-wide mute it exists to avoid.
+
+`test/initializers/sentry_test.rb` pins all three directions — the console typo drops, the
+non-interactive runner still reports, non-runner events are untouched — because those tests
+are the only thing that would notice.
+:::
+
+An operator who *wants* a console exception recorded still has one: run it without a terminal
+(`docker exec` with its output piped, which is what automation does anyway).
+
 ## Configuring it
 
 The three variables reach the container as Kamal secrets (`env.secret` in

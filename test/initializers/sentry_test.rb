@@ -148,4 +148,125 @@ class SentryInitializerTest < ActiveSupport::TestCase
       refute Sentry.initialized?
     end
   end
+
+  # --- issue #767: an interactive `rails runner` is an operator, not the app ----------
+  #
+  # sentry-rails' runner hook tags every uncaught `bin/rails runner` exception
+  # `source: runner`. Two very different things wear that tag on the prod box: the deploy
+  # workflow's job-drain gate (`docker exec` and `docker exec -i`, no TTY either way) and
+  # an operator hand-typing a one-liner at a `docker exec -it` prompt. Five of the latter
+  # paged #alerts five times in an hour on 2026-09-02.
+  #
+  # The filter's failure mode is silence, so all three directions are pinned explicitly:
+  # the console typo drops, the drain gate still reports, and non-runner events are
+  # untouched. Delete the `attached_to_terminal` half of the initializer's before_send and
+  # the "drain gate" cases below fail; delete the `source == runner` half and the
+  # "unaffected" cases fail.
+
+  # Stubs the three standard streams, always all three, so a case means the same thing
+  # whether the suite runs under a developer's terminal or a CI runner's pipe.
+  def with_ttys(stdin: false, stdout: false, stderr: false, &block)
+    $stdin.stub(:tty?, stdin) do
+      $stdout.stub(:tty?, stdout) do
+        $stderr.stub(:tty?, stderr, &block)
+      end
+    end
+  end
+
+  # What sentry-rails' `runner` railtie hook does at_exit with an uncaught exception.
+  def capture_runner_exception(message)
+    Sentry.capture_exception(StandardError.new(message), tags: { source: "runner" })
+  end
+
+  test "an interactive rails runner exception is not reported" do
+    boot_sentry("production") do
+      with_ttys(stdin: true, stdout: true, stderr: true) do
+        capture_runner_exception("PG::UndefinedColumn: column sessions.initial_prompt does not exist")
+      end
+
+      assert_empty captured_events,
+        "a hand-typed console typo must not open a GlitchTip issue or page #alerts"
+    end
+  end
+
+  # `docker exec -t` (no `-i`) leaves stdin unattached but allocates a terminal on the
+  # output side. Still a human at a prompt.
+  test "a runner exception with a terminal on stdout only is not reported either" do
+    boot_sentry("production") do
+      with_ttys(stdout: true) do
+        capture_runner_exception("PG::UndefinedColumn: column post_deploy_task_runs.error does not exist")
+      end
+
+      assert_empty captured_events
+    end
+  end
+
+  # The canary the job-drain gate feeds to `bin/rails runner -` over `docker exec -i`:
+  # stdin is a pipe, output is captured into a shell variable, no terminal anywhere.
+  # This is the signal the filter must not silence — a raise here means an unverified deploy.
+  test "a non-interactive stdin-fed rails runner exception is still reported" do
+    boot_sentry("production") do
+      with_ttys do
+        capture_runner_exception("job drain canary never ran")
+      end
+
+      assert_equal 1, captured_events.size,
+        "the deploy workflow's drain gate runs the runner without a TTY and must still page"
+      event = captured_events.first.to_h
+      assert_includes event[:exception][:values].first[:value], "job drain canary never ran"
+      assert_equal "runner", event[:tags][:source],
+        "the event reaches GlitchTip with its runner tag intact"
+    end
+  end
+
+  # The gate's other invocation: an inline one-liner over plain `docker exec`. Identical in
+  # shape to the operator's typo and distinguishable only by the absent terminal, which is
+  # why the filter keys on interactivity rather than on how the code was passed in.
+  test "a non-interactive inline rails runner exception is still reported" do
+    boot_sentry("production") do
+      with_ttys do
+        capture_runner_exception("queue capability probe blew up")
+      end
+
+      assert_equal 1, captured_events.size
+    end
+  end
+
+  test "a non-runner exception is unaffected, terminal or not" do
+    boot_sentry("production") do
+      with_ttys(stdin: true, stdout: true, stderr: true) do
+        Sentry.capture_exception(StandardError.new("a real web request failed"))
+        Sentry.capture_exception(StandardError.new("a real job failed"), tags: { source: "application.active_job" })
+        ErrorReporter.report_exception(StandardError.new("a real lifecycle failure"), context: { session_id: 767 })
+      end
+
+      assert_equal 3, captured_events.size,
+        "the filter must key on the runner tag; ordinary app errors are none of its business"
+      values = captured_events.map { |e| e.to_h[:exception][:values].first[:value] }
+      assert(values.any? { |v| v.include?("a real web request failed") })
+      assert(values.any? { |v| v.include?("a real job failed") })
+      assert(values.any? { |v| v.include?("a real lifecycle failure") })
+    end
+  end
+
+  test "the filter does not disturb an untagged message event at a terminal" do
+    boot_sentry("production") do
+      with_ttys(stdin: true) do
+        ErrorReporter.report_message("lifecycle warning")
+      end
+
+      assert_equal 1, captured_events.size
+    end
+  end
+
+  # Staging runs the same initializer; the filter is not production-only.
+  test "staging drops the interactive runner and keeps the non-interactive one" do
+    boot_sentry("staging") do
+      with_ttys(stdin: true) { capture_runner_exception("typo on staging") }
+      assert_empty captured_events
+
+      with_ttys { capture_runner_exception("staging drain gate") }
+      assert_equal 1, captured_events.size
+    end
+  end
 end
