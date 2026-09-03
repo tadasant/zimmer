@@ -76,6 +76,13 @@ module Mcp
           sessions are running
         - when the hold lifts, as far as the model can honestly say — for two of the three ceilings that
           is a condition rather than a time, and it is stated as one instead of being dressed up as an ETA
+        - when the ACCOUNT POOL comes back: whether any account has room on both its windows right now
+          and, when none does, the first moment one does — as a countdown and a UTC wall clock. This is a
+          different question from the ceilings above. Those are Zimmer's own gate; this is Claude's quota,
+          so a pool can be out of capacity while the gate is open, and the gate can hold spot work on a
+          pacing curve while every account has room. It is the figure to act on when deciding whether to
+          sleep on a wake and retry or to report a blocker upward. The same numbers the Account Pool
+          section of /quotas renders, from the same measurement
         - what the running fleet is burning in $/min, and what one more session is projected to add
         - the two dormant spot populations, both in `waiting` and NOT running, so both are unrelated to
           the concurrency limit and routinely exceed it: the ones the budget ceiling PAUSED mid-run (the
@@ -173,8 +180,11 @@ module Mcp
                    "spent counts as 100% in the 5-hour figure)"
         end
 
+        lines.concat(pool_capacity_lines(decision.pool_capacity))
+
         lines.concat(window_lines("5-hour", decision.five_hour))
         lines.concat(window_lines("Weekly", decision.weekly))
+        lines.concat(weekly_reset_lines(decision.pool_capacity))
         lines.concat(genesis_lines(classes, counts))
         lines.concat(trigger_lines)
 
@@ -182,6 +192,81 @@ module Mcp
       end
 
       private
+
+      # When the ACCOUNT POOL comes back — the question a held session actually
+      # has to answer to choose between sleeping on a wake and escalating.
+      #
+      # Not the same question as `resume_outlook` above it. That one is about
+      # Zimmer's own ceilings; this one is about Claude's quota underneath them,
+      # and the two come apart in both directions: a pool with every account out
+      # of capacity while the gate sits open, and a gate holding spot work on a
+      # pacing curve while every account has room.
+      #
+      # Carried off SpotGateService::PoolCapacity, which copies it off
+      # ClaudeAccountPool::Measure — the same measurement the /quotas banner
+      # renders, so the page and this tool cannot answer it differently.
+      #
+      # Empty when there was no pool reading to decide on at all (gating off, or
+      # nothing probed), which the "no reading" lines below already say.
+      def pool_capacity_lines(capacity)
+        return [] if capacity.nil?
+
+        [ "- **Account pool capacity:** #{pool_capacity_phrase(capacity)}" ]
+      end
+
+      # Both absences named, because "no time" is two different answers here and a
+      # caller cannot act on the bare nil. See SpotGateService::PoolCapacity.
+      def pool_capacity_phrase(capacity)
+        return "available now — at least one account has room on both its 5-hour and 7-day windows" if capacity.capacity_now?
+
+        blocked = "every account with a reading is out of capacity on at least one window"
+        return "#{blocked}, and none of them recorded a reset time — nothing here says when the pool comes back" if capacity.next_capacity_at.nil?
+
+        "#{blocked}. The first one has room on both windows again #{reset_phrase(capacity.next_capacity_at)}"
+      end
+
+      # The 7-day rollover, under the weekly window it belongs to. Measured over
+      # exactly the accounts whose week is spent, so it says "blocked until X"
+      # rather than naming a rollover on an account that was never blocked — the
+      # same set, and the same three states, the /quotas line reports.
+      def weekly_reset_lines(capacity)
+        return [] if capacity.nil?
+
+        spent = capacity.weekly_spent_count
+        return [ "- **Next 7-day reset:** no account's 7-day window is spent, so nothing is waiting on one" ] if spent.zero?
+
+        accounts = "#{spent} #{"account".pluralize(spent)} whose 7-day window is spent"
+        reset = capacity.next_weekly_reset
+        return [ "- **Next 7-day reset:** unknown — no reset time is recorded for the #{accounts}" ] if reset.nil?
+
+        [ "- **Next 7-day reset:** #{reset_phrase(reset)} — the soonest recorded among #{accounts}" ]
+      end
+
+      # A reset as a countdown AND a wall clock, the pair /quotas shows. The
+      # countdown is what a caller deciding "sleep or escalate" acts on; the
+      # absolute time is what survives being quoted into a later message, where a
+      # relative one would have quietly gone stale.
+      #
+      # A deadline can cross now between the measurement and this render, and a
+      # countdown of "0 seconds" would read as "any moment now" rather than as the
+      # stale reading it is.
+      #
+      # To the nearest minute. The timestamp behind it came off a poll of the
+      # account's quota, so "1 hour, 35 minutes, and 59 seconds" claims a precision
+      # the reading does not have, and the decision it feeds — sleep or escalate —
+      # is never made on the seconds.
+      def reset_phrase(time)
+        seconds = (time - Time.current).round
+        return "now (#{wall_clock(time)}) — that moment has passed, so this reading is stale" if seconds <= 0
+        return "in under a minute (#{wall_clock(time)})" if seconds < 1.minute
+
+        "in #{duration((seconds / 60.0).round * 60)} (#{wall_clock(time)})"
+      end
+
+      # UTC, in the format the /quotas notes use. A tool answer is read by an
+      # agent that has no viewer timezone to be rewritten into, so the zone is
+      # spelled out rather than implied.
+      def wall_clock(time) = time.utc.strftime("%b %-d, %H:%M UTC")
 
       # One window, in the units the model actually has for it. Dollars when the
       # calibration has produced a usable estimate; percentages of the window

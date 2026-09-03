@@ -893,6 +893,111 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_equal [ nil, nil ], SpotGateService.evaluate.resume_outlook
   end
 
+  # --- pool capacity ------------------------------------------------------------
+  #
+  # The pool's answer to "when does this stop being true", carried through to
+  # every surface that reports on the gate. The property under test throughout is
+  # that the Decision carries what ClaudeAccountPool::Measure measured — a second
+  # computation on the reporting side is exactly what these forbid.
+
+  test "the decision carries the pool's capacity answer, measured not recomputed" do
+    # Both windows spent, so every one of the four fields carries a real value —
+    # a pool where they all happened to be nil would prove nothing about drift.
+    seed(current_5h: 1.0, current_7d: 1.0,
+         reset_5h: 90.minutes.from_now, reset_7d: 3.days.from_now)
+
+    measure = ClaudeAccountPool.measure
+    capacity = SpotGateService.evaluate.pool_capacity
+
+    refute_nil capacity
+    refute_nil measure.next_capacity_at
+    refute_nil measure.next_weekly_reset
+    assert_equal measure.next_capacity_at, capacity.next_capacity_at
+    assert_equal measure.next_weekly_reset, capacity.next_weekly_reset
+    assert_equal measure.capacity_now?, capacity.capacity_now?
+    assert_equal measure.weekly_spent_count, capacity.weekly_spent_count
+  end
+
+  test "a pool with room reports capacity now and no time to wait for" do
+    seed(current_5h: 0.10, current_7d: 0.10)
+
+    capacity = SpotGateService.evaluate.pool_capacity
+
+    assert capacity.capacity_now?
+    assert_nil capacity.next_capacity_at, "there is nothing to wait for while the pool is serving"
+    assert_equal 0, capacity.weekly_spent_count
+    assert_nil capacity.next_weekly_reset
+  end
+
+  # The two nil cases for `next_capacity_at`, which a caller cannot tell apart
+  # from the timestamp alone: nothing to wait for, and nothing that knows.
+  test "a blocked pool with a recorded reset carries the moment it comes back" do
+    seed(current_5h: 1.0, current_7d: 0.10, reset_5h: 45.minutes.from_now)
+
+    capacity = SpotGateService.evaluate.pool_capacity
+
+    refute capacity.capacity_now?
+    assert_in_delta 45.minutes.from_now.to_f, capacity.next_capacity_at.to_f, 5
+  end
+
+  test "a blocked pool that recorded no reset carries a nil the counts explain" do
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: @account, utilization_5h: 1.0, utilization_7d: 0.10,
+      reset_5h: nil, reset_7d: nil, active_session_count: 1, trigger: "usage_sample"
+    )
+
+    capacity = SpotGateService.evaluate.pool_capacity
+
+    refute capacity.capacity_now?, "no capacity now, and no timestamp either"
+    assert_nil capacity.next_capacity_at
+  end
+
+  # The weekly reset is measured over the accounts whose week IS spent, so the
+  # count is what says whether a nil means "nothing is waiting on a week" or
+  # "the accounts waiting on one cannot say when".
+  test "a spent week carries its soonest recorded rollover and the count behind it" do
+    seed(current_5h: 0.10, current_7d: 1.0, reset_7d: 3.days.from_now)
+
+    capacity = SpotGateService.evaluate.pool_capacity
+
+    assert_equal 1, capacity.weekly_spent_count
+    assert_in_delta 3.days.from_now.to_f, capacity.next_weekly_reset.to_f, 5
+  end
+
+  test "a spent week with no recorded rollover keeps the count and nils the time" do
+    ClaudeAccountQuotaSnapshot.create!(
+      claude_account: @account, utilization_5h: 0.10, utilization_7d: 1.0,
+      reset_5h: 2.hours.from_now, reset_7d: nil, active_session_count: 1, trigger: "usage_sample"
+    )
+
+    capacity = SpotGateService.evaluate.pool_capacity
+
+    assert_equal 1, capacity.weekly_spent_count
+    assert_nil capacity.next_weekly_reset
+  end
+
+  # A decision reached without reading the pool has no pool answer to give, and
+  # says nil rather than inventing "capacity now".
+  test "a decision made without a pool reading carries no capacity answer" do
+    @setting.update!(spot_gating_enabled: false)
+    assert_nil SpotGateService.evaluate.pool_capacity
+
+    @setting.update!(spot_gating_enabled: true)
+    assert_nil SpotGateService.evaluate.pool_capacity, "no snapshot, no pool answer"
+
+    assert_nil SpotGateService::ALWAYS_ALLOWED.pool_capacity
+  end
+
+  test "to_h serializes the capacity answer alongside the windows" do
+    seed(current_5h: 1.0, current_7d: 0.10, reset_5h: 30.minutes.from_now)
+
+    serialized = SpotGateService.evaluate.to_h[:pool_capacity]
+
+    refute_nil serialized
+    assert_equal false, serialized[:capacity_now]
+    assert_in_delta 30.minutes.from_now.to_f, serialized[:next_capacity_at].to_f, 5
+  end
+
   private
 
   def running_session(index, genesis: SessionGenesis::WEB_UI)

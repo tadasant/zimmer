@@ -303,6 +303,20 @@ Nothing here counts a reset time that has already passed. A past timestamp descr
 has already rolled over, which is the same rule the counters follow, so it is not something the pool
 is waiting for.
 
+`get_spot_policy` reports the same two answers, from the same measurement rather than from a second
+one of its own: the pool's moment as **Account pool capacity** beside the decision, and the 7-day
+rollover as **Next 7-day reset** under the weekly window. Each is a countdown *and* a UTC wall clock
+— the countdown is what a session deciding between sleeping on a wake and escalating acts on, and
+the absolute time is what survives being quoted into a later message. `SpotGateService::PoolCapacity`
+is what carries the four values off `ClaudeAccountPool::Measure` into the decision; the three banner
+states above are the three sentences the tool prints, so the page and the tool cannot answer this
+differently.
+
+That answer is deliberately separate from the ceilings below. **Account pool capacity** is Claude's
+quota — when an account can serve a request at all. The ceilings are Zimmer's own gate. They come
+apart in both directions: a pool can be out of capacity while the gate sits open, and the gate can
+hold spot work on a pacing curve while every account has room.
+
 The times are rendered as UTC on the server and rewritten to the reader's own clock in the browser
 (the `local-time` Stimulus controller), which names the zone it converted to; the UTC reading stays
 on hover, and stays on screen if JavaScript never runs.
@@ -989,6 +1003,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read the $/min of each harness + model combination | Burn rate table on `/costs` | `get_costs` |
 | Read which of the three ceilings is holding spot work, and what lifts it | Spot gate card on `/quotas` | `get_spot_policy` |
 | Read how many spot sessions are asleep in the spot queue | Spot gate card on `/quotas` | `get_spot_policy` |
+| Read when the account pool regains capacity, and the soonest 7-day rollover behind it | Account Pool section on `/quotas` | `get_spot_policy` |
 | Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
 | Toggle gating, set the two priority reserves, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
 | One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |

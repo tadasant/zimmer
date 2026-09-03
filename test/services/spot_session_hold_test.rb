@@ -524,7 +524,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       detail: "Holding spot sessions: 10 of 10 session slots taken.",
       five_hour: nil, weekly: nil, active_sessions: 10, fleet_cap: 10,
       accounts_read: 2, pool_size: 2,
-      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: nil
     )
   end
 
@@ -582,7 +583,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       detail: "Holding spot sessions: the 5-hour window is at 85% of the 80% spot budget, averaged across all 2 accounts.",
       five_hour: nil, weekly: nil, active_sessions: 3, fleet_cap: 10,
       accounts_read: 2, pool_size: 2,
-      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: nil
     )
   end
 
@@ -592,7 +594,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       detail: "1 of 10 session slots taken, and 5-hour at 12% of its 80% target, averaged across all 2 accounts.",
       five_hour: nil, weekly: nil, active_sessions: 1, fleet_cap: 10,
       accounts_read: 2, pool_size: 2,
-      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: nil
     )
   end
 end
