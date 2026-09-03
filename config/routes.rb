@@ -162,6 +162,7 @@ Rails.application.routes.draw do
           get :transcript
           patch :notes, action: :update_notes
           post :toggle_favorite
+          patch :visibility, action: :update_visibility
           patch :heartbeat, action: :update_heartbeat
           patch :set_category
         end
@@ -460,6 +461,9 @@ Rails.application.routes.draw do
       patch :reorder_precedence
       patch :update_goal
       patch :toggle_favorite
+      # Board visibility: hide / snooze / restore a card. Presentation only —
+      # it is NOT :pause_until, which really does sleep the session.
+      patch :update_visibility
       patch :toggle_push_notifications
       patch :toggle_heartbeat
       patch :update_heartbeat_interval

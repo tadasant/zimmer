@@ -71,6 +71,20 @@ class SessionsController < ApplicationController
   # another page — so this is a cap, and the view says when it has truncated.
   RANKED_SECTION_LIMIT = 200
 
+  # The Filters section's board-visibility control — the reveal affordance for the
+  # second, presentation-only axis. "On board" is the default and hides the
+  # sessions the operator has tucked away; the other two are how a hidden session
+  # is always findable again, so nothing here is ever unrecoverable.
+  #
+  # This narrows nothing else. A snoozed session is running, queued and ranked
+  # exactly as it was — the filter decides what is drawn and stops there. The
+  # values are SessionVisibility's, shared with the REST listings and the MCP
+  # search so all three spell the filter the same way.
+  VISIBILITY_ON_BOARD = SessionVisibility::FILTER_ON_BOARD
+  VISIBILITY_OFF_BOARD = SessionVisibility::FILTER_OFF_BOARD
+  VISIBILITY_ALL = SessionVisibility::FILTER_ALL
+  VISIBILITY_FILTER_OPTIONS = SessionVisibility::FILTER_OPTIONS
+
   # Cookie that persists an explicit Filters choice (statuses + scheduling class),
   # so the selection survives a reload and a bare visit to "/" rather than snapping
   # back to the default. Written only when the Filters form is submitted; cleared by
@@ -177,6 +191,18 @@ class SessionsController < ApplicationController
       scope.excluding_status_summary_forks
     end
 
+    # Board visibility, applied to every branch below through the same lambda so no
+    # view can silently forget it. An expired snooze is already "visible" to the
+    # scope, which is how a snoozed session returns on its own with nothing having
+    # written to its row. See SessionVisibility.
+    board_scope = lambda do |scope|
+      case @visibility_filter
+      when VISIBILITY_OFF_BOARD then scope.board_hidden
+      when VISIBILITY_ALL then scope
+      else scope.board_visible
+      end
+    end
+
     sessions = base_scope.call(Session.all)
 
     # Roots offered in the Advanced Search agent-root autocomplete. Sourced from the
@@ -211,6 +237,14 @@ class SessionsController < ApplicationController
         sessions = filter_sessions_by_search(sessions, @search_query)
       end
     end
+
+    # Board visibility is the last narrowing, so the reveal count below is counted
+    # through every other filter the operator has set. "3 tucked away" then means
+    # three cards THIS board would otherwise be showing, rather than three
+    # somewhere in the table — the number exists to talk them into revealing, and
+    # it is only persuasive if revealing actually produces those three.
+    @off_board_count = sessions.board_hidden.count
+    sessions = board_scope.call(sessions)
 
     # The Ranked view: the spot queue in the order it will actually be worked,
     # with the priority sessions that outrank all of it stacked above. Two
@@ -2204,6 +2238,37 @@ class SessionsController < ApplicationController
     end
   end
 
+  # Board visibility: hide a session, snooze it until a chosen time, or put it
+  # back. Presentation only — see Sessions::SetVisibility. It is the neighbour of
+  # #pause_until in the same overflow menu and does none of what that one does:
+  # no sleep, no wake trigger, no spot queue, no status change.
+  #
+  # Answers JSON (the visibility Stimulus controller drives it with fetch) and
+  # HTML (the no-JS fallback), the way #pause_until does.
+  def update_visibility
+    @session = find_session
+
+    Sessions::SetVisibility.call(
+      session: @session,
+      visibility: params[:visibility],
+      snoozed_until: params[:snoozed_until],
+      timezone: params[:timezone].presence || "UTC"
+    )
+
+    respond_to do |format|
+      format.json { render json: visibility_payload(@session) }
+      format.html do
+        redirect_back fallback_location: session_path(@session),
+                      notice: visibility_notice(@session)
+      end
+    end
+  rescue Sessions::SetVisibility::Error, ActiveRecord::RecordInvalid => e
+    respond_to do |format|
+      format.json { render json: { success: false, error: e.message }, status: :unprocessable_entity }
+      format.html { redirect_back fallback_location: session_path(@session), alert: e.message }
+    end
+  end
+
   def toggle_favorite
     @session = find_session
 
@@ -3103,8 +3168,13 @@ class SessionsController < ApplicationController
     if params[FILTERS_SUBMITTED_PARAM] == "1"
       @status_filter = sanitized_status_filter(params[:status])
       @priority_class_filter = sanitized_priority_class(params[:priority_class])
+      @visibility_filter = sanitized_visibility_filter(params[:visibility])
       cookies[FILTERS_COOKIE] = {
-        value: { "status" => @status_filter, "priority_class" => @priority_class_filter }.to_json,
+        value: {
+          "status" => @status_filter,
+          "priority_class" => @priority_class_filter,
+          "visibility" => @visibility_filter
+        }.to_json,
         expires: 1.year
       }
       return
@@ -3113,11 +3183,16 @@ class SessionsController < ApplicationController
     if (persisted = persisted_filters)
       @status_filter = sanitized_status_filter(persisted["status"])
       @priority_class_filter = sanitized_priority_class(persisted["priority_class"])
+      # A cookie written before this filter existed has no "visibility" key, which
+      # sanitizes to the default rather than to nothing — an operator who never
+      # asked to see hidden sessions keeps the board they had.
+      @visibility_filter = sanitized_visibility_filter(persisted["visibility"])
       return
     end
 
     @status_filter = default_status_filter.dup
     @priority_class_filter = sanitized_priority_class(params[:priority_class])
+    @visibility_filter = sanitized_visibility_filter(params[:visibility])
   end
 
   # One session's rank, as the ranked view's JavaScript needs it back.
@@ -3179,6 +3254,14 @@ class SessionsController < ApplicationController
   def sanitized_priority_class(value)
     klass = value.to_s.strip
     SessionGenesis::CLASSES.include?(klass) ? klass : ""
+  end
+
+  # Board visibility filter. Anything unrecognized — a hand-edited URL, or a cookie
+  # written before this control existed — falls back to the default board rather
+  # than to a state the Filters form cannot express.
+  def sanitized_visibility_filter(value)
+    choice = value.to_s.strip
+    VISIBILITY_FILTER_OPTIONS.include?(choice) ? choice : VISIBILITY_ON_BOARD
   end
 
   # Coarse server-side mobile detection used only to pick the default view mode.
@@ -3698,6 +3781,28 @@ class SessionsController < ApplicationController
 
     "That time has already passed, or is less than " \
       "#{Sessions::ScheduleWakeUp::WAKE_AT_GRACE_WINDOW.to_i} seconds away. Pick a later time."
+  end
+
+  # The JSON the visibility control reads back. `board_visible` is the one the
+  # page acts on: it decides whether the card leaves the board.
+  def visibility_payload(session)
+    {
+      success: true,
+      session_id: session.id,
+      visibility: session.visibility,
+      effective_visibility: session.effective_visibility,
+      board_visible: session.board_visible?,
+      snoozed_until: session.snoozed_until&.iso8601,
+      summary: session.visibility_summary
+    }
+  end
+
+  def visibility_notice(session)
+    case session.visibility
+    when SessionVisibility::HIDDEN then "Session #{session.id} hidden from the board."
+    when SessionVisibility::SNOOZED then "Session #{session.id} snoozed until #{session.snoozed_until}."
+    else "Session #{session.id} is back on the board."
+    end
   end
 
   # "Pause Until → Spot Queue". Reached from #pause_until, after the same

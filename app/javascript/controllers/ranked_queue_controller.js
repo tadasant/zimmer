@@ -42,6 +42,10 @@ export default class extends Controller {
     statusFilter: Array,
     // "spot", "priority", or "" for both.
     priorityClassFilter: String,
+    // Which board this is: "on_board" (the default, which leaves snoozed and
+    // hidden rows out), "off_board", or "all". Presentation only — it decides
+    // what is drawn and nothing about what runs.
+    visibilityFilter: String,
     // False when a search, an agent root or a genesis is narrowing this page.
     // Those three cannot be evaluated client-side for a session the page has
     // never rendered, so it declines to insert rather than guessing.
@@ -127,6 +131,8 @@ export default class extends Controller {
       status: element.dataset.status,
       schedulingClass: element.dataset.schedulingClass,
       precedence: element.dataset.precedence,
+      // The string "true"/"false" the server rendered; compared as such below.
+      onBoard: element.dataset.onBoard !== "false",
       row: source ? document.importNode(source, true) : null
     }
   }
@@ -154,11 +160,11 @@ export default class extends Controller {
     this.insertRow(envelope)
   }
 
-  // The two filter dimensions a page can evaluate for a session it has never
+  // The three filter dimensions a page can evaluate for a session it has never
   // rendered. The other three — search, agent root, genesis — are the server's
   // to judge, which is why `liveInsert` turns inserts off when one is in force.
-  // Removal stays sound under all five: a row on screen already matched them, and
-  // neither a status nor a class change can alter that.
+  // Removal stays sound under all six: a row on screen already matched them, and
+  // none of status, class or board visibility can alter that.
   admits(envelope) {
     if (this.hasStatusFilterValue && this.statusFilterValue.length > 0 &&
         !this.statusFilterValue.includes(envelope.status)) {
@@ -167,6 +173,11 @@ export default class extends Controller {
     if (this.priorityClassFilterValue && this.priorityClassFilterValue !== envelope.schedulingClass) {
       return false
     }
+    // Board visibility. Without this a session the operator snoozed would be
+    // pushed back onto their queue by its next status change — the one way a
+    // presentation-only axis could look like it was not working.
+    if (this.visibilityFilterValue === "on_board" && !envelope.onBoard) return false
+    if (this.visibilityFilterValue === "off_board" && envelope.onBoard) return false
     return true
   }
 

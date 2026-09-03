@@ -1,0 +1,23 @@
+<%# The "this card is tucked away" pill. Only rendered while a board is revealing
+    hidden and snoozed sessions — on the default board these cards are not
+    rendered at all — so its job is to say WHY a card is there and, for a snooze,
+    when it comes back on its own.
+
+    Locals: agent_session %>
+<span class="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600"
+      title="<%= agent_session.visibility_summary %>. Visual only — it does not affect whether or when this session runs.">
+  <%= render "sessions/visibility_icon", classes: "h-3 w-3" %>
+  <% if agent_session.visibility == SessionVisibility::HIDDEN %>
+    Hidden
+  <% elsif agent_session.snoozed_until.blank? %>
+    <%# A snooze with no end time is refused on write, so this only shows for a
+        row predating that validation. It renders rather than raising: one such
+        row must not take the whole revealed board with it. %>
+    Snoozed
+  <% else %>
+    <%# .utc is what makes the "UTC" suffix honest: `strftime` on the raw
+        attribute renders in the server's zone, which is UTC only while
+        config.time_zone is left at its default. %>
+    Snoozed · <%= agent_session.snoozed_until.utc.strftime("%b %-d, %-I:%M %p UTC") %>
+  <% end %>
+</span>

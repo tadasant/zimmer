@@ -81,6 +81,19 @@ module ApiSessionSerialization
     json[:session_notes] = session.session_notes
     json[:session_notes_updated_at] = session.session_notes_updated_at&.iso8601
     json[:favorited] = session.favorited
+    # Board visibility — a SECOND axis, entirely separate from `status`. It is how
+    # the operator tidies their dashboard (hide a card, or snooze it out of sight
+    # until a time) and it has no effect whatsoever on scheduling or execution: a
+    # snoozed session is started, queued and ranked exactly as it would have been.
+    #
+    # `visibility` is the stored choice; `effective_visibility` is that choice with
+    # an expired snooze already resolved back to "visible", which is what every
+    # human-facing board reads. A consumer deciding whether to draw something wants
+    # `effective_visibility`; one deciding whether a snooze was ever set wants
+    # `visibility` and `snoozed_until`.
+    json[:visibility] = session.visibility
+    json[:effective_visibility] = session.effective_visibility
+    json[:snoozed_until] = session.snoozed_until&.iso8601
     json[:transcript] = session.transcript if include_transcript
 
     json
