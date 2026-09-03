@@ -262,8 +262,36 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 ## Timeouts and caching
 
-- `MCP_TIMEOUT = 180000` (3 minutes) — a flat startup timeout for **every** MCP server.
-  Tracked in [#113](https://github.com/tadasant/zimmer/issues/113).
+- **Three minutes to start**, for every MCP server, on Claude and Codex. The budget is one number
+  — `McpStartupTimeout::SECONDS` — written in each runtime's own idiom, because they share no
+  mechanism. Claude reads `MCP_TIMEOUT=180000` off the agent process's environment
+  (`ClaudeSpawnEnv#configure_mcp_env`), which reaches every server it spawns. Codex has no such
+  variable: it reads `startup_timeout_sec` out of each `[mcp_servers.*]` table, so
+  `CodexConfigTomlPostProcessor` writes `startup_timeout_sec = 180` onto every **stdio** entry.
+  HTTP entries get none — they reach a server that is already running, and a longer budget there
+  would only delay reporting a URL that is simply unreachable.
+- Codex's own default is 30 seconds, measured against the pinned `@openai/codex@0.146.0` binary:
+  a stdio server that never answers delays the first model request by 29.9s over the
+  no-server baseline, and `startup_timeout_sec = 5` moves the same measurement to 5.1s. That is
+  the whole exposure — the cold clone below is guaranteed by the cache pinning, and installing all
+  nine npx servers at once into one fresh clone cache takes 18s for the slowest on an idle
+  production droplet. Under 2x margin, on the runtime where running out means the server is
+  dropped rather than merely slow ([#702](https://github.com/tadasant/zimmer/issues/702)).
+- The wider budget has a cost, and it is the one Claude already pays: a server that hangs holds
+  the handshake for three minutes instead of thirty seconds, on every launch, since Zimmer
+  respawns stdio servers per run. A slow start is recoverable and a dropped server is not, so
+  that is the trade taken deliberately.
+- **Pi gets neither.** `PiRuntimeAdapter` exports no timeout variable, and nothing Zimmer writes
+  into the `.mcp.json` that `PiMcpConfigPostProcessor` seeds is read as one — yet those seeded
+  entries are stdio `npx` servers on the same clone-scoped cold cache. Tracked in
+  [#844](https://github.com/tadasant/zimmer/issues/844).
+- A config entry that already carries `startup_timeout_sec` (or the deprecated
+  `startup_timeout_ms` Codex folds into the same field) keeps its own value. A `mcp.json` catalog
+  entry cannot express one — AIR's server schema has no such field — so what this preserves in
+  practice is a timeout a repo wrote into its own checked-in `.codex/config.toml`, which AIR
+  merges around rather than replaces.
+- One flat number for every server is the coarse answer; per-server configurability is tracked in
+  [#113](https://github.com/tadasant/zimmer/issues/113).
 - Every server whose `command` is `npx` gets `NPM_CONFIG_CACHE` written into **its own `env` table**
   by `RuntimeConfigPostProcessor`, pointing at the clone's `.npm-cache`. So `npx` MCP servers in
   *different* sessions never fight over a shared cache. The match is exact: `sh -c "npx …"`, an
@@ -306,8 +334,8 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 - `MCP_PACKAGE_REINSTALL` and `Dockerfile.base`'s `bin/preinstall-mcp-packages` pre-warm the python
   packages listed in `mcp.json`, and `npm install -g` the npm ones. The npm half no longer helps an
   MCP server: `NPM_CONFIG_CACHE` moves the *whole* npm cache into the clone, `_cacache` included, so
-  a cold clone pays the registry download for every npx server. That has been true on Claude since
-  the per-clone cache landed and is now true on Codex too — see
+  a cold clone pays the registry download for every npx server, on every runtime. The startup
+  budget above is the headroom that absorbs it — see
   [Limitations](/limitations/#a-cold-clone-pays-the-npm-download-for-every-npx-mcp-server).
 
 ## The fourteen that ship

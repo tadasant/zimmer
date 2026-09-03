@@ -639,8 +639,9 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   # the runtime catalog and fully deterministic. It exercises every Codex-specific
   # path: retargeting a native Zimmer http entry, env_vars secret inlining (with
   # retained host-env forwarding), env_http_headers secret inlining, an npx entry's
-  # argv passed through verbatim, and the elicitation address written into the
-  # stdio entry's env table (and only that entry's).
+  # argv passed through verbatim, the startup timeout written onto the stdio entry
+  # (and only that entry), and the elicitation address written into the stdio
+  # entry's env table (and only that entry's).
   test "post_process! produces byte-for-byte stable .codex/config.toml (golden file)" do
     stub_secrets("ACME_API_KEY" => "sk-acme-123", "ACME_TOKEN" => "tok-acme-xyz")
 
@@ -675,6 +676,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       args = ["-y", "@acme/mcp"]
       command = "npx"
       env_vars = ["ACME_HOST_REGION"]
+      startup_timeout_sec = #{McpStartupTimeout::SECONDS}
       [mcp_servers.acme-server.env]
       ACME_API_KEY = "sk-acme-123"
       ELICITATION_POLL_URL = "#{ElicitationEndpoint.url}"
@@ -748,6 +750,102 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_nil servers["context7"]["env_vars"],
       "the host-env forwarding rule must go once Zimmer writes the value literally"
     assert_nil servers.dig("not-npx", "env", "NPM_CONFIG_CACHE")
+  end
+
+  # ---------------------------------------------------------------------------
+  # MCP startup timeout
+  #
+  # Claude takes its budget from MCP_TIMEOUT on the agent process. Codex has no
+  # such variable — it reads `startup_timeout_sec` out of each `[mcp_servers.*]`
+  # table and otherwise applies its own 30s default, which the cold clone that
+  # NPM_CONFIG_CACHE pinning guarantees can run out of.
+  # ---------------------------------------------------------------------------
+
+  test "post_process! gives every Codex stdio server the shared MCP startup timeout" do
+    write_config(
+      "context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] },
+      "not-npx" => { "command" => "/usr/local/bin/thing", "args" => [ "--serve" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+
+    assert_equal 180, servers.dig("context7", "startup_timeout_sec")
+    assert_equal 180, servers.dig("not-npx", "startup_timeout_sec"),
+      "a non-npx stdio server has a cold start of its own and gets the same budget"
+  end
+
+  test "post_process! does not write a startup timeout onto an http server" do
+    write_config(
+      "acme-http" => { "url" => "https://acme.example.com/mcp", "http_headers" => {} }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+
+    assert_nil servers.dig("acme-http", "startup_timeout_sec"),
+      "an http entry reaches an already-running server and has no cold start to absorb"
+    assert_nil servers.dig(SELF_SESSION_SERVER, "startup_timeout_sec"),
+      "the auto-injected Zimmer entries are http and must not be given one either"
+  end
+
+  test "post_process! keeps a startup timeout the catalog entry sets itself" do
+    write_config(
+      "explicit-sec" => {
+        "command" => "npx", "args" => [ "-y", "@acme/mcp" ], "startup_timeout_sec" => 12
+      },
+      "explicit-ms" => {
+        "command" => "npx", "args" => [ "-y", "@acme/other" ], "startup_timeout_ms" => 9_000
+      }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+
+    assert_equal 12, servers.dig("explicit-sec", "startup_timeout_sec")
+    assert_equal 9_000, servers.dig("explicit-ms", "startup_timeout_ms")
+    assert_nil servers.dig("explicit-ms", "startup_timeout_sec"),
+      "Codex folds the deprecated ms spelling into the same field, so Zimmer must not add a second one"
+  end
+
+  # ensure_baseline! is not a stdio-free path, however much it looks like one.
+  # It parses whatever config is already on the clone, and a session that HAD
+  # explicit MCP servers and no longer does (a follow-up, an unarchive, a fork)
+  # reaches it with the previous run's stdio entries still in that file.
+  test "ensure_baseline! gives a stdio server already on the clone the startup timeout" do
+    write_config("context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] })
+
+    build_processor.ensure_baseline!
+
+    assert_equal McpStartupTimeout::SECONDS, read_config.dig("mcp_servers", "context7", "startup_timeout_sec")
+  end
+
+  test "post_process! leaves an entry that is not a table alone" do
+    write_config("context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] })
+    config = TomlRB.parse(@mock_fs.read(config_file_path))
+    config["mcp_servers"]["junk"] = "not-a-table"
+    @mock_fs.write(config_file_path, TomlRB.dump(config))
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+    assert_equal "not-a-table", servers["junk"]
+    assert_equal McpStartupTimeout::SECONDS, servers.dig("context7", "startup_timeout_sec")
+  end
+
+  # The point of McpStartupTimeout: one budget, two spellings. A change to
+  # Claude's millisecond constant that did not reach Codex would put the runtime
+  # with the shorter default back on the shorter budget.
+  test "Codex's startup timeout is the same budget Claude gets from MCP_TIMEOUT" do
+    write_config("context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] })
+
+    build_processor.post_process!
+
+    assert_equal ClaudeSpawnEnv::MCP_TIMEOUT_MS / 1000,
+      read_config.dig("mcp_servers", "context7", "startup_timeout_sec")
   end
 
   private

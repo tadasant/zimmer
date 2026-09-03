@@ -19,6 +19,8 @@
 #   5. Resolve ${VAR} interpolations from SecretsLoader.
 #   6. Pin every npx server's npm cache inside the clone (NPM_CONFIG_CACHE), so no
 #      server resolves against the host-shared `~/.npm/_npx`.
+#   7. Give every stdio server the MCP startup timeout the runtime needs written
+#      into its config — a no-op for a runtime that takes it from the spawn env.
 #
 # A catalog entry's `command`/`args` are written through verbatim — in particular,
 # no `--prefix` is spliced into an npx invocation. `--prefix /tmp` makes npm treat
@@ -37,7 +39,8 @@
 # Steps 1-4 and 6 operate purely on the normalized server hash (`command`/`args`/`env`
 # for stdio, `url`/header-table for http) that both formats share, so they live
 # here as concrete shared logic. Steps tied to the file format and serialization
-# (read/parse, server-table extraction, per-entry secret resolution, write)
+# (read/parse, server-table extraction, per-entry secret resolution, write) —
+# and step 7, which each runtime spells in its own config key or not at all —
 # are template-method hooks each concrete subclass implements
 # (ClaudeMcpConfigPostProcessor for JSON, CodexConfigTomlPostProcessor for TOML),
 # reusing the shared helpers SelfSessionInjector and SecretsInterpolator for the
@@ -82,6 +85,7 @@ class RuntimeConfigPostProcessor
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
     pin_npx_caches_to_clone!(servers)
+    apply_startup_timeouts!(servers)
 
     persist_config!(config)
   end
@@ -126,6 +130,12 @@ class RuntimeConfigPostProcessor
     # entry. It runs anyway so the two paths stay identical, on the same argument as
     # the elicitation injection above.
     pin_npx_caches_to_clone!(servers)
+    # And again, for the third time and the same reason. This one is the least
+    # hypothetical of the three: #read_or_synthesize_config parses whatever
+    # `.codex/config.toml` is already on the clone, and a session that HAD explicit
+    # MCP servers and no longer does (a follow-up, an unarchive, a fork) reaches
+    # here with the previous run's stdio entries still in that file.
+    apply_startup_timeouts!(servers)
 
     persist_config!(config)
   end
@@ -461,6 +471,32 @@ class RuntimeConfigPostProcessor
 
     Rails.logger.info "[#{self.class.name}] Pinned #{NpxCacheIsolator::NPM_CACHE_VAR} inside the clone " \
       "for #{pinned.size} npx MCP server(s): #{pinned.join(', ')}.#{detail}"
+  end
+
+  # Write McpStartupTimeout's budget into the config, for a runtime that takes
+  # its MCP startup timeout from there rather than from the spawn env.
+  #
+  # The pairing with #pin_npx_caches_to_clone! is the whole reason this step
+  # exists: pinning the cache into the clone is what makes every first launch a
+  # cold one, so the runtime has to be willing to wait out the download it just
+  # guaranteed. Claude is, via `MCP_TIMEOUT` on the agent process
+  # (ClaudeSpawnEnv#configure_mcp_env), which reaches every server it spawns —
+  # so the Claude processor leaves this a no-op rather than writing the same
+  # budget twice in two places that could disagree.
+  #
+  # Codex has no such variable and a 30-second default, so it overrides this.
+  #
+  # The default is a no-op for two different reasons, and only one of them is
+  # benign. Claude does not need it — its spawn env already carries the budget to
+  # every server it spawns. Pi is not covered at all: `PiRuntimeAdapter` exports
+  # no timeout variable, and nothing Zimmer writes into the `.mcp.json` that
+  # PiMcpConfigPostProcessor seeds is read as one, so a Pi session on a cold
+  # clone runs on whatever its own client defaults to
+  # ([#844](https://github.com/tadasant/zimmer/issues/844)).
+  #
+  # @param _servers [Hash] server name => entry
+  def apply_startup_timeouts!(_servers)
+    # No-op by default.
   end
 
   # The elicitation variables as the agent process will see them, so a server's
