@@ -1441,10 +1441,10 @@ class TriggerConditionTest < ActiveSupport::TestCase
                  condition.reload.github_issue_repo_baselines)
   end
 
-  # Dropping a repo drops its baseline with it — the entry can never match another item,
-  # and leaving it behind would silently re-suppress the repo's history if it were added
-  # back later at an instant it never actually rejoined.
-  test "a repo that leaves the scope takes its issue baseline with it" do
+  # An edit that both adds and removes drops the departed repo's baseline: the entry can
+  # never match another item once nothing from that repo is queried for. (A removal on its
+  # own is not a widening and does not reach the rebase at all — see the test below.)
+  test "a repo that leaves the scope in a widening edit takes its issue baseline with it" do
     condition = trigger_conditions(:github_issue_condition)
     condition.update!(configuration: condition.configuration.merge(
       "last_issue_at" => "2026-07-12T09:00:00Z"
@@ -1459,6 +1459,62 @@ class TriggerConditionTest < ActiveSupport::TestCase
 
     assert_equal({ "tadasant/pi-extensions" => "2026-07-13T11:00:00Z" },
                  condition.reload.github_issue_repo_baselines)
+  end
+
+  # A removal on its own keeps the cursor (tested above), so it also keeps the baselines —
+  # there is no rebase to prune them in. Harmless: nothing from an unwatched repo is
+  # queried for, and a re-add is a widening, which overwrites the stale entry with the
+  # instant the repo actually rejoined.
+  test "removing a repo on its own leaves the issue baselines alone, and a re-add restamps" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z"
+    ))
+
+    travel_to Time.utc(2026, 7, 13, 10, 0, 0) do
+      condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+    condition.update!(configuration: { "repos" => [ "tadasant/zimmer" ] })
+
+    assert_equal({ "tadasant/zimmer-catalog" => "2026-07-13T10:00:00Z" },
+                 condition.reload.github_issue_repo_baselines,
+                 "a narrowing is not a rebase, so nothing prunes here")
+
+    travel_to Time.utc(2026, 7, 13, 12, 0, 0) do
+      condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+
+    assert_equal({ "tadasant/zimmer-catalog" => "2026-07-13T12:00:00Z" },
+                 condition.reload.github_issue_repo_baselines,
+                 "the re-add is a widening, so the repo is baselined at the instant it rejoined")
+  end
+
+  # The map is compared lexicographically against an issue's created_at, so a value that is
+  # not an ISO 8601 string sorts above every timestamp and would suppress the repo forever,
+  # silently — and the poller's prune would keep it forever too. The key is preserved across
+  # a UI save, so an API or MCP caller can send one; the write path is where it is settled.
+  test "a github_issue condition normalizes the issue baselines a caller sends" do
+    condition = trigger_conditions(:github_issue_condition)
+
+    condition.update!(configuration: condition.configuration.merge(
+      "issue_repo_baselines" => {
+        "Tadasant/Zimmer" => "2026-07-12T09:00:00+00:00",
+        "tadasant/other" => { "not" => "a timestamp" },
+        "tadasant/third" => "whenever",
+        "" => "2026-07-12T09:00:00Z"
+      }
+    ))
+
+    assert_equal({ "tadasant/zimmer" => "2026-07-12T09:00:00Z" },
+                 condition.reload.github_issue_repo_baselines,
+                 "downcased and re-emitted; anything unparseable is dropped rather than kept")
+  end
+
+  test "garbage in place of the issue baselines hash reads as no baselines at all" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge("issue_repo_baselines" => "nope"))
+
+    assert_equal({}, condition.reload.github_issue_repo_baselines)
   end
 
   # A condition the poller has never reached has no cursor to rebase and no seen-set to

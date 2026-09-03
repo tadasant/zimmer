@@ -758,8 +758,10 @@ and an emptied fired-key set made every issue already fired in it read as fresh,
 duplicate session for each ([#759](https://github.com/tadasant/zimmer/issues/759)). The fired keys
 survive the edit. The newly-watched repo is held back by `issue_repo_baselines` instead: a
 `"owner/repo" => timestamp` map saying when each repo joined the scope, which the poller compares
-against an issue's `created_at`. A first poll stamps every watched repo the same way, which is what
-makes "issues that predate the condition are history" true rather than merely intended.
+against an issue's `created_at`. A first poll stamps every watched repo the same way — at the
+*condition's* `created_at`, not the tick's, so an issue opened in the minute between saving the
+trigger and the first poll is still an event. That is what makes "issues that predate the condition
+are history" true rather than merely intended.
 
 Because the comparison is on *creation* time, it holds however late GitHub indexes an issue — and
 because it is per repo, the lag window stays fully live for the repos already being watched. An
