@@ -142,13 +142,21 @@ module Issues
     def repo_summaries
       @repo_summaries ||= begin
         queued_by_repo = WorkBacklogItem.queued.group(:repo).count
+        # Grouped once rather than re-scanned per repo: five `select`s over ~950
+        # issues is five sweeps to answer a question one sweep answers.
+        open_by_repo = snapshot.issues.select(&:open?).group_by(&:repo)
+
         GithubSnapshot::REPOS.map do |repo|
-          issues = snapshot.issues.select { |issue| issue.repo == repo && issue.open? }
+          issues = open_by_repo.fetch(repo, [])
+          # `direction_for`, not the resolver directly — this is the third caller
+          # of the memo, and going around it resolved every open issue twice per
+          # request.
+          directions = issues.map { |issue| direction_for.call(issue).direction }.tally
           RepoSummary.new(
             repo: repo,
             open_count: issues.length,
             queued_count: queued_by_repo.fetch(repo, 0),
-            directions: Direction::ALL.index_with { |d| issues.count { |i| direction_resolver.call(labels: i.labels, issue_url: i.url).direction == d } },
+            directions: Direction::ALL.index_with { |d| directions.fetch(d, 0) },
             error: snapshot.errors[repo]
           )
         end
@@ -156,8 +164,14 @@ module Issues
     end
 
     # The issues the trend chart folds over: every issue GitHub returned, open or
-    # closed-within-the-window, narrowed by the repo filter if one is set so the
-    # chart answers the same question as the table under it.
+    # closed-within-the-window, narrowed by the repo filter if one is set.
+    #
+    # The DIRECTION filter is deliberately not applied here. Narrowing the chart
+    # to one direction and then segmenting it by direction leaves a single line
+    # and throws away the comparison the chart exists to make — "is the divergent
+    # pile growing faster than the convergent one" is a question about both. The
+    # repo filter has no such conflict: it narrows the population without
+    # collapsing the segmentation.
     def trend_issues
       @trend_issues ||= filters.repo ? snapshot.issues.select { |issue| issue.repo == filters.repo } : snapshot.issues
     end

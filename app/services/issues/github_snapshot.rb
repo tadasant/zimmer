@@ -68,7 +68,19 @@ module Issues
       # @return [Snapshot]
       def fetch(force: false)
         Rails.cache.delete(CACHE_KEY) if force
-        hydrate(Rails.cache.fetch(CACHE_KEY, expires_in: CACHE_TTL) { load_from_github })
+
+        cached = Rails.cache.read(CACHE_KEY)
+        return hydrate(cached) if cached
+
+        raw = load_from_github
+        # A read in which EVERY repo failed is not a picture of GitHub, it is a
+        # picture of GitHub being unreachable — and caching it would hold the
+        # whole page in its degraded state for the full TTL after the outage
+        # cleared, recoverable only by someone noticing and pressing Refresh. A
+        # partial read is cached: it has real issues in it, and the repo that
+        # failed is named on the page.
+        Rails.cache.write(CACHE_KEY, raw, expires_in: CACHE_TTL) unless total_failure?(raw)
+        hydrate(raw)
       end
 
       # The raw, cacheable shape: plain hashes and strings.
@@ -85,14 +97,23 @@ module Issues
         issues = []
         errors = {}
 
+        # A repo can come back with BOTH — the open search answered and the closed
+        # one did not — so the issues are kept and the error recorded, rather than
+        # one branch or the other.
         fetch_repos_concurrently(since).each do |repo, repo_issues, error|
-          error ? errors[repo] = error : issues.concat(repo_issues)
+          issues.concat(repo_issues)
+          errors[repo] = error if error
         end
 
         { "fetched_at" => Time.current.iso8601, "issues" => issues.map(&:to_h_for_cache), "errors" => errors }
       end
 
       private
+
+      # Every repo failed, so there is nothing in this read worth keeping.
+      def total_failure?(raw)
+        raw["errors"].to_h.length == REPOS.length && Array(raw["issues"]).empty?
+      end
 
       def hydrate(raw)
         raw = {} unless raw.is_a?(Hash)
@@ -123,12 +144,14 @@ module Issues
             # Set inside the thread, not on the line after `Thread.new` — a fast
             # failure could otherwise beat the assignment.
             Thread.current.report_on_exception = false
-            Rails.application.executor.wrap { [ repo, fetch_repo(repo, since), nil ] }
+            Rails.application.executor.wrap { [ repo, *fetch_repo(repo, since) ] }
           rescue StandardError => e
             # Caught HERE rather than around `thread.value`, because `Thread#join`
             # re-raises before the value is ever asked for — so a rescue at the
             # join site would take the whole page down with the first repo that
-            # 404s. A thread in this pool never raises.
+            # 404s. A thread in this pool never raises a StandardError; anything
+            # outside it (a failed autoload, an OOM) is not a condition a page can
+            # render around, and is left to propagate.
             Rails.logger.warn("[Issues::GithubSnapshot] #{repo}: #{e.class}: #{e.message}")
             [ repo, [], "#{e.class}: #{e.message}" ]
           end
@@ -155,14 +178,34 @@ module Issues
       # result well inside GithubSearchService::MAX_PAGES — which raises rather
       # than truncating, so a repo that outgrows 1000 open issues is reported and
       # not silently halved.
+      #
+      # EACH HALF FAILS ON ITS OWN. The two searches are not equally likely to
+      # fail, and they are not equally costly to lose. "Closed in the last 180
+      # days" is the one that grows without bound on a fleet's own repo, so it is
+      # the one that hits the 1000-result ceiling first — and letting that take
+      # the open half down with it would blank the counts strip, the per-repo
+      # summary and the loose list for a repo whose open issues we successfully
+      # read a moment earlier. What survives is kept; what failed is named. The
+      # trend line for that repo is short by its closed issues, so the error says
+      # which half was lost rather than only that something was.
       def fetch_repo(repo, since)
-        open_items = GithubSearchService.search_issues("repo:#{repo} is:issue is:open")
-        closed_items = GithubSearchService.search_issues("repo:#{repo} is:issue is:closed closed:>=#{since}")
+        errors = []
+        open_items = search(%(repo:#{repo} is:issue is:open), "the open issues", errors)
+        closed_items = search(%(repo:#{repo} is:issue is:closed closed:>=#{since}), "the closed issues", errors)
 
-        (open_items + closed_items)
+        issues = (open_items + closed_items)
           .reject { |item| item.key?("pull_request") }
           .map { |item| GithubIssue.from_search_item(item, repo) }
           .uniq(&:number)
+
+        [ issues, errors.presence&.join("; ") ]
+      end
+
+      def search(query, what, errors)
+        GithubSearchService.search_issues(query)
+      rescue GithubSearchService::SearchError => e
+        errors << "could not read #{what} (#{e.message})"
+        []
       end
     end
   end

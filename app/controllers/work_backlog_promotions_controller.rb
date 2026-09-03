@@ -50,6 +50,13 @@ class WorkBacklogPromotionsController < ApplicationController
     back(alert: "Nothing was started — #{e.message}.")
   rescue AgentRootsConfig::AgentRootNotFoundError => e
     back(alert: "Cannot spawn a session: #{e.message}")
+  rescue ActiveRecord::RecordInvalid => e
+    # The spawn itself was refused — Session's own validations, reached through
+    # `create_from_agent_root!`. A button that 500s is the worst answer here: the
+    # reader cannot tell whether it half-worked, and `WorkBacklog::Start` rolls
+    # the item back to `queued` on a raise, so the honest report is "nothing
+    # happened, here is why". Same shape as the two rescues above.
+    back(alert: "Could not start a session for that item: #{e.record&.errors&.full_messages&.to_sentence.presence || e.message}")
   end
 
   private

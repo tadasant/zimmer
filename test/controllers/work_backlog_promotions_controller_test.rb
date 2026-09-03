@@ -89,6 +89,18 @@ class WorkBacklogPromotionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to issues_path(promoted_session_id: Session.order(:id).last.id)
   end
 
+  test "a session the spawn itself refuses is reported rather than 500ing the button" do
+    item = backlog_item(key: "zimmer#498")
+
+    Session.stub(:create_from_agent_root!, ->(**) { raise ActiveRecord::RecordInvalid, Session.new }) do
+      assert_no_difference("Session.count") { post promote_work_backlog_item_path(item) }
+    end
+
+    assert_redirected_to issues_path
+    assert_match(/Could not start a session/, flash[:alert])
+    assert item.reload.queued?, "a refused spawn leaves the item on the queue"
+  end
+
   test "an agent root that is not in the catalog is reported rather than raised" do
     item = backlog_item(key: "zimmer#498")
 

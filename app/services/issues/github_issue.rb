@@ -8,8 +8,9 @@ module Issues
   # issue state, so there is no mirror table here — these are built on every
   # (uncached) request from a search result and thrown away with the response.
   GithubIssue = Data.define(:repo, :number, :title, :url, :state, :created_at, :closed_at, :labels) do
-    # "zimmer#498" — the same key WorkBacklogItem uses, so the join between the
-    # queue and GitHub is a hash lookup rather than a URL comparison.
+    # "zimmer#498" — what a human recognises an issue by, and the same shape
+    # WorkBacklogItem's `key` takes. Display only: the join between the queue and
+    # GitHub is on `url`, which is the field both sides actually validate.
     def key = "#{repo.to_s.split('/').last}##{number}"
 
     def open? = state == "open"

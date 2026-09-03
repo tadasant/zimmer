@@ -105,6 +105,26 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
+  test "a hostile URL is rendered as text on both halves of the page, whoever wrote it" do
+    # The queue's `issue_url` is agent-written and only length-validated; the
+    # loose list's URL comes from GitHub. Neither is a reason to put an
+    # unvalidated scheme in an href.
+    backlog_item(key: "zimmer#1", title: "Queued with a bad URL", issue_url: "javascript:alert('queue')")
+    snapshot = github_snapshot(issues: [
+      Issues::GithubIssue.new(repo: "tadasant/zimmer", number: 9, title: "Loose with a bad URL",
+                              url: "javascript:alert('github')", state: "open",
+                              created_at: 3.days.ago, closed_at: nil, labels: [])
+    ])
+
+    with_github_snapshot(snapshot) { get issues_path }
+
+    assert_response :success
+    assert_match "Queued with a bad URL", response.body
+    assert_match "Loose with a bad URL", response.body
+    assert_no_match(/href="javascript:/, response.body)
+    assert_select "a[href^=?]", "javascript:", false
+  end
+
   test "a repo GitHub could not be read is named on the page" do
     snapshot = github_snapshot(errors: { "tadasant/motet" => "gh api search/issues failed" })
 

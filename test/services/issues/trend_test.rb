@@ -155,6 +155,18 @@ class Issues::TrendTest < ActiveSupport::TestCase
     assert_equal 1, trend.max_value
   end
 
+  test "a GitHub label named `unrated` does not become a second grey series" do
+    issues = [ github_issue(number: 1, created_at: noon(5), labels: [ "unrated" ]),
+               github_issue(number: 2, created_at: noon(5)) ]
+
+    trend = build(issues, window_days: 7, segment: "label")
+
+    grey = trend.series.select { |s| s.color == Issues::Trend::RESIDUAL_COLOR }
+    assert_equal 1, grey.length, "only one bucket per chart means we could not classify this"
+    assert_equal Issues::Trend::OTHER, grey.sole.key
+    assert_equal 2, trend.totals.last, "and no issue is lost to the relabelling"
+  end
+
   private
 
   def build(issues, window_days:, segment: "direction")

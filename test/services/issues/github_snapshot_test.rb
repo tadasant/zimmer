@@ -112,6 +112,62 @@ class Issues::GithubSnapshotTest < ActiveSupport::TestCase
     assert_not snapshot.failed?
   end
 
+  test "a repo whose closed search fails keeps the open issues it already read" do
+    raw = with_preflight_ok do
+      GithubSearchService.stub(:search_issues, ->(query) {
+        raise GithubSearchService::SearchError, "matched more than 1000 items" if query.include?("is:closed")
+
+        query.include?("tadasant/zimmer") ? [ search_item(number: 1) ] : []
+      }) { Issues::GithubSnapshot.load_from_github }
+    end
+
+    snapshot = Issues::GithubSnapshot.send(:hydrate, raw)
+    assert_equal 1, snapshot.issues.length, "the open half answered and must not be thrown away"
+    assert_equal Issues::GithubSnapshot::REPOS.sort, snapshot.errors.keys.sort
+    assert_match(/could not read the closed issues/, snapshot.errors["tadasant/zimmer"])
+    assert_no_match(/could not read the open issues/, snapshot.errors["tadasant/zimmer"])
+  end
+
+  test "a read in which every repo failed is not cached, so the page recovers on its own" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    preflight = GithubSearchService::PreflightResult.new(GithubSearchService::PREFLIGHT_REJECTED, "Bad credentials")
+
+    Rails.stub(:cache, cache) do
+      GithubSearchService.stub(:auth_preflight, preflight) { Issues::GithubSnapshot.fetch }
+      assert_nil cache.read(Issues::GithubSnapshot::CACHE_KEY), "an all-failed read must not be held for the TTL"
+    end
+  end
+
+  test "a successful read is cached, and force drops it" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    loads = 0
+    loader = -> { loads += 1; { "fetched_at" => Time.current.iso8601, "issues" => [], "errors" => {} } }
+
+    Rails.stub(:cache, cache) do
+      Issues::GithubSnapshot.stub(:load_from_github, loader) do
+        Issues::GithubSnapshot.fetch
+        Issues::GithubSnapshot.fetch
+        assert_equal 1, loads, "the second load came from the cache"
+        assert cache.read(Issues::GithubSnapshot::CACHE_KEY).present?
+
+        Issues::GithubSnapshot.fetch(force: true)
+        assert_equal 2, loads, "force drops the cached read"
+      end
+    end
+  end
+
+  test "a partial read is still cached — it has real issues in it" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    raw = { "fetched_at" => Time.current.iso8601,
+            "issues" => [ search_item(number: 1).slice("number") ],
+            "errors" => { "tadasant/motet" => "boom" } }
+
+    Rails.stub(:cache, cache) do
+      Issues::GithubSnapshot.stub(:load_from_github, -> { raw }) { Issues::GithubSnapshot.fetch }
+      assert cache.read(Issues::GithubSnapshot::CACHE_KEY).present?
+    end
+  end
+
   private
 
   def with_preflight_ok(&block)
