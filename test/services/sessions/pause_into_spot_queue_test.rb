@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# "Pause Until → Spot Queue". The property that separates this from its sibling
+# Parking a session in the spot queue. The property that separates this from its sibling
 # Sessions::ScheduleWakeUp is what it does NOT do: no trigger, no wall-clock time,
 # nothing that fires. What it leaves behind instead is the record SpotSessionPause
 # already resumes on.
@@ -63,9 +63,8 @@ class Sessions::PauseIntoSpotQueueTest < ActiveSupport::TestCase
     assert_equal 4_200, session.reload.precedence
   end
 
-  # The panel's "Resume with" box applies to both halves of the control. A time
-  # preset hangs the prompt on the trigger it arms; this has no trigger, so the
-  # prompt rides on the session until the sweep picks it up.
+  # A wake-up hangs its resume prompt on the trigger it arms; this park has no
+  # trigger, so the prompt rides on the session until the sweep picks it up.
   test "keeps a resume prompt for the sweep to deliver" do
     session = session_in(:needs_input)
 
@@ -82,8 +81,8 @@ class Sessions::PauseIntoSpotQueueTest < ActiveSupport::TestCase
     assert_not session.reload.metadata.key?(SpotSessionPause::QUEUED_PROMPT)
   end
 
-  # A running session does not sleep mid-turn — the same deferral a time-based
-  # Pause Until gets, for the same reason: the turn in flight is worth finishing.
+  # A running session does not sleep mid-turn — the same deferral a scheduled
+  # wake gets, for the same reason: the turn in flight is worth finishing.
   test "a running session is marked pending_sleep rather than stopped" do
     session = session_in(:running)
 
@@ -96,9 +95,10 @@ class Sessions::PauseIntoSpotQueueTest < ActiveSupport::TestCase
     assert_equal SpotSessionPause::QUEUED_REASON, session.metadata[SpotSessionPause::PAUSED_REASON]
   end
 
-  # Picking the queue after picking a time means "not then, this instead". The
-  # earlier wake would otherwise still fire, at the time it just replaced.
-  test "supersedes a wake-up armed by an earlier Pause Until" do
+  # Parking in the queue after arming a wake means "not then, this instead". The
+  # earlier wake would otherwise still fire and pull the session straight back
+  # out of the queue.
+  test "supersedes a wake-up armed earlier" do
     session = session_in(:needs_input)
     Sessions::ScheduleWakeUp.call(session: session, wake_at: 2.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
                                   prompt: "wake up", timezone: "UTC")
@@ -142,8 +142,8 @@ class Sessions::PauseIntoSpotQueueTest < ActiveSupport::TestCase
   end
 
   # The one status the service must judge differently from Sessions::ScheduleWakeUp's
-  # WAKEABLE_STATUSES. The web UI checks the same predicate before calling; the
-  # guard lives here so the MCP surface cannot be the path that skips it.
+  # WAKEABLE_STATUSES — Session#sleepable? is the predicate, and it lives on the
+  # model so every path that parks a session asks the same question.
   test "refuses a waiting session that has never started" do
     queued = session_in(:waiting, session_id: nil)
 
@@ -156,7 +156,7 @@ class Sessions::PauseIntoSpotQueueTest < ActiveSupport::TestCase
 
   # A dormant session is not stalled, so the "continue" nudge a refresh sends to
   # a stranded one must not reach it — that would pull it straight back out of
-  # the queue its human just put it in.
+  # the queue it was just put in.
   test "a parked session is not nudged awake by a refresh" do
     session = session_in(:needs_input)
 
@@ -168,8 +168,8 @@ class Sessions::PauseIntoSpotQueueTest < ActiveSupport::TestCase
   end
 
   # The record has to go when a human takes the session back by hand, or the next
-  # ordinary "Pause Until 9 AM" would land in `waiting` still looking parked and
-  # the sweep would resume it long before that time.
+  # ordinary wake-up would land in `waiting` still looking parked and the sweep
+  # would resume it long before that time.
   test "the queue record is cleared by every path that restarts a session" do
     SpotSessionPause::METADATA_KEYS.each do |key|
       assert_includes Session::STALE_RETRY_METADATA_KEYS, key

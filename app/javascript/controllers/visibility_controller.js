@@ -5,8 +5,8 @@ import { Controller } from "@hotwired/stimulus"
 // Board visibility: "Snooze until…" and "Hide" — the presentation-only axis that
 // tidies the dashboard. It changes what is on screen and nothing else: no
 // session is started, stopped, slept or woken by anything in this file. The
-// control immediately below it in the same menu, "Pause Until", is the one that
-// really sleeps a session (pause_until_controller.js).
+// Nothing in the web UI sleeps a session; that is `wake_me_up_later` and
+// `pause_into_spot_queue` over MCP.
 //
 // Snooze times are computed here, in the BROWSER's zone, and posted as a naive
 // wall-clock string alongside the zone's IANA name — the same contract Pause

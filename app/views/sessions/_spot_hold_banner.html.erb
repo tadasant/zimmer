@@ -3,12 +3,12 @@
     or no free session slot), held before its NEXT turn when a wake or a
     follow-up arrived while a window was at its target, paused mid-run once a
     window arrived at its target with this session already running, or put there
-    deliberately by a human choosing "Spot Queue" in Pause Until. Without this
+    deliberately with `action_session`'s "pause_into_spot_queue". Without this
     the session sits in `waiting` looking indistinguishable from one that is
     merely queued, and the only record of why would be a line in its log.
 
     One partial for all four because a session is only ever in one of them, and
-    they are ordered most-specific first: a human's choice describes the session
+    they are ordered most-specific first: a deliberate park describes the session
     better than the gate reason layered on top of it. %>
 <%# The hold, read through SpotSessionHold::Record rather than key by key, so
     the two sentences this banner needs — how old the reading is, and whether the
@@ -25,10 +25,9 @@
 <% pause_detail = agent_session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL) %>
 <% if (hold_detail.present? || pause_detail.present?) && agent_session.waiting? %>
   <% paused_mid_run = hold_detail.blank? %>
-  <%# A third case shares the pause record: a human who chose "Spot Queue" in
-      Pause Until. Nothing interrupted that session and no turn was lost, so it
-      gets its own sentence rather than being described as a casualty of the
-      ceiling. %>
+  <%# A third case shares the pause record: a session parked in the queue
+      deliberately. Nothing interrupted it and no turn was lost, so it gets its
+      own sentence rather than being described as a casualty of the ceiling. %>
   <% queued_by_user = SpotSessionPause.queued_by_user?(agent_session) %>
   <%# A data attribute rather than an id: this partial renders twice per page —
       once in the mobile block, once in the desktop header, mirroring
@@ -71,7 +70,7 @@
           (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
           <%= agent_session.scheduling_class_source %>). It has not been cancelled —
           <% if queued_by_user %>
-            it was paused into the queue from "Pause Until" with no wake-up time, and it resumes
+            it was parked in the queue deliberately, with no wake-up time, and it resumes
             when a Claude account is under both quota targets and a slot is free, ahead of everything
             ranked below precedence <%= agent_session.precedence %>.
           <% elsif paused_mid_run %>

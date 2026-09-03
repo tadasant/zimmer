@@ -15,12 +15,12 @@ module Sessions
   # runs it. That is the whole contract of the feature; anything added here that
   # reaches into the lifecycle is a bug rather than a feature.
   #
-  # Contrast Sessions::ScheduleWakeUp, which the neighbouring "Pause Until"
+  # Contrast Sessions::ScheduleWakeUp, which `wake_me_up_later`
   # control uses: that one really does sleep the session.
   class SetVisibility
     class Error < StandardError; end
 
-    # Same wall-clock contract "Pause Until" uses: the browser sends a NAIVE local
+    # Same wall-clock contract Sessions::ScheduleWakeUp uses: the browser sends a NAIVE local
     # datetime plus the IANA zone it is expressed in, and the server resolves it
     # there. Sending the naive value alone would let the server read it as UTC and
     # silently shift every snooze by the operator's offset — which is how "Tomorrow,

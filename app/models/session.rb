@@ -434,9 +434,9 @@ class Session < ApplicationRecord
   # SpotSessionPause::METADATA_KEYS are on the list for the same reason
   # `paused_by` is: they say the session is dormant in the spot queue, and a
   # session somebody restarted, continued or unarchived is not. Left behind, the
-  # record outlives the park — and the next ordinary "Pause Until 9 AM" on that
+  # record outlives the park — and the next ordinary wake-up scheduled on that
   # session would land in `waiting` still matching SpotSessionPause.paused?, so
-  # the ceiling sweep would resume it long before the time its human chose.
+  # the ceiling sweep would resume it long before the time it was set for.
   STALE_RETRY_METADATA_KEYS = (SIGTERM_RETRY_METADATA_KEYS + %w[
     failure_reason
     exit_status
@@ -571,43 +571,21 @@ class Session < ApplicationRecord
     [ "1 hour", 3600 ]
   ].freeze
 
-  # Whether the web UI should offer "Pause Until" for this session.
+  # Whether this session can be put to sleep on a schedule or parked in the spot
+  # queue — Sessions::ScheduleWakeUp and Sessions::PauseIntoSpotQueue both ask.
   #
-  # Narrower than Sessions::ScheduleWakeUp::WAKEABLE_STATUSES, which is the
-  # question an agent asks about itself. A `waiting` session that has never
-  # started is not asleep — it is queued for spawn, and `waiting` is simply the
-  # AASM initial state. Arming a wake there tells the operator the session is
-  # paused while the spawn pipeline goes right on starting it: `start` (unlike
+  # Narrower than Sessions::ScheduleWakeUp::WAKEABLE_STATUSES. A `waiting` session
+  # that has never started is not asleep — it is queued for spawn, and `waiting`
+  # is simply the AASM initial state. Arming a wake there parks the session on
+  # paper while the spawn pipeline goes right on starting it: `start` (unlike
   # `resume`) does not consume the wake, so the trigger is left armed behind a
   # session that is already running.
-  def pausable_until?
+  def sleepable?
     return false unless Sessions::ScheduleWakeUp::WAKEABLE_STATUSES.include?(status.to_s)
     return false if waiting? && session_id.blank?
 
     true
   end
-
-  # Choices offered by the "Pause Until" control, in order. `key` is the contract
-  # with pause_until_controller.js, which resolves each one to an absolute time in
-  # the BROWSER's timezone — the wall-clock presets ("Tomorrow, 9:00 AM") mean the
-  # operator's morning, not the server's, and only the browser knows which that is.
-  # Anything not on this list goes through the datetime picker instead.
-  PAUSE_UNTIL_PRESETS = [
-    { key: "15m", label: "In 15 minutes" },
-    { key: "1h", label: "In 1 hour" },
-    { key: "3h", label: "In 3 hours" },
-    { key: "tonight", label: "Tonight, 6 PM" },
-    { key: "tomorrow", label: "Tomorrow, 9 AM" },
-    { key: "monday", label: "Monday, 9 AM" }
-  ].freeze
-
-  # The one choice in the same panel that is not a time, and therefore not a
-  # preset: "Spot Queue" sleeps the session and slots it into the spot queue
-  # instead of arming a wake-up (Sessions::PauseIntoSpotQueue). It is deliberately
-  # NOT in PAUSE_UNTIL_PRESETS — every entry there is a key the browser resolves
-  # to an absolute instant, and there is no instant to resolve here. The value is
-  # the `mode` SessionsController#pause_until switches on.
-  PAUSE_UNTIL_SPOT_QUEUE_MODE = "spot_queue"
 
   # Validations
   # Prompt is now optional to allow for "clone only" sessions

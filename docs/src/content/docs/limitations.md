@@ -3021,6 +3021,15 @@ All four are open issues:
 
 Also:
 
+- **Nothing in the web UI puts a session to sleep.** The "Pause Until" control that did — a time
+  preset, a datetime picker, and a "Spot Queue" choice, on the session card, the detail header and
+  the phone sheet — was removed because it read as a third confusing pause beside **Pause** and the
+  board's **Snooze until…**, which mean different things. Sleeping a session until a wall-clock time
+  is now `wake_me_up_later`, and parking one in the spot queue is `action_session`'s
+  `pause_into_spot_queue` — both MCP/REST only, so a human with only a browser cannot do either.
+  Snoozing a card is **not** a substitute: it hides the card and never touches the session. What a
+  human can still do is the other direction — **Start now** wakes a sleeping session early, and it
+  is the only human-facing escape hatch a session asleep on an agent-scheduled wake has.
 - **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and
   the server cannot know which statuses a given browser has ticked, so it only special-cases
   `archived`. With the default `needs_input`-only view, a session that transitions out of

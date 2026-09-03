@@ -6,10 +6,9 @@ module Mcp
     # existing session (reuse_session + last_session_id).
     #
     # The scheduling itself — validation, the trigger, and the sleep that trigger
-    # creation performs as a side effect — lives in Sessions::ScheduleWakeUp, which
-    # the web UI's "Pause Until" control shares. This class is the MCP-shaped
-    # wrapper around it: argument coercion, the rendered description, and the
-    # markdown receipt.
+    # creation performs as a side effect — lives in Sessions::ScheduleWakeUp.
+    # This class is the MCP-shaped wrapper around it: argument coercion, the
+    # rendered description, and the markdown receipt.
     class WakeMeUpLater < Tool
       tool_name "wake_me_up_later"
 

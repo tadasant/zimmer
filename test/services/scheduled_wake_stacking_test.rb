@@ -2,22 +2,23 @@
 
 require "test_helper"
 
-# "Pause Until" (a one-time wake armed against a session) outranks every reason
-# Zimmer has to start that session early.
+# A scheduled wake (a one-time trigger armed against a session, which is what
+# `wake_me_up_later` creates) outranks every reason Zimmer has to start that
+# session early.
 #
-# Two features landed 45 minutes apart: "Pause Until", which sleeps a session and
-# arms a one-time wake, and the ranked spot queue, which replaced the per-session
-# quota timers with one `quota_available` edge that spawns a fleet-maintenance
-# session to decide — in precedence order — who runs. Neither knew about the
-# other. A paused session is `waiting`, which is exactly the state every automated
-# resume sweep selects on, and precedence is read from a column that says nothing
-# about whether the session asked to be left alone.
+# Two features landed 45 minutes apart: the scheduled wake, which sleeps a session
+# and arms a one-time trigger, and the ranked spot queue, which replaced the
+# per-session quota timers with one `quota_available` edge that spawns a
+# fleet-maintenance session to decide — in precedence order — who runs. Neither
+# knew about the other. A slept session is `waiting`, which is exactly the state
+# every automated resume sweep selects on, and precedence is read from a column
+# that says nothing about whether the session asked to be left alone.
 #
 # The contract these tests pin: a session with a pending future wake is dormant to
 # EVERY automated starter — the spot-ceiling sweep, the auth-outage un-park, and
 # the fresh-start job — regardless of its precedence or its scheduling class. It
 # wakes on its own schedule and on nothing else.
-class PauseUntilStackingTest < ActiveSupport::TestCase
+class ScheduledWakeStackingTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
   def wake_at(offset = 3.hours)
@@ -48,7 +49,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
     Mcp::Tools::ActionSession.new(context: Mcp::Context.new(tool_groups: "sessions"))
   end
 
-  def pause_until!(session, at = wake_at)
+  def schedule_wake!(session, at = wake_at)
     Sessions::ScheduleWakeUp.call(session: session, wake_at: at, prompt: "Resume after the pause")
   end
 
@@ -64,7 +65,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
         "paused_by" => SpotSessionPause::PAUSED_BY
       }
     )
-    trigger = pause_until!(session)
+    trigger = schedule_wake!(session)
     assert session.reload.waiting?, "precondition: the pause leaves the session waiting"
 
     AppSetting.editable.update!(spot_gating_enabled: false)
@@ -86,7 +87,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
         "paused_by" => SpotSessionPause::PAUSED_BY
       }
     )
-    pause_until!(session)
+    schedule_wake!(session)
     refute session.reload.spot?, "precondition: this session is priority-classified"
 
     result = SpotSessionPause.sweep!
@@ -110,7 +111,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
         "auth_outage_parked_at" => 1.hour.ago.utc.iso8601
       }
     )
-    trigger = pause_until!(session)
+    trigger = schedule_wake!(session)
 
     resumed = AuthOutageParkService.wake_parked_sessions!
 
@@ -128,7 +129,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
   # by its own wake. This is what keeps the fix from being a way to strand work.
   test "the guards stop applying once the pause has expired" do
     session = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 100_000)
-    pause_until!(session, wake_at(1.hour))
+    schedule_wake!(session, wake_at(1.hour))
     assert session.reload.paused_until_scheduled_time?
 
     travel_to 2.hours.from_now do
@@ -152,7 +153,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
   # the pause's — see the test below.
   test "the wake fires on time and starts the priority session it paused" do
     session = dormant_session(genesis: SessionGenesis::WEB_UI, precedence: 100_000)
-    trigger = pause_until!(session, wake_at(1.hour))
+    trigger = schedule_wake!(session, wake_at(1.hour))
     assert session.reload.waiting?
     refute session.spot?, "precondition: this session is priority-classified"
 
@@ -177,7 +178,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
   # the property the gate's own behaviour is layered on.
   test "a fired wake is not refused by the pause guard — it goes on to the spot gate" do
     session = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 100_000)
-    pause_until!(session, wake_at(1.hour))
+    schedule_wake!(session, wake_at(1.hour))
     assert session.spot?, "precondition: this session is spot-classified"
 
     travel_to 2.hours.from_now do
@@ -273,7 +274,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
   # already gone. It has to refuse here.
   test "action_session restart refuses a paused session and says to take the next candidate" do
     session = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 100_000)
-    trigger = pause_until!(session)
+    trigger = schedule_wake!(session)
 
     error = assert_raises(Mcp::ToolError) do
       action_session_tool.call({ "action" => "restart", "session_id" => session.id })
@@ -303,7 +304,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
   # be widened into it by accident.
   test "a follow_up addressed at a paused session still takes it over" do
     session = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 100_000)
-    trigger = pause_until!(session)
+    trigger = schedule_wake!(session)
 
     action_session_tool.call(
       { "action" => "follow_up", "session_id" => session.id, "prompt" => "Actually, do it now" }
@@ -321,7 +322,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
   # behind the quota gate" makes it burn a turn discovering that.
   test "the ranked queue listing marks a paused session" do
     paused = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 100_000)
-    pause_until!(paused)
+    schedule_wake!(paused)
     queued = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 50)
 
     tool = Mcp::Tools::QuickSearchSessions.new(context: Mcp::Context.new(tool_groups: "sessions"))
@@ -349,7 +350,7 @@ class PauseUntilStackingTest < ActiveSupport::TestCase
       metadata: { "agent_root_key" => "zimmer" }
     )
     session.sleep!
-    pause_until!(session.reload)
+    schedule_wake!(session.reload)
 
     assert_no_enqueued_jobs only: AgentSessionJob do
       AgentSessionJob.new.perform(session.id)

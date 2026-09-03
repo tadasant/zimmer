@@ -2152,99 +2152,14 @@ class SessionsController < ApplicationController
     end
   end
 
-  # "Pause Until": sleep this session now and either schedule a one-time trigger
-  # to wake it at the chosen time, or hand it to the spot queue with no wake-up
-  # at all (`mode=spot_queue`). The time half is the web-UI counterpart of the
-  # wake_me_up_later MCP tool — both go through Sessions::ScheduleWakeUp, so both
-  # reject a past-dated or too-soon wake the same way rather than bricking the
-  # session. One endpoint for both because it is one control: the gate below, the
-  # session lookup, and the JSON shape the panel reads are shared, and only what
-  # wakes the session again differs.
-  #
-  # The browser sends a naive local wall-clock time plus its own IANA zone
-  # (Intl.DateTimeFormat().resolvedOptions().timeZone). Treating that naive value
-  # as UTC would silently offset every pause by the operator's UTC offset, so the
-  # zone is not optional in practice — it just defaults to UTC for a caller that
-  # genuinely means UTC.
-  def pause_until
-    @session = find_session
-
-    # Narrower than the service's WAKEABLE_STATUSES: a never-started `waiting`
-    # session is queued for spawn, not asleep, and pausing it would arm a wake the
-    # spawn pipeline ignores. Re-checked here because a card rendered before the
-    # session started still carries the button.
-    unless @session.pausable_until?
-      return respond_to do |format|
-        message = "Session #{@session.id} cannot be paused from here (status: #{@session.status})."
-        format.json { render json: { success: false, error: message }, status: :unprocessable_entity }
-        format.html { redirect_to @session, alert: message }
-      end
-    end
-
-    # Read BEFORE anything arms a wake: the trigger's after_create callback is
-    # what marks a running session `pending_sleep`, and by the time it has run the
-    # answer to "was this a running session" is already half-rewritten.
-    was_running = @session.running?
-
-    # The one choice in the panel that is not a time. It sleeps the session the
-    # same way and then arms nothing at all: the spot scheduler picks it up when
-    # a Claude Code account is under both quota targets and a slot is free.
-    return pause_into_spot_queue(was_running: was_running) if params[:mode].to_s == Session::PAUSE_UNTIL_SPOT_QUEUE_MODE
-
-    prompt = params[:prompt].presence || AutomatedPrompts::PAUSE_UNTIL_WAKE
-
-    # replace_existing: picking a second time from the UI means "not then, THIS
-    # time". Without it the earlier wake still fires — at the time the operator
-    # just replaced. An agent calling wake_me_up_later keeps the additive
-    # behaviour, which is what the triple-wake pattern depends on.
-    trigger = Sessions::ScheduleWakeUp.call(
-      session: @session,
-      wake_at: params[:wake_at],
-      timezone: params[:timezone].presence || "UTC",
-      prompt: prompt,
-      replace_existing: true
-    )
-
-    # A human pausing a running session means stop — see #halt_running_turn.
-    halted = halt_running_turn(was_running)
-
-    condition = trigger.trigger_conditions.first
-    @session.reload
-
-    respond_to do |format|
-      format.json do
-        render json: {
-          success: true,
-          session_id: @session.id,
-          status: @session.status,
-          # True only in the degraded case where the halt could not land: the
-          # session is still running and `pending_sleep` will sleep it at the end
-          # of its turn. The UI says so rather than claiming a state change that
-          # has not happened yet.
-          pending_sleep: @session.metadata&.dig("pending_sleep") == true,
-          halted_turn: halted,
-          wake_at: condition.scheduled_at,
-          timezone: condition.schedule_timezone,
-          trigger_id: trigger.id
-        }
-      end
-      format.html { redirect_to @session, notice: "Paused until #{condition.scheduled_at} (#{condition.schedule_timezone})." }
-    end
-  rescue Sessions::ScheduleWakeUp::Error => e
-    message = pause_until_error_message(e)
-    respond_to do |format|
-      format.json { render json: { success: false, error: message }, status: :unprocessable_entity }
-      format.html { redirect_to @session, alert: message }
-    end
-  end
-
   # Board visibility: hide a session, snooze it until a chosen time, or put it
-  # back. Presentation only — see Sessions::SetVisibility. It is the neighbour of
-  # #pause_until in the same overflow menu and does none of what that one does:
-  # no sleep, no wake trigger, no spot queue, no status change.
+  # back. Presentation ONLY — see Sessions::SetVisibility. Snoozing a card is not
+  # sleeping a session: no sleep, no wake trigger, no spot queue, no status
+  # change. Sleeping a session is `wake_me_up_later` / `pause_into_spot_queue`
+  # over MCP, and the web UI has no control that does it.
   #
   # Answers JSON (the visibility Stimulus controller drives it with fetch) and
-  # HTML (the no-JS fallback), the way #pause_until does.
+  # HTML (the no-JS fallback).
   def update_visibility
     @session = find_session
 
@@ -3773,18 +3688,6 @@ class SessionsController < ApplicationController
 
   # JSON payload the heartbeat Stimulus controller reads back after toggling the
   # heartbeat or changing its interval.
-  # The scheduler's rejection, restated for someone looking at a popover rather
-  # than at a tool description. Only the too-soon case needs it: the rest of the
-  # messages already read as plain English.
-  def pause_until_error_message(error)
-    return error.message unless error.code == :wake_at_too_soon
-
-    "That time has already passed, or is less than " \
-      "#{Sessions::ScheduleWakeUp::WAKE_AT_GRACE_WINDOW.to_i} seconds away. Pick a later time."
-  end
-
-  # The JSON the visibility control reads back. `board_visible` is the one the
-  # page acts on: it decides whether the card leaves the board.
   def visibility_payload(session)
     {
       success: true,
@@ -3803,63 +3706,6 @@ class SessionsController < ApplicationController
     when SessionVisibility::SNOOZED then "Session #{session.id} snoozed until #{session.snoozed_until}."
     else "Session #{session.id} is back on the board."
     end
-  end
-
-  # "Pause Until → Spot Queue". Reached from #pause_until, after the same
-  # pausable_until? gate, because it is the same control and the same gesture —
-  # only the thing that wakes the session again differs.
-  def pause_into_spot_queue(was_running: false)
-    result = Sessions::PauseIntoSpotQueue.call(session: @session, prompt: params[:prompt])
-
-    # Same halt a time-based pause gets, for the same reason: both are a human
-    # saying stop, and the queue this parks into is not one a session can wait in
-    # while it is still spending the quota the queue exists to ration.
-    halted = halt_running_turn(was_running, reason: :pause_into_spot_queue)
-    @session.reload
-
-    respond_to do |format|
-      format.json do
-        render json: {
-          success: true,
-          session_id: @session.id,
-          status: @session.status,
-          # True only in the degraded case where the halt could not land — the
-          # session is still running and sleeps when its turn ends.
-          pending_sleep: @session.metadata&.dig("pending_sleep") == true,
-          halted_turn: halted,
-          spot_queue: true,
-          pinned_to_spot: result.pinned_to_spot,
-          precedence: @session.precedence
-        }
-      end
-      format.html { redirect_to @session, notice: "Queued for the spot queue." }
-    end
-  rescue Sessions::PauseIntoSpotQueue::Error => e
-    respond_to do |format|
-      format.json { render json: { success: false, error: e.message }, status: :unprocessable_entity }
-      format.html { redirect_to @session, alert: e.message }
-    end
-  end
-
-  # Stop a running session's turn so a Pause Until actually pauses it.
-  #
-  # Called AFTER the wake is armed, never before. Arming first means a rejected
-  # time costs the operator nothing — no turn has been taken away yet — and it
-  # means a halt that cannot land degrades to the old deferred behaviour instead
-  # of leaving a session awake with nothing to put it to sleep: `pending_sleep`
-  # is already written by then, so the turn's own end still sleeps it.
-  #
-  # @param was_running [Boolean] the status read before the wake was armed
-  # @return [Boolean] whether the turn was actually stopped
-  def halt_running_turn(was_running, reason: :pause_until)
-    return false unless was_running
-
-    # The same courtesy #pause pays: a follow-up the operator sent seconds ago
-    # may still be on its way to the process, and killing it now would lose the
-    # message with no record that it existed.
-    wait_for_pending_message_delivery(@session)
-
-    Sessions::HaltRunningTurn.call(session: @session.reload, reason: reason).halted
   end
 
   def heartbeat_json

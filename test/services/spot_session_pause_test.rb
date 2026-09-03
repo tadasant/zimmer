@@ -237,9 +237,9 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
   # The failure this feature could plausibly ship with is "parked forever with
   # nothing to wake it". This is the end-to-end refutation: a session a human put
-  # in the queue from "Pause Until" is picked up by the same sweep that resumes a
+  # in the queue deliberately is picked up by the same sweep that resumes a
   # ceiling pause, with no trigger anywhere in the picture.
-  test "a session parked in the queue from Pause Until is resumed by the sweep" do
+  test "a session parked in the queue deliberately is resumed by the sweep" do
     seed(current_5h: 0.10)
     session = queued_session
 
