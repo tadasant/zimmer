@@ -130,7 +130,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `GET` | `/sessions/search` | `q` (or `query`) required (≤1000 chars), `search_contents` (`true` or `1`), `scan_cursor`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` / `visibility` filters as `/sessions`. Missing/oversized query → 400 (the only 400 in the API). Status-summary forks are never listed. See [Searching transcript contents](#searching-transcript-contents) for what `search_contents` changes about the response |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201, or **200 with `idempotent_replay: true`** when `idempotency_key` matches an earlier create. See below. |
-| `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `custom_metadata`. Promoting a **waiting** session to `priority` also [starts it now](/sessions/spot-and-priority/#starting-a-queued-session-now), which is what makes "moved to priority and started" true rather than aspirational — the deferred re-check it was carrying can be an hour out. Only the transition into `priority` does it, so a PATCH that touches the title cannot restart a session. When it acts, the response carries a `start` object (`outcome`: `started` / `refused`, plus a `message`); it is absent when the promotion started nothing |
+| `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `place`, `custom_metadata`. Promoting a **waiting** session to `priority` also [starts it now](/sessions/spot-and-priority/#starting-a-queued-session-now), which is what makes "moved to priority and started" true rather than aspirational — the deferred re-check it was carrying can be an hour out. Only the transition into `priority` does it, so a PATCH that touches the title cannot restart a session. When it acts, the response carries a `start` object (`outcome`: `started` / `refused`, plus a `message`); it is absent when the promotion started nothing |
 | `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}`. **422** while any message is still queued for the session, since archiving discards it; `force: true` overrides deliberately and the discarded messages are retired to `undelivered` — see [lifecycle](/sessions/lifecycle/) |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off. A session that [never ran](/sessions/lifecycle/#restoring-a-session-that-never-ran) has neither, so it is returned to `needs_input` to start fresh (`clone_restored: false`) rather than refused |
@@ -262,7 +262,7 @@ and runs the same scan — see [the MCP server](/extend/mcp-server/).
 
 Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
 `title`, `slug`, `goal`, `execution_provider`, `is_autonomous`, `parent_session_id`,
-`auto_compact_window`, `scheduling_class`, `precedence`, `idempotency_key`, `mcp_servers[]`,
+`auto_compact_window`, `scheduling_class`, `precedence`, `place`, `idempotency_key`, `mcp_servers[]`,
 `catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`, `config{}`, `custom_metadata{}`.
 
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
@@ -291,6 +291,31 @@ moved to priority without touching the trigger that spawned it; send `null` to g
 session within the spot queue — higher is handled sooner, on an absolute scale, so 100000 comes before
 50 — and it is carried on every session, priority ones included. Omit it on create and the session
 lands one point above the session named in `parent_session_id`, or at 0 with no parent.
+
+`place` is the symbolic form of the same field, on both of those endpoints. Instead of naming a
+number you name a position — `top_of_spot` is the one placement today — and the server resolves it
+against the queue as it stands at the moment of the write. It is there so that heading the queue is
+one request rather than two: reading the current top and then writing a few points above it can be
+overtaken between the two calls, landing the session second in the queue it meant to head, and it
+makes the caller re-derive a rule the server owns (the live maximum over **non-archived spot**
+sessions — a caller that forgets the archived exclusion inflates the whole scale). Resolution goes
+through the same helper the Ranked view's demote button and the MCP tools
+[`start_session` / `action_session`](/extend/mcp-server/) use, so the surfaces cannot drift apart on
+what "the top of the queue" means.
+
+```bash
+curl -X PATCH https://zimmer.example.com/api/v1/sessions/123 \
+  -H "X-API-Key: $ZIMMER_API_KEY" -H "Content-Type: application/json" \
+  -d '{"place": "top_of_spot"}'
+```
+
+`place` and `precedence` are **mutually exclusive** — they are two answers to the same question, so
+sending both is a `422` rather than a silent preference for one. An unknown placement is a `422` too.
+Sending neither leaves the ranking alone: a `PATCH` that touches only the title does not renumber the
+session, and a create falls through to the ordinary inheritance described above. On an update the
+placement is resolved with the session itself excluded from the population and floored at the rank it
+already holds, so re-placing the session already on top is a no-op rather than a ratchet, and "put
+this first" never lowers a rank.
 
 See [Spot and priority](/sessions/spot-and-priority/). Every session object carries `genesis`,
 `scheduling_class` (the explicit choice, usually `null`), `priority_class` (the resolved answer) and

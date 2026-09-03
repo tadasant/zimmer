@@ -147,4 +147,38 @@ class SessionPrecedenceTest < ActiveSupport::TestCase
   test "PLACES names every placement the surfaces accept" do
     assert_equal [ SessionPrecedence::PLACE_TOP_OF_SPOT ], SessionPrecedence::PLACES
   end
+
+  # The instance form is what a surface re-placing an EXISTING session uses —
+  # MCP's action_session and the REST API's PATCH both come through it, so the
+  # two adjustments below are stated once rather than per surface.
+
+  test "a session placing itself is excluded from the population it measures" do
+    build_session(precedence: 100, scheduling_class: SessionGenesis::SPOT)
+    session = build_session(precedence: 50, scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal 105, session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
+    session.update!(precedence: 105)
+    assert_equal 105, session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT),
+      "a repeat placement is a no-op, not a ratchet"
+  end
+
+  test "a session placing itself is never lowered by the placement" do
+    build_session(precedence: 10, scheduling_class: SessionGenesis::SPOT)
+    session = build_session(precedence: 1_000, scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal 1_000, session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
+  end
+
+  test "the floor does not stop a session below the top from being raised" do
+    build_session(precedence: 800, scheduling_class: SessionGenesis::SPOT)
+    session = build_session(precedence: 1, scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal 805, session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
+  end
+
+  test "a session placing itself rejects a placement it does not know" do
+    session = build_session(precedence: 1, scheduling_class: SessionGenesis::SPOT)
+
+    assert_raises(ArgumentError) { session.precedence_for_place("bottom_of_spot") }
+  end
 end
