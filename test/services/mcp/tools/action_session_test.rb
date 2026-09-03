@@ -347,6 +347,30 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "running", session.reload.status
   end
 
+  test "follow_up reports the queue depth its own message landed in" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Ahead of you", position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "Also ahead of you", position: 2, status: "pending")
+
+    result = @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Third in line")
+
+    assert_includes result, "- **Queue depth:** 3 messages now pending delivery to this session."
+    assert_includes result, "yours is not the only message waiting"
+  end
+
+  test "follow_up reports a depth of one without the consolidate note" do
+    result = @tool.call("action" => "follow_up", "session_id" => sessions(:running).id, "prompt" => "Only one")
+
+    assert_includes result, "- **Queue depth:** 1 message now pending delivery to this session."
+    assert_not_includes result, "yours is not the only message waiting"
+  end
+
+  test "follow_up to an idle session reports no queue depth" do
+    result = @tool.call("action" => "follow_up", "session_id" => sessions(:needs_input).id, "prompt" => "Keep going")
+
+    assert_not_includes result, "**Queue depth:**"
+  end
+
   test "follow_up requires a prompt" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "follow_up", "session_id" => sessions(:needs_input).id) }
     assert_match(/"prompt" parameter is required/, error.message)

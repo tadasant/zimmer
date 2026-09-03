@@ -218,6 +218,20 @@ this?" must be able to tell "no human turns" from "I forgot the flag." Entries a
 human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). See
 [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
 
+`get_session` also always includes a `### Queued Messages` section: how many messages are `pending`
+for that session, and a one-line, hard-truncated preview of the first few by position. It is there
+because `get_session` is the dump a caller reads *before* it decides what to do with a session, and
+without it a queue is invisible — four orchestrator sessions once each correctly declined to spawn a
+duplicate and then each appended a follow-up to the same queue none of them could see, three of them
+restating the message above. The section is deliberately a count plus a summary rather than the
+messages: this output already runs long on a big session, so previews are cut at 120 characters,
+five messages are shown and the rest are counted. `manage_enqueued_messages` is the tool that reads
+the queue in full — and its `update`, `delete` and `reorder` actions are how a caller *consolidates*
+a queue instead of growing it. Only `pending` counts: a delivered message's row is destroyed, and an
+`undelivered` one is terminal, so neither is something the session is still going to see.
+`action_session`'s `follow_up` reports the same number from the other side — the queue depth its own
+call left behind, so a caller that just became fourth in line finds out at the moment it happens.
+
 `gate_decisions` is a group of its own rather than three more tools in `sessions`, and it is opt-in
 rather than base. Folded into `sessions`, every session carrying `zimmer-sessions` would be handed
 the ability to write gate ratings; left in the base set, so would every session holding the full

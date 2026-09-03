@@ -1304,6 +1304,11 @@ module Mcp
           "- **Message:** #{message}"
         ]
         lines << "- **Job ID:** #{session.running_job_id}" if session.running_job_id.present?
+        # The depth this call left behind, so a caller that just became fourth in
+        # line finds out at the moment it happens rather than never. Same reason
+        # `get_session` grew a queued-messages section (#698): an unread queue is
+        # how four sessions each restate the message above it.
+        lines.concat(EnqueuedMessageSections.queue_depth_lines(session))
         lines.join("\n")
       end
 
