@@ -120,6 +120,23 @@ class TranscriptArchiveJob < ApplicationJob
       {}
     end
 
+    # The newest subagent write per session, for the whole corpus, in one GROUP BY.
+    #
+    # This is what makes change detection see subagent transcripts at all (#720).
+    # `SubagentTranscript` has no `touch:` on its parent, so writing one leaves
+    # `sessions.updated_at` exactly where it was — and both passes below compared only
+    # that column, so a subagent transcript created after its session's last archive was
+    # never rebuilt into the zip and never would be until some unrelated write bumped the
+    # session row.
+    #
+    # One aggregate, not a `maximum` per session. This population is every session that
+    # has a subagent transcript, which is the same population #719's change moved a
+    # per-id `Session.find_by` out of; a per-session query here would put that N+1
+    # straight back. What it holds is one Integer + Time per session — the same
+    # cardinality as the `pluck(:session_id)` it replaces, not one entry per transcript,
+    # and no transcript payload.
+    subagent_maxima = with_db_retry { SubagentTranscript.group(:session_id).maximum(:updated_at) }
+
     # Find all sessions with transcripts (any status)
     session_ids_to_archive = Set.new
     removed_session_ids = Set.new(previous_sessions.keys)
@@ -129,7 +146,7 @@ class TranscriptArchiveJob < ApplicationJob
         session_id = session_metadata.id.to_s
         removed_session_ids.delete(session_id)
 
-        last_updated = session_metadata.updated_at.iso8601(6)
+        last_updated = archive_stamp(session_metadata.updated_at, subagent_maxima[session_metadata.id])
         previously_archived_at = previous_sessions[session_id]
 
         # Only include if new or changed
@@ -139,26 +156,40 @@ class TranscriptArchiveJob < ApplicationJob
       end
     end
 
-    # Also check for sessions with subagent transcripts but no main transcript
+    # The second pass, over every session that has subagent transcripts. It is what
+    # reaches the ones with no main transcript at all — they are not in the marker scan
+    # above — and what re-checks the rest against their recorded stamp.
     with_db_retry do
-      subagent_session_ids = SubagentTranscript.distinct.pluck(:session_id)
-      candidate_ids = subagent_session_ids.reject do |sid|
+      candidate_ids = subagent_maxima.keys.reject do |sid|
         session_id = sid.to_s
+        # Pass 1 compares the same stamp, so a session it visited (its id is out of
+        # `removed_session_ids`) and did not queue is already known settled — re-deriving
+        # that here would put a corpus-sized `sessions` read back into a job whose whole
+        # point is to no longer have one. What is left are the sessions pass 1 never saw:
+        # the ones with no main transcript, and the ones that are new to the sidecar.
         (previous_sessions.key?(session_id) && !removed_session_ids.include?(session_id)) ||
           session_ids_to_archive.include?(sid) # already queued from the main transcript check
       end
 
-      # One `pluck` for existence rather than `Session.find_by` per id. The old form
+      # One `pluck` for the whole slice rather than `Session.find_by` per id. The old form
       # instantiated a full Session — transcript column and all — for every session
       # with a subagent transcript, just to ask whether the row was still there.
+      #
+      # It answers two questions at once, which is why it carries `updated_at`: the row
+      # still exists, and here is the stamp to compare the sidecar against. Deciding by
+      # stamp rather than by "is this id already in the metadata" is the #720 fix —
+      # presence in the metadata says a session was archived once, not that what was
+      # archived is still current.
       #
       # Sliced because the list is bound one parameter per id and Postgres refuses a
       # statement with more than 65,535 of them. `candidate_ids` is small in practice, so
       # this is about not having a corpus-sized ceiling on a job whose whole point is to
       # no longer have one.
       candidate_ids.each_slice(BIND_SLICE_SIZE) do |slice|
-        Session.where(id: slice).pluck(:id).each do |sid|
+        Session.where(id: slice).pluck(:id, :updated_at).each do |sid, session_updated_at|
           removed_session_ids.delete(sid.to_s)
+          next if previous_sessions[sid.to_s] == archive_stamp(session_updated_at, subagent_maxima[sid])
+
           session_ids_to_archive << sid
         end
       end
@@ -187,7 +218,12 @@ class TranscriptArchiveJob < ApplicationJob
                         "#{deferred_count} deferred to the next tick"
     end
 
-    build_archive(changed_ids, previous_sessions, removed_session_ids, deferred_count: deferred_count)
+    # Sliced to the sessions this run will actually stamp. The detection hash is
+    # corpus-sized; `changed_ids` is capped at MAX_SESSIONS_PER_RUN, and this is the
+    # phase that holds a whole transcript live, so nothing corpus-sized should survive
+    # into it.
+    build_archive(changed_ids, previous_sessions, removed_session_ids,
+      deferred_count: deferred_count, subagent_maxima: subagent_maxima.slice(*changed_ids))
   end
 
   # Path accessors — instance methods so tests can stub them for isolation
@@ -208,6 +244,26 @@ class TranscriptArchiveJob < ApplicationJob
     Session.where.not(transcript: nil).select(:id, :updated_at)
   end
 
+  # The freshness stamp the sidecar records for one session: the newest write across
+  # everything that session's zip entry contains. That is the session row *and* its
+  # subagent transcripts, because `add_session_to_zip` writes both — so `updated_at`
+  # alone is not the entry's freshness, and treating it as such is what dropped
+  # subagent transcripts written after a session's last archive (#720).
+  #
+  # `subagent_updated_at` is nil for the sessions that have no subagent transcripts,
+  # which is most of them, and the stamp is then `sessions.updated_at` byte-for-byte.
+  # That is deliberate: an existing sidecar goes on matching for every one of those
+  # sessions, so shipping this re-archives only the sessions that actually have
+  # subagent transcripts, once each, rather than the whole corpus.
+  #
+  # The stamp is read before the zip is written, so a subagent transcript created
+  # mid-run is written into the archive but stamped as if it were not, and the next
+  # run rebuilds that session once more. Archiving something twice is the safe
+  # direction; the failure this replaces was archiving it never.
+  def archive_stamp(session_updated_at, subagent_updated_at)
+    [ session_updated_at, subagent_updated_at ].compact.max.iso8601(6)
+  end
+
   def load_metadata
     return {} unless File.exist?(metadata_path)
 
@@ -217,7 +273,7 @@ class TranscriptArchiveJob < ApplicationJob
     {}
   end
 
-  def build_archive(changed_ids, previous_sessions, removed_session_ids, deferred_count: 0)
+  def build_archive(changed_ids, previous_sessions, removed_session_ids, subagent_maxima:, deferred_count: 0)
     temp_path = archive_dir.join("latest_#{SecureRandom.hex(8)}.zip.tmp")
     all_sessions_metadata = previous_sessions.dup
 
@@ -228,10 +284,11 @@ class TranscriptArchiveJob < ApplicationJob
       if File.exist?(archive_path) && removed_session_ids.empty?
         # Copy existing archive and update incrementally
         FileUtils.cp(archive_path, temp_path)
-        update_zip(temp_path, changed_ids, all_sessions_metadata)
+        update_zip(temp_path, changed_ids, all_sessions_metadata, subagent_maxima: subagent_maxima)
       else
         # Build from scratch (first run or sessions were removed)
-        build_full_zip(temp_path, changed_ids, previous_sessions, all_sessions_metadata, removed_session_ids)
+        build_full_zip(temp_path, changed_ids, previous_sessions, all_sessions_metadata, removed_session_ids,
+          subagent_maxima: subagent_maxima)
       end
 
       # Write manifest
@@ -293,16 +350,17 @@ class TranscriptArchiveJob < ApplicationJob
     end
   end
 
-  def update_zip(zip_path, changed_ids, all_sessions_metadata)
+  def update_zip(zip_path, changed_ids, all_sessions_metadata, subagent_maxima:)
     Zip::File.open(zip_path) do |zip|
       each_changed_session(changed_ids, all_sessions_metadata) do |session|
         add_session_to_zip(zip, session)
-        all_sessions_metadata[session.id.to_s] = session.updated_at.iso8601(6)
+        all_sessions_metadata[session.id.to_s] = archive_stamp(session.updated_at, subagent_maxima[session.id])
       end
     end
   end
 
-  def build_full_zip(zip_path, changed_ids, previous_sessions, all_sessions_metadata, removed_session_ids)
+  def build_full_zip(zip_path, changed_ids, previous_sessions, all_sessions_metadata, removed_session_ids,
+    subagent_maxima:)
     # We need to rebuild including unchanged sessions from the old archive
     # plus the changed sessions
     Zip::OutputStream.open(zip_path) do |_|
@@ -334,7 +392,7 @@ class TranscriptArchiveJob < ApplicationJob
         # Add changed sessions
         each_changed_session(changed_ids, all_sessions_metadata) do |session|
           add_session_to_zip(new_zip, session)
-          all_sessions_metadata[session.id.to_s] = session.updated_at.iso8601(6)
+          all_sessions_metadata[session.id.to_s] = archive_stamp(session.updated_at, subagent_maxima[session.id])
         end
       end
     else
@@ -342,7 +400,7 @@ class TranscriptArchiveJob < ApplicationJob
       Zip::File.open(zip_path) do |zip|
         each_changed_session(changed_ids, all_sessions_metadata) do |session|
           add_session_to_zip(zip, session)
-          all_sessions_metadata[session.id.to_s] = session.updated_at.iso8601(6)
+          all_sessions_metadata[session.id.to_s] = archive_stamp(session.updated_at, subagent_maxima[session.id])
         end
       end
     end
