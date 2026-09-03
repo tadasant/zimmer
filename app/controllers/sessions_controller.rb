@@ -3939,17 +3939,20 @@ class SessionsController < ApplicationController
   # @param session [Session] The failed session to restart
   # @return [Array<Boolean, String|nil>] [success, error_message] tuple
   def restart_with_continue_prompt(session)
-    # When setup never completed (no session_id, no working directory), the session
-    # cannot be restarted with a follow-up prompt — there's no clone to send it to.
-    # Re-enqueue as a new session to re-run the full setup pipeline (git clone,
-    # MCP configuration, skill injection, process spawn).
-    if session.failed_before_initial_prompt? && !session.setup_complete?
+    # When there is no conversation to prompt into — setup never completed (no
+    # session_id, no working directory), or the session never ran at all — the
+    # session cannot be restarted with a follow-up prompt, because there's no
+    # clone to send it to. Re-enqueue as a new session to re-run the full setup
+    # pipeline (git clone, MCP configuration, skill injection, process spawn).
+    if session.needs_restart_from_scratch?
       return restart_from_scratch(session)
     end
 
-    # For sessions with complete setup artifacts, validate they still exist.
-    # The job handles clone recreation if the directory is missing, so we only
-    # require session_id here (working_directory absence is handled by the job).
+    # Everything past here resumes a conversation, so it needs the id that
+    # conversation is filed under. A session with no id but a transcript to lose
+    # reaches this point (#needs_restart_from_scratch? deliberately does not claim
+    # it), and is refused rather than silently started over. The job handles clone
+    # recreation if the directory is missing, so working_directory is not checked.
     unless session.session_id.present?
       error_message = "no session_id found"
       with_db_retry do
@@ -4059,9 +4062,10 @@ class SessionsController < ApplicationController
     # The replacement turn IS the original first turn — same prompt, new clone,
     # new session_id — so it carries the attachments that turn was created with
     # (Sessions::FirstTurnAttachments, which never raises). Replaying all of them
-    # is deliberate: this path is reached only for a pre-prompt failure with setup
-    # incomplete, so nothing was delivered to an agent — and a restart from
-    # scratch has just discarded the conversation any earlier delivery went to.
+    # is deliberate: this path is reached only when there is no conversation to
+    # prompt into — a pre-prompt failure with setup incomplete, or a session that
+    # never ran — so nothing was delivered to an agent, and a restart from scratch
+    # has just discarded the conversation any earlier delivery went to.
     # Read outside the transaction so a slow volume cannot hold it open.
     images, files = Sessions::FirstTurnAttachments.for(session)
     carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)

@@ -652,6 +652,18 @@ class AgentSessionJob < ApplicationJob
         )
         session.update!(prompt: follow_up_prompt) if session.prompt.blank?
         follow_up_prompt = nil
+
+        # Drop the delivery marker Session#deliver_follow_up! stamped for this
+        # turn. Clearing `follow_up_prompt` above is what routes this job down
+        # the new-session path — and that path never reaches the follow-up arm
+        # below, which is the only other place the marker is consumed. Left
+        # behind, it is not merely stale: the arm reads
+        # `pending_follow_up_prompt || follow_up_prompt`, so THIS turn's
+        # discarded text would win over the next turn's real prompt and be
+        # delivered in its place, silently swallowing the message a human just
+        # sent. The prompt for this run is the session's own, which is already
+        # on the row.
+        session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
       end
 
       # Store the job ID for tracking and timestamp for MCP log filtering

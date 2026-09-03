@@ -451,14 +451,11 @@ class Trigger < ApplicationRecord
       end
 
       # Resuscitate archived sessions: unarchive and then follow up — but only
-      # when there is a conversation to bring back. A session archived before it
-      # ever took a turn is not a reuse candidate at all (see
-      # #resuscitatable_session?), and treating it as one bricks the trigger:
-      # UnarchiveSessionService refuses it, #resuscitate_session! raises,
-      # ScheduleTriggerJob advances last_triggered_at to stop the retry loop, and
-      # the recurring trigger creates nothing — on that fire and on every fire
-      # after it, since the candidate never changes. That is the "Daily Fleet
-      # Cleanup" incident of 2026-08-23.
+      # when there is a conversation to follow up INTO. A session archived before
+      # it ever took a turn is not a reuse candidate at all (see
+      # #resuscitatable_session?), because a follow-up to a session with no
+      # session_id is reclassified as a fresh start that runs the session's own
+      # prompt, dropping the one this fire carries.
       if session && resuscitate_archived && session.archived?
         if resuscitatable_session?(session)
           resuscitate_session!(session)
@@ -471,9 +468,10 @@ class Trigger < ApplicationRecord
         # while a one-time reuse trigger skips silently, because it means THAT
         # session and a fresh stranger would be no use to it.
         Rails.logger.warn(
-          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) cannot resuscitate archived session " \
+          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) will not reuse archived session " \
           "#{session.id} — it has no runtime session id and no transcript, so it was archived before it " \
-          "ever started and there is nothing to restore. Treating it as no reuse candidate: a recurring " \
+          "ever started and there is no conversation to follow up into. Restoring it would start it over " \
+          "on its own original prompt rather than this one. Treating it as no reuse candidate: a recurring " \
           "trigger spawns a fresh session, a one-time reuse trigger skips."
         )
       end
@@ -941,36 +939,33 @@ class Trigger < ApplicationRecord
     end
   end
 
-  # Can this archived session be brought back at all?
+  # Is this archived session worth resuscitating as a reuse candidate?
   #
-  # Only if there is something to bring back. UnarchiveSessionService restores a
-  # transcript so the agent can resume, and refuses a session with no
-  # `session_id` ("Session has no session_id") because that is the name it would
-  # write the transcript under. So a session with neither is refused on this fire
-  # and on every later one — it is not a reuse candidate, and a trigger that
-  # keeps it as one is dead for good, since the candidate never changes and each
-  # fire raises the same error.
+  # Only if there is a conversation to follow up INTO. A session that never
+  # started has none (Session#never_ran?), and following up into it does not do
+  # what the trigger asked: AgentSessionJob reclassifies a follow-up prompt to a
+  # session with no session_id as a fresh start, and a fresh start runs the
+  # session's OWN prompt — so this fire's prompt would be silently dropped in
+  # favour of the one the session was created with. Falling through to
+  # #create_new_session! spawns a session that runs this fire's prompt, which is
+  # what the trigger meant.
   #
-  # That pair is the state the spot gate produces at scale: a `spot` session
-  # held at the starting line for a whole quota window, never started, then
-  # archived. `session_id` is stamped once the spawn pipeline has the session's
-  # clone and BEFORE the runtime is launched (AgentSessionJob passes it to the
-  # CLI as `--session-id`), so blank means the session never got that far, and
-  # its transcript is blank for the same reason.
+  # It also has to stay a screen because it once bricked triggers outright: the
+  # unarchive refused a never-started session, #resuscitate_session! raised,
+  # ScheduleTriggerJob advanced last_triggered_at, and the recurring trigger
+  # created nothing on that fire and on every fire after it, since the candidate
+  # never changes. That is the "Daily Fleet Cleanup" incident of 2026-08-23.
+  # UnarchiveSessionService no longer refuses such a session — it restores it to
+  # start fresh instead (zimmer#557) — but a trigger still must not reuse one.
   #
-  # The transcript is checked as well as the id because the two can come apart:
-  # a runtime that mints its own conversation id (codex) has that id cleared by
-  # ProcessLifecycleManager#release_stale_runtime_session_id! on a fresh-start
-  # recovery, so a long-running session can hold a full transcript with no id.
-  # That session HAS state, and the service still cannot restore it — which is
-  # exactly a failure a human should see. It keeps raising.
-  #
-  # Deliberately narrow for the same reason. The service's other failures — a
+  # Deliberately narrow, and narrow in the same way Session#never_ran? is: a
+  # session holding a transcript with no id HAS work, so it keeps going down the
+  # resume path where a failure stays loud. The service's other failures — a
   # clone that would not restore, a DB error, a state the row cannot leave — say
   # nothing about whether the session holds work worth resuming, so they raise
   # rather than quietly spawning a duplicate alongside it.
   def resuscitatable_session?(session)
-    session.session_id.present? || session.transcript.present?
+    !session.never_ran?
   end
 
   def reusable_session?(session)

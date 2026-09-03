@@ -3358,6 +3358,91 @@ class SessionTest < ActiveSupport::TestCase
     assert_not session.failed_before_initial_prompt?
   end
 
+  # Tests for never_ran? and needs_restart_from_scratch? (GitHub issue #557)
+  #
+  # A never-run session is one whose agent process never launched: no runtime
+  # session_id, no transcript. Archiving one used to be irreversible and
+  # restarting one was refused outright, both with "Session has no session_id".
+  # The dangerous mistake is the inverse, so these tests pin the narrowness of
+  # the predicate as hard as they pin the predicate itself.
+
+  test "never_ran? is true for a session with neither a session_id nor a transcript" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", status: :needs_input)
+    assert session.never_ran?
+  end
+
+  test "never_ran? is false for a session that holds a session_id" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :needs_input,
+      session_id: SecureRandom.uuid
+    )
+    assert_not session.never_ran?
+  end
+
+  # The two signals come apart: a runtime that mints its own conversation id has
+  # that id cleared by a fresh-start recovery, so a long-running session can hold
+  # a full transcript with no id. That session HAS work.
+  test "never_ran? is false for a session that holds a transcript but no session_id" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :needs_input,
+      transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n)
+    )
+    assert_nil session.session_id
+    assert_not session.never_ran?
+  end
+
+  test "needs_restart_from_scratch? is true for a session that never ran" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", status: :needs_input)
+    assert session.needs_restart_from_scratch?
+  end
+
+  test "needs_restart_from_scratch? is true for a pre-prompt failure with incomplete setup" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
+      transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n),
+      metadata: { "failure_reason" => "git_clone_failed" }
+    )
+    assert_not session.never_ran?, "the transcript keeps this session off the never-ran path"
+    assert session.needs_restart_from_scratch?
+  end
+
+  # The inverse guard: a session holding work must never be swept into a fresh
+  # start, because a fresh start discards the conversation it holds.
+  test "needs_restart_from_scratch? is false for a session with a transcript and no session_id" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
+      transcript: %({"type":"user","message":{"role":"user","content":"Hi"}}\n),
+      metadata: { "failure_reason" => "process_failed" }
+    )
+    assert_not session.needs_restart_from_scratch?
+  end
+
+  # A `waiting` session with no session_id has not been abandoned — the spawn
+  # pipeline still owns it, and its first job may simply not have been picked up
+  # yet. Restarting it would race that job and clone the repository twice. This
+  # is the same exclusion #continue_nudge_on_refresh? and StalledSessionStart
+  # already make, and it is the one shape of never-run session restart must not
+  # claim.
+  test "needs_restart_from_scratch? is false for a waiting session that never ran" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", status: :waiting)
+    assert session.never_ran?
+    assert_not session.needs_restart_from_scratch?
+  end
+
+  test "needs_restart_from_scratch? is true for a failed session that never ran" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed)
+    assert session.needs_restart_from_scratch?
+  end
+
+  test "needs_restart_from_scratch? is false for a session with complete setup artifacts" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
+      session_id: SecureRandom.uuid,
+      metadata: { "failure_reason" => "git_clone_failed", "clone_path" => "/tmp/clone" }
+    )
+    assert_not session.needs_restart_from_scratch?
+  end
+
   # Tests for degraded MCP servers (GitHub issue #521)
 
   test "degraded_mcp_servers reads the servers AgentSessionJob wrote off" do
