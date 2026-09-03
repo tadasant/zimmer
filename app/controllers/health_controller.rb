@@ -224,11 +224,13 @@ class HealthController < ApplicationController
       parts << "Skipped #{results[:skipped].size} session(s). #{reasons}"
     end
 
-    if parts.empty?
-      flash[:notice] = "No sessions to retry"
-    elsif results[:failed].any? || results[:retried].empty?
-      # Nothing was retried, or something outright failed: the operator asked for
-      # an action that did not happen, so it does not get to look like success.
+    return flash[:notice] = "No sessions to retry" if parts.empty?
+
+    # Only a genuine failure is an alert. A skip is not one: the bulk "retry all
+    # recent failures" flow legitimately passes over sessions whose clone is gone,
+    # and colouring that red would page the dashboard on every ordinary sweep. The
+    # reason still rides along in the message, which is the part that was missing.
+    if results[:failed].any?
       flash[:alert] = parts.join(". ")
     else
       flash[:notice] = parts.join(". ")
