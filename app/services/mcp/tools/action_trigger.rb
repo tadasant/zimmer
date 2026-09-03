@@ -105,14 +105,17 @@ module Mcp
           you want to keep — notably `event_type`, which defaults to `new_message` (fire on
           everything) if you drop it. Keys a POLLER owns survive an update that omits them: the
           Slack cursors (plus `allowed_user_ids`), and the GitHub ones (`seen_items`,
-          `seen_missing_counts`, `baseline_scope`, `last_issue_at`, `seen_issue_keys`). You do not
-          need to echo them — editing `repos` on a live `github_label` condition keeps its
-          seen-set, and the poller baselines only the newly-watched repos/labels rather than
-          stampeding a session for everything already labelled in them. The one key that is
-          still rebased by an edit is a `github_issue` condition's `last_issue_at`, and only when
-          the edit ADDS a repo: its state is a single global time cursor with no per-repo
-          dimension, so a widening restarts it at the moment of the edit rather than back-firing
-          every issue the new repo has opened since. Removing a repo keeps the cursor.
+          `seen_missing_counts`, `baseline_scope`, `last_issue_at`, `seen_issue_keys`,
+          `issue_repo_baselines`). You do not need to echo them — editing `repos` on a live
+          `github_label` condition keeps its seen-set, and the poller baselines only the
+          newly-watched repos/labels rather than stampeding a session for everything already
+          labelled in them. The one key that is still rebased by an edit is a `github_issue`
+          condition's `last_issue_at`, and only when the edit ADDS a repo: its state is a single
+          global time cursor, so a widening restarts it at the moment of the edit rather than
+          back-firing every issue the new repo has opened since. The added repo is recorded in
+          `issue_repo_baselines` so only what it opens AFTER the edit is an event; the fired-key
+          set is kept, so the 30-minute index-lag window the poller re-queries behind the new
+          cursor does not replay what already fired in it. Removing a repo keeps the cursor.
         - An element without an `id` adds a new condition.
         - An existing condition the array does not mention is **left alone**. To delete one,
           send `{"id": 123, "remove": true}`.
