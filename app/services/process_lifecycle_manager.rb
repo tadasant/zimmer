@@ -78,19 +78,20 @@ class ProcessLifecycleManager
   # rather than accumulating toward a permanent failure over its lifetime.
   BUDGET = RetryBudget::SIGNAL_DEATH
 
-  # Maximum number of times a turn that ended with the runtime having written
-  # NOTHING is restarted from scratch before the session is allowed to come to
-  # rest. See #handle_empty_turn.
+  # How many times a turn that ended with the runtime having written NOTHING is
+  # restarted from scratch before the session is allowed to come to rest. See
+  # #handle_empty_turn. Shared with Sessions::RestartUnstartedTurn, which reaches
+  # the same judgement from the other side of a worker interruption.
   #
-  # No reset logic pairs with this counter, and none is needed: the branch fires
-  # only while neither transcript store holds a byte, so a session that ever
-  # produces output can never reach it again. A session still empty after two
-  # restarts is not going to be fixed by a third.
-  MAX_EMPTY_TURN_RECOVERIES = 2
+  # Reset, like every other budget, once the process has been stable — but on a
+  # 30-minute window rather than the usual 60 seconds, because this is the one
+  # branch for which "the process is up" is not evidence that it is working. See
+  # RetryBudget::EMPTY_TURN_RESET_AFTER.
+  EMPTY_TURN_BUDGET = RetryBudget::EMPTY_TURN
 
-  # Maximum number of times a fresh start that the runtime refused because the
-  # session id was still held is retried under a newly minted id.
-  MAX_SESSION_ID_CONFLICT_RECOVERIES = 2
+  # How many times a fresh start that the runtime refused because the session id
+  # was still held is retried under a newly minted id.
+  SESSION_ID_CONFLICT_BUDGET = RetryBudget::SESSION_ID_CONFLICT
 
   # Result structures
   SpawnResult = Struct.new(:success, :pid, :stderr_log_path, :error, keyword_init: true) do
@@ -1077,7 +1078,7 @@ class ProcessLifecycleManager
   # needs_input with a blank transcript until a human typed "continue" (prod
   # session 4668).
   #
-  # So restart the turn instead, bounded by MAX_EMPTY_TURN_RECOVERIES. It is the
+  # So restart the turn instead, bounded by EMPTY_TURN_BUDGET. It is the
   # cause-agnostic backstop behind every specific recovery above it — but scoped to
   # a session that has NEVER produced a line, not to every empty turn: the question
   # it asks is about the session's whole transcript, so a later turn that happens to
@@ -1087,16 +1088,16 @@ class ProcessLifecycleManager
   # Note: Called while in :handling_exit state. Must transition to :running
   # on success or :idle on failure before returning.
   def handle_empty_turn(working_dir)
-    attempt = empty_turn_recovery_count + 1
+    attempt = EMPTY_TURN_BUDGET.next_attempt(session)
 
     add_log(
       "Process exited without the runtime writing a single transcript line — restarting the turn " \
-      "(attempt #{attempt}/#{MAX_EMPTY_TURN_RECOVERIES}) rather than leaving the session at rest with an empty transcript",
+      "(attempt #{attempt}/#{EMPTY_TURN_BUDGET.max}) rather than leaving the session at rest with an empty transcript",
       level: "warning"
     )
     @logger.warn("Recovering from an empty turn", attempt: attempt)
 
-    with_db_retry { session.merge_metadata!("empty_turn_recovery_count" => attempt) }
+    with_db_retry { EMPTY_TURN_BUDGET.record!(session, attempt: attempt) }
 
     # A new id, for the same reason as the failed-resume path: this branch is
     # reached only when neither store holds a conversation, so there is nothing
@@ -1131,12 +1132,12 @@ class ProcessLifecycleManager
   # on success or :idle on failure before returning.
   def handle_session_id_conflict(working_dir)
     session.reload
-    attempt = session.metadata&.dig("session_id_conflict_count").to_i + 1
+    attempt = SESSION_ID_CONFLICT_BUDGET.next_attempt(session)
 
-    if attempt > MAX_SESSION_ID_CONFLICT_RECOVERIES
+    if SESSION_ID_CONFLICT_BUDGET.exhausted?(session)
       add_log(
         "Runtime refused to start: session id #{session.session_id} is already in use, and the " \
-        "recovery budget is spent (#{MAX_SESSION_ID_CONFLICT_RECOVERIES} attempts)",
+        "recovery budget is spent (#{SESSION_ID_CONFLICT_BUDGET.max} attempts)",
         level: "error"
       )
       surface_stderr_to_session_log
@@ -1144,7 +1145,7 @@ class ProcessLifecycleManager
       return ExitDecision.new(action: :failed, error_message: "Runtime session id #{session.session_id} is already in use")
     end
 
-    with_db_retry { session.merge_metadata!("session_id_conflict_count" => attempt) }
+    with_db_retry { SESSION_ID_CONFLICT_BUDGET.record!(session, attempt: attempt) }
 
     if conversation_persisted?(working_dir)
       # The id names a real conversation. Minting a new one would abandon it;
@@ -1152,7 +1153,7 @@ class ProcessLifecycleManager
       # runtime_started so the resume builds `--resume` rather than `--session-id`.
       add_log(
         "Runtime refused to start: session id #{session.session_id} is already in use and names an " \
-        "existing conversation — resuming it instead (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
+        "existing conversation — resuming it instead (attempt #{attempt}/#{SESSION_ID_CONFLICT_BUDGET.max})",
         level: "warning"
       )
       @logger.warn("Resuming the conversation a held session id names", attempt: attempt)
@@ -1167,7 +1168,7 @@ class ProcessLifecycleManager
 
     add_log(
       "Runtime refused to start: session id #{session.session_id} is already in use and no conversation has been " \
-      "written under it — retrying under a new session id (attempt #{attempt}/#{MAX_SESSION_ID_CONFLICT_RECOVERIES})",
+      "written under it — retrying under a new session id (attempt #{attempt}/#{SESSION_ID_CONFLICT_BUDGET.max})",
       level: "warning"
     )
     @logger.warn("Recovering from a held runtime session id", attempt: attempt, session_id: session.session_id)
@@ -1325,7 +1326,7 @@ class ProcessLifecycleManager
   # because the runtime never wrote anything. See #handle_empty_turn.
   def empty_turn_recovery_needed?(working_dir)
     session.reload
-    return false if empty_turn_recovery_count >= MAX_EMPTY_TURN_RECOVERIES
+    return false if EMPTY_TURN_BUDGET.exhausted?(session)
     return false if recovery_prompt.blank?
 
     !conversation_persisted?(working_dir)
@@ -1346,10 +1347,6 @@ class ProcessLifecycleManager
       working_directory: working_dir,
       file_system: @file_system
     )
-  end
-
-  def empty_turn_recovery_count
-    session.metadata&.dig("empty_turn_recovery_count").to_i
   end
 
   # Whether the runtime refused this spawn because the session id was still held.

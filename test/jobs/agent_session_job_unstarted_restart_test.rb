@@ -149,7 +149,7 @@ class AgentSessionJobUnstartedRestartTest < ActiveJob::TestCase
 
   test "a session that stays empty across the whole budget comes to rest saying so" do
     @session.merge_metadata!(
-      Sessions::RestartUnstartedTurn::COUNT_KEY => Sessions::RestartUnstartedTurn::MAX_RESTARTS
+      Sessions::RestartUnstartedTurn::BUDGET.key => Sessions::RestartUnstartedTurn::BUDGET.max
     )
 
     assert_no_enqueued_jobs only: AgentSessionJob do
@@ -169,7 +169,7 @@ class AgentSessionJobUnstartedRestartTest < ActiveJob::TestCase
   # and fan out a duplicate wake and push.
   test "the abandoned park announces exactly once" do
     @session.merge_metadata!(
-      Sessions::RestartUnstartedTurn::COUNT_KEY => Sessions::RestartUnstartedTurn::MAX_RESTARTS
+      Sessions::RestartUnstartedTurn::BUDGET.key => Sessions::RestartUnstartedTurn::BUDGET.max
     )
 
     perform_dead_pid_recovery
@@ -181,10 +181,10 @@ class AgentSessionJobUnstartedRestartTest < ActiveJob::TestCase
 
   test "the restart budget is spent one attempt at a time" do
     perform_dead_pid_recovery
-    assert_equal 1, @session.metadata[Sessions::RestartUnstartedTurn::COUNT_KEY]
+    assert_equal 1, @session.metadata[Sessions::RestartUnstartedTurn::BUDGET.key]
 
     # The replacement turn dies the same way, and so does the one after it.
-    Sessions::RestartUnstartedTurn::MAX_RESTARTS.times do
+    Sessions::RestartUnstartedTurn::BUDGET.max.times do
       @session.update!(status: :running, metadata: @session.metadata.merge(
         "process_pid" => 73_925, "clone_path" => CLONE, "working_directory" => CLONE
       ))
@@ -192,8 +192,8 @@ class AgentSessionJobUnstartedRestartTest < ActiveJob::TestCase
     end
 
     assert_equal "needs_input", @session.status
-    assert_equal Sessions::RestartUnstartedTurn::MAX_RESTARTS,
-      @session.metadata[Sessions::RestartUnstartedTurn::COUNT_KEY]
+    assert_equal Sessions::RestartUnstartedTurn::BUDGET.max,
+      @session.metadata[Sessions::RestartUnstartedTurn::BUDGET.key]
     assert_present @session.metadata[Sessions::RestartUnstartedTurn::ABANDONED_KEY]
   end
 

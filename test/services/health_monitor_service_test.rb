@@ -1536,7 +1536,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     report = @service.full_health_report
 
     assert report.key?(:retry_budget_health)
-    assert_equal 5, report[:retry_budget_health][:budgets].size
+    # Derived rather than literal: the section exists so that declaring a budget is
+    # what puts it on the health surface, and a hardcoded count is the thing that
+    # would quietly stop being true when an eighth one is declared.
+    assert_equal RetryBudget.all.size, report[:retry_budget_health][:budgets].size
   end
 
   # === API Error Retry Health Tests ===

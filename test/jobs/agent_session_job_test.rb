@@ -3492,10 +3492,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     @session.reload
 
-    assert_equal ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES,
+    assert_equal ProcessLifecycleManager::EMPTY_TURN_BUDGET.max,
       @session.metadata["empty_turn_recovery_count"],
       "the empty-turn backstop must be reachable through the signal-0 door"
-    assert_equal 1 + ProcessLifecycleManager::MAX_EMPTY_TURN_RECOVERIES,
+    assert_equal 1 + ProcessLifecycleManager::EMPTY_TURN_BUDGET.max,
       mock_cli_adapter.executed_commands.length,
       "each restart re-spawns the turn rather than parking it"
     assert_equal "needs_input", @session.status,
@@ -5833,7 +5833,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # Tests for SIGTERM retry counter reset functionality (issue pulsemcp/agents#459)
   test "the shared reset threshold is 60 seconds" do
     assert_equal 60, RetryBudget::DEFAULT_RESET_AFTER
-    assert_equal [ 60 ], RetryBudget.all.map(&:reset_after).uniq
+    # Every budget but the empty-turn restart shares it. RetryBudgetTest owns the
+    # assertion about which one departs from it, and why it has to.
+    assert_equal [ 60 ], (RetryBudget.all - [ RetryBudget::EMPTY_TURN ]).map(&:reset_after).uniq
   end
 
   test "reset_retry_budget for SIGTERM resets counter after threshold" do
@@ -6139,7 +6141,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
         .merge(RetryBudget.all.index_by(&:stamp).transform_values { "2025-11-29T18:22:09Z" })
     )
 
-    stale = RetryBudget.all.index_with { 65.seconds.ago }
+    # Each budget past its OWN window, because they are no longer all the same: the
+    # empty-turn restart waits 30 minutes (RetryBudget::EMPTY_TURN_RESET_AFTER).
+    stale = RetryBudget.all.index_with { |budget| (budget.reset_after + 5).seconds.ago }
     job.send(:reset_stable_retry_budgets, @session, stale, log_buffer)
     log_buffer.flush
 
