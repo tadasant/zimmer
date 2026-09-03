@@ -742,22 +742,36 @@ nothing else has fired past it since, and does nothing once something has. Open 
 you want the gate.
 :::
 
-Only a **widening** re-baselines the condition: adding a repo. Editing `exclude_labels`, or
-removing a repo, does not — a `github_issue` condition's state is a time cursor, and a narrowing
-cannot make an old issue look new, so throwing the cursor away would lose live position for
-nothing. Adding a repo is different, and re-baselining is what stops it stampeding a session for
-every issue that repo has already opened: the cursor advances only when an issue *fires*, so on a
-quiet trigger it can be months behind the clock.
+Only a **widening** rebases the cursor: adding a repo. Editing `exclude_labels`, or removing a
+repo, does not — a `github_issue` condition's cursor is a timestamp, and a narrowing cannot make an
+old issue look new, so throwing it away would lose live position for nothing. Adding a repo is
+different: the cursor advances only when an issue *fires*, so on a quiet trigger it can be months
+behind the clock, and querying from there would return the new repo's entire back catalogue.
 
-The re-baseline happens **at the moment of the edit**, not at the next tick: `last_issue_at`
-restarts at "now" as the edit is saved. Nothing back-fires, and nothing opened in the up-to-a-minute
-gap before the next poll falls through the crack between the two.
+The rebase happens **at the moment of the edit**, not at the next tick: `last_issue_at` restarts at
+"now" as the edit is saved, so nothing opened in the up-to-a-minute gap before the next poll falls
+through the crack between the two.
 
-:::note[Why the two GitHub types re-baseline differently]
-A `github_label` condition keeps a per-item seen-set, so it can record *what its baseline covers*
-and absorb only the newly-watched part of a widened scope (see below). A `github_issue` condition's
-entire state is one global timestamp with no per-repo dimension to hold a partial baseline in, so it
-has only the blunt instrument. Giving it the same precision would mean per-repo cursors.
+What the rebase does **not** do is throw the rest of the state away. The poller queries 30 minutes
+*behind* the cursor to absorb index lag, so a cursor of "now" still returns the last half hour —
+and an emptied fired-key set made every issue already fired in it read as fresh, spawning a
+duplicate session for each ([#759](https://github.com/tadasant/zimmer/issues/759)). The fired keys
+survive the edit. The newly-watched repo is held back by `issue_repo_baselines` instead: a
+`"owner/repo" => timestamp` map saying when each repo joined the scope, which the poller compares
+against an issue's `created_at`. A first poll stamps every watched repo the same way, which is what
+makes "issues that predate the condition are history" true rather than merely intended.
+
+Because the comparison is on *creation* time, it holds however late GitHub indexes an issue — and
+because it is per repo, the lag window stays fully live for the repos already being watched. An
+issue opened seconds before the edit in a repo watched all along, and indexed only afterwards,
+still fires. An entry is dropped once the cursor has carried the window past it, so the steady
+state carries none.
+
+:::note[Why the two GitHub types baseline differently]
+A `github_label` condition keeps a per-item seen-set, so `baseline_scope` records *what its
+baseline covers* and the set itself never has to move. A `github_issue` condition has a cursor, and
+a cursor has to restart or it re-reads history — so it restarts, and `issue_repo_baselines` carries
+the "what" the cursor cannot.
 :::
 
 ### What a GitHub-triggered session receives
@@ -835,6 +849,10 @@ silently:
   (`GithubTriggerPollerJob::INDEX_LAG_GRACE`), and a set of already-fired keys covering that window
   is what stops the re-query from firing them twice. Observed indexing lag in practice is seconds;
   an issue indexed more than 30 minutes late is missed.
+- That window reaches back *through* a baseline, so the cursor alone cannot say "everything that
+  already existed is history". `issue_repo_baselines` says it separately — when each repo joined the
+  condition's scope — and the poller refuses anything created before its repo's entry. See the
+  re-baselining section above.
 
 
 In both cases state advances only for items that actually produced a session. A failure to create

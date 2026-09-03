@@ -865,6 +865,140 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal "2026-07-13T10:00:30Z", @issue_condition.reload.github_last_issue_at
   end
 
+  # ── #759: the lag window must not reach back through a baseline ───────────
+  #
+  # The cursor restarting at the edit is only half an answer, because the next tick queries
+  # INDEX_LAG_GRACE *behind* the cursor. A rebase that also emptied `seen_issue_keys` left
+  # nothing to reject the last 30 minutes with, so every issue already fired in them read as
+  # fresh and got a second session — observed on trigger 353 on 2026-09-02, where adding one
+  # repo re-fired zimmer#755 and #756.
+
+  test "a scope-widening edit does not re-fire what already fired inside the lag window" do
+    fired = item(number: 755, pr: false, created_at: "2026-07-12T09:00:00Z")
+
+    travel_to Time.utc(2026, 7, 12, 9, 0, 30) do
+      stub_search(issue: [ fired ]) do
+        assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+      end
+    end
+    assert_equal [ "tadasant/zimmer#755" ], @issue_condition.reload.github_seen_issue_keys
+
+    travel_to Time.utc(2026, 7, 12, 9, 10, 0) do
+      @issue_condition.update!(configuration: {
+        "repos" => [ "tadasant/zimmer", "tadasant/pi-extensions" ]
+      })
+    end
+    assert_equal "2026-07-12T09:10:00Z", @issue_condition.reload.github_last_issue_at
+
+    # The rebased cursor still reaches back to 08:40, so GitHub hands the same issue back.
+    travel_to Time.utc(2026, 7, 12, 9, 11, 0) do
+      stub_search(issue: [ fired ]) do
+        assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+      end
+    end
+  end
+
+  # The other half, and the one a careless fix breaks: the grace window exists so that an
+  # issue GitHub indexes late is still caught. Truncating the window at the rebase instant
+  # would lose this one silently — it was opened before the edit, in a repo watched all
+  # along, and simply had not been indexed yet when the edit landed.
+  test "an issue opened before a scope-widening edit still fires when indexed after it" do
+    late = item(number: 756, pr: false, created_at: "2026-07-12T09:05:00Z")
+
+    travel_to Time.utc(2026, 7, 12, 9, 10, 0) do
+      @issue_condition.update!(configuration: {
+        "repos" => [ "tadasant/zimmer", "tadasant/pi-extensions" ]
+      })
+    end
+
+    travel_to Time.utc(2026, 7, 12, 9, 11, 0) do
+      stub_search(issue: [ late ]) do
+        assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+      end
+    end
+
+    # And exactly once — it is remembered, so the next tick's re-query does not repeat it.
+    travel_to Time.utc(2026, 7, 12, 9, 12, 0) do
+      stub_search(issue: [ late ]) do
+        assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+      end
+    end
+  end
+
+  # What keeps the preserved window from letting the ADDED repo's back catalogue in: it is
+  # baselined by repo, at the edit, so only what it opens afterwards is an event.
+  test "a newly watched repo's existing issues do not fire, but its new ones do" do
+    existing = item(number: 10, pr: false, repo: "tadasant/pi-extensions",
+                    created_at: "2026-07-12T09:05:00Z")
+
+    travel_to Time.utc(2026, 7, 12, 9, 10, 0) do
+      @issue_condition.update!(configuration: {
+        "repos" => [ "tadasant/zimmer", "tadasant/pi-extensions" ]
+      })
+    end
+    assert_equal({ "tadasant/pi-extensions" => "2026-07-12T09:10:00Z" },
+                 @issue_condition.reload.github_issue_repo_baselines)
+
+    travel_to Time.utc(2026, 7, 12, 9, 11, 0) do
+      stub_search(issue: [ existing ]) do
+        assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+      end
+    end
+
+    opened_after = item(number: 11, pr: false, repo: "tadasant/pi-extensions",
+                        created_at: "2026-07-12T09:10:30Z")
+    travel_to Time.utc(2026, 7, 12, 9, 12, 0) do
+      stub_search(issue: [ existing, opened_after ]) do
+        assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+      end
+    end
+  end
+
+  # The same defect on the path that has no edit at all: a first poll sets the cursor to
+  # "now" and the next tick queries 30 minutes behind it, so a brand-new condition used to
+  # spawn a session for every issue opened in the half hour before it existed.
+  test "the first poll's baseline stops the lag window replaying the previous half hour" do
+    @issue_condition.update_column(
+      :configuration,
+      @issue_condition.configuration.except("last_issue_at", "seen_issue_keys")
+    )
+    already_open = item(number: 700, pr: false, created_at: "2026-07-12T08:45:00Z")
+
+    travel_to Time.utc(2026, 7, 12, 9, 0, 0) do
+      stub_search(issue: [ already_open ]) do
+        assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+      end
+    end
+    assert_equal({ "tadasant/zimmer" => "2026-07-12T09:00:00Z" },
+                 @issue_condition.reload.github_issue_repo_baselines)
+
+    travel_to Time.utc(2026, 7, 12, 9, 1, 0) do
+      stub_search(issue: [ already_open ]) do
+        assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+      end
+    end
+  end
+
+  # A baseline is bounded by the same horizon as the seen-set: once the cursor has carried
+  # the window past it, it can never match again and is dropped.
+  test "a repo baseline is dropped once the cursor carries the window past it" do
+    travel_to Time.utc(2026, 7, 12, 9, 10, 0) do
+      @issue_condition.update!(configuration: {
+        "repos" => [ "tadasant/zimmer", "tadasant/pi-extensions" ]
+      })
+    end
+
+    later = item(number: 90, pr: false, created_at: "2026-07-12T09:45:00Z")
+    travel_to Time.utc(2026, 7, 12, 9, 46, 0) do
+      stub_search(issue: [ later ]) do
+        assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+      end
+    end
+
+    assert_equal({}, @issue_condition.reload.github_issue_repo_baselines,
+                 "the window now starts at 09:15, past the 09:10 baseline")
+  end
+
   test "first poll of a new-issue condition baselines the cursor and fires nothing" do
     @issue_condition.update_column(
       :configuration,
@@ -1127,7 +1261,8 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   def un_baseline!(condition)
     condition.update_column(
       :configuration,
-      condition.configuration.except("seen_items", "last_issue_at", "seen_issue_keys")
+      condition.configuration.except("seen_items", "last_issue_at", "seen_issue_keys",
+                                     "issue_repo_baselines")
     )
     condition.reload
   end
@@ -1162,9 +1297,12 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     assert_not_nil @issue_condition.reload.github_last_issue_at
 
     # 2. Wind the cursor back so the next poll sees the issue as new, exercising the
-    #    STEADY-STATE write path.
+    #    STEADY-STATE write path. The repo baselines the first poll stamped are cleared
+    #    with it — they say when this condition started caring, which is the same clock —
+    #    and explicitly, since an omitted poll-state key is merged back rather than reset.
     @issue_condition.update!(configuration: @issue_condition.configuration.merge(
-      "last_issue_at" => "2026-07-12T08:00:00Z", "seen_issue_keys" => []
+      "last_issue_at" => "2026-07-12T08:00:00Z", "seen_issue_keys" => [],
+      "issue_repo_baselines" => {}
     ))
     GithubSearchService.stub(:search_issues, ->(*, **) { issue }) do
       assert_nothing_raised { job.send(:process_condition, @issue_condition) }

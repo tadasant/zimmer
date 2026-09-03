@@ -63,6 +63,12 @@
 # issue that shared its second with the previous tick's newest. The cursor is therefore
 # inclusive (`>=`) and paired with a small set of keys already fired at that exact second.
 #
+# Because that cursor is re-queried from INDEX_LAG_GRACE behind itself, it cannot on its own
+# express "everything that already existed is history": the window reaches straight back
+# through the instant a baseline was taken. `issue_repo_baselines` says it separately — when
+# each repo joined the scope — so a first poll, and a scope-widening edit, can refuse a repo's
+# back catalogue while the grace window stays live for the repos already being watched.
+#
 # A `github_issue` condition may also carry `exclude_labels` — an opt-out the issue's author
 # applies by opening it with one of those labels. It is expressed as a `-label:` negation in
 # the search itself, so an excluded issue is never seen, never fires, and never moves the
@@ -574,9 +580,19 @@ class GithubTriggerPollerJob < ApplicationJob
 
     # First tick: start the clock. Issues that predate the condition are history, not
     # events this trigger was created to react to.
+    #
+    # Saying that with the cursor alone does not hold, because the next tick queries
+    # INDEX_LAG_GRACE *behind* it: "now" as a cursor still returns the last 30 minutes, and
+    # with nothing to reject them they read as fresh. So the baseline records what already
+    # existed as well as when — per repo, by creation time — and the window is free to keep
+    # reaching back.
     if cursor.blank?
       now = Time.current.utc.iso8601
-      write_state(condition, scope, { "last_issue_at" => now, "seen_issue_keys" => [] })
+      write_state(
+        condition, scope,
+        { "last_issue_at" => now, "seen_issue_keys" => [],
+          "issue_repo_baselines" => baselines_for_all_watched(condition, now) }
+      )
       Rails.logger.info "[GithubTriggerPollerJob] Baselined condition #{condition.id} at #{now}; firing none"
       return
     end
@@ -598,7 +614,16 @@ class GithubTriggerPollerJob < ApplicationJob
     return if items.empty?
 
     already_fired = condition.github_seen_issue_keys.to_set
-    fresh = items.reject { |item| already_fired.include?(item_key(item)) }
+    baselines = condition.github_issue_repo_baselines
+
+    # Two ways an item in the window is not an event. It has already fired — that is the
+    # seen-set's job, and it is why the window can be re-queried at all. Or it predates the
+    # baseline of the repo it is in, which is how a repo joins the scope without dragging
+    # its whole history in behind it. Neither is recorded as fired: a pre-baseline issue is
+    # rejected by the same comparison on every tick, so there is nothing to remember.
+    fresh = items.reject do |item|
+      already_fired.include?(item_key(item)) || predates_repo_baseline?(item, baselines)
+    end
     return if fresh.empty?
 
     newest_at = cursor
@@ -624,11 +649,31 @@ class GithubTriggerPollerJob < ApplicationJob
       .uniq
       .sort
 
+    # A repo baseline is spent once the window no longer reaches back past it: `horizon` is
+    # exactly where the next tick's query starts, so an entry at or before it can never
+    # match another item. Dropping it there bounds the map the same way the horizon bounds
+    # the seen-set, and leaves the steady state carrying none at all.
     write_state(
       condition, scope,
-      { "last_issue_at" => newest_at, "seen_issue_keys" => retained_keys },
+      { "last_issue_at" => newest_at, "seen_issue_keys" => retained_keys,
+        "issue_repo_baselines" => baselines.select { |_repo, at| at.to_s > horizon } },
       fired: true
     )
+  end
+
+  # Every watched repo baselined at the same instant — the shape a first tick stamps,
+  # where nothing that exists yet is an event.
+  def baselines_for_all_watched(condition, at)
+    condition.github_repos.to_h { |repo| [ repo.to_s.downcase, at ] }
+  end
+
+  # Whether this issue was opened before its repo joined the condition's scope. Keyed on
+  # `created_at`, which never changes, so an issue GitHub indexes long after the baseline
+  # is still judged by when it was OPENED — the property the baseline is a statement about.
+  def predates_repo_baseline?(item, baselines)
+    baseline = baselines[repo_of(item).to_s.downcase]
+
+    baseline.present? && item["created_at"].to_s < baseline.to_s
   end
 
   # The exclusion is applied by the SEARCH, not by filtering what comes back, so an
