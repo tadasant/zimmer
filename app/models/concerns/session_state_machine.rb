@@ -1660,12 +1660,6 @@ module SessionStateMachine
     )
   end
 
-  # Unfired trigger conditions that could still wake this session: conditions on
-  # triggers where this session is the reuse target, that haven't fired yet.
-  # Callers still filter to the one-time shapes (one-time schedule or
-  # session-scoped ao_event) — recurring schedules and broadcast ao_events are
-  # not per-session wake-ups and are left alone.
-  # Whether any one-time wake-up is still armed against this session.
   # Whether any one-time wake-up is still armed against this session — asked with
   # the same "can it fire" reading as #awaiting_scheduled_wake?, not the looser
   # "is there an unfired row".
@@ -1676,6 +1670,14 @@ module SessionStateMachine
   # answer true to the looser one, re-sleep on the strength of it, and be stranded
   # again by the very resume sent to rescue it. That is the loop StrandedSleepRescue
   # would otherwise spend its whole budget on.
+  #
+  # Rescued to FALSE, which is the opposite direction from #awaiting_scheduled_wake?
+  # and deliberately so. That one is asked about a session already at rest, where
+  # "asleep on purpose" is the answer that leaves it alone; this one gates a
+  # re-sleep, where the safe answer is to not go back to sleep. A session that
+  # comes to rest in `needs_input` because the trigger table was briefly
+  # unreadable is visible on the homepage; one that sleeps on a wake nobody could
+  # confirm is not.
   def armed_one_time_wake?
     conditions = pending_one_time_wake_conditions.to_a
     watched = self.class.watched_session_statuses(conditions)
@@ -1683,8 +1685,18 @@ module SessionStateMachine
       (condition.one_time_schedule? || condition.session_scoped_ao_event?) &&
         self.class.one_time_wake_pending?(condition, watched_statuses: watched)
     end
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.error(
+      "[SessionStateMachine] Failed to check armed wake-ups for session #{id}: #{e.message}"
+    )
+    false
   end
 
+  # Unfired trigger conditions that could still wake this session: conditions on
+  # triggers where this session is the reuse target, that haven't fired yet.
+  # Callers still filter to the one-time shapes (one-time schedule or
+  # session-scoped ao_event) — recurring schedules and broadcast ao_events are
+  # not per-session wake-ups and are left alone.
   def pending_one_time_wake_conditions
     TriggerCondition
       .joins(:trigger)

@@ -405,6 +405,46 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     assert_equal "running", stranded.reload.status
   end
 
+  # page_after's cursor is a (updated_at, id) PAIR because updated_at alone is not
+  # unique: a page boundary landing inside a run of equal timestamps would either
+  # skip the rest of the run or loop over it forever. The starvation test above
+  # gives every session a distinct microsecond timestamp, so it never exercises
+  # this — the run of identical ones does.
+  test "a run of identical updated_at values longer than a page does not skip or loop" do
+    watched = other_session(status: :running)
+    sleepers = (StrandedSleepRescue::PAGE_SIZE + 5).times.map do
+      sleeper = sleeping_session(age: 30.days)
+      arm_wake!(sleeper, [ ao_event_condition(watched, event_name: "session_needs_input") ])
+      sleeper
+    end
+    stranded = sleeping_session(age: 30.days)
+
+    # Every candidate carries the SAME updated_at, so the ordering is decided
+    # entirely by the id half of the cursor.
+    same_moment = 30.days.ago
+    Session.where(id: sleepers.map(&:id) + [ stranded.id ]).update_all(updated_at: same_moment)
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 1, result.rescued
+    assert_equal "running", stranded.reload.status
+  end
+
+  # A rescue that raises rolls its budget increment back with the transaction, so
+  # without a cooldown the session neither advances toward MAX_RESCUES nor leaves
+  # the population — it holds one of the pass's five action slots forever.
+  test "a session the sweep could not rescue is cooled down rather than retried every pass" do
+    session = sleeping_session
+    Session.any_instance.stubs(:claim_system_recovery_turn!).raises(RuntimeError, "boom")
+
+    result = StrandedSleepRescue.sweep!
+
+    assert_equal 0, result.rescued
+    assert_equal 1, result.found
+    assert_operator session.reload.updated_at, :>, StrandedSleepRescue::GRACE.ago,
+      "the failed session must fall out of the candidate set for a GRACE"
+  end
+
   test "an archived session is never resumed" do
     session = sleeping_session
     Session.where(id: session.id).update_all(status: Session.statuses[:archived])
