@@ -30,6 +30,7 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
       },
       "cgroup": {
         "path": "/sys/fs/cgroup/system.slice/docker-8f1c.scope",
+        "census_known": true,
         "process_count": 1,
         "workload_process_count": 0,
         "oom_events": 1,
@@ -39,6 +40,45 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
         "attempted": true,
         "outcome": "exited",
         "steps": "killing containerd shim(s) 4242; container left the running state; docker start failed: redundant container registration"
+      }
+    }
+  JSON
+
+  # The two real firings of 2026-09-02 (issue #774): no OOM anywhere, five live workload
+  # processes, on hosts whose memory limits differ 5x. Both #774's false claims -- #502's
+  # cgroup OOM, and an idle worker -- are claims about exactly this payload.
+  NO_OOM_BUSY_PAYLOAD = <<~JSON
+    {
+      "schema": 1,
+      "host": "zimmer-prod",
+      "detected_at": "2026-09-02T06:43:53Z",
+      "container": {
+        "id": "a1b2c3d4e5f6",
+        "name": "zimmer-worker-production",
+        "runtime": "sysbox-runc",
+        "running": true,
+        "oom_killed": false,
+        "restart_count": 0,
+        "memory_limit_bytes": 10737418240,
+        "started_at": "2026-09-01T22:10:00Z"
+      },
+      "probe": {
+        "consecutive_failures": 3,
+        "timeout_seconds": 20,
+        "last_error": "unsafe procfs detected: openat2 fsmount:fscontext:proc/thread-self/fd/: operation not permitted"
+      },
+      "cgroup": {
+        "path": "/sys/fs/cgroup/system.slice/docker-a1b2.scope",
+        "census_known": true,
+        "process_count": 6,
+        "workload_process_count": 5,
+        "oom_events": 0,
+        "oom_kills": 0
+      },
+      "recovery": {
+        "attempted": false,
+        "outcome": "skipped",
+        "steps": "5 process(es) other than the init shim are still alive in the cgroup"
       }
     }
   JSON
@@ -58,6 +98,178 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
     assert_includes details, "oom_kill=1"
     assert_includes details, "2.0 GiB"
     assert_includes details, "setns process caused"
+    assert_includes details, "issues/502"
+  end
+
+  # The four combinations that matter. Cause comes from the OOM fields and impact from the
+  # census; each is read independently, and getting either backwards is silent until the
+  # next wedge.
+  test "OOM evidence plus an empty cgroup: names #502 and says the worker is idle" do
+    details = capture_alert { WorkerWedgeAlert.report(FULL_PAYLOAD) }[:details]
+
+    assert_includes details, "An OOM kill is recorded"
+    assert_includes details, "this is the sysbox cgroup-OOM wedge from"
+    assert_includes details, "issues/502"
+    assert_includes details, "no workload processes are left in its cgroup, so it is running no jobs"
+    assert_not_includes details, "is unverified"
+  end
+
+  test "OOM evidence with live processes: names #502 but does not claim the worker is idle" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["cgroup"]["workload_process_count"] = 5
+    payload["cgroup"]["process_count"] = 6
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "An OOM kill is recorded"
+    assert_includes details, "5 processes are still alive in its cgroup"
+    assert_includes details, "is unverified"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+  end
+
+  test "no OOM evidence with an empty cgroup: refuses #502 but still reports the worker idle" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"]["oom_killed"] = false
+    payload["cgroup"]["oom_kills"] = 0
+    payload["cgroup"]["oom_events"] = 0
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "so no OOM kill landed in it"
+    assert_includes details, "*not* the cgroup-OOM wedge"
+    assert_includes details, "its cause is unknown"
+    assert_includes details, "no workload processes are left in its cgroup, so it is running no jobs"
+  end
+
+  # The regression the issue was filed for: neither false claim may appear.
+  test "no OOM evidence with live processes: claims neither the cause nor the impact" do
+    details = capture_alert { WorkerWedgeAlert.report(NO_OOM_BUSY_PAYLOAD) }[:details]
+
+    assert_includes details, "so no OOM kill landed in it"
+    assert_includes details, "*not* the cgroup-OOM wedge"
+    assert_includes details, "5 processes are still alive in its cgroup"
+    assert_includes details, "says nothing about processes that were already running"
+    assert_includes details, "is unverified"
+
+    assert_not_includes details, "this is the sysbox cgroup-OOM wedge from"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+    assert_not_includes details, "the worker is still not running work"
+  end
+
+  # `docker exec` failing says nothing about what is already running, so the unresolved
+  # trailer cannot inherit the idle claim from the recovery outcome either.
+  test "the unresolved trailer defers to the census rather than to the recovery outcome" do
+    details = capture_alert { WorkerWedgeAlert.report(NO_OOM_BUSY_PAYLOAD) }[:details]
+
+    assert_includes details, "This one is not over"
+    assert_includes details, "5 of its processes are alive"
+    assert_includes details, "establish that it is idle before reaching for the destructive last rung"
+    assert_includes details, WorkerWedgeAlert::RUNBOOK
+  end
+
+  test "one live process is counted in the singular" do
+    payload = JSON.parse(NO_OOM_BUSY_PAYLOAD)
+    payload["cgroup"]["workload_process_count"] = 1
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "1 process is still alive in its cgroup"
+  end
+
+  # A census that could not be taken is not a census that came back empty -- the recovery
+  # gate refuses to conflate them, and the page must not either.
+  test "a census the watchdog could not take is reported as unknown, not as idle" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["cgroup"]["census_known"] = false
+    payload["cgroup"]["workload_process_count"] = 0
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "could not take a census of its cgroup"
+    assert_includes details, "is unknown"
+    assert_includes details, "This one is not over"
+    assert_includes details, "the cgroup census could not be taken"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+  end
+
+  # An unreadable cgroup used to default `oom_kill` to 0, which is indistinguishable from
+  # a counter that genuinely read zero. The script sends `null` and the page must not read
+  # it -- or a stale 0 from an older watchdog -- as proof no OOM happened.
+  test "a cgroup the watchdog could not locate leaves the cause unknown, not ruled out" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"]["oom_killed"] = false
+    payload["cgroup"] = { "path" => "", "census_known" => false, "process_count" => 0,
+                          "workload_process_count" => 0, "oom_events" => nil, "oom_kills" => nil }
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "counter is not in this payload"
+    assert_not_includes details, "so no OOM kill landed in it"
+    # And the evidence block must not print the defaults as if they were readings.
+    assert_includes details, "*Cgroup:* census unavailable, oom_kill=unread"
+    assert_not_includes details, "0 live workload processes"
+  end
+
+  test "an older payload that defaulted oom_kill to 0 with no cgroup located is still unknown" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"]["oom_killed"] = false
+    payload["cgroup"] = { "path" => "", "process_count" => 0, "workload_process_count" => 0,
+                          "oom_events" => 0, "oom_kills" => 0 }
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "counter is not in this payload"
+    assert_not_includes details, "so no OOM kill landed in it"
+  end
+
+  # A census that failed defaults the count to 0 exactly the way an empty container reads.
+  # Only `census_known` tells them apart, so its absence -- a watchdog installed before the
+  # field existed -- can never license the idle claim.
+  test "a zero count without census_known is unknown rather than idle" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["cgroup"].delete("census_known")
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "could not take a census of its cgroup"
+    assert_not_includes details, "so it is running no jobs and no agent sessions"
+    assert_includes details, "*Cgroup:* census unavailable"
+  end
+
+  # A positive count can only come from a walk that worked, so it needs no flag to vouch
+  # for it -- and an older watchdog must still get the live-process wording.
+  test "a positive count stands on its own without census_known" do
+    payload = JSON.parse(NO_OOM_BUSY_PAYLOAD)
+    payload["cgroup"].delete("census_known")
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "5 processes are still alive in its cgroup"
+    assert_includes details, "*Cgroup:* 5 live workload processes (6 total)"
+  end
+
+  test "a payload carrying no OOM fields at all says the cause is unknown" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"].delete("oom_killed")
+    payload["cgroup"].delete("oom_kills")
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "counter is not in this payload"
+    assert_not_includes details, "An OOM kill is recorded"
+    assert_includes details, "oom_kill=unread"
+  end
+
+  # `OOMKilled=false` with a non-zero cgroup counter is still an OOM: the kill landed
+  # inside the cgroup, which is exactly #502's shape.
+  test "a cgroup oom_kill counts as OOM evidence even when OOMKilled is false" do
+    payload = JSON.parse(FULL_PAYLOAD)
+    payload["container"]["oom_killed"] = false
+    payload["cgroup"]["oom_kills"] = 2
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_includes details, "An OOM kill is recorded"
     assert_includes details, "issues/502"
   end
 
@@ -212,6 +424,24 @@ class WorkerWedgeAlertTest < ActiveSupport::TestCase
 
     assert_includes details, "(truncated)"
     assert_operator details.length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
+  end
+
+  # The busiest framing is the longest one -- a live census spells out why `docker exec`
+  # proves nothing -- and AlertService truncates from the end, which is where the runbook
+  # link lives. So the worst case has to fit with both long fields at their caps.
+  test "the longest framing still fits inside the details cap with both long fields maxed" do
+    payload = JSON.parse(NO_OOM_BUSY_PAYLOAD)
+    payload["probe"]["last_error"] = "x" * 5_000
+    payload["recovery"]["steps"] = "y" * 5_000
+    # Host and container names are unbounded and never truncated, so the pin uses the
+    # longest shapes this deployment actually produces rather than the fixture's short ones.
+    payload["host"] = "zimmer-production-droplet-nyc3-01"
+    payload["container"]["name"] = "zimmer-worker-production-production-9e95b4d"
+
+    details = capture_alert { WorkerWedgeAlert.report(payload.to_json) }[:details]
+
+    assert_operator details.length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
+    assert_includes details, WorkerWedgeAlert::RUNBOOK
   end
 
   private

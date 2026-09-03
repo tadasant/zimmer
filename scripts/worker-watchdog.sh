@@ -316,7 +316,9 @@ find_cgroup() {
 # Emits "<total> <non-init> <known>". `known` is 0 when the subtree could not be
 # enumerated at all -- a scope that vanished mid-run, an unreadable subtree, a missing
 # `find`. That is NOT the same as an empty container, and only the gate can tell the
-# difference, so the count alone must never be the thing it reads.
+# difference, so the count alone must never be the thing it reads. It travels in the
+# payload as `cgroup.census_known` for the same reason: the alert must not read a
+# census that was never taken as proof the worker is idle.
 cgroup_census() {
   local dir="$1" total=0 workload=0 known=0 p comm procs files
   if [ -n "$dir" ] && [ -d "$dir" ]; then
@@ -338,12 +340,15 @@ cgroup_census() {
   printf '%s %s %s' "$total" "$workload" "$known"
 }
 
+# memory.events is "<key> <value>" per line. Prints NOTHING when the file could not be
+# read or the key is not in it, and the payload carries that through as JSON `null`: a
+# counter nobody read is not a counter that read zero, and the alert draws its "is this
+# an OOM?" conclusion from this number.
 cgroup_field() {
-  # memory.events is "<key> <value>" per line.
   local dir="$1" key="$2" v=""
   [ -n "$dir" ] && [ -r "${dir}/memory.events" ] &&
     v=$(awk -v k="$key" '$1 == k { print $2 }' "${dir}/memory.events" 2>/dev/null)
-  printf '%s' "${v:-0}"
+  printf '%s' "$v"
 }
 
 # ---------------------------------------------------------------------------
@@ -711,10 +716,11 @@ payload=$(
   },
   "cgroup": {
     "path": "$(json_escape "$cg")",
+    "census_known": $([ "${cg_known:-0}" = "1" ] && printf true || printf false),
     "process_count": ${cg_total:-0},
     "workload_process_count": ${cg_workload:-0},
-    "oom_events": ${oom_events:-0},
-    "oom_kills": ${oom_kill:-0}
+    "oom_events": ${oom_events:-null},
+    "oom_kills": ${oom_kill:-null}
   },
   "recovery": {
     "attempted": ${recovery_attempted},
@@ -732,7 +738,7 @@ log "incident written to ${incident_file}"
 # journald carries it even if Slack does not.
 command -v logger >/dev/null 2>&1 &&
   logger -t "$TAG" -p daemon.err \
-    "worker ${name} wedged (running=true, exec fails, ${cg_workload} workload procs, oom_kills=${oom_kill}); recovery=${RECOVERY_OUTCOME}"
+    "worker ${name} wedged (running=true, exec fails, ${cg_workload} workload procs, oom_kills=${oom_kill:-unread}); recovery=${RECOVERY_OUTCOME}"
 
 # The incident file and the journald line stand on their own, but the PAGE is the only
 # part a human sees -- so a failed delivery must not buy the full silence window.
