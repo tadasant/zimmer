@@ -145,9 +145,9 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
 
   # --- HTTP timeouts (#732) ---
 
-  # exchange_code runs inside a web request, where an unbounded read pins a Puma
-  # thread. It shares XOauthCredential's bounded POST rather than repeating the
-  # Net::HTTP block, so there is one implementation to keep bounded.
+  # exchange_code shares XOauthCredential's bounded POST rather than repeating
+  # the Net::HTTP block, so the operator running `x_oauth:complete` gets the same
+  # bound the cron path has, from one implementation.
   test "the code exchange bounds both connect and read at TOKEN_REQUEST_TIMEOUT" do
     with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "ref", expires_in: 7200 }) do
       XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",
@@ -191,7 +191,7 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
     assert_equal "tadasayy", row.account_key
   end
 
-  test "a hanging token endpoint raises Net::ReadTimeout instead of pinning the thread" do
+  test "a hanging token endpoint raises Net::ReadTimeout instead of hanging the exchange" do
     with_hanging_token_endpoint do |endpoint|
       with_default_token_endpoint(endpoint) do
         with_token_request_timeout(1) do
