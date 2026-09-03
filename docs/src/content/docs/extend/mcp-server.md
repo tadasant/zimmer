@@ -227,10 +227,14 @@ restating the message above. The section is deliberately a count plus a summary 
 messages: this output already runs long on a big session, so previews are cut at 120 characters,
 five messages are shown and the rest are counted. `manage_enqueued_messages` is the tool that reads
 the queue in full — and its `update`, `delete` and `reorder` actions are how a caller *consolidates*
-a queue instead of growing it. Only `pending` counts: a delivered message's row is destroyed, and an
-`undelivered` one is terminal, so neither is something the session is still going to see.
-`action_session`'s `follow_up` reports the same number from the other side — the queue depth its own
-call left behind, so a caller that just became fourth in line finds out at the moment it happens.
+a queue instead of growing it. Only `pending` counts: a delivered message's row is destroyed, an
+`undelivered` one is terminal, and a `processing` one has already been handed over, so none of the
+three is something a caller can still get ahead of. The two surfaces that *add* to a queue report the
+same number from the other side — `action_session`'s `follow_up` and `manage_enqueued_messages`'
+`create`, so a caller that just became fourth in line finds out at the moment it happens. When the
+call **delivered** the message rather than queuing it (an idle session, or `force_immediate`) the
+line says what is still pending *behind* it instead; a message's position in the queue is not the
+depth, since a retired `undelivered` row holds a position too.
 
 `gate_decisions` is a group of its own rather than three more tools in `sessions`, and it is opt-in
 rather than base. Folded into `sessions`, every session carrying `zimmer-sessions` would be handed

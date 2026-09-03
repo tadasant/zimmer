@@ -92,6 +92,34 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_operator section.bytesize, :<, 2_000, "queued-messages section grew unbounded: #{section.bytesize} bytes"
   end
 
+  test "the preview cut keeps exactly the limit and only then adds an ellipsis" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "a" * 120, position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "b" * 121, position: 2, status: "pending")
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "#{'a' * 120}\n"
+    assert_not_includes output, "#{'a' * 120}..."
+    assert_includes output, "#{'b' * 120}..."
+    assert_not_includes output, "b" * 121
+  end
+
+  # The cut is in CHARACTERS, so multibyte content is never split mid-codepoint
+  # — and the section is still bounded, just by ~4 bytes per character rather
+  # than one. This is the case the ASCII bound above does not cover.
+  test "multibyte queued content is cut on characters and stays bounded" do
+    session = sessions(:running)
+    5.times { |i| session.enqueued_messages.create!(content: "日本語" * 1_000, position: i + 1, status: "pending") }
+
+    output = @tool.call("id" => session.id)
+    section = output[/### Queued Messages.*?(?=\n### )/m]
+
+    assert section.valid_encoding?
+    assert_includes section, "#{'日本語' * 40}..."
+    assert_operator section.bytesize, :<, 4_000, "multibyte section grew unbounded: #{section.bytesize} bytes"
+  end
+
   test "a newline in queued content cannot forge a second bullet" do
     session = sessions(:running)
     session.enqueued_messages.create!(

@@ -172,7 +172,10 @@ module Mcp
           "- **ID:** #{message.id}",
           "- **Position:** #{message.position}",
           "- **Status:** #{message.status}",
-          "- **Content:** #{preview(message.content)}"
+          "- **Content:** #{preview(message.content)}",
+          # Position is not depth: a retired `undelivered` row holds a position
+          # too. Say how many messages are actually still going to be delivered.
+          *EnqueuedMessageSections.queue_depth_lines(session, queued_message: message)
         ].join("\n")
       end
 
