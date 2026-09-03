@@ -418,6 +418,8 @@ export default class extends Controller {
     // can update the page without a full reload.
     form.dataset.turbo = "true"
     form.setAttribute("accept", "text/vnd.turbo-stream.html, text/html")
+    // A submission vehicle, not UI, for the beat it spends in the document.
+    form.hidden = true
 
     const token = document.querySelector('meta[name="csrf-token"]')?.content
     if (token) {
@@ -435,15 +437,18 @@ export default class extends Controller {
       form.appendChild(m)
     }
     document.body.appendChild(form)
-    // The form is a vehicle, not UI: without this the session page keeps every
-    // one of them, because the turbo_stream response the line above exists to
-    // get leaves the document standing rather than tearing it down. Turbo
-    // dispatches turbo:submit-end from its FormSubmission's `finally`, so it
-    // lands on every settled outcome — success, 4xx/5xx, network error, abort —
-    // and this is the same idiom archive_countdown_controller uses (and Turbo
-    // itself, for the form it synthesizes behind a data-turbo-method link). On
-    // the Turbo-less fallback below the listener never fires and is inert: that
-    // path is a native navigation, which takes the whole document with it.
+    // Without this the page keeps every form it ever submitted: the
+    // turbo_stream response `data-turbo` above exists to get leaves the
+    // document standing, where a native navigation would tear it down. Turbo
+    // dispatches turbo:submit-end from the `finally` of FetchRequest#perform,
+    // so it lands on every outcome the request actually reaches — success,
+    // 4xx/5xx, network error, abort. (A declined data-turbo-confirm, and a
+    // turbo:before-fetch-request prevented without resume(), never get that
+    // far; this form carries neither.) Same idiom as
+    // archive_countdown_controller, and as the form Turbo itself synthesizes
+    // behind a data-turbo-method link. On the Turbo-less fallback below the
+    // listener never fires and is inert: that path is a native navigation,
+    // which takes the whole document with it.
     form.addEventListener("turbo:submit-end", () => form.remove(), { once: true })
     if (window.Turbo && typeof window.Turbo.navigator?.submitForm === "function") {
       window.Turbo.navigator.submitForm(form)
