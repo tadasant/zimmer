@@ -42,6 +42,34 @@ Three kinds of link do most of the work:
 - **A pull request, issue, or CI run** that came up in the conversation.
 - **Another Zimmer session**, by its `/sessions/:id` URL.
 
+## A description of state, never a plan
+
+The blurb says where a session stands. It is not allowed to say what the session is going to do
+next. Both prompts — the fork's and the [one-shot path](#the-pool-independent-path)'s — carry two
+rules to that effect, because a rule is worthless in whichever prompt it is missing from:
+
+- **No first-person claim about an action the session has not already taken** — a scheduled wake, a
+  follow-up, a retry, a label about to be applied. This one is
+  `SessionStatusSummaryGenerator::STATE_NOT_INTENT_RULE`, shared verbatim between the two prompts.
+  It is bounded to **machine** waits: a session waiting on a human never "arranged" that wait and no
+  transcript shows it doing so, so "waiting for your review" stays sayable while "I've scheduled a
+  wake" does not.
+- **Nothing the conversation does not contain.** Answer from the transcript; do not invent a detail
+  it does not hold.
+
+A blurb once asserted *"I've scheduled a self-wake to re-poll at 22:45Z and apply the label once it
+turns green"* for a session that had scheduled no wake and held no trigger of any kind. The session
+sat stranded for 16 hours, reading on the homepage as a healthy machine wait. That is the exact
+inversion of what the panel is for: the one session on the board that needed a human looked like the
+one that definitely did not. A summary that can assert an action nobody performed is worse than no
+summary, because it is read as evidence.
+
+Which of the two paths wrote that blurb was never established. The fork is the likelier author — it
+carried a CI check count that appears nowhere in the transcript, which is a
+[#716](https://github.com/tadasant/zimmer/issues/716) symptom — and the anti-invention rule was on
+the one-shot prompt from the start and missing from the fork's. Both prompts carry both rules, so
+the question does not have to be settled for the gap to be closed.
+
 ## Generation runs on a fork
 
 The blurb is written by an agent, and the agent is a **fork of the session itself**.
