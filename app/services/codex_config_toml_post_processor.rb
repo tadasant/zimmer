@@ -30,6 +30,13 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # (see forward_operator_ssh_key!). Not a secret — a path.
   OPERATOR_SSH_KEY_PATH_VAR = "SSH_PRIVATE_KEY_PATH"
 
+  # Codex's own key for how long it waits on a server's `initialize`, in seconds
+  # (see apply_startup_timeouts!). `startup_timeout_ms` is the deprecated alias
+  # Codex still folds into the same field; an entry carrying either one is left
+  # alone.
+  STARTUP_TIMEOUT_KEY = "startup_timeout_sec"
+  DEPRECATED_STARTUP_TIMEOUT_KEY = "startup_timeout_ms"
+
   private
 
   def config_path
@@ -129,6 +136,46 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     forwarded = entry["env_vars"]
     forwarded = [] unless forwarded.is_a?(Array)
     entry["env_vars"] = forwarded | [ OPERATOR_SSH_KEY_PATH_VAR ]
+  end
+
+  # Give every stdio server the same startup budget Claude has always had.
+  #
+  # Claude gets it from `MCP_TIMEOUT` on the agent process, which reaches every
+  # server Claude spawns. Codex has no such variable: it reads a per-server
+  # `startup_timeout_sec` out of the `[mcp_servers.*]` table and otherwise
+  # applies its own default. Measured against the pinned
+  # `@openai/codex@0.146.0`, that default is 30 seconds — a hanging stdio server
+  # delays the first model request by 29.9s over the no-server baseline, and
+  # writing `startup_timeout_sec = 5` moves the same measurement to 5.1s.
+  #
+  # Thirty seconds is not obviously too little, which is exactly why it is worth
+  # fixing before it bites: #pin_npx_caches_to_clone! guarantees that a fresh
+  # clone's first launch downloads every npx server from the registry, and the
+  # nine in `mcp.json` installing at once cost 18s for the slowest on an idle
+  # production droplet. The margin is under 2x, on the runtime where running out
+  # of it means the server is dropped rather than merely slow.
+  #
+  # Only stdio entries. An HTTP entry is a request to a server that is already
+  # running — for the auto-injected Zimmer entries, this very process — so it has
+  # no cold start to absorb, and widening the budget there would only lengthen
+  # the wait before a genuinely unreachable URL is reported.
+  #
+  # An entry that names a timeout itself keeps it, under either spelling: that is
+  # the operator's call, the same way an explicit NPM_CONFIG_CACHE is.
+  def apply_startup_timeouts!(servers)
+    timed = servers.filter_map do |name, entry|
+      next unless entry.is_a?(Hash)
+      next if entry["command"].blank?
+      next if entry[STARTUP_TIMEOUT_KEY].present? || entry[DEPRECATED_STARTUP_TIMEOUT_KEY].present?
+
+      entry[STARTUP_TIMEOUT_KEY] = McpStartupTimeout.seconds
+      name
+    end
+
+    return if timed.empty?
+
+    Rails.logger.info "[#{self.class.name}] Set #{STARTUP_TIMEOUT_KEY}=#{McpStartupTimeout.seconds} " \
+      "on #{timed.size} stdio MCP server(s): #{timed.join(', ')}."
   end
 
   # Memoized across the entries of one post_process! run (the provisioner is idempotent
