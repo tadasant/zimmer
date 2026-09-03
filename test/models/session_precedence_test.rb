@@ -176,6 +176,16 @@ class SessionPrecedenceTest < ActiveSupport::TestCase
     assert_equal 805, session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
   end
 
+  # The floor reads the session's own rank, not the rank of anything in the SPOT
+  # population it measures — which is the whole reason a priority session being
+  # demoted keeps its number instead of being rewritten down to the spot top.
+  test "a priority session placing itself keeps a rank the spot queue cannot see" do
+    build_session(precedence: 10, scheduling_class: SessionGenesis::SPOT)
+    session = build_session(precedence: 1_000, scheduling_class: SessionGenesis::PRIORITY)
+
+    assert_equal 1_000, session.precedence_for_place(SessionPrecedence::PLACE_TOP_OF_SPOT)
+  end
+
   test "a session placing itself rejects a placement it does not know" do
     session = build_session(precedence: 1, scheduling_class: SessionGenesis::SPOT)
 

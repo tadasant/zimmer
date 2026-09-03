@@ -58,6 +58,14 @@ module SessionPrecedence
   # one is added here rather than in four places.
   PLACES = [ PLACE_TOP_OF_SPOT ].freeze
 
+  # What every surface says when a caller sends both a placement and an absolute
+  # rank. Here rather than in each surface for the same reason PLACES is: the
+  # refusal is one rule, and a caller that hits it over REST and then over MCP
+  # should not have to work out that it read two different sentences.
+  BOTH_PLACE_AND_PRECEDENCE = '"place" and "precedence" are mutually exclusive — they are two ' \
+    'answers to the same question. Pass "place" to let the server work the value out against the ' \
+    'live queue, or "precedence" to name an absolute rank yourself.'
+
   # Bounds. Postgres `integer` is 32-bit, and the reorder maths adds and averages
   # values, so the accepted range is kept an order of magnitude clear of the
   # column's own limit. Nothing legitimate needs a billion.

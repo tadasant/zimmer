@@ -133,6 +133,76 @@ class Api::V1::SessionsControllerPlaceTest < ActionDispatch::IntegrationTest
     assert_equal SessionPrecedence::DEFAULT, JSON.parse(response.body)["session"]["precedence"]
   end
 
+  # An explicit JSON null `precedence` is the field left out, not a second
+  # answer, so it does not trip the mutual-exclusion check. This is the pairing
+  # the check is actually tuned for — a predicate written on key presence would
+  # reject it — so it is pinned on its own.
+  test "create accepts a place alongside an explicit null precedence" do
+    spot_session(precedence: 400)
+
+    post "/api/v1/sessions",
+      params: {
+        agent_root: "zimmer", prompt: "Go",
+        place: SessionPrecedence::PLACE_TOP_OF_SPOT, precedence: nil
+      }.to_json,
+      headers: @headers.merge("Content-Type" => "application/json")
+
+    assert_response :created
+    assert_equal 400 + SessionPrecedence::SLOT_GAP, JSON.parse(response.body)["session"]["precedence"]
+  end
+
+  # The same reading of blank, one transport over. REST takes form-encoded
+  # bodies, where a client that submits every field it renders sends an empty
+  # `precedence` rather than omitting it — and the model's own writer reads a
+  # blank one as "say nothing". Telling that caller it had answered twice when it
+  # had not would be a wrong 422.
+  test "create accepts a place alongside a blank precedence" do
+    spot_session(precedence: 400)
+
+    post "/api/v1/sessions",
+      params: { agent_root: "zimmer", prompt: "Go", place: SessionPrecedence::PLACE_TOP_OF_SPOT, precedence: "" },
+      headers: @headers
+
+    assert_response :created
+    assert_equal 400 + SessionPrecedence::SLOT_GAP, JSON.parse(response.body)["session"]["precedence"]
+  end
+
+  # A replay answers with the session the first call made and re-validates
+  # nothing — the retry this exists for is a caller that already has its session
+  # and cannot tell, so the second payload is not a second request. The placement
+  # is therefore the one resolved when the session was actually created, not one
+  # re-resolved against a queue that has moved since.
+  test "an idempotent replay reports the placement the first create resolved" do
+    spot_session(precedence: 400)
+
+    post "/api/v1/sessions",
+      params: {
+        agent_root: "zimmer", prompt: "Go", idempotency_key: "place-replay",
+        place: SessionPrecedence::PLACE_TOP_OF_SPOT
+      },
+      headers: @headers
+    assert_response :created
+    first = JSON.parse(response.body)["session"]
+    assert_equal 400 + SessionPrecedence::SLOT_GAP, first["precedence"]
+
+    spot_session(precedence: 9_000)
+
+    assert_no_difference "Session.count" do
+      post "/api/v1/sessions",
+        params: {
+          agent_root: "zimmer", prompt: "Go", idempotency_key: "place-replay",
+          place: SessionPrecedence::PLACE_TOP_OF_SPOT
+        },
+        headers: @headers
+    end
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert json["idempotent_replay"]
+    assert_equal first["id"], json["session"]["id"]
+    assert_equal first["precedence"], json["session"]["precedence"]
+  end
+
   # --- update ---------------------------------------------------------------
 
   test "update with place top_of_spot lands the session above the current top" do
@@ -261,6 +331,29 @@ class Api::V1::SessionsControllerPlaceTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal 90, session.reload.precedence
+  end
+
+  test "update accepts a place alongside an explicit null precedence" do
+    spot_session(precedence: 400)
+    session = spot_session(precedence: 5)
+
+    patch "/api/v1/sessions/#{session.id}",
+      params: { place: SessionPrecedence::PLACE_TOP_OF_SPOT, precedence: nil }.to_json,
+      headers: @headers.merge("Content-Type" => "application/json")
+
+    assert_response :success
+    assert_equal 400 + SessionPrecedence::SLOT_GAP, session.reload.precedence
+  end
+
+  test "update accepts a place alongside a blank precedence" do
+    spot_session(precedence: 400)
+    session = spot_session(precedence: 5)
+
+    patch "/api/v1/sessions/#{session.id}",
+      params: { place: SessionPrecedence::PLACE_TOP_OF_SPOT, precedence: "" }, headers: @headers
+
+    assert_response :success
+    assert_equal 400 + SessionPrecedence::SLOT_GAP, session.reload.precedence
   end
 
   private

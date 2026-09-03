@@ -55,11 +55,7 @@ module Mcp
         place = args["place"]
         return absolute_precedence(args["precedence"]) if place.blank?
 
-        unless args["precedence"].nil?
-          raise ToolError, '"place" and "precedence" are mutually exclusive — they are two answers to ' \
-                           'the same question. Pass "place" to let the server work the value out against ' \
-                           "the live queue, or \"precedence\" to name an absolute rank yourself."
-        end
+        raise ToolError, SessionPrecedence::BOTH_PLACE_AND_PRECEDENCE unless args["precedence"].nil?
 
         unless SessionPrecedence::PLACES.include?(place.to_s)
           raise ToolError, "Unknown place: #{place.inspect}. Valid: #{SessionPrecedence::PLACES.join(', ')}."
