@@ -97,6 +97,7 @@ class TriggerCondition < ApplicationRecord
   # them — see #preserve_github_poll_state for why they are merged back in.
   GITHUB_POLL_STATE_KEYS = %w[
     seen_items seen_missing_counts baseline_scope last_issue_at seen_issue_keys
+    issue_repo_baselines
   ].freeze
 
   # The same problem on the Slack side, and worse: these keys are every cursor the
@@ -478,6 +479,26 @@ class TriggerCondition < ApplicationRecord
     Array(configuration["seen_issue_keys"])
   end
 
+  # When each watched repo entered this condition's scope, as `"owner/repo" => iso8601`
+  # (repo keys downcased). An issue in that repo created BEFORE its instant predates the
+  # condition's watch of it, and is therefore history rather than an event — however late
+  # GitHub gets round to indexing it.
+  #
+  # This is what the cursor alone cannot say. `last_issue_at` records *when* a baseline
+  # happened; the poller re-queries INDEX_LAG_GRACE behind it on purpose, so the window
+  # reaches back through the baseline instant and every issue on the far side reads as
+  # fresh. Recording the baseline per repo lets the poller keep the whole grace window —
+  # the late-indexed issue it exists to catch still fires — while refusing the issues that
+  # were already there. See GithubTriggerPollerJob#process_new_issue_condition.
+  #
+  # Absent for a condition baselined before this key existed, which reads as "no repo has
+  # a baseline": the cursor behaves exactly as it did, and the first widening edit or
+  # re-baseline stamps what it needs.
+  def github_issue_repo_baselines
+    value = configuration["issue_repo_baselines"]
+    value.is_a?(Hash) ? value : {}
+  end
+
   # What this condition watches. The poller snapshots this at the start of a tick and
   # re-checks it before writing, so a UI edit that lands mid-tick is not clobbered by
   # state computed against the old scope.
@@ -765,7 +786,8 @@ class TriggerCondition < ApplicationRecord
   # baselined without firing while everything else still fires. Nothing has to be thrown
   # away, so an edit to `repos` costs the condition nothing.
   #
-  # `github_issue` is the exception, and stays a re-baseline — see below.
+  # `github_issue` rebases its cursor instead, and records what the new scope added rather
+  # than dropping what the old one knew — see #rebase_github_issue_cursor.
   def preserve_github_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
@@ -816,26 +838,42 @@ class TriggerCondition < ApplicationRecord
   # away a live cursor for nothing — and if the poller happened to be behind, it would
   # skip every issue opened in the repos that are still watched.
   def github_issue_scope_widened?
-    watched_before = split_lines(configuration_was["repos"]).map { |repo| repo.to_s.downcase }
-
-    split_lines(configuration["repos"]).any? { |repo| watched_before.exclude?(repo.to_s.downcase) }
+    github_issue_repos_added.any?
   end
 
-  # A `github_issue` condition's whole state is ONE global time cursor, with no per-repo
-  # dimension to record a partial baseline in. Carrying it across a newly-added repo
-  # would fire for every issue that repo has opened since the cursor — and the cursor
-  # only advances when an issue fires, so on a quiet trigger that is months of history.
-  # So a WIDENED scope still re-baselines it, deliberately, and unifying it with the
-  # seen-set's precision would mean per-repo cursors: a redesign, not this fix.
+  # The repos this edit puts in scope that were not in it before, downcased.
+  def github_issue_repos_added
+    watched_before = split_lines(configuration_was["repos"]).map { |repo| repo.to_s.downcase }
+
+    split_lines(configuration["repos"]).map { |repo| repo.to_s.downcase } - watched_before
+  end
+
+  # A `github_issue` condition's cursor is global, so it still restarts at "now" when the
+  # scope widens: carrying it across a newly-added repo would query from months back — the
+  # cursor only advances when an issue fires — and return every issue that repo has ever
+  # opened, up to the 1000-result ceiling the search raises past. Rebasing it at the moment
+  # of the EDIT rather than at the next tick is what keeps an issue opened in the gap
+  # between the two from falling before the new cursor and never being seen.
   #
-  # What changes is only WHEN: the cursor is rebased to the moment of the edit rather
-  # than deleted and rebased at the next tick, which closes the up-to-a-minute window in
-  # which an issue opened between the edit and that tick fell before the new cursor and
-  # was never seen. Nothing back-fires — the cursor still starts at "now" — and nothing
-  # in the gap is lost.
+  # What must NOT restart is the seen-set. The poller queries INDEX_LAG_GRACE *behind* the
+  # cursor, so a cursor of "now" still returns the last 30 minutes — and an emptied seen-set
+  # made every issue already fired in those 30 minutes read as fresh, spawning a duplicate
+  # session for each. That is #759, observed on 2026-09-02: adding one repo to trigger 353
+  # re-fired the two issues opened in the half hour before the edit.
+  #
+  # Suppressing the newly-watched repo's own history is the job of `issue_repo_baselines`
+  # instead, which says it per repo and by CREATION time — so it holds however late GitHub
+  # indexes an issue, and the grace window stays intact for the repos already watched.
+  # Entries for repos that just left scope are dropped; they can no longer match anything.
   def rebase_github_issue_cursor
-    configuration["last_issue_at"] = Time.current.utc.iso8601 if configuration_was.key?("last_issue_at")
-    configuration["seen_issue_keys"] = []
+    return unless configuration_was.key?("last_issue_at")
+
+    now = Time.current.utc.iso8601
+    watched = split_lines(configuration["repos"]).map { |repo| repo.to_s.downcase }
+
+    configuration["issue_repo_baselines"] =
+      github_issue_repo_baselines.slice(*watched).merge(github_issue_repos_added.index_with(now))
+    configuration["last_issue_at"] = now
   end
 
   def github_watch_scope_changed?

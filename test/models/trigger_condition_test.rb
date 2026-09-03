@@ -1362,10 +1362,10 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_not condition.github_baseline_covers?("tadasant/zimmer", "ready to merge")
   end
 
-  # A github_issue condition's state is one global cursor, so a widened scope still
-  # re-baselines it — but at the instant of the EDIT, not at whatever time the next tick
-  # runs. That closes the gap in which an issue opened right after the edit fell before
-  # the new cursor and was never seen.
+  # A github_issue condition's cursor is one global timestamp, so a widened scope still
+  # restarts it — but at the instant of the EDIT, not at whatever time the next tick runs.
+  # That closes the gap in which an issue opened right after the edit fell before the new
+  # cursor and was never seen.
   test "adding a repo to a github_issue condition rebases its cursor to the edit" do
     condition = trigger_conditions(:github_issue_condition)
     condition.update!(configuration: condition.configuration.merge(
@@ -1380,7 +1380,104 @@ class TriggerConditionTest < ActiveSupport::TestCase
     condition.reload
     assert_equal "2026-07-13T10:00:00Z", condition.github_last_issue_at,
                  "the cursor must restart at the edit, not be dropped for the next tick to set"
-    assert_equal [], condition.github_seen_issue_keys
+  end
+
+  # #759. The cursor restarts at the edit, but the poller queries INDEX_LAG_GRACE behind
+  # it — so an emptied seen-set makes every issue already fired in the previous 30 minutes
+  # read as fresh, and each one gets a second session. The set has to survive the rebase.
+  test "adding a repo to a github_issue condition keeps the keys it has already fired" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z",
+      "seen_issue_keys" => [ "tadasant/zimmer#42" ]
+    ))
+
+    travel_to Time.utc(2026, 7, 13, 10, 0, 0) do
+      condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+
+    assert_equal [ "tadasant/zimmer#42" ], condition.reload.github_seen_issue_keys,
+                 "the rebased cursor still re-queries the 30 minutes behind it; forgetting " \
+                 "what fired there is what re-fired zimmer#755 and #756 in production"
+  end
+
+  # What stops the newly-watched repo's own back catalogue from riding in on that preserved
+  # window: it is baselined by repo, at the edit. The repos already watched get no entry,
+  # so their grace window keeps working.
+  test "adding a repo to a github_issue condition baselines only that repo" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z"
+    ))
+
+    travel_to Time.utc(2026, 7, 13, 10, 0, 0) do
+      condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+
+    assert_equal({ "tadasant/zimmer-catalog" => "2026-07-13T10:00:00Z" },
+                 condition.reload.github_issue_repo_baselines)
+  end
+
+  # A second widening must not re-baseline the first addition: an issue opened in
+  # zimmer-catalog between the two edits is a live event, and stamping it forward to the
+  # later instant would swallow it. Each repo carries the instant IT joined.
+  test "a second widening leaves the first addition's baseline where it was" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z"
+    ))
+
+    travel_to Time.utc(2026, 7, 13, 10, 0, 0) do
+      condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+    travel_to Time.utc(2026, 7, 13, 11, 0, 0) do
+      condition.update!(configuration: {
+        "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog", "tadasant/pi-extensions" ]
+      })
+    end
+
+    assert_equal({ "tadasant/zimmer-catalog" => "2026-07-13T10:00:00Z",
+                   "tadasant/pi-extensions" => "2026-07-13T11:00:00Z" },
+                 condition.reload.github_issue_repo_baselines)
+  end
+
+  # Dropping a repo drops its baseline with it — the entry can never match another item,
+  # and leaving it behind would silently re-suppress the repo's history if it were added
+  # back later at an instant it never actually rejoined.
+  test "a repo that leaves the scope takes its issue baseline with it" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "last_issue_at" => "2026-07-12T09:00:00Z"
+    ))
+
+    travel_to Time.utc(2026, 7, 13, 10, 0, 0) do
+      condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+    travel_to Time.utc(2026, 7, 13, 11, 0, 0) do
+      condition.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/pi-extensions" ] })
+    end
+
+    assert_equal({ "tadasant/pi-extensions" => "2026-07-13T11:00:00Z" },
+                 condition.reload.github_issue_repo_baselines)
+  end
+
+  # A condition the poller has never reached has no cursor to rebase and no seen-set to
+  # protect, so a widening edit writes no baseline: the poller's first tick stamps every
+  # watched repo at its own instant, which covers the addition too.
+  test "widening a github_issue condition that has never been polled writes no cursor state" do
+    condition = trigger_conditions(:github_issue_condition)
+    condition.update_column(
+      :configuration,
+      condition.configuration.except("last_issue_at", "seen_issue_keys")
+    )
+
+    travel_to Time.utc(2026, 7, 13, 10, 0, 0) do
+      condition.reload.update!(configuration: { "repos" => [ "tadasant/zimmer", "tadasant/zimmer-catalog" ] })
+    end
+
+    condition.reload
+    assert_nil condition.github_last_issue_at
+    assert_equal({}, condition.github_issue_repo_baselines)
   end
 
   # Only a repo that was NOT watched before can back-fire, so only that rebases. A
