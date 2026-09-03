@@ -114,7 +114,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     create_session(title: "Kestrel session", status: :needs_input,
       transcript: [ { "type" => "assistant", "message" => { "content" => "the kestrel manoeuvre worked" } } ])
 
-    visit root_path(q: "kestrel manoeuvre", search_contents: "1", status: Session.statuses.keys)
+    # Every status, the way the UI asks for it. A bare `status:` param is inert —
+    # the controller only reads it alongside the Filters submit marker — so without
+    # this the notice is measured above whatever the default filter happens to leave
+    # on the page, which is a strictly easier layout than the one being asserted.
+    visit root_path(every_status_params(q: "kestrel manoeuvre", search_contents: "1"))
     assert_text "Transcript scan complete"
 
     assert_no_horizontal_overflow("sessions index with a completed transcript scan")
@@ -126,7 +130,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     previous = ENV["ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS"]
     ENV["ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS"] = "0"
     begin
-      visit root_path(q: "kestrel manoeuvre", search_contents: "1", status: Session.statuses.keys)
+      visit root_path(every_status_params(q: "kestrel manoeuvre", search_contents: "1"))
       assert_text "Transcript scan stopped early"
 
       assert_no_horizontal_overflow("sessions index with an incomplete transcript scan")
