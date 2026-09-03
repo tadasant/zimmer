@@ -79,19 +79,32 @@ if ENV["SENTRY_DSN_BACKEND"].present?
     #
     # Two wider draws are tempting and both are wrong: dropping every `source: runner`
     # event, or a global off-switch. Either silences the drain gate, and it does so
-    # silently — nothing tells you an alert that should have paged did not. For the same
-    # reason this predicate is self-contained (no autoloaded constant to fail to resolve)
-    # and fails open: Client#capture_event rescues anything raised here and drops the
-    # event, so a bug in this filter would be exactly the global mute it must not be.
+    # silently — nothing tells you an alert that should have paged did not.
+    #
+    # For the same reason this predicate is self-contained (no autoloaded constant that
+    # could fail to resolve), it logs what it drops so the decision is greppable in the
+    # container logs rather than invisible, and it fails open — because the SDK does not.
+    # A raise inside before_send loses the event either way: swallowed by
+    # Sentry::Client#capture_event's rescue on the synchronous path (which is the one
+    # `rails runner` takes, since sentry-rails' runner hook forces
+    # background_worker_threads = 0), and by the background worker thread everywhere else.
+    # A bug in this filter would therefore be exactly the project-wide mute it exists to
+    # avoid, so anything unexpected here reports the event instead.
     config.before_send = lambda do |event, _hint|
       begin
         tags = event.tags
-        source = tags.is_a?(Hash) ? (tags[:source] || tags["source"]) : nil
-        attached_to_terminal = [ $stdin, $stdout, $stderr ].any? do |io|
-          io.respond_to?(:tty?) && io.tty?
-        end
+        source = tags[:source] || tags["source"]
+        attached_to_terminal = [ $stdin, $stdout, $stderr ].any?(&:tty?)
 
-        next nil if source.to_s == "runner" && attached_to_terminal
+        if source.to_s == "runner" && attached_to_terminal
+          # Exception class only, never the message: a console one-liner's message can
+          # carry row data, and this line goes to the container log and the OTLP exporter.
+          Rails.logger.info(
+            "[sentry] dropped an interactive rails runner event: " \
+            "#{event.exception&.values&.first&.type || "unknown"}"
+          )
+          next nil
+        end
       rescue StandardError
         # Fail open: report the event rather than let a filter bug mute the project.
       end

@@ -190,45 +190,72 @@ class SentryInitializerTest < ActiveSupport::TestCase
   end
 
   # `docker exec -t` (no `-i`) leaves stdin unattached but allocates a terminal on the
-  # output side. Still a human at a prompt.
-  test "a runner exception with a terminal on stdout only is not reported either" do
+  # output side. Any one of the three streams being a terminal means a human is there.
+  test "a runner exception with a terminal on any single stream is not reported either" do
     boot_sentry("production") do
-      with_ttys(stdout: true) do
-        capture_runner_exception("PG::UndefinedColumn: column post_deploy_task_runs.error does not exist")
+      [ :stdin, :stdout, :stderr ].each do |stream|
+        with_ttys(stream => true) do
+          capture_runner_exception("PG::UndefinedColumn: no column post_deploy_task_runs.#{stream}")
+        end
+
+        assert_empty captured_events, "a terminal on #{stream} alone still means an operator"
+      end
+    end
+  end
+
+  # The job-drain gate, both of its invocations: the canary fed to `bin/rails runner -`
+  # over `docker exec -i`, and the queue-capability one-liner passed as an argument to
+  # plain `docker exec`. Neither allocates a terminal, and that is the ONLY thing this
+  # seam can see — the two are deliberately indistinguishable here, because a filter that
+  # could tell them apart would be keyed on the wrong thing and would silence the second.
+  # This is the signal the filter must not touch: a raise here means an unverified deploy.
+  test "a non-interactive rails runner exception is still reported, in either shape" do
+    boot_sentry("production") do
+      with_ttys do
+        capture_runner_exception("job drain canary never ran")
+        capture_runner_exception("queue capability probe blew up")
+      end
+
+      assert_equal 2, captured_events.size,
+        "the deploy workflow's drain gate runs the runner without a TTY and must still page"
+      events = captured_events.map(&:to_h)
+      values = events.map { |e| e[:exception][:values].first[:value] }
+      assert(values.any? { |v| v.include?("job drain canary never ran") })
+      assert(values.any? { |v| v.include?("queue capability probe blew up") })
+      assert_equal [ "runner", "runner" ], events.map { |e| e[:tags][:source] },
+        "the events reach GlitchTip with their runner tag intact"
+    end
+  end
+
+  # The gem passes `source` as a symbol today. If a future version hands it over as a
+  # string the filter must still match, so that branch is pinned rather than assumed.
+  test "a string-keyed source tag is matched too" do
+    boot_sentry("production") do
+      with_ttys(stdin: true) do
+        Sentry.capture_exception(StandardError.new("typo"), tags: { "source" => "runner" })
       end
 
       assert_empty captured_events
     end
   end
 
-  # The canary the job-drain gate feeds to `bin/rails runner -` over `docker exec -i`:
-  # stdin is a pipe, output is captured into a shell variable, no terminal anywhere.
-  # This is the signal the filter must not silence — a raise here means an unverified deploy.
-  test "a non-interactive stdin-fed rails runner exception is still reported" do
+  # The SDK fails CLOSED: Client#capture_event rescues whatever before_send raises and
+  # drops the event. So the initializer's own `rescue` is the only thing between a bug in
+  # this filter and a silent project-wide mute, and it is worth a test of its own —
+  # without this case, deleting that rescue breaks nothing visible.
+  test "a predicate that blows up reports the event instead of eating it" do
     boot_sentry("production") do
-      with_ttys do
-        capture_runner_exception("job drain canary never ran")
+      exploding = ->(*) { raise "tty? is not answerable here" }
+
+      # Runner-tagged and would otherwise be dropped, so the assertion turns on the
+      # rescue rather than on the tag: `attached_to_terminal` is computed before the
+      # tag is consulted, so the raise lands whatever the event is.
+      $stdin.stub(:tty?, exploding) do
+        capture_runner_exception("a real production failure")
       end
 
       assert_equal 1, captured_events.size,
-        "the deploy workflow's drain gate runs the runner without a TTY and must still page"
-      event = captured_events.first.to_h
-      assert_includes event[:exception][:values].first[:value], "job drain canary never ran"
-      assert_equal "runner", event[:tags][:source],
-        "the event reaches GlitchTip with its runner tag intact"
-    end
-  end
-
-  # The gate's other invocation: an inline one-liner over plain `docker exec`. Identical in
-  # shape to the operator's typo and distinguishable only by the absent terminal, which is
-  # why the filter keys on interactivity rather than on how the code was passed in.
-  test "a non-interactive inline rails runner exception is still reported" do
-    boot_sentry("production") do
-      with_ttys do
-        capture_runner_exception("queue capability probe blew up")
-      end
-
-      assert_equal 1, captured_events.size
+        "a broken before_send must fail open, never mute the project"
     end
   end
 
