@@ -14,6 +14,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # The probe and the two assertions live in test/support so a screen with its
   # own setup can reuse them rather than reimplement them.
   include MobileOverflowAssertions
+  # `github_issue` — the Issues page's GitHub half has to be built from literals,
+  # never fetched, or the geometry assertion measures whatever GitHub returned.
+  include IssuesHelpers
 
   setup do
     page.driver.browser.manage.window.resize_to(MOBILE_WIDTH, MOBILE_HEIGHT)
@@ -990,6 +993,79 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         "the footer wrapped onto a second line at a #{card_width}px card: the row is " \
         "#{row['height']}px tall where one line is #{row['line']}px, fitting " \
         "#{row['groups']} into #{row['width']}px"
+    end
+  end
+
+  # The Issues page is the widest thing Zimmer renders on a phone: two tables whose
+  # last column is a control, a chart with its own axes, and issue titles that are
+  # nothing but unbreakable tokens. GitHub is stubbed rather than fetched — the
+  # invariant under test is geometry, and a test that shells out to `gh` measures
+  # whatever GitHub happened to return.
+  test "the issues page does not overflow horizontally on a phone" do
+    item = WorkBacklogItem.create!(
+      key: "zimmer#498", issue_url: "https://github.com/tadasant/zimmer/issues/498",
+      repo: "tadasant/zimmer", surface: "zimmer", title: LONG_TOKEN_TITLE, kind: "tech-debt",
+      scope_direction: "convergent", estimated_cost: "small", gate_verdict: "auto-proceed",
+      decided_at: Date.current, added_at: Time.current, added_by: "issue-work-gate",
+      added_via: WorkBacklogItem::IMPORT, precedence: 6000, status: WorkBacklogItem::QUEUED,
+      payload: { "gate_session" => "https://zimmer.tadasant.com/sessions/9999" }
+    )
+    running = create_session(title: "Implement zimmer#499 (#{LONG_TOKEN_TITLE})")
+    WorkBacklogItem.create!(
+      key: "zimmer#499", issue_url: "https://github.com/tadasant/zimmer/issues/499",
+      repo: "tadasant/zimmer", surface: "zimmer", title: LONG_TOKEN_TITLE, kind: "bug",
+      scope_direction: "divergent", estimated_cost: "medium", gate_verdict: "auto-proceed",
+      decided_at: Date.current, added_at: Time.current, added_by: "issue-work-gate",
+      added_via: WorkBacklogItem::IMPORT, precedence: 3000, status: WorkBacklogItem::STARTED,
+      started_session: running, started_at: Time.current, payload: {}
+    )
+
+    snapshot = Issues::GithubSnapshot::Snapshot.new(
+      fetched_at: Time.current, errors: {}, credential_detail: nil,
+      issues: [
+        github_issue(number: 498, title: LONG_TOKEN_TITLE, labels: [ "convergent", "agent-filed", "brittle-assumption" ]),
+        github_issue(number: 4242, title: LONG_TOKEN_TITLE,
+                     labels: [ Issues::Board::HOLD_LABEL, "needs human", "agent-filed" ]),
+        github_issue(number: 4243, title: "Short one", created_at: 60.days.ago),
+        github_issue(number: 4244, title: LONG_TOKEN_TITLE, state: "closed",
+                     created_at: 60.days.ago, closed_at: 5.days.ago)
+      ]
+    )
+
+    Issues::GithubSnapshot.stub(:fetch, ->(**) { snapshot }) do
+      visit issues_path
+      assert_selector "h1", text: "Issues"
+      assert_text LONG_TOKEN_TITLE
+      assert_no_horizontal_overflow("issues page")
+
+      # Promote is the last column of the queue table and the whole point of the
+      # page. It has to be REACHABLE, not merely un-clipped — a button behind a
+      # sideways scroll inside the table is the original report's exact shape.
+      promote_right = page.evaluate_script(<<~JS)
+        (function () {
+          const b = document.querySelector("form[action*='/promote'] button");
+          return b ? Math.round(b.getBoundingClientRect().right) : null;
+        })()
+      JS
+      assert promote_right, "the queue rendered no Promote button to measure"
+      assert_operator promote_right, :<=, MOBILE_WIDTH,
+        "the Promote button ends #{promote_right - MOBILE_WIDTH}px past the #{MOBILE_WIDTH}px viewport"
+
+      # Every chart control, at the widest window and the segmentation that puts
+      # the most series on screen.
+      visit issues_path(window: 180, segment: "label")
+      assert_no_horizontal_overflow("issues page, 180-day chart segmented by label")
+
+      visit issues_path(repo: "tadasant/zimmer", scope_direction: "convergent", kind: "tech-debt")
+      assert_no_horizontal_overflow("issues page with filters applied")
+
+      # The laptop has to keep working too. Checked here rather than in the
+      # desktop test below, because that one visits its pages unstubbed and this
+      # page would reach for GitHub.
+      page.driver.browser.manage.window.resize_to(1400, 900)
+      visit issues_path
+      doc_overflow, = overflow_report
+      assert doc_overflow <= 0, "the issues page scrolls sideways at 1400px (#{doc_overflow}px too wide)"
     end
   end
 

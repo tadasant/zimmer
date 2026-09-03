@@ -1,0 +1,11 @@
+<%# The one place a direction gets a colour, so the queue, the GitHub list and
+    the count strip cannot disagree about what green means.
+
+    The tooltip says WHICH of the four rules answered — a label on the issue, the
+    backlog row, an old gate rating, or nothing yet — because "convergent
+    according to GitHub" and "convergent according to a rating in July" are
+    different degrees of confidence and the pill looks identical either way. %>
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold whitespace-nowrap <%= issue_direction_tone(resolution.direction) %>"
+      title="<%= resolution.direction %> — from <%= resolution.source_label %>">
+  <%= resolution.direction %>
+</span>

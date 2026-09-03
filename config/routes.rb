@@ -356,6 +356,19 @@ Rails.application.routes.draw do
     resources :feedbacks, only: [ :create ], controller: "gate_decision_feedbacks"
   end
 
+  # Issues: the fleet's work backlog joined to what is going on in GitHub across
+  # the five repos the fleet works. GitHub is read at request time and cached for
+  # a few minutes; `refresh` is the button that drops that cache, and it is a POST
+  # because it costs ten `gh` calls and must not be re-run by a prefetch.
+  #
+  # The promote action is the page's one write, and it is browser-only by design:
+  # WorkBacklogPromotionsController is an ApplicationController descendant, so no
+  # API key and no MCP tool reaches it. Read the honest limits of that boundary on
+  # the controller itself — Zimmer's browser surface authenticates nobody.
+  get "issues", to: "issues#index", as: :issues
+  post "issues/refresh", to: "issues#refresh", as: :refresh_issues
+  post "issues/backlog/:id/promote", to: "work_backlog_promotions#create", as: :promote_work_backlog_item
+
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the
   # list renders before any probe resolves.

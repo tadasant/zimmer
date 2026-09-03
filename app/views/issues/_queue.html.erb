@@ -1,0 +1,84 @@
+<%# The queue: every item the issue gate cleared, in rank order (precedence
+    descending, oldest first within a tie) — the same order WorkBacklog::Ranking
+    defines and the groomer's pull follows. Position 1 is what gets pulled next. %>
+<div class="bg-white border border-gray-200 rounded-lg overflow-hidden mb-6">
+  <div class="overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-[11px] uppercase tracking-wide text-gray-500">
+        <tr>
+          <%# The rank number is redundant below `sm:` — the rows are already IN
+              rank order — and at 320px the column it costs is the difference
+              between the Promote button being on screen and being a sideways
+              scroll away. %>
+          <th class="px-2 sm:px-3 py-2 text-left font-medium hidden sm:table-cell">#</th>
+          <th class="px-2 sm:px-3 py-2 text-left font-medium">Issue</th>
+          <th class="px-2 sm:px-3 py-2 text-left font-medium">Direction</th>
+          <th class="px-3 py-2 text-left font-medium hidden md:table-cell">Kind</th>
+          <th class="px-3 py-2 text-left font-medium hidden lg:table-cell">Cost</th>
+          <th class="px-3 py-2 text-right font-medium hidden lg:table-cell">Precedence</th>
+          <th class="px-3 py-2 text-left font-medium hidden xl:table-cell">Cleared</th>
+          <th class="px-2 sm:px-3 py-2 text-right font-medium"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        <% rows.each do |row| %>
+          <tr class="hover:bg-gray-50 align-top">
+            <td class="px-2 sm:px-3 py-2 text-gray-400 tabular-nums text-xs whitespace-nowrap hidden sm:table-cell"><%= row.position || "—" %></td>
+            <td class="px-2 sm:px-3 py-2 min-w-0">
+              <%# The title reads first and the issue link sits under it — a bare
+                  issue number is not something anyone recognises at a glance.
+                  `wrap-anywhere`, not `break-words`: inside a table only
+                  `overflow-wrap: anywhere` reduces a cell's min-content width, so
+                  one unbreakable title cannot widen the table past its scroll
+                  container. %>
+              <div class="text-gray-900 font-medium wrap-anywhere line-clamp-2"><%= row.item.title %></div>
+              <div class="flex flex-wrap items-center gap-1.5 mt-0.5">
+                <% if row.issue_url.present? %>
+                  <%= link_to row.key, row.issue_url, target: "_blank", rel: "noopener noreferrer",
+                      class: "text-xs text-indigo-600 hover:text-indigo-800" %>
+                <% else %>
+                  <span class="text-xs text-gray-400">no issue — <%= row.key %></span>
+                <% end %>
+                <% if row.item.pinned? %>
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 text-[10px] font-semibold"
+                        title="Hand-placed by a human; agents never re-rank it">pinned</span>
+                <% end %>
+                <% if row.issue_closed? %>
+                  <%# Worth saying out loud: promoting this would spawn a session
+                      to implement something already done. The groomer's pull
+                      removes these mechanically, but only when it reaches them. %>
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold"
+                        title="The GitHub issue is closed, but the item is still queued">issue closed</span>
+                <% end %>
+                <% row.labels.reject { |l| Issues::Direction::LABELS.include?(l) }.first(3).each do |label| %>
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px]"><%= label %></span>
+                <% end %>
+              </div>
+            </td>
+            <td class="px-2 sm:px-3 py-2"><%= render "direction_pill", resolution: row.direction %></td>
+            <td class="px-3 py-2 text-gray-600 whitespace-nowrap hidden md:table-cell"><%= row.item.kind %></td>
+            <td class="px-3 py-2 text-gray-600 whitespace-nowrap hidden lg:table-cell"><%= row.item.estimated_cost %></td>
+            <td class="px-3 py-2 text-gray-500 text-right tabular-nums whitespace-nowrap hidden lg:table-cell"><%= row.item.precedence %></td>
+            <td class="px-3 py-2 text-gray-500 text-xs whitespace-nowrap hidden xl:table-cell">
+              <%= row.item.decided_at&.to_date&.to_fs(:iso8601) || "—" %>
+              <% if (gate_link = issue_gate_session_link(row.item.gate_session_url)) %>
+                <br><%= gate_link %>
+              <% end %>
+            </td>
+            <td class="px-2 sm:px-3 py-2 text-right"><%= render "promote", row: row, query_params: query_params %></td>
+          </tr>
+        <% end %>
+        <% if rows.empty? %>
+          <tr><td colspan="8" class="px-3 py-10 text-center text-sm text-gray-500">
+            <% if queue_empty %>
+              Nothing is on the work backlog yet. The issue gate appends items as it rates them, and the
+              <code class="text-xs">ImportWorkBacklog</code> post-deploy task seeds the history.
+            <% else %>
+              No queued items match these filters.
+            <% end %>
+          </td></tr>
+        <% end %>
+      </tbody>
+    </table>
+  </div>
+</div>
