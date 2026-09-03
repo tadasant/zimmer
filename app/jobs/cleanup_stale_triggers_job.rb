@@ -61,6 +61,12 @@ class CleanupStaleTriggersJob < ApplicationJob
 
   STALE_SCHEDULE_THRESHOLD = 1.hour
 
+  # Most parks a single pass will do. Parking alerts, and the incident shape this
+  # exists for produces a wave of undelivered wakes at once; the cap keeps one bad
+  # hour from turning into an unbounded run of writes and alerts. The rest are
+  # still there on the next tick — nothing is lost by deferring them.
+  MAX_PARKS_PER_SWEEP = 20
+
   # What #collect_lapsed_one_time_schedules did on one pass. Parking and
   # destroying are different outcomes with different meanings, so they are
   # counted apart rather than summed into one "cleaned up" number.
@@ -224,7 +230,15 @@ class CleanupStaleTriggersJob < ApplicationJob
 
       trigger_id = trigger.id
 
-      if undelivered_wake?(trigger)
+      # Parking is only ever right for a trigger that was ARMED and did not fire.
+      # A `disabled` one did not fire because the user switched it off —
+      # #schedule_due? returns false for any non-enabled trigger — so nothing
+      # failed, nobody is asleep on it, and parking it `failed` with an alert
+      # saying a wake never fired would be a lie about the user's own action. It
+      # falls through to the destroy below as ordinary residue.
+      if trigger.enabled? && undelivered_wake?(trigger)
+        next if parked_ids.size >= MAX_PARKS_PER_SWEEP
+
         park_undelivered_wake(trigger)
         parked_ids << trigger_id
         next
@@ -233,7 +247,8 @@ class CleanupStaleTriggersJob < ApplicationJob
       trigger.destroy!
       destroyed_ids << trigger_id
       Rails.logger.info "[CleanupStaleTriggersJob] Destroyed lapsed one-time trigger #{trigger_id} — " \
-        "it already fired and its scheduled_at(s) are all > #{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
+        "it fired already, or was disabled, and its scheduled_at(s) are all > " \
+        "#{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
     rescue => e
       Rails.logger.error "[CleanupStaleTriggersJob] Failed to collect lapsed one-time trigger " \
         "#{trigger.id}: #{e.class}: #{e.message}"

@@ -170,6 +170,30 @@ class CleanupStaleTriggersJobTest < ActiveJob::TestCase
       "a parked wake is not enabled, so the requester reads as stranded rather than resting"
   end
 
+  # A disabled trigger did not fail to fire — the user switched it off.
+  # #schedule_due? is false for any non-enabled trigger, so nothing is asleep on
+  # it, and parking it `failed` with "this wake never fired" would misdescribe the
+  # user's own action.
+  test "a lapsed schedule on a DISABLED trigger is destroyed, not parked" do
+    requester = make_session(status: :waiting)
+
+    disabled = Trigger.create!(
+      name: "Switched off before its moment",
+      status: "disabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "scheduled_at" => 2.hours.ago.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+
+    CleanupStaleTriggersJob.perform_now
+
+    assert_not Trigger.exists?(disabled.id), "a trigger the user switched off is ordinary residue"
+  end
+
   test "a parked undelivered wake is left alone on the next pass" do
     requester = make_session(status: :waiting)
 
