@@ -1124,18 +1124,19 @@ about to reap.
 The two sweeps above, `RecoveryContinuationJob`, `SessionRecoveryService`'s hung-process
 auto-restart, `StrandedSleepRescue`, `HealthMonitorService#retry_failed_sessions` and
 `AgentSessionJob`'s auto-continue after a job interruption each decide from a session object read
-earlier — minutes earlier for a sweep, and for the failed-session retry from a failure list a human
-was reading. A human can click Trash in the gap. Resuming from that stale read writes `running` over
-an archived row and starts a real agent against a clone whose trash-cleanup clock has already begun.
+earlier — minutes earlier for a sweep, a loop iteration earlier for the failed-session retry. A
+human can click Trash in the gap. Resuming from that stale read writes `running` over an archived
+row and starts a real agent against a clone whose trash-cleanup clock has already begun.
 
 All of them go through `Session#claim_system_recovery_turn!`: a `FOR UPDATE` re-read inside the
 caller's transaction, refusing an `archived` row (and an already-`running` one) before anything is
 enqueued, with the refusal recorded on the session's own timeline. The lock is held until the
 caller commits, so the enqueue cannot straddle an archive. The failed-session retry also hands the
-reason back to whoever asked: a refused claim comes out in the `skipped` list of `POST
-/health/retry_sessions` and the `action_health` MCP tool, because an operator retrying one session
-by id cannot tell a silent no-op from a bug. See
-[Spawning and monitoring](/sessions/spawning/) for the delivery-time guard this pairs with, and for
+reason back to whoever asked: a refused claim comes out in the `skipped` list the JSON surfaces and
+the `action_health` MCP tool return, and in the health dashboard's flash, because an operator
+retrying one session by id cannot tell a silent no-op from a bug. See
+[Spawning and monitoring](/sessions/spawning/) for the delivery-time guard this pairs with, for the
+resumers that lock by hand instead, and for
 [#554](https://github.com/tadasant/zimmer/issues/554) /
 [#753](https://github.com/tadasant/zimmer/issues/753).
 

@@ -2879,8 +2879,15 @@ class AgentSessionJob < ApplicationJob
 
     Rails.logger.info "[AgentSessionJob] Session #{session.id} not auto-continued after job interruption: #{outcome}"
     # A session log rather than only a Rails log: "why did nothing happen to this
-    # session" is asked from the session page.
-    session.logs.create!(content: message, level: "info")
+    # session" is asked from the session page. Rescued here rather than left to
+    # the caller's rescue, which would report a deliberate refusal as a failed
+    # auto-continue and promise a cron recovery that an archived session will
+    # never get.
+    begin
+      session.logs.create!(content: message, level: "info")
+    rescue => e
+      Rails.logger.warn "[AgentSessionJob] Could not record the refusal on session #{session.id}: #{e.message}"
+    end
     nil
   end
 

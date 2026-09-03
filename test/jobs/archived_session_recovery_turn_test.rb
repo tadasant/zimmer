@@ -31,10 +31,11 @@ require "mocha/minitest"
 #
 # THE REST OF THE FAMILY (#753). `HealthMonitorService#retry_failed_sessions` and
 # `AgentSessionJob#auto_continue_after_interrupt` had the identical shape and are
-# covered below. The retry loop's window is the widest of the lot — its
-# `session_ids:` branch is a human retrying one session off a failure list they
-# read some time ago — and the auto-continue's is the narrowest, spanning a
-# `Dir.exist?` on the clone volume during SIGTERM shutdown, which is a deploy,
+# covered below. Both windows are narrow rather than minutes wide, and neither is
+# zero: the retry loop reads its relation once and then works from those objects,
+# so every session past the first waits out a `Dir.exist?` stat on the clone
+# volume and a full resume-and-enqueue for each session ahead of it, while the
+# auto-continue spans that same `Dir.exist?` during SIGTERM shutdown — a deploy,
 # which is when somebody is most likely to be emptying the trash.
 #
 # The assertion that matters throughout is `assert_no_enqueued_jobs only:
@@ -265,12 +266,11 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
   # HealthMonitorService#retry_failed_sessions — the operator-facing enqueuer
   # ---------------------------------------------------------------------------
   #
-  # The widest window of the family (#753). The relation is read at the top of the
-  # loop, and on the `session_ids:` branch it came from a failure list a human was
-  # reading — so the archive can land anywhere between the operator deciding and
-  # the retry arriving. `can_retry_session?` is the hook the tests below archive
-  # through because it is where the real gap is: it stats the clone directory,
-  # once per session, after the relation has already been loaded.
+  # The relation is read once and the loop then works from those objects, so the
+  # archive can land anywhere between the read and this iteration.
+  # `can_retry_session?` is the hook the tests below archive through because it is
+  # where the real gap is: it stats the clone directory, once per session, after
+  # the relation has already been loaded.
 
   test "the failed-session retry refuses a session archived after the relation was read" do
     @session.update!(status: :failed)
@@ -298,8 +298,9 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
 
   # The refusal has to reach the operator who asked for the retry. A silent no-op
   # on the `session_ids:` branch is indistinguishable from a bug, so the reason
-  # goes back in `results[:skipped]` — what /health, the REST endpoint and the
-  # action_health MCP tool all render — and onto the session's own timeline.
+  # goes back in `results[:skipped]` — what the JSON surfaces and the action_health
+  # MCP tool return, and what HealthController now flashes — and onto the session's
+  # own timeline.
   test "a refused retry is reported to the operator and on the session's timeline" do
     @session.update!(status: :failed)
     service = HealthMonitorService.new
