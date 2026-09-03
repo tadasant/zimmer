@@ -473,7 +473,15 @@ class Session < ApplicationRecord
     recovery_continue_attempts
     stranded_sleep_rescues
     stranded_sleep_abandoned
+    deliberate_sleep_at
   ] + SpotSessionPause::METADATA_KEYS).freeze
+
+  # When a caller put this session to sleep through POST /api/v1/sessions/:id/sleep
+  # without arming anything. That endpoint is the only route into `waiting` with
+  # no wake-up and no marker of its own, so the marker is what tells
+  # StrandedSleepRescue the dormancy was asked for rather than lost. Listed in
+  # STALE_RETRY_METADATA_KEYS above, so a resume or restart clears it.
+  DELIBERATE_SLEEP_KEY = "deliberate_sleep_at"
 
   # Metadata keys rendered by the session metadata partial. A change to any of them is
   # what makes a metadata write worth broadcasting.

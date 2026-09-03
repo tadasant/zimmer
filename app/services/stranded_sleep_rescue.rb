@@ -53,7 +53,10 @@ require "automated_prompts"
 #   * a watched session whose row cannot be read reads as fireable;
 #   * GRACE is generous enough that no in-flight fire is mistaken for a lost one;
 #   * anything queued — a pending message, a pending AgentSessionJob — means
-#     something is already coming and this sweep stands down.
+#     something is already coming and this sweep stands down;
+#   * a session slept deliberately through POST /api/v1/sessions/:id/sleep — the
+#     one route into `waiting` that arms nothing — carries
+#     Session::DELIBERATE_SLEEP_KEY and is excluded.
 #
 # == What it does about it
 #
@@ -85,18 +88,24 @@ class StrandedSleepRescue
   # for a human. Each rescue is at least GRACE apart.
   MAX_RESCUES = 3
 
-  # Bounds on one pass. Every action here spends an agent turn, so the batch is
-  # deliberately smaller than StalledSessionStart's: a surprise population must
-  # not become a surprise bill.
+  # Bounds on one pass. Every action here spends an agent turn, so the action
+  # bound is deliberately smaller than StalledSessionStart's: a surprise
+  # population must not become a surprise bill.
   #
-  # Unlike that sweep, the `stranded` figure in the log is bounded too, at
-  # MAX_LOADED_PER_SWEEP. It has to be: the last question — can any of this
-  # session's wakes still fire — is answered in Ruby against the trigger rows, so
-  # there is no SQL count of the population to take first. The load bound is set
-  # ten times the action bound so the number still says something useful about
-  # the size of a problem rather than only about the size of this batch.
+  # The examined bound is separate and much larger, and the gap between them is
+  # load-bearing. The last question — can any of this session's wakes still fire
+  # — is answered in Ruby against the trigger rows, so it cannot be a WHERE
+  # clause and the candidate set is dominated by sessions sleeping perfectly
+  # normally. A single `ORDER BY updated_at LIMIT n` would hand the whole page to
+  # them: a legitimate sleeper does not advance `updated_at` while it sleeps, so
+  # a `wake_me_up_later` set three days out sits at the head of an oldest-first
+  # ordering for three days. Once n of those exist the sweep is permanently blind
+  # — and blind while logging `stranded: 0`, which is the worst possible way to
+  # fail. So #sweep! PAGES, keeping the cursor moving until it has found enough
+  # to act on or examined this many rows.
   MAX_ACTIONS_PER_SWEEP = 5
-  MAX_LOADED_PER_SWEEP = MAX_ACTIONS_PER_SWEEP * 10
+  PAGE_SIZE = 100
+  MAX_EXAMINED_PER_SWEEP = 1_000
 
   # How many times this sweep has rescued this session. Listed in
   # Session::STALE_RETRY_METADATA_KEYS so an ordinary resume or restart clears it
@@ -119,15 +128,31 @@ class StrandedSleepRescue
     paused_by
   ].freeze
 
-  Sweep = Data.define(:rescued, :abandoned, :refused, :stranded)
+  # The outcome of one pass.
+  #
+  # `found` is what the pass identified as stranded, NOT how many stranded
+  # sessions exist — #find_stranded stops paging the moment it has
+  # MAX_ACTIONS_PER_SWEEP of them, so the two are the same number only when the
+  # scan ran out of candidates first. `examined` is what makes that legible:
+  # `found: 5, examined: 100` is a pass that stopped early, `found: 0,
+  # examined: 1000` is a pass that spent its whole budget and saw nothing. A
+  # single field claiming to be the size of the problem would be lying in both
+  # directions.
+  Sweep = Data.define(:rescued, :abandoned, :refused, :found, :examined)
 
   class << self
     # `waiting` sessions that have run, are not dormant by anyone's marker, have
     # nothing queued and nothing in flight, and have been quiet for `grace`.
     #
-    # Everything answerable in SQL is answered there. The one question left for
-    # #sweep! is whether a wake can still fire, which costs a query per session
-    # and is the whole point of the sweep.
+    # Everything answerable in SQL is answered here. The one question left for
+    # #sweep! is whether a wake can still fire, which is answered in Ruby against
+    # the trigger rows — in batches, through Session.ids_awaiting_scheduled_wake,
+    # so a page of a hundred costs a fixed handful of queries rather than a
+    # hundred.
+    #
+    # Ordered oldest-first by `updated_at` and paged by (`updated_at`, `id`) so
+    # the cursor is total: `updated_at` alone is not unique, and a page boundary
+    # landing inside a run of equal timestamps would either skip rows or loop.
     #
     # @return [ActiveRecord::Relation<Session>]
     def candidates(now: Time.current, grace: GRACE)
@@ -149,11 +174,18 @@ class StrandedSleepRescue
         .where("NOT EXISTS (SELECT 1 FROM enqueued_messages WHERE enqueued_messages.session_id = " \
                "sessions.id AND enqueued_messages.status = 'pending')")
 
-      relation = (DORMANT_MARKERS + [ ABANDONED ]).reduce(relation) do |scope, marker|
+      relation = excluded_markers.reduce(relation) do |scope, marker|
         scope.where("sessions.metadata->>? IS NULL", marker)
       end
 
-      PendingAgentTurns.without_a_pending_turn(relation).order(:updated_at)
+      PendingAgentTurns.without_a_pending_turn(relation).order(:updated_at, :id)
+    end
+
+    # The exclusion markers, in one place: the ones other sweeps own, plus this
+    # sweep's own "gave up" marker and the deliberate-sleep marker the REST sleep
+    # endpoint stamps.
+    def excluded_markers
+      DORMANT_MARKERS + [ ABANDONED, Session::DELIBERATE_SLEEP_KEY ]
     end
 
     # One pass.
@@ -163,34 +195,99 @@ class StrandedSleepRescue
     #
     # @return [Sweep]
     def sweep!(logger: StructuredLogger.new({ service: "StrandedSleepRescue" }))
-      loaded = candidates.limit(MAX_LOADED_PER_SWEEP).to_a
-      stranded = loaded.reject { |session| session.awaiting_scheduled_wake? }
-      return Sweep.new(rescued: 0, abandoned: 0, refused: 0, stranded: 0) if stranded.empty?
+      batch, examined = find_stranded
 
-      batch = stranded.first(MAX_ACTIONS_PER_SWEEP)
+      if batch.empty?
+        log_exhausted_scan(logger, examined) if examined >= MAX_EXAMINED_PER_SWEEP
+        return Sweep.new(rescued: 0, abandoned: 0, refused: 0, found: 0, examined: examined)
+      end
 
       rescued = 0
       abandoned = 0
       refused = 0
-      batch.each do |session|
-        case repair!(session, logger)
-        when :rescued then rescued += 1
-        when :abandoned then abandoned += 1
-        else refused += 1
+      # Alerts are batched for the same reason every sibling trigger job batches
+      # them: the incident that produces stranded sleepers produces them in
+      # numbers, and one Slack message about five of them is what a human can act
+      # on where five messages is noise.
+      AlertBatcher.with_batch do
+        batch.each do |session|
+          case repair!(session, logger)
+          when :rescued then rescued += 1
+          when :abandoned then abandoned += 1
+          else refused += 1
+          end
         end
       end
 
       logger.warn("Resumed sessions that were asleep on a wake that can never fire",
-        stranded: stranded.size, in_this_batch: batch.size,
+        found: batch.size, examined: examined,
         rescued: rescued, abandoned: abandoned, refused: refused)
 
-      Sweep.new(rescued: rescued, abandoned: abandoned, refused: refused, stranded: stranded.size)
+      Sweep.new(rescued: rescued, abandoned: abandoned, refused: refused, found: batch.size, examined: examined)
     rescue StandardError => e
       logger.warn("Stranded-sleep sweep failed", error: "#{e.class}: #{e.message}")
-      Sweep.new(rescued: 0, abandoned: 0, refused: 0, stranded: 0)
+      Sweep.new(rescued: 0, abandoned: 0, refused: 0, found: 0, examined: 0)
     end
 
     private
+
+    # Walk the candidate set oldest-first until MAX_ACTIONS_PER_SWEEP stranded
+    # sessions are found or MAX_EXAMINED_PER_SWEEP rows have been looked at.
+    #
+    # The paging is the whole point — see MAX_EXAMINED_PER_SWEEP. Each page costs
+    # one SELECT for the rows plus the fixed handful
+    # Session.ids_awaiting_scheduled_wake takes, however many sessions are on it.
+    #
+    # @return [Array(Array<Session>, Integer)] the sessions to act on, and how
+    #   many rows were examined getting to them
+    def find_stranded
+      found = []
+      examined = 0
+      cursor = nil
+
+      while found.size < MAX_ACTIONS_PER_SWEEP && examined < MAX_EXAMINED_PER_SWEEP
+        page = page_after(cursor)
+        break if page.empty?
+
+        examined += page.size
+        cursor = [ page.last.updated_at, page.last.id ]
+
+        sleeping = Session.ids_awaiting_scheduled_wake(page.map(&:id))
+        page.each do |session|
+          next if sleeping.include?(session.id)
+
+          found << session
+          break if found.size >= MAX_ACTIONS_PER_SWEEP
+        end
+      end
+
+      [ found, examined ]
+    end
+
+    # One page of candidates strictly after +cursor+, a `[updated_at, id]` pair.
+    def page_after(cursor)
+      scope = candidates.limit(PAGE_SIZE)
+      return scope.to_a if cursor.nil?
+
+      updated_at, id = cursor
+      scope.where(
+        "sessions.updated_at > :updated_at OR (sessions.updated_at = :updated_at AND sessions.id > :id)",
+        updated_at: updated_at, id: id
+      ).to_a
+    end
+
+    # Say so when a pass ran out of budget without finding anything.
+    #
+    # Silence here would be indistinguishable from "the fleet is healthy", and a
+    # scan that keeps hitting its ceiling means the sleeping population has grown
+    # past what one pass can see — the blindness this sweep's paging exists to
+    # prevent, arriving by a slower route.
+    def log_exhausted_scan(logger, examined)
+      logger.warn(
+        "Stranded-sleep sweep examined its whole budget without finding a stranded session",
+        examined: examined, budget: MAX_EXAMINED_PER_SWEEP
+      )
+    end
 
     # Wake one stranded session, or stop trying.
     #
