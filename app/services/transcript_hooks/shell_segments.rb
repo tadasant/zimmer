@@ -11,18 +11,25 @@ require "strscan"
 # reads as a POST to `/pulls`, which is a session adopting every PR it listed
 # (#214).
 #
-# The split is crude — it is not a shell parser — but it does know the difference
-# between a separator and a separator's *characters* appearing inside data. A
-# separator that is escaped, or inside a quoted string, is not a separator:
-# `grep -n "def \|pull/\|gh pr create\|..." hook.rb` is one command, and splitting
-# it at the pipes of its own grep pattern manufactures a segment that starts with
-# `gh pr create` out of a read-only grep (#772).
+# Two things are on offer, and they answer different questions. #shell_segments
+# answers "which commands are these", and #unquoted answers "what does this
+# command *run*, as opposed to what was it handed as data" — `gh pr create` inside
+# a `grep` pattern being the case that made the difference matter (#772).
 #
-# Where the quoting cannot be resolved — the scan ends inside an unclosed quote,
-# which a heredoc body carrying an apostrophe is the usual way to produce — the
-# plain split is used instead. Over-splitting is the safer of the two readings:
-# it loses a recording, where a wrong merge would bury a real invocation behind
-# whatever command sits in front of it.
+# Neither is a shell parser, and the split is crude on purpose. It errs toward
+# *more* segments, which is the safe direction for both callers: a mis-split
+# loses a recording rather than manufacturing one. Two rules keep it from
+# splitting a command that only looks like several:
+#
+#   - A separator that is escaped, or inside a quoted string, is not a separator.
+#     `grep -n "def \|pull/\|gh pr create\|..." hook.rb` is one command, and
+#     cutting it at the pipes of its own grep pattern manufactures a segment that
+#     begins `gh pr create` out of a read-only grep.
+#   - Quoting is read one line at a time, and an unclosed quote falls back to the
+#     plain split. A stray apostrophe is ordinary in a shell comment or a heredoc
+#     body ("It's ready"), and two of them would otherwise re-balance across the
+#     lines between them and swallow whatever they enclose — including a real
+#     `gh pr create` on its own line.
 #
 # Used by TranscriptHooks::GithubPrUrlHook and
 # TranscriptHooks::GithubCommentAuthorshipHook, which share the shape but not the
@@ -43,8 +50,15 @@ module TranscriptHooks::ShellSegments
 
   # A run of characters that can change nothing about the scan — no quote, no
   # escape, no separator. Consumed in one go so the walk below is a handful of
-  # C-level scans per command rather than a Ruby iteration per character.
+  # C-level scans per line rather than a Ruby iteration per character.
   PLAIN_RUN_PATTERN = /[^\\"';|&\n]+/
+
+  # A quoted string, and only a *closed* one. What a command quotes is what it was
+  # handed rather than what it runs, so #unquoted takes these out — but an
+  # unterminated quote is left alone, because that is what a stripped wrapper
+  # leaves behind: `bash -lc "cd x && gh pr create"` arrives with its opening quote
+  # already gone (SHELL_WRAPPER_PATTERN), and what trails is a script, not data.
+  QUOTED_SPAN_PATTERN = /"(?:\\.|[^"\\])*"|'[^']*'/m
 
   # A backslash-newline is one command wrapped over several lines, so it is folded
   # back into that command rather than splitting it — otherwise a `gh api` and the
@@ -69,10 +83,9 @@ module TranscriptHooks::ShellSegments
   SHELL_WRAPPER_PATTERN = %r{\A(?:\S*/)?(?:ba|da|z|k)?sh\s+-[a-z]*c\s+["']?}
 
   # The keyword of a compound statement, which sits in front of the command it
-  # runs: `for i in 1 2 3; do gh pr create --fill; done`, `if ...; then gh api ...`.
-  # The split leaves it at the front of the segment, where it would hide the
-  # invocation from a caller anchoring at the start of the string. `done` and
-  # `docker` are untouched — the keyword has to be followed by whitespace.
+  # runs on the same line: `for i in 1 2 3; do gh api ...`, `if ...; then gh api`.
+  # Stripped for the sake of the callers that read the *front* of a segment —
+  # GithubPrUrlHook's and GithubCommentAuthorshipHook's `\Agh\s+api\b`.
   KEYWORD_PREFIX_PATTERN = /\A\s*(?:do|then|else)\s+/
 
   # The commands in +command+, each normalized so that the invocation it runs is at
@@ -85,30 +98,47 @@ module TranscriptHooks::ShellSegments
   # @param command [String]
   # @return [Array<String>]
   def shell_segments(command)
-    split_commands(command.to_s.gsub(LINE_CONTINUATION_PATTERN, " "))
-      .map do |segment|
-        segment.sub(KEYWORD_PREFIX_PATTERN, "")
-               .sub(CAPTURE_PREFIX_PATTERN, "")
-               .sub(ENV_PREFIX_PATTERN, "")
-               .sub(SHELL_WRAPPER_PATTERN, "")
-               .sub(ENV_PREFIX_PATTERN, "")
-               .strip
-      end
+    script = command.to_s.gsub(LINE_CONTINUATION_PATTERN, " ")
+
+    script.split("\n").flat_map { |line| split_line(line) }.filter_map do |segment|
+      normalized = segment.sub(KEYWORD_PREFIX_PATTERN, "")
+                          .sub(CAPTURE_PREFIX_PATTERN, "")
+                          .sub(ENV_PREFIX_PATTERN, "")
+                          .sub(SHELL_WRAPPER_PATTERN, "")
+                          .sub(ENV_PREFIX_PATTERN, "")
+                          .strip
+
+      normalized unless normalized.empty?
+    end
+  end
+
+  # +segment+ with every closed quoted string blanked out: what the command runs,
+  # with what it was handed removed. `grep -n "gh pr create" hook.rb` runs a grep
+  # and nothing else, however much its argument reads like an invocation.
+  #
+  # Blanked rather than deleted, so that neighbouring words cannot be run together
+  # into something neither of them said.
+  #
+  # @param segment [String]
+  # @return [String]
+  def unquoted(segment)
+    segment.gsub(QUOTED_SPAN_PATTERN, " ")
   end
 
   private
 
-  # +script+ split on the separators a shell would act on, skipping the ones it
-  # would read as data: a backslash-escaped character, and anything between quotes.
+  # One line of a script, split on the separators a shell would act on and skipping
+  # the ones it would read as data: a backslash-escaped character, and anything
+  # between quotes.
   #
-  # Returns the plain split when the walk ends inside an unclosed quote — the
-  # quoting did not resolve, so the crude reading is the one to trust (see the
-  # module header).
+  # Returns the plain split when the line ends inside an unclosed quote — the
+  # quoting did not resolve, so the crude reading is the one to trust. Quote state
+  # never leaves the line for the same reason (see the module header).
   #
-  # @param script [String]
+  # @param line [String]
   # @return [Array<String>]
-  def split_commands(script)
-    scanner = StringScanner.new(script)
+  def split_line(line)
+    scanner = StringScanner.new(line)
     segments = []
     current = +""
     quote = nil
@@ -134,7 +164,7 @@ module TranscriptHooks::ShellSegments
       end
     end
 
-    return script.split(SEGMENT_SEPARATOR) if quote
+    return line.split(SEGMENT_SEPARATOR) if quote
 
     segments << current
   end

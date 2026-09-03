@@ -118,10 +118,12 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
 
   # --- The shapes a real `gh pr create` arrives in -----------------------------
   #
-  # A create is read only where it starts its command segment (#772). Every shape
-  # below puts something in front of it, and every one of them still counts —
-  # narrowing this far enough to miss a real create is the worse failure (#89),
-  # because it switches every GitHub integration off for that session in silence.
+  # A create counts wherever a command actually runs one, and #772 narrowed that
+  # to what the command runs rather than what it quotes. Every shape below either
+  # puts something in front of the create or puts quotes near it, and every one of
+  # them still counts — narrowing far enough to miss a real create is the worse
+  # failure (#89), because it switches every GitHub integration off for that
+  # session in silence.
 
   test "records a PR opened by gh pr create after a cd into the clone" do
     run_hook claude_pr_create(
@@ -141,19 +143,47 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/owner/repo/pull/51" ], tracked_urls
   end
 
-  test "records a PR opened by gh pr create inside a retry loop" do
-    # `do` sits in front of the command it runs, on the same line as it.
+  test "records a PR opened by gh pr create behind the words a shell allows in command position" do
+    # A create sits behind a great many things and the list has no end: loop and
+    # conditional keywords, `timeout`, `sudo`, `xargs`. Reading only the front of
+    # the segment would drop every one of them that went unenumerated, so the
+    # create is read wherever it is run.
+    [
+      "for i in 1 2 3; do gh pr create --fill && break; done",
+      "until gh pr create --fill; do sleep 5; done",
+      "if ! gh pr create --fill; then echo failed; fi",
+      "timeout 120 gh pr create --fill",
+      "sudo -E gh pr create --fill",
+      "echo x | xargs -I{} gh pr create --fill"
+    ].each_with_index do |command, index|
+      @session.update!(custom_metadata: {})
+
+      run_hook claude_pr_create(
+        "https://github.com/owner/repo/pull/52",
+        id: "toolu_create_#{index}",
+        command: command
+      )
+
+      assert_equal [ "https://github.com/owner/repo/pull/52" ], tracked_urls, "#{command} opens a pull request"
+    end
+  end
+
+  test "records a PR opened by a gh pr create inside a quoted shell wrapper" do
+    # `sh -c "..."` is the shape ShellSegments strips the front of, opening quote
+    # included. What trails is a script, so the create in it is run rather than
+    # quoted.
     run_hook claude_pr_create(
-      "https://github.com/owner/repo/pull/52",
-      command: "for i in 1 2 3; do gh pr create --fill && break; done"
+      "https://github.com/owner/repo/pull/55",
+      command: %q(sh -c "cd /home/rails/clones/repo && gh pr create --fill")
     )
 
-    assert_equal [ "https://github.com/owner/repo/pull/52" ], tracked_urls
+    assert_equal [ "https://github.com/owner/repo/pull/55" ], tracked_urls
   end
 
   test "records a PR opened by gh pr create whose title carries a shell separator" do
     # The pipe is inside the quoted title, so it is part of the title rather than
-    # a command boundary — and the create is still the front of its own segment.
+    # a command boundary — the create keeps a segment of its own, and blanking the
+    # title out of it leaves the create in place.
     run_hook claude_pr_create(
       "https://github.com/owner/repo/pull/53",
       command: %q(gh pr create --title "fix: read a|b as one token" --body B)
@@ -162,22 +192,41 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/owner/repo/pull/53" ], tracked_urls
   end
 
-  test "records a PR opened by gh pr create after a heredoc body that leaves a quote unclosed" do
-    # The apostrophe in the body opens a quote nothing closes, so the segment scan
-    # cannot resolve the script's quoting and falls back to the crude split. That
-    # fallback is the safe direction on purpose: over-splitting still leaves the
-    # create at the front of a segment of its own, where a wrong merge would bury
-    # it behind the `cat` in front of it.
-    command = <<~SH
-      cat > /tmp/body.md <<'EOF'
-      It's ready for review.
-      EOF
-      gh pr create --title T --body-file /tmp/body.md
-    SH
+  test "records a PR opened by gh pr create after a heredoc body carrying apostrophes" do
+    # A body written with `cat > file <<'EOF'` is the fleet's own `--body-file`
+    # shape, and English prose puts stray apostrophes in it. Read as quotes across
+    # the whole script they would enclose the create on the line after `EOF`; read
+    # a line at a time they cannot reach it. One apostrophe or two makes no
+    # difference, which is the point — a hook that recorded the odd count and lost
+    # the even one would be worse than either.
+    [ "It's ready for review.", "It's ready, and I've rerun CI." ].each_with_index do |body, index|
+      @session.update!(custom_metadata: {})
 
-    run_hook claude_pr_create("https://github.com/owner/repo/pull/54", command: command)
+      command = <<~SH
+        cat > /tmp/body.md <<'EOF'
+        #{body}
+        EOF
+        gh pr create --title T --body-file /tmp/body.md
+      SH
 
-    assert_equal [ "https://github.com/owner/repo/pull/54" ], tracked_urls
+      run_hook claude_pr_create(
+        "https://github.com/owner/repo/pull/54",
+        id: "toolu_create_heredoc_#{index}",
+        command: command
+      )
+
+      assert_equal [ "https://github.com/owner/repo/pull/54" ], tracked_urls, "body: #{body}"
+    end
+  end
+
+  test "records a PR opened by a gh pr create surrounded by comments carrying apostrophes" do
+    # The same hazard without a heredoc: two stray apostrophes on either side of
+    # the create would re-balance and swallow the line between them.
+    command = "# Let's open the PR\ngh pr create --fill\n# That's it"
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/56", command: command)
+
+    assert_equal [ "https://github.com/owner/repo/pull/56" ], tracked_urls
   end
 
   # --- REST API creates -------------------------------------------------------
@@ -420,10 +469,11 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   test "ignores a PR URL in the output of a grep for the gh pr create literal" do
     # #772, session 11898 verbatim: a read-only grep over this hook's own source,
     # whose result is therefore the header above GH_PR_CREATE_PATTERN — example
-    # URL included. Two things had to be true for that to be read as a create:
-    # `gh pr create` counted anywhere in a segment, and the grep pattern's own
-    # escaped pipes were split on, which handed the matcher a segment starting
-    # `gh pr create`. The URL went into the session's list beside its real PR, and
+    # URL included. The literal is the grep's argument, so the command runs a grep
+    # and opens nothing. Note the pattern's escaped pipes: reading them as command
+    # boundaries cuts the argument into pieces, one of which is the bare literal,
+    # and no amount of care about the rest of the segment survives that. The URL
+    # went into the session's list beside its real PR, and
     # GitHubPullRequestPollerJob ran `gh pr view` against a repo that does not
     # exist on every poll from then on.
     @session.update!(git_root: "https://github.com/tadasant/zimmer.git")
@@ -436,7 +486,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
       claude_tool_result(
         id: "toolu_grep",
         content: "12:  # Captures URLs like: https://github.com/owner/repo/pull/123\n" \
-                 "18:  GH_PR_CREATE_PATTERN = /\\Agh\\s+pr\\s+create\\b/\n"
+                 "18:  GH_PR_CREATE_PATTERN = /\\bgh\\s+pr\\s+create\\b/\n"
       )
     )
 
@@ -444,10 +494,10 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "ignores a PR URL in the output of commands that merely quote gh pr create" do
-    # The same shape as the grep above, in the other spellings of it: the literal
-    # is an argument, so the command it belongs to is a read, not a create. The
-    # URL here is on the session's *own* repo, which is what the create path would
-    # not have caught it by — a create vouches for any repo.
+    # The same shape as the grep above, in its other spellings: the literal is
+    # quoted, so it is an argument rather than the command. The URL here is on the
+    # session's *own* repo, which is not what would have caught it — a create
+    # vouches for any repo, this one included.
     [
       "rg -n 'gh pr create' app/services",
       %q(grep -rE "gh pr create|gh api" app/),
@@ -906,9 +956,9 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "codex: records a PR opened by a gh pr create behind a cd in the joined argv" do
-    # Codex's argv array joins back into `bash -lc cd ... && gh pr create ...`:
-    # the wrapper is stripped and the `cd` is a segment of its own, so the create
-    # still starts the segment it runs in.
+    # Codex's argv array joins back into `bash -lc cd ... && gh pr create ...`.
+    # The wrapper is stripped and the `cd` is a segment of its own; nothing here
+    # quotes the create.
     @session.update!(agent_runtime: "codex")
 
     run_hook(

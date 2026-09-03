@@ -87,18 +87,22 @@ a retry loop, `out=$(...)`, Codex's `bash -lc` wrapper). Reading them together w
 borrow the POST beside it and adopt every PR it printed. `TranscriptHooks::ShellSegments` does the
 split, and `GithubCommentAuthorshipHook` classifies its own `gh api` writes through the same seam.
 
-A create also has to **start** the segment it is read out of. `ShellSegments` puts the invocation at
-the front for every shape that matters — `cd ... &&` is a boundary, and env-var prefixes, `out=$(...)`
-captures, a `do`/`then` keyword and the `bash -lc` wrapper are stripped — so the requirement costs
-none of them, and it rejects `gh pr create` appearing as an *argument* to something else. The split
-knows quoting for the same reason: a separator that is escaped or inside a quoted string is not a
-separator, so `grep -n "def \|gh pr create\|pull/" hook.rb` stays one `grep` rather than becoming
-four commands, one of which appears to run a create. Session 11898 ran exactly that grep, over this
-hook's own source, and recorded the example URL in its header as a PR it had opened
-([#772](https://github.com/tadasant/zimmer/issues/772)). Where the quoting cannot be resolved — a
-heredoc body carrying an apostrophe is the usual way — the crude split is used instead, because
-over-splitting loses a recording where a wrong merge would hide a real create behind the command in
-front of it.
+A create is also read out of what a command **runs**, never out of what it **quotes**. `gh pr create`
+inside a `grep` pattern, an `rg` argument, an `echo` or a `sed` script is data, and session 11898 ran
+exactly that — `grep -n "def \|gh pr create\|pull/" hook.rb` over this hook's own source — and
+recorded the example URL in its header as a PR it had opened
+([#772](https://github.com/tadasant/zimmer/issues/772)). `ShellSegments#unquoted` blanks a segment's
+quoted strings out before the create is matched against it, and the split does its half by not
+treating a separator as a separator when it is escaped or quoted: that grep stays one `grep` rather
+than becoming four commands, one of which is the bare literal.
+
+The create is then matched **anywhere** in what is left, rather than at the front of the segment.
+A create sits behind all sorts of things in command position — `cd ... &&`, `GH_TOKEN=x`,
+`timeout 120`, `until ... ; do`, `sudo -E`, `xargs`, the `bash -lc` wrapper — and an anchor would
+drop every one of them it did not enumerate. Quoting is likewise read one line at a time, and a line
+that ends inside an unclosed quote falls back to the crude split. Both of those are the same bet: a
+heredoc body or a shell comment carrying an apostrophe or two must not be able to swallow the real
+`gh pr create` on the line below it. Recording too little is the worse failure, and it is silent.
 
 The claimed path is what catches creation routes that are not a shell command at all: a wrapper
 script, an MCP tool, the GitHub web UI. It requires a creation phrase adjacent to the URL — an inflected verb

@@ -42,7 +42,7 @@
 #     inside a quoted argument to `grep`, `rg`, `sed` or `echo` is data, not an
 #     invocation, and a command that searches this very file for the literal has
 #     the header you are reading — example URL included — as its result (#772).
-#     A create is read only where it starts the command segment it belongs to.
+#     A create is read out of what a command runs, never out of what it quotes.
 #   - A URL in a user message. Zimmer's own trigger prompts carry PR URLs
 #     ("comment on your PR <url>"), so adopting them would let one misrouted
 #     notification bootstrap a permanent wrong association.
@@ -82,26 +82,27 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # (e.g., github.com.evil.com would NOT match)
   GITHUB_PR_URL_PATTERN = %r{https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+}
 
-  # A command segment that *runs* `gh pr create` — which is one that starts with
-  # it. TranscriptHooks::ShellSegments has already moved the invocation to the
-  # front for every shape that matters: `cd ... &&` is a segment boundary, and
-  # env-var prefixes (`GH_TOKEN=x gh pr create`), captures, a `do`/`then` keyword
-  # and Codex's `bash -lc ...` wrapper around a joined argv array are all stripped.
-  # So the anchor costs none of those and rejects the shape that cost #772 — the
-  # literal `gh pr create` sitting inside a quoted string that is *data* to some
-  # other command. Session 11898 ran
-  # `grep -n "def \|pull/\|gh pr create\|..." github_pr_url_hook.rb`, and the hook
-  # read the example URL in its own source as a PR that session had opened.
+  # `gh pr create` as a command being run — which is not the same thing as the
+  # literal appearing in one. It is matched against the segment's #unquoted view
+  # (TranscriptHooks::ShellSegments), so the same three words handed to another
+  # command as *data* count for nothing: session 11898 ran
+  # `grep -n "def \|pull/\|gh pr create\|..." github_pr_url_hook.rb` over this very
+  # file, and its result — the header you are reading, example URL included — was
+  # read as a PR that session had opened (#772). `rg 'gh pr create'`, an `echo`,
+  # and a `sed` script are the same shape.
   #
-  # Anchoring is only half of that fix: the segment split had to stop treating the
-  # pipes *inside* that grep pattern as separators, or the tail of the pattern
-  # would still arrive here as a segment beginning with `gh pr create`.
+  # Matched anywhere in what survives that, deliberately, rather than at the front
+  # of the segment. A create sits behind all sorts of things in command position —
+  # `cd ... &&`, `GH_TOKEN=x`, `timeout 120`, `until ...; do`, `sudo -E`, `xargs`,
+  # Codex's `bash -lc` wrapper — and an anchor drops every one it does not
+  # enumerate. Missing a real create is the worse failure of the two: it switches
+  # every GitHub integration off for that session, in silence (#89).
   #
-  # Still a heuristic, not a shell parser: a line of a heredoc body that begins
-  # with `gh pr create` reads as an invocation and is not one. What it no longer
-  # reads as one is the far commoner shape — an argument to `grep`, `rg`, `sed` or
-  # `echo`. Symmetric with GH_API_PATTERN below, which has always been anchored.
-  GH_PR_CREATE_PATTERN = /\Agh\s+pr\s+create\b/
+  # Still a heuristic, not a shell parser. Two shapes read as an invocation and are
+  # not one: an unquoted mention (`echo gh pr create`, a `#` comment), and a line
+  # of a heredoc body, which is quoted by the heredoc rather than by anything this
+  # can see.
+  GH_PR_CREATE_PATTERN = /\bgh\s+pr\s+create\b/
 
   # `gh pr create` goes through GitHub's GraphQL API, and when that API is down
   # the REST API usually is not — so the fallback an agent reaches for is
@@ -485,7 +486,7 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     return false unless command.match?(GH_CREATE_INVOCATION_PATTERN)
 
     segments_of(command).any? do |segment|
-      segment.match?(GH_PR_CREATE_PATTERN) && !segment.match?(REPO_FLAG_PATTERN)
+      gh_pr_create?(segment) && !segment.match?(REPO_FLAG_PATTERN)
     end
   end
 
@@ -499,7 +500,7 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     return [] unless command.match?(GH_CREATE_INVOCATION_PATTERN)
 
     segments_of(command).flat_map do |segment|
-      if segment.match?(GH_PR_CREATE_PATTERN)
+      if gh_pr_create?(segment)
         segment.scan(REPO_FLAG_PATTERN).flatten.map { |repo| normalize_repo(repo) }
       elsif rest_pr_create?(segment)
         rest_create_repos(segment)
@@ -507,6 +508,15 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
         []
       end
     end.uniq
+  end
+
+  # Whether one command segment runs `gh pr create`, read against what the segment
+  # runs rather than what it quotes (see GH_PR_CREATE_PATTERN). Memoized alongside
+  # the split, since a transcript is rescanned on every broadcast and both
+  # `unbounded_create?` and `create_repos` ask the same question of every segment.
+  def gh_pr_create?(segment)
+    @gh_pr_create ||= {}
+    @gh_pr_create.fetch(segment) { @gh_pr_create[segment] = unquoted(segment).match?(GH_PR_CREATE_PATTERN) }
   end
 
   # Whether one command segment opens a pull request through the REST API: it runs
