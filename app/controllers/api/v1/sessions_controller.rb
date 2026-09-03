@@ -13,6 +13,16 @@ class Api::V1::SessionsController < Api::BaseController
   include ApiSessionSerialization
   include SessionTranscriptLookup
 
+  # A `place`/`precedence` pair the server cannot act on. Raised rather than
+  # rendered-and-returned because the resolver's nil already means "the caller
+  # named no placement": a write path that answered a rendered 422 with a second
+  # render would raise DoubleRenderError *after* the row had committed, turning a
+  # rejected request into a 500 with a session created. An exception cannot be
+  # forgotten the way a `performed?` check can.
+  class PlacementError < StandardError; end
+
+  rescue_from PlacementError, with: :render_placement_error
+
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
@@ -117,7 +127,6 @@ class Api::V1::SessionsController < Api::BaseController
     # session created and then ranked wrong. Nothing to exclude and no rank to
     # keep on a create, so this is the plain class-method resolution.
     placement = resolved_placement(session_params)
-    return if performed?
 
     @session = Session.new(session_params.except(:agent_root, :place))
     @session.precedence = placement unless placement.nil?
@@ -170,7 +179,6 @@ class Api::V1::SessionsController < Api::BaseController
     # The session already holds a rank, so it places itself: excluded from its own
     # population, and never lowered by a request to put it first.
     placement = resolved_placement(session_update_params, session: @session)
-    return if performed?
 
     attrs = session_update_params.except(:place)
     attrs[:precedence] = placement unless placement.nil?
@@ -1448,42 +1456,33 @@ class Api::V1::SessionsController < Api::BaseController
   # same helper the Ranked view's demote button and the MCP tools use, so the
   # surfaces cannot drift apart on what "the top of the queue" means.
   #
-  # Renders a 422 and returns nil on a bad request; callers check `performed?`.
-  #
   # `place` is an enum, so a blank one is the argument left out rather than a
-  # placement. `precedence` is a scalar whose whole range is meaningful, so
-  # anything but a JSON null is a value the caller chose — and choosing both is
-  # two answers to one question, refused the way MCP refuses it rather than
-  # silently preferring one.
+  # placement. `precedence` is a scalar whose whole range is meaningful, so any
+  # value the caller actually typed is one they chose — and choosing both is two
+  # answers to one question, refused the way MCP refuses it rather than silently
+  # preferring one. Blank counts as untyped on both: the model's own writer reads
+  # a blank `precedence` as "say nothing", and a form that submits every field it
+  # renders would otherwise be told it had answered twice when it had not.
   #
   # @param permitted [ActionController::Parameters] the permitted write payload
   # @param session [Session, nil] the session being placed, when it already exists
+  # @raise [PlacementError] on both arguments at once, or an unknown placement
   # @return [Integer, nil]
   def resolved_placement(permitted, session: nil)
     place = permitted[:place]
     return nil if place.blank?
 
-    unless permitted[:precedence].nil?
-      render_api_error(
-        "Invalid placement",
-        '"place" and "precedence" are mutually exclusive — they are two answers to the same ' \
-        'question. Pass "place" to let the server work the value out against the live queue, ' \
-        'or "precedence" to name an absolute rank yourself.',
-        status: :unprocessable_entity
-      )
-      return nil
-    end
+    raise PlacementError, SessionPrecedence::BOTH_PLACE_AND_PRECEDENCE if permitted[:precedence].present?
 
     unless SessionPrecedence::PLACES.include?(place.to_s)
-      render_api_error(
-        "Invalid placement",
-        "Unknown place: #{place.inspect}. Valid: #{SessionPrecedence::PLACES.join(', ')}.",
-        status: :unprocessable_entity
-      )
-      return nil
+      raise PlacementError, "Unknown place: #{place.inspect}. Valid: #{SessionPrecedence::PLACES.join(', ')}."
     end
 
     session ? session.precedence_for_place(place.to_s) : Session.precedence_for_place(place.to_s)
+  end
+
+  def render_placement_error(error)
+    render_api_error("Invalid placement", error.message, status: :unprocessable_entity)
   end
 
   def regenerate_mcp_config_file(session)
