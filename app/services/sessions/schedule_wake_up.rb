@@ -183,11 +183,11 @@ module Sessions
     # to; fall back to the runtime for sessions that predate agent roots, or
     # whose root has since left the catalog.
     #
-    # That fallback names no catalog root, and it does not have to. Trigger only
-    # resolves `agent_root_name` on the path that spawns a session, so a wake
-    # carrying an unresolvable name still fires and still resumes its session.
-    # That is a guarantee of Trigger#create_session!, which runs
-    # #heal_stale_agent_root! after every reuse path has returned, and it is
+    # That fallback names no catalog root, and it does not have to. Only the path
+    # that SPAWNS a session fails on a name it cannot resolve, so a wake carrying
+    # an unresolvable one still fires and still resumes its session. That is a
+    # guarantee of Trigger#create_session!, which raises from
+    # #heal_stale_agent_root! only after every reuse path has returned, and it is
     # covered by a test there — before it held, this fallback bricked the wake it
     # was arming (https://github.com/tadasant/zimmer/issues/600). Do not "fix"
     # this by guessing a default root: a wake must never arm a root the session

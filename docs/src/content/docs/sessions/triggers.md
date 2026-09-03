@@ -30,13 +30,14 @@ flowchart LR
     GL -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
     GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
 
-    T --> H["heal stale MCP servers,<br/>skills, hooks, plugins"]
+    T --> H["heal stale catalog refs<br/>(agent root repointed, never raised)"]
     H --> D{"reuse_session?"}
     D -->|"yes + session is<br/>needs_input/running/waiting"| FU["follow_up_session!"]
     D -->|"resuscitate_archived<br/>+ archived<br/>+ the session started"| RS["unarchive + follow up"]
-    D -->|no| HR["heal stale agent root"]
+    D -->|"one-time reuse trigger,<br/>target not reusable"| SK["skip — nothing to spawn,<br/>nothing to resolve"]
+    D -->|no| HR["resolve the agent root<br/>(raises if it cannot)"]
     D -->|"archived, never started<br/>(nothing to follow up into)"| HR
-    HR --> NEW["create_new_session!<br/>(a one-time reuse trigger skips instead)"]
+    HR --> NEW["create_new_session!"]
 ```
 
 ### `slack`
@@ -1056,27 +1057,32 @@ with a single-file resume path; a Codex unarchive writes nothing and is not fail
 
 ### The agent root is resolved only where it is used
 
-`agent_root_name` is a **spawn-path** field. `Trigger#create_new_session!` (and the burst notice)
-hands it to `Session.create_from_agent_root!`; a reuse hands it to nobody, because the session it
-follows up into was already created with a root of its own.
+`agent_root_name` is a **spawn-path** field on the fire path. `Trigger#create_new_session!` (and the
+burst notice) hands it to `Session.create_from_agent_root!`; a reuse hands it to nobody, because the
+session it follows up into was already created with a root of its own.
 
-`Trigger#heal_stale_agent_root!` therefore runs *after* every reuse path has returned, and not
-before them. It repoints a renamed root onto its successor — matched on an exact `git_root` +
-`subdirectory` match — and **raises** when it can find none, which parks the trigger `failed`. That
-raise is right for a fire that was about to create a session under a name that no longer means
-anything, and wrong for one that was never going to read the name at all.
+`Trigger#heal_stale_agent_root!` therefore runs twice, and the two calls differ in one thing —
+whether an unresolvable name is allowed to raise.
 
-Running it up front made it wrong for a whole class of trigger. Every per-session wake —
-`Sessions::ScheduleWakeUp`, behind **Pause Until** and the `wake_me_up_later` MCP tool — labels
-itself with the root of the session it is going to reuse, and falls back to the session's runtime
-name when the session resolves to no catalog root at all (a legacy session, or one whose root has
-since left the catalog). `"claude_code"` is not a root, so the wake raised on its own label,
-`ScheduleTriggerJob` parked it `failed`, every firing path filters on `enabled` — and the session
-slept forever, silently. See [#600](https://github.com/tadasant/zimmer/issues/600).
+- **Before the reuse paths, non-raising.** A *renamed* root is still repointed onto its successor on
+  every fire — matched on an exact `git_root` + `subdirectory` match. That repair belongs on every
+  fire because `agent_root_name` is read off the fire path too: `search_triggers` and
+  `action_trigger` gate a scope-restricted MCP connection on it, and the trigger page and the REST
+  payload display it. A reuse trigger that never spawns would otherwise keep a vanished name forever
+  and drop out of a scoped agent's view of its own triggers.
+- **After them, on the spawn path, raising.** A name with no successor is a real failure only for a
+  fire that was about to create a session under it. `ScheduleTriggerJob` parks a one-time wake
+  `failed` on that raise; a recurring schedule instead advances `last_triggered_at` and retries on
+  its next interval, and `AoEventTriggerJob` parks only a session-scoped condition.
 
-The cost of healing late is that a stale root on a reuse trigger is repaired lazily, on the first
-fire that actually spawns, rather than eagerly on any fire. That is the same repair at the moment it
-is needed.
+Raising up front made the check wrong for a whole class of trigger. Every per-session wake —
+`Sessions::ScheduleWakeUp` behind the `wake_me_up_later` MCP tool, and the session-scoped `ao_event`
+wake behind `wake_me_up_when_session_changes_state` — labels itself with the root of the session it
+is going to reuse, and falls back to the session's runtime name when the session resolves to no
+catalog root at all (a legacy session, or one whose root has since left the catalog).
+`"claude_code"` is not a root, so the wake raised on its own label, the trigger was parked `failed`,
+every firing path filters on `enabled` — and the session slept forever, silently. See
+[#600](https://github.com/tadasant/zimmer/issues/600).
 
 ## Coalescing a repeated fire
 
