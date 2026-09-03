@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# Assert that a base image really carries every npm package Dockerfile.base pins.
+# Assert that a base image really carries every npm package Dockerfile.base pins, and
+# every Pi extension entrypoint it smoke-checks.
 #
-# This runs INSIDE the image, after it has been pushed and pulled back down, so what
-# it reads is what the registry serves rather than what a build log claimed. The
-# `test -f` lines in Dockerfile.base check the same ground at build time and are not
-# a substitute: they say a layer was produced, not that the tag every session image
-# is built FROM now resolves to it.
+# This runs INSIDE the image, after it has been pushed and pulled back down, so what it
+# reads is what the registry serves rather than what a build log claimed. The `test -f`
+# lines in Dockerfile.base check the same ground at build time and are not a substitute:
+# they say a layer was produced, not that the tag the release path resolves serves it.
 #
-# EXPECTED_PINS is a whitespace-separated list of `name@version` specs, extracted
-# from Dockerfile.base by the caller (the runner has the repo; the image does not).
+# Both inputs are whitespace-separated lists extracted from Dockerfile.base by the
+# caller, because the runner has the repo and the image does not:
+#   EXPECTED_PINS         `name@version` specs from its npm install lines
+#   EXPECTED_ENTRYPOINTS  absolute paths from its `test -f` smoke checks
 #
-# Invoked as `docker run --rm -i -e EXPECTED_PINS=... --entrypoint bash IMAGE -s`
-# with this file on stdin — deliberately not a bind mount, because the self-hosted
-# runner and the Docker daemon do not necessarily share a filesystem.
+# Invoked as `docker run --rm -i -e EXPECTED_PINS=… -e EXPECTED_ENTRYPOINTS=… \
+#   --entrypoint bash IMAGE -s` with this file on stdin — deliberately not a bind
+# mount, because the self-hosted runner and the Docker daemon do not necessarily share
+# a filesystem.
 set -uo pipefail
 
-# Every place Dockerfile.base installs npm packages into. A pin resolved from none
-# of them is reported as missing rather than silently skipped.
+# Every place Dockerfile.base installs npm packages into. A pin resolved from none of
+# them is reported missing rather than silently skipped.
 ROOTS=(
   /usr/lib/node_modules
   /usr/local/lib/node_modules
@@ -24,13 +27,20 @@ ROOTS=(
   /opt/pi-extensions/node_modules
 )
 
-if [ -z "${EXPECTED_PINS// }" ]; then
-  echo "EXPECTED_PINS is empty — the caller's extraction matched nothing, which would" >&2
-  echo "make this check pass vacuously. Refusing." >&2
-  exit 1
-fi
+# An empty list would make the whole check pass while asserting nothing, which is the
+# one failure mode worse than the drift it is looking for. Read with :- so `set -u`
+# does not abort before this can say why.
+for var in EXPECTED_PINS EXPECTED_ENTRYPOINTS; do
+  value="${!var:-}"
+  if [ -z "${value// }" ]; then
+    echo "$var is empty — the caller's extraction from Dockerfile.base matched nothing," >&2
+    echo "which would make this check pass vacuously. Refusing." >&2
+    exit 1
+  fi
+done
 
 failed=0
+
 for spec in $EXPECTED_PINS; do
   name="${spec%@*}"
   want="${spec##*@}"
@@ -57,30 +67,24 @@ for spec in $EXPECTED_PINS; do
   fi
 done
 
-# The Pi extension entrypoints are paths, not versions: an unpacked tarball with the
-# entrypoint at a different path installs cleanly and then loads nothing, which is
-# the failure #757 hit. Read them out of the packages' own `pi.extensions` field
-# rather than restating the paths here.
-for name in pi-mcp-adapter @tadasant/pi-hooks @tadasant/pi-plugins; do
-  pkg="/opt/pi-extensions/node_modules/$name/package.json"
-  [ -f "$pkg" ] || continue
-  entries=$(node -p "JSON.stringify(require('$pkg').pi?.extensions ?? [])" 2>/dev/null || echo "[]")
-  for rel in $(node -p "($entries).map(e => typeof e === 'string' ? e : e.path).join(' ')" 2>/dev/null); do
-    abs="/opt/pi-extensions/node_modules/$name/${rel#./}"
-    if [ -f "$abs" ]; then
-      printf '  ok       %-46s entrypoint %s\n' "$name" "$rel"
-    else
-      printf '  MISSING  %-46s entrypoint %s (no file at %s)\n' "$name" "$rel" "$abs"
-      failed=1
-    fi
-  done
+# A version check cannot see this: an npm package whose tarball unpacked to a different
+# layout installs cleanly at the right version and then loads nothing, because
+# PiExtensions#resolved_paths drops an extension whose entrypoint is not on disk and Pi
+# runs without it. That is the failure #757 hit.
+for path in $EXPECTED_ENTRYPOINTS; do
+  if [ -f "$path" ]; then
+    printf '  ok       %-46s entrypoint present\n' "$path"
+  else
+    printf '  MISSING  %-46s entrypoint absent\n' "$path"
+    failed=1
+  fi
 done
 
 if [ "$failed" -ne 0 ]; then
   echo
-  echo "The published base image does not match the pins in Dockerfile.base." >&2
+  echo "The published image does not match the declarations in Dockerfile.base." >&2
   exit 1
 fi
 
 echo
-echo "Every pin in Dockerfile.base is present in the published image."
+echo "Every pin and entrypoint Dockerfile.base declares is present in the published image."
