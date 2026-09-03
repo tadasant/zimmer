@@ -89,13 +89,14 @@ class RefreshXOauthTokensJobTest < ActiveJob::TestCase
     end
   end
 
-  # --- the timeout taxonomy against a real hanging endpoint (#732) ---
+  # --- the timeout taxonomy (#732) ---
   #
   # Both branches depend on the token request carrying a bound: an unbounded one
   # holds its `default`-queue thread rather than raising either timeout, and the
-  # classifications never run. These drive the real refresh! ->
+  # classifications never run. All three drive the real refresh! ->
   # XOauthCredential.post_token_request path (refresh! is NOT stubbed), so the
-  # classification is the one production would make.
+  # classification is the one production would make. The read-timeout pair gets
+  # its timeout from a real silent socket; the connect one cannot (see below).
 
   test "a hanging token endpoint is classified ambiguous, not retried in-band, and does not block" do
     with_hanging_token_endpoint do |endpoint|

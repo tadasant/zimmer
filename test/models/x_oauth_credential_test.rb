@@ -165,14 +165,4 @@ class XOauthCredentialTest < ActiveSupport::TestCase
       observed_timeouts
     assert_equal 10, XOauthCredential::TOKEN_REQUEST_TIMEOUT
   end
-
-  test "a hanging token endpoint raises Net::ReadTimeout instead of blocking" do
-    with_hanging_token_endpoint do |endpoint|
-      cred = build_credential(token_endpoint: endpoint)
-      with_token_request_timeout(1) do
-        elapsed = elapsed_seconds { assert_raises(Net::ReadTimeout) { cred.refresh! } }
-        assert_operator elapsed, :<, 10, "the read bound did not apply — this fell back to Net::HTTP's default"
-      end
-    end
-  end
 end
