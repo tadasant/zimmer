@@ -899,9 +899,9 @@ class Trigger < ApplicationRecord
   # refuses to deliver into a session carrying it. That is right for a session
   # sitting in needs_input where somebody hit Pause — and wrong the moment the
   # same human arms a wake on it, because the pair says "come back at 9am" and
-  # then guarantees the 9am delivery is dropped. Pause-then-Pause-Until is an
-  # ordinary sequence in the UI (the buttons sit next to each other), and it left
-  # the session asleep forever.
+  # then guarantees the 9am delivery is dropped. A human hitting Pause and an
+  # agent then arming its own wake is an ordinary sequence, and it left the
+  # session asleep forever.
   #
   # Only "user" is cleared. `recovery` and `spot_quota` mark sessions their own
   # sweeps are still responsible for, and this wake does not relieve them of it.

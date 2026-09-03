@@ -336,18 +336,25 @@ re-armed by it), and the trigger's [burst cap](/sessions/triggers/#burst-control
 it the tool returns the burst-notice session, or reports that nothing was created. See [firing a
 trigger by hand](/sessions/triggers/#firing-a-trigger-by-hand).
 
-`action_session`'s `pause_into_spot_queue` is the MCP half of **Pause Until → Spot Queue** in the web
-UI, and the counterpart of `wake_me_up_later` for a session with no time worth naming: it sleeps the
-session with no trigger at all and leaves it for the spot scheduler, which resumes it when a Claude
-Code account is under both quota targets and a slot is free. It is on the `self_session` surface too,
-because a session waiting on quota rather than on an event is exactly the caller for it. See
+`action_session`'s `pause_into_spot_queue` is the counterpart of `wake_me_up_later` for a session
+with no time worth naming: it sleeps the session with no trigger at all and leaves it for the spot
+scheduler, which resumes it when a Claude Code account is under both quota targets and a slot is
+free. It is on the `self_session` surface too, because a session waiting on quota rather than on an
+event is exactly the caller for it. See
 [Spot and priority](/sessions/spot-and-priority/#joining-the-queue-on-purpose).
 
-One thing differs between the two halves, on purpose. On a *running* session the web UI stops the
-turn; the tool lets it finish, because its commonest caller is a session parking itself and a
-session that halted itself would kill the process waiting for the reply. Pass `"halt": true` to get
-the UI's behaviour when you are driving somebody else's running session. The `self_session` variant
-does not expose the option, and strips it from the arguments if it is passed anyway.
+On a *running* session the park lets the turn finish, because its commonest caller is a session
+parking itself and a session that halted itself would kill the process waiting for the reply. Pass
+`"halt": true` to stop the turn where it stands when you are driving somebody else's running
+session. The `self_session` variant does not expose the option, and strips it from the arguments if
+it is passed anyway.
+
+**Sleeping a session is an MCP-only capability.** `wake_me_up_later` and `pause_into_spot_queue` are
+the only ways to put a session to sleep until a time or a quota opening — the web UI has no control
+that does it, and neither does the REST API (`POST /api/v1/sessions/:id/sleep` sleeps a session with
+no wake and no queue record, which is a different thing).
+
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
 
 `start_session` and `action_session` also take the web UI's *symbolic* queue placement, not just the
 integer behind it: `place: "top_of_spot"` is the same server-side resolution the Ranked view's

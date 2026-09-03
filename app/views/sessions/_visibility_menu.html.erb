@@ -3,10 +3,9 @@
     This is presentation and nothing else. It does not pause, start, stop, sleep
     or wake a session, and it never touches status, precedence or the spot queue;
     a snoozed session runs exactly when it would have run anyway, it just is not
-    on screen. Its neighbour in this same menu, "Pause Until", is the one that
-    really sleeps a session — the two are deliberately worded so that a glance
-    tells them apart, because confusing them either stalls work you meant to
-    merely tidy away or leaves work on screen you meant to hide.
+    on screen. Nothing in the web UI sleeps a session — that is `wake_me_up_later`
+    and `pause_into_spot_queue` over MCP — so the copy below says what snoozing
+    does NOT do rather than pointing at a control a human could reach.
 
     Locals:
       agent_session — the session
@@ -17,9 +16,8 @@
                                    menu never nests a popover inside a popover)
                       :sheet_item (the mobile bottom sheet on the detail page)
 
-    Offered for EVERY session in every state, unlike Pause Until: there is no
-    session whose card an operator may not tidy off their board, archived and
-    failed ones included. %>
+    Offered for EVERY session in every state: there is no session whose card an
+    operator may not tidy off their board, archived and failed ones included. %>
 <% variant ||= :button %>
 <% inline_variant = variant != :button %>
 <% tucked_away = !agent_session.board_visible? %>
@@ -71,11 +69,11 @@
     </div>
 
     <%# Said before the click rather than after it, and said next to the choices
-        rather than in a tooltip, because the control immediately below this one
-        in the same menu ("Pause Until") looks the same and does the opposite. %>
+        rather than in a tooltip: "snooze until 9am" reads like it holds the work
+        back, and it does not. %>
     <p class="mb-2 rounded-md bg-slate-50 px-2 py-1.5 text-[11px] leading-snug text-slate-600">
       Takes this card off your board until then. <span class="font-medium">It does not pause the session</span> —
-      nothing about when Zimmer runs it changes. Use <span class="font-medium">Pause Until</span> for that.
+      nothing about when Zimmer runs it changes.
     </p>
 
     <% if tucked_away %>

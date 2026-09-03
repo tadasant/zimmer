@@ -11,10 +11,9 @@ module Sessions
   # transaction that persists the trigger. Creating the trigger IS the atomic
   # sleep+schedule, which is why nothing here calls Session#sleep! itself.
   #
-  # Two surfaces share this: the `wake_me_up_later` MCP tool an agent calls on
-  # itself, and the "Pause Until" control a human clicks in the web UI. They
-  # validate identically because the validation lives here — a past-dated wake
-  # leaves a session permanently asleep no matter who asked for it.
+  # The `wake_me_up_later` MCP tool an agent calls on itself is the surface over
+  # this, and the validation lives here rather than in the tool — a past-dated
+  # wake leaves a session permanently asleep no matter who asked for it.
   class ScheduleWakeUp
     # Raised for every rejected request. `code` lets a caller add its own
     # remediation sentence without re-deriving why the call failed.
@@ -51,21 +50,17 @@ module Sessions
     # @param wake_at [String] naive ISO-8601 wall-clock time, e.g. "2026-04-15T14:30:00"
     # @param prompt [String] the prompt the wake resumes the session with
     # @param timezone [String] IANA zone `wake_at` is expressed in
-    # @param replace_existing [Boolean] cancel this session's unfired one-time
-    #   schedule wakes first (see #supersede_existing_wakes!)
     # @return [Trigger] the persisted one-time wake trigger
     # @raise [Error] when the time or the session state makes the wake unschedulable
-    def self.call(session:, wake_at:, prompt:, timezone: "UTC", replace_existing: false)
-      new(session: session, wake_at: wake_at, prompt: prompt, timezone: timezone,
-          replace_existing: replace_existing).call
+    def self.call(session:, wake_at:, prompt:, timezone: "UTC")
+      new(session: session, wake_at: wake_at, prompt: prompt, timezone: timezone).call
     end
 
-    def initialize(session:, wake_at:, prompt:, timezone: "UTC", replace_existing: false)
+    def initialize(session:, wake_at:, prompt:, timezone: "UTC")
       @session = session
       @wake_at = normalize_seconds(wake_at.to_s)
       @prompt = prompt.to_s
       @timezone = timezone.presence || "UTC"
-      @replace_existing = replace_existing
     end
 
     attr_reader :session, :wake_at, :prompt, :timezone
@@ -95,33 +90,16 @@ module Sessions
 
       raise Error.new("A wake-up prompt is required.", code: :missing_prompt) if prompt.blank?
 
-      # One transaction: superseding the old wake and arming the new one are the
-      # same act. Splitting them means a create that fails after the destroy
-      # leaves an already-sleeping session with nothing armed at all — while the
-      # error it raises says no changes were made.
-      Trigger.transaction do
-        supersede_existing_wakes! if @replace_existing
-        create_wake_trigger!
-      end
+      # Wakes are ADDITIVE, and deliberately: an agent arming several at once is
+      # the documented pattern — `wake_me_up_later` is routinely paired with
+      # `wake_me_up_when_session_changes_state` watchers, whichever fires first
+      # wins, and Trigger#destroy_sibling_wakes! cleans up the rest. The one
+      # gesture that replaces rather than adds is a park into the spot queue,
+      # which runs Sessions::SupersedePendingWakes itself.
+      create_wake_trigger!
     end
 
     private
-
-    # Cancel this session's unfired one-time schedule wakes before arming a new one.
-    #
-    # Off by default, because an agent arming several wakes at once is the
-    # documented pattern: `wake_me_up_later` is routinely paired with
-    # `wake_me_up_when_session_changes_state` watchers, whichever fires first wins,
-    # and Trigger#destroy_sibling_wakes! cleans up the rest.
-    #
-    # The web UI's "Pause Until" is the opposite gesture. A human picking a second
-    # time means "not then, THIS time" — and leaving the first wake armed would fire
-    # at whichever is earlier, which is precisely the time they just replaced. The
-    # spot-queue choice in the same panel is the same gesture and runs the same
-    # service, which is why the query lives in Sessions::SupersedePendingWakes.
-    def supersede_existing_wakes!
-      SupersedePendingWakes.call(session: session)
-    end
 
     # Minute-precision is accepted, but the value is stored on the trigger
     # condition and re-parsed with Time.iso8601 when it fires, which requires

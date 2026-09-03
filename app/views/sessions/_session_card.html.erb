@@ -168,10 +168,9 @@
               a card low on the page does not push its menu off the bottom.
 
               Rendered on every card: board visibility is offered for every session
-              in every state, including the archived and failed ones Pause Until
-              cannot sleep, so the menu is never empty. %>
+              in every state, so the menu is never empty. %>
           <div data-controller="overflow-menu"
-               data-action="pause-until:scheduled->overflow-menu#close visibility:changed->overflow-menu#close">
+               data-action="visibility:changed->overflow-menu#close">
             <button type="button"
                     data-overflow-menu-target="button"
                     data-action="overflow-menu#toggle"
@@ -187,14 +186,7 @@
             <div data-overflow-menu-target="menu"
                  role="menu"
                  class="hidden absolute right-0 bottom-full mb-2 z-30 w-72 max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
-              <%# Board visibility first: it is the one offered on every card,
-                  and putting it above Pause Until keeps the destructive-looking
-                  neighbour from being the first thing a thumb lands on. %>
               <%= render "sessions/visibility_menu", agent_session: agent_session, variant: :menu_item %>
-              <% if agent_session.pausable_until? %>
-                <div class="border-t border-gray-100"></div>
-              <% end %>
-              <%= render "sessions/pause_until", agent_session: agent_session, variant: :menu_item %>
             </div>
           </div>
           <% if agent_session.archived? %>

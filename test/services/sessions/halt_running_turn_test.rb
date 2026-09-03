@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# Stopping a running session's turn on the spot, which is what makes "Pause Until"
+# Stopping a running session's turn on the spot, which is what makes a park
 # mean something on a session that is not idle. The cases that matter are the ones
 # where the turn does NOT end tidily: no process to kill, a turn that finished on
 # its own while SIGTERM grace ran out, a pause callback that swallowed its sleep.

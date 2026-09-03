@@ -248,15 +248,10 @@
       <% end %>
 
       <%# Session-state actions %>
-      <%# The phone's counterpart to the detail header's Pause Until pill — that
-          header is `hidden md:block`, so this sheet is the only place a phone can
-          reach it. The panel expands inline; the sheet scrolls. %>
-      <%# Board visibility, above Pause Until for the same reason it leads the card
-          menu: it is the harmless one of the two, and it is offered for every
-          session where Pause Until is not. %>
+      <%# The phone's counterpart to the detail header's Snooze pill — that header
+          is `hidden md:block`, so this sheet is the only place a phone can reach
+          it. The panel expands inline; the sheet scrolls. %>
       <%= render "sessions/visibility_menu", agent_session: @session, variant: :sheet_item %>
-
-      <%= render "sessions/pause_until", agent_session: @session, variant: :sheet_item %>
 
       <% if @session.archived? %>
         <button type="button" data-action="click->joystick-menu#fire" data-petal-key="restore" class="flex items-center w-full px-4 py-3 text-left text-sm text-green-700 hover:bg-green-50 active:bg-green-100">

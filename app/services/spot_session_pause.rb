@@ -63,12 +63,12 @@
 # `paused_by` says `spot_quota` — so a reader can tell this apart from a turn
 # that ended, a deployment restart, and a human hitting Pause.
 #
-# == A human can join the queue on purpose
+# == A session can join the queue on purpose
 #
-# The web UI's "Pause Until" offers "Spot Queue" beside its time presets, and
-# that choice (Sessions::PauseIntoSpotQueue) parks a session here deliberately:
-# same `waiting`, same metadata, same resume sweep — no wake trigger and no wall
-# clock. It carries QUEUED_REASON rather than a gate reason, so every surface
+# `action_session`'s "pause_into_spot_queue" (Sessions::PauseIntoSpotQueue) parks
+# a session here deliberately: same `waiting`, same metadata, same resume sweep —
+# no wake trigger and no wall clock. It carries QUEUED_REASON rather than a gate
+# reason, so every surface
 # that explains a dormant session can say which of the two happened to it, and
 # so the ceiling's own cost is not overstated by counting it.
 #
@@ -85,16 +85,15 @@ class SpotSessionPause
   PAUSED_DETAIL = "spot_pause_detail"
   PAUSED_COUNT = "spot_pause_count"
 
-  # The resume prompt a human typed into "Pause Until" before choosing the spot
-  # queue. Nothing else carries it: a time-based pause hangs its prompt on the
-  # trigger it arms, and the spot queue arms nothing.
+  # The resume prompt left with a deliberate park into the spot queue. Nothing
+  # else carries it: a time-based pause hangs its prompt on the trigger it arms,
+  # and the spot queue arms nothing.
   QUEUED_PROMPT = "spot_queue_prompt"
 
   METADATA_KEYS = [ PAUSED_AT, PAUSED_REASON, PAUSED_DETAIL, PAUSED_COUNT, QUEUED_PROMPT ].freeze
 
-  # `spot_pause_reason` when a HUMAN put the session here from the web UI's
-  # "Pause Until" control (Sessions::PauseIntoSpotQueue) rather than the ceiling
-  # interrupting it. The dormancy and the resume path are identical — the same
+  # `spot_pause_reason` when the session was put here deliberately
+  # (Sessions::PauseIntoSpotQueue) rather than the ceiling interrupting it. The dormancy and the resume path are identical — the same
   # sweep picks it up on the same gate decision — so it shares every key above;
   # only the wording differs, and it must, because "paused mid-run because a
   # quota window ran out of spot budget" is not what happened to this one.
@@ -209,13 +208,14 @@ class SpotSessionPause
     end
 
     # Whether this session is dormant in the spot queue — paused mid-run by the
-    # ceiling, or parked here by a human from "Pause Until". Both wait on the
-    # same gate and both are resumed by the same sweep.
+    # ceiling, or parked here deliberately. Both wait on the same gate and both
+    # are resumed by the same sweep.
     def paused?(session)
       session.waiting? && session.metadata&.dig(PAUSED_REASON).present?
     end
 
-    # Whether a human put this session in the queue rather than the ceiling.
+    # Whether this session was parked in the queue on request rather than by the
+    # ceiling.
     def queued_by_user?(session)
       session.metadata&.dig(PAUSED_REASON) == QUEUED_REASON
     end
@@ -223,9 +223,9 @@ class SpotSessionPause
     # Resume one dormant session on demand, rather than on the sweep's next pass.
     #
     # This is the door Sessions::StartNow comes through when a human presses
-    # Start on a session the ceiling paused, or parked here from "Pause Until".
-    # It is deliberately the SAME resume the sweep performs — the row lock, the
-    # re-check under it, the prompt a human left with the park — because a
+    # Start on a session the ceiling paused, or one parked here deliberately. It
+    # is deliberately the SAME resume the sweep performs — the row lock, the
+    # re-check under it, the prompt left with the park — because a
     # session put back by hand and one put back by the sweep must come back the
     # same way. What differs is only the sentence in its log.
     #
@@ -305,13 +305,12 @@ class SpotSessionPause
     # polls, and stops.
     def pause!(session, decision, overrides, logger)
       return false unless session.running?
-      # A session a human just parked into the queue is already on its way here:
-      # it carries the queue record and is either asleep or sleeping at the end of
+      # A session just parked into the queue is already on its way here: it
+      # carries the queue record and is either asleep or sleeping at the end of
       # its turn. Pausing it again would overwrite its story with the ceiling's,
       # and the count below would charge a turn to the ceiling that the ceiling
-      # never took. (The web UI stops such a turn itself — Sessions::HaltRunningTurn
-      # — so a running session reaching here still carrying the queue record is one
-      # parked through the MCP tool's deferred default.)
+      # never took. (A running session reaching here still carrying the queue
+      # record is one parked without `halt`, so its own turn end will sleep it.)
       return false if queued_by_user?(session)
 
       terminate_process(session, logger)
@@ -496,12 +495,12 @@ class SpotSessionPause
     # Three sentences because a resume has three shapes: the window genuinely fell
     # (the common one), the gate stopped holding work for some other reason —
     # somebody turned gating off, or there is no reading to decide on — or the
-    # session was never paused at all and a human put it in the queue by hand.
+    # session was never paused at all and was put in the queue deliberately.
     # Naming any of them as one of the others would be a lie in the log.
     def resume_message(decision, session)
       if queued_by_user?(session)
         "The spot queue reached this session (#{decision.reason}) — resuming it. " \
-          "It was parked here from \"Pause Until\", not paused by the ceiling."
+          "It was parked here deliberately, not paused by the ceiling."
       elsif decision.reason == "within_limits"
         "The window has room again past the resume margin — resuming this spot session automatically."
       else
@@ -515,14 +514,14 @@ class SpotSessionPause
     end
 
     # What the resumed agent is told about why it is awake. A queued session was
-    # never interrupted — its human parked it deliberately — so telling it a
-    # quota window had stopped it mid-turn would send it hunting for lost work
+    # never interrupted — it was parked deliberately — so telling it a quota
+    # window had stopped it mid-turn would send it hunting for lost work
     # that was never lost. It does not name the gate reading either: the promoted
     # branch resumes a session whatever the windows say, and this sentence is
     # shared with it.
     def resume_prompt_reason(queued)
       if queued
-        "your human parked this session in Zimmer's spot queue from the \"Pause Until\" control, " \
+        "this session was parked in Zimmer's spot queue with no wake-up time, " \
           "and Zimmer has now resumed it from that queue"
       else
         "Zimmer paused this spot session mid-run because a Claude Code quota window had spent the " \

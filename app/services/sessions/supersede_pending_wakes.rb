@@ -3,23 +3,22 @@
 module Sessions
   # Cancels a session's unfired one-time schedule wakes.
   #
-  # This is the "not then, THIS instead" half of the web UI's "Pause Until": a
-  # human picking a second time — or picking the spot queue after a time — means
-  # the first wake must not still fire at the moment they just replaced. Both
-  # halves of that control therefore run it, which is why it lives here rather
-  # than inside either one.
+  # This is the "not then, THIS instead" half of a park into the spot queue: that
+  # park arms nothing at all, so a wake left over from an earlier
+  # `wake_me_up_later` would pull the session straight back out of the queue it
+  # was just put in.
   #
-  # An agent calling `wake_me_up_later` keeps the additive behaviour and never
-  # goes through here: arming several wakes at once is the documented pattern
-  # (a wall-clock backstop beside a `wake_me_up_when_session_changes_state`
-  # watcher), whichever fires first wins, and Trigger#destroy_sibling_wakes!
-  # cleans up the rest.
+  # `wake_me_up_later` itself keeps the additive behaviour and never goes through
+  # here: arming several wakes at once is the documented pattern (a wall-clock
+  # backstop beside a `wake_me_up_when_session_changes_state` watcher), whichever
+  # fires first wins, and Trigger#destroy_sibling_wakes! cleans up the rest.
   class SupersedePendingWakes
     # @param session [Session]
     # @param note [String] what the session's log calls the thing that replaced
-    #   the wake, so a reader can tell a re-scheduled time from a spot-queue park
+    #   the wake. The one caller passes "Spot Queue"; the default is here so a
+    #   future one is not forced to invent a label to call this at all
     # @return [Array<Integer>] ids of the triggers destroyed
-    def self.call(session:, note: "Pause Until")
+    def self.call(session:, note: "Superseded")
       new(session: session, note: note).call
     end
 

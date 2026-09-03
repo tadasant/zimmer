@@ -625,16 +625,14 @@ One thing outranks even that: a session with a **wake-up still ahead of it** is 
 ### Joining the queue on purpose
 
 The same dormancy is reachable deliberately, and it is the answer to "this session should wait, and
-no time I could name is the right one". **Pause Until → Spot Queue** on a session card, in the
-detail header, or in the phone's bottom sheet — `pause_into_spot_queue` on `action_session` for an
-agent — sleeps the session and hands it to this sweep with **no wake-up trigger and no wall-clock
-time at all**.
+no time I could name is the right one". `pause_into_spot_queue` on `action_session` sleeps the
+session and hands it to this sweep with **no wake-up trigger and no wall-clock time at all**.
 
 It is the same record and the same resume path as a ceiling pause, with three differences, because
 nothing interrupted this session:
 
 - `spot_pause_reason` is `user_spot_queue`, so the banner, `get_session` and the session log all say
-  a human parked it rather than describing a turn it never lost. It is also left out of the
+  it was parked deliberately rather than describing a turn it never lost. It is also left out of the
   "spot sessions asleep in the queue" count on `/quotas`, which is about what the ceiling cost.
 - A session that resolves to **priority** is set to `spot`, since the sweep resumes a non-spot
   sleeper on its very next pass. **Make this session priority** on the banner reverses it, and that
@@ -734,8 +732,8 @@ descriptions make.
 Precedence answers *which* waiting session goes first. It does not answer *whether* a session may
 start at all, and one thing overrides it unconditionally: a **wall-clock pause**.
 
-A session that a human paused until a time with **Pause Until**, or that an agent slept with
-`wake_me_up_later`, sits in `waiting` and keeps whatever precedence it had. Nothing in the columns
+A session that an agent slept with `wake_me_up_later` sits in `waiting` and keeps whatever
+precedence it had. Nothing in the columns
 distinguishes it from a session merely queued behind the gate — both are `waiting` spot sessions with
 a number. So the rule is enforced on the *start*, not on the ordering:
 
@@ -846,7 +844,7 @@ A waiting session is dormant in one of three shapes, and each has its own door b
 | --- | --- |
 | Held at the starting line by [SpotSessionHold](#what-hold-does) | its **already-queued** delayed `AgentSessionJob` is rescheduled to now, through GoodJob's own `reschedule_job` |
 | …and it is still `spot` | the gate is asked again *now* rather than in forty minutes — it is not bypassed. A window still over its target holds the session again, and the message says so rather than claiming a start it cannot promise. Promotion is what removes the gate, which is what the hold banner has always pointed at |
-| Paused mid-run by the ceiling, or parked from **Pause Until → Spot Queue** | `SpotSessionPause`'s own resume — the same locked re-check the sweep performs, restoring the prompt a human left with the park |
+| Paused mid-run by the ceiling, or parked from `pause_into_spot_queue` | `SpotSessionPause`'s own resume — the same locked re-check the sweep performs, restoring the prompt left with the park |
 | Neither, and it has **never** run | a fresh `AgentSessionJob` — the one branch that builds a turn out of nothing rather than moving one that exists |
 | Neither: it has run before and has nothing scheduled | nothing, from a promote. It is stranded rather than queued, so **Start now** sends it the same continue nudge Refresh does |
 
@@ -1000,8 +998,9 @@ control that combines with the others, and each persists exactly as pressing **A
 | Choose a class when spawning | **Scheduling class** on the new-session form; **Run as spot** on every Quick Router surface | `start_session` (`scheduling_class`) |
 | Change one session's class | **Scheduling class** on the session detail page, or **Make this session priority** on the hold banner | `action_session` (`change_scheduling_class`) |
 | Start a queued session now, without waiting out its re-check | **Start now** in the Ranked view's ⋮ menu; promoting a waiting row does it too | `action_session` (`start_now`, or as a side effect of `change_scheduling_class` to `priority`) |
-| Park a session in the spot queue with no wake-up time | **Pause Until → Spot Queue** (card menu, detail header, phone sheet) | `action_session` (`pause_into_spot_queue`) |
-| Stop a *running* session's turn while parking it | **Pause Until** does it unconditionally | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
+| Park a session in the spot queue with no wake-up time | — (MCP only; the web UI has no control that sleeps a session) | `action_session` (`pause_into_spot_queue`) |
+| Sleep a session until a chosen wall-clock time | — (MCP only) | `wake_me_up_later` |
+| Stop a *running* session's turn while parking it | — (MCP only) | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
 | Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and ⋮ menu | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
 | Put a session at the head of the spot queue | **Demote to spot** in the Ranked view's ⋮ menu; **Run as spot** on a Quick Router submission | `action_session` and `start_session` (`place: "top_of_spot"`) |
 | Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |

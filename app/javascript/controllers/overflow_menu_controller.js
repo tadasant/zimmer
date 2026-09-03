@@ -2,22 +2,20 @@ import { Controller } from "@hotwired/stimulus"
 
 // Connects to data-controller="overflow-menu"
 //
-// The "⋮" overflow container on a session card's footer row. It exists so that
-// secondary actions have somewhere to live without widening a card that is read
-// on a phone as often as on a laptop — Pause Until is its first entry, not its
-// only possible one.
+// The "⋮" overflow container a session card's footer row and a ranked row both
+// use. It exists so that secondary actions have somewhere to live without
+// widening a card that is read on a phone as often as on a laptop.
 //
 // The menu is a plain positioned box; anything inside it lays out in normal flow.
 // That is deliberate: a child popover anchored inside an already-absolute menu is
 // what pushes controls off the right edge of a 375px viewport, so the panel a menu
 // row opens expands the menu itself instead.
 // Vertical room a menu row's expanded panel needs beyond the closed menu box.
-// Sized to the tallest thing a card's menu opens (the Pause Until panel: six
-// presets, a datetime picker and a prompt field). A menu whose rows expand into
-// nothing — a ranked row's promote/demote, say — overrides it with 0, or every
-// row in the upper two-thirds of the page would open upward for room it never
-// needs.
-const MENU_EXPANSION_HEADROOM = 400
+// Sized to the snooze panel, which is the only thing a menu row opens today and
+// is the same panel on both consumers. A menu whose rows expanded into nothing
+// would override this with 0, or every row in the upper two-thirds of the page
+// would open upward for room it never needs.
+const MENU_EXPANSION_HEADROOM = 300
 
 export default class extends Controller {
   static targets = ["button", "menu"]
