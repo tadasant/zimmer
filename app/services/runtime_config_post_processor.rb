@@ -130,6 +130,12 @@ class RuntimeConfigPostProcessor
     # entry. It runs anyway so the two paths stay identical, on the same argument as
     # the elicitation injection above.
     pin_npx_caches_to_clone!(servers)
+    # And again, for the third time and the same reason. This one is the least
+    # hypothetical of the three: #read_or_synthesize_config parses whatever
+    # `.codex/config.toml` is already on the clone, and a session that HAD explicit
+    # MCP servers and no longer does (a follow-up, an unarchive, a fork) reaches
+    # here with the previous run's stdio entries still in that file.
+    apply_startup_timeouts!(servers)
 
     persist_config!(config)
   end
@@ -480,13 +486,17 @@ class RuntimeConfigPostProcessor
   #
   # Codex has no such variable and a 30-second default, so it overrides this.
   #
-  # Only on the #post_process! path, which is the only one a stdio entry can
-  # reach: #ensure_baseline! runs for a session with no MCP servers of its own
-  # and injects HTTP Zimmer entries, which have no cold start to wait on.
+  # The default is a no-op for two different reasons, and only one of them is
+  # benign. Claude does not need it — its spawn env already carries the budget to
+  # every server it spawns. Pi is not covered at all: `PiRuntimeAdapter` exports
+  # no timeout variable, and nothing Zimmer writes into the `.mcp.json` that
+  # PiMcpConfigPostProcessor seeds is read as one, so a Pi session on a cold
+  # clone runs on whatever its own client defaults to
+  # ([#844](https://github.com/tadasant/zimmer/issues/844)).
   #
-  # @param servers [Hash] server name => entry
-  def apply_startup_timeouts!(servers)
-    # No-op by default: the runtime's spawn env already carries the budget.
+  # @param _servers [Hash] server name => entry
+  def apply_startup_timeouts!(_servers)
+    # No-op by default.
   end
 
   # The elicitation variables as the agent process will see them, so a server's

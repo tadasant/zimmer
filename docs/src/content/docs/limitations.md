@@ -1402,21 +1402,20 @@ tarball store, comes with it. So the packages `bin/preinstall-mcp-packages` warm
 `~/.npm` at build time are not read by any MCP server, and the first launch in a fresh clone fetches
 every one of them from the registry.
 
-Both runtimes now have room to absorb it: three minutes, from
-`MCP_TIMEOUT=180000` on Claude and `startup_timeout_sec = 180` on every Codex stdio entry. Before
-[#702](https://github.com/tadasant/zimmer/issues/702) that second half was missing and Codex fell
-back to its own 30-second default — measured, not assumed, against the pinned
-`@openai/codex@0.146.0` — against a worst observed cold start of 18s for the slowest of the nine
-npx servers installing at once. So the cost is a delay on both runtimes rather than a dropped
-server on one.
+Claude and Codex both have room to absorb it — three minutes, from `MCP_TIMEOUT=180000` on Claude
+and `startup_timeout_sec = 180` on every Codex stdio entry
+([#702](https://github.com/tadasant/zimmer/issues/702)) — so on those two the cost is a delay
+rather than a dropped server. The price of the wider budget is that a genuinely hung server holds
+the handshake for three minutes instead of Codex's 30-second default. Pi has no such budget at all
+([#844](https://github.com/tadasant/zimmer/issues/844)).
 
-The cost itself is still paid. Un-pinning the cache is not the fix — a host-shared cache is what
-[#595](https://github.com/tadasant/zimmer/issues/595) was — and the cheap way to warm the clone is
-worse than the disease: hardlinking the image's 173MB content-addressed `_cacache` into every clone
-shares inodes that all 40-odd live clones would then be writing through, and copying it outright
-would roughly double the 7.7GB the clones directory currently holds, to save 6–15s of launch time.
-Warming the clone at prepare time, by running the npx installs during `air prepare` rather than at
-the first MCP handshake, remains open.
+The download itself is still paid, and un-pinning the cache is not the fix — a host-shared cache is
+what [#595](https://github.com/tadasant/zimmer/issues/595) was. Seeding the clone from the image's
+`_cacache` is the obvious alternative and is worse than it looks: hardlinking a 173MB
+content-addressed store into every live clone shares inodes that all of them would then be writing
+through, so one bad write corrupts the store every session depends on, and copying it outright
+roughly doubles what the clones directory holds. Warming the clone at prepare time, by running the
+npx installs during `air prepare` rather than at the first MCP handshake, remains open.
 
 ### No extension can ship in a built image
 
