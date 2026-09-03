@@ -592,7 +592,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     bundle = RuntimeRegistry::Bundle.new(
       runtime: "fake_runtime",
       air_adapter_name: "fake-adapter",
-      config_post_processor_class: ClaudeMcpConfigPostProcessor
+      config_post_processor_class: ClaudeMcpConfigPostProcessor,
+      artifact_bridge_class: NullRuntimeArtifactBridge
     )
     @session.stubs(:runtime).returns(bundle)
 

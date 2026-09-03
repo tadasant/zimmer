@@ -21,22 +21,17 @@
 # == Why an entry can be absent ==
 #
 # `@tadasant/pi-hooks` and `@tadasant/pi-plugins` are the Zimmer-side answer to
-# Pi having no hooks and no AIR-plugin support. They live in the public
-# `tadasant/pi-extensions` repo and are NOT yet published to npm — both 404 on
-# the registry, and the release PR is open but unmerged. An unpublished package
-# cannot be in the image, so the image build must not name it: `npm install` is
-# all-or-nothing and a single 404 would fail the whole base image.
+# Pi having no hooks and no AIR-plugin support. Both are published (0.1.0) and
+# both are in the image, so nothing here is pending today.
 #
-# So the registry declares all three with their pinned versions, and
-# `pending_publish` marks the ones the image does not install yet.
-# #resolved_paths returns only entrypoints that actually exist on disk, so a Pi
-# session runs with whatever is present rather than dying on an `-e` path that
-# is not there. #missing reports the gap through CliStatusService, which is the
-# observable answer to "is Pi fully wired yet" that an operator can reach
-# without a shell on the box.
-#
-# When `v0.1.0` publishes, the change is one Dockerfile line plus dropping
-# `pending_publish:` here — no code change.
+# The absence machinery stays because absence is still possible and still has to
+# degrade rather than crash: `pi -e <missing path>` makes Pi refuse to start, so
+# an image built before a registry entry was added — a worker still running the
+# previous base image after a deploy that bumped this file — would fail every Pi
+# session outright. #resolved_paths returns only entrypoints that exist on disk,
+# so such a session runs with whatever is present instead, and #missing reports
+# the gap through CliStatusService, which is the observable answer to "is Pi
+# fully wired" that an operator can reach without a shell on the box.
 module PiExtensions
   # Where the Pi extension packages are installed. Overridable via ENV so CI
   # runners (which cannot write to /opt) can redirect to a writable path.
@@ -45,8 +40,11 @@ module PiExtensions
   # One entry per extension Zimmer wants active in a Pi session.
   #
   # `entrypoint` is relative to INSTALL_DIR/node_modules and is the file handed
-  # to `pi -e`. `pending_publish` means the package is not on npm yet, so the
-  # image does not install it and its absence is expected rather than broken.
+  # to `pi -e`. `pending_publish` marks a package that is not on npm yet, so the
+  # image cannot install it and its absence is expected rather than broken —
+  # `npm install` is all-or-nothing, and one 404 would fail the whole base image.
+  # Nothing carries the flag today; it exists so that adding an entry for a
+  # package still in flight is a one-line change rather than a redesign.
   #
   # == Where an entrypoint comes from ==
   #
@@ -57,6 +55,13 @@ module PiExtensions
   # None of the three packages below ships a usable `dist/index.js`:
   # `pi-mcp-adapter` has a `dist/` holding only its public-export subset, and
   # the two `@tadasant` packages ship no `dist/` at all.
+  #
+  # `@tadasant/pi-plugins` declares TWO entrypoints in its own manifest — its own
+  # `extensions/plugins.ts` and the `extensions/hooks.ts` of the `@tadasant/pi-hooks`
+  # copy it bundles. Zimmer names only the first, and loads pi-hooks from the
+  # top-level install instead. Either path works: pi-hooks marks itself loaded on
+  # a `Symbol.for` global precisely so a user who has it both standalone and
+  # bundled does not get two runners spawning every hook twice.
   #
   # A wrong entrypoint fails quietly, which is why it is worth checking against
   # the manifest. `pi -e <missing path>` makes Pi refuse to start, so
@@ -87,7 +92,7 @@ module PiExtensions
       entrypoint: File.join("@tadasant", "pi-hooks", "extensions", "hooks.ts"),
       purpose: "Lifecycle hooks (Pi exposes lifecycle only through its TypeScript " \
                "extension API and has no hooks concept of its own).",
-      pending_publish: true
+      pending_publish: false
     ),
     Extension.new(
       package: "@tadasant/pi-plugins",
@@ -96,7 +101,7 @@ module PiExtensions
       purpose: "AIR Plugins — resolving a plugin manifest and activating the " \
                "skills, hooks and MCP servers it bundles. Requires pi-hooks and " \
                "pi-mcp-adapter to be loaded alongside it.",
-      pending_publish: true
+      pending_publish: false
     )
   ].freeze
 
@@ -108,13 +113,15 @@ module PiExtensions
   end
 
   # The extensions the base image installs today — everything already published.
+  # All three, as of `@tadasant/pi-hooks@0.1.0` and `@tadasant/pi-plugins@0.1.0`
+  # reaching npm.
   #
   # Read by the Dockerfile parity test so the image's `npm install` list and this
   # registry cannot drift apart silently.
   #
   # @return [Array<Extension>]
   def installable
-    REGISTRY.reject(&:pending_publish?)
+    all.reject(&:pending_publish?)
   end
 
   # Entrypoints that exist on disk right now, in registry order.
@@ -127,7 +134,7 @@ module PiExtensions
   # @return [Array<String>] absolute entrypoint paths
   def resolved_paths(file_system: nil)
     fs = file_system || RealFileSystemAdapter.new
-    REGISTRY.map(&:path).select { |path| fs.exists?(path) }
+    all.map(&:path).select { |path| fs.exists?(path) }
   end
 
   # Declared extensions whose entrypoint is not on disk.
@@ -140,7 +147,7 @@ module PiExtensions
   # @return [Array<Extension>]
   def missing(file_system: nil)
     fs = file_system || RealFileSystemAdapter.new
-    REGISTRY.reject { |ext| fs.exists?(ext.path) }
+    all.reject { |ext| fs.exists?(ext.path) }
   end
 
   # A one-line, operator-facing summary of what is loaded and what is not.
@@ -150,11 +157,12 @@ module PiExtensions
   # @return [String]
   def status_summary(file_system: nil)
     absent = missing(file_system: file_system)
-    return "all #{REGISTRY.size} Pi extensions loaded" if absent.empty?
+    declared = all.size
+    return "all #{declared} Pi extensions loaded" if absent.empty?
 
     pending, broken = absent.partition(&:pending_publish?)
     parts = []
-    parts << "#{REGISTRY.size - absent.size}/#{REGISTRY.size} loaded"
+    parts << "#{declared - absent.size}/#{declared} loaded"
     parts << "awaiting npm publish: #{pending.map(&:to_s).join(', ')}" if pending.any?
     parts << "MISSING FROM IMAGE: #{broken.map(&:to_s).join(', ')}" if broken.any?
     parts.join("; ")

@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"22222222-3333-4444-5555-666666666661","timestamp":"2026-09-03T16:41:50.237Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"9d5c0bb5","parentId":null,"timestamp":"2026-09-03T16:41:50.381Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"cae14d8d","parentId":"9d5c0bb5","timestamp":"2026-09-03T16:41:50.382Z","thinkingLevel":"off"}
+{"type":"message","id":"a46b3160","parentId":"cae14d8d","timestamp":"2026-09-03T16:41:50.405Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1788453710401}}
+{"type":"message","id":"11c17beb","parentId":"a46b3160","timestamp":"2026-09-03T16:41:50.522Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1788453710436,"errorMessage":"401: {\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}"}}

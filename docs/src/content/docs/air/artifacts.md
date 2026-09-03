@@ -95,6 +95,12 @@ catalog already uses the externalized form.
 A lifecycle script registered into the agent's *own* settings — `.claude/settings.json`, tagged with
 `_airHookId` so AIR knows which entries it owns. Fired on agent events (a tool call, a git push).
 
+On the Pi runtime there is no such settings file to register into, and `air prepare pi` ignores hook
+entries outright. `PiAirBridge` writes a generated index that `@tadasant/pi-hooks` reads instead —
+see [Pi is the runtime that supplies nothing](/extend/agent-harness/#pi-is-the-runtime-that-supplies-nothing).
+The `HOOK.json` below is unchanged either way; what differs is the body's contract, described under
+[Writing a body that runs on more than one runtime](#writing-a-body-that-runs-on-more-than-one-runtime).
+
 Zimmer's catalog declares exactly one: `git-push-ci-reminder`. `hooks/hooks.json` registers it, and
 `hooks/git-push-ci-reminder/` holds the body:
 
@@ -121,10 +127,29 @@ the Claude event name directly (`PostToolUse`); an unrecognized one is warned ab
 `matcher` filters by tool name. A `./`-prefixed `command` or arg is rewritten at install time to
 `"$CLAUDE_PROJECT_DIR/.claude/hooks/<id>/…"`, so it resolves no matter where the agent has `cd`'d to.
 
-This hook reads the PostToolUse payload on stdin, and when the Bash command that just ran was a
-`git push` (a `--dry-run` isn't), returns `additionalContext` reminding the agent to confirm CI
-before calling the work done. Everything else is a no-op, and it always exits 0 — a hook must never
-fail the tool call it observes.
+This hook reads the tool-call payload on stdin, and when the shell command that just ran was a
+`git push` (a `--dry-run` isn't), returns a reminder to confirm CI before calling the work done.
+Everything else is a no-op, and it always exits 0 — a hook must never fail the tool call it observes.
+
+#### Writing a body that runs on more than one runtime
+
+`HOOK.json` is portable. The body it names is not, unless you write it that way — the two runtimes
+that execute AIR hooks today disagree about both halves of the contract:
+
+| | stdin payload | how context reaches the model |
+| --- | --- | --- |
+| Claude Code (`PostToolUse`) | `{tool_name, tool_input, tool_response}` | `hookSpecificOutput.additionalContext` |
+| Pi (`@tadasant/pi-hooks`) | `{event, toolName, input, content}` | `{"content": …}`, which **replaces** the tool result |
+
+A body that reads `tool_name` gets `undefined` on Pi and returns early; one that writes
+`hookSpecificOutput` has its output ignored. Both are silent — the hook loads, matches, spawns and
+exits 0, having done nothing.
+
+`@tadasant/pi-hooks` sets `PI_HOOK=1` on every hook process, which is the signal to answer in its
+dialect. `git-push-ci-reminder.mjs` normalizes either payload and renders either response, and it is
+worth copying that shape. Note the asymmetry in the right-hand column: Pi's `content` **replaces**
+the tool result rather than appending to it, so the Pi branch has to echo the command's own output
+back before its own text or the model never sees what the command actually did.
 
 `plugins/ci-workflow/.plugin/plugin.json` bundles this hook alongside `zimmer-run-tests`, and
 `ci-workflow` is `default_in_roots: ["agent-orchestrator"]`, so sessions on that root get it
