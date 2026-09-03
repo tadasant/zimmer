@@ -3686,8 +3686,8 @@ class SessionsController < ApplicationController
     end
   end
 
-  # JSON payload the heartbeat Stimulus controller reads back after toggling the
-  # heartbeat or changing its interval.
+  # The JSON the visibility control reads back. `board_visible` is the one the
+  # page acts on.
   def visibility_payload(session)
     {
       success: true,
@@ -3708,6 +3708,8 @@ class SessionsController < ApplicationController
     end
   end
 
+  # JSON payload the heartbeat Stimulus controller reads back after toggling the
+  # heartbeat or changing its interval.
   def heartbeat_json
     {
       success: true,

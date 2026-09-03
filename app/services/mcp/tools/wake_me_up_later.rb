@@ -142,8 +142,8 @@ module Mcp
 
       # The scheduler's rejection, plus the one remediation sentence that only
       # makes sense to a model: recompute against the server time the description
-      # renders. The web UI's remediation is different, which is why it is spliced
-      # on here rather than baked into Sessions::ScheduleWakeUp.
+      # renders. Spliced on here rather than baked into Sessions::ScheduleWakeUp,
+      # which has no idea it is being called by a model.
       def tool_error_message(error)
         return error.message unless error.code == :wake_at_too_soon
 

@@ -350,8 +350,11 @@ session. The `self_session` variant does not expose the option, and strips it fr
 it is passed anyway.
 
 **Sleeping a session is an MCP-only capability.** `wake_me_up_later` and `pause_into_spot_queue` are
-the only ways to put a session to sleep — the web UI has no control that does it. The UI's lever on a
-sleeping session runs the other way: **Start now** wakes it early.
+the only ways to put a session to sleep until a time or a quota opening — the web UI has no control
+that does it, and neither does the REST API (`POST /api/v1/sessions/:id/sleep` sleeps a session with
+no wake and no queue record, which is a different thing).
+
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
 
 `start_session` and `action_session` also take the web UI's *symbolic* queue placement, not just the
 integer behind it: `place: "top_of_spot"` is the same server-side resolution the Ranked view's

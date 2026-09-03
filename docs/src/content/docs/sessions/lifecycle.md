@@ -640,8 +640,7 @@ fire-and-drop in the scheduler and leave the session asleep forever, so the serv
 Only `needs_input`, `running` and `waiting` sessions can be scheduled; from `failed` or `archived`
 the auto-sleep silently no-ops and the trigger would point at a session nothing can wake.
 
-There is no human-facing control that sleeps a session until a chosen time. A human's lever on a
-sleeping session is the other direction: **Start now** wakes it early.
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
 
 **The spot queue — the same sleep with no wake-up.** `action_session`'s `pause_into_spot_queue`
 sleeps the session and hands it to the spot scheduler instead of arming anything:

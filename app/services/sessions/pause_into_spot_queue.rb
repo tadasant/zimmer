@@ -107,8 +107,8 @@ module Sessions
     rescue ActiveRecord::RecordInvalid => e
       # Chiefly the catalog coupling: a session whose agent root or skills no
       # longer resolve fails its own validations, and a park that raised
-      # RecordInvalid would surface as a 500 in the panel and a raw exception in
-      # the MCP tool. Nothing was committed — the transaction saw to that.
+      # RecordInvalid would surface as a raw exception in the MCP tool. Nothing
+      # was committed — the transaction saw to that.
       raise Error, "Could not park session #{session.id} in the spot queue: " \
                    "#{e.record.errors.full_messages.join(', ')}. No changes were made."
     end
