@@ -1,0 +1,54 @@
+<%# The filter bar. Every control maps to one key on WorkBacklog::Filters, the
+    same object the REST index and `get_work_backlog` use — so a question asked on
+    this page and the same question asked by the groomer cannot come back with
+    different answers.
+
+    `status` is deliberately absent: the queued and in-flight sections each fix
+    their own status, and a filter that could set it would make one of them lie.
+
+    Repo and direction narrow the GitHub half of the page as well, because they
+    mean the same thing on both sides. The queue-only keys (kind, cost, pinned)
+    have no counterpart on a GitHub issue and leave that list alone. %>
+<%= form_with url: issues_path, method: :get, data: { turbo: false },
+    class: "bg-white border border-gray-200 rounded-lg p-3 mb-4" do %>
+  <%# The chart's own state rides along so applying a filter does not silently
+      snap the trend back to 30 days / by direction. %>
+  <%= hidden_field_tag :window, params[:window] if params[:window].present? %>
+  <%= hidden_field_tag :segment, params[:segment] if params[:segment].present? %>
+
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 items-end">
+    <div>
+      <label for="repo" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Repo</label>
+      <%= select_tag :repo, options_for_select([ [ "All repos", "" ] ] + repo_options.map { |r| [ issue_repo_short(r), r ] }, filters.repo),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="scope_direction" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Direction</label>
+      <%= select_tag :scope_direction, options_for_select([ [ "Any", "" ], [ "Convergent", Issues::Direction::CONVERGENT ], [ "Divergent", Issues::Direction::DIVERGENT ] ], filters.scope_direction),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="surface" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Surface</label>
+      <%= select_tag :surface, options_for_select([ [ "Any", "" ] ] + surface_options.map { |s| [ s, s ] }, filters.surface),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="kind" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Kind</label>
+      <%= select_tag :kind, options_for_select([ [ "Any", "" ] ] + kind_options.map { |k| [ k, k ] }, filters.kind),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+    <div>
+      <label for="estimated_cost" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Cost</label>
+      <%= select_tag :estimated_cost, options_for_select([ [ "Any", "" ] ] + WorkBacklogItem::COSTS.map { |c| [ c, c ] }, filters.estimated_cost),
+          class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
+    </div>
+  </div>
+  <div class="flex flex-wrap items-center gap-2 mt-3">
+    <label class="inline-flex items-center gap-1.5 text-sm text-gray-700 whitespace-nowrap">
+      <%= check_box_tag :pinned, "true", filters.pinned == true, class: "rounded border-gray-300 text-indigo-600" %>
+      Hand-placed only
+    </label>
+    <%= submit_tag "Apply", class: "px-3 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 cursor-pointer" %>
+    <%= link_to "Clear", issues_path, class: "px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900" %>
+  </div>
+<% end %>
