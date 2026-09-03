@@ -76,7 +76,7 @@ class ProcessLifecycleManager
   # AgentSessionJob resets the counter once a resumed process runs stably, so a
   # genuinely long-lived session that OOMs occasionally gets a fresh budget each time
   # rather than accumulating toward a permanent failure over its lifetime.
-  BUDGET = RetryBudget::SIGNAL_DEATH
+  SIGNAL_DEATH_BUDGET = RetryBudget::SIGNAL_DEATH
 
   # How many times a turn that ended with the runtime having written NOTHING is
   # restarted from scratch before the session is allowed to come to rest. See
@@ -782,17 +782,17 @@ class ProcessLifecycleManager
   # @return [ExitDecision] Decision on what to do next
   def handle_signal_death(status, working_dir)
     signal_desc = exit_status_description(status)
-    retry_count = BUDGET.count_for(session)
+    retry_count = SIGNAL_DEATH_BUDGET.count_for(session)
     # Where the session has its own memory cgroup, the kernel's own counter says whether
     # memory was the cause, and how close to the bound the session got. Absent one, the
     # hedge below is the honest answer — see #session_memory_kill.
     memory_kill = session_memory_kill
     cause_clause = memory_kill ? memory_kill[:clause] : "(likely OOM or external kill)"
 
-    if BUDGET.exhausted?(session)
+    if SIGNAL_DEATH_BUDGET.exhausted?(session)
       add_log(
         "Process killed by #{signal_desc} #{cause_clause} and signal-death resume limit " \
-        "reached (#{BUDGET.max} attempts) — failing session",
+        "reached (#{SIGNAL_DEATH_BUDGET.max} attempts) — failing session",
         level: "warning"
       )
       @logger.warn("Signal-death resume limit exhausted", signal: signal_desc, attempts: retry_count)
@@ -811,14 +811,14 @@ class ProcessLifecycleManager
       return ExitDecision.new(action: :aborted)
     end
 
-    next_attempt = BUDGET.next_attempt(session)
+    next_attempt = SIGNAL_DEATH_BUDGET.next_attempt(session)
     with_db_retry do
-      BUDGET.record!(session, attempt: next_attempt)
+      SIGNAL_DEATH_BUDGET.record!(session, attempt: next_attempt)
     end
 
     add_log(
       "Process killed by #{signal_desc} #{cause_clause} — resuming session " \
-      "(attempt #{next_attempt}/#{BUDGET.max})",
+      "(attempt #{next_attempt}/#{SIGNAL_DEATH_BUDGET.max})",
       level: "info"
     )
     @logger.info("Recovering from signal death", signal: signal_desc, attempt: next_attempt)

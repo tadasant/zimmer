@@ -275,4 +275,34 @@ class RetryBudgetTest < ActiveSupport::TestCase
     assert_equal [ spent.id ], budget.exhausted_sessions.pluck(:id)
     assert_equal 0, RetryBudget::SIGTERM.sessions.count, "another budget's key must not match"
   end
+
+  # Running out is not the same ending for every loop. Six budgets fail the session; the
+  # empty-turn restart parks it in `needs_input` with an empty transcript. A hardcoded
+  # `:failed` filter would report zero exhaustions for that one no matter how many
+  # sessions Zimmer gave up restarting — and would count every one of them as a recovery.
+  test "exhausted_sessions counts the terminal status each budget actually reaches" do
+    abandoned = Session.create!(
+      prompt: "Never wrote a line", agent_runtime: "claude_code", status: :needs_input,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem",
+      metadata: { "empty_turn_recovery_count" => RetryBudget::EMPTY_TURN.max }
+    )
+    restarted = Session.create!(
+      prompt: "Restarted and running", agent_runtime: "claude_code", status: :running,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem",
+      metadata: { "empty_turn_recovery_count" => 1 }
+    )
+
+    assert_equal :needs_input, RetryBudget::EMPTY_TURN.terminal_status
+    assert_equal [ abandoned.id ], RetryBudget::EMPTY_TURN.exhausted_sessions.pluck(:id)
+    assert_equal [ restarted.id ], RetryBudget::EMPTY_TURN.recovered_sessions.pluck(:id),
+      "a session Zimmer gave up restarting is not a recovery"
+  end
+
+  test "every other budget's terminal status is a failed session" do
+    off_default = RetryBudget.all.reject { |budget| budget.terminal_status == :failed }
+
+    assert_equal [ :empty_turn ], off_default.map(&:name)
+  end
 end

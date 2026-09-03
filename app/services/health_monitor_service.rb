@@ -253,10 +253,9 @@ class HealthMonitorService
   # Built by enumerating RetryBudget.all rather than by naming metadata keys in SQL,
   # so a budget appears here because it was declared. Before this existed the health
   # surface covered the two budgets somebody had remembered to wire (SIGTERM and API
-  # error) and read as complete, while the signal-death, MCP-connection and
-  # context-length budgets were invisible to /health, to get_system_health and to
-  # SystemHealthMonitorJob — so "why did this session fail permanently" could not be
-  # answered from any health surface for three of the five ways it can happen.
+  # error) and read as complete, while every other budget was invisible to /health, to
+  # get_system_health and to SystemHealthMonitorJob — so "why did this session stop"
+  # could not be answered from any health surface for most of the ways it can happen.
   #
   # The two sections below stay: they carry rate-limit and quota detail this generic
   # one has no equivalent of, and the /health page renders them as their own panels.
@@ -1043,8 +1042,11 @@ class HealthMonitorService
         Arel.sql("COALESCE(SUM((metadata->>#{Session.connection.quote(budget.key)})::int), 0)")
       ).first
 
-    # Sessions that spent the budget and did NOT end up failed — the recovery worked.
-    successful_recovery_count = budget.sessions.where.not(status: :failed).count
+    # Sessions that spent the budget and did NOT come to rest in its terminal status —
+    # the recovery worked. Asked of the budget, because the terminal status differs:
+    # the empty-turn restart parks rather than fails, and a `:failed` filter would count
+    # every abandoned session here as a recovery.
+    successful_recovery_count = budget.recovered_sessions.count
 
     stamped = budget.stamped_sessions.to_a
     recent = stamped.select { |session| within?(budget.last_attempt_at(session), threshold) }
