@@ -66,6 +66,7 @@ class XOauthCredential < ApplicationRecord
   validates :account_key, presence: true, uniqueness: true
   validates :access_token_env_var, presence: true, uniqueness: true
   validates :token_endpoint, presence: true
+  validate :token_endpoint_must_be_https
 
   scope :active, -> { where("expires_at IS NULL OR expires_at > ?", Time.current) }
   scope :refreshable, -> { where.not(refresh_token: [ nil, "" ]) }
@@ -91,6 +92,16 @@ class XOauthCredential < ApplicationRecord
   # exchange both go through here, so neither can drift back to Net::HTTP's unbounded
   # defaults. Persistence differs between the two callers and stays with them —
   # this only speaks HTTP.
+  #
+  # `use_ssl` follows the URL's scheme rather than being forced on, and that is a
+  # trade rather than a guarantee. The guard against a cleartext endpoint is
+  # #token_endpoint_must_be_https, which runs on save — so it covers every way an
+  # operator can set the column, and does not cover a value written past it with
+  # update_column or assigned to an unsaved instance. Forcing TLS on here would
+  # close that too, at the cost of RefreshXOauthTokensJob's hanging-endpoint
+  # tests, which need a plaintext socket to raise Net::ReadTimeout rather than a
+  # handshake-phase Net::OpenTimeout. If that coverage is ever restructured,
+  # forcing it on is the stronger position.
   #
   # @return [Net::HTTPResponse] the raw response; callers classify the status
   # @raise network errors (Net::OpenTimeout, Net::ReadTimeout, ...) — callers
@@ -210,6 +221,33 @@ class XOauthCredential < ApplicationRecord
   end
 
   private
+
+  # The client secret goes out as HTTP Basic on every request to this endpoint
+  # (see .post_token_request), so a non-https value puts a long-lived
+  # confidential-client credential on the wire in the clear. Whether anything
+  # surfaces afterwards depends on what answers on port 80: a plain redirect
+  # lands in last_refresh_error, but anything that speaks the token protocol —
+  # a proxy, an interceptor — returns 200 and the leak leaves no trace.
+  #
+  # https is also the only value the field was ever meant to hold: X publishes no
+  # plaintext token endpoint, and DEFAULT_TOKEN_ENDPOINT is https. There is
+  # deliberately no carve-out for loopback: the field is operator-editable through
+  # the supervisor panel (XOauthCredentialDashboard lists it in FORM_ATTRIBUTES),
+  # and one rule with no exceptions is what makes that surface reviewable.
+  #
+  # userinfo is refused too. basic_auth overwrites the Authorization header, so
+  # embedded credentials would not leak — they would simply be ignored, which is
+  # its own trap, and X's endpoint has no use for them either way.
+  def token_endpoint_must_be_https
+    return if token_endpoint.blank? # the presence validation owns that case
+
+    uri = URI.parse(token_endpoint)
+    return if uri.is_a?(URI::HTTPS) && uri.host.present? && uri.userinfo.blank?
+
+    errors.add(:token_endpoint, "must be an https:// URL with a host and no embedded credentials — the X client secret is sent to it as HTTP Basic auth")
+  rescue URI::InvalidURIError
+    errors.add(:token_endpoint, "is not a valid URL")
+  end
 
   def handle_non_transient_failure!(response)
     if permanent_refresh_failure?(response)
