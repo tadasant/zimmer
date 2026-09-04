@@ -246,8 +246,15 @@
      * the element, so the `.prose .table-wrapper` rule above never matches
      * inside a transcript. Without this the wrapper computes `overflow-x:
      * visible` and a table with an unbreakable cell — a backticked file path —
-     * widens the page instead of scrolling in its own box. Only the scroll is
-     * restated; the wrapper's border and shadow stay with the `.prose` variant. */
+     * widens the page instead of scrolling in its own box.
+     *
+     * Only the scroll is restated. The whole `.prose <descendant>` family above
+     * — `.inline-code`, `.markdown-blockquote`, `.markdown-table` and this
+     * wrapper's own border and shadow — misses `.prose-session` for the same
+     * reason, so transcript markdown wears the typography plugin's default look
+     * rather than this file's. That is cosmetic and knowingly left: closing it
+     * would restyle the transcript, which is a bigger change than the overflow
+     * this rule is here to fix. */
     & .table-wrapper {
       @apply overflow-x-auto;
     }
