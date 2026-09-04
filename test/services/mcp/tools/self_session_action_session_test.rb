@@ -17,6 +17,22 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     assert_match(/self-management/, definition[:description])
   end
 
+  # The narrowed surface carries the same hand-maintained pair as its parent:
+  # an executable ACTIONS list and a prose description that has to be edited in
+  # step with it. Same drift, same consequence — a self-managing session reads
+  # the description and concludes it cannot do something it can.
+  test "the action description names every dispatchable action and no others" do
+    description = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.dig(:properties, :action, :description)
+
+    Mcp::Tools::SelfSessionActionSession::ACTIONS.each do |action|
+      assert_includes description, %("#{action}"),
+        "#{action} is dispatchable but missing from the action description"
+    end
+
+    assert_equal [], description.scan(/"(\w+)"/).flatten - Mcp::Tools::SelfSessionActionSession::ACTIONS,
+      "the action description advertises actions the dispatch does not accept"
+  end
+
   test "refuses an action outside the self-management subset" do
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "follow_up", "session_id" => sessions(:needs_input).id, "prompt" => "hi")
