@@ -36,6 +36,28 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       "the action description advertises actions the dispatch does not accept"
   end
 
+  # The same drift, one literal over. The tool's own long-form description — the
+  # text tools/list serves — explains each action as a "- **<name>**:" bullet,
+  # and it is hand-maintained next to the same ACTIONS list. An action with no
+  # bullet is dispatchable but unexplained, so the agent reading the tool never
+  # learns it exists and reaches for a worse path; a bullet with no action
+  # documents something the enum will reject.
+  #
+  # Scoped to the "**Actions:**" block rather than the whole description, which
+  # also carries prose sections whose bullets are not actions and must stay free
+  # to lead with a bold word.
+  test "the long-form description explains every dispatchable action and no others" do
+    actions_block = Mcp::Tools::ActionSession.to_h[:description][/^\*\*Actions.*?(?=\n\n\*\*)/m]
+    assert actions_block, "could not find the Actions block in the long-form description"
+    bulleted = actions_block.scan(/^- \*\*(\w+)\*\*:/).flatten
+
+    assert_equal [], Mcp::Tools::ActionSession::ACTIONS - bulleted,
+      "dispatchable actions with no bullet in the long-form description"
+    assert_equal [], bulleted - Mcp::Tools::ActionSession::ACTIONS,
+      "the long-form description explains actions the dispatch does not accept"
+    assert_equal bulleted.uniq, bulleted, "an action is explained twice in the long-form description"
+  end
+
   test "change_scheduling_class moves one session without touching its genesis" do
     session = sessions(:needs_input)
     session.update!(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: nil)
