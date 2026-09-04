@@ -341,6 +341,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
 
     assert_includes details, "In flight by queue: inference 2 (threads: agents 8,"
     assert_includes details, "Oldest execution by queue: inference 1h 17m"
+    assert_includes details, "Youngest execution by queue: inference 1h 17m"
   end
 
   # An ordinary backlog keeps the title it had, so this only adds a shape rather

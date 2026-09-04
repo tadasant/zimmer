@@ -169,15 +169,19 @@ class SystemHealthMonitorJob < ApplicationJob
         "(threads: #{HealthMonitorService.format_breakdown(HealthMonitorService.lane_thread_counts)})",
       "• Oldest execution by queue: " \
         "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}",
+      "• Youngest execution by queue: " \
+        "#{HealthMonitorService.format_ages(stats[:youngest_claimed_age_seconds_by_queue])}",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
       "",
       "The first line names one of three things: a WEDGED lane, one starved lane, or " \
-        "a stall spread across several. Read the last three bullets together before " \
+        "a stall spread across several. Read the in-flight bullets together before " \
         "acting, because they settle what the ready ages cannot. A lane whose in-flight " \
-        "count equals its thread count and whose oldest execution is hours old is " \
-        "wedged: every thread is held by work that is not coming back, so it can claim " \
-        "nothing — not the backlog behind it, and not a deploy gate's canary. A lane " \
+        "count equals its thread count and whose YOUNGEST execution is already hours " \
+        "old is wedged: every thread is held by work that is not coming back, so it " \
+        "can claim nothing — not the backlog behind it, and not a deploy gate's " \
+        "canary. An old oldest beside a fresh youngest is one slow job, not a wedge. " \
+        "A lane " \
         "with ready work and NO claims is the opposite failure: the worker is not " \
         "polling that lane at all. Both leave an old head of line and they look " \
         "identical from the ready side alone, which is why these lines exist. " \
