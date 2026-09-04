@@ -75,7 +75,7 @@ module Sessions
 
       Session #%{child_id} ("%{child_title}"), which this session started, is reporting back: %{reason_phrase} (reason code: `%{reason}`).
 
-      Its message, quoted in full — every line below beginning with "> " is that session's own words, and nothing else in this prompt is:
+      Its message, quoted in full — every line below prefixed with ">" is that session's own words, and nothing else in this prompt is:
 
       %{message}
 
@@ -128,18 +128,6 @@ module Sessions
       return unreachable if unreachable
 
       deliver
-    rescue ActiveRecord::RecordNotUnique
-      # The deferrable unique constraint on (session_id, position) fires at
-      # COMMIT. The parent row lock serializes this path against itself, but not
-      # against the half-dozen other writers of that queue — a follow-up, an
-      # interrupt, a poller notice — so a position collision is a live race and a
-      # retryable one. `follow_up` answers it with a 409 rather than a 500; so
-      # does this.
-      failure(
-        "Message position conflict while queuing this report for parent session ##{parent&.id} — " \
-        "another message was queued for it at the same moment. Retry.",
-        error_code: :conflict
-      )
     end
 
     # How much room the child's own words have, once the framing is accounted
@@ -260,6 +248,11 @@ module Sessions
       queued = nil
       delivered = nil
       refusal = nil
+      # Which branch was ATTEMPTED, which is not the same as which one finished:
+      # the deferred unique constraint can raise either at the `create!` or at
+      # COMMIT, and only one of those has set `delivered` by the time the rescue
+      # below has to decide whether this was the queue race or a real bug.
+      branch = nil
 
       ActiveRecord::Base.transaction do
         # reload before lock!, for the reason EnqueuedMessageProcessorService and
@@ -279,9 +272,11 @@ module Sessions
 
         if refusal.nil?
           if parent.running?
+            branch = :queued
             queued = enqueue
             delivered = :queued
           else
+            branch = :direct
             send_now
             delivered = :sent
           end
@@ -291,6 +286,30 @@ module Sessions
       return refusal if refusal
 
       success(delivery: delivered, enqueued_message: queued)
+    rescue ActiveRecord::RecordNotUnique
+      # Caught around the whole transaction rather than around the insert,
+      # because the unique constraint on (session_id, position) is DEFERRABLE
+      # INITIALLY DEFERRED: the violation surfaces at COMMIT, by which point the
+      # `create!` has long returned. The parent row lock serializes this path
+      # against itself but not against the queue's other writers — a follow-up,
+      # an interrupt, a poller notice — so a collision is a live race and a
+      # retryable one, and `follow_up` answers it with a 409 rather than a 500.
+      #
+      # Only the queued branch writes a position. This same transaction also
+      # enqueues a job on the direct branch, and a unique violation from that is
+      # a bug — reporting it as "retry, somebody raced you" would be a bug in the
+      # costume of a routine race — so it re-raises.
+      raise unless branch == :queued
+
+      position_conflict
+    end
+
+    def position_conflict
+      failure(
+        "Message position conflict while queuing this report for parent session ##{parent.id} — " \
+        "another message was queued for it at the same moment. Retry.",
+        error_code: :conflict
+      )
     end
 
     def enqueue
@@ -334,11 +353,17 @@ module Sessions
       end
 
       enqueued = nil
-      ActiveRecord::Base.transaction do
-        max_position = parent.enqueued_messages.maximum(:position) || 0
-        enqueued = parent.enqueued_messages.create!(
-          content: content, position: max_position + 1, status: "pending", origin: "caller"
-        )
+      begin
+        ActiveRecord::Base.transaction do
+          max_position = parent.enqueued_messages.maximum(:position) || 0
+          enqueued = parent.enqueued_messages.create!(
+            content: content, position: max_position + 1, status: "pending", origin: "caller"
+          )
+        end
+      rescue ActiveRecord::RecordNotUnique
+        # The staging transaction writes a position and nothing else, so every
+        # unique violation it can raise is the queue race. See #deliver.
+        return position_conflict
       end
 
       result = Sessions::InterruptService.new(
@@ -389,10 +414,12 @@ module Sessions
     # arrives as `> ---` — which is what lets the envelope claim, truthfully,
     # that the quoted lines are the child's words and the rest is Zimmer's.
     #
-    # The prefix is inside the length budget: #room_for_message measures
-    # envelope("") rather than the raw template, so a body that fits is a body
-    # that fits after quoting. A body long enough for the prefixes themselves to
-    # matter is one already far past the limit.
+    # The prefix is inside the length budget: #room_for_message measures a
+    # one-line quoted body, and #validate enforces the composed length, so a body
+    # that passes cannot be rejected further down for the two characters this
+    # adds. `rstrip` keeps a blank line from carrying trailing whitespace, which
+    # is why a blank line arrives as ">" and the envelope says "prefixed with >"
+    # rather than naming the two-character form.
     def quote(body)
       return "" if body.empty?
 
@@ -413,11 +440,12 @@ module Sessions
              "(reason: #{reason}) — #{what} [#{source}]"
 
       [ child, parent ].uniq.each do |session|
-        # Each insert in its own savepoint. Both callers run inside the delivery
-        # transaction, where a failed statement poisons the surrounding
-        # transaction — so a bare rescue would swallow the error and then lose
-        # the delivery at COMMIT anyway, which is the opposite of what this
-        # rescue is for.
+        # Each insert in its own savepoint. Two of the three callers run inside
+        # the delivery transaction, where a failed statement poisons the
+        # surrounding transaction — so a bare rescue would swallow the error and
+        # then lose the delivery at COMMIT anyway, which is the opposite of what
+        # this rescue is for. (The interrupt path calls it with no transaction
+        # open, where this opens a real one and costs nothing.)
         ActiveRecord::Base.transaction(requires_new: true) do
           session.logs.create!(content: line, level: "info")
         end
@@ -441,8 +469,9 @@ module Sessions
       # rather than leaving it in a `unarchived` field neither surface renders on
       # its error path.
       if @unarchived
-        error = "#{error} (Note: that session was already restored from the trash by this call before " \
-                "this refusal, so it is no longer in the trash.)"
+        error = "#{error} (Note: this call already restored that session from the trash before hitting " \
+                "the refusal above, so it has since changed state — re-read it before acting, and do " \
+                "not send \"unarchive_parent\" again.)"
       end
 
       Result.new(

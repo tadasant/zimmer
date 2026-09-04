@@ -198,6 +198,43 @@ class Sessions::MessageParentTest < ActiveSupport::TestCase
     assert_equal :conflict, result.error_code
   end
 
+  # --- Failures that must not lose the report --------------------------------
+
+  # The bug this savepoint exists for: log_both runs inside the delivery
+  # transaction, where a failed statement poisons the whole transaction — so a
+  # bare rescue would swallow the logging error and then lose the delivery at
+  # COMMIT, which is the opposite of what the rescue is for.
+  test "a failing log does not cost the delivery" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+
+    Log.any_instance.stubs(:save!).raises(ActiveRecord::StatementInvalid, "boom")
+
+    result = report(child, message: "still has to arrive")
+
+    assert result.success?, result.error
+    assert_equal :queued, result.delivery
+    assert_match(/still has to arrive/, parent.reload.enqueued_messages.sole.content)
+  end
+
+  # The unique constraint on (session_id, position) is deferred to COMMIT, and
+  # the parent's queue has several other writers — so a collision is a live race
+  # and a retryable one, answered with a 409 rather than a 500.
+  test "a position collision is a retryable conflict rather than a crash" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+
+    EnqueuedMessage.any_instance.stubs(:create_or_update).raises(
+      ActiveRecord::RecordNotUnique, "duplicate key value violates unique constraint"
+    )
+
+    result = report(child)
+
+    refute result.success?
+    assert_equal :conflict, result.error_code
+    assert_match(/position conflict/, result.error)
+  end
+
   # --- Arguments -------------------------------------------------------------
 
   test "requires a message" do

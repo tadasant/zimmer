@@ -1427,9 +1427,6 @@ class Api::V1::SessionsController < Api::BaseController
     )
   end
 
-  # True when the request actually named this artifact list, empty or not. An
-  # array is the only thing that counts as naming one, so an explicit `[]` is a
-  # request for none while an absent key falls through to the root's defaults.
   # The human-readable half of the message_parent response. The structured
   # `delivery` field above is what a client keys off; this is what an agent
   # reading the raw JSON gets told.
@@ -1446,6 +1443,9 @@ class Api::V1::SessionsController < Api::BaseController
     result.unarchived ? "#{base} That session was archived and has been restored from the trash to receive it." : base
   end
 
+  # True when the request actually named this artifact list, empty or not. An
+  # array is the only thing that counts as naming one, so an explicit `[]` is a
+  # request for none while an absent key falls through to the root's defaults.
   def explicit_list_param?(key)
     session_params[key].is_a?(Array)
   end
