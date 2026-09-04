@@ -194,7 +194,13 @@ a `gh api` write to a comments endpoint) with the permalink that command printed
 
 It reads only the results of commands it recognizes as posting — an agent that *reads* a comment gets
 that comment's own `html_url` back, and recording that would suppress a human comment. Same principle
-as `GithubPrUrlHook`: what the transcript shows the session *doing*, not what it saw.
+as `GithubPrUrlHook`, and since [#870](https://github.com/tadasant/zimmer/issues/870) the same
+reading of a command: what the transcript shows the session *doing*, not what it saw, so
+`grep -rn "gh pr comment" docs/` is a read. The one part read as written is the endpoint path of a
+`gh api` write, because quoting a path is ordinary and a quoted path must not hide a real post — the
+same asymmetry `GithubPrUrlHook` draws between a create and its `--repo`. Erring toward detection is
+deliberate here: a comment recorded wrongly is suppressed for every session permanently, but a post
+*missed* is the self-reply loop the hook exists to break.
 
 
 ## Writing one
