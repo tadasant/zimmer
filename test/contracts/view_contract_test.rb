@@ -580,10 +580,15 @@ class ViewContractTest < ActionView::TestCase
 
     # Collapsed by default: a <details> with no `open`, showing the skill name
     # and an explicitly approximate token count.
+    # Anchored to the <summary>: "update-skill" also appears in the hidden body,
+    # via the Base-directory line the fixture supplies, so a bare
+    # assert_includes would pass with the label deleted from the header.
     assert_includes html, "<details"
     refute_match(/<details[^>]*\bopen\b/, html)
-    assert_includes html, "update-skill"
-    assert_match(/approx\. \d+(\.\d)?k? tokens/, html)
+    summary = html[/<summary\b.*?<\/summary>/m]
+    assert summary, "the collapsed notice must render a <summary>"
+    assert_includes summary, "update-skill"
+    assert_match(/approx\. \d+(\.\d)?k? tokens/, summary)
 
     # Nothing is removed — the full body is still in the row, behind the
     # disclosure, and still what the copy button copies.

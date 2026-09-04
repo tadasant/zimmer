@@ -215,6 +215,27 @@ class SessionsHelperTest < ActionView::TestCase
     assert_nil ot_runtime_notice_digest(runtime_notice(text: "a" * SessionsHelper::RUNTIME_NOTICE_COLLAPSE_CHARS))
   end
 
+  test "ot_runtime_notice_digest leaves a short skill dump uncollapsed too" do
+    short = "Base directory for this skill: /skills/tiny\n\n# Tiny\n\nOne line of body."
+    assert_nil ot_runtime_notice_digest(runtime_notice(text: short))
+
+    # And the floor is what stops it, not the skill trigger: pad past the floor
+    # and the same shape collapses under its skill name.
+    padded = "#{short}\n#{'padding. ' * 60}"
+    assert_operator padded.length, :>, SessionsHelper::RUNTIME_NOTICE_FLOOR_CHARS
+    assert_equal "tiny", ot_runtime_notice_digest(runtime_notice(text: padded))[:label]
+  end
+
+  test "ot_runtime_notice_digest refuses a base directory that names no skill" do
+    %w[. ..].each do |basename|
+      text = "Base directory for this skill: /home/agent/skills/#{basename}\n#{'x' * 3_000}"
+
+      # Falls back to the first line rather than heading the row with "." or "..".
+      assert_equal "Base directory for this skill: /home/agent/skills/#{basename}",
+        ot_runtime_notice_digest(runtime_notice(text: text))[:label]
+    end
+  end
+
   test "ot_runtime_notice_digest collapses a large notice that is not a skill dump, labelled by its first line" do
     text = "The coordinator sent a message while you were working:\n\n#{'detail ' * 500}"
     digest = ot_runtime_notice_digest(runtime_notice(text: text))

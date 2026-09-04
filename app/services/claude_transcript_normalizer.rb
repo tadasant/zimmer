@@ -36,8 +36,11 @@ class ClaudeTranscriptNormalizer < TranscriptNormalizer
   #     interrupt. In Zimmer that shutdown is usually Zimmer's own doing:
   #     Sessions::InterruptService SIGTERMs the CLI to deliver an enqueued
   #     message ahead of the running turn.
-  #   isMeta — the CLI's internal resume scaffolding ("Continue from where you
-  #     left off."), paired with a stub assistant turn.
+  #   isMeta — context the CLI injected rather than a person typing. Its resume
+  #     scaffolding ("Continue from where you left off.", paired with a stub
+  #     assistant turn) is the common case by count; the same flag also carries
+  #     the entire body of a skill when one fires, which is why SessionsHelper
+  #     draws a large runtime notice collapsed.
   #
   # Rendering either as a UserMessage tells the reader a human acted, which is
   # the opposite of what Zimmer knows; the deployment's owner read one and asked

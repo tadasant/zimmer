@@ -154,16 +154,24 @@
             the skill name and an approximate token count, and the body renders
             unchanged once expanded. Rendered with <details> rather than a
             Stimulus controller, for the same reason the session hierarchy is:
-            no JS to load, it works under touch and keyboard, and there is
-            nothing for the transcript's infinite-scroll and auto-scroll
-            controllers to fight with. %>
+            no JS to load, and it works under touch and keyboard.
+
+            The one controller it does have to tell is auto-scroll. This row sits
+            inside the container auto-scroll's ResizeObserver watches, so
+            expanding a body worth tens of thousands of pixels looks exactly like
+            new content arriving — and a reader who was tailing would be thrown
+            to the bottom of the transcript, past the thing they just opened. The
+            action clears tailing, the same as scrolling up does; it hangs off
+            the summary's click rather than the details' toggle because toggle
+            fires after layout, which is already too late. %>
         <% if (digest = ot_runtime_notice_digest(item)) %>
           <details class="group/notice mt-2">
-            <summary class="flex flex-wrap items-center gap-x-2 gap-y-1 cursor-pointer select-none list-none marker:content-none rounded px-2 py-1 -mx-2 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300">
+            <summary data-action="click->auto-scroll#disclosureToggling"
+                     class="flex flex-wrap items-center gap-x-2 gap-y-1 cursor-pointer select-none list-none marker:content-none rounded px-2 py-1 -mx-2 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300">
               <svg class="h-3 w-3 flex-shrink-0 text-gray-400 transition-transform group-open/notice:rotate-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
               </svg>
-              <span class="font-medium text-gray-600 truncate min-w-0"><%= digest[:label] %></span>
+              <span class="font-medium text-gray-600 truncate min-w-0" title="<%= digest[:label] %>"><%= digest[:label] %></span>
               <span class="text-gray-400" title="Estimated from character count — not a billing figure"><%= digest[:token_summary] %></span>
               <span class="text-gray-400 group-open/notice:hidden">Show</span>
               <span class="text-gray-400 hidden group-open/notice:inline">Hide</span>
