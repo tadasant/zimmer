@@ -262,6 +262,27 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     assert_empty parent.enqueued_messages
   end
 
+  # Every other message_parent test here drives the shared @tool, whose context
+  # carries no session_id — so enforce_self_report! returns on its first line and
+  # is never exercised on a success path. This is the one that reports over a
+  # connection stamped the way every injected one is, which is the only shape a
+  # real caller has.
+  test "a connection that names the calling session reports over it normally" do
+    parent = sessions(:running)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    tool = Mcp::Tools::SelfSessionActionSession.new(
+      context: Mcp::Context.new(tool_groups: "self_session", session_id: child.id)
+    )
+
+    result = tool.call("action" => "message_parent", "session_id" => child.id,
+                       "message" => "the infra root owns this", "reason" => "wrong_scope")
+
+    assert_includes result, "## Report Sent to Parent Session"
+    assert_match(/the infra root owns this/, parent.enqueued_messages.sole.content)
+  end
+
   test "the reason enum is the service's, so the two cannot drift" do
     properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.deep_symbolize_keys[:properties]
 

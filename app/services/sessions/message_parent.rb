@@ -63,12 +63,19 @@ module Sessions
     # What the parent actually reads. Zimmer's framing around the child's own
     # words, so a parent can tell a report from a child apart from a human
     # speaking to it — and so it knows nothing else is going to act on this.
+    #
+    # The child's words are QUOTED (see #quote), not interpolated raw. The
+    # envelope's whole job is to be distinguishable from Zimmer's own voice, and
+    # a body free to contain its own `---` and its own bracketed header could end
+    # the quotation early and continue in that voice. Mcp::EnqueuedMessageSections
+    # guards the same laundering where agent-written content is rendered into a
+    # tool result; this is the same problem one layer up.
     ENVELOPE = <<~PROMPT.strip
       [MESSAGE FROM A CHILD SESSION — sent by an agent, not by a human]
 
       Session #%{child_id} ("%{child_title}"), which this session started, is reporting back: %{reason_phrase} (reason code: `%{reason}`).
 
-      Its message:
+      Its message, quoted in full — every line below beginning with "> " is that session's own words, and nothing else in this prompt is:
 
       %{message}
 
@@ -115,22 +122,40 @@ module Sessions
 
       @parent = child.parent_session
       return no_parent if parent.nil?
+      return parent_is_self if parent.id == child.id
 
       unreachable = ensure_reachable
       return unreachable if unreachable
 
       deliver
+    rescue ActiveRecord::RecordNotUnique
+      # The deferrable unique constraint on (session_id, position) fires at
+      # COMMIT. The parent row lock serializes this path against itself, but not
+      # against the half-dozen other writers of that queue — a follow-up, an
+      # interrupt, a poller notice — so a position collision is a live race and a
+      # retryable one. `follow_up` answers it with a 409 rather than a 500; so
+      # does this.
+      failure(
+        "Message position conflict while queuing this report for parent session ##{parent&.id} — " \
+        "another message was queued for it at the same moment. Retry.",
+        error_code: :conflict
+      )
     end
 
     # How much room the child's own words have, once the framing is accounted
     # for. Measured against THIS report's envelope (which carries the child's id,
     # title and URL) rather than a constant, so the number in the refusal is the
-    # number that was applied — and so a message that passes here cannot be
-    # rejected further down by EnqueuedMessage's own length validation.
+    # number that was applied.
+    #
+    # It is the room for a SINGLE-LINE body, because #quote costs two more
+    # characters per line and this method has no body to count lines of. The
+    # refusal that quotes it is therefore a floor, and what is actually enforced
+    # is the composed length — see #validate. A message anywhere near either
+    # number is half a megabyte long and has other problems.
     #
     # @return [Integer]
     def room_for_message
-      @room_for_message ||= Session::PROMPT_MAX_LENGTH - envelope("").length
+      @room_for_message ||= Session::PROMPT_MAX_LENGTH - (envelope("x").length - 1)
     end
 
     private
@@ -151,10 +176,14 @@ module Sessions
         return failure("reason must be one of: #{REASONS.keys.join(', ')}")
       end
 
-      if message.length > room_for_message
+      # The composed length is what EnqueuedMessage and Session both validate, so
+      # it is what is checked here — a message that passes cannot be rejected
+      # further down. #room_for_message is the number the caller is told, and it
+      # is the single-line floor.
+      if content.length > Session::PROMPT_MAX_LENGTH
         return failure(
           "message is too long (maximum #{room_for_message} characters, once the framing Zimmer adds " \
-          "around it is accounted for)"
+          "around it is accounted for — a little less if it runs to many lines, which are quoted)"
         )
       end
 
@@ -166,6 +195,20 @@ module Sessions
         "Session ##{child.id} has no parent session — it was started by a human or by a trigger, not by " \
         "another session, so there is nobody upstream to report to. Put this in your final message and come " \
         "to rest in needs_input for your human instead."
+      )
+    end
+
+    # `parent_session_id` is client-supplied and nothing stops it naming the row
+    # itself (Session#parent_session_must_exist checks existence, not identity),
+    # so this is reachable rather than theoretical. It has to be refused before
+    # `deliver`: on the force_immediate path a self-parented session would aim
+    # Sessions::InterruptService at the very process awaiting this reply and
+    # terminate the turn to deliver a message to itself.
+    def parent_is_self
+      failure(
+        "Session ##{child.id} is recorded as its own parent, which is not a lineage anybody can report " \
+        "across. That is a defect in how this session was created — say so to your human rather than " \
+        "reporting to yourself."
       )
     end
 
@@ -314,7 +357,13 @@ module Sessions
       end
 
       log_both("delivered to parent session ##{parent.id} as an interrupt")
-      success(delivery: :interrupted, enqueued_message: enqueued)
+      # Deliberately NOT `enqueued_message: enqueued`. A successful interrupt
+      # drains the queue through EnqueuedMessageProcessorService, which destroys
+      # the row after it claims it — so the object in hand names a message that
+      # no longer exists. Reporting it would advertise a dead id to a REST caller
+      # and a queue position to an agent, both describing a message that was in
+      # fact delivered. `follow_up` omits it on this path for the same reason.
+      success(delivery: :interrupted)
     end
 
     # --- Content and bookkeeping ---------------------------------------------
@@ -330,9 +379,24 @@ module Sessions
         child_title: child.title.to_s,
         reason: reason,
         reason_phrase: REASONS.fetch(reason, REASONS["other"]),
-        message: body,
+        message: quote(body),
         child_url: session_url(child)
       )
+    end
+
+    # Markdown blockquote, one prefix per line, blank lines included so the quote
+    # is unbroken. Nothing the child writes escapes it — a `---` of its own
+    # arrives as `> ---` — which is what lets the envelope claim, truthfully,
+    # that the quoted lines are the child's words and the rest is Zimmer's.
+    #
+    # The prefix is inside the length budget: #room_for_message measures
+    # envelope("") rather than the raw template, so a body that fits is a body
+    # that fits after quoting. A body long enough for the prefixes themselves to
+    # matter is one already far past the limit.
+    def quote(body)
+      return "" if body.empty?
+
+      body.split("\n", -1).map { |line| "> #{line}".rstrip }.join("\n")
     end
 
     def session_url(session)
@@ -349,7 +413,14 @@ module Sessions
              "(reason: #{reason}) — #{what} [#{source}]"
 
       [ child, parent ].uniq.each do |session|
-        session.logs.create!(content: line, level: "info")
+        # Each insert in its own savepoint. Both callers run inside the delivery
+        # transaction, where a failed statement poisons the surrounding
+        # transaction — so a bare rescue would swallow the error and then lose
+        # the delivery at COMMIT anyway, which is the opposite of what this
+        # rescue is for.
+        ActiveRecord::Base.transaction(requires_new: true) do
+          session.logs.create!(content: line, level: "info")
+        end
       rescue StandardError => e
         Rails.logger.warn "[Sessions::MessageParent] Could not log for session #{session.id}: #{e.message}"
       end
@@ -363,6 +434,17 @@ module Sessions
     end
 
     def failure(error, error_code: :unprocessable_entity)
+      # A refusal that arrives AFTER the restore is the one a caller would
+      # otherwise misread: the parent was re-archived, or came back in a state
+      # the delivery will not take, and "that session is archived" read on its
+      # own suggests nothing happened. The re-clone did happen, so say so here
+      # rather than leaving it in a `unarchived` field neither surface renders on
+      # its error path.
+      if @unarchived
+        error = "#{error} (Note: that session was already restored from the trash by this call before " \
+                "this refusal, so it is no longer in the trash.)"
+      end
+
       Result.new(
         success?: false, parent: @parent, delivery: nil, enqueued_message: nil,
         unarchived: @unarchived == true, error: error, error_code: error_code
