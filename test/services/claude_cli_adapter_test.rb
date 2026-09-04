@@ -911,10 +911,12 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
   # The web role, plain runc, a dev machine, CI. Unbounded is what every deployment did
   # before this existed, so it must stay a clean pass-through rather than an error.
   test "spawn_process leaves the command alone where there is no cgroup to enter" do
-    @adapter.zimmer_session_id = 4244
-    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+    without_delegated_cgroup_parent do
+      @adapter.zimmer_session_id = 4244
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
 
-    assert_equal [ "claude", "test" ], @mock_process_manager.spawned_processes.first[:command]
+      assert_equal [ "claude", "test" ], @mock_process_manager.spawned_processes.first[:command]
+    end
   end
 
   test "spawn_process returns hash with pid and stderr_log_path" do
