@@ -2732,15 +2732,17 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   # Every deployment without a writable cgroup2 filesystem. The hedge is what this said
   # before per-session cgroups existed, and it stays exactly right there.
   test "handle_exit keeps its old hedge where there is no per-session cgroup to read" do
-    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+    without_delegated_cgroup_parent do
+      @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
 
-    manager = create_manager
-    manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
-    manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+      manager = create_manager
+      manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+      manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
 
-    assert_equal AutomatedPrompts::SYSTEM_RECOVERY, @mock_cli_adapter.resumed_sessions.last[:prompt]
-    @log_buffer.flush
-    assert_match(/likely OOM or external kill/, @session.logs.reload.map(&:content).join("\n"))
+      assert_equal AutomatedPrompts::SYSTEM_RECOVERY, @mock_cli_adapter.resumed_sessions.last[:prompt]
+      @log_buffer.flush
+      assert_match(/likely OOM or external kill/, @session.logs.reload.map(&:content).join("\n"))
+    end
   end
 
   test "handle_exit increments the signal-death retry counter across successive kills" do
