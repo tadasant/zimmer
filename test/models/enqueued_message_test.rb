@@ -533,6 +533,15 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     end
   end
 
+  # A merged or closed PR reports mergeable: null. Reading that as "no idea"
+  # would deliver a notice telling a session to resolve conflicts on a PR that
+  # has already landed.
+  test "a conflict notice whose PR is no longer open is stale" do
+    GithubPullRequestMergeability.stubs(:read).with(PR_URL).returns(:not_open)
+
+    assert conflict_message.stale?
+  end
+
   # --- #retire_as_stale! ---
 
   test "retire_as_stale! retires a pending row and reports that it did" do
@@ -548,6 +557,54 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
 
     refute message.retire_as_stale!, "a claimed message belongs to the peer that claimed it"
     assert_equal "processing", message.reload.status
+  end
+
+  # The suppression must not become permanent. The poller has already recorded
+  # this PR as "confirmed + notified" and clears that marker only on a CLEAN
+  # reading — so if the mergeable reading that justified the suppression was
+  # itself one of the stale readings the two-poll debounce exists to filter, a
+  # real conflict would never be reported again. Handing the PR back to the
+  # debounce makes the guard self-correcting.
+  test "retire_as_stale! hands the PR back to the poller's conflict debounce" do
+    session = sessions(:running)
+    other_pr = "https://github.com/tadasant/zimmer/pull/999"
+    session.merge_custom_metadata!(
+      GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY => { PR_URL => true, other_pr => true },
+      GitHubMergeConflictPollerJob::SUSPECTED_METADATA_KEY => { PR_URL => true }
+    )
+
+    conflict_message.retire_as_stale!
+
+    session.reload
+    confirmed = session.custom_metadata[GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY]
+    suspected = session.custom_metadata[GitHubMergeConflictPollerJob::SUSPECTED_METADATA_KEY]
+    refute confirmed.key?(PR_URL), "the confirmed marker must be cleared or the notice is suppressed forever"
+    refute suspected.key?(PR_URL)
+    assert confirmed.key?(other_pr), "another PR's marker is not ours to clear"
+  end
+
+  test "a row a peer already claimed leaves the debounce markers alone" do
+    session = sessions(:running)
+    session.merge_custom_metadata!(
+      GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY => { PR_URL => true }
+    )
+    message = conflict_message
+    message.update!(status: "processing")
+
+    refute message.retire_as_stale!
+
+    assert session.reload.custom_metadata[GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY].key?(PR_URL)
+  end
+
+  # The retirement has already committed by then, so a failure resetting the
+  # debounce is a missed re-notification rather than a lost message. Raising
+  # would turn it into one.
+  test "a debounce reset that fails does not undo the retirement" do
+    GitHubMergeConflictPollerJob.stubs(:forget_conflict!).raises(RuntimeError, "metadata write failed")
+    message = conflict_message
+
+    assert message.retire_as_stale!
+    assert_equal "undelivered", message.reload.status
   end
 
   test "retire_as_stale! keeps the row readable at its position" do

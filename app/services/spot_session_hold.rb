@@ -790,6 +790,16 @@ class SpotSessionHold
     def origin_for(prompt)
       if AutomatedPrompts.system_recovery?(prompt)
         "automated_recovery_nudge"
+      elsif AutomatedPrompts.merge_conflict_pr_url(prompt).present?
+        # Stamped so the delivery-time re-read can find it. A conflict notice
+        # that reached a spot-class session while it was parked in `needs_input`
+        # was SENT rather than queued, and lands back in the queue here when the
+        # gate refuses the turn carrying it — where it can wait hours at the
+        # quota wall rather than the minutes an ordinary turn boundary takes. It
+        # is therefore the longest-gap version of the staleness this origin
+        # exists to catch (EnqueuedMessage#stale?), and the one most likely to be
+        # false by the time anybody reads it.
+        "automated_merge_conflict"
       else
         "caller"
       end

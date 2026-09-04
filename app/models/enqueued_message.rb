@@ -163,6 +163,13 @@ class EnqueuedMessage < ApplicationRecord
   # on a PR that will never merge and nothing says why — and this method's job
   # is to drop only what it can positively show is moot.
   #
+  # The readings that make a queued conflict notice moot. `:mergeable` is the
+  # case the guard exists for; `:not_open` is the PR having merged or closed
+  # while the notice sat in the queue, which is just as positively known and
+  # just as pointless to wake a session about. Every other reading — including
+  # `:unknown` — delivers.
+  DELIVERY_SUPPRESSING_READINGS = %i[mergeable not_open].freeze
+
   # @return [Boolean]
   def stale?
     return false unless STALENESS_CHECKED_ORIGINS.include?(origin)
@@ -175,7 +182,8 @@ class EnqueuedMessage < ApplicationRecord
       return false
     end
 
-    mergeability = GithubPullRequestMergeability.read(pr_url)
+    reading = GithubPullRequestMergeability.read(pr_url)
+    suppress = DELIVERY_SUPPRESSING_READINGS.include?(reading)
 
     # Logged at info on every branch, not just the suppression: the point of
     # this line is that a human reading a session that never got a conflict
@@ -183,10 +191,10 @@ class EnqueuedMessage < ApplicationRecord
     # never sent at all".
     Rails.logger.info(
       "[EnqueuedMessage] Re-read #{pr_url} before delivering message #{id} to session ##{session_id}: " \
-      "mergeable=#{mergeability} — #{mergeability == :mergeable ? 'suppressing the conflict notice' : 'delivering'}"
+      "read #{reading} — #{suppress ? 'suppressing the conflict notice' : 'delivering'}"
     )
 
-    mergeability == :mergeable
+    suppress
   end
 
   # Retire this message because #stale? found the state it reports has moved on.
@@ -207,8 +215,12 @@ class EnqueuedMessage < ApplicationRecord
   #
   # @return [Boolean] true if this call is the one that retired the row
   def retire_as_stale!
-    self.class.where(id: id, status: "pending")
-        .update_all(status: "undelivered", updated_at: Time.current) == 1
+    retired = self.class.where(id: id, status: "pending")
+                  .update_all(status: "undelivered", updated_at: Time.current) == 1
+    return false unless retired
+
+    forget_poller_conflict_markers
+    true
   end
 
   # Reorder message to a new position
@@ -249,6 +261,28 @@ class EnqueuedMessage < ApplicationRecord
   end
 
   private
+
+  # Hand the PR this notice named back to the poller's debounce, so a conflict
+  # that turns out to have been real is re-confirmed rather than silently
+  # swallowed. GitHubMergeConflictPollerJob.forget_conflict! carries the full
+  # reasoning; the short version is that the poller has already marked this PR
+  # "confirmed + notified", and that marker is cleared only by a clean reading.
+  #
+  # Best-effort on purpose. The retirement has already committed and is the
+  # thing that had to happen; failing to reset the debounce is a missed
+  # re-notification, not a lost message, and raising here would turn it into
+  # one. It is logged loudly instead.
+  def forget_poller_conflict_markers
+    pr_url = AutomatedPrompts.merge_conflict_pr_url(content)
+    return if pr_url.blank? || session.nil?
+
+    GitHubMergeConflictPollerJob.forget_conflict!(session, pr_url)
+  rescue => e
+    Rails.logger.error(
+      "[EnqueuedMessage] Retired message #{id} as stale but could not reset the conflict debounce for " \
+      "session ##{session_id}: #{e.class}: #{e.message} — a genuine conflict on this PR may not be re-reported"
+    )
+  end
 
   # See the callback declaration for why this exists. The job re-reads
   # everything under the per-session advisory lock, so this only has to be

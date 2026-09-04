@@ -131,6 +131,23 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
     assert session.reload.needs_input?, "the session keeps resting rather than burning a turn"
   end
 
+  # record_attempt runs before the try, and only `resume` clears it — which a
+  # retire-only drain never reaches. Left standing, three of these would leave
+  # the counter at MAX_ATTEMPTS and send the next GENUINE failure straight to
+  # give_up with no retries and a page.
+  test "a retire-only drain gives the attempt back instead of banking it" do
+    session, message = idle_session_with_queued_message(
+      content: AutomatedPrompts.merge_conflict_message("https://github.com/tadasant/zimmer/pull/834")
+    )
+    message.update!(origin: "automated_merge_conflict")
+    GithubPullRequestMergeability.stubs(:read).returns(:mergeable)
+
+    EnqueuedMessageDrainJob.perform_now(session.id)
+
+    assert_nil session.reload.metadata[EnqueuedMessageDrainJob::ATTEMPTS_KEY],
+      "a drain that had nothing left to deliver did not fail at anything"
+  end
+
   # The bounded half of "do not create a spin loop": a drain that cannot deliver
   # backs off rather than retrying on the spot, and counts.
   test "retries with a delay when delivery fails" do

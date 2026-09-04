@@ -190,8 +190,15 @@ module Sessions
 
     private
 
+    # revalidate: false — this service has already decided which message to
+    # deliver. It validated that row as `pending` under the lock, promoted it to
+    # the front, and reports success naming its content. A delivery-time
+    # staleness sweep could retire that very row, leaving the service to deliver
+    # whatever came next while logging the promoted message as sent — or to
+    # report a 409 blaming a concurrent interrupt that never happened. An
+    # explicit "send this now" outranks the guard.
     def processor_service
-      @processor_service ||= EnqueuedMessageProcessorService.new(@session)
+      @processor_service ||= EnqueuedMessageProcessorService.new(@session, revalidate: false)
     end
 
     def lifecycle_manager

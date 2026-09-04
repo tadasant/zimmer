@@ -493,6 +493,63 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     refute EnqueuedMessage.exists?(follow_up.id)
   end
 
+  # An explicit "send this one now" has already decided which row to deliver.
+  # Sessions::InterruptService validates that row, promotes it to the front and
+  # reports success naming its content — so a sweep that retired it under the
+  # service would have it deliver the next message while logging the promoted
+  # one as sent.
+  test "revalidate: false skips the sweep entirely and delivers the notice" do
+    message = queue_conflict_notice
+    GithubPullRequestMergeability.expects(:read).never
+
+    service = EnqueuedMessageProcessorService.new(@session, revalidate: false)
+    assert service.process_next_message
+
+    refute EnqueuedMessage.exists?(message.id)
+  end
+
+  test "a stale notice behind an ordinary message is retired too, not just the head" do
+    follow_up = @session.enqueued_messages.create!(content: "Human follow-up", position: 1)
+    stale_notice = queue_conflict_notice(position: 2)
+    stub_mergeability(:mergeable)
+
+    captured_prompt = nil
+    AgentSessionJob.stub(:enqueue_with_prompt, ->(_id, prompt, **_kwargs) { captured_prompt = prompt }) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+
+    assert_equal "Human follow-up", captured_prompt
+    refute EnqueuedMessage.exists?(follow_up.id)
+    assert_equal "undelivered", stale_notice.reload.status
+  end
+
+  test "two stale notices in one queue are both retired" do
+    first = queue_conflict_notice(position: 1)
+    second = @session.enqueued_messages.create!(
+      content: AutomatedPrompts.merge_conflict_message("https://github.com/tadasant/zimmer/pull/999"),
+      position: 2,
+      origin: "automated_merge_conflict"
+    )
+    GithubPullRequestMergeability.stubs(:read).returns(:mergeable)
+
+    refute EnqueuedMessageProcessorService.new(@session).process_next_message
+
+    assert_equal "undelivered", first.reload.status
+    assert_equal "undelivered", second.reload.status
+  end
+
+  # The sweep mirrors the state gate inside the claim transaction. A session in
+  # any other state cannot be handed a message however the sweep goes, so paying
+  # for a `gh` round trip and retiring a notice nobody was going to claim is
+  # work done for nothing.
+  test "a session that cannot take a message is not swept" do
+    queue_conflict_notice
+    @session.update!(status: :failed)
+    GithubPullRequestMergeability.expects(:read).never
+
+    refute EnqueuedMessageProcessorService.new(@session).process_next_message
+  end
+
   test "an ordinary caller message is never re-read against GitHub" do
     @session.enqueued_messages.create!(content: "Plain prompt", position: 1)
     GithubPullRequestMergeability.expects(:read).never

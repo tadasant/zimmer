@@ -1,14 +1,19 @@
 # frozen_string_literal: true
 
+require "json"
+
 # Whether a GitHub PR can be merged into its base branch *right now*.
 #
-# GitHubMergeConflictPollerJob answers the same question on its own cron tick,
-# and keeps its own copy of the read: it wraps the call in a null-retry loop,
-# feeds the two-poll debounce, and its private methods are what its tests stub.
-# This module is the other caller — the one that has to ask again at the moment
-# a conflict notice is taken off a session's queue, which can be several minutes
-# after the poll that wrote it (see EnqueuedMessage#stale?). It reads the same
-# `mergeable` field so the two cannot disagree about what "conflicting" means.
+# GitHubMergeConflictPollerJob answers a narrower version of the same question
+# on its own cron tick, and keeps its own copy of the read: it wraps the call in
+# a null-retry loop, feeds the two-poll debounce, and its private methods are
+# what its tests stub. This module is the other caller — the one that has to ask
+# again at the moment a conflict notice is taken off a session's queue, which can
+# be several minutes after the poll that wrote it (see EnqueuedMessage#stale?).
+# It reads the same `mergeable` field so the two cannot disagree about what
+# "conflicting" means, plus `state`, because a PR that closed or merged while the
+# notice sat in the queue is a *known* reason the notice is moot rather than an
+# unknown.
 #
 # Every answer that is not a definite reading is `:unknown`, and every caller is
 # expected to fail *open* on it. A guard that suppressed a notice on a read it
@@ -31,7 +36,11 @@ module GithubPullRequestMergeability
   module_function
 
   # @param pr_url [String] full PR URL, e.g. "https://github.com/owner/repo/pull/1"
-  # @return [Symbol] :mergeable, :conflicting, or :unknown
+  # @return [Symbol] one of:
+  #   :mergeable  — GitHub says this PR merges cleanly
+  #   :conflicting — GitHub says it does not
+  #   :not_open   — merged or closed, so mergeability no longer means anything
+  #   :unknown    — no reading could be taken; callers must fail open
   def read(pr_url)
     match = PR_URL_PATTERN.match(pr_url.to_s)
     unless match
@@ -45,20 +54,20 @@ module GithubPullRequestMergeability
       return :unknown
     end
 
-    interpret(fetch_mergeable_field(owner, repo, pr_number), "#{owner}/#{repo}##{pr_number}")
+    interpret(fetch_pull_request(owner, repo, pr_number), "#{owner}/#{repo}##{pr_number}")
   end
 
-  # Raw `mergeable` value as a string ("true" / "false" / "null"), or nil when
-  # the call could not be completed.
+  # The PR's `state` and `mergeable` as a hash with string keys, or nil when the
+  # call could not be completed.
   #
   # Goes through BoundedSubprocess rather than a bare Open3 so this read — the
   # one that runs on a session's delivery path rather than a poller's own tick —
   # cannot wedge. See tadasant/zimmer#458 for the pollers' own bare calls.
-  def fetch_mergeable_field(owner, repo, pr_number)
+  def fetch_pull_request(owner, repo, pr_number)
     command = [
       "gh", "api",
       "repos/#{owner}/#{repo}/pulls/#{pr_number}",
-      "--jq", ".mergeable"
+      "--jq", "{state: .state, mergeable: .mergeable}"
     ]
 
     stdout, stderr, status = BoundedSubprocess.run(command, timeout: READ_TIMEOUT_SECONDS)
@@ -71,7 +80,8 @@ module GithubPullRequestMergeability
       return nil
     end
 
-    stdout.strip
+    parsed = JSON.parse(stdout.to_s)
+    parsed.is_a?(Hash) ? parsed : nil
   rescue BoundedSubprocess::TimeoutError => e
     Rails.logger.warn "[GithubPullRequestMergeability] #{e.message}"
     nil
@@ -81,18 +91,32 @@ module GithubPullRequestMergeability
     nil
   end
 
-  # `null` is GitHub still computing mergeability, which is common in the
-  # seconds after a push. The poller retries through it because it is about to
-  # write a debounce marker either way; here there is nothing to gain by
+  # `mergeable: null` is GitHub still computing mergeability, which is common in
+  # the seconds after a push. The poller retries through it because it is about
+  # to write a debounce marker either way; here there is nothing to gain by
   # waiting — an indefinite answer is `:unknown` and the caller delivers.
-  def interpret(raw, subject)
-    case raw
-    when "true" then :mergeable
-    when "false" then :conflicting
-    when "null", nil then :unknown
+  #
+  # `state` is checked first because it outranks mergeability: a merged or closed
+  # PR reports `mergeable: null`, and reading that as "no idea" would throw away
+  # the one thing GitHub told us for certain.
+  def interpret(payload, subject)
+    return :unknown if payload.nil?
+
+    state = payload["state"]
+    return :not_open if state.is_a?(String) && state != "open"
+
+    case payload["mergeable"]
+    when true then :mergeable
+    when false then :conflicting
+    when nil then :unknown
     else
-      Rails.logger.warn "[GithubPullRequestMergeability] Unexpected mergeable value #{raw.inspect} for #{subject}"
+      Rails.logger.warn "[GithubPullRequestMergeability] Unexpected mergeable value " \
+        "#{payload['mergeable'].inspect} for #{subject}"
       :unknown
     end
   end
+
+  # Only `read` is the interface. The other two are split out for readability
+  # and are stubbed by name in this module's own test, not called from elsewhere.
+  private_class_method :fetch_pull_request, :interpret
 end
