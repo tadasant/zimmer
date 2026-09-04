@@ -483,8 +483,16 @@ archive retires it to `undelivered` and pages. It cannot be accepted and then si
 An **archived** parent is refused rather than delivered to, since nothing delivers a message to a
 session in the trash — the error names `unarchive_parent: true`, which restores that session and then
 delivers. That is opt-in on purpose: it interrupts a session that considered its work finished. A
-**failed** parent, and a session with **no parent** at all, are refused outright, and each error says
-what to do instead. `session_id` must be the calling session's own: a connection stamped with a
+**failed** parent, a session with **no parent** at all, and a session recorded as **its own** parent
+(`parent_session_id` is client-supplied, and the model checks existence rather than identity) are
+refused outright, and each error says what to do instead. One more error is a retry rather than a
+refusal: a queue **position conflict**, which means another writer of the parent's queue won a race
+deferred to COMMIT. Send it again.
+
+What the parent reads is the child's message **quoted** — every line behind a `>` prefix — inside
+Zimmer's framing. That is what lets the envelope claim the quoted lines are the child's words and the
+rest is Zimmer's: a body carrying its own `---` and its own bracketed header cannot close the
+quotation early and continue in that voice. `session_id` must be the calling session's own: a connection stamped with a
 `session_id` refuses to send another session's report, which is the one place this surface enforces
 its aim rather than only its actions.
 
