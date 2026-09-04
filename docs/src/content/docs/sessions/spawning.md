@@ -662,6 +662,17 @@ successfully`. That success line was previously written unconditionally, so a Co
 by a failed resume ended its log claiming it had finished fine, which is precisely what a frozen
 session looks like from the outside.
 
+A failed session's teardown then says what is on disk, having looked. Zimmer keeps a failed
+session's clone for debugging and recovery, and the last line of that session's log is where a
+person decides whether anything is left to recover — so the claim rests on a `directory?` stat of
+the recorded path, not on the presence of `metadata["clone_path"]`, which only records where a
+clone was once made. When the tree is there the line names the path and says archiving the session
+cleans it up; when it is not, the line says so, asks for no cleanup, and points at what actually survives —
+the session's prompt and transcript, which live on the session record rather than in the clone.
+Before that, a session that failed *because* its clone directory had vanished was told four seconds
+later that the clone had been preserved for debugging
+([#816](https://github.com/tadasant/zimmer/issues/816)).
+
 :::danger[Every one of those questions is answered by a regex against CLI prose]
 There is no structured exit signal. Zimmer determines *why* a session died by string-matching
 English:
