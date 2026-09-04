@@ -23,15 +23,17 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
   test "names each trigger's MCP servers in list mode" do
     output = @tool.call({})
 
-    assert_includes output, "**MCP Servers:** slack-workspace"
+    assert_includes output, "### CI Failure Handler (ID: #{triggers(:enabled_slack_trigger).id})"
+    assert_includes output, "**Scheduling Class:** priority (default for its conditions) | " \
+                            "**MCP Servers:** slack-workspace\n"
     assert_includes output, "**MCP Servers:** (none)"
 
     triggers(:enabled_slack_trigger).update!(mcp_servers: %w[slack-workspace github])
     assert_includes @tool.call({}), "**MCP Servers:** slack-workspace, github"
   end
 
-  # A small configuration is the whole point of the by-id view — it must look
-  # exactly as it always has, byte for byte.
+  # A small configuration is the whole point of the by-id view — it is rendered
+  # byte for byte, with nothing elided.
   test "renders a small configuration verbatim" do
     condition = trigger_conditions(:enabled_schedule_condition)
 
@@ -41,7 +43,7 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
       .split("\n").map { |line| "  #{line}" }.join("\n")
     assert_includes output, "  ```json\n#{verbatim}\n  ```"
     assert_includes output, '"timezone": "Eastern Time (US & Canada)"'
-    assert_not_includes output, "Summarised:"
+    assert_not_includes output, "Poller state, summarised"
   end
 
   # Slack cursor maps grow without bound — SlackTriggerPollerJob rewrites them every
@@ -60,17 +62,56 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     output = @tool.call("id" => condition.trigger_id)
 
     # The shape of the cursor state, not the state itself.
-    assert_includes output, '"thread_timestamps": "400 entries, most recent 1788455399.688659"'
-    assert_includes output, '"participating_threads": "400 entries, most recent C0A6BF8T45R:1788400399.000000"'
+    assert_includes output, "- `thread_timestamps`: 400 entries, most recent 1788455399.688659"
+    assert_includes output, "- `participating_threads`: 400 entries, most recent C0A6BF8T45R:1788400399.000000"
     assert_not_includes output, "1788455000.688659"
-    assert_includes output, "Summarised:"
     assert_includes output, "GET /api/v1/triggers/#{condition.trigger_id}"
+
+    # A summarised key is OMITTED from the JSON rather than given a prose value:
+    # the commonest misuse of action_trigger is echoing a configuration back, and
+    # preserve_slack_poll_state restores a key that is absent — while a summary
+    # sitting under its real key would be written over the live cursor map.
+    assert_not_includes output, '"thread_timestamps"'
+    assert_not_includes output, '"participating_threads"'
 
     # Settings a human typed survive intact, however long the configuration got.
     assert_includes output, '"channel_name": "eng-ci"'
     assert_includes output, '"U20"'
 
     assert_operator output.length, :<, 4_000, "the summarised rendering must not carry the cursor dump"
+  end
+
+  # A poller-owned collection under the threshold is not high-cardinality, so it
+  # stays in the JSON however large the configuration around it is.
+  test "leaves a small poller-owned collection in place" do
+    condition = trigger_conditions(:enabled_slack_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "thread_timestamps" => 400.times.to_h { |i| [ "C0A6BF8T45R:#{i}", "1788455#{format('%03d', i)}.688659" ] },
+      "bot_activity_timestamps" => { "C0A6BF8T45R" => "1788455399.688659" }
+    ))
+
+    output = @tool.call("id" => condition.trigger_id)
+
+    assert_includes output, '"bot_activity_timestamps"'
+    assert_includes output, '"C0A6BF8T45R": "1788455399.688659"'
+    assert_not_includes output, "- `bot_activity_timestamps`:"
+  end
+
+  # GitHub poll state carries no timestamps, so the summary names a sample entry
+  # instead of a most-recent one.
+  test "summarises a collection whose entries carry no timestamp" do
+    condition = trigger_conditions(:github_label_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "seen_items" => (1..400).map { |i| "tadasant/zimmer#pull_request##{i}" }
+    ))
+
+    output = @tool.call("id" => condition.trigger_id)
+
+    assert_includes output, "- `seen_items`: 400 entries, e.g. tadasant/zimmer#pull_request#1"
+    assert_not_includes output, '"seen_items"'
+    # The user-facing lists are not poller state and are never summarised.
+    assert_includes output, '"tadasant/zimmer"'
+    assert_includes output, '"ready to merge"'
   end
 
   # Nothing to summarise means nothing changes: a long configuration with no
@@ -82,7 +123,7 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     output = @tool.call("id" => condition.trigger_id)
 
     assert_includes output, "x" * 3_000
-    assert_not_includes output, "Summarised:"
+    assert_not_includes output, "Poller state, summarised"
   end
 
   test "surfaces skip_if_pending_session, and names the session it is skipping for" do
