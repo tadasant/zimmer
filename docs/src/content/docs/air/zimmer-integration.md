@@ -68,8 +68,8 @@ against *this* catalog. The two reasons a link cannot come across verbatim are t
 self-contained property implies:
 
 - **The reference is not in this catalog.** `open-pr` upstream deep-links four references Zimmer
-  does not carry, and `wait-for-ci` deep-links a fifth (`HARNESS_BASH_DENIALS.md`). All of them
-  live in a private repo and some of them describe the private production deployment;
+  does not carry, and `wait-for-ci` deep-links one of those same four (`HARNESS_BASH_DENIALS.md`).
+  All four live in a private repo and some of them describe the private production deployment;
   `tadasant/zimmer` is public, so copying them in would leak deployment detail *and* break the
   offline-resolve promise. The substance those passages needed is written inline in the vendored
   body instead, and the links are gone. Incident citations that name a private repo get the same

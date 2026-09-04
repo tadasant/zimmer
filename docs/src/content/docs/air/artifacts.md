@@ -29,7 +29,7 @@ The generic workflow skills are vendored here too, under `category: workflow`:
 | Skill | What it does |
 | --- | --- |
 | `open-pr` | Commit, push, open the PR, self-review, subagent-review, wait for CI, then its two terminal steps: apply the `ready to merge` label, and schedule a bounded self-wake so the session sleeps on the PR instead of parking in the action queue. Bundles the `git-workflow` reference. |
-| `wait-for-ci` | Block until CI passes or fails on the current PR, in the foreground; if the turn will end with checks pending, schedule a bounded self-wake instead. On green it hands the `ready to merge` label back to `open-pr`. Bundles the `git-workflow` reference. |
+| `wait-for-ci` | Block until CI passes or fails on the current PR, in the foreground — and if the turn will end with checks still pending, schedule a bounded self-wake before ending it. On green it hands the `ready to merge` label back to `open-pr`. Bundles the `git-workflow` reference. |
 | `recover-from-compaction-thrashing` | Delegate verbose tool calls to subagents so compaction doesn't erase your work. |
 
 :::note[The catalog is the only source of skills]
@@ -48,9 +48,10 @@ A markdown document that many skills can share. Broken out from skills deliberat
 (your git workflow, your engineering conventions) shouldn't be copy-pasted into every skill that
 needs it.
 
-Zimmer's catalog ships four: `engineering-practices`, `brand`, `brand-voice`, and
-`anti-slop-rubric`, mapping to `references/ENGINEERING_PRACTICES.md`, `BRAND.md`,
-`BRAND_VOICE.md`, and `ANTI_SLOP_RUBRIC.md`. The `sync-docs` skill declares the last three.
+Zimmer's catalog ships five: `engineering-practices`, `brand`, `brand-voice`,
+`anti-slop-rubric`, and `git-workflow`, mapping to `references/ENGINEERING_PRACTICES.md`,
+`BRAND.md`, `BRAND_VOICE.md`, `ANTI_SLOP_RUBRIC.md`, and `GIT_WORKFLOW.md`. The `sync-docs`
+skill declares three of them; `open-pr` and `wait-for-ci` declare `git-workflow`.
 
 At prepare time, each skill's declared references are bundled into
 `.claude/skills/<skill-id>/references/`.
