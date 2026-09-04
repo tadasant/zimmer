@@ -34,7 +34,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
     freeze_time do
       assert_no_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
 
-      travel FleetIdleMonitor::IDLE_THRESHOLD
+      travel FleetIdleMonitor.idle_threshold
       assert_enqueued_with(job: SystemEventTriggerJob, args: [ FleetIdleMonitor::EVENT_NAME ]) do
         FleetIdleCheckerJob.perform_now
       end
@@ -49,7 +49,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
     session = nil
     freeze_time do
       FleetIdleCheckerJob.perform_now
-      travel FleetIdleMonitor::IDLE_THRESHOLD
+      travel FleetIdleMonitor.idle_threshold
 
       assert_difference -> { Session.count }, 1 do
         perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
@@ -58,7 +58,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
     end
 
     assert_equal trigger.id.to_s, session.metadata["trigger_id"].to_s
-    assert_includes session.prompt, "The fleet has run out of work"
+    assert_includes session.prompt, "The fleet has room for more work"
     assert_equal SessionGenesis::SYSTEM_EVENT, session.genesis
     assert_not_nil trigger.trigger_conditions.first.reload.last_triggered_at
   end
@@ -70,7 +70,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
 
     freeze_time do
       FleetIdleCheckerJob.perform_now
-      travel FleetIdleMonitor::IDLE_THRESHOLD
+      travel FleetIdleMonitor.idle_threshold
 
       assert_difference -> { Session.count }, 1 do
         10.times do
@@ -90,7 +90,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
 
     freeze_time do
       FleetIdleCheckerJob.perform_now
-      travel FleetIdleMonitor::IDLE_THRESHOLD
+      travel FleetIdleMonitor.idle_threshold
       perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
       spawned = Session.order(:id).last
 
@@ -110,7 +110,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
       end
 
       # Past the floor, a quiet fleet is a fresh opportunity again.
-      travel FleetIdleMonitor::MIN_FIRE_INTERVAL
+      travel FleetIdleMonitor.min_fire_interval
       assert_difference -> { Session.count }, 1 do
         perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
       end

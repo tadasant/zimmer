@@ -629,10 +629,16 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # the token that has to wrap — so this owns both rather than leaning on fixtures.
   # The readings matter too: with them the spot gate renders its live decision and
   # the pool note under it, which is the longest prose on the page.
+  #
+  # The backlog top-up card below the gate is measured on the same visit. Its clock
+  # state is set to `cooling_down` deliberately: that branch renders the longest
+  # sentence of the six, so the card is at its widest rather than at its emptiest.
   test "inference does not overflow horizontally on a phone" do
     AppSetting.editable.update!(spot_gating_enabled: true,
                                 spot_reserve_five_hour_pct: 20,
-                                spot_reserve_weekly_pct: 20)
+                                spot_reserve_weekly_pct: 20,
+                                fleet_idle_since: 10.minutes.ago,
+                                fleet_idle_event_fired_at: 20.minutes.ago)
     3.times do |i|
       account = ClaudeAccount.create!(
         email: "a-rather-long-account-address-#{i}@subdomain.example.com",
@@ -649,8 +655,14 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     visit inference_path
     assert_selector "h1"
     assert_selector "#spot-gate-pool-note"
+    # The top-up card's three-up knob row and four-up reading row are the two
+    # blocks on it that have to collapse below `sm`.
+    assert_selector "#fleet-top-up-status"
+    assert_selector "#fleet-top-up-next-fire"
 
     assert_no_horizontal_overflow("inference")
+
+    page.save_screenshot("tmp/screenshots/proof-inference-fleet-top-up-375.png")
   end
 
   # The Pi tab carries the longest unbroken tokens on the surface — a store path,

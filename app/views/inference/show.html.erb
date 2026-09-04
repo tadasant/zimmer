@@ -54,6 +54,12 @@
         <%= render "inference/spot_gate" %>
       <% end %>
 
+      <!-- Backlog top-up: when a fleet with room to spare gets handed more work.
+           Loaded alongside the gate, so it renders on the same condition. -->
+      <% if @fleet_top_up %>
+        <%= render "inference/fleet_top_up" %>
+      <% end %>
+
       <!-- Account Cards -->
       <% if @accounts.any? %>
         <div class="space-y-4">

@@ -226,6 +226,18 @@ semantics are deliberately asymmetric:
 It is checked **when a session starts** and never again. Lowering the limit under a running fleet
 holds the next start; it never interrupts work already underway.
 
+### Its sibling: the backlog top-up ceiling
+
+**Max sessions at once** says how much work may run. The **Backlog top-up** card directly below it on
+`/inference` says how *little* work means the fleet has room for more — the ceiling
+`no_sessions_in_progress` fires under, which is what hands an under-used fleet more to do. The two are
+read together: raising the concurrency limit without raising the top-up ceiling buys slots nothing
+fills them, which is exactly what left a ten-slot fleet running at two.
+
+Its count is running sessions **plus spot ones queued behind the gate**, against one ceiling, so a
+backed-up spot queue suppresses top-up the same way running work does. Both live under
+[`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress), which owns the full rules.
+
 ### Read across the whole pool, not one account
 
 Utilization is the **pool average** — every Claude Code account's latest reading, averaged. It is the
@@ -1032,6 +1044,8 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read when the account pool regains capacity, and the soonest 7-day rollover behind it | Account Pool section on `/inference` | `get_spot_policy` |
 | Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
 | Toggle gating, set the two priority reserves, set the max sessions at once | `/inference` | `action_spot_policy` (`set_gating`) |
+| Read the backlog top-up ceiling, stretch and cooldown, and where the fleet sits against them | Backlog top-up card on `/inference` | `get_spot_policy` |
+| Set the backlog top-up ceiling, stretch and cooldown | Backlog top-up card on `/inference` | `action_spot_policy` (`set_top_up`) |
 | One-click promote a genesis (non-trigger kinds only) | `/inference` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
 | Reset all genesis classes | `/inference` | `action_spot_policy` (`reset_genesis_classes`) |
 | Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |
