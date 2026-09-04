@@ -114,6 +114,12 @@ class EnqueuedMessageDrainJob < ApplicationJob
     # exactly the outcome wanted. A peer draining the queue between skip_reason
     # and here lands in the same branch, and is equally not a failure.
     unless session.enqueued_messages.pending.exists?
+      # Give the attempt back. record_attempt runs before the try, and the
+      # counter is otherwise cleared only by the `resume` transition — which a
+      # retire-only drain never reaches. Left standing, three of these would
+      # leave the counter at MAX_ATTEMPTS and send the NEXT genuine delivery
+      # failure straight to give_up with no retries and a page.
+      clear_attempts(session)
       Rails.logger.info(
         "[EnqueuedMessageDrainJob] Session #{session_id}: queue emptied without a delivery " \
         "(retired or taken by a peer) — nothing left to deliver"
@@ -168,6 +174,13 @@ class EnqueuedMessageDrainJob < ApplicationJob
     # the next one. The invariant was stated without an exception, so this has
     # none; a caller who wants the message gone deletes it.
     nil
+  end
+
+  # Undo record_attempt for an outcome that was not an attempt at anything.
+  def clear_attempts(session)
+    return if session.metadata&.dig(ATTEMPTS_KEY).blank?
+
+    session.update_column(:metadata, (session.metadata || {}).except(ATTEMPTS_KEY))
   end
 
   # Record the attempt BEFORE trying, so an attempt that takes the worker down

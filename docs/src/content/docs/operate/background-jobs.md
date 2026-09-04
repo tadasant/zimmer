@@ -618,12 +618,27 @@ six minutes after the poll that wrote it, and about five after the conflicts wer
 So `EnqueuedMessageProcessorService` asks again before it claims anything.
 `EnqueuedMessage#stale?` re-reads the PR's `mergeable` field — the same field the poller reads,
 through `GithubPullRequestMergeability` — and a notice whose PR now reads mergeable is retired
-`undelivered` instead of delivered. This is the same question `AoEventSubject#stale?` asks of an
-event's subject before firing a trigger condition, asked at the other end of the same kind of gap.
+`undelivered` instead of delivered. This is the same question `AoEventSubject::SessionSubject#stale?` asks
+of an event's subject before firing a trigger condition, asked at the other end of the same kind of gap.
 
 It is **origin-aware**, and only `automated_merge_conflict` is on the list. A merge is a fact that
 outlives the poll, so `automated_pr_merged` has nothing to re-check; an ordinary `caller` message is
-somebody waiting on delivery and can never go out of date.
+somebody waiting on delivery and can never go out of date. `SpotSessionHold` stamps the same origin
+on a conflict notice it parks in the queue when the quota gate refuses the turn carrying it — that
+is the longest-gap version of the same staleness, since a spot hold lasts hours rather than the
+minutes a turn boundary takes.
+
+Retiring a notice also hands the PR back to the poller's debounce, via
+`GitHubMergeConflictPollerJob.forget_conflict!`. Without that the suppression would be permanent:
+the poller has already recorded the PR as "confirmed + notified", and it clears that marker only on
+a *clean* reading — so a `mergeable == true` that was itself one of the stale readings the debounce
+exists to filter would silence a real conflict forever. Clearing both markers makes the guard
+self-correcting instead, at a cost of one debounce cycle.
+
+A `mergeable` reading is not the only thing that makes a notice moot. A PR that **merged or closed**
+while the notice sat in the queue reports `mergeable: null`, so the read also asks for `state` and
+treats a non-`open` PR as suppressing — that is a positively known fact, not an unknown, and waking
+a session to resolve conflicts on a merged PR is exactly the harm being avoided.
 
 The wasted turn is not the reason this matters. **Any resume consumes a session's one-time wake
 triggers.** A session sleeping on its PR under the `open-pr` skill's self-wake, woken by a notice
@@ -645,7 +660,15 @@ Two properties keep the guard from becoming the worse bug:
 
 The re-read runs outside the claim transaction, because that transaction holds the session's row
 lock and every poller wanting to enqueue against the session takes the same one. It goes through
-`BoundedSubprocess`, so a wedged `gh` cannot hold up a session's turn boundary indefinitely.
+`BoundedSubprocess`, so a wedged `gh` cannot hold up a session's turn boundary indefinitely, and the
+sweep as a whole is bounded again by `STALENESS_SWEEP_BUDGET_SECONDS` — the per-call timeout bounds
+one child, not a loop over a session with several conflicting PRs. Notices past the budget are
+delivered unchecked, which is the same fail-open answer an unreadable PR gets.
+
+**An explicit "send this one now" outranks the guard.** `Sessions::InterruptService` validates a
+specific row, promotes it to the front of the queue and reports success naming its content, so it
+passes `revalidate: false`. A sweep that retired that row under it would have it deliver the next
+message while logging the promoted one as sent.
 
 ## Queues
 

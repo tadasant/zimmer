@@ -357,7 +357,8 @@
       </div>
 
       <%# Rendered here rather than inside the follow-up form, which is hidden once
-          the session is archived — the state these rows exist in. %>
+          the session is archived — one of the two states these rows exist in. The
+          other is a live session whose queued poller notice was retired as stale. %>
       <%= render "enqueued_messages/undelivered_messages", agent_session: @session %>
 
       <!-- Follow-up Prompt Input (Sticky at bottom) -->
