@@ -116,7 +116,7 @@ Staging authenticates with a **dedicated, non-primary** GitHub account — **`ta
 Tadas's personal `tadasant` — so the box never holds his personal token.
 
 The token lives in the [Parameter Store](/operate/secrets-parameter-store/) as the `${VAR}` named
-**`GH_TOKEN`**, at `/zimmer/staging/mcp/static/GH_TOKEN`. It is deliberately **not** a GitHub Actions
+**`GH_TOKEN`**, at `/zimmer/staging/secrets/static/GH_TOKEN`. It is deliberately **not** a GitHub Actions
 secret: storing a GitHub credential in GitHub puts the thing and the lock in one place, and a value in
 the store rotates with one `gcloud` command instead of a redeploy.
 
@@ -180,9 +180,9 @@ that can write, [by design](/operate/secrets-parameter-store/).
 
    Set an expiry you are willing to renew, and note that an expired token fails the same way an
    absent one does: the poller skips and logs, it does not alert.
-3. **Seed it into the store** as `/zimmer/staging/mcp/static/GH_TOKEN`, with the admin identity —
+3. **Seed it into the store** as `/zimmer/staging/secrets/static/GH_TOKEN`, with the admin identity —
    the four steps from [Adding a secret](/operate/secrets-parameter-store/#adding-a-secret), whose parameter id for
-   this path is `zimmer-staging-mcp-static-gh-token`. Do not skip the `secretAccessor` binding: without
+   this path is `zimmer-staging-secrets-static-gh-token`. Do not skip the `secretAccessor` binding: without
    it every read 400s while the Connectors banner stays green.
 4. **Keep a copy in 1Password**, so it can be recovered and rotated deliberately.
 5. **Verify.** The value is picked up within the snapshot TTL — no redeploy. Confirm with

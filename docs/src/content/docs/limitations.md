@@ -3517,6 +3517,39 @@ shows, in either environment.
 
 ---
 
+## The secret namespace is renamed in code, and the live data has not moved yet
+
+`ParameterStore::Namespace`'s scope segment is now `secrets` rather than `mcp`, because `GH_TOKEN`
+and `OPENROUTER_API_KEY` were never MCP secrets. **The rename shipped; the migration of the live
+parameters in `zimmer-secrets-prod` and `zimmer-secrets-staging` has not run.**
+
+That is a designed-for state, not a broken one. `Namespace.read_namespaces` returns both
+namespaces, canonical first, and `GcpClient#resolve_all` reads them in one pass — so every secret
+keeps resolving from wherever it currently sits, in either order of code deploy and data move. The
+reason it had to be built that way is what makes the half-done state hard to see: the chain's
+contract is that [a miss is not an error](/operate/secrets-parameter-store/#the-chain-and-its-order),
+so a resolver pointed at a namespace the data had not reached would not raise — every store-only
+secret would read as **Missing configuration**, on the Connectors page and nowhere else.
+
+Two things are outstanding, and they have an order:
+
+1. **strad's Secrets Console cannot write the new paths yet.** `strad/infra/strad.prod.yaml` in
+   `tadasant-internal` pins Zimmer's two store entries to `namespaces: ["/zimmer/production/mcp/"]`
+   and `["/zimmer/staging/mcp/"]` with `namespacesStrict: true`, and under strict a path outside
+   that list is refused. Both entries have to list the new prefix **as well as** the old one before
+   anything writes there. That file belongs to the `strad-production` root.
+2. **The migration is run by a human.** `parameter_store:migrate_namespace` (dry run) and
+   `…:migrate_namespace!` need a credential with write permission on the store, and Zimmer
+   deliberately holds none — the `zimmer-secrets-writer` service account exists but its key is not
+   deployed. Shipping the move as a post-deploy job would mean baking an admin key into the image
+   to run once, which is the opposite of what the resolver's three read-only roles are for.
+
+Until it runs, the Connectors store banner names the variables still in the pre-rename namespace,
+and each variable's `GSM` tooltip names the namespace that answered for it. Dropping the pre-rename
+read path is a separate PR, and its precondition is that banner reading empty.
+
+---
+
 ## 🔴 The envelope Zimmer tells you to store breaks on any secret containing a quote, brace or newline
 
 **Unfixed, and known.** No issue is filed yet — it is recorded here so it is not rediscovered from
@@ -3529,7 +3562,7 @@ creates the parameter with `--parameter-format json` and puts the `__REF__` poin
 string**:
 
 ```json
-{"path":"/zimmer/production/mcp/static/X","secret":true,"value":"__REF__(\"//secretmanager…\")"}
+{"path":"/zimmer/production/secrets/static/X","secret":true,"value":"__REF__(\"//secretmanager…\")"}
 ```
 
 Parameter Manager's `:render` substitutes the secret's **raw bytes** in place of that token, inside
@@ -3540,9 +3573,8 @@ whole namespace snapshot, not just that one variable. Every `${VAR}` in the envi
 resolving from the store at once.
 
 That rules out most real credentials: service-account key JSON, PEM private keys, anything
-JSON-shaped. Plain tokens are fine, which is why nothing has surfaced — no real secret has been
-stored under `/zimmer/{env}/mcp/static/` yet, and the resolver is not yet delivered to a running
-container.
+JSON-shaped. Plain tokens are fine, which is why nothing has surfaced — everything stored under
+the namespaces the resolver reads is a plain token today.
 
 **The reason no test catches it** is the more important half. `FakeParameterStore#render_version`
 parses the envelope, replaces the value on the *parsed Ruby object*, and re-serializes with

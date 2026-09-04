@@ -102,10 +102,14 @@ module ParameterStore
     # be gone, and a half-created pair is exactly the state Delete exists to
     # clean up.
     #
+    # @param path [String, nil] the path whose fold names the pair to remove.
+    #   Defaults to the variable's canonical path; {NamespaceMigration} passes
+    #   the pre-rename one, which folds to a different id, to delete the copy it
+    #   has just verified out of.
     # @return [String] the resource id that was removed
     # @raise [StoreError, AuthError]
-    def delete(variable, env: Rails.env)
-      id = Namespace.parameter_id(Namespace.parameter_path(variable, env))
+    def delete(variable, env: Rails.env, path: nil)
+      id = Namespace.parameter_id(path.presence || Namespace.parameter_path(variable, env))
       refuse_unmanaged!(id)
 
       parameter_version_ids(id).each do |version|

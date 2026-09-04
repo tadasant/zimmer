@@ -45,7 +45,8 @@
 class GhTokenProvisioner
   # The `${VAR}` name, which is also the environment variable `gh` reads. Its
   # canonical store path is ParameterStore::Namespace.parameter_path("GH_TOKEN") —
-  # /zimmer/{env}/mcp/static/GH_TOKEN.
+  # /zimmer/{env}/secrets/static/GH_TOKEN. It is also the reason that namespace is
+  # named what it is: a `gh` CLI token was never an MCP secret.
   VARIABLE = "GH_TOKEN"
 
   # How long a resolution is trusted before the chain is consulted again.
