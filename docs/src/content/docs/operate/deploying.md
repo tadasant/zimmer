@@ -400,6 +400,17 @@ everything?" a question the health panel answers rather than one somebody has to
 on each item's `id` so a second pass writes nothing, with the counts on its `stats`. See
 [the work backlog](/operate/work-backlog/).
 
+`RearmWakesBrickedByUnresolvableAgentRoot` is the other shape a one-time task takes: not an import
+but a **repair of live rows**, where selecting one row too many is as bad as selecting one too few.
+Two things follow from that. Its idempotency is structural rather than keyed — re-enabling a trigger
+moves it off `failed`, which is the first term of its own predicate, so a second pass matches
+nothing and it can never re-arm a row a human has since cleared. And because the write itself
+destroys the evidence (`Trigger#clear_failure_state_when_leaving_failed` sheds `failed_at` and
+`last_error` on the way out of `failed`), it logs each row whole *before* mutating it and puts a
+bounded digest in `stats`. A task whose effect is one-way owes a reader that much: the log is the
+durable copy, `stats` is the copy reachable without a shell, and neither is the row it changed. See
+[re-arming bricked wakes](/sessions/triggers/#re-arming-the-wakes-that-were-already-bricked).
+
 ### Seeing it without a shell
 
 One object, `PostDeployTaskRun.summary`, rendered four ways so they cannot disagree:
