@@ -276,6 +276,141 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 10101)
   end
 
+  # --- Quoted mentions: the literal handed to another command as data ---------
+  #
+  # #870. A read-only command that merely names a posting command is not one, and
+  # reading it as one records every permalink in its output — over this repo's own
+  # source and docs, which quote both the literals and example permalinks.
+
+  test "does NOT record a permalink grepped out of the repo for the gh pr comment literal" do
+    # Session 11898's shape (#772) pointed at this hook: a grep for the literal over
+    # a file whose comments carry an example permalink.
+    output = <<~OUT
+      app/services/transcript_hooks/github_comment_authorship_hook.rb:44:  #   gh pr comment / gh issue comment
+      docs/src/content/docs/limitations.md:2637:`gh pr comment` prints #{POSTED_URL}
+    OUT
+
+    run_hook(claude_transcript(command: %q(grep -rn "gh pr comment" app/ docs/), output: output))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778),
+      "a grep for the literal is a read, and its output is somebody else's comment"
+  end
+
+  test "does NOT record a permalink from rg for the gh pr review literal" do
+    output = "app/services/transcript_hooks/github_comment_authorship_hook.rb:46:  # gh pr review — see #{POSTED_URL}"
+
+    run_hook(claude_transcript(command: %q(rg "gh pr review" app/), output: output))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "does NOT record a permalink printed by an echo that quotes gh issue comment" do
+    run_hook(claude_transcript(
+      command: "echo \"gh issue comment posts to #{POSTED_URL}\"",
+      output: POSTED_URL
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "does NOT record a comments READ whose own jq filter quotes a write flag" do
+    # The write flag inside the segment's own quoted argument, where segmentation
+    # cannot help: there is only one command. Read off the raw segment, this list of
+    # a whole thread is a post, and every comment in it — the human's included — is
+    # suppressed fleet-wide.
+    output = [
+      { "id" => 5145406778, "html_url" => POSTED_URL, "user" => { "login" => "tadasant" } }
+    ].to_json
+
+    run_hook(claude_transcript(
+      command: %q{gh api repos/tadasant/tadasant-internal/issues/281/comments --paginate --jq 'map(select(.body | test("rm -f ")))'},
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "does NOT record a comments READ written as an explicit GET with query fields" do
+    # `gh api -X GET <path> -f per_page=100` is gh's own idiom for a GET with query
+    # parameters. Reading the field flag as the write would record the whole thread
+    # this lists — the human's comments included.
+    output = [
+      { "id" => 5145406778, "html_url" => POSTED_URL, "user" => { "login" => "tadasant" } }
+    ].to_json
+
+    run_hook(claude_transcript(
+      command: "gh api -X GET repos/tadasant/tadasant-internal/issues/281/comments -f per_page=100",
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  # --- The other direction: a real post must still be seen -------------------
+  #
+  # A lost recording is the self-reply loop this hook exists to break, so every
+  # shape a post arrives in stays covered.
+
+  test "records a gh pr comment run behind a timeout prefix" do
+    run_hook(claude_transcript(command: "timeout 120 gh pr comment 281 --body 'done'", output: POSTED_URL))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "records a gh pr comment retried inside an until loop" do
+    run_hook(claude_transcript(
+      command: "until gh pr comment 281 --body 'done'; do sleep 5; done",
+      output: POSTED_URL
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "records a gh pr comment inside a quoted shell wrapper" do
+    run_hook(claude_transcript(
+      command: %q(bash -lc "cd /repo && gh pr comment 281 --body 'done'"),
+      output: POSTED_URL
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "records a gh pr review whose body quotes the literal it is talking about" do
+    # The body is data and the invocation is not, in the same segment.
+    run_hook(claude_transcript(
+      command: %q(gh pr review 281 --comment --body "use gh pr comment next time"),
+      output: POSTED_URL
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "records a gh api post whose method flag is quoted" do
+    # The quoted method is blanked out of the view the flags are read from, so the
+    # field flag is what carries the write — which is the same answer.
+    output = { "id" => 13131, "html_url" => "https://github.com/o/r/pull/7#issuecomment-13131" }.to_json
+
+    run_hook(claude_transcript(
+      command: %q(gh api repos/o/r/issues/7/comments -X "POST" -f body='done'),
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 13131)
+  end
+
+  test "records a gh api post whose endpoint path is quoted" do
+    # The endpoint is a value the write needs, quoted or not, so it is read off the
+    # command as written rather than off the #unquoted view.
+    output = { "id" => 12121, "html_url" => "https://github.com/o/r/pull/7#issuecomment-12121" }.to_json
+
+    run_hook(claude_transcript(
+      command: %q(gh api "repos/o/r/issues/7/comments" -f body='done'),
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 12121)
+  end
+
   test "reads a tool result whose content is an array of text blocks" do
     transcript = <<~JSONL
       {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"gh pr comment 281 --body done"}}]}}
