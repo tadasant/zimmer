@@ -692,9 +692,9 @@ actually decides what gets done.
   a rank.
 - **"Put this first" is a placement, not a number.** Where a surface offers it, a symbolic
   `top_of_spot` stands in for the integer and the server resolves it against the live queue as part
-  of the same write. The Ranked view's demote button, the Quick Router and the two MCP session tools
-  offer it; a trigger and the REST API take an integer only — see [Placing something at the head of
-  the queue](#placing-something-at-the-head-of-the-queue).
+  of the same write. The Ranked view's demote button, the Quick Router, the two MCP session tools and
+  the REST API's create and update all offer it; a trigger takes an integer only — see [Placing
+  something at the head of the queue](#placing-something-at-the-head-of-the-queue).
 
 ### Placing something at the head of the queue
 
@@ -712,18 +712,19 @@ offers the placement comes through it:
 | Ranked view, **Demote to spot** | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
 | Quick Router, **Run as spot** | resolved server-side on submit; the checkbox copy says so |
 | MCP `start_session`, `action_session` (`change_precedence` / `change_scheduling_class`) | `place: "top_of_spot"` |
+| [REST API](/extend/rest-api/) `POST /api/v1/sessions`, `PATCH /api/v1/sessions/:id` | `"place": "top_of_spot"` |
 
 Two surfaces that rank a session do **not** offer it, and that is deliberate. The session detail
 page's scheduling-class control posts only the class — its Precedence field beside it is the integer,
 and a demotion there keeps whatever rank the session carried. A **trigger** takes an integer only: the
 value is stamped on every session it ever spawns, so a placement resolved once at edit time would be
 a stale number by the first spawn, and one resolved at every fire would be a standing queue-jump
-rather than a rank. The [REST API](/extend/rest-api/) takes an integer only as well.
+rather than a rank.
 
-On MCP the argument is **mutually exclusive with `precedence`** — they are two answers to the same
-question, and passing both is an error rather than a silent winner. Passing neither leaves the
-ordinary behaviour untouched: a spawn still lands one point above its parent, and a demotion still
-keeps whatever rank the session already carried.
+On MCP and over REST the argument is **mutually exclusive with `precedence`** — they are two answers
+to the same question, and passing both is an error rather than a silent winner. Passing neither
+leaves the ordinary behaviour untouched: a spawn still lands one point above its parent, and a
+demotion still keeps whatever rank the session already carried.
 
 Where the surface is placing a session that already exists, the resolution both **excludes that
 session** from the measure and **floors the result at the rank it already holds**. The first stops

@@ -58,6 +58,14 @@ module SessionPrecedence
   # one is added here rather than in four places.
   PLACES = [ PLACE_TOP_OF_SPOT ].freeze
 
+  # What every surface says when a caller sends both a placement and an absolute
+  # rank. Here rather than in each surface for the same reason PLACES is: the
+  # refusal is one rule, and a caller that hits it over REST and then over MCP
+  # should not have to work out that it read two different sentences.
+  BOTH_PLACE_AND_PRECEDENCE = '"place" and "precedence" are mutually exclusive — they are two ' \
+    'answers to the same question. Pass "place" to let the server work the value out against the ' \
+    'live queue, or "precedence" to name an absolute rank yourself.'
+
   # Bounds. Postgres `integer` is 32-bit, and the reorder maths adds and averages
   # values, so the accepted range is kept an order of magnitude clear of the
   # column's own limit. Nothing legitimate needs a billion.
@@ -130,6 +138,30 @@ module SessionPrecedence
     def clamp_precedence(value)
       value.to_i.clamp(MIN, MAX)
     end
+  end
+
+  # The precedence THIS session should take at a symbolic placement — the form
+  # every surface wants when it is re-placing a session that is already in the
+  # queue (MCP's `action_session`, `PATCH /api/v1/sessions/:id`).
+  #
+  # Two adjustments over the class method, both about a session measuring itself:
+  #
+  # 1. It is excluded from the population, so "put this at the head" applied to
+  #    the row already on top does not walk it SLOT_GAP higher every call. Same
+  #    exclusion the Ranked view's demote button applies.
+  # 2. The result is floored at the value the session already holds. Without
+  #    that, (1) overshoots in the other direction: a session on top at 1000 with
+  #    a runner-up at 10 would be rewritten to 15 — still the head of the spot
+  #    queue, but now beneath a priority session carrying 500 that would outrank
+  #    it on a later demotion. "Put this first" is never a request to lower a
+  #    rank, so a session that is already first keeps its number.
+  #
+  # @param place [String] one of PLACES
+  # @raise [ArgumentError] if the placement is not one this knows
+  # @return [Integer]
+  def precedence_for_place(place)
+    resolved = self.class.precedence_for_place(place, self.class.where.not(id: id))
+    [ resolved, precedence.to_i ].max
   end
 
   # Records that a caller named a value, so create-time inheritance leaves it
