@@ -96,6 +96,14 @@ class SessionExperimentalFlag < ApplicationRecord
       )
     )
   rescue StandardError => e
+    # Unless the connection is already poisoned. Swallowing here is what makes a
+    # bookkeeping write safe to run inside a state transition — but on a
+    # transaction Postgres has aborted there is nothing left to make safe: every
+    # statement the transition runs after this one fails too, and the transition
+    # rolls back regardless. Swallowing there only buries the real cause under
+    # the InFailedSqlTransaction errors that follow it. See issue #924.
+    raise if DatabaseTransactionState.aborted_by?(e)
+
     Rails.logger.warn("[SessionExperimentalFlag] could not tag session #{session&.id}: #{e.class}: #{e.message}")
     nil
   end

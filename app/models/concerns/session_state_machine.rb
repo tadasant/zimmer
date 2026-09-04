@@ -946,54 +946,77 @@ module SessionStateMachine
   # database, a dead Redis) hits this callback for every session in flight and
   # must collapse into one alert per AlertService::DEDUP_WINDOW, not thousands.
   #
+  # ONE failure is not swallowed: an error that left the connection inside a
+  # transaction Postgres has aborted. Swallowing exists to let a transition finish
+  # with one side effect missing, and on a poisoned connection no transition can
+  # finish — the state UPDATE itself rolls back, and every later callback raises
+  # `InFailedSqlTransaction` and lands here in turn. Reporting each of them pages
+  # once per callback with nothing but consequences, which is exactly what issue
+  # #924 was: four ERROR records for one failed SELECT nobody logged. Re-raising
+  # lets the first one abort the transition and surface the real cause once.
+  #
   # @param operation [Symbol] the callback that failed — pass `__method__`
   # @param error [Exception] the swallowed error
   # @param alert [Boolean] whether this failure also pages #eng-alerts
   def report_swallowed_side_effect(operation, error, alert:)
-    Rails.logger.error(
-      "[SessionStateMachine] Failed to #{operation} for session #{id}: #{error.class}: #{error.message}"
-    )
-    return unless alert
-
-    # Post AFTER the transaction commits. AASM runs `after` callbacks inside the
-    # transition's own transaction, and AlertService posts to Slack synchronously
-    # (5s connect / 10s read). Alerting inline would hold a transaction open on
-    # this row for a network round trip during precisely the incident — a sick
-    # database — where that hurts most. after_all_transactions_commit runs the
-    # block immediately when no transaction is open, so nothing is deferred that
-    # doesn't need to be.
-    session_id = id
-    ActiveRecord.after_all_transactions_commit do
-      AlertService.raise_alert(
-        "Session state-machine side effect failed",
-        details: "`#{operation}` raised during a state transition and was swallowed, so the " \
-                 "transition completed with this side effect missing.\n\n" \
-                 "*Session:* #{session_id}\n\n" \
-                 "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
-        source: "SessionStateMachine##{operation}",
-        dedup_key: "session_state_machine_side_effect_#{operation}",
-        # The exception itself, not a hand-copied `e.message`: the backtrace is
-        # the high-signal part and it is sitting right here at the rescue.
-        error: error
-      )
-    rescue => alert_error
-      # Runs post-commit, outside the outer rescue's reach.
+    if DatabaseTransactionState.aborted_by?(error)
+      # Logged before the raise, not instead of it. Whether anything upstream
+      # records this depends on who called the transition, and the one seam whose
+      # job is to make swallowed failures visible must not have an exit that says
+      # nothing.
       Rails.logger.error(
-        "[SessionStateMachine] Failed to alert on swallowed side effect #{operation}: #{alert_error.message}"
+        "[SessionStateMachine] Aborting the transition on session #{id}: #{operation} raised " \
+        "#{error.class}: #{error.message}, and the transaction it ran in cannot commit"
       )
+      raise error
     end
-  rescue => reporting_error
-    # Reporting must never become a new way for a transition to blow up. This
-    # runs inside an AASM `after` block, so an exception escaping here would
-    # abort the transition mid-flight — the exact wedge these rescues exist to
-    # prevent. The inner rescue covers the case where the logger itself is what
-    # is broken, which is also the most likely reason the line above raised.
+
     begin
       Rails.logger.error(
-        "[SessionStateMachine] Failed to report swallowed side effect #{operation}: #{reporting_error.message}"
+        "[SessionStateMachine] Failed to #{operation} for session #{id}: #{error.class}: #{error.message}"
       )
-    rescue StandardError
-      nil
+      return unless alert
+
+      # Post AFTER the transaction commits. AASM runs `after` callbacks inside the
+      # transition's own transaction, and AlertService posts to Slack synchronously
+      # (5s connect / 10s read). Alerting inline would hold a transaction open on
+      # this row for a network round trip during precisely the incident — a sick
+      # database — where that hurts most. after_all_transactions_commit runs the
+      # block immediately when no transaction is open, so nothing is deferred that
+      # doesn't need to be.
+      session_id = id
+      ActiveRecord.after_all_transactions_commit do
+        AlertService.raise_alert(
+          "Session state-machine side effect failed",
+          details: "`#{operation}` raised during a state transition and was swallowed, so the " \
+                   "transition completed with this side effect missing.\n\n" \
+                   "*Session:* #{session_id}\n\n" \
+                   "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
+          source: "SessionStateMachine##{operation}",
+          dedup_key: "session_state_machine_side_effect_#{operation}",
+          # The exception itself, not a hand-copied `e.message`: the backtrace is
+          # the high-signal part and it is sitting right here at the rescue.
+          error: error
+        )
+      rescue => alert_error
+        # Runs post-commit, outside the outer rescue's reach.
+        Rails.logger.error(
+          "[SessionStateMachine] Failed to alert on swallowed side effect #{operation}: #{alert_error.message}"
+        )
+      end
+    rescue => reporting_error
+      # Reporting must never become a new way for a transition to blow up. This
+      # runs inside an AASM `after` block, so an exception escaping here would
+      # abort the transition mid-flight — the exact wedge these rescues exist to
+      # prevent. The inner rescue covers the case where the logger itself is what
+      # is broken, which is also the most likely reason the line above raised.
+      begin
+        Rails.logger.error(
+          "[SessionStateMachine] Failed to report swallowed side effect #{operation}: #{reporting_error.message}"
+        )
+      rescue StandardError
+        nil
+      end
     end
   end
 
@@ -1038,12 +1061,18 @@ module SessionStateMachine
   # value with today's setting, flip it to `mixed`, and quietly drain the control
   # cohort of the very comparison this exists to support.
   #
-  # Never raises: SessionExperimentalFlag.record! swallows its own errors, and
-  # this rescue covers the constant lookup that reaches it. A cohort label is
-  # bookkeeping, and bookkeeping must not be able to stop a session starting.
+  # Does not raise, with one deliberate exception: SessionExperimentalFlag.record!
+  # swallows its own errors and this rescue covers the constant lookup that
+  # reaches it, because a cohort label is bookkeeping and bookkeeping must not be
+  # able to stop a session starting. But a transaction Postgres has already
+  # aborted is not a session this can save — the transition is going to roll back
+  # whatever happens here — so that one case propagates rather than adding
+  # another misleading error to the pile. See DatabaseTransactionState.
   def record_experimental_setting_flags
     SessionExperimentalFlag.record!(self)
   rescue => e
+    raise if DatabaseTransactionState.aborted_by?(e)
+
     Rails.logger.error "[SessionStateMachine] Failed to tag experimental settings: #{e.message}"
   end
 

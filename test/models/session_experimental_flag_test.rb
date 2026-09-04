@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class SessionExperimentalFlagTest < ActiveSupport::TestCase
   setup do
@@ -16,6 +17,36 @@ class SessionExperimentalFlagTest < ActiveSupport::TestCase
     setting = AppSetting.editable
     setting.mcp_tool_search_enabled = value
     setting.save!
+  end
+
+  test "a tagging failure is swallowed so it cannot stop a session starting" do
+    # record! runs inside state transitions. A bookkeeping write must never be the
+    # reason a session fails to start, and that stays true.
+    SessionExperimentalFlag.stubs(:upsert_all).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+    set_tool_search(true)
+
+    assert_nothing_raised { SessionExperimentalFlag.record!(@session) }
+    assert_nil flag
+  end
+
+  test "a tagging failure on an aborted transaction is not swallowed" do
+    # #924: swallowing is what makes the write safe inside a transition, but on a
+    # transaction Postgres has aborted there is nothing left to make safe — the
+    # transition rolls back either way, and swallowing only buries the cause under
+    # the errors every later statement in it produces.
+    error = assert_raises(ActiveRecord::StatementInvalid) do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        begin
+          ActiveRecord::Base.connection.execute("SELECT no_such_column_anywhere")
+        rescue ActiveRecord::StatementInvalid
+          # The transaction is aborted now, exactly as it was in production.
+        end
+
+        SessionExperimentalFlag.record!(@session)
+      end
+    end
+
+    assert_kind_of PG::InFailedSqlTransaction, error.cause
   end
 
   test "the first observation fixes the start value and every observation moves the end value" do

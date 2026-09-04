@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class ExperimentalSettingsRegistryTest < ActiveSupport::TestCase
   test "MCP tool search is registered and reads the live setting" do
@@ -40,6 +41,39 @@ class ExperimentalSettingsRegistryTest < ActiveSupport::TestCase
 
     assert_equal ExperimentalSettingsRegistry.keys.sort, values.keys.sort
     values.each_value { |v| assert_includes [ true, false ], v }
+  end
+
+  test "a setting whose read fails harmlessly resolves to the shipped default" do
+    # An unreadable settings row must not stop a session spawning, so the read
+    # degrades through AppSetting::NULL to what the setting ships as. Note this
+    # stubs the query, not AppSetting.current — current is the thing that
+    # degrades, so stubbing it out would test nothing this path does.
+    setting = ExperimentalSettingsRegistry.find("mcp_tool_search")
+    AppSetting.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+    assert_equal AppSetting::DEFAULT_MCP_TOOL_SEARCH_ENABLED, setting.current_value
+  end
+
+  test "a setting read inside an aborted transaction raises instead of resolving to nil" do
+    # #924: this read runs inside the resume transition's transaction. Returning
+    # nil there let the transition carry on across a connection Postgres had
+    # already given up on, and the four statements after it each reported an
+    # InFailedSqlTransaction that named nothing useful.
+    setting = ExperimentalSettingsRegistry.find("mcp_tool_search")
+
+    error = assert_raises(ActiveRecord::StatementInvalid) do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        begin
+          ActiveRecord::Base.connection.execute("SELECT no_such_column_anywhere")
+        rescue ActiveRecord::StatementInvalid
+          # The transaction is aborted now, exactly as it was in production.
+        end
+
+        setting.current_value
+      end
+    end
+
+    assert_kind_of PG::InFailedSqlTransaction, error.cause
   end
 
   test "a backfillable setting knows what it was on either side of the date it landed" do
