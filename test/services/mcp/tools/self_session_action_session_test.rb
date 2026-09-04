@@ -33,6 +33,18 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
       "the action description advertises actions the dispatch does not accept"
   end
 
+  # And the same for the long-form description this surface writes for itself:
+  # a narrowed ACTIONS list against its own hand-maintained "- **<name>**:"
+  # bullets, drifting the same way for the same reason.
+  test "the long-form description explains every dispatchable action and no others" do
+    bulleted = Mcp::Tools::SelfSessionActionSession.to_h[:description].scan(/^- \*\*(\w+)\*\*:/).flatten
+
+    assert_equal [], Mcp::Tools::SelfSessionActionSession::ACTIONS - bulleted,
+      "dispatchable actions with no bullet in the long-form description"
+    assert_equal [], bulleted - Mcp::Tools::SelfSessionActionSession::ACTIONS,
+      "the long-form description explains actions the dispatch does not accept"
+  end
+
   test "refuses an action outside the self-management subset" do
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "follow_up", "session_id" => sessions(:needs_input).id, "prompt" => "hi")
