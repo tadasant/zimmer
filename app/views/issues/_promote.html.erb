@@ -9,6 +9,6 @@
 <%= button_to promote_work_backlog_item_path(row.item, query_params),
     method: :post,
     class: "text-xs px-2 py-1 border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 whitespace-nowrap disabled:opacity-50",
-    form: { data: { turbo_confirm: "Start #{row.key} now as a priority session? This spawns a zimmer-router session immediately and takes a slot ahead of the spot queue." } } do %>
+    form: { data: { turbo_confirm: "Start #{row.key} now as a priority session? This spawns a zimmer-orchestrator session immediately and takes a slot ahead of the spot queue." } } do %>
   Promote
 <% end %>

@@ -1808,15 +1808,15 @@ indistinguishable in a picker. That looks like a bug.
 
 Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 
-### The baseline `zimmer-router` root can't spawn downstream sessions out of the box
+### The baseline orchestrator root can't spawn downstream sessions out of the box
 
-🔴 `zimmer-router` — the root behind every quick-router / chat-bubble submission — ships with **no**
+🔴 `zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission — ships with **no**
 default artifacts: no routing skill, and no session-orchestration MCP server. It resolves and starts,
 but it cannot *route*. A quick-router submission therefore lands as an ordinary agent session cloning
 `tadasant/zimmer` at its root, which is rarely what the prompt asked for. Treat the quick router as
 "start a session from a prompt", not "dispatch to the right root", until this is finished.
 
-The obvious wiring — `default_in_roots: ["zimmer-router"]` on the `zimmer-sessions` catalog entry —
+The obvious wiring — `default_in_roots: ["zimmer-orchestrator"]` on the `zimmer-sessions` catalog entry —
 is deliberately **not** done, because it is unsafe for a stock deployment. `zimmer-sessions`' URL in
 the **in-image** catalog is the placeholder `https://zimmer.example.com/...` (only its `X-API-Key`
 header is a `${VAR}`, so `SecretsInterpolator` never rewrites the host), and
@@ -1838,14 +1838,31 @@ dispatch, an operator must wire a session-scoped Zimmer MCP server whose URL res
 environment — a custom `AIR_CONFIG` catalog with real URLs, or lifting the prod retarget no-op. See
 `app/services/runtime_config_post_processor.rb` and `app/services/self_session_injector.rb`.
 
-### `zimmer`, `general-agent`, and `zimmer-router` are indistinguishable to the reverse lookup
+### The router root's two names split its cost and filter history
 
-All three have `"url": "https://github.com/tadasant/zimmer.git"` and no `subdirectory`.
+`token_usages.agent_root` is a plain string written at spend time, and the router root has two names
+(`zimmer-orchestrator` and its deprecated `zimmer-router` alias — see
+[The router root's two names](/air/agent-roots/#the-router-roots-two-names)). Nothing rewrites the
+old rows, so `CostAnalytics#by_agent_root` reports router spend under both names forever: on
+`/costs`, in `get_costs`, and in `GET /api/v1/costs`. The sessions index's agent-root filter is a
+datalist over `AgentRootsConfig.all`, so it offers both entries with the history split between them.
+
+That is the deliberate price of not rewriting rows. Backfilling `token_usages` and
+`sessions.metadata` would collapse the two, but it would also erase the record of which name a
+session was actually created under, and the alias exists precisely so that record stays resolvable.
+
+### `zimmer`, `general-agent`, and the orchestrator root are indistinguishable to the reverse lookup
+
+Five roots have `"url": "https://github.com/tadasant/zimmer.git"` and no `subdirectory`: `zimmer`,
+`general-agent`, `fleet-maintenance`, `zimmer-orchestrator` and its `zimmer-router` alias. The last
+two are separate catalog entries with byte-identical coordinates, which is what makes the alias work
+— and also what makes them, like the other three, indistinguishable to the reverse lookup.
+
 `AgentRootsConfig#find_for_session` prefers `metadata["agent_root_key"]`, but its fallback matches on
 `(url, subdirectory)` and returns the first hit — `zimmer`. Sessions created through
 `create_from_agent_root!` (which includes every quick-router session) always carry the key, so this is
 latent rather than live; but a key-less session, or `Trigger#heal_stale_agent_root!`, will resolve any
-of the three to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer/issues/67).
+of them to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer/issues/67).
 
 ---
 

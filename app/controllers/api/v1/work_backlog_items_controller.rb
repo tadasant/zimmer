@@ -107,7 +107,7 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
 
   # POST /api/v1/work_backlog_items/:id/start_now
   #
-  # The human's promote button: spawn a `priority` zimmer-router session for a
+  # The human's promote button: spawn a `priority` zimmer-orchestrator session for a
   # queued item right now and mark it started. No MCP counterpart.
   def start_now
     result = WorkBacklog::Start.call(

@@ -171,6 +171,24 @@ module Mcp
       end
     end
 
+    # Permit when the connection allows ANY of `names` — for a root the app
+    # resolves rather than the caller names, and whose resolution has aliases.
+    # `allowed_agent_roots` is baked into a session's .mcp.json at spawn time, so
+    # a session whose config was written under an alias is still carrying that
+    # name on disk. Aliases denote one root at one location, so granting any of
+    # them grants the rest; AgentRootsConfig::ROUTER_ROOT_NAMES is the only such
+    # set, and a test pins its two entries to identical catalog coordinates.
+    def enforce_any_allowed_root!(names)
+      names = Array(names)
+      raise ArgumentError, "enforce_any_allowed_root! needs at least one name" if names.empty?
+      return unless context.restricted?
+      return if (names & context.allowed_agent_roots).any?
+
+      raise ToolError, "This MCP connection is restricted — agent root " \
+                       "#{names.map(&:inspect).join(' or ')} is not permitted. " \
+                       "Allowed agent roots: #{context.allowed_agent_roots.join(', ')}"
+    end
+
     def session_url(session)
       context.session_url(session)
     end

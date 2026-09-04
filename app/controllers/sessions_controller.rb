@@ -527,7 +527,7 @@ class SessionsController < ApplicationController
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
       session = Session.create_from_agent_root!(
-        agent_root_name: Session::ROUTER_AGENT_ROOT,
+        agent_root_name: AgentRootsConfig.router_root_name,
         prompt: prompt,
         metadata: { source: "quick_prompt" },
         genesis: SessionGenesis::WEB_UI,
@@ -635,7 +635,7 @@ class SessionsController < ApplicationController
       stage_uploads_or_raise!(incoming_images, incoming_files, temp_session_id)
 
       session = Session.create_from_agent_root!(
-        agent_root_name: Session::ROUTER_AGENT_ROOT,
+        agent_root_name: AgentRootsConfig.router_root_name,
         prompt: augmented_prompt,
         parent_session_id: parent_session_id,
         metadata: { source: "chat_bubble", original_prompt: prompt, current_url: current_url },
