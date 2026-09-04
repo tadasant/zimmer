@@ -346,6 +346,37 @@ the keys an incoming configuration omits. Replace semantics would destroy the ro
 with it, silently re-baselining a live trigger. Fetching a trigger by id through `search_triggers`
 prints each condition's id, which is what the array addresses.
 
+`search_triggers` **names each trigger's MCP servers in list mode as well as by id**, because the
+question a catalog rename asks is fleet-wide — *which triggers reference server `X`?* — and the list
+is the only view built for scanning many triggers. One listing answers it for a page of triggers
+rather than one by-id call per row.
+
+The by-id view is the one that prints a condition's `configuration`, and that hash holds the
+poller's cursors as well as the settings a human typed. A Slack passive listener accumulates one
+entry per thread in `thread_timestamps` / `participating_threads`, rewritten every minute and
+growing without bound, so serialising it cost roughly 15k tokens for a single trigger. A
+configuration whose JSON is 2,000 characters or fewer — an ordinary schedule, `ao_event` or
+`github_label` one — is printed whole. Over that, a poller-owned key
+(`TriggerCondition::SLACK_POLL_STATE_KEYS` and `GITHUB_POLL_STATE_KEYS`, less the user-facing
+`allowed_user_ids`) holding more than ten entries is **left out of the JSON** and described under
+it instead:
+
+```
+- `thread_timestamps`: 312 entries, most recent 1788455311.688659
+- `seen_items`: 312 entries, e.g. tadasant/zimmer#pull_request#42
+```
+
+Omitted rather than replaced in place, and that is the important half. The commonest way to misuse
+`action_trigger` is to read a configuration and send back what you believe is the desired final
+state; a summary sitting under its real key would be written straight over the live cursor map,
+while a key that is *absent* is merged back intact by `preserve_slack_poll_state` /
+`preserve_github_poll_state`. So the JSON this view prints is safe to echo.
+
+Everything else is untouched: a poller key under ten entries stays in place, nothing outside those
+two constants is ever summarised (`repos`, `labels`, `exclude_labels` and `allowed_user_ids`
+included), and a large configuration with no high-cardinality poller state is still printed in full.
+`GET /api/v1/triggers/:id` serves every cursor exactly for a caller that needs the values.
+
 `action_trigger`'s `invoke` fires a trigger now, without waiting for a condition to match — the MCP
 half of `POST /api/v1/triggers/:id/invoke`, and the same fire the **Run Now** button on the trigger
 page performs. Pass `variables` to fill in the template's placeholders. The session is linked to the
