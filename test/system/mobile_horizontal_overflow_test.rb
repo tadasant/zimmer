@@ -311,12 +311,15 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   SKILL_NAME = "recover-from-compaction-thrashing".freeze
 
   # A realistic base directory — an absolute path with no space in it, which is
-  # what a skill injection actually carries. It used to be shortened here,
-  # because transcript prose had no `overflow-wrap: break-word` and a real path
-  # ran ~150px past a 360px viewport (tadasant/zimmer#919). `.prose-session` now
-  # breaks it, so the fixture no longer has to lie about its input.
+  # what a skill injection actually carries, and what the markdown case below
+  # reuses. It used to be shortened, because transcript prose had no
+  # `overflow-wrap: break-word` and a real path ran ~150px past a 360px viewport
+  # (tadasant/zimmer#919). `.prose-session` now breaks it, so neither fixture has
+  # to lie about its input.
+  SKILL_PATH = "/home/rails/.zimmer/clones/zimmer/.claude/skills/#{SKILL_NAME}".freeze
+
   SKILL_DUMP = <<~TEXT.freeze
-    Base directory for this skill: /home/rails/.zimmer/clones/zimmer/.claude/skills/#{SKILL_NAME}
+    Base directory for this skill: #{SKILL_PATH}
 
     # Recover From Compaction Thrashing
 
@@ -366,14 +369,12 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # Asserting the geometry rather than the utility classes: what has to hold is
   # that the page does not scroll sideways and that the table scrolls inside its
   # wrapper instead.
-  TRANSCRIPT_PATH = "/home/rails/.zimmer/clones/zimmer/.claude/skills/recover-from-compaction-thrashing".freeze
-
   MARKDOWN_BODY = <<~MD.freeze
-    Base directory for this skill: #{TRANSCRIPT_PATH}
+    Base directory for this skill: #{SKILL_PATH}
 
     | File | What it does |
     | --- | --- |
-    | `#{TRANSCRIPT_PATH}/SKILL.md` | the skill body |
+    | `#{SKILL_PATH}/SKILL.md` | the skill body |
   MD
 
   test "a transcript markdown table and a long path do not overflow horizontally on a phone" do
@@ -382,9 +383,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => MARKDOWN_BODY } ] } }
     ])
 
+    # `visit` opens every transcript panel on the page, so the markdown below has
+    # geometry by the time the probes run.
     visit session_path(session)
-    page.execute_script(%(document.querySelector('details[data-controller~="transcript-panel"]').open = true))
-    assert_selector "details[data-controller~='transcript-panel'][open]"
     assert_text "Base directory for this skill"
 
     assert_no_horizontal_overflow("session detail with a markdown table and a long path")
@@ -392,7 +393,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     # The table has to be the thing that scrolls. A wrapper that merely fits
     # would mean the table was clipped or the page had gone wide instead, so
-    # assert the overflow is real *and* contained.
+    # assert the overflow is real *and* contained. Asserted present first: a
+    # renderer that stopped emitting the wrapper is one of the regressions this
+    # case is for, and it should read as a missing element rather than as a
+    # `null` dereference inside the probe.
+    assert_selector ".prose-session .table-wrapper", visible: :all
     wrapper = page.evaluate_script(<<~JS)
       (function () {
         const el = document.querySelector(".prose-session .table-wrapper");
@@ -409,7 +414,6 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # which a break-opportunity-free token has the least room to fit.
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
     visit session_path(session)
-    page.execute_script(%(document.querySelector('details[data-controller~="transcript-panel"]').open = true))
     assert_text "Base directory for this skill"
 
     assert_no_horizontal_overflow("session detail with a markdown table and a long path at 320px")
