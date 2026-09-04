@@ -866,12 +866,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("connectors")
   end
 
-  # The real production entry for the strad secrets server, verbatim. Its header
-  # interpolates `${STRAD_API_KEY}`, and an unresolved `${VAR}` is what makes
-  # /connectors render its "Where to set this" block — the widest thing the page
-  # carries, because the Secrets Console URL in it is one 37-character token with
-  # no break opportunity. Kept to the real name and the real URL on purpose: a
-  # longer invented variable name would measure a page nobody has.
+  # The strad secrets server, keeping the real server name, the real URL and the
+  # real `${STRAD_API_KEY}` its header interpolates. An unresolved `${VAR}` is what
+  # makes /connectors render its "Where to set this" block, and that block is the
+  # widest thing the page carries: the Secrets Console URL inside it is one
+  # 37-character token with no break opportunity. The real names matter — an
+  # invented variable name long enough to overflow on its own measures a page
+  # nobody has, and reports the overflow against the wrong element.
   MISSING_SECRET_CATALOG = {
     "secrets-service-account" => {
       "title" => "Secrets Service Account",
@@ -882,13 +883,12 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     }
   }.freeze
 
-  # 320px, not 375px, because that is where this broke and the page above stayed
-  # green: the console link ran 36px past the catalog card, and the card is
-  # `overflow-hidden` — it clips its own rounded corners — so the tail of the URL
-  # was cut off rather than pushed onto a scrollbar the user could drag to it. A
-  # clipped control is the worse failure of the two, and the block exists to tell
-  # someone where to go set the missing secret, so the destination is the part
-  # that went out of reach.
+  # 320px as well as 375px, because the two widths catch different things and the
+  # case above passes at 375px either way. The catalog card is `overflow-hidden` —
+  # it clips its own rounded corners — so anything wider than it is cut off rather
+  # than pushed onto a scrollbar the reader can drag to. A clipped control is the
+  # worse of the two overflow failures, and this block exists to say where to go
+  # set the missing secret, so its link is the part that must stay reachable.
   test "the missing-secret block's console link stays inside the card on the narrowest phone" do
     AirCatalogService.stubs(:entries_for).returns({})
     AirCatalogService.stubs(:entries_for).with(:mcp).returns(MISSING_SECRET_CATALOG)
@@ -902,19 +902,22 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # render as "unclaimed" rows and put their own geometry into the measurement.
     McpOauthCredential.delete_all
 
-    # 375px first, at the width the shared setup already established: a wrap class
-    # that fixes 320px by wrecking the layout everywhere else fails here too.
+    # 375px first, at the width the shared setup establishes: a wrap treatment that
+    # buys 320px by introducing overflow at the width the rest of this file measures
+    # fails here rather than passing quietly.
     visit connectors_path
+    assert_selector "[data-connector-list-sorted]", wait: 30
     assert_selector "[data-secret-console]"
     assert_no_horizontal_overflow("connectors missing-secret block at #{MOBILE_WIDTH}px")
 
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
     visit connectors_path
+    assert_selector "[data-connector-list-sorted]", wait: 30
     assert_selector "[data-secret-console]"
     assert_no_horizontal_overflow("connectors missing-secret block at #{NARROW_WIDTH}px")
 
-    # `Rails.root.join`, not a bare relative path: Capybara resolves a relative one
-    # against a directory that is not the repo root here, and writes nothing.
+    # An absolute path, so the file lands where the name reads. Capybara resolves a
+    # relative one against `Capybara.save_path`, which puts it under tmp/capybara/.
     page.save_screenshot(Rails.root.join("tmp/screenshots/connectors-missing-secret-320.png").to_s)
   end
 
@@ -942,19 +945,25 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     visit connectors_path
     assert_selector "[data-store-legacy-namespace=remaining]"
     assert_text "STRAD_API_KEY"
+    assert_selector "[data-connector-list-sorted]", wait: 30
 
     assert_no_horizontal_overflow("connectors store banner, mid-migration")
 
     page.save_screenshot("tmp/screenshots/connectors-secret-store-375.png")
 
-    # The whole page at 320px too, rather than the banner's frame alone. It was
-    # scoped to the frame because /connectors clipped the Secrets Console link 36px
-    # past the catalog card at that width, so the banner would have failed for
-    # someone else's overflow; that link wraps now, and the banner has to fit the
-    # page's own padding at 320px the same way it does at 375px.
+    # And the same page at 320px, which is where a fixed minimum stops fitting at
+    # all. The banner is measured inside the page rather than through its own frame
+    # endpoint for the reason given above: in the page it has the page's padding to
+    # fit, and the frame on its own has the whole viewport.
+    #
+    # Both widths wait for the connector list to finish resolving. The rows are lazy
+    # frames the list controller promotes and then sorts, so without the wait the
+    # measurement races them: whichever rows happened to answer are in it and the
+    # rest are not, which under-measures silently and varies run to run.
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
     visit connectors_path
     assert_selector "[data-store-legacy-namespace=remaining]"
+    assert_selector "[data-connector-list-sorted]", wait: 30
     assert_no_horizontal_overflow("connectors store banner, mid-migration, at #{NARROW_WIDTH}px")
   end
 
