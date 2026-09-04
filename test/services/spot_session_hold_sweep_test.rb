@@ -13,10 +13,20 @@ require "test_helper"
 # session — being what the ladder rests on, rather than one job surviving.
 class SpotSessionHoldSweepTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
+  include AttachmentFixtures
 
   setup do
     Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
     GoodJob::Job.delete_all
+  end
+
+  teardown { cleanup_stored_attachments! }
+
+  # The arguments of the one AgentSessionJob the sweep enqueued.
+  def rearmed_agent_session_args
+    jobs = enqueued_jobs.select { |job| job["job_class"] == "AgentSessionJob" }
+    assert_equal 1, jobs.length, "expected exactly one enqueued AgentSessionJob"
+    ActiveJob::Arguments.deserialize(jobs.first["arguments"])
   end
 
   def held_session(retry_at:, turn: SpotSessionHold::TURN_START, prompt: nil, extra: {})
@@ -127,6 +137,60 @@ class SpotSessionHoldSweepTest < ActiveSupport::TestCase
     job = enqueued_jobs.find { |j| j["job_class"] == "AgentSessionJob" }
     assert AutomatedPrompts.system_recovery?(job["arguments"][1]),
       "a lost prompt must not stop the session coming back"
+  end
+
+  # --- a re-armed START carries the attachments the turn was created with ---
+  #
+  # `!resuming?` means the session has never run, so the job the sweep builds IS
+  # the first turn. AgentSessionJob reads attachments ONLY out of its job
+  # arguments, so enqueuing a bare one re-armed "here is the screenshot, fix
+  # this" with the prompt and without the screenshot (#789), while the log line
+  # below it told the reader the turn had been carried across.
+
+  test "a re-armed start carries the images the session was created with" do
+    session = held_session(retry_at: 11.hours.ago)
+    image = store_image_for(session)
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    assert_equal [ { path: image[:path], media_type: "image/png" } ],
+      rearmed_agent_session_args.dig(2, :images)
+    assert_match(/carrying 1 image/, session.logs.order(:id).last.content)
+  end
+
+  test "a re-armed start carries the files the session was created with" do
+    session = held_session(retry_at: 11.hours.ago)
+    stored = store_file_for(session, filename: "notes.txt", content: "read me")
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    files = rearmed_agent_session_args.dig(2, :files)
+    assert_equal [ stored[:path] ], files.map { |f| f[:path] }
+    assert_equal [ "notes.txt" ], files.map { |f| f[:original_filename] }
+  end
+
+  # The ordinary case, and the one this must not change: nothing on disk, so the
+  # job is enqueued exactly as it was before and the log says nothing extra.
+  test "a re-armed start with no stored attachments is enqueued unchanged" do
+    session = held_session(retry_at: 11.hours.ago)
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    assert_equal [ session.id ], rearmed_agent_session_args
+    refute_match(/carrying/, session.logs.order(:id).last.content)
+  end
+
+  # A re-armed RESUME moves a turn of its own. Its attachments came with the
+  # prompt that woke it, and reading the volume there would attach the first
+  # turn's screenshot to a much later turn.
+  test "a re-armed resume does not pick up the volume's attachments" do
+    session = held_session(retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME,
+                           prompt: "please continue the PR")
+    store_image_for(session)
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    assert_equal [ session.id, "please continue the PR" ], rearmed_agent_session_args
   end
 
   # A pause, an auth-outage park and a wall-clock pause each own their own

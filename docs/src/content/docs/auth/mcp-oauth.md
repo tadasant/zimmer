@@ -601,6 +601,19 @@ spawn. The gap is that re-auth gives no immediate feedback or re-establishment.
 Tracked in [#195](https://github.com/tadasant/zimmer/issues/195).
 :::
 
+:::note[The replayed turn carries its attachments — when there is still a first turn to replay]
+`McpOauthResumeService` resumes by re-queuing the *original* run, and `AgentSessionJob` receives
+images and files exclusively as job arguments, so a bare re-queue replayed "here is the screenshot,
+fix this" with the prompt and without the screenshot. The resume now reads them back off the durable
+volume through `Sessions::FirstTurnAttachments`
+([#789](https://github.com/tadasant/zimmer/issues/789)) — but only when the session's transcript is
+empty, meaning no turn has reached an agent yet. `oauth_required` is not exclusively a first-turn
+failure: **Configure MCP servers** and **Configure plugins** set it when a human adds an OAuth server
+to a live session, and `AgentSessionJob`'s follow-up branch sets it under *"Follow-up blocked"*. On a
+session that has already run, everything on its volume includes attachments earlier turns consumed,
+so the resume deliberately carries none.
+:::
+
 :::caution[Authorizing from the Connectors page does not release a session parked on that server]
 A session-less flow has no session to resume, so it does not run `McpOauthResumeService` at
 all — not even for a session that is `failed` with `oauth_required` on the very server you

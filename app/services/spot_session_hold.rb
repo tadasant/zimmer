@@ -539,6 +539,7 @@ class SpotSessionHold
       # The job first, the sentence about it second. A log line written ahead of a
       # failed enqueue is a session timeline promising a re-check that does not
       # exist — the fossil-read-as-live-state this whole class is about.
+      carrying = ""
       if record.resuming?
         AgentSessionJob.enqueue_with_prompt(
           session.id,
@@ -548,17 +549,32 @@ class SpotSessionHold
           delay: delay
         )
       else
-        AgentSessionJob.enqueue_new_session(session.id, delay: delay)
+        # `!resuming?` is a session that has never run, so the job built here IS
+        # its first turn — and AgentSessionJob reads attachments ONLY out of its
+        # job arguments. Enqueuing a bare one re-armed "here is the screenshot,
+        # fix this" with the prompt and without the screenshot (#789), under a
+        # log line claiming the turn had been carried across. The resuming branch
+        # above must NOT read the volume: it moves a turn of its own, whose
+        # attachments came with the prompt that woke it.
+        images, files = Sessions::FirstTurnAttachments.for(session)
+        carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
+        AgentSessionJob.enqueue_new_session(
+          session.id, images: images.presence, files: files.presence, delay: delay
+        )
+      end
+
+      carried = if prompt.present? || !record.resuming?
+        "The turn it was holding is carried with it#{carrying}."
+      else
+        "The prompt it was woken for was lost with the re-check, so it comes back on a " \
+        "recovery nudge instead."
       end
 
       session.logs.create!(
         level: "warning",
         content: "The re-check this spot hold promised (#{record.retry_at&.utc&.iso8601 || "unknown"}) " \
                  "never fired, so the session was waiting on nothing. Zimmer's spot-hold sweep put it " \
-                 "back on the ladder: re-checking at #{retry_at.utc.iso8601}. " \
-                 "#{prompt.present? || !record.resuming? ? "The turn it was holding is carried with it." :
-                    "The prompt it was woken for was lost with the re-check, so it comes back on a " \
-                    "recovery nudge instead."}"
+                 "back on the ladder: re-checking at #{retry_at.utc.iso8601}. #{carried}"
       )
 
       logger.info("Re-armed a stalled spot hold",

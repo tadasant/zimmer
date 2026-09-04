@@ -8,8 +8,11 @@
 #
 # The session's original intent — its prompt — is already durably stored on the
 # Session record, so resuming is a matter of re-queuing the initial run via
-# AgentSessionJob.enqueue_new_session, which replays that prompt. This service
-# owns the "should we resume yet, and resume exactly once" decision.
+# AgentSessionJob.enqueue_new_session, which replays that prompt. Its
+# attachments are durable too, but on the volume rather than in the job, so they
+# are read back and put on the replay explicitly; see #replayable_attachments
+# for why that read is gated and the restart doors' equivalent is not. This
+# service owns the "should we resume yet, and resume exactly once" decision.
 #
 # A session is considered OAuth-blocked when it is either:
 #   - failed with metadata["failure_reason"] == "oauth_required", or
@@ -99,6 +102,8 @@ class McpOauthResumeService
   end
 
   def resume!
+    images, files = replayable_attachments
+
     session.update!(
       status: "waiting",
       metadata: session.metadata.merge(
@@ -108,12 +113,48 @@ class McpOauthResumeService
       )
     )
 
-    AgentSessionJob.enqueue_new_session(session.id)
+    AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
 
     Rails.logger.info(
       "[McpOauthResumeService] All OAuth flows complete for session #{session.id}, " \
-      "auto-resuming original intent"
+      "auto-resuming original intent" \
+      "#{Sessions::FirstTurnAttachments.carrying_clause(images, files)}"
     )
+  end
+
+  # The attachments to put back on the replayed turn — which is the session's
+  # own first-turn attachments, or nothing at all.
+  #
+  # The replay is `enqueue_new_session`, so what it delivers is the stored prompt
+  # — the original intent. AgentSessionJob reads attachments ONLY out of its job
+  # arguments and never re-reads the volume, so replaying that prompt without
+  # them delivers "here is the screenshot, fix this" with the prompt and without
+  # the screenshot (#789).
+  #
+  # == Why this is gated where the restart doors are not
+  #
+  # Restart from scratch is gated on `failed_before_initial_prompt? &&
+  # !setup_complete?`, so it knows nothing was ever delivered. `oauth_required`
+  # being a member of PRE_PROMPT_FAILURE_REASONS does NOT buy the same knowledge
+  # here, because three routes set it on a session that has already run:
+  # SessionsController#update_mcp_servers and #update_catalog_plugins, when a
+  # human adds a server to a live session, and AgentSessionJob's follow-up
+  # branch, under "Follow-up blocked: OAuth authorization required for MCP
+  # servers". Sessions::FirstTurnAttachments reads everything on the volume minus
+  # what the queue owns, and on such a session that set includes attachments
+  # earlier turns already consumed — re-delivering them would put the first
+  # turn's screenshot on a much later one.
+  #
+  # A blank transcript is what separates the two: it is the same half of
+  # Session#never_ran? that means "no turn has reached an agent", without the
+  # `session_id` half, which is already stamped by the time the fresh-clone spawn
+  # reaches its OAuth gate and so would refuse a genuine first turn.
+  #
+  # @return [Array(Array<Hash>, Array<Hash>)] images, files
+  def replayable_attachments
+    return [ [], [] ] if session.transcript.present?
+
+    Sessions::FirstTurnAttachments.for(session)
   end
 
   def record_partial_progress(remaining)
