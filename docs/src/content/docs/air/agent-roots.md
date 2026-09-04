@@ -1,6 +1,6 @@
 ---
 title: Agent roots
-description: What a root is, the ten that ship, subagent roots, and how a root's defaults seed a session.
+description: What a root is, the twelve that ship, subagent roots, and how a root's defaults seed a session.
 sidebar:
   order: 3
 ---
