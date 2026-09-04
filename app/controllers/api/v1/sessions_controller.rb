@@ -23,7 +23,7 @@ class Api::V1::SessionsController < Api::BaseController
 
   rescue_from PlacementError, with: :render_placement_error
 
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -434,6 +434,69 @@ class Api::V1::SessionsController < Api::BaseController
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   rescue ActiveRecord::RecordNotUnique
     render_api_error("Conflict", "Message position conflict, please retry", status: :conflict)
+  end
+
+  # POST /api/v1/sessions/:id/message_parent
+  # Report back to the session that started :id.
+  #
+  # The mirror of follow_up, and deliberately not a general one: :id names the
+  # CHILD — the session doing the reporting — and the target is never given. It
+  # is read from `parent_session_id`, which is what keeps the same capability
+  # safe on the filtered `self_session` MCP surface a session carries. To message
+  # an arbitrary session, use follow_up above.
+  #
+  # Request body:
+  #   - message: What the child is telling its parent (required)
+  #   - reason: Why it is reporting back — one of Sessions::MessageParent::REASONS
+  #     ("wrong_scope", "missing_tools", "other"). Required, because the value is
+  #     what a parent branches on.
+  #   - force_immediate: Interrupt a running parent instead of queuing (default: false)
+  #   - unarchive_parent: Restore an archived parent and deliver to it (default: false).
+  #     Without it, an archived parent is refused: nothing delivers a message to a
+  #     session in the trash, so accepting one would throw it away silently.
+  #
+  # Like every other session-initiated call, the caller is self-declared — the API
+  # key is shared by the whole fleet, so :id is a claim rather than an identity.
+  # What is NOT self-declared is the target: the parent comes from the database.
+  def message_parent
+    result = Sessions::MessageParent.call(
+      child: @session,
+      message: params[:message].to_s,
+      reason: params[:reason].to_s,
+      force_immediate: params[:force_immediate] == true || params[:force_immediate] == "true",
+      unarchive_parent: params[:unarchive_parent] == true || params[:unarchive_parent] == "true",
+      source: "api_v1:sessions.message_parent"
+    )
+
+    unless result.success?
+      render_api_error("Cannot message parent", result.error, status: result.error_code || :unprocessable_entity)
+      return
+    end
+
+    payload = {
+      parent_session: session_json(result.parent),
+      delivery: result.delivery.to_s,
+      unarchived_parent: result.unarchived,
+      message: message_parent_receipt(result)
+    }
+
+    # Only the queued branch has a row to report. A successful interrupt drains
+    # the queue through EnqueuedMessageProcessorService, which destroys the row
+    # once it claims it — so the service returns nothing there, and a client is
+    # never handed an id that 404s or a "pending" status for a message that was
+    # in fact delivered. `follow_up` omits the key on its force path for the same
+    # reason.
+    if result.enqueued_message
+      payload[:enqueued_message] = {
+        id: result.enqueued_message.id,
+        position: result.enqueued_message.position,
+        status: result.enqueued_message.status
+      }
+    end
+
+    # 202 for the queued branch only, matching follow_up: the parent has accepted
+    # the report but has not read it yet.
+    render json: payload, status: result.queued? ? :accepted : :ok
   end
 
   # POST /api/v1/sessions/:id/pause
@@ -1362,6 +1425,22 @@ class Api::V1::SessionsController < Api::BaseController
       :idempotency_key,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
     )
+  end
+
+  # The human-readable half of the message_parent response. The structured
+  # `delivery` field above is what a client keys off; this is what an agent
+  # reading the raw JSON gets told.
+  def message_parent_receipt(result)
+    base = case result.delivery
+    when :queued
+      "Report queued for parent session ##{result.parent.id}. It will be read when that session's current turn ends."
+    when :interrupted
+      "Report delivered to parent session ##{result.parent.id} immediately, ending the turn it was in."
+    else
+      "Report delivered to parent session ##{result.parent.id}."
+    end
+
+    result.unarchived ? "#{base} That session was archived and has been restored from the trash to receive it." : base
   end
 
   # True when the request actually named this artifact list, empty or not. An

@@ -322,15 +322,38 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
       "the blocked-by-a-session carve-out must not describe reason 2 as parking either"
   end
 
-  test "includes the file-a-GitHub-issue principle" do
+  # Principle 8 sends two different things to two different homes, and the
+  # distinction is the whole point of the 2026-09-04 rewrite: a goal THIS session
+  # cannot reach goes to its parent and is never an issue, while something noticed
+  # in passing is an inline note unless it clears the incident bar. A prompt that
+  # drifted back to "file it and keep going" would restore the posture the clamp
+  # retired, and would outrank the filing skill for every session in the fleet.
+  test "principle 8 routes a wrong-scope goal to the parent, and files only over the incident bar" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
-    assert_includes prompt, "### 8. File a GitHub Issue for Anything You Cannot Fix Here"
-    assert_includes prompt, "**File a GitHub issue about it and keep going.**"
-    assert_includes prompt, "a stale assumption encoded somewhere your PR does not reach"
-    assert_includes prompt, "do not park the session so that a human reads about it"
-    assert_includes prompt, "File against the repository that owns the defect"
+    assert_includes prompt, "### 8. Write Down What You Cannot Fix Here — Rarely as an Issue"
+
+    # The dispatch half: the mechanism is named, and filing is ruled out for it.
+    assert_includes prompt, "`action_session` with `message_parent` on the self-session MCP server"
+    assert_includes prompt, "`reason: \"wrong_scope\"` or `\"missing_tools\"`"
+    assert_includes prompt, "**This is never an issue.**"
+    assert_includes prompt, "**Never fall back to filing an issue.**"
+
+    # The noticed-in-passing half: the bar, and the note that replaces the issue.
+    assert_includes prompt, "could cause an **incident** later"
+    assert_includes prompt, "⟨somebody outside this session⟩ is the one who notices"
+    assert_includes prompt, "a future agent session would waste work"
+    assert_includes prompt, "The cap is one issue per session and the expected number is zero."
+    assert_includes prompt, "`## Noticed, not filed`"
+
+    # What survived the rewrite, because it is about how to file well rather than
+    # about whether to.
+    assert_includes prompt, "a stale assumption your PR does not reach"
+    assert_includes prompt, "file against the repository that owns the defect"
     assert_includes prompt, "Do not stall your own task to do it"
+
+    refute_includes prompt, "**File a GitHub issue about it and keep going.**",
+      "the unconditional filing instruction is the posture the incident bar replaced"
   end
 
   test "session lifecycle principle rejects the four non-reasons for parking" do

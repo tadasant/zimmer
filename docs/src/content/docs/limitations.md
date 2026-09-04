@@ -2600,6 +2600,40 @@ way to detach an edge from the app itself yet ([#299](https://github.com/tadasan
 If the trust model ever needs this closed properly, the fix is a per-session credential (a token
 minted into each session's injected MCP config) rather than anything in the graph code.
 
+### A child's report to its parent is only as attributable as the caller that sent it
+
+`message_parent` ([MCP](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here),
+[REST](/extend/rest-api/#reporting-back-to-the-parent-that-started-you)) resolves its *target*
+server-side — the caller names no session, Zimmer reads `parent_session_id` — so the report cannot be
+pointed at an arbitrary session the way a self-declared uncle edge can. What is still self-declared is
+the *sender*. `POST /api/v1/sessions/:id/message_parent` takes whichever `:id` the caller supplies,
+for the reason above: one API key, no ambient caller identity. Anything holding that key can make
+session A's parent read a report attributed to session A.
+
+The MCP surface narrows this, and is worth knowing as the exception rather than the rule. An injected
+`self_session` connection carries the id of the session it was written for, so a report naming a
+*different* session is refused there — the one place that surface enforces its aim rather than only
+its actions. A `?tool_groups=self_session` connection with no `session_id`, and the REST endpoint,
+cannot check.
+
+The bound on the damage is the same one the uncle edge has: the report is logged into **both**
+sessions' timelines naming both ids and the entry point, and the message the parent reads states
+which session it came from. A misattributed report is visible after the fact rather than silent. The
+proper fix is the same per-session credential.
+
+### Waking a parent to report to it spends the wakes it was sleeping on
+
+Delivering a `message_parent` report to a parent in `waiting` resumes it, and a deliberate resume
+cancels the session's pending one-time wake triggers — the ordinary rule for any follow-up, since a
+resume means "somebody has taken this session over". A router asleep on
+`wake_me_up_when_session_changes_state` for three children, woken by the fourth's report, comes back
+with nothing armed and has to re-arm what it still cares about.
+
+This is not special to reporting; a human follow-up does the same. It matters more here because the
+caller is an agent that may not know what its parent was waiting on. The alternative — queuing for a
+sleeping parent instead of waking it — is worse: the parent that never learns is exactly the one
+asleep on a wake that will not fire, which is the hole this closed.
+
 ### A session hierarchy is bounded, and a big one is shown truncated
 
 The lineage graph is walked at most 8 levels deep and 150 nodes wide, in both directions — uncle

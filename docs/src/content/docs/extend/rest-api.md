@@ -135,6 +135,7 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}`. **422** while any message is still queued for the session, since archiving discards it; `force: true` overrides deliberately and the discarded messages are retired to `undelivered` — see [lifecycle](/sessions/lifecycle/) |
 | `POST` | `/sessions/:id/unarchive` | → `{session, clone_restored, message}`. Recreates the clone directory and restores the transcript when they are gone, so the harness resumes where it left off. A session that [never ran](/sessions/lifecycle/#restoring-a-session-that-never-ran) has neither, so it is returned to `needs_input` to start fresh (`clone_restored: false`) rather than refused |
 | `POST` | `/sessions/:id/follow_up` | `prompt` (≤500,000), `goal` (≤50,000), `force_immediate`, `acting_session_id`. 202 if the session is running (queued); 200 otherwise. `goal` takes effect on every path — see below |
+| `POST` | `/sessions/:id/message_parent` | `message` (required), `reason` (required: `wrong_scope` \| `missing_tools` \| `other`), `force_immediate`, `unarchive_parent`. **`:id` is the CHILD** — the target is read from `parent_session_id` and is never a parameter. 202 if the parent is running (queued); 200 otherwise; 409 if the parent is archived or failed, or on a queue position conflict; 422 if the session has no parent or is its own parent. The `enqueued_message` key is present only on the queued branch — an interrupt consumes the row it staged. See [Reporting back to the parent that started you](#reporting-back-to-the-parent-that-started-you) |
 | `POST` | `/sessions/:id/pause` | running only → `needs_input` |
 | `POST` | `/sessions/:id/sleep` | `needs_input` → sleeps; `running` → sets `pending_sleep`. Marks the sleep deliberate (`deliberate_sleep_at`), which is what keeps [`StrandedSleepSweepJob`](/operate/background-jobs/) from treating a session slept with nothing armed as one whose wake was lost. Any resume or restart clears the marker |
 | `POST` | `/sessions/:id/restart` | clears stale retry metadata and re-queues the job; re-runs the whole setup pipeline when there is no conversation to prompt into — setup never finished (a failed clone, say), or the session [never ran at all](/sessions/lifecycle/#restoring-a-session-that-never-ran) — and the replacement first turn carries the session's [stored images and files](/limitations/#a-stranded-waiting-session-is-only-rescued-if-it-never-started). 422 `Session has no session_id` is now reserved for the session that has a transcript but no id to resume it under |
@@ -420,6 +421,60 @@ omitted one leaves the session's existing goal alone.** The queued and interrupt
 the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it claims the message;
 the direct path writes it alongside the prompt. A goal over `GOAL_MAX_LENGTH` (50,000) is rejected
 with a 422 before anything is delivered, on every path.
+
+### Reporting back to the parent that started you
+
+`POST /sessions/:id/message_parent` is `follow_up` run the other way down the hierarchy, and it
+exists because that direction had no route at all. A parent can reach a child whenever it likes; a
+child's only channel back was its final message, which the parent reads only if it happens to be
+polling `get_session`. A parent that has archived, or one asleep on a wake that will not fire, never
+learned — so a session handed work it could not do (the wrong agent root, a missing MCP server or
+credential) had nowhere to report that except a GitHub issue.
+
+**`:id` names the child, and there is no parameter naming the target.** Zimmer reads
+`parent_session_id` itself. That is the whole design: the same capability is on the filtered
+`self_session` MCP surface a session carries, where an argument naming an arbitrary target would be a
+general session-to-session messaging primitive rather than a report to one's own parent. `follow_up`
+above is that general form, and it stays on the full surface.
+
+| Parameter | Meaning |
+| --- | --- |
+| `message` | What the child is telling its parent. Delivered **quoted** — every line reaches the parent behind a `>` prefix, so a body carrying its own separator or bracketed header cannot end the quotation early and continue in Zimmer's voice. Bounded so that it plus the framing fits inside `PROMPT_MAX_LENGTH`; the 422 names the room left |
+| `reason` | `wrong_scope` (the work belongs to a different agent root), `missing_tools` (an MCP server, credential or privilege it was not given), or `other`. Required, and a closed list, because it is what a parent branches on |
+| `force_immediate` | Interrupt a running parent instead of queuing. Off by default — see below |
+| `unarchive_parent` | Restore an archived parent out of the trash and deliver to it |
+
+Delivery is the ordinary follow-up routing, not a second path: a `running` parent takes the report
+on its `EnqueuedMessage` queue (202), and a `waiting` or `needs_input` one takes it now (200) —
+including a parent asleep on a wake, which is woken, since that is exactly the parent that would
+otherwise never learn. **Queuing is the default rather than interrupting**: the parent of a stuck
+child is usually a router mid-delegation, and ending that turn to say "child #N cannot do this"
+costs the other delegations in flight while the news itself keeps a few minutes.
+
+Because it is the ordinary queue, it is inside the ordinary accounting. The row's `origin` is
+`caller`, so the parent cannot archive over an unread report without being refused, and a forced
+archive retires it to `undelivered` and raises the strand alert. A report cannot be accepted and then
+silently vanish.
+
+Four refusals, each with something the child can do about it:
+
+| Situation | Response |
+| --- | --- |
+| The session has no parent — it was started by a human or a trigger | 422. Nothing is upstream; report to the human instead |
+| The session is recorded as its own parent | 422. `parent_session_id` is client-supplied and the model checks existence rather than identity, so this is reachable; it is a defect in how the session was created |
+| The parent is archived | 409, naming `unarchive_parent`. Nothing delivers a message to a session in the trash, so accepting one would throw it away |
+| The parent has failed | 409. A human has to restart it first |
+
+A fifth response is not a refusal but a retry: a **409 naming a message position conflict**. The unique constraint on `(session_id, position)` is deferred to COMMIT, and the parent's queue has several other writers, so a report can lose a race with one of them. Send it again.
+
+`unarchive_parent: true` runs the same restore as `POST /sessions/:id/unarchive` — clone, transcript
+and all — and then delivers. It is deliberately opt-in rather than automatic: it interrupts a session
+that considered its work finished, so it is for work that still has to happen, not for filing a note.
+
+The caller is self-declared in the same sense as `acting_session_id` below — the shared API key
+identifies a caller, not a session, so `:id` is a claim. What is *not* self-declared is the target:
+the parent comes from the database. The MCP surface, which does know which session a connection was
+written for, refuses a report sent on another session's behalf; this endpoint cannot check.
 
 ### `acting_session_id`: declaring yourself as the caller
 
