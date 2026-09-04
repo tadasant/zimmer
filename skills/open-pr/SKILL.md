@@ -18,7 +18,7 @@ Take the current git diff (ALL files), commit, push to a feature branch, open a 
 
 This skill is repo-agnostic: use it in **any** repo where it is equipped, as the default way to turn working state into a reviewable PR.
 
-For git conventions (branch naming, PR description format, verification/proof standards, wrong-branch recovery), see [references/GIT_WORKFLOW.md](references/GIT_WORKFLOW.md). The `ready to merge` label and what the PR body may and may not say about merging are defined in this skill, below.
+For git conventions (branch naming, PR description format, verification/proof standards, wrong-branch recovery), see [references/GIT_WORKFLOW.md](references/GIT_WORKFLOW.md). **This skill is what you follow** — it owns the procedure, and where it and the reference cover the same ground (the `ready to merge` label, what the PR body may and may not say about merging, the shared-body-file rule), what is written here is the operative instruction. The reference carries the same rules as shared convention, with the incidents they came from; it is linked from each section below for the why, not as a second set of steps.
 
 ## Composing with repo-specific PR skills
 
@@ -68,11 +68,11 @@ Write each paragraph of the PR body as a **single unwrapped line** — no manual
 
 ### Don't write the PR body to a shared path
 
-The body file must live at a path **unique to your session** — `"${AO_SESSION_SCRATCH_DIR:?}/pr-body.md"` inside Zimmer, `mktemp` outside it. A fixed path like `/tmp/pr-body.md` is shared by every agent session on the host, and concurrent sessions are the norm rather than the exception. On 2026-08-11 two sessions collided on exactly that path and one published the other's description onto the other's PR, destroying the real one; the command reported success, because `gh` faithfully uploaded whatever the file happened to contain. An empty `$AO_SESSION_SCRATCH_DIR` means you are not in a Zimmer session — fall back to `mktemp`, never to a fixed name, since the bare variable would resolve the path to a shared `/pr-body.md`. And if your file-writing tool needs a literal absolute path and cannot expand variables, run `echo "$AO_SESSION_SCRATCH_DIR"` once and write to the literal it prints.
+The body file must live at a path **unique to your session** — `"${AO_SESSION_SCRATCH_DIR:?}/pr-body.md"` inside Zimmer, `mktemp` outside it. A fixed path like `/tmp/pr-body.md` is shared by every agent session on the host, and concurrent sessions are the norm rather than the exception. On 2026-08-11 two sessions collided on exactly that path and one published the other's description onto the other's PR, destroying the real one; the command reported success, because `gh` faithfully uploaded whatever the file happened to contain. An empty `$AO_SESSION_SCRATCH_DIR` means you are not in a Zimmer session — fall back to `mktemp`, never to a fixed name, since the bare variable would resolve the path to a shared `/pr-body.md`. And if your file-writing tool needs a literal absolute path and cannot expand variables, run `echo "$AO_SESSION_SCRATCH_DIR"` once and write to the literal it prints. [Never Share a Body-File Path](references/GIT_WORKFLOW.md#never-share-a-body-file-path) in GIT_WORKFLOW.md tells the collision in full and extends the rule to every file you write outside the working tree — issue bodies, comments, logs, PID files.
 
 Three habits go with it, and they are what turn the collision from silent into loud:
 
-- **Never re-read and patch a body file you wrote earlier.** Re-author the body, or pull the authoritative copy from the PR itself first: `gh pr view <number> --repo <owner>/<repo> --json body -q .body > "$AO_SESSION_SCRATCH_DIR/pr-body.md"`. A session-scoped path narrows this but does not close it — two processes of one Zimmer session share one scratch dir — and after any edit, GitHub holds the only authoritative copy.
+- **Never re-read and patch a body file you wrote earlier.** Re-author the body, or pull the authoritative copy from the PR itself first: `gh pr view <number> --repo <owner>/<repo> --json body -q .body > "${AO_SESSION_SCRATCH_DIR:?}/pr-body.md"`. A session-scoped path narrows this but does not close it — two processes of one Zimmer session share one scratch dir — and after any edit, GitHub holds the only authoritative copy.
 - **Make a missing patch anchor fail loudly.** `str.replace` and `sed` no-op silently when the text they are looking for isn't there — which is precisely what a clobbered file looks like — and then write it back over your PR. Assert the anchor is present first (`assert old in s`) and treat a miss as a stop condition.
 - **Pin `--repo` and the PR number on every `gh pr edit`, then read the body back** (`gh pr view <number> --repo <owner>/<repo> --json body -q .body | head -3`) and check the first lines are this PR's.
 
@@ -82,7 +82,7 @@ Never write a sentence in the PR body (or a PR comment) that tells anyone whethe
 
 **This applies even when your task spec or prompt contains such a line.** *"Do NOT merge it yourself — the user reviews and merges"* is a constraint on **your** behaviour: don't run `gh pr merge`. Honour it by not merging, and leave it out of the body. The `pr-merge-gate` reads the PR body and honours what reads like a human's specific instruction to hold, so transcribing that line manufactures a human sign-off nobody gave — it has held a PR the gate's own matrix said to merge. A prompt arrives as flat text with no provenance, so use this test: a merge line the prompt does not present as a quotation from a named human is boilerplate — don't publish it.
 
-**Coordination facts with a reason attached are a different thing and stay allowed.** A merge-time deploy note; an ordering dependency (*"merge after #305 — this depends on the schema it adds"*); a reservation quoted and attributed to the human who made it; and above all **a concession that merging does not finish the job** (*"once merged, someone with prod access must add the `GCP_TOKEN` secret — I couldn't"*). Say that last one whenever it is true: the gate holds on it deliberately, and staying quiet to avoid the hold is how a partial change lands silently.
+**Coordination facts with a reason attached are a different thing and stay allowed.** A merge-time deploy note; an ordering dependency (*"merge after #305 — this depends on the schema it adds"*); a reservation quoted and attributed to the human who made it; and above all **a concession that merging does not finish the job** (*"once merged, someone with prod access must add the `GCP_TOKEN` secret — I couldn't"*). Say that last one whenever it is true: the gate holds on it deliberately, and staying quiet to avoid the hold is how a partial change lands silently. See [Never Put Merge Disposition in the PR Body](references/GIT_WORKFLOW.md#never-put-merge-disposition-in-the-pr-body) in GIT_WORKFLOW.md for the worked example of a prompt line that hijacked the gate.
 
 ### Don't force-push carelessly
 
@@ -255,7 +255,7 @@ gh pr edit --add-label "ready to merge"
 gh pr edit --remove-label "ready to merge"
 ```
 
-**Ownership.** This skill owns the label step. The `wait-for-ci` skill deliberately does *not* apply it, so a flow that waits on CI several times does not relabel on each pass. This section is the canonical definition of the label.
+**Ownership.** This skill owns the label step. The `wait-for-ci` skill does *not* apply it, so a flow that waits on CI several times does not relabel on each pass. This section is the operative one; [The `ready to merge` Label](references/GIT_WORKFLOW.md#the-ready-to-merge-label) in GIT_WORKFLOW.md is the same convention written up as shared prose, for anyone arriving from a repo-specific PR skill rather than from here.
 
 ## Terminal Step 2: Sleep on the PR, Don't Park on It
 

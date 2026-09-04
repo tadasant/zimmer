@@ -22,7 +22,7 @@
   },
   "git-workflow": {
     "title": "Git Workflow Guide",
-    "description": "The shared git workflow the `open-pr` skill deep-links to: branch naming, the merged-branch guard, PR description format (one line per paragraph), the closing-issues keyword rules, and the verification/proof standards a PR must meet. Bundled into the `open-pr` skill's references at prepare time so its links resolve.",
+    "description": "The shared git workflow the `open-pr` skill deep-links to: branch naming, the merged-branch guard, PR description format (one line per paragraph), the session-scoped body-file rule, the closing-issues keyword rules, the verification/proof standards a PR must meet, the `ready to merge` label, and the ban on putting merge disposition in the PR body. Bundled into the `open-pr` skill's references at prepare time so its links resolve.",
     "file": "GIT_WORKFLOW.md"
   }
 }
