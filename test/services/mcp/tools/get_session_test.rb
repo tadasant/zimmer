@@ -302,6 +302,62 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     refute_includes output, "The prompt that woke it is not lost"
   end
 
+  # The pause branch is reached through the ranking now rather than rendered
+  # unconditionally, so it needs positive coverage and not only the refutations
+  # the multi-mechanism tests below make.
+  test "a spot session paused mid-run by the ceiling reads back the pause" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionPause::PAUSED_AT => "2026-08-22T16:59:15Z",
+      SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+      SpotSessionPause::PAUSED_DETAIL => "Pausing spot sessions: the 5-hour window's spot budget is spent.",
+      SpotSessionPause::PAUSED_COUNT => 2
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Paused mid-run by the spot ceiling:** Pausing spot sessions:"
+    assert_includes output, "- **Paused at:** 2026-08-22T16:59:15Z"
+    assert_includes output, "- **Pauses so far:** 2"
+    assert_includes output, "- **Resumes when:** the pool's utilization falls"
+  end
+
+  # The other shape that shares the pause record. Nothing interrupted this session,
+  # so it must not be described as a casualty of the ceiling.
+  test "a session parked in the spot queue deliberately reads back as deliberate" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionPause::PAUSED_AT => "2026-08-22T16:59:15Z",
+      SpotSessionPause::PAUSED_REASON => SpotSessionPause::QUEUED_REASON,
+      SpotSessionPause::PAUSED_DETAIL => "Parked in the spot queue on request.",
+      SpotSessionPause::PAUSED_COUNT => 1
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Parked in the spot queue deliberately:**"
+    refute_includes output, "- **Paused mid-run by the spot ceiling:**"
+  end
+
+  # A record with no parseable stamp still gets named, without an empty " from ."
+  # where its timestamp would go.
+  test "a superseded mechanism with no usable timestamp is named without one" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionPause::PAUSED_AT => "not a timestamp",
+      SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+      SpotSessionPause::PAUSED_DETAIL => "Pausing spot sessions: the 5-hour window's spot budget is spent.",
+      SpotSessionPause::PAUSED_COUNT => 2,
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T16:59:30Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "**Also on the record, and not why it is waiting now:** a spot ceiling " \
+                            "pause. It is older than the reason above."
+  end
+
   # An auth-outage park has its own resume owner — the quota-recovery path, not
   # the spot gate — and until #642 it was the one dormancy this tool could not say
   # out loud. A session parked on an empty login pool read back nothing at all.

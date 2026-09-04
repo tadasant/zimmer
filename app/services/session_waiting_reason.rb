@@ -128,6 +128,13 @@ class SessionWaitingReason
 
     # The same grace every other surface takes, so "stalled" is drawn in one place
     # (see SpotSessionHold::Record#overdue?).
+    #
+    # This is only ever asked when a second mechanism is present, which is what
+    # makes it equivalent to the refusal it stands in for: `#rearm!` skips a
+    # session that is `dormant_for_another_reason?`, and a pause or a park is two
+    # of that predicate's three arms. Its third — a session asleep on a wall-clock
+    # wake — is not a mechanism this ranks, so a hold beside one is a single
+    # candidate and keeps the headline.
     def hold_overdue?(session)
       SpotSessionHold.record_for(session)&.overdue? || false
     end
@@ -135,8 +142,8 @@ class SessionWaitingReason
     def parse_time(raw)
       return nil if raw.blank?
 
-      Time.iso8601(raw.to_s)
-    rescue ArgumentError
+      Time.zone.parse(raw.to_s)
+    rescue ArgumentError, TypeError
       nil
     end
   end
