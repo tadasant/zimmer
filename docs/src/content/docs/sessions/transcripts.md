@@ -95,6 +95,18 @@ here" is context a reader on the `minimal` filter still needs. A flagged line wi
 made into a notice at all — there is nothing to attribute — so it stays on the message path, where
 a content-less message is already suppressed at render and an image-only one still shows its image.
 
+The timeline is not the only surface that was asserting a person. `TranscriptTextRenderer` (the
+plain-text export behind `GET /api/v1/sessions/:id/transcript` and the `get_session` MCP tool's
+`transcript_format: "text"`) and the session page's own copy-to-clipboard both read
+`parsed_transcript` — raw JSONL, never normalized — so both apply the same discriminator directly,
+via `ClaudeTranscriptNormalizer.runtime_notice_markers`. Fixing only the normalizer would have left
+an agent reading the text export being told a human typed the line.
+
+Codex gets no equivalent treatment: its rollout `response_item` message payloads carry only `role`
+and `content`, with no per-line marker that distinguishes a machine-written user turn from a typed
+one. There is nothing unambiguous to key off, so `CodexTranscriptNormalizer` is left alone rather
+than given an invented discriminator.
+
 #### Large notices render collapsed
 
 `isMeta` carries more than the resume stub. It is also the flag on the line Claude Code writes
@@ -114,27 +126,19 @@ Two things trigger the fold, and both live in `SessionsHelper#ot_runtime_notice_
 | a first line reading `Base directory for this skill: <path>` | the skill's name, from the path's last segment |
 | anything else longer than `RUNTIME_NOTICE_COLLAPSE_CHARS` (2,000) | the notice's own first line, truncated |
 
-The threshold sits far above the short scaffolding the same flag carries — "Continue from where
-you left off." is 33 characters — because folding a single line away behind an accordion is worse
-than leaving it alone. The token count is a character-count estimate at four characters per
+Both are floored at `RUNTIME_NOTICE_FLOOR_CHARS` (400): folding a short notice away behind an
+accordion is worse than leaving it alone, and that holds for a short skill dump too. The
+thresholds sit far above the scaffolding the same flag carries — "Continue from where you left
+off." is 33 characters. The token count is a character-count estimate at four characters per
 token, labelled `approx.` in the UI: Zimmer runs no tokenizer at render time and the number is
 not a billing figure.
 
 It is a `<details>`, not a Stimulus controller, for the reason the session hierarchy is: no JS to
-load, it works under touch and keyboard, and there is nothing for the transcript's infinite-scroll
-and auto-scroll controllers to fight with.
-
-The timeline is not the only surface that was asserting a person. `TranscriptTextRenderer` (the
-plain-text export behind `GET /api/v1/sessions/:id/transcript` and the `get_session` MCP tool's
-`transcript_format: "text"`) and the session page's own copy-to-clipboard both read
-`parsed_transcript` — raw JSONL, never normalized — so both apply the same discriminator directly,
-via `ClaudeTranscriptNormalizer.runtime_notice_markers`. Fixing only the normalizer would have left
-an agent reading the text export being told a human typed the line.
-
-Codex gets no equivalent treatment: its rollout `response_item` message payloads carry only `role`
-and `content`, with no per-line marker that distinguishes a machine-written user turn from a typed
-one. There is nothing unambiguous to key off, so `CodexTranscriptNormalizer` is left alone rather
-than given an invented discriminator.
+load, and it works under touch and keyboard. The one controller it has to tell is `auto-scroll`,
+whose `ResizeObserver` watches the container this row sits in — expanding a body worth tens of
+thousands of pixels is indistinguishable from new content arriving, and a reader who was tailing
+would be thrown to the bottom of the transcript, past what they just opened. The `toggle` clears
+tailing, the same as scrolling up does.
 
 ## Secret redaction
 

@@ -267,12 +267,18 @@ module SessionsHelper
   #
   #   * the skill-dump shape — a first line reading "Base directory for this
   #     skill: <path>", which the CLI writes ahead of the injected body. It
-  #     names the skill, and it is never small.
+  #     names the skill, and it is what gives the digest a real label.
   #   * any other notice longer than RUNTIME_NOTICE_COLLAPSE_CHARS. The notices
   #     that are not skill dumps are overwhelmingly one-liners — "Continue from
   #     where you left off." is 33 characters, the malformed-tool-call nudges
-  #     under 100 — so the threshold sits far above them on purpose. Folding a
-  #     single line away behind an accordion is worse than leaving it alone.
+  #     under 100 — so the threshold sits far above them on purpose.
+  #
+  # Both triggers are floored at RUNTIME_NOTICE_FLOOR_CHARS, because folding a
+  # short notice away behind an accordion is worse than leaving it alone and
+  # that is true of a short skill dump too. No skill on this host is anywhere
+  # near the floor — the smallest is 3.4k characters — so the floor never fires
+  # today; it is there so a genuinely tiny SKILL.md cannot make a one-line row
+  # into an accordion.
   #
   # Presentation only: nothing is removed from the transcript. The full text
   # still renders when expanded, is still what the copy button copies, and the
@@ -282,6 +288,8 @@ module SessionsHelper
 
     payload = item[:payload]
     text = payload.is_a?(Hash) ? payload["text"].to_s : ""
+    return nil if text.length <= RUNTIME_NOTICE_FLOOR_CHARS
+
     skill = ot_runtime_notice_skill_name(text)
     return nil if skill.nil? && text.length <= RUNTIME_NOTICE_COLLAPSE_CHARS
 
@@ -294,6 +302,10 @@ module SessionsHelper
   # Text longer than this, with no skill name to go on, still collapses. Set
   # well clear of the short scaffolding lines the same flag carries.
   RUNTIME_NOTICE_COLLAPSE_CHARS = 2_000
+
+  # Nothing shorter than this collapses, whatever shape it is. Roughly a screen
+  # of prose — below it there is nothing to hide.
+  RUNTIME_NOTICE_FLOOR_CHARS = 400
 
   # Whether this event row should get the subtle gray tool background.
   def ot_tool_row?(item)
@@ -421,15 +433,20 @@ module SessionsHelper
   # Anchored at the start of the text so a stray mention further down cannot
   # relabel an unrelated notice, and the basename is required to look like a
   # skill id — a malformed path falls back to the first-line label rather than
-  # putting a path fragment in the header.
+  # putting a path fragment in the header. "." and ".." pass that shape test and
+  # are excluded by name: they are what File.basename returns for a path that
+  # names no file, and either would be a meaningless one-character header.
   SKILL_DUMP_HEADER = /\ABase directory for this skill:[ \t]*(\S.*)$/
   SKILL_ID = /\A[\w.-]+\z/
+  NOT_A_SKILL_NAME = %w[. ..].freeze
 
   def ot_runtime_notice_skill_name(text)
     match = SKILL_DUMP_HEADER.match(text.to_s.lstrip)
     return nil unless match
 
     name = File.basename(match[1].strip)
+    return nil if NOT_A_SKILL_NAME.include?(name)
+
     name.match?(SKILL_ID) ? name : nil
   end
 
@@ -449,15 +466,8 @@ module SessionsHelper
   APPROX_CHARS_PER_TOKEN = 4
 
   def ot_approx_token_summary(text)
-    tokens = [ (text.to_s.length / APPROX_CHARS_PER_TOKEN.to_f).round, 1 ].max
-    rounded =
-      if tokens < 1_000
-        tokens.to_s
-      elsif tokens < 10_000
-        "#{(tokens / 1_000.0).round(1)}k"
-      else
-        "#{(tokens / 1_000.0).round}k"
-      end
+    tokens = (text.to_s.length / APPROX_CHARS_PER_TOKEN.to_f).round
+    rounded = tokens < 1_000 ? tokens.to_s : "#{(tokens / 1_000.0).round(1)}k"
 
     "approx. #{rounded} tokens"
   end
