@@ -3,9 +3,11 @@ class EnqueuedMessage < ApplicationRecord
   #
   # `pending` -> `processing` -> `sent` is the delivery path, and the row is
   # destroyed immediately after `sent` — so `sent` is a moment, not a resting
-  # place. `undelivered` is the one terminal resting state: the session was
-  # archived while this message was still queued, which ends every path by
-  # which it could have been delivered.
+  # place. `undelivered` is the one terminal resting state, and two things put a
+  # row there: the session was archived while this message was still queued,
+  # which ends every path by which it could have been delivered; or #stale? found
+  # the state the message reports had moved on before anybody read it, which
+  # leaves nothing worth delivering.
   STATUSES = %w[pending processing sent undelivered].freeze
 
   # Who wrote the message.
@@ -56,6 +58,17 @@ class EnqueuedMessage < ApplicationRecord
   # heartbeat when it pages, and not before.
   SELF_ADDRESSED_ORIGINS = %w[automated_recovery_nudge].freeze
 
+  # The origins whose message names a GitHub state that can un-happen between
+  # the poll that noticed it and the session's next turn boundary, and which is
+  # therefore re-read before delivery. See #stale?.
+  #
+  # `automated_merge_conflict` is the whole list, and `automated_pr_merged` is
+  # deliberately not on it: a merge is a fact that outlives the poll, so there
+  # is nothing to re-check. Only conflicts un-resolve — a session that rebases,
+  # resolves and force-pushes in the minutes after the poll makes the notice
+  # false before anybody reads it (tadasant/zimmer#835).
+  STALENESS_CHECKED_ORIGINS = %w[automated_merge_conflict].freeze
+
   belongs_to :session
 
   # Validations
@@ -85,6 +98,7 @@ class EnqueuedMessage < ApplicationRecord
   scope :pending, -> { where(status: "pending") }
   scope :undelivered, -> { where(status: "undelivered") }
   scope :ordered, -> { order(position: :asc) }
+  scope :staleness_checked, -> { where(origin: STALENESS_CHECKED_ORIGINS) }
 
   # Mark message as sent
   def mark_as_sent!
@@ -94,7 +108,9 @@ class EnqueuedMessage < ApplicationRecord
   # Retire a message that will never be delivered.
   #
   # Called from the `archive` transition, which is the point at which delivery
-  # becomes impossible: Session#process_next_enqueued_message! only claims
+  # becomes impossible. (The other producer of `undelivered`, #retire_as_stale!,
+  # writes the status conditionally rather than through here — see there.)
+  # Session#process_next_enqueued_message! only claims
   # `pending` rows, and the only caller that claims them for a live session is
   # AgentSessionJob's end-of-turn drain, which an archived session never
   # reaches. Leaving the row `pending` after that is what made the loss silent —
@@ -118,6 +134,81 @@ class EnqueuedMessage < ApplicationRecord
   # question from "was anything lost".
   def self_addressed?
     SELF_ADDRESSED_ORIGINS.include?(origin)
+  end
+
+  # Whether the thing this message is about has stopped being true, so that
+  # delivering it would cost the session a turn to tell it nothing.
+  #
+  # The same question AoEventSubject asks of an event's subject before firing a
+  # condition, asked at the other end of the same kind of gap. A poller reads
+  # GitHub, finds a conflict, and — because the session is mid-turn or asleep
+  # rather than parked in `needs_input` — queues the notice instead of sending
+  # it. The row then sits until the session's next turn boundary, which is
+  # minutes away, and in those minutes the session may well have rebased,
+  # resolved and force-pushed. That is exactly what happened in
+  # tadasant/zimmer#835: the notice arrived roughly six minutes after the poll
+  # that wrote it and five after the conflicts were gone.
+  #
+  # Why it matters more than the wasted turn: a resume consumes a session's
+  # one-time wake triggers. The `open-pr` skill's terminal step has a session
+  # schedule a bounded self-wake and end its turn in `waiting` so it sleeps on
+  # its PR rather than sitting in the human's action queue. A stale notice
+  # destroys that wake, and a session that takes the notice at face value —
+  # finds nothing to resolve, ends its turn — is then left with no pending
+  # trigger and no running turn: invisible until a human types into it.
+  #
+  # Fails OPEN, on every path. An unreadable, timed-out or still-computing
+  # mergeability read answers `false`, so the message is delivered. Suppressing
+  # a genuine conflict notice is the strictly worse failure — the session sleeps
+  # on a PR that will never merge and nothing says why — and this method's job
+  # is to drop only what it can positively show is moot.
+  #
+  # @return [Boolean]
+  def stale?
+    return false unless STALENESS_CHECKED_ORIGINS.include?(origin)
+
+    pr_url = AutomatedPrompts.merge_conflict_pr_url(content)
+    if pr_url.blank?
+      Rails.logger.warn(
+        "[EnqueuedMessage] Message #{id} (session ##{session_id}) has origin #{origin} but names no PR — delivering"
+      )
+      return false
+    end
+
+    mergeability = GithubPullRequestMergeability.read(pr_url)
+
+    # Logged at info on every branch, not just the suppression: the point of
+    # this line is that a human reading a session that never got a conflict
+    # notice can tell "suppressed because the PR was clean" from "the notice was
+    # never sent at all".
+    Rails.logger.info(
+      "[EnqueuedMessage] Re-read #{pr_url} before delivering message #{id} to session ##{session_id}: " \
+      "mergeable=#{mergeability} — #{mergeability == :mergeable ? 'suppressing the conflict notice' : 'delivering'}"
+    )
+
+    mergeability == :mergeable
+  end
+
+  # Retire this message because #stale? found the state it reports has moved on.
+  #
+  # `undelivered` rather than a destroy, for the reason the archive path keeps
+  # its rows: the content stays readable through every surface that reported the
+  # message queued — the session panel, the REST index, MCP
+  # `manage_enqueued_messages` — so "suppressed because the PR was clean" is a
+  # thing a human can see rather than infer from an absence. Position is left
+  # alone for the same reason it is on the archive path: a retired row holds its
+  # position, and only a delivery renumbers the queue behind it.
+  #
+  # Conditional on the row still being `pending`, and a bulk `update_all` for
+  # that reason rather than `mark_undelivered!`: a peer that claimed it first
+  # (FOR UPDATE SKIP LOCKED, in Session#process_next_enqueued_message!) owns it,
+  # and taking it out from under that peer would strand a message already being
+  # delivered.
+  #
+  # @return [Boolean] true if this call is the one that retired the row
+  def retire_as_stale!
+    self.class.where(id: id, status: "pending")
+        .update_all(status: "undelivered", updated_at: Time.current) == 1
   end
 
   # Reorder message to a new position

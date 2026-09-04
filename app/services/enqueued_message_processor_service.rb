@@ -1,6 +1,8 @@
 # Service for processing enqueued messages for a session
 #
 # This service is responsible for:
+# - Retiring queued notices whose reason for existing expired while they sat in
+#   the queue (EnqueuedMessage#stale?)
 # - Atomically claiming the next pending enqueued message
 # - Updating session's goal if the message carries a non-blank one (blank/nil preserves session goal)
 # - Resetting SIGTERM retry state for fresh execution
@@ -50,6 +52,8 @@ class EnqueuedMessageProcessorService
   #
   # @return [Boolean] true if a message was processed, false otherwise
   def process_next_message
+    drop_stale_messages
+
     message = nil
     message_content = nil
 
@@ -187,6 +191,53 @@ class EnqueuedMessageProcessorService
   end
 
   private
+
+  # Retire queued notices whose reason for existing has expired, before claiming
+  # one to deliver. This is the point the check has to live at: the poller that
+  # wrote the notice enqueued it because the session was mid-turn or asleep, and
+  # the row then sat here until this turn boundary — minutes in which the state
+  # it reports can have moved on (tadasant/zimmer#835). See
+  # EnqueuedMessage#stale? for what "moved on" means and why it fails open.
+  #
+  # Scoped to `staleness_checked` so the cost is bounded to the origins that
+  # actually have something to re-read: an ordinary `caller` message is somebody
+  # waiting on delivery, and nothing about it can go out of date.
+  #
+  # Runs BEFORE the transaction below, deliberately. EnqueuedMessage#stale?
+  # shells out to GitHub, and a network round trip should not be held inside a
+  # transaction that also holds this session's row lock — every poller that
+  # wants to enqueue against this session takes the same lock.
+  #
+  # One caller does wrap it: Sessions::InterruptService runs the whole interrupt
+  # inside Session.with_session_lock, so for a send-now the read lands inside
+  # that advisory lock. That is why the read is bounded — see
+  # GithubPullRequestMergeability::READ_TIMEOUT_SECONDS — and it is the same
+  # trade that path already takes holding the lock across SIGTERM and reap.
+  def drop_stale_messages
+    retired = session.enqueued_messages.pending.staleness_checked.ordered.select do |message|
+      message.stale? && message.retire_as_stale!
+    end
+    return if retired.empty?
+
+    retired.each do |message|
+      add_log(
+        "Queued #{message.origin} message at position #{message.position} was not delivered: the state it " \
+        "reports has moved on since the poller saw it, so it is retired undelivered rather than costing " \
+        "the session a turn",
+        level: "info"
+      )
+    end
+    flush_log_buffer
+    broadcast_service&.enqueued_messages_list(session)
+  rescue => e
+    # A staleness check that blows up must not cost the session its message. Fall
+    # through to the ordinary claim below and deliver, which is the same fail-open
+    # posture EnqueuedMessage#stale? takes for a read it cannot complete.
+    Rails.logger.error(
+      "[EnqueuedMessageProcessorService] Staleness check failed for session #{session.id} " \
+      "(#{e.class}: #{e.message}) — delivering the queue unchanged"
+    )
+  end
 
   # Add log entry to session
   # Uses log_buffer if available, otherwise creates log directly

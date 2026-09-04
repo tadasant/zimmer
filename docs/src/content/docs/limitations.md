@@ -2612,6 +2612,32 @@ failure is in the Rails log, and nowhere else.
 A crash is the case the ordering does cover. Messages go out before the markers are persisted, so a
 process that dies in between re-sends on the next poll rather than dropping the notification.
 
+### A suppressed conflict notice is never re-sent, and a failed re-read sends it anyway
+
+A queued merge-conflict notice is re-read against GitHub before it is delivered, and dropped if the
+PR now reads mergeable — see
+[Background jobs](/operate/background-jobs/#a-conflict-notice-is-re-read-when-it-comes-off-the-queue-not-when-it-was-written).
+Two edges come with that.
+
+`GitHubMergeConflictPollerJob` has already recorded the PR as a confirmed conflict by the time the
+notice is dropped, and that marker is what suppresses re-notification. So if the PR *re-conflicts*
+without ever reading clean on a poll in between, the session is not told again: the poller clears
+the marker only on a clean reading, and the next conflicting reading after that has to go through
+the two-poll debounce from scratch. In practice a PR that goes from conflicting to mergeable to
+conflicting again passes through a clean poll on the way, which clears it — but that is the ordinary
+timing rather than a guarantee.
+
+In the other direction the re-read fails open, deliberately: an error, a timeout, or GitHub's
+still-computing `null` all deliver the notice. A force-push leaves `mergeable` as `null` for a
+while, so a session that resolves its conflicts and is handed a turn immediately afterwards can
+still get the notice it no longer needs. That is the cheap failure being chosen over the expensive
+one — a suppressed genuine notice leaves a session asleep on a PR that can never merge.
+
+The re-read is also one extra `gh` call per conflict-notice delivery, on the session's turn
+boundary. It is bounded by `BoundedSubprocess` so it cannot wedge, and it happens only for the
+`automated_merge_conflict` origin, which is rare. It is still a call the three pollers could have
+shared — see [#711](https://github.com/tadasant/zimmer/issues/711).
+
 ### A parked session can hear about its merged PR up to a day late
 
 `PollBackoff` slows each GitHub poller per session according to how long it has been since the user

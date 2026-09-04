@@ -107,6 +107,20 @@ class EnqueuedMessageDrainJob < ApplicationJob
       return
     end
 
+    # The queue emptying without a delivery is a success, not the failure
+    # handle_failed_attempt is written against. EnqueuedMessageProcessorService
+    # retires a stale notice — one whose state moved on while it sat here, see
+    # EnqueuedMessage#stale? — and then has nothing left to claim, which is
+    # exactly the outcome wanted. A peer draining the queue between skip_reason
+    # and here lands in the same branch, and is equally not a failure.
+    unless session.enqueued_messages.pending.exists?
+      Rails.logger.info(
+        "[EnqueuedMessageDrainJob] Session #{session_id}: queue emptied without a delivery " \
+        "(retired or taken by a peer) — nothing left to deliver"
+      )
+      return
+    end
+
     handle_failed_attempt(session, attempt)
   end
 
@@ -167,7 +181,8 @@ class EnqueuedMessageDrainJob < ApplicationJob
 
   # EnqueuedMessageProcessorService returned false with the session still idle
   # and the queue still non-empty — so this is a real failure, not a peer having
-  # got there first (skip_reason already ruled that out under the lock).
+  # got there first and not a notice retired as stale. The caller checks the
+  # queue again before reaching here, which is what rules those two out.
   def handle_failed_attempt(session, attempt)
     if attempt < MAX_ATTEMPTS
       Rails.logger.warn(

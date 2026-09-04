@@ -149,12 +149,33 @@ module AutomatedPrompts
     If you are genuinely blocked and there is nothing you can do without human input, use your Zimmer tools to turn off this session's heartbeat (set heartbeat_enabled to false) so we don't keep beating over and over.
   PROMPT
 
+  # Reads the PR URL back out of a merge-conflict message.
+  #
+  # The pattern lives next to the template it parses on purpose. A conflict
+  # notice is re-validated against GitHub at the moment it is taken off a
+  # session's queue (EnqueuedMessage#stale?), which needs the PR the notice is
+  # about — and an EnqueuedMessage row carries only its content and its origin.
+  # Keeping the writer and the reader in one file is what stops a reworded
+  # template from silently disabling that check; the round trip is asserted in
+  # test/lib/automated_prompts_test.rb.
+  MERGE_CONFLICT_PR_URL_PATTERN = /merge conflicts on your PR \((\S+?)\)/
+
   # Build a merge conflict automated message for a specific PR URL
   #
   # @param pr_url [String] The full GitHub PR URL (e.g., "https://github.com/owner/repo/pull/123")
   # @return [String] The formatted automated message
   def self.merge_conflict_message(pr_url)
     format(MERGE_CONFLICT_TEMPLATE, pr_url: pr_url)
+  end
+
+  # The PR URL a merge-conflict message names, or nil if this is not one.
+  #
+  # @param prompt [Object]
+  # @return [String, nil]
+  def self.merge_conflict_pr_url(prompt)
+    return nil unless prompt.is_a?(String)
+
+    prompt[MERGE_CONFLICT_PR_URL_PATTERN, 1]
   end
 
   # Build a PR-merged automated message for a specific PR URL
