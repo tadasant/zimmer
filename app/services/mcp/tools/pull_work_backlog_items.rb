@@ -13,7 +13,7 @@ module Mcp
       tool_name "pull_work_backlog_items"
 
       description <<~DESC
-        Pull items off the top of the **work backlog** and start them. For each item this spawns a `#{WorkBacklog::Start::AGENT_ROOT}` session (goal `#{WorkBacklog::Start::GOAL}`, `scheduling_class: "spot"`, prompt = the issue URL plus "please implement this"), marks the item `started` with that session recorded, and returns both. One transaction per pull: if a spawn fails nothing is marked. This replaces the groomer's read-spawn-remove-PR cycle.
+        Pull items off the top of the **work backlog** and start them. For each item this spawns a `#{AgentRootsConfig::ROUTER_ROOT_NAMES.first}` session (goal `#{WorkBacklog::Start::GOAL}`, `scheduling_class: "spot"`, prompt = the issue URL plus "please implement this"), marks the item `started` with that session recorded, and returns both. One transaction per pull: if a spawn fails nothing is marked. This replaces the groomer's read-spawn-remove-PR cycle.
 
         **Two ways to say which.** `count` starts the top N by rank (0 is a legal, useful no-op that just re-ranks). `keys` starts exactly the items you name, in the order you give them, after you have read them with `get_work_backlog` and re-checked each on GitHub — that is the normal path, since **you must re-check before you start**: the item is a pointer to a live thread, and weeks can pass between an append and a pull. Live means open, no linked open PR, no unarchived session already working it; trusted means the thread's author and every commenter still pass the trust rules as it stands now. A key that is not queued fails the whole call. At most #{WorkBacklog::Pull::MAX} per call, so one bad night is bounded — how many to pull is your WIP arithmetic (`counts.in_flight` from `get_work_backlog` is the number of sessions this backlog produced that are still alive).
 
@@ -54,8 +54,11 @@ module Mcp
 
       def call(args)
         # A restricted connection may only spawn its allowed roots, and a pull
-        # spawns zimmer-router.
-        enforce_allowed_root!(WorkBacklog::Start::AGENT_ROOT) if args["count"].to_i.positive? || Array(args["keys"]).any?
+        # spawns the router root — under either of its names, since a session
+        # spawned before the rename still names the old one in its .mcp.json.
+        if args["count"].to_i.positive? || Array(args["keys"]).any?
+          enforce_any_allowed_root!(AgentRootsConfig::ROUTER_ROOT_NAMES)
+        end
 
         result = WorkBacklog::Pull.call(
           count: args["count"],
@@ -74,7 +77,7 @@ module Mcp
       rescue WorkBacklog::Pull::InvalidPull, WorkBacklog::Start::NotQueued => e
         raise ToolError, "Nothing was pulled: #{e.message}"
       rescue AgentRootsConfig::AgentRootNotFoundError => e
-        raise ToolError, "Nothing was pulled: the #{WorkBacklog::Start::AGENT_ROOT} agent root is not in the catalog (#{e.message})"
+        raise ToolError, "Nothing was pulled: the #{WorkBacklog::Start.agent_root} agent root is not in the catalog (#{e.message})"
       end
 
       private

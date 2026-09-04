@@ -256,7 +256,7 @@ is read by a job that spawns sessions from it with no human in the loop, so an e
 unattended implementing session. `get_work_backlog` returns the queue in rank order with each item's
 whole-queue position; `append_work_backlog_item` places the item by the band rules, stamps the writing
 session and its agent root from the connection, and refuses `prompt`, `precedence`, `pinned` and
-`added_by` outright; `pull_work_backlog_items` spawns a `spot` `zimmer-router` session per item as a
+`added_by` outright; `pull_work_backlog_items` spawns a `spot` `zimmer-orchestrator` session per item as a
 child of the caller and records it on the row. What is deliberately absent, on this group or any
 other: no tool pins an item, hand-places it, removes it by judgement, or starts it as a `priority`
 session — those are the human's levers over what the fleet works on next and exist only on the REST

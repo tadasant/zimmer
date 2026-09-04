@@ -38,18 +38,54 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     end
   end
 
-  # Session::ROUTER_AGENT_ROOT names the baseline root that every quick-router /
+  # router_root_name names the baseline root that every quick-router /
   # chat-bubble submission is created against. If that root is absent from the
   # shipped catalog (roots.json), create_from_agent_root! raises
   # AgentRootNotFoundError and the dashboard's quick router breaks with "Router
-  # agent root not configured", so the constant must always resolve against the
-  # real, shipped catalog.
-  test "Session::ROUTER_AGENT_ROOT resolves to a shipped baseline router root" do
-    router = AgentRootsConfig.find!(Session::ROUTER_AGENT_ROOT)
+  # agent root not configured", so it must always resolve against the real,
+  # shipped catalog.
+  test "router_root_name resolves to a shipped baseline router root" do
+    router = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
 
-    assert_equal "zimmer-router", router.name
+    assert_equal "zimmer-orchestrator", router.name
     assert_equal "https://github.com/tadasant/zimmer.git", router.url
     refute router.user_invocable?, "the router root is dispatched by the quick router, not picked from the new-session form"
+  end
+
+  # zimmer-router is the pre-rename name. Sessions created before the rename
+  # still carry it in metadata["agent_root_key"], and unarchiving one resolves
+  # that name against the current catalog, so the alias has to stay findable.
+  test "the deprecated zimmer-router alias still resolves from the shipped catalog" do
+    alias_root = AgentRootsConfig.find!("zimmer-router")
+
+    assert_equal AgentRootsConfig.find!("zimmer-orchestrator").url, alias_root.url
+    refute alias_root.user_invocable?
+  end
+
+  # The Rails change and the catalog change are independent PRs against
+  # different repos, merged by hand in either order, and AirCatalogService can
+  # serve a last-known-good catalog resolved before either landed. So both
+  # branches of the preference have to hold: name the new root when the catalog
+  # has it, and the old one when it does not.
+  test "router_root_name prefers zimmer-orchestrator when the catalog carries it" do
+    with_resolved_roots("zimmer-orchestrator" => {}, "zimmer-router" => {}) do
+      assert_equal "zimmer-orchestrator", AgentRootsConfig.router_root_name
+    end
+  end
+
+  test "router_root_name falls back to zimmer-router when the catalog has only the old name" do
+    with_resolved_roots("zimmer-router" => {}, "general-agent" => {}) do
+      assert_equal "zimmer-router", AgentRootsConfig.router_root_name
+    end
+  end
+
+  # Neither name present means no catalog has the router root at all. Naming the
+  # preferred one makes the resulting AgentRootNotFoundError say what the app
+  # was looking for rather than what it used to look for.
+  test "router_root_name names the preferred root when the catalog carries neither" do
+    with_resolved_roots("general-agent" => {}) do
+      assert_equal "zimmer-orchestrator", AgentRootsConfig.router_root_name
+    end
   end
 
   test "returns list of agent root names" do
@@ -434,5 +470,13 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
       "Locked-down Zimmer MCP server should be removed — Zimmer auto-injects from default_subagent_roots"
     refute_includes agent_root.default_mcp_servers, "agent-orchestrator-ai-artifact-engineering",
       "Locked-down AI Artifact Engineering Zimmer MCP server should be removed — Zimmer auto-injects from default_subagent_roots"
+  end
+
+  private
+
+  # router_root_name is the only thing under test that reads the catalog, and it
+  # only ever asks for :roots, so a blanket stub on entries_for is unambiguous.
+  def with_resolved_roots(entries, &block)
+    AirCatalogService.stub(:entries_for, entries, &block)
   end
 end

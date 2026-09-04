@@ -81,12 +81,13 @@ Two things are deliberately outside that rule:
   declare `default_subagent_roots`) are added by `SelfSessionInjector`, not by this resolution. A
   session spawned with `mcp_servers: []` still receives them, by design.
 
-## The eleven roots that ship
+## The twelve roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
 | `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. Every skill but `awaken-waiting-sessions` defaults here. |
-| `zimmer-router` | ❌ | `tadasant/zimmer` | The baseline router. `Session::ROUTER_AGENT_ROOT`; every quick-router / chat-bubble submission is created against it. Ships with no default artifacts — it cannot yet dispatch downstream sessions ([why](/limitations/#the-baseline-zimmer-router-root-cant-spawn-downstream-sessions-out-of-the-box)). |
+| `zimmer-orchestrator` | ❌ | `tadasant/zimmer` | The baseline router. `AgentRootsConfig.router_root_name`; every quick-router / chat-bubble submission and every work-backlog start is created against it. Ships with no default artifacts — it cannot yet dispatch downstream sessions ([why](/limitations/#the-baseline-orchestrator-root-cant-spawn-downstream-sessions-out-of-the-box)). |
+| `zimmer-router` | ❌ | `tadasant/zimmer` | Deprecated alias of `zimmer-orchestrator`, kept so sessions created before the rename still resolve their root ([how](#the-router-roots-two-names)). Nothing new is created against it. |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `fleet-maintenance` | ❌ | `tadasant/zimmer` | The deployment's own scheduler. The `quota_available` trigger dispatches it; it runs `awaken-waiting-sessions` and starts parked spot work in precedence order. Defaults to the `zimmer-fleet` server, which is the only thing that gives it the tools that skill calls. |
 | `agent-orchestrator` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents/agent-orchestrator` |
@@ -114,10 +115,48 @@ distinct locations. That is its own change.
 `roots.json` also gives `agent-orchestrator` the `display_name` "Zimmer" — the *same* display name
 as the `zimmer` root — so the two are already indistinguishable in a picker.
 
-**The roots that actually work today:** `zimmer`, `zimmer-router` (the quick-router target),
-and `general-agent` (the default).
+**The roots that actually work today:** `zimmer`, `zimmer-orchestrator` (the quick-router target)
+and its `zimmer-router` alias, and `general-agent` (the default).
 Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
 :::
+
+## The router root's two names
+
+`zimmer-router` was renamed to `zimmer-orchestrator`. The rename is **additive**: both names are in
+`roots.json`, the old one described as a deprecated alias, and no session row was rewritten. A
+session created before the rename still carries `zimmer-router` in `metadata["agent_root_key"]`, and
+unarchiving it resolves that name against the current catalog — which is exactly why the alias
+stays.
+
+The app does not hardcode either name. `AgentRootsConfig::ROUTER_ROOT_NAMES` lists them
+most-preferred first and `AgentRootsConfig.router_root_name` returns the first one the resolved
+catalog actually carries:
+
+```ruby
+ROUTER_ROOT_NAMES = %w[zimmer-orchestrator zimmer-router].freeze
+
+def router_root_name
+  entries = AirCatalogService.entries_for(:roots)
+  ROUTER_ROOT_NAMES.find { |name| entries.key?(name) } || ROUTER_ROOT_NAMES.first
+end
+```
+
+Resolving rather than naming is what makes the rename safe to land. Zimmer's own catalog lives in
+this repo, but a deployment can point `air.json` at another one — and that catalog is a separate
+repo on its own merge schedule. Naming only `zimmer-orchestrator` would break every routable
+message for as long as the deployed catalog still had only `zimmer-router`, including when
+`AirCatalogService` is [serving a last-known-good snapshot](/air/zimmer-integration/#three-cache-layers) resolved before the
+rename. Falling back covers that window in both directions.
+
+It sits on a hot path — every chat-bubble and quick-prompt submission — so it stays cheap: at most
+two `Hash#key?` calls against the entry tree `AirCatalogService` has already parsed and caches for
+60 seconds. Nothing is memoized on top of that, deliberately, so a catalog that gains
+`zimmer-orchestrator` cuts over within one TTL rather than at the next restart.
+
+A restricted MCP connection is granted the root under **either** name
+(`Mcp::Tool#enforce_any_allowed_root!`). `allowed_agent_roots` is baked into a session's
+`.mcp.json` when it spawns, so a session started before the rename is still carrying the old name
+on disk; both names denote the same root, so granting one grants the other.
 
 ## Subagent roots
 

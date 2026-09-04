@@ -111,7 +111,7 @@ pill beside the agent-root pill; `to_outline`, which `get_session` and `get_sess
 use, renders it in braces:
 
 ```
-- #101 [zimmer-router] {web_ui · priority} Add spot vs priority classification
+- #101 [zimmer-orchestrator] {web_ui · priority} Add spot vs priority classification
   - #102 [zimmer] {web_ui · priority} Implement the genesis column ← this session
 ```
 

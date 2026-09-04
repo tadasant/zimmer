@@ -9,10 +9,18 @@
     "user_invocable": true,
     "default_goal": "open-reviewed-green-pr"
   },
+  "zimmer-orchestrator": {
+    "name": "zimmer-orchestrator",
+    "display_name": "Zimmer Orchestrator",
+    "description": "Baseline root for the dashboard's quick router: freeform input submitted there starts its session here. Not user-invocable — the quick router dispatches it, rather than it being picked from the new-session form.",
+    "url": "https://github.com/tadasant/zimmer.git",
+    "default_branch": "main",
+    "user_invocable": false
+  },
   "zimmer-router": {
     "name": "zimmer-router",
-    "display_name": "Zimmer Router",
-    "description": "Baseline root for the dashboard's quick router: freeform input submitted there starts its session here. Not user-invocable — the quick router dispatches it, rather than it being picked from the new-session form.",
+    "display_name": "Zimmer Router (deprecated)",
+    "description": "Deprecated alias of zimmer-orchestrator, kept so sessions created before the rename still resolve their root. New sessions are created against zimmer-orchestrator; nothing should name this one.",
     "url": "https://github.com/tadasant/zimmer.git",
     "default_branch": "main",
     "user_invocable": false

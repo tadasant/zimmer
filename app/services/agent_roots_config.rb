@@ -9,6 +9,17 @@ class AgentRootsConfig
   # The default agent root selected on the new session form
   DEFAULT_ROOT = ENV.fetch("AO_DEFAULT_AGENT_ROOT", "general-agent").freeze
 
+  # The router root's names, most-preferred first. `zimmer-router` was renamed to
+  # `zimmer-orchestrator`; both are in the catalog, the old one as a deprecated
+  # alias, so every session row already carrying `zimmer-router` keeps resolving.
+  #
+  # The app resolves the name instead of hardcoding it because the catalog and
+  # the app are separate repos landing as separate PRs: naming only the new root
+  # would break every routable message in the window where the deployed catalog
+  # still has only the old one. Preferring the new and falling back to the old
+  # makes both merge orders — and a stale last-known-good catalog — safe.
+  ROUTER_ROOT_NAMES = %w[zimmer-orchestrator zimmer-router].freeze
+
   # Agent root configuration object
   class AgentRoot
     attr_reader :name, :display_name, :description, :url, :default_branch, :subdirectory, :default_goal, :default_mcp_servers, :default_skills, :default_hooks, :default_plugins, :default_subagent_roots, :user_invocable, :default_model, :default_runtime
@@ -117,6 +128,24 @@ class AgentRootsConfig
       all.map(&:name)
     end
 
+    # The root that every quick-router / chat-bubble submission and every
+    # work-backlog start is created against: the first of ROUTER_ROOT_NAMES the
+    # catalog actually carries.
+    #
+    # HOT PATH — consulted on every routable message. It is one Hash#key? per
+    # candidate against AirCatalogService's already-parsed entry tree, which
+    # holds its own 60s TTL, so no resolve is shelled out on account of this
+    # call. Deliberately not memoized on top of that: the cutover then lands
+    # within one TTL of the catalog gaining the new root, with no restart.
+    #
+    # Falls back to the preferred name when no candidate is present, so a
+    # catalog that has neither fails at create_from_agent_root! with an
+    # AgentRootNotFoundError naming the root callers expect.
+    def router_root_name
+      entries = AirCatalogService.entries_for(:roots)
+      ROUTER_ROOT_NAMES.find { |name| entries.key?(name) } || ROUTER_ROOT_NAMES.first
+    end
+
     def user_invocable
       all.select(&:user_invocable?)
     end
@@ -175,7 +204,7 @@ class AgentRootsConfig
       # AirCatalogService serves a last-known-good catalog (in-memory or persisted
       # snapshot) whenever a resolve fails, so reaching here means even that
       # fallback was exhausted — no catalog has ever resolved successfully. That is
-      # genuinely broken (every session start, including zimmer-router, will fail) and
+      # genuinely broken (every session start, including the router root, will fail) and
       # warrants an alert, not a warning.
       Rails.logger.error "[AgentRootsConfig] catalog unavailable with no last-known-good fallback: #{e.message}"
       []
