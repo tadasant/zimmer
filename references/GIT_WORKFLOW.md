@@ -2,7 +2,8 @@
 
 This document describes the standard git workflow for this repository. It is the
 shared reference the `open-pr` skill links to for branch naming, PR description format,
-and verification/proof standards.
+the session-scoped body-file rule, verification/proof standards, the `ready to merge`
+label, and the ban on putting merge disposition in the PR body.
 
 ## Branch Naming Convention
 
@@ -131,12 +132,12 @@ Before committing and creating a PR, run these from the repo root:
 
 **A fixed path like `/tmp/pr-body.md` is shared by every agent session on the box, so the file you wrote is not necessarily the file `gh` reads.** Zimmer runs many sessions concurrently on one host with one `/tmp`, and this document used to prescribe that exact path, so every session that followed it raced every other one.
 
-On 2026-08-11 that race landed. One session wrote its own PR body to `/tmp/pr-body.md` while another was still working; **fifty seconds later** the second session ran `gh pr edit <number> --body-file /tmp/pr-body.md` and published the first session's description — a change to a different repository entirely — onto its own PR. The real description was destroyed, the command printed `BODY UPDATED`, and nobody noticed until a human read the merged PR. Both sessions were following this document exactly: the shared path is the root defect, and the silent read-modify-write in rule 3 below is what kept it from being caught.
+On 2026-08-11 that race landed. One session wrote its own PR body to `/tmp/pr-body.md` while another was still working; **fifty seconds later** the second session re-read that same file to patch its own body, ran a substitution that silently matched nothing, and published the first session's description — a change to a different repository entirely — onto its own PR. The real description was destroyed, the command printed `BODY UPDATED`, and nobody noticed until a human read the merged PR. Both sessions were following this document exactly: the shared path is the root defect, and the silent read-modify-write in rule 3 below is what kept it from being caught.
 
 Four rules, all cheap:
 
 1. **Session-scoped path, always** — for any file you write outside the working tree, not just a PR body. An issue body, a PR or issue comment, a review body, a log, a PID file: `/tmp/issue.md` is as shared as `/tmp/pr-body.md` is, and a PID file is worse, because acting on a stale one kills another session's process. Use `"${AO_SESSION_SCRATCH_DIR:?}/…"` inside Zimmer and `mktemp` outside it; an empty `$AO_SESSION_SCRATCH_DIR` means you are **not** in a Zimmer session, and the fallback is `mktemp`, never a fixed name. The `:?` matters: an unset variable would otherwise expand to nothing and put the file at `/pr-body.md`, which is shared all over again — and while an ordinary user gets a permission error there, a container running as root does not. If your file-writing tool needs a literal absolute path and cannot expand a variable, resolve the directory once with `echo "$AO_SESSION_SCRATCH_DIR"` and write to the literal it prints — do not fall back to a fixed path because the variable was inconvenient.
-2. **The body file is write-only from your side.** Never read back and patch a body file you wrote earlier. A session-scoped path narrows who can have overwritten it but does not close the question: two processes of one Zimmer session share one `$AO_SESSION_SCRATCH_DIR`, which has been observed happening ([tadasant/zimmer#395](https://github.com/tadasant/zimmer/issues/395)), and once a description has been edited at all, the copy on GitHub is the only authoritative one — your file is a draft that may predate an edit you or a reviewer made. To revise, either re-author the whole body, or refresh from the live PR first: `gh pr view <number> --repo <owner>/<repo> --json body -q .body > "$AO_SESSION_SCRATCH_DIR/pr-body.md"`.
+2. **The body file is write-only from your side.** Never read back and patch a body file you wrote earlier. A session-scoped path narrows who can have overwritten it but does not close the question: two processes of one Zimmer session share one `$AO_SESSION_SCRATCH_DIR`, which has been observed happening ([tadasant/zimmer#395](https://github.com/tadasant/zimmer/issues/395)), and once a description has been edited at all, the copy on GitHub is the only authoritative one — your file is a draft that may predate an edit you or a reviewer made. To revise, either re-author the whole body, or refresh from the live PR first: `gh pr view <number> --repo <owner>/<repo> --json body -q .body > "${AO_SESSION_SCRATCH_DIR:?}/pr-body.md"`.
 3. **A patch that finds nothing must fail loudly.** `str.replace`, `sed s///` and friends silently no-op when the anchor is absent — which is exactly what a clobbered file looks like — and then write the wrong content back over your PR. Assert the anchor is present before substituting (`assert old in s`), and treat a miss as a stop condition, not a warning.
 4. **Pin the target and read it back.** Pass `--repo <owner>/<repo>` and the PR number explicitly on every `gh pr edit`, and confirm what actually landed rather than trusting the exit code: `gh pr view <number> --repo <owner>/<repo> --json body -q .body | head -3`. The first lines should be prose you recognise as this PR's.
 
@@ -310,17 +311,19 @@ Skipping the reproduce step is a common mistake — if you can't reproduce the b
    - Fix any CI failures iteratively
    - Only consider the PR ready after CI is green
 
-3. **Apply the `ready to merge` label** (terminal step — see below)
+3. **Fresh-eyes review** — an independent subagent reviews the diff, and its findings are actioned before the label goes on
 
-4. **In Zimmer, sleep on the PR rather than parking on it** (see below) — the producing session schedules a bounded self-wake instead of coming to rest in the human's action queue
+4. **Apply the `ready to merge` label** (the last action taken on the PR — see below)
+
+5. **In Zimmer, sleep on the PR rather than parking on it** (see below) — the producing session schedules a bounded self-wake instead of coming to rest in the human's action queue
 
 ### The `ready to merge` Label
 
-Every agent-authored PR ends by carrying the label `ready to merge`. The `open-pr` skill owns the step and spells out the exact mechanics; this section is the shared convention behind it, and what `wait-for-ci` and any repo-specific PR skill are deferring to.
+Every agent-authored PR ends by carrying the label `ready to merge`. The `open-pr` skill owns the step and spells out the exact mechanics; this section is the shared convention behind it.
 
 The label is a **claim about the PR's state**, not a request for attention: the agent has self-reviewed it, a fresh-eyes subagent has reviewed it, every finding is addressed, and CI is green — so the only thing left is the merge. Never apply it to a red or half-finished PR. It is also the string the merge-side automation keys on, so treat it as an exact literal: three lowercase words, single spaces. `ready-to-merge` and `Ready to Merge` are different GitHub labels and will not fire anything.
 
-**The label is orthogonal to merging and to human review.** Applying `ready to merge` does not merge the PR and does not assert a human has reviewed it — it only asserts the *agent-side* gate is complete: self-review, fresh-eyes subagent review, and green CI. That is exactly the end state of the `open-reviewed-green-pr` goal family ("open a reviewed, green PR; do NOT merge; leave it unmerged for the user"). So a goal that tells you to leave the PR unmerged for a human is **not** a licence to skip the label — the two are complementary, and the label is how the merge gate and a human skimming the list know the PR has cleared agent review. Two concrete ways this has gone wrong, both of which strand a green, reviewed PR unlabeled outside the merge pipeline: (a) using `wait-for-ci` to reach green and stopping there, never running the `open-pr` terminal step that owns the label (`wait-for-ci` deliberately hands the label off and never applies it itself); and (b) knowing about the label and consciously withholding it "because the task said don't merge / leave it for the human." Apply the label once earned, *then* stop for the human.
+**The label is orthogonal to merging and to human review.** Applying `ready to merge` does not merge the PR and does not assert a human has reviewed it — it only asserts the *agent-side* gate is complete: self-review, fresh-eyes subagent review, and green CI. That is exactly the end state of the `open-reviewed-green-pr` goal family ("open a reviewed, green PR; do NOT merge; leave it unmerged for the user"). So a goal that tells you to leave the PR unmerged for a human is **not** a licence to skip the label — the two are complementary, and the label is how the merge gate and a human skimming the list know the PR has cleared agent review. Two concrete ways this has gone wrong, both of which strand a green, reviewed PR unlabeled outside the merge pipeline: (a) using `wait-for-ci` to reach green and stopping there, never running the `open-pr` terminal step that owns the label — `wait-for-ci` does not apply the label, so reaching green is not the same as finishing; and (b) knowing about the label and consciously withholding it "because the task said don't merge / leave it for the human." Apply the label once earned, *then* stop for the human.
 
 Apply it as the **last action on the PR**, after CI is green and all review feedback is addressed. `gh pr edit --add-label` fails if the label does not exist in the repo, so create-if-missing first. Run both from the PR's branch; both are idempotent:
 
@@ -336,13 +339,13 @@ Two failure modes to handle rather than flail at:
 - **No permission to label.** If the PR targets an upstream repo you don't own, `gh` resolves to that base repo and both commands 403. Skip the label and say so when you report the PR link.
 - **You push again after labelling.** The label does not un-apply itself, so it would sit on a PR whose CI is re-running. Run `gh pr edit --remove-label "ready to merge"` before pushing the follow-up commit, and re-add it once CI is green again.
 
-`wait-for-ci` intentionally does not apply the label, so repeated CI waits don't relabel. A repo-specific PR skill layered on top should run its extra steps *before* the label, keeping it terminal.
+`wait-for-ci` does not apply the label, so repeated CI waits don't relabel. A repo-specific PR skill layered on top should run its extra steps *before* the label, keeping it terminal.
 
 ### After the Label: Sleep on the PR, Don't Park on It
 
 **Zimmer only.** Applying the label is the last thing that happens *to the PR*, but in Zimmer it is not the last thing that happens in the *session*. Rather than coming to rest in `needs_input`, the producing session schedules a bounded `wake_me_up_later` self-wake and goes to `waiting`. It still holds the PR and still carries the work's context — it simply does not occupy a slot in the human's action queue while nothing yet needs a human.
 
-The line this draws is the deployment's own line between a machine wait and a human handoff: **a PR waiting for the merge gate to rate it is a machine wait; a PR the gate has *held* is a human handoff.** So the session converges back to `needs_input` exactly when a human becomes the next actor — the gate posted a `HELD` verdict, or the bounded wake budget ran out — and archives itself when the PR merges or is closed. A goal that says "leave the PR unmerged in `needs_input` for the human" is satisfied either way; what changes is only how the interval before that point is spent.
+The line this draws is the deployment's own line between a machine wait and a human handoff: **a PR waiting for the merge gate to rate it is a machine wait; a PR the gate has *held* is a human handoff.** So the session converges back to `needs_input` when a human becomes the next actor — the gate posted a `HELD` verdict, the wake budget ran out, or the PR's state stopped being readable — and archives itself when the PR merges or is closed. The `open-pr` skill's decision table is the full enumeration. A goal that says "leave the PR unmerged in `needs_input` for the human" is satisfied either way; what changes is only how the interval before that point is spent.
 
 The `open-pr` skill owns the mechanics — the interval, the wake bound, what each wake checks, and when to skip the wake entirely (no Zimmer session, no label applied, or something else already needs a human). Outside Zimmer there is no such step and the label genuinely is the last thing that happens.
 
