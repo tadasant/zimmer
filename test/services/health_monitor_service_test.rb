@@ -799,6 +799,262 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_in_delta 90, stats[:oldest_ready_age_seconds_by_queue]["agents"], 5
   end
 
+  # === The claimed side: a lane wedged on work it already holds ===
+  #
+  # Every number above is taken over READY work, and ready work cannot express the
+  # difference between the two ways a lane stops draining: its whole thread pool is
+  # held by executions that never return, or the worker is not polling that lane at
+  # all. Both leave an old head of line and an unmoving depth.
+  #
+  # On 2026-09-04 the Tadasant production worker held `claimed_count` at 15 for over
+  # an hour while `inference`, `default` and `maintenance` claimed nothing, its
+  # heartbeat stayed 7 seconds old and it cleared ~697 jobs/hour on the other lanes.
+  # The page could not say which shape it was and neither could the deploy gate,
+  # which failed reporting in as many words that the lane "could not be shown to be
+  # draining any other work OR to be holding a full pool of live work".
+
+  # An execution: a row a worker has claimed and started. `running_for` backdates
+  # `performed_at`, which is when the job actually began — the age the gate reads.
+  def claim_lane(queue, count, running_for:, job_class: "PlaceholderJob")
+    started_at = running_for.ago
+    insert_good_jobs(count) do
+      { queue_name: queue, job_class: job_class, locked_by_id: SecureRandom.uuid,
+        locked_at: started_at, performed_at: started_at,
+        created_at: started_at, updated_at: started_at }
+    end
+  end
+
+  # A live GoodJob worker. The gate turns a per-process thread count into the lane's
+  # real capacity by multiplying by this, so a test with no registered process has a
+  # capacity of zero and nothing can be full.
+  def register_workers(count = 1)
+    now = Time.current
+    GoodJob::Process.insert_all(Array.new(count) do
+      { id: SecureRandom.uuid, state: { "hostname" => "test-worker" }, created_at: now, updated_at: now }
+    end)
+  end
+
+  # Both threads of the two-thread `inference` lane, held for far longer than
+  # anything in that lane is designed to take, with the backlog stacked behind them,
+  # in front of one live worker.
+  def wedge_inference_lane(ready: 57, running_for: 77.minutes, workers: 1)
+    register_workers(workers)
+    enqueue_lane("inference", ready, head_waiting_for: running_for)
+    claim_lane("inference", 2 * workers, running_for: running_for, job_class: "SessionStatusSummaryJob")
+  end
+
+  test "queue_statistics splits the claimed population by lane, with each lane's oldest execution" do
+    claim_lane("inference", 2, running_for: 70.minutes, job_class: "SessionStatusSummaryJob")
+    claim_lane("agents", 3, running_for: 3.hours, job_class: "AgentSessionJob")
+    claim_lane("pollers", 1, running_for: 2.seconds, job_class: "SlackTriggerPollerJob")
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_equal 6, stats[:claimed_count]
+    assert_equal({ "agents" => 3, "inference" => 2, "pollers" => 1 }, stats[:claimed_count_by_queue])
+    assert_in_delta 4200, stats[:oldest_claimed_age_seconds_by_queue]["inference"], 5
+    assert_in_delta 10_800, stats[:oldest_claimed_age_seconds_by_queue]["agents"], 5
+    assert_in_delta 2, stats[:oldest_claimed_age_seconds_by_queue]["pollers"], 5
+    assert_equal "SessionStatusSummaryJob", stats[:oldest_claimed_job_class_by_queue]["inference"]
+    assert_equal "AgentSessionJob", stats[:oldest_claimed_job_class_by_queue]["agents"]
+  end
+
+  test "the global oldest execution age is the oldest of the lane in-flight heads" do
+    claim_lane("inference", 1, running_for: 70.minutes)
+    claim_lane("pollers", 1, running_for: 5.seconds)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_in_delta 4200, stats[:oldest_claimed_age_seconds], 5
+  end
+
+  # The same convention the ready side holds to, and for the same reason: an idle
+  # lane and a lane running one job are different facts, and a zero says the wrong
+  # one to the collector scraping these off /health/export_diagnostics.
+  test "a lane holding nothing is absent from the in-flight breakdowns, not zero" do
+    claim_lane("inference", 1, running_for: 30.seconds)
+
+    stats = @service.system_health[:queue_stats]
+
+    refute_includes stats[:claimed_count_by_queue].keys, "agents"
+    assert_nil stats[:claimed_count_by_queue]["agents"]
+    assert_nil stats[:oldest_claimed_age_seconds_by_queue]["agents"]
+  end
+
+  # An execution is aged from when it STARTED, not from when the row was written.
+  # Dating it from `created_at` would charge every job for the time it spent queued,
+  # and would read a lane that has just picked up an hour-old backlog as wedged on
+  # its first tick — which is the opposite of what it is doing.
+  test "an execution is aged from performed_at, so a lane draining an old backlog is not wedged" do
+    register_workers
+    enqueue_lane("inference", 60, head_waiting_for: 80.minutes)
+    started_at = 20.seconds.ago
+    insert_good_jobs(2) do
+      { queue_name: "inference", job_class: "SessionTitleJob", locked_by_id: SecureRandom.uuid,
+        locked_at: started_at, performed_at: started_at,
+        created_at: 80.minutes.ago, updated_at: started_at }
+    end
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_in_delta 20, stats[:oldest_claimed_age_seconds_by_queue]["inference"], 5
+    assert_nil @service.send(:wedged_lane, stats), "a lane that has just picked the backlog up is draining, not wedged"
+  end
+
+  # The 2026-09-04 incident, in the shape the health surface saw it.
+  test "a lane holding a full pool past its own ceiling is critical, and the page names the holder" do
+    wedge_inference_lane
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert_equal "wedged_lane:inference", status.code
+    assert_includes status.message, "the inference lane is holding 2/2 threads"
+    assert_includes status.message, "SessionStatusSummaryJob"
+    assert_includes status.message, "57 jobs ready behind it"
+  end
+
+  # The whole point of reading the claimed side is that it is diagnosable before the
+  # ready side has piled up enough depth to trip a threshold sized in the hundreds.
+  test "a wedged lane is critical well below the depth its starved-lane threshold needs" do
+    wedge_inference_lane(ready: 4)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_operator stats[:ready_count_by_queue]["inference"], :<,
+                    HealthMonitorService::QUEUE_LANE_CRITICAL_THRESHOLDS["inference"][:depth]
+    assert_nil @service.send(:starved_lane, stats), "four ready jobs is nowhere near the starved-lane bar"
+    assert @service.send(:system_health_status, stats).critical?
+  end
+
+  # Four conjuncts, one test each. Any of them missing and the lane is doing
+  # something other than wedging.
+  test "a full pool still inside its lane's ceiling is not wedged" do
+    register_workers
+    enqueue_lane("inference", 57, head_waiting_for: 77.minutes)
+    claim_lane("inference", 2, running_for: 2.minutes)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_nil @service.send(:wedged_lane, stats),
+               "two minutes is inside what a HEADLESS_TIMEOUT-bounded job can take"
+  end
+
+  test "a lane past its ceiling with a thread to spare is not wedged" do
+    register_workers
+    enqueue_lane("inference", 57, head_waiting_for: 77.minutes)
+    claim_lane("inference", 1, running_for: 77.minutes)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_nil @service.send(:wedged_lane, stats),
+               "one of two threads held is a lane that can still claim"
+  end
+
+  test "a full pool with nothing waiting behind it is not wedged" do
+    register_workers
+    claim_lane("inference", 2, running_for: 77.minutes)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_nil @service.send(:wedged_lane, stats), "nothing is being starved, so nothing is being reported"
+  end
+
+  # AgentSessionJob holds its thread for the whole life of the session, which is
+  # unbounded by design. There is no execution age in that lane that means anything,
+  # so it carries no ceiling and can never be judged wedged — the same treatment any
+  # queue nobody has sized yet gets, which is the safe direction for a gate that pages.
+  test "the agents lane is never judged wedged, however long it holds its threads" do
+    register_workers
+    enqueue_lane("agents", 40, head_waiting_for: 3.hours)
+    claim_lane("agents", 8, running_for: 6.hours, job_class: "AgentSessionJob")
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_nil HealthMonitorService::LANE_EXECUTION_CEILINGS["agents"]
+    assert_nil @service.send(:wedged_lane, stats)
+  end
+
+  test "a lane the running configuration does not size is never judged wedged" do
+    register_workers
+    enqueue_lane("nobody_sized_this", 40, head_waiting_for: 3.hours)
+    claim_lane("nobody_sized_this", 8, running_for: 6.hours)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_nil @service.send(:wedged_lane, stats)
+  end
+
+  # The counts and the ages are separate queries against a moving table, so a lane
+  # can appear in one and not the other. No age is no evidence of a wedge.
+  test "a lane with a full pool but no execution age is not wedged" do
+    wedge_inference_lane
+    stats = @service.system_health[:queue_stats].merge(oldest_claimed_age_seconds_by_queue: {})
+
+    assert_nil @service.send(:wedged_lane, stats)
+  end
+
+  # The wedge is a strictly more specific reading of the same evidence, so it must
+  # be the one reported when both branches would fire — otherwise the page describes
+  # the symptom while the cause is sitting in the same hash.
+  test "a wedged lane is reported ahead of the starved-lane branch" do
+    wedge_inference_lane(ready: 200)
+
+    stats = @service.system_health[:queue_stats]
+
+    refute_nil @service.send(:starved_lane, stats), "200 ready at 77m clears the starved-lane bar too"
+    assert_equal "wedged_lane:inference", @service.send(:system_health_status, stats).code
+  end
+
+  # A lane's capacity is its threads times the number of LIVE workers. During a
+  # Kamal cutover two workers are registered at once, and measuring one worker's
+  # full pool against a single process's thread count would call a healthy overlap
+  # a wedge.
+  test "a lane's capacity scales with the live workers, so a deploy overlap is not a wedge" do
+    register_workers(2)
+    enqueue_lane("inference", 57, head_waiting_for: 77.minutes)
+    claim_lane("inference", 2, running_for: 77.minutes)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_nil @service.send(:wedged_lane, stats, 2),
+               "two of four threads held leaves two free, whatever one process's count says"
+    refute_nil @service.send(:wedged_lane, stats, 1),
+               "the same rows against a single worker ARE a full pool"
+  end
+
+  test "two workers each holding a full pool is still a wedge" do
+    wedge_inference_lane(workers: 2)
+
+    status = @service.system_health[:status]
+
+    assert_equal "wedged_lane:inference", status.code
+    assert_includes status.message, "holding 4/4 threads"
+  end
+
+  # Rows a dead process left claimed are GoodJob's to reap — it deletes a process
+  # that stops renewing its heartbeat and releases the jobs it held. That is a
+  # different incident from a wedge, and it self-heals.
+  test "claimed rows with no live worker behind them are not a wedge" do
+    enqueue_lane("inference", 57, head_waiting_for: 77.minutes)
+    claim_lane("inference", 2, running_for: 77.minutes)
+
+    health = @service.system_health
+
+    assert_equal 0, health[:worker_stats][:active_workers]
+    refute_equal "wedged_lane:inference", health[:status].code
+  end
+
+  # The thread counts the gate measures a pool against come from the one place that
+  # decides them, keyed to match the queue names `good_jobs` stores.
+  test "lane_thread_counts mirrors the configured scheduler, keyed by queue name" do
+    counts = HealthMonitorService.lane_thread_counts
+
+    assert_equal ConnectionBudget.good_job_queue_threads.values.sum, counts.values.sum
+    assert_equal ConnectionBudget.good_job_queue_threads[:inference], counts["inference"]
+    assert counts.keys.all?(String), "queue names come back from the database as strings"
+  end
+
   test "a queue of only future-dated jobs is healthy however deep it is" do
     enqueue_scheduled_jobs(500)
 

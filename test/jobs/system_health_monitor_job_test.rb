@@ -277,6 +277,89 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
                     "with no breakdown to read, the first bullet keeps the age and drops the lane"
   end
 
+  # === A wedged lane ===
+  #
+  # The page's first line and its header both have to say what kind of incident
+  # this is. A responder reading "Queue backlog critical" over a body that says the
+  # worker is holding a full pool on work that will not finish goes looking for the
+  # wrong thing — and on a phone the header is all they see before deciding whether
+  # to open the thread.
+
+  # Both threads of the two-thread `inference` lane, held for far longer than
+  # anything in that lane is designed to take, with a backlog stacked behind them.
+  def wedge_inference_lane(ready: 57, running_for: 77.minutes)
+    # A lane's capacity is its threads times the live workers, so the gate needs a
+    # registered process before any pool can be full.
+    GoodJob::Process.insert_all([ { id: SecureRandom.uuid, state: { "hostname" => "test-worker" },
+                                    created_at: Time.current, updated_at: Time.current } ])
+    enqueue_lane_jobs("inference", ready, waiting_for: running_for)
+    started_at = running_for.ago
+    rows = Array.new(2) do
+      { queue_name: "inference", job_class: "SessionStatusSummaryJob",
+        locked_by_id: SecureRandom.uuid, locked_at: started_at, performed_at: started_at,
+        created_at: started_at, updated_at: started_at }
+    end
+    GoodJob::Job.insert_all(rows)
+  end
+
+  test "a wedged lane pages under its own title and its own dedup key" do
+    wedge_inference_lane
+
+    SystemHealthMonitorJob.perform_now # streak -> 1
+
+    title = nil
+    dedup = nil
+    details = ""
+    AlertService.expects(:raise_alert).once.with do |alert_title, opts|
+      title = alert_title
+      dedup = opts[:dedup_key]
+      details = opts[:details].to_s
+      true
+    end
+    SystemHealthMonitorJob.perform_now
+
+    assert_equal "Queue lane wedged", title
+    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:wedged_lane:inference", dedup
+    assert_includes details, "the inference lane is holding 2/2 threads"
+    assert_includes details, "SessionStatusSummaryJob"
+  end
+
+  # The two lines that make the next firing self-diagnosing: what the worker holds
+  # per lane, beside the pool each hold is filling, and how long the oldest of them
+  # has been running.
+  test "the alert body names what the worker is holding per lane, and for how long" do
+    wedge_inference_lane
+
+    SystemHealthMonitorJob.perform_now # streak -> 1
+
+    details = ""
+    AlertService.expects(:raise_alert).once.with do |_title, opts|
+      details = opts[:details].to_s
+      true
+    end
+    SystemHealthMonitorJob.perform_now
+
+    assert_includes details, "In flight by queue: inference 2 (threads: agents 8,"
+    assert_includes details, "Oldest execution by queue: inference 1h 17m"
+  end
+
+  # An ordinary backlog keeps the title it had, so this only adds a shape rather
+  # than renaming every page that already fires.
+  test "a backlog that is not a wedge still pages as a backlog" do
+    make_queue_critical
+
+    SystemHealthMonitorJob.perform_now # streak -> 1
+
+    title = nil
+    AlertService.expects(:raise_alert).once.with do |alert_title, _opts|
+      title = alert_title
+      true
+    end
+    SystemHealthMonitorJob.perform_now
+
+    assert_equal "Queue backlog critical", title
+  end
+
   test "does not alert on a deep queue that is still draining" do
     # Depth well past the critical threshold, but the oldest job arrived seconds ago:
     # a busy queue, not a stalled one.
