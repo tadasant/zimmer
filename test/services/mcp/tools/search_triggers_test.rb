@@ -18,6 +18,73 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     assert_includes output, "  - Slack: #eng-ci"
   end
 
+  # "Which triggers reference MCP server X?" is the question every catalog rename
+  # audit runs on, and the list is the only view built for scanning many triggers.
+  test "names each trigger's MCP servers in list mode" do
+    output = @tool.call({})
+
+    assert_includes output, "**MCP Servers:** slack-workspace"
+    assert_includes output, "**MCP Servers:** (none)"
+
+    triggers(:enabled_slack_trigger).update!(mcp_servers: %w[slack-workspace github])
+    assert_includes @tool.call({}), "**MCP Servers:** slack-workspace, github"
+  end
+
+  # A small configuration is the whole point of the by-id view — it must look
+  # exactly as it always has, byte for byte.
+  test "renders a small configuration verbatim" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+
+    output = @tool.call("id" => condition.trigger_id)
+
+    verbatim = JSON.pretty_generate(condition.reload.configuration)
+      .split("\n").map { |line| "  #{line}" }.join("\n")
+    assert_includes output, "  ```json\n#{verbatim}\n  ```"
+    assert_includes output, '"timezone": "Eastern Time (US & Canada)"'
+    assert_not_includes output, "Summarised:"
+  end
+
+  # Slack cursor maps grow without bound — SlackTriggerPollerJob rewrites them every
+  # minute — and serialising one cost ~15k tokens for a single trigger.
+  test "summarises high-cardinality poller state in a large configuration" do
+    condition = trigger_conditions(:enabled_slack_condition)
+    thread_timestamps = 400.times.to_h do |i|
+      [ "C0A6BF8T45R:1788400#{format('%03d', i)}.000000", "1788455#{format('%03d', i)}.688659" ]
+    end
+    condition.update!(configuration: condition.configuration.merge(
+      "thread_timestamps" => thread_timestamps,
+      "participating_threads" => thread_timestamps.keys,
+      "allowed_user_ids" => (1..20).map { |i| "U#{i}" }
+    ))
+
+    output = @tool.call("id" => condition.trigger_id)
+
+    # The shape of the cursor state, not the state itself.
+    assert_includes output, '"thread_timestamps": "400 entries, most recent 1788455399.688659"'
+    assert_includes output, '"participating_threads": "400 entries, most recent C0A6BF8T45R:1788400399.000000"'
+    assert_not_includes output, "1788455000.688659"
+    assert_includes output, "Summarised:"
+    assert_includes output, "GET /api/v1/triggers/#{condition.trigger_id}"
+
+    # Settings a human typed survive intact, however long the configuration got.
+    assert_includes output, '"channel_name": "eng-ci"'
+    assert_includes output, '"U20"'
+
+    assert_operator output.length, :<, 4_000, "the summarised rendering must not carry the cursor dump"
+  end
+
+  # Nothing to summarise means nothing changes: a long configuration with no
+  # high-cardinality collection is still rendered in full.
+  test "leaves a large configuration without high-cardinality collections verbatim" do
+    condition = trigger_conditions(:enabled_slack_condition)
+    condition.update!(configuration: condition.configuration.merge("note" => "x" * 3_000))
+
+    output = @tool.call("id" => condition.trigger_id)
+
+    assert_includes output, "x" * 3_000
+    assert_not_includes output, "Summarised:"
+  end
+
   test "surfaces skip_if_pending_session, and names the session it is skipping for" do
     trigger = triggers(:enabled_slack_trigger)
 

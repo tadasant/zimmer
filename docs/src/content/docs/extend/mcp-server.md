@@ -346,6 +346,26 @@ the keys an incoming configuration omits. Replace semantics would destroy the ro
 with it, silently re-baselining a live trigger. Fetching a trigger by id through `search_triggers`
 prints each condition's id, which is what the array addresses.
 
+`search_triggers` **names each trigger's MCP servers in list mode as well as by id**, because the
+question a catalog rename asks is fleet-wide — *which triggers reference server `X`?* — and the list
+is the only view built for scanning many triggers. One call answers it.
+
+The by-id view is the one that prints a condition's `configuration`, and that hash holds the
+poller's cursors as well as the settings a human typed. A Slack passive listener accumulates one
+entry per thread in `thread_timestamps` / `participating_threads`, rewritten every minute and
+growing without bound, so serialising it verbatim cost roughly 15k tokens for a single trigger. A
+configuration under 2,000 characters — an ordinary schedule, `ao_event` or `github_label` one — is
+still printed exactly as it is stored. Over that, any collection of more than ten entries is
+replaced by its shape:
+
+```json
+"thread_timestamps": "312 entries, most recent 1788455311.688659"
+```
+
+The user-facing lists (`repos`, `labels`, `exclude_labels`, `allowed_user_ids`) are never
+summarised, whatever the size of the configuration around them, and `GET /api/v1/triggers/:id`
+still serves every cursor in full for a caller that needs the exact value.
+
 `action_trigger`'s `invoke` fires a trigger now, without waiting for a condition to match — the MCP
 half of `POST /api/v1/triggers/:id/invoke`, and the same fire the **Run Now** button on the trigger
 page performs. Pass `variables` to fill in the template's placeholders. The session is linked to the
