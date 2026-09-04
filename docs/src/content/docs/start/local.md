@@ -61,7 +61,7 @@ Everything in `.env.example` is commented out except `RAILS_ENV=development`. Th
 | Var | What for |
 | --- | --- |
 | `DATABASE_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` | Postgres. Postgres.app users want `5450`. |
-| `REDIS_URL` | Cache. `redis://localhost:6379` |
+| `REDIS_URL` | Cache. `redis://localhost:6379` — the server, with **no** database index. Each environment picks its own (development's cache takes 1, production 0). |
 | `ANTHROPIC_API_KEY` | Claude Code, if not using OAuth |
 | `API_KEYS` | Comma-separated keys for the REST API. Unset ⇒ the API 401s on everything. |
 | `APP_HOST` | The MCP OAuth redirect host. Unset ⇒ defaults to `localhost:3000`. |

@@ -123,8 +123,8 @@ the mechanism the script relies on.)
 - **No worker process.** GoodJob runs `:async` inside the Rails process in development.
 - **No CSS watcher.** `tailwindcss:build` runs once. Re-run it after changing styles.
 - **Redis is the deployment's.** `REDIS_URL` is inherited and points at the real
-  `zimmer-redis`; development's cache store appends `/1` while the deployment uses `/0`,
-  so they land in different logical databases.
+  `zimmer-redis`; development's cache store selects database 1 while the deployment uses
+  0, so they land in different logical databases.
 - **A booted dev app holds real credentials.** `RAILS_MASTER_KEY` and the session's
   environment are present. It is not a sandbox. It binds `127.0.0.1` by default for that
   reason; `BINDING=0.0.0.0` would offer it to every other container on the Kamal bridge.
