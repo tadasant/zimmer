@@ -114,7 +114,7 @@ module SessionsHelper
       # Default to green, JS will update based on elapsed time
       "bg-green-100 text-green-800"
     when "waiting"
-      # Purple for waiting (was yellow, changed to avoid clash with running's yellow)
+      # Purple for waiting, so it cannot be read as running's yellow
       "bg-purple-100 text-purple-800"
     when "needs_input"
       # Blue for needs input
