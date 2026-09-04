@@ -73,7 +73,9 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # as a post, because `rm -f` supplies the write flag — and that command is a *read*
   # whose output carries every comment in the thread, including the human's. Recording
   # those would suppress real comments permanently and fleet-wide, which is worse than
-  # the bug this hook exists to fix.
+  # the bug this hook exists to fix. The discipline is over *classification* only —
+  # a tool result is one blob, so a post sharing a call with a comments read still
+  # has that read's output scanned as the post's (#901).
   #
   # Which of the three reads the segment as written and which reads its #unquoted
   # view is not uniform, because the three are not the same kind of thing — the
@@ -95,7 +97,15 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # `/pulls/1/comments`, `/pulls/1/comments/2/replies`. Keeps `/tmp/comments.json` and
   # a body that merely says "comments" out.
   GH_API_COMMENTS_PATTERN = %r{/(?:issues|pulls)/(?:\d+/)?comments\b}
-  GH_API_WRITE_PATTERN = /(?:--method[\s=]+POST|-X\s*POST|(?:\A|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=))/
+  # An explicit method flag and whatever it names, in any of `gh`'s spellings:
+  # `-X POST`, `-XPOST`, `--method=POST`, `-X get`. What it names is authoritative,
+  # so `gh api -X GET repos/o/r/issues/7/comments -f per_page=100` — `gh`'s own idiom
+  # for a GET with query parameters — is the read it is, rather than a "post" whose
+  # output is the entire thread. GithubPrUrlHook#rest_pr_create? reads a create the
+  # same way.
+  GH_API_METHOD_FLAG_PATTERN = /(?<![\w-])(?:-X|--method)[=\s]*["']?([A-Za-z]+)/
+  # Without an explicit method, a field flag is what turns `gh api` into a POST.
+  GH_API_FIELD_FLAG_PATTERN = /(?:\A|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=)/
 
   # Segmentation — the split itself, and why it errs toward more segments — lives in
   # TranscriptHooks::ShellSegments, shared with GithubPrUrlHook. A mis-split can
@@ -115,6 +125,10 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # The PR/issue URL a comment permalink hangs off, used to record which PR the
   # comment landed on.
   PARENT_URL_PATTERN = %r{\A(https://github\.com/[\w.-]+/[\w.-]+/(?:pull|issues)/\d+)#}
+
+  # The cheap precheck #posting_kind runs before splitting a command at all: every
+  # shape above names one of these, so a command naming none cannot be a post.
+  POSTING_INVOCATION_PATTERN = /\bgh\s+(?:(?:pr|issue)\s+comment|pr\s+review|api)\b/
 
   def call
     posted = extract_posted_comments
@@ -234,8 +248,14 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # :direct, :api, or nil — classified per command segment, never across the whole
   # shell line (see GH_API_PATTERN). Each segment is paired with its #unquoted view
   # once, since every pattern below reads one or the other of the two.
+  #
+  # The precheck is what keeps that off the overwhelming majority of commands, which
+  # name no posting subcommand at all: splitting is not free, and a `Bash` command
+  # can carry a whole heredoc body. It runs against the command as written, which is
+  # a superset of every view classification reads, so it cannot hide a post.
   def posting_kind(command)
     return nil if command.blank?
+    return nil unless command.match?(POSTING_INVOCATION_PATTERN)
 
     segments = shell_segments(command).map { |segment| [ segment, unquoted(segment) ] }
 
@@ -253,9 +273,13 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # @param runs [String] its #unquoted view — what the segment runs, with what it
   #   was handed blanked out
   def gh_api_post?(written, runs)
-    runs.match?(GH_API_PATTERN) &&
-      written.match?(GH_API_COMMENTS_PATTERN) &&
-      runs.match?(GH_API_WRITE_PATTERN)
+    return false unless runs.match?(GH_API_PATTERN)
+    return false unless written.match?(GH_API_COMMENTS_PATTERN)
+
+    method = runs[GH_API_METHOD_FLAG_PATTERN, 1]
+    return method.casecmp?("POST") if method
+
+    runs.match?(GH_API_FIELD_FLAG_PATTERN)
   end
 
   # Comments already on record, so a transcript rescanned every poll costs one query
