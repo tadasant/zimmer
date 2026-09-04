@@ -226,7 +226,13 @@ transcript that says `YC interview`; it does not match one that says `the interv
 words have to be adjacent and in that order — there is no tokenising, no OR between words, no
 stemming — and `%` and `_` are literal characters rather than wildcards. Search a distinctive
 phrase when you want to confirm a session said something, and one word when you want a wider net.
-Both the dashboard and `quick_search_sessions` match the same way.
+Both the dashboard and `quick_search_sessions` match the same way, on the title and metadata columns
+as well as on the transcript.
+
+`search_contents` matches `transcript::text` — the stored JSON, not the rendered conversation. A
+phrase broken across a line break is `\n` in that text and does not match, and a hit can land in a
+tool argument or a file path rather than in anything anybody said. Keep the phrase short and inside
+one line, and read a miss as "not found" rather than "never said".
 
 **The content search is bounded, and says so.** `transcript` is a `json` column with no index a
 substring match can use, so a single unbounded `ILIKE` over the corpus raced the proxy's 30-second

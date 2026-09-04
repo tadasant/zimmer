@@ -103,10 +103,10 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
   end
 
   test "a multi-word query matches the phrase, not each word on its own" do
-    target = create_transcript_session(title: "Phrase", said: "the kestrel manoeuvre worked")
-    apart = create_transcript_session(title: "Words apart", said: "a kestrel, and much later a manoeuvre")
+    target = create_transcript_session(title: "Phrase", said: "the harbour pilot signed off")
+    apart = create_transcript_session(title: "Words apart", said: "a pilot met us at the harbour")
 
-    output = @tool.call("query" => "kestrel manoeuvre", "search_contents" => true)
+    output = @tool.call("query" => "harbour pilot", "search_contents" => true)
 
     assert_includes output, "(ID: #{target.id})"
     assert_not_includes output, "(ID: #{apart.id})",
@@ -203,6 +203,7 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     query = schema.dig(:properties, :query, :description)
     assert_includes query, "metadata/custom_metadata JSON"
     assert_includes query, "not against the prompt"
+    assert_includes query, "several words are a PHRASE"
 
     description = Mcp::Tools::QuickSearchSessions.rendered_description
     assert_includes description, "show_archived: true"
