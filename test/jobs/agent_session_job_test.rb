@@ -1153,6 +1153,124 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert created_log, "Should log that clone was recreated"
   end
 
+  # zimmer#921: a live session strands the same way an archived one does. Its
+  # clone is reaped on the hourly sweep, and the recreation asks for the
+  # subdirectory frozen on the row — which no longer exists once the agent root's
+  # directory has been renamed in the catalog. A subdirectory-not-found is not
+  # transient, so the session hard-fails with no retry and can never resume.
+  test "should recreate the clone on the agent root's current subdirectory after a catalog rename" do
+    renamed_away = "artifacts/agent-roots/zimmer-router"
+    current_subdirectory = "artifacts/agent-roots/zimmer-orchestrator"
+
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      subdirectory: renamed_away,
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => File.join("/tmp/deleted-clone", renamed_away),
+        "agent_root_key" => "moved-root"
+      }
+    )
+    AgentRootsConfig.stubs(:find).returns(nil)
+    AgentRootsConfig.stubs(:find).with("moved-root")
+      .returns(AgentRootsConfig::AgentRoot.new("moved-root", { "subdirectory" => current_subdirectory }))
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    new_clone_path = "/tmp/recreated-clone"
+    new_working_directory = File.join(new_clone_path, current_subdirectory)
+    mock_fs.mkdir_p(new_working_directory)
+    mock_fs.write("#{new_working_directory}/claude_stderr.log", "")
+
+    mock_process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    # Stands in for GitCloneService's own fallback (covered in its unit tests):
+    # the requested path is absent from the fresh clone, the catalog's is present.
+    requested = nil
+    offered_fallback = nil
+    clone = lambda do |_git_root, **kwargs|
+      requested = kwargs[:subdirectory]
+      offered_fallback = kwargs[:fallback_subdirectory]
+      { clone_path: new_clone_path, working_directory: new_working_directory, subdirectory: current_subdirectory }
+    end
+
+    GitCloneService.stub(:create_clone, clone) do
+      TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+        mock_poller = Object.new
+        def mock_poller.poll_and_broadcast; end
+        mock_poller
+      }) do
+        Thread.stub(:new, ->(&block) {
+          mock_thread = Object.new
+          def mock_thread.alive?; false; end
+          def mock_thread.kill; end
+          def mock_thread.join(*); end
+          mock_thread
+        }) do
+          job.perform(@session.id, "Follow up after the clone was reaped")
+        end
+      end
+    end
+
+    assert_equal renamed_away, requested
+    assert_equal current_subdirectory, offered_fallback,
+      "the recreation must offer the agent root's current path, resolved from the catalog"
+
+    @session.reload
+    assert_equal current_subdirectory, @session.subdirectory,
+      "the corrected subdirectory must be persisted so the next resume asks for it directly"
+    assert_equal new_working_directory, @session.metadata["working_directory"]
+    assert @session.logs.any? { |log| log.content.include?("Agent root subdirectory moved in the catalog") },
+      "the move should be visible in the session log"
+  end
+
+  test "should offer the agent root's current subdirectory when cloning a fresh session" do
+    @session.update!(
+      subdirectory: "artifacts/agent-roots/zimmer-router",
+      metadata: (@session.metadata || {}).merge("agent_root_key" => "moved-root")
+    )
+    AgentRootsConfig.stubs(:find).returns(nil)
+    AgentRootsConfig.stubs(:find).with("moved-root")
+      .returns(AgentRootsConfig::AgentRoot.new("moved-root", { "subdirectory" => "artifacts/agent-roots/zimmer-orchestrator" }))
+
+    job = AgentSessionJob.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_pm = MockProcessManager.new
+    mock_cli = MockClaudeCliAdapter.new
+    mock_cli.process_manager = mock_pm
+    mock_cli.file_system = mock_fs
+    job.process_manager = mock_pm
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli
+
+    @session.update!(prompt: nil, status: :needs_input)
+
+    clone_path = "/test/clone/path"
+    working_directory = File.join(clone_path, "artifacts/agent-roots/zimmer-orchestrator")
+    mock_fs.mkdir_p(working_directory)
+
+    offered_fallback = nil
+    clone = lambda do |_git_root, **kwargs|
+      offered_fallback = kwargs[:fallback_subdirectory]
+      { clone_path: clone_path, working_directory: working_directory, subdirectory: "artifacts/agent-roots/zimmer-orchestrator" }
+    end
+
+    GitCloneService.stub(:create_clone, clone) do
+      job.perform(@session.id, nil, resume_monitoring: false, clone_only: true)
+    end
+
+    assert_equal "artifacts/agent-roots/zimmer-orchestrator", offered_fallback,
+      "a session that only starts after its root moved must be able to land on the new path"
+    assert_equal "artifacts/agent-roots/zimmer-orchestrator", @session.reload.subdirectory
+  end
+
   # Regression for session 9516: when a running session's clone is recreated
   # mid-run (quota-limit resume, recovery, trigger re-fire), the regenerated
   # .mcp.json must retain the full configured server set — not collapse to just

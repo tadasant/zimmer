@@ -938,7 +938,8 @@ class AgentSessionJob < ApplicationJob
             clone_result = GitCloneService.create_clone(
               session.git_root,
               branch: session.branch || "main",
-              subdirectory: session.subdirectory
+              subdirectory: session.subdirectory,
+              fallback_subdirectory: session.catalog_subdirectory
             )
           rescue GitCloneService::GitError => e
             if GitCloneService.transient_clone_error?(e) &&
@@ -960,6 +961,15 @@ class AgentSessionJob < ApplicationJob
 
           clone_path = clone_result[:clone_path]
           working_directory = clone_result[:working_directory]
+
+          # The recreated clone may have landed on the agent root's *current*
+          # subdirectory rather than the one frozen on the row (#921).
+          if session.adopt_clone_subdirectory!(clone_result[:subdirectory])
+            log_buffer.add(
+              "Agent root subdirectory moved in the catalog; session now uses #{session.subdirectory}",
+              level: "info"
+            )
+          end
 
           session.update!(
             metadata: (session.metadata || {}).merge(
@@ -1129,10 +1139,23 @@ class AgentSessionJob < ApplicationJob
             clone_result = GitCloneService.create_clone(
               session.git_root,
               branch: session.branch,
-              subdirectory: session.subdirectory
+              subdirectory: session.subdirectory,
+              fallback_subdirectory: session.catalog_subdirectory
             )
             clone_path = clone_result[:clone_path]
             working_directory = clone_result[:working_directory]
+
+            # A session that was created before its agent root's directory was
+            # renamed — and only started afterwards — asks for a path this commit
+            # no longer has. Adopt what the clone landed on before anything
+            # downstream (the log line below, the skills cache key) reads it (#921).
+            if session.adopt_clone_subdirectory!(clone_result[:subdirectory])
+              log_buffer.add(
+                "Agent root subdirectory moved in the catalog; session now uses #{session.subdirectory}",
+                level: "info"
+              )
+            end
+
             log_buffer.add(
               "[DIAGNOSTIC] GitCloneService.create_clone returned successfully",
               level: "debug"
