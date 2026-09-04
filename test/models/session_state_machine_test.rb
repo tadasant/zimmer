@@ -2901,6 +2901,10 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     poison = ->(*) { ActiveRecord::Base.connection.execute("SELECT no_such_column_anywhere") }
 
+    # Four ERROR records is what #924 cost, and three of the callbacks that
+    # produced them page. None of them may fire.
+    AlertService.expects(:raise_alert).never
+
     log_output = StringIO.new
     original_logger = Rails.logger
     Rails.logger = Logger.new(log_output)
@@ -2921,9 +2925,11 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     logged = log_output.string
 
     assert_match(
-      /\[AppSetting\] AppSetting\.current could not read the settings row/, logged,
-      "the originating failure has to exist in the logs at all — that is what #924 cost a full triage"
+      /\[AppSetting\] ExperimentalSettingsRegistry\[mcp_tool_search\] could not read the settings row/, logged,
+      "the originating failure has to exist in the logs at all, naming its caller — that is what #924 cost a full triage"
     )
+    assert_equal 1, logged.scan(/could not read the settings row/).length,
+      "one failed SELECT, one line: a second rescue reporting it again is a smaller copy of #924"
 
     [ "mark_notifications_stale", "cancel_pending_one_time_wake_triggers", "log_state_change" ].each do |callback|
       refute_match(

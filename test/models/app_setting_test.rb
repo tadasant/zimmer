@@ -156,11 +156,34 @@ class AppSettingTest < ActiveSupport::TestCase
   end
 
   test "class-level mcp_tool_search_enabled? falls back to the default when the row can't be read" do
-    # The claim the rescue makes: a database the spawn path cannot query resolves
-    # to the shipped default rather than raising mid-spawn.
-    AppSetting.stubs(:current).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+    # The claim the degrade makes: a database the spawn path cannot query resolves
+    # to the shipped default rather than raising mid-spawn. Stubs the query, not
+    # AppSetting.current — current is the thing that degrades, so stubbing it out
+    # would only exercise a rescue that no longer needs to exist.
+    AppSetting.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
 
     assert AppSetting.mcp_tool_search_enabled?
+  end
+
+  test "one failed settings read logs once, naming the caller that asked for it" do
+    # Every wrapper reads through AppSetting.current, so the degrade happens in
+    # exactly one place and reports itself once. A rescue in each wrapper as well
+    # would turn one failure into three log lines naming three callers — a
+    # smaller copy of the four-records-for-one-failure that #924 was.
+    log_output = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = Logger.new(log_output)
+
+    begin
+      AppSetting.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+      assert AppSetting.mcp_tool_search_enabled?
+    ensure
+      Rails.logger = original_logger
+    end
+
+    assert_equal 1, log_output.string.scan(/could not read the settings row/).length
+    assert_match(/AppSetting\.mcp_tool_search_enabled\? could not read the settings row/, log_output.string)
   end
 
   test "a settings read that degrades to a default says so in the log" do

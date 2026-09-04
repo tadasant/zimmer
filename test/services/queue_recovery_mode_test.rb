@@ -374,14 +374,15 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
   end
 
   test "an unreadable settings row degrades to no recovery mode, but not on an aborted transaction" do
-    # The degrade is right when the read failed on its own. It is wrong on a
-    # transaction Postgres has already aborted — AppSetting.current re-raises
-    # there, and swallowing it back into `{}` would put #924 back one level up.
-    AppSetting.stubs(:current).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+    # The degrade is right when the read failed on its own: NULL answers no
+    # has_attribute?, so recovery mode reads as off. On a transaction Postgres has
+    # already aborted, AppSetting.current re-raises instead — and nothing here may
+    # swallow that back into `{}`, which would put #924 back one level up.
+    AppSetting.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
 
     assert_nothing_raised { refute QueueRecoveryMode.active? }
 
-    AppSetting.unstub(:current)
+    AppSetting.unstub(:order)
 
     error = assert_raises(ActiveRecord::StatementInvalid) do
       ActiveRecord::Base.transaction(requires_new: true) do
