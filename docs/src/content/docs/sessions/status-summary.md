@@ -303,8 +303,8 @@ What that mode does not need is the point of it:
 It is reached from the three places a fork is known not to be able to deliver:
 
 - **The repair sweep during an auth outage.** A runtime with no available account switches to this
-  path rather than standing down, admitted by the [lane's headroom](#the-repair-sweep-behind-it)
-  rather than by a cap of its own.
+  path rather than standing down, admitted by the
+  [lane's headroom](#sizing-the-sweep-against-the-lane) rather than by a cap of its own.
 - **The harvest of a fork that could not have delivered.** A fork that was *parked*, or that died
   while the pool was empty, enqueues a headless retry for its source session immediately rather than
   leaving it to a sweep that would re-fork into the same empty pool. A fork that died of something
@@ -427,7 +427,10 @@ It is a repair sweep, not polling, and the difference is enforced rather than as
   throughput cap — each fork copies a repository and takes an account slot, which lane depth says
   nothing about — so a fleet-wide outage that failed every generation at once cannot become a
   fleet-wide re-fork. A spent fork cap skips the session and keeps walking, so the headless repairs
-  behind it are still reached.
+  behind it are still reached. When a candidate *is* on an exhausted pool, the fork path is further
+  held to `FORK_SHARE_UNDER_OUTAGE` (half, rounded up) of the lane budget: both paths draw on one
+  budget, and on a mixed fleet the fork path reaches it first only because its sessions happen to be
+  more recently active.
 - **An auth outage changes how it repairs, not whether it does.** A runtime with no available account
   is repaired on the [pool-independent path](#the-pool-independent-path) instead — no fork, no clone
   copy, no account slot.
@@ -448,10 +451,14 @@ nothing and the candidates it did not reach keep their retry interval for the ne
 `LANE_DEPTH_CEILING` is one sweep interval of lane time expressed in jobs:
 
 ```
-LANE_DEPTH_CEILING = inference threads x (SWEEP_INTERVAL / HEADLESS_TIMEOUT)
-                   = 2 x (300s / 90s)
-                   = 6
+LANE_DEPTH_CEILING = (inference threads x SWEEP_INTERVAL) / HEADLESS_TIMEOUT
+                   = (2 x 300s) / 90s
+                   = 6            (integer division, floored — and floored at 1)
 ```
+
+The thread count is read off `SessionStatusSummaryJob.queue_name` rather than naming a lane here,
+so the exact drift that caused this — a job moved between lanes while a budget kept describing the
+one it left — cannot recur silently.
 
 The arithmetic that makes this worth doing is the arithmetic that broke without it. A hand-picked cap
 of ten repairs every five minutes is **120 arrivals an hour**. The `inference` lane runs

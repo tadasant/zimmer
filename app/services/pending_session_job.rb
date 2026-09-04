@@ -36,11 +36,11 @@
 # fork, so neither can stack a job per wake for one session.
 #
 # What the backstop cannot get from a per-session check is how much it may
-# enqueue ACROSS sessions, and that is the bill that actually came due (#776): a
-# sweep sized in 2026-08 against the wide `default` lane kept enqueuing ten
-# repairs every five minutes onto the two-thread `inference` lane #763 moved
-# them to, which drains at most eighty an hour. #queued_count is the arrival-side
-# admission check that replaces the hand-picked number — see
+# enqueue ACROSS sessions, and that is the bill that came due in #776: a sweep
+# sized in 2026-08 against the wide `default` lane kept enqueuing ten repairs
+# every five minutes onto the two-thread `inference` lane #763 moved them to,
+# which drains at most eighty an hour. #queued_count is the arrival-side
+# admission check it sizes itself with instead — see
 # StatusSummaryBackstopJob::LANE_DEPTH_CEILING.
 #
 # `serialized_params -> 'arguments' ->> 0` is the session id, the same column
@@ -71,7 +71,11 @@ module PendingSessionJob
   # Queued and not yet claimed — the one definition both questions share, and
   # the one place the retry subtlety above is encoded: GoodJob resets
   # `performed_at` when it re-enqueues a row, so a row in back-off is counted.
+  #
+  # Private: this module's surface is the two questions its header describes, not
+  # a relation for callers to bolt further conditions onto.
   def unclaimed(job_class)
     GoodJob::Job.where(job_class: job_class.name, finished_at: nil, performed_at: nil)
   end
+  private_class_method :unclaimed
 end

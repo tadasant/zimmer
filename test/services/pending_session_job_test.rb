@@ -109,9 +109,10 @@ class PendingSessionJobTest < ActiveSupport::TestCase
   end
 
   # Depth means work a new arrival would wait behind. A claimed row is being
-  # served and a finished row is gone; a row in retry back-off has had
-  # `performed_at` reset and has read nothing yet, so it still counts.
-  test "the depth excludes claimed and finished rows but includes retries" do
+  # served and a finished row is gone; a row still waiting on its `scheduled_at`
+  # has read nothing yet and counts — which is the same population a row in retry
+  # back-off lands in, since GoodJob resets `performed_at` when it re-enqueues.
+  test "the depth excludes claimed and finished rows but counts one still waiting to run" do
     queue_a_job_for(a_session.id, job_class: "SessionStatusSummaryJob", performed_at: 1.second.ago)
     queue_a_job_for(a_session.id, job_class: "SessionStatusSummaryJob", finished_at: 1.minute.ago)
     queue_a_job_for(a_session.id, job_class: "SessionStatusSummaryJob", scheduled_at: 30.seconds.from_now)
