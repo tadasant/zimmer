@@ -149,9 +149,34 @@
             <% end %>
           </div>
         </div>
-        <div class="mt-2">
-          <%= render "shared/enhanced_markdown", content: body %>
-        </div>
+        <%# A runtime notice big enough to bury the conversation (chiefly an
+            injected SKILL.md) is folded away behind a disclosure: the row shows
+            the skill name and an approximate token count, and the body renders
+            unchanged once expanded. Rendered with <details> rather than a
+            Stimulus controller, for the same reason the session hierarchy is:
+            no JS to load, it works under touch and keyboard, and there is
+            nothing for the transcript's infinite-scroll and auto-scroll
+            controllers to fight with. %>
+        <% if (digest = ot_runtime_notice_digest(item)) %>
+          <details class="group/notice mt-2">
+            <summary class="flex flex-wrap items-center gap-x-2 gap-y-1 cursor-pointer select-none list-none marker:content-none rounded px-2 py-1 -mx-2 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300">
+              <svg class="h-3 w-3 flex-shrink-0 text-gray-400 transition-transform group-open/notice:rotate-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+              </svg>
+              <span class="font-medium text-gray-600 truncate min-w-0"><%= digest[:label] %></span>
+              <span class="text-gray-400" title="Estimated from character count — not a billing figure"><%= digest[:token_summary] %></span>
+              <span class="text-gray-400 group-open/notice:hidden">Show</span>
+              <span class="text-gray-400 hidden group-open/notice:inline">Hide</span>
+            </summary>
+            <div class="mt-2">
+              <%= render "shared/enhanced_markdown", content: body %>
+            </div>
+          </details>
+        <% else %>
+          <div class="mt-2">
+            <%= render "shared/enhanced_markdown", content: body %>
+          </div>
+        <% end %>
       </div>
     </div>
   </div>

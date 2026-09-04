@@ -69,7 +69,7 @@ a person. Two of them show up constantly in Zimmer:
 | Flag on the JSONL line | What the CLI is recording |
 | --- | --- |
 | `interruptedByShutdown: true` | a turn killed mid-tool-use, by a process shutdown rather than a keyboard interrupt |
-| `isMeta: true` | the CLI's own resume scaffolding — "Continue from where you left off." |
+| `isMeta: true` | context the CLI injected rather than a person typing — its resume scaffolding ("Continue from where you left off."), and the whole body of a skill when one fires |
 
 In Zimmer the shutdown behind the first one is usually Zimmer: `Sessions::InterruptService`
 SIGTERMs the CLI to deliver an enqueued message ahead of the running turn. Rendering the resulting
@@ -94,6 +94,35 @@ message, but it sits in the conversational slot the CLI wrote it into, and "the 
 here" is context a reader on the `minimal` filter still needs. A flagged line with no text is not
 made into a notice at all — there is nothing to attribute — so it stays on the message path, where
 a content-less message is already suppressed at render and an image-only one still shows its image.
+
+#### Large notices render collapsed
+
+`isMeta` carries more than the resume stub. It is also the flag on the line Claude Code writes
+when a skill fires, and that line is an entire `SKILL.md` — the smallest one on a production
+Zimmer host is 3.4k characters, the largest 690k. Printed in full, two or three of them push the
+conversation off the page.
+
+So the timeline folds them away. A collapsed notice draws one muted line — the skill's name, an
+approximate token count, and a disclosure control — and the body renders unchanged as soon as it
+is opened. Nothing is removed: the full text is still in the row, still what the copy button
+copies, and the plain-text export never comes through this path at all.
+
+Two things trigger the fold, and both live in `SessionsHelper#ot_runtime_notice_digest`:
+
+| Trigger | Header label |
+| --- | --- |
+| a first line reading `Base directory for this skill: <path>` | the skill's name, from the path's last segment |
+| anything else longer than `RUNTIME_NOTICE_COLLAPSE_CHARS` (2,000) | the notice's own first line, truncated |
+
+The threshold sits far above the short scaffolding the same flag carries — "Continue from where
+you left off." is 33 characters — because folding a single line away behind an accordion is worse
+than leaving it alone. The token count is a character-count estimate at four characters per
+token, labelled `approx.` in the UI: Zimmer runs no tokenizer at render time and the number is
+not a billing figure.
+
+It is a `<details>`, not a Stimulus controller, for the reason the session hierarchy is: no JS to
+load, it works under touch and keyboard, and there is nothing for the transcript's infinite-scroll
+and auto-scroll controllers to fight with.
 
 The timeline is not the only surface that was asserting a person. `TranscriptTextRenderer` (the
 plain-text export behind `GET /api/v1/sessions/:id/transcript` and the `get_session` MCP tool's

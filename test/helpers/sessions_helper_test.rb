@@ -181,6 +181,62 @@ class SessionsHelperTest < ActionView::TestCase
       "not typed by a person"
   end
 
+  # === collapsing an injected skill dump ===
+  #
+  # The `isMeta` flag carries both an entire SKILL.md and one-line CLI
+  # scaffolding. Only the first is worth folding away.
+
+  SKILL_DUMP = <<~TEXT
+    Base directory for this skill: /home/rails/clone/.claude/skills/update-skill
+
+    # Update Skill
+
+    #{'Body line that pads this out past the threshold. ' * 60}
+  TEXT
+
+  test "ot_runtime_notice_digest names the skill an injected SKILL.md came from" do
+    digest = ot_runtime_notice_digest(runtime_notice(text: SKILL_DUMP, markers: [ "isMeta" ]))
+
+    assert_equal "update-skill", digest[:label]
+    assert_match(/\Aapprox\. \d+(\.\d)?k? tokens\z/, digest[:token_summary])
+  end
+
+  test "ot_runtime_notice_digest estimates tokens from the character count" do
+    # 4 characters per token: 8_000 characters reads as approximately 2.0k.
+    text = "Base directory for this skill: /skills/big\n#{'x' * 7_957}"
+    assert_equal 8_000, text.length
+
+    assert_equal "approx. 2.0k tokens", ot_runtime_notice_digest(runtime_notice(text: text))[:token_summary]
+  end
+
+  test "ot_runtime_notice_digest leaves a short runtime notice uncollapsed" do
+    assert_nil ot_runtime_notice_digest(runtime_notice(text: "Continue from where you left off.", markers: [ "isMeta" ]))
+    assert_nil ot_runtime_notice_digest(runtime_notice)
+    assert_nil ot_runtime_notice_digest(runtime_notice(text: "a" * SessionsHelper::RUNTIME_NOTICE_COLLAPSE_CHARS))
+  end
+
+  test "ot_runtime_notice_digest collapses a large notice that is not a skill dump, labelled by its first line" do
+    text = "The coordinator sent a message while you were working:\n\n#{'detail ' * 500}"
+    digest = ot_runtime_notice_digest(runtime_notice(text: text))
+
+    assert_equal "The coordinator sent a message while you were working:", digest[:label]
+  end
+
+  test "ot_runtime_notice_digest falls back to a generic label when there is no readable first line" do
+    assert_equal "Injected context", ot_runtime_notice_digest(runtime_notice(text: "\n \n#{' ' * 3_000}"))[:label]
+  end
+
+  test "ot_runtime_notice_digest ignores a skill header that is not at the start of the text" do
+    text = "Some other injected block.\nBase directory for this skill: /skills/update-skill\n#{'x' * 3_000}"
+
+    assert_equal "Some other injected block.", ot_runtime_notice_digest(runtime_notice(text: text))[:label]
+  end
+
+  test "ot_runtime_notice_digest is nil for anything that is not a runtime notice" do
+    assert_nil ot_runtime_notice_digest(event(Types::USER_MESSAGE, content: [ { "type" => "text", "text" => "x" * 5_000 } ]))
+    assert_nil ot_runtime_notice_digest(event(Types::SYSTEM_EVENT, subtype: "queue-operation"))
+  end
+
   test "ot_content_markdown leaves other system events on the generic renderer" do
     item = event(Types::SYSTEM_EVENT, subtype: "queue-operation", payload: { "operation" => "dequeue" })
 

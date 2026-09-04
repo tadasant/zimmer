@@ -254,6 +254,47 @@ module SessionsHelper
       item[:subtype] == OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE
   end
 
+  # Runtime notices long enough to bury the conversation they sit in are drawn
+  # collapsed: a one-line digest in the row, the full text behind a disclosure.
+  # The case that motivated it is the `isMeta` line Claude Code writes when a
+  # skill fires — an entire SKILL.md, verbatim, in the transcript. Across a
+  # production host's transcripts the smallest of those is 3.4k characters and
+  # the largest 690k, and two or three of them are enough to push the actual
+  # conversation off the page.
+  #
+  # Returns { label:, token_summary: } for a notice that should render
+  # collapsed, or nil for one that should print in full as before. Two triggers:
+  #
+  #   * the skill-dump shape — a first line reading "Base directory for this
+  #     skill: <path>", which the CLI writes ahead of the injected body. It
+  #     names the skill, and it is never small.
+  #   * any other notice longer than RUNTIME_NOTICE_COLLAPSE_CHARS. The notices
+  #     that are not skill dumps are overwhelmingly one-liners — "Continue from
+  #     where you left off." is 33 characters, the malformed-tool-call nudges
+  #     under 100 — so the threshold sits far above them on purpose. Folding a
+  #     single line away behind an accordion is worse than leaving it alone.
+  #
+  # Presentation only: nothing is removed from the transcript. The full text
+  # still renders when expanded, is still what the copy button copies, and the
+  # plain-text export (TranscriptTextRenderer) never comes through here.
+  def ot_runtime_notice_digest(item)
+    return nil unless ot_runtime_notice?(item)
+
+    payload = item[:payload]
+    text = payload.is_a?(Hash) ? payload["text"].to_s : ""
+    skill = ot_runtime_notice_skill_name(text)
+    return nil if skill.nil? && text.length <= RUNTIME_NOTICE_COLLAPSE_CHARS
+
+    {
+      label: skill || ot_runtime_notice_fallback_label(text),
+      token_summary: ot_approx_token_summary(text)
+    }
+  end
+
+  # Text longer than this, with no skill name to go on, still collapses. Set
+  # well clear of the short scaffolding lines the same flag carries.
+  RUNTIME_NOTICE_COLLAPSE_CHARS = 2_000
+
   # Whether this event row should get the subtle gray tool background.
   def ot_tool_row?(item)
     %w[Thinking ToolCall ToolResult SubagentSpawn].include?(item[:type])
@@ -370,6 +411,55 @@ module SessionsHelper
     attribution += ".*"
 
     [ attribution, payload["text"].to_s.presence ].compact.join("\n\n")
+  end
+
+  # The skill a runtime notice is injecting, from the header line Claude Code
+  # writes ahead of the SKILL.md body:
+  #
+  #   Base directory for this skill: /…/.claude/skills/<skill-name>
+  #
+  # Anchored at the start of the text so a stray mention further down cannot
+  # relabel an unrelated notice, and the basename is required to look like a
+  # skill id — a malformed path falls back to the first-line label rather than
+  # putting a path fragment in the header.
+  SKILL_DUMP_HEADER = /\ABase directory for this skill:[ \t]*(\S.*)$/
+  SKILL_ID = /\A[\w.-]+\z/
+
+  def ot_runtime_notice_skill_name(text)
+    match = SKILL_DUMP_HEADER.match(text.to_s.lstrip)
+    return nil unless match
+
+    name = File.basename(match[1].strip)
+    name.match?(SKILL_ID) ? name : nil
+  end
+
+  # What a large notice is called when it is not a skill dump: its own first
+  # line, which for the CLI's longer scaffolding ("The coordinator sent a
+  # message while you were working:") already says what the block is. Only a
+  # notice with no readable first line gets the generic label.
+  def ot_runtime_notice_fallback_label(text)
+    first_line = text.to_s.lines.find { |line| line.strip.present? }.to_s.strip
+    first_line.present? ? first_line.truncate(80) : "Injected context"
+  end
+
+  # A character-count estimate of the tokens the notice cost, worded so nobody
+  # reads it as a billing figure. Four characters per token is the usual rough
+  # rule for English prose; the real count depends on the tokenizer and Zimmer
+  # does not run one at render time.
+  APPROX_CHARS_PER_TOKEN = 4
+
+  def ot_approx_token_summary(text)
+    tokens = [ (text.to_s.length / APPROX_CHARS_PER_TOKEN.to_f).round, 1 ].max
+    rounded =
+      if tokens < 1_000
+        tokens.to_s
+      elsif tokens < 10_000
+        "#{(tokens / 1_000.0).round(1)}k"
+      else
+        "#{(tokens / 1_000.0).round}k"
+      end
+
+    "approx. #{rounded} tokens"
   end
 
   def ot_system_event_markdown(item)
