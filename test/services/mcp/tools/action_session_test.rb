@@ -15,6 +15,17 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
   # Durable attachment storage outlives the test that wrote it.
   teardown { cleanup_stored_attachments! }
 
+  # ACTION_DESC is the prose an agent reads to decide what it can ask for, and it
+  # is a hand-maintained literal next to the executable ACTIONS list. An action
+  # the dispatch accepts but the description omits reads as unsupported, so the
+  # agent reaches for a worse path for a capability the tool already has.
+  test "ACTION_DESC names every dispatchable action" do
+    Mcp::Tools::ActionSession::ACTIONS.each do |action|
+      assert_includes Mcp::Tools::ActionSession::ACTION_DESC, %("#{action}"),
+        "#{action} is dispatchable but missing from ACTION_DESC"
+    end
+  end
+
   test "change_scheduling_class moves one session without touching its genesis" do
     session = sessions(:needs_input)
     session.update!(genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: nil)
