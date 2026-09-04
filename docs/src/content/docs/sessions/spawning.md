@@ -70,6 +70,21 @@ back in the `skipped` list of `POST /health/retry_sessions`, `POST /api/v1/healt
 and the `action_health` MCP tool, next to the reason, and in the health dashboard's flash — because
 an operator who clicked Retry on one session cannot tell a silent no-op from a bug.
 
+Neither half covers the window that opens *after* the turn is claimed, so there is a third check
+at **spawn time**. The delivery-time guard reads the row at the top of the job, and the claim's
+lock closes only the window where the archive lands before it — but between that read and the
+actual spawn sit the clone, the AIR prepare, the MCP setup, the boot-tasks wait and credential
+injection, which on a first start is minutes of wall clock. Session 13221 archived one second
+after its recovery turn was claimed and reached the spawn 94 seconds later, by which point the
+clone cleanup archiving enqueued had already deleted the clone: opening the runtime's stderr log
+raised `ENOENT`, which surfaced as a `spawn_failed` **error** for a session that had simply
+finished ([#884](https://github.com/tadasant/zimmer/issues/884)). So the job re-reads the row
+immediately before handing the turn to `ProcessLifecycleManager`, and an archived session stands
+down there instead — quietly, at `info`, with no `spawn_failed` marker, because a session in the
+trash taking no turn is the correct outcome rather than a fault. A **live** session whose clone
+has gone missing still fails loudly: that session should run, and re-cloning it is
+[#817](https://github.com/tadasant/zimmer/issues/817).
+
 :::caution[Other resumers lock by hand, or not at all]
 `SpotSessionPause.resume!`, `AuthOutageParkService.resume_parked!` and `SpotSessionHold.rearm!` are
 not part of this family: each takes its own row lock and re-checks under it rather than routing

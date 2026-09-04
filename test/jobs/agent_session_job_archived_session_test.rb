@@ -5,6 +5,7 @@ require "mocha/minitest"
 require_relative "../support/mock_process_manager"
 require_relative "../support/mock_file_system_adapter"
 require_relative "../support/mock_claude_cli_adapter"
+require "automated_prompts"
 
 # A session in the trash takes no turn.
 #
@@ -213,7 +214,99 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     assert_nil refusal, "a monitoring resume must get past the guard to do its cleanup"
   end
 
+  # ---------------------------------------------------------------------------
+  # The archive that lands AFTER the turn was claimed (#884)
+  # ---------------------------------------------------------------------------
+  #
+  # Every guard above this point decides EARLY — refuse_archived_session reads the
+  # row at the top of #perform, and the FOR UPDATE claim in
+  # Session#claim_system_recovery_turn! (#554, pinned from the enqueuer side in
+  # test/jobs/archived_session_recovery_turn_test.rb) decides at claim time. Both
+  # close the window where the archive lands BEFORE them and neither closes the one
+  # where it lands after, which is minutes wide: the clone, the AIR prepare, the MCP
+  # setup, the boot-tasks wait and credential injection all sit between the last
+  # read and the spawn.
+  #
+  # Session 13221 archived one second after its recovery turn was claimed and
+  # reached the spawn 94 seconds later, by which point the clone cleanup archiving
+  # enqueued had already deleted the clone. File.open on the stderr log raised
+  # ENOENT, the adapter re-raised it as ClaudeCliError, and it surfaced as a
+  # `spawn_failed` ERROR that paged #alerts twice for a session that had already
+  # finished.
+
+  test "a session archived while its turn was being set up never reaches the runtime" do
+    live = live_recovery_session
+
+    cli = run_job_archiving_mid_flight(live)
+
+    assert_empty cli.executed_commands, "an archive during setup must still stop the turn"
+    assert_empty cli.resumed_sessions, "an archive during setup must still stop the turn"
+
+    live.reload
+    assert_equal "archived", live.status, "the refusal must not move a session out of the trash"
+    assert_nil live.running_job_id, "a job that started nothing must leave no owner on the row"
+  end
+
+  test "the late refusal is an ordinary outcome, not a spawn failure" do
+    live = live_recovery_session
+
+    run_job_archiving_mid_flight(live)
+
+    live.reload
+    assert_not_equal "spawn_failed", live.metadata["failure_reason"],
+                     "an archived session taking no turn is the correct outcome, not a runtime fault"
+
+    logs = live.logs.reload
+    assert_empty logs.select { |entry| entry.level == "error" },
+                 "the ERROR that paged #alerts twice is the thing being fixed"
+
+    refusal = logs.find { |entry| entry.content.include?("archived after the turn was claimed") }
+    assert_not_nil refusal, "expected a session log explaining why nothing happened"
+    assert_equal "info", refusal.level
+    assert_includes refusal.content, "its clone has already been cleaned up",
+                    "the timeline should say the clone was already gone — that is what made this raise"
+  end
+
   private
+
+  # A session in exactly the state auto_continue_after_interrupt leaves behind: the
+  # recovery turn is claimed (`running`), the clone and runtime session id are from
+  # the interrupted turn, and a SYSTEM_RECOVERY prompt is on its way to #perform.
+  def live_recovery_session
+    Session.create!(
+      prompt: "Test prompt",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid,
+      status: :running,
+      metadata: {
+        "clone_path" => CLONE_PATH,
+        "working_directory" => CLONE_PATH,
+        "runtime_started" => true
+      },
+      transcript: { "type" => "user", "message" => { "content" => "Test prompt" } }.to_json
+    )
+  end
+
+  # Drive a live session's turn, archiving the row and deleting its clone — the way
+  # the cleanup archiving enqueues does — partway through the setup that precedes
+  # the spawn, after every early guard has already read the row and passed it.
+  def run_job_archiving_mid_flight(session)
+    archive_during_setup = lambda do |**_kwargs|
+      Session.where(id: session.id).update_all(
+        status: Session.statuses[:archived], archived_at: Time.current
+      )
+      @job&.file_system&.rm_rf(CLONE_PATH)
+      "orchestrator system prompt"
+    end
+
+    OrchestratorSystemPromptBuilder.stub(:build, archive_during_setup) do
+      run_job(session, AutomatedPrompts.system_recovery(reason: "the job monitoring this session was interrupted"),
+              decision: allowed_decision)
+    end
+  end
 
   # Drive the real job for one turn against a stubbed gate decision, with the
   # runtime, the filesystem and the process manager mocked out. Mirrors
@@ -223,7 +316,7 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     cli.resume_hook = ->(_opts) { { pid: 12_346, stderr_log_path: "#{CLONE_PATH}/claude_stderr.log" } }
     cli.execute_hook = ->(_opts) { { pid: 12_347, stderr_log_path: "#{CLONE_PATH}/claude_stderr.log" } }
 
-    job = build_job(cli)
+    job = @job = build_job(cli)
     job.file_system.mkdir_p(CLONE_PATH)
     job.file_system.write("#{CLONE_PATH}/claude_stderr.log", "")
     job.process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
