@@ -21,11 +21,17 @@
 # answer no:
 #
 #   1. Is the fleet RUNNING `fleet_idle_max_sessions` or more sessions already?
-#      One population and one number: sessions actually `running`. Every runtime
-#      and every scheduling class counts — "is anyone doing anything" is about
-#      the deployment's capacity to take on more, and a running Codex session
-#      occupies that as much as a Claude one. `fleet_idle_max_sessions = 1` means
-#      simply "nothing running".
+#      One population and one number: sessions actually `running`. Every runtime,
+#      every scheduling class, and Zimmer's own status-summary forks all count —
+#      "is anyone doing anything" is about the deployment's capacity to take on
+#      more, and a running Codex session occupies that as much as a Claude one.
+#      `fleet_idle_max_sessions = 1` means simply "nothing running".
+#
+#      This is a different population from the one the spot gate's concurrency
+#      limit counts, which is Claude Code sessions only and does not skip frozen
+#      categories (Session.running_claude_code_count). The two ceilings sit on
+#      the same axis and are read together on /inference, but a fleet running
+#      Codex work will not see the same number under both.
 #
 #      `waiting` sessions do NOT count, of any class, and the reason is what
 #      `waiting` actually holds. It is not a queue — it is Zimmer's only resting
@@ -33,10 +39,10 @@
 #      self-scheduled wake sit in it alongside anything genuinely queued, and the
 #      sleepers dominate. The biggest single population is the `open-pr` skill's
 #      terminal step: a session that has FINISHED its work and is sleeping on its
-#      open PR, for tens of minutes at a time, occupying nothing. Counting those
-#      made a deployment with 5 sessions running and 8 asleep report itself as
-#      holding 13 against a ceiling of 7 — full, no top-up due — while more than
-#      half its slots sat empty.
+#      open PR, for tens of minutes at a time, occupying nothing. A deployment
+#      running 5 sessions with 8 asleep beside them has 5 sessions' worth of
+#      work, not 13, and a ceiling that counts 13 reads a fleet with more than
+#      half its slots empty as full.
 #
 #      The spot queue is not an exception to that. A dormant spot session is work
 #      waiting for capacity, which is the condition top-up exists to relieve
@@ -155,8 +161,8 @@ class FleetIdleMonitor
   EVENT_NAME = "no_sessions_in_progress"
 
   class << self
-    # How few sessions the fleet may hold and still count as idle enough, how
-    # long it must stay that way, and the floor between two fires. All three are
+    # How few sessions the fleet may be running and still count as idle enough,
+    # how long it must stay that way, and the floor between two fires. All three are
     # operator-tunable on /inference, so they are read rather than frozen.
     #
     # Each takes the already-loaded settings row when the caller has one, so a
