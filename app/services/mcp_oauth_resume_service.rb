@@ -40,13 +40,19 @@ class McpOauthResumeService
 
   # @return [Symbol] :resumed, :partial, or :not_blocked
   def call
+    # Read the volume BEFORE taking the row lock, the way the restart doors read
+    # before their transaction: sniffing an image's media type reads its bytes,
+    # and a slow volume must not hold a session row open. The gate below is
+    # re-asked under the lock, against the reloaded row.
+    attachments = replayable_attachments
+
     @session.with_lock do
       return :not_blocked unless blocked?
 
       remaining = servers_still_needing_oauth
 
       if remaining.empty? && pending_flows.none?
-        resume!
+        resume!(attachments)
         :resumed
       else
         record_partial_progress(remaining)
@@ -101,8 +107,11 @@ class McpOauthResumeService
     McpOauthPendingFlow.for_session(session).active
   end
 
-  def resume!
-    images, files = replayable_attachments
+  def resume!(attachments)
+    # Re-asked under the lock, against the row `with_lock` reloaded. The read
+    # above happened before it, and a session that started producing a
+    # transcript in between is no longer replaying a first turn.
+    images, files = session.transcript.present? ? [ [], [] ] : attachments
 
     session.update!(
       status: "waiting",
@@ -115,10 +124,22 @@ class McpOauthResumeService
 
     AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
 
+    carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
+
     Rails.logger.info(
       "[McpOauthResumeService] All OAuth flows complete for session #{session.id}, " \
-      "auto-resuming original intent" \
-      "#{Sessions::FirstTurnAttachments.carrying_clause(images, files)}"
+      "auto-resuming original intent#{carrying}"
+    )
+
+    # What the turn carries goes in the session's own timeline, not only in the
+    # app log — an answer only a shell on the box can reach is not an answer. It
+    # is written only when there IS something to say: an ordinary resume carries
+    # nothing, and saying so every time would bury the times it does.
+    return if carrying.blank?
+
+    session.logs.create!(
+      level: "info",
+      content: "OAuth authorization complete: replaying this session's first turn#{carrying}."
     )
   end
 
@@ -136,19 +157,27 @@ class McpOauthResumeService
   # Restart from scratch is gated on `failed_before_initial_prompt? &&
   # !setup_complete?`, so it knows nothing was ever delivered. `oauth_required`
   # being a member of PRE_PROMPT_FAILURE_REASONS does NOT buy the same knowledge
-  # here, because three routes set it on a session that has already run:
+  # here, because four routes set it on a session that has already run:
   # SessionsController#update_mcp_servers and #update_catalog_plugins, when a
-  # human adds a server to a live session, and AgentSessionJob's follow-up
-  # branch, under "Follow-up blocked: OAuth authorization required for MCP
-  # servers". Sessions::FirstTurnAttachments reads everything on the volume minus
-  # what the queue owns, and on such a session that set includes attachments
-  # earlier turns already consumed — re-delivering them would put the first
-  # turn's screenshot on a much later one.
+  # human adds a server to a live session; AgentSessionJob's follow-up branch,
+  # under "Follow-up blocked: OAuth authorization required for MCP servers"; and
+  # AgentSessionJob#check_and_handle_mcp_failure, the post-spawn classifier that
+  # #authorized? below already names. Sessions::FirstTurnAttachments reads
+  # everything on the volume minus what the queue owns, and on such a session
+  # that set includes attachments earlier turns already consumed — re-delivering
+  # them would put the first turn's screenshot on a much later one.
   #
   # A blank transcript is what separates the two: it is the same half of
   # Session#never_ran? that means "no turn has reached an agent", without the
   # `session_id` half, which is already stamped by the time the fresh-clone spawn
   # reaches its OAuth gate and so would refuse a genuine first turn.
+  #
+  # It is a proxy for a decision the job makes for itself and states differently
+  # — `is_resume` there is `runtime_started && session_id.present? &&
+  # (follow_up_prompt.present? || reusing_existing_clone)`. The two diverge only
+  # in the conservative direction: an already-run session whose clone has since
+  # been swept takes the job's fresh-start branch and replays its prompt, and
+  # this gate gives it no attachments to go with it.
   #
   # @return [Array(Array<Hash>, Array<Hash>)] images, files
   def replayable_attachments

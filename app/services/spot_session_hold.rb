@@ -539,6 +539,7 @@ class SpotSessionHold
       # The job first, the sentence about it second. A log line written ahead of a
       # failed enqueue is a session timeline promising a re-check that does not
       # exist — the fossil-read-as-live-state this whole class is about.
+      images = files = nil
       carrying = ""
       if record.resuming?
         AgentSessionJob.enqueue_with_prompt(
@@ -549,22 +550,37 @@ class SpotSessionHold
           delay: delay
         )
       else
-        # `!resuming?` is a session that has never run, so the job built here IS
-        # its first turn — and AgentSessionJob reads attachments ONLY out of its
-        # job arguments. Enqueuing a bare one re-armed "here is the screenshot,
-        # fix this" with the prompt and without the screenshot (#789), under a
-        # log line claiming the turn had been carried across. The resuming branch
-        # above must NOT read the volume: it moves a turn of its own, whose
-        # attachments came with the prompt that woke it.
-        images, files = Sessions::FirstTurnAttachments.for(session)
-        carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
+        # The lost job carried this turn's images and files as arguments, and
+        # AgentSessionJob reads them from nowhere else — so a bare re-arm brought
+        # back "here is the screenshot, fix this" with the prompt and without the
+        # screenshot (#789), under a log line claiming the turn had been carried
+        # across. Re-read from the volume, where they sit keyed by session id.
+        #
+        # `session_id.blank?` is the same predicate Sessions::StartNow uses for
+        # "has never run", and it is what makes the volume the right place to
+        # look: the gate holds a session BEFORE AgentSessionJob stamps a
+        # session_id, so a genuine first start (and a restart from scratch, which
+        # clears it) reads blank. A TURN_START hold on a session that HAS run —
+        # McpOauthResumeService resumes such a session with a promptless
+        # new-session job, which this gate can hold — carried no attachments on
+        # its lost job either, and everything on its volume belongs to turns it
+        # has already had.
+        if session.session_id.blank?
+          images, files = Sessions::FirstTurnAttachments.for(session)
+          carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
+        end
         AgentSessionJob.enqueue_new_session(
           session.id, images: images.presence, files: files.presence, delay: delay
         )
       end
 
-      carried = if prompt.present? || !record.resuming?
+      carried = if !record.resuming?
         "The turn it was holding is carried with it#{carrying}."
+      elsif prompt.present?
+        # Narrower than the sentence above on purpose. The hold record stores the
+        # prompt and nothing else, so a re-armed resume brings its prompt back
+        # and leaves any attachments that came with it behind — see #890.
+        "The prompt it was holding is carried with it."
       else
         "The prompt it was woken for was lost with the re-check, so it comes back on a " \
         "recovery nudge instead."
