@@ -1,5 +1,4 @@
 require "application_system_test_case"
-require "path_sanitizer"
 require "mocha/minitest"
 
 class SmokeTest < ApplicationSystemTestCase
@@ -28,7 +27,7 @@ class SmokeTest < ApplicationSystemTestCase
         working_directory = options[:chdir]
 
         # Create fake transcript
-        create_fake_transcript(session_id, working_directory) if session_id && working_directory
+        create_fake_claude_transcript(session_id, working_directory) if session_id && working_directory
 
         # Create stderr log file if it's being redirected
         if options[:err] && options[:err].respond_to?(:path)
@@ -260,12 +259,20 @@ class SmokeTest < ApplicationSystemTestCase
                  "Expected session to reach '#{expected_status}' status within #{max_wait} seconds"
   end
 
-  def create_fake_transcript(session_id, working_directory)
-    # Calculate transcript directory the same way as the real service
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
-    sanitized_path = PathSanitizer.sanitize(working_directory)
-    transcript_dir = File.join(claude_projects_dir, sanitized_path)
+  # Write the transcript the fake `claude` process would have written.
+  #
+  # Named for the runtime rather than generically because the shape below — the
+  # directory, the file name, the record format — is Claude Code's, and because a
+  # bare `create_fake_transcript` here would shadow FixtureHelpers' method of that
+  # name for the whole class.
+  #
+  # The directory is the runtime source's own answer, not a copy of the layout:
+  # ClaudeTranscriptSource is where ~/.claude/projects/<sanitized-cwd> is written
+  # down, and the poller under test resolves the same path through
+  # TranscriptRuntime.
+  def create_fake_claude_transcript(session_id, working_directory)
+    transcript_dir = ClaudeTranscriptSource.new(file_system: @mock_fs)
+      .transcript_directory(working_directory: working_directory)
     @mock_fs.mkdir_p(transcript_dir)
 
     transcript_file = File.join(transcript_dir, "conversation-#{session_id}.jsonl")
