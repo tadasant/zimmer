@@ -437,8 +437,9 @@ durable copy, `stats` is the copy reachable without a shell, and neither is the 
 unattended is not care, it is asymmetry. Deleting a row that was correct hands an agent's own
 GitHub comment back to every session tracking the PR; leaving a wrong one costs exactly what the
 status quo already costs. So the task is written to be **too narrow rather than too broad**: a row
-is deleted only when the fixed classifier says it is not a post *and* the permalink is still in a
-tool result of the recording session's transcript, and every row the signal cannot reach — no
+is deleted only when the fixed classifier says it is not a post *and* the permalink is still in the
+output of a command that names a posting invocation, which is the only kind of result the old
+classifier could have read it from — and every row the signal cannot reach — no
 session, no transcript, a transcript that parses to nothing — is kept and counted under its own
 reason. That counting is the other half of the design: a sweep with nothing to do and a sweep that
 silently reached nothing look identical from outside, so `stats` carries `rows_examined`,

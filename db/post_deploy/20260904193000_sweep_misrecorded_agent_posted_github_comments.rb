@@ -45,8 +45,17 @@
 # needs TWO facts, not one:
 #
 #   1. the fixed classifier does not read this comment as agent-posted, AND
-#   2. the comment's permalink is still visible in a tool result of that very
-#      transcript — the evidence the old classifier misread is still there.
+#   2. the comment's permalink is still visible in the output of a command that
+#      NAMES a posting invocation — the evidence the old classifier misread is
+#      still there, in a result it could actually have been reading.
+#
+# The second half of (2) is a real restriction, not decoration. Scanning every
+# tool result would let a `Read` of this repo's own limitations.md — which quotes
+# example permalinks — stand in as evidence for deleting a row that `Read` could
+# never have written, with an empty audit trail to show for it. Every
+# classification the pre-#899 hook could make required the command to name `gh pr
+# comment`, `gh issue comment`, `gh pr review` or `gh api`, so restricting to
+# those is a strict superset of what it accepted: no intended deletion is lost.
 #
 # (2) is what separates "this was a grep, and now we read it as one" from "this
 # transcript no longer mentions the comment at all", which is ambiguous: the row
@@ -60,14 +69,28 @@
 #
 #   session_id NULL         `belongs_to :session, optional: true`, and a row with
 #                           no session names no transcript to re-derive from.
-#   session deleted         same, one step later.
-#   transcript blank/gone   nothing to classify.
+#   session deleted         a race only: the foreign key is `on_delete: :nullify`,
+#                           so a destroyed session leaves the row in the case
+#                           above. Kept as its own reason because a row loaded
+#                           before the nullify still carries the stale id.
+#   transcript blank/gone   nothing to classify. Also where a transcript stored in
+#                           a shape this task cannot read lands, since the column
+#                           is `json` and nothing constrains it to a string.
 #   transcript unparsable   ditto; an empty parse is indistinguishable from a
 #                           transcript in a shape this runtime's parser cannot
 #                           read, and neither is evidence of a wrong row.
 #
 # All four are counted separately in `stats`, so "the sweep could not reach N
 # rows" is a number a human can read off /health rather than a silence.
+#
+# ONE CASE THE BIAS DOES NOT COVER, stated rather than hidden: the verdict is
+# derived per SESSION but the row is global. `AgentPostedGithubComment.record!`
+# returns the existing row on a conflict, so `session_id` is whichever session
+# recorded the comment FIRST. A comment genuinely posted by session B but first
+# recorded by a false positive in session A is re-derived from A's transcript and
+# can be deleted. It needs A to misread the id before B posted it, which is a
+# narrow window, and there is no second signal to break the tie with — the row
+# carries one session and that is the one the hook read.
 #
 # WHAT IT DOES NOT REPAIR
 #
@@ -130,10 +153,16 @@ class SweepMisrecordedAgentPostedGithubComments < PostDeployTask
       batch.group_by(&:session_id).each do |session_id, rows|
         examine(session_id, rows)
       end
-      record_progress!
+      # Staged, NOT saved: `sweep` writes the cursor immediately after this block
+      # returns, and that one write carries these counters with it. Saving here
+      # instead would leave a window where a batch's counters are durable but its
+      # cursor is not, so a resumed slice would re-examine the batch and count
+      # every kept row in it a second time.
+      stage_progress
     end
 
-    record_progress!
+    stage_progress
+    checkpoint!
     outcome
   end
 
@@ -194,17 +223,22 @@ class SweepMisrecordedAgentPostedGithubComments < PostDeployTask
     @deleted_details << record.as_json if @deleted_details.size < MAX_DETAILED
   end
 
-  # Written after every batch as well as at the end, so a slice that dies mid-sweep
-  # still leaves a truthful account of what it had already deleted.
-  def record_progress!
-    checkpoint!(
-      rows_examined: @examined,
-      rows_reachable: @examined - unreachable_count,
-      rows_unreachable: unreachable_count,
-      rows_kept: @kept_by_reason.values.sum,
-      rows_deleted: @deleted_count,
-      kept_by_reason: @kept_by_reason,
-      deleted_details: @deleted_details
+  # The counters, assigned in memory for the next write to carry.
+  #
+  # Truthful as of the last COMPLETED batch. A slice killed part-way through one
+  # loses that batch's counters, including deletions it had already made — those
+  # rows are gone and can never be recounted, which is exactly why every deletion
+  # is logged whole before the write. The log is the durable record; `stats` is
+  # the copy reachable without a shell.
+  def stage_progress
+    run.stats = run.stats.merge(
+      "rows_examined" => @examined,
+      "rows_reachable" => @examined - unreachable_count,
+      "rows_unreachable" => unreachable_count,
+      "rows_kept" => @kept_by_reason.values.sum,
+      "rows_deleted" => @deleted_count,
+      "kept_by_reason" => @kept_by_reason,
+      "deleted_details" => @deleted_details
     )
   end
 
@@ -242,11 +276,15 @@ class SweepMisrecordedAgentPostedGithubComments < PostDeployTask
     # with an array left over from an older format. Both are normalized to the
     # string the hook is handed by `TranscriptPollerService`, so the classifier sees
     # exactly what it saw when the row was written.
+    #
+    # Anything else reads as no transcript rather than raising. The column is
+    # `json` and nothing constrains its shape, and a task that dies on one odd row
+    # parks `failed` and repairs none of the others.
     def self.transcript_content(session)
       raw = session.transcript
       return raw.map(&:to_json).join("\n") if raw.is_a?(Array)
 
-      raw
+      raw if raw.is_a?(String)
     end
     private_class_method :transcript_content
 
@@ -260,10 +298,12 @@ class SweepMisrecordedAgentPostedGithubComments < PostDeployTask
     # Would the FIXED hook write this row today?
     def posted?(key) = posted_keys.include?(key)
 
-    # Is the permalink still in a tool result of this transcript? Tool results
-    # only, because that is the sole place the old classifier read an id from —
-    # a permalink in the agent's own prose was never what recorded the row, and
-    # counting it as evidence would widen the deletion for no gain.
+    # Is the permalink still in the output of a command that could have recorded
+    # it? Tool results only, because that is the sole place any classifier read an
+    # id from — and only results of commands NAMING a posting invocation, because
+    # those are the only ones the pre-#899 hook could have read (see the file
+    # header). A permalink in the agent's prose, or in a `Read` of a file that
+    # quotes one, never recorded anything and must not delete anything.
     def mentions?(key) = mentions.key?(key)
 
     # The shell commands whose output carried the permalink — the audit trail for
@@ -294,6 +334,7 @@ class SweepMisrecordedAgentPostedGithubComments < PostDeployTask
         # `is_error` results, before #899 as after it, so no row was ever written
         # from one. Counting it would only widen the deletion.
         next if result[:is_error]
+        next unless posting_call_ids.include?(result[:id])
 
         text = result[:text]
         next if text.blank?
@@ -311,6 +352,17 @@ class SweepMisrecordedAgentPostedGithubComments < PostDeployTask
       @commands_by_call_id ||= parser.shell_calls.each_with_object({}) do |call, acc|
         acc[call[:id]] = call[:command].to_s
       end
+    end
+
+    # The calls whose output the pre-#899 hook could have read an id from. The
+    # hook's own cheap precheck, run against the command AS WRITTEN — which is a
+    # superset of every view either classifier reads, so it cannot exclude a call
+    # that classified as a post under either.
+    def posting_call_ids
+      @posting_call_ids ||= commands_by_call_id
+        .select { |_id, command| command.match?(TranscriptHooks::GithubCommentAuthorshipHook::POSTING_INVOCATION_PATTERN) }
+        .keys
+        .to_set
     end
 
     def parser
