@@ -282,14 +282,14 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   test "session hierarchy nodes stay within the viewport on a phone, unchanged at desktop width" do
     origin = with_agent_root(
       create_session(title: "Gate and claim the mobile overflow bug", status: :needs_input),
-      "zimmer-router"
+      "zimmer-orchestrator"
     )
     router = with_agent_root(
       create_session(
         title: "Implement zimmer#390 (session hierarchy nodes overflow at 375px)",
         status: :needs_input, parent_session_id: origin.id
       ),
-      "zimmer-router"
+      "zimmer-orchestrator"
     )
     # Keeps LONG_TOKEN_TITLE, so the link path renders an unbreakable title.
     worker = with_agent_root(create_session(status: :needs_input, parent_session_id: router.id), "zimmer")
@@ -307,7 +307,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # test is measuring.
     sibling = with_agent_root(
       create_session(title: "Re-route the stalled worker", status: :needs_input, parent_session_id: helper.id),
-      "zimmer-router"
+      "zimmer-orchestrator"
     )
     SessionUncleLink.create!(session: current, uncle_session: sibling, source: "test")
 
@@ -880,7 +880,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         git_root: "https://github.com/test/repo.git",
         scheduling_class: SessionGenesis::PRIORITY, precedence: 0
       ),
-      "zimmer-router"
+      "zimmer-orchestrator"
     )
 
     visit root_path(view: SessionsController::VIEW_MODE_RANKED)
