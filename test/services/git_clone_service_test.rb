@@ -312,6 +312,90 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(repo_with_subdir)
   end
 
+  # zimmer#921: renaming an agent root's directory in the catalog moves the tree
+  # while every session row created before the rename still names the old path.
+  # The catalog knows the new one, so a clone that can land on it must.
+  test "falls back to the catalog's current subdirectory when the requested one is gone" do
+    repo_with_subdir = create_test_git_repository_with_subdirectory
+
+    result = GitCloneService.create_clone(
+      repo_with_subdir,
+      branch: "main",
+      subdirectory: "renamed_away",
+      fallback_subdirectory: "subdir"
+    )
+
+    assert_equal File.join(result[:clone_path], "subdir"), result[:working_directory]
+    assert_equal "subdir", result[:subdirectory],
+      "the caller needs to know which path the clone landed on so it can persist it"
+    assert File.exist?(File.join(result[:working_directory], "subfile.txt"))
+
+    GitCloneService.cleanup_clone(result[:clone_path])
+    FileUtils.rm_rf(repo_with_subdir)
+  end
+
+  test "keeps the requested subdirectory when it is present, even with a fallback offered" do
+    repo_with_subdir = create_test_git_repository_with_subdirectory
+
+    result = GitCloneService.create_clone(
+      repo_with_subdir,
+      branch: "main",
+      subdirectory: "subdir",
+      fallback_subdirectory: "somewhere_else"
+    )
+
+    assert_equal File.join(result[:clone_path], "subdir"), result[:working_directory]
+    assert_equal "subdir", result[:subdirectory]
+
+    GitCloneService.cleanup_clone(result[:clone_path])
+    FileUtils.rm_rf(repo_with_subdir)
+  end
+
+  # A session that never had a subdirectory must not acquire one from a root that
+  # has since grown one: the fallback answers "where did the path I asked for go",
+  # not "what does the catalog say now".
+  test "does not adopt a fallback for a clone that asked for no subdirectory" do
+    repo_with_subdir = create_test_git_repository_with_subdirectory
+
+    result = GitCloneService.create_clone(
+      repo_with_subdir,
+      branch: "main",
+      subdirectory: nil,
+      fallback_subdirectory: "subdir"
+    )
+
+    assert_equal result[:clone_path], result[:working_directory]
+    assert_nil result[:subdirectory]
+
+    GitCloneService.cleanup_clone(result[:clone_path])
+    FileUtils.rm_rf(repo_with_subdir)
+  end
+
+  test "still raises when neither the requested subdirectory nor the fallback exists" do
+    error = assert_raises(GitCloneService::SubdirectoryNotFoundError) do
+      GitCloneService.create_clone(
+        @test_repo_path,
+        branch: "main",
+        subdirectory: "nonexistent_subdir",
+        fallback_subdirectory: "also_nonexistent"
+      )
+    end
+
+    assert_includes error.message, "Subdirectory 'nonexistent_subdir' not found"
+    assert_includes error.message, "also tried 'also_nonexistent'"
+    assert_not GitCloneService.transient_clone_error?(error),
+      "a missing subdirectory is permanent — retrying the same commit finds the same absence"
+  end
+
+  test "raises SubdirectoryNotFoundError, a GitError, when no fallback is offered" do
+    error = assert_raises(GitCloneService::SubdirectoryNotFoundError) do
+      GitCloneService.create_clone(@test_repo_path, branch: "main", subdirectory: "nonexistent_subdir")
+    end
+
+    assert_kind_of GitCloneService::GitError, error
+    assert_not_includes error.message, "also tried"
+  end
+
   test "verifies clone path includes repo name and branch" do
     result = GitCloneService.create_clone(@test_repo_path, branch: "main")
 

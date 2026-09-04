@@ -143,6 +143,14 @@ stdin and stdout to `/dev/null`, and stderr to `claude_stderr.log` / `codex_stde
 the **working directory** — which is the clone root for a session without an agent root, and the
 agent root's subdirectory for one with.
 
+That subdirectory is frozen onto the session row when the session is created, so every clone the
+job makes — the first one, and the recreation after a reaper took it — also offers
+`GitCloneService` the path the root declares in the catalog *now*, and adopts it if the stored one
+is no longer in the tree. Without that, renaming an agent root's directory strands every session
+created before the rename ([#921](https://github.com/tadasant/zimmer/issues/921)); with it, a root
+that moved its directory under a name the catalog still carries resolves on its own. See
+[the router root's two names](/air/agent-roots/#the-router-roots-two-names).
+
 That distinction matters beyond spawn time. Everything that reconnects to a running process it
 did not spawn — a job resuming monitoring, `ProcessLifecycleManager` after a recovery spawn, the
 interrupt and terminate paths — has to rebuild this path, and both context-length recovery and
