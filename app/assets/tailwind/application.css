@@ -108,6 +108,16 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 
+    /* Agents write absolute paths, branch names and URLs constantly, and each is
+     * one token with no break opportunity — wider on its own than a phone. Left
+     * alone, one of them sets the width of the whole document and the transcript
+     * scrolls sideways. `break-word` rather than `anywhere`: it only breaks a
+     * token that would not otherwise fit, so ordinary prose still wraps between
+     * words. It inherits, so every p/li/td below picks it up; `pre` does not
+     * wrap at all (`white-space: pre`), so code blocks keep scrolling in their
+     * own box. */
+    overflow-wrap: break-word;
+
     /* Headings - clean hierarchy */
     & h1 {
       @apply text-xl font-semibold mt-8 mb-4 pb-3;
@@ -228,6 +238,18 @@
     /* First paragraph after heading - tighter spacing */
     & h1 + p, & h2 + p, & h3 + p {
       @apply mt-3;
+    }
+
+    /* Tables - the wrapper ApplicationHelper's table renderer emits has to be
+     * told to scroll here too. `@apply prose` copies the typography plugin's
+     * declarations into this class but does not put the literal `prose` class on
+     * the element, so the `.prose .table-wrapper` rule above never matches
+     * inside a transcript. Without this the wrapper computes `overflow-x:
+     * visible` and a table with an unbreakable cell — a backticked file path —
+     * widens the page instead of scrolling in its own box. Only the scroll is
+     * restated; the wrapper's border and shadow stay with the `.prose` variant. */
+    & .table-wrapper {
+      @apply overflow-x-auto;
     }
   }
 }
