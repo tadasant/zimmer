@@ -523,10 +523,40 @@ restart from scratch. A `start` hold on a session that has already run is a diff
 OAuth resume enqueues a promptless new-session job, which this gate can hold, and everything on that
 session's volume belongs to turns it has already had.
 
-A re-armed **resume** still loses its attachments, and its log line now says only that the *prompt*
-was carried. The hold record stores the prompt and nothing else, so there is nothing durable to
-replay them from, and re-reading the volume would attach turns' worth of the wrong ones. Tracked in
-[#890](https://github.com/tadasant/zimmer/issues/890).
+**A re-armed *resume* carries its attachments too, from a different place.** A deferred resume writes
+`spot_hold_images` and `spot_hold_files` beside `spot_hold_prompt` — the descriptors `hold!` was
+handed, not the bytes, which are already durable on the volume — and the sweep replays them from
+there ([#890](https://github.com/tadasant/zimmer/issues/890)). The three keys are written and
+dropped together, so a hold that carries no attachment clears an earlier hold's rather than leaving
+it beside a prompt it never belonged to.
+
+It must be the record and not the volume, and that is the whole reason the two branches differ. On a
+resume the volume holds every attachment the session has *ever* received, including ones earlier
+turns already consumed, so "everything on disk" would put an old screenshot on a new turn. Replaying
+the **wrong** attachments is worse than replaying none: both are silent, and only one of them is
+also wrong.
+
+A resume whose prompt was lost as well comes back on the recovery nudge with **no** attachments. The
+nudge is a different turn — Zimmer's own sentence about a stalled ladder — and an attachment belongs
+to the prompt that referred to it.
+
+Both stores hand a descriptor back with string keys while the CLI adapters index it with symbols
+(`image[:path]`), so the round trip goes through `Sessions::AttachmentDescriptors`, which owns that
+conversion in both directions. A descriptor that skipped it would enqueue a turn that looks like it
+is carrying a screenshot and reads as carrying none — the same silent failure wearing the other
+face. `hold!` normalizes once at the door and builds every carrier from the result, because it hands
+one turn's attachments to as many as three of them — the delayed job, the hold record, and the
+`enqueued_messages` row a second refused turn is parked in — and two copies of one turn built from
+different values is how they come to disagree.
+
+The replay also checks the bytes are still there. A hold record outlives the files it names: the
+sweep re-arms records nobody has touched for hours, while the durable-storage cleanup reaps a
+session's attachment tree on its own schedule. Handing the adapter a path that is gone is not a
+missing screenshot — `load_image_as_base64` reads it, the `Errno::ENOENT` surfaces as a failed
+spawn, and the session is stamped `spawn_failed`. A repair path must not be able to do more damage
+than the thing it repairs, so a descriptor whose file has vanished is dropped and the turn comes
+back short an attachment rather than not at all. The `start` branch gets that for free, by reading
+what is on disk in the first place.
 
 **An interrupt no longer mistakes a hold for a stranded session.** A held session is dormant on
 purpose, exactly like a ceiling pause or an auth-outage park, and `AgentSessionJob`'s interrupt
