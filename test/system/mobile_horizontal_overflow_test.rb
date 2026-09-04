@@ -928,6 +928,61 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("connectors")
   end
 
+  # The strad secrets server, keeping the real server name, the real URL and the
+  # real `${STRAD_API_KEY}` its header interpolates. An unresolved `${VAR}` is what
+  # makes /connectors render its "Where to set this" block, and that block is the
+  # widest thing the page carries: the Secrets Console URL inside it is one
+  # 37-character token with no break opportunity. The real names matter — an
+  # invented variable name long enough to overflow on its own measures a page
+  # nobody has, and reports the overflow against the wrong element.
+  MISSING_SECRET_CATALOG = {
+    "secrets-service-account" => {
+      "title" => "Secrets Service Account",
+      "description" => "Strad-hosted secrets MCP server.",
+      "type" => "streamable-http",
+      "url" => "https://strad.tadasant.com/mcp?servers=secrets",
+      "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" }
+    }
+  }.freeze
+
+  # 320px as well as 375px, because the two widths catch different things and the
+  # case above passes at 375px either way. The catalog card is `overflow-hidden` —
+  # it clips its own rounded corners — so anything wider than it is cut off rather
+  # than pushed onto a scrollbar the reader can drag to. A clipped control is the
+  # worse of the two overflow failures, and this block exists to say where to go
+  # set the missing secret, so its link is the part that must stay reachable.
+  test "the missing-secret block's console link stays inside the card on the narrowest phone" do
+    AirCatalogService.stubs(:entries_for).returns({})
+    AirCatalogService.stubs(:entries_for).with(:mcp).returns(MISSING_SECRET_CATALOG)
+    # A chain over an empty environment resolves nothing, whatever the process
+    # actually holds. That matters here more than usual: this box IS an agent
+    # session, and a session's environment carries every one of Zimmer's secrets,
+    # so on the real chain STRAD_API_KEY resolves and the block never renders.
+    SecretProviders.stubs(:chain)
+      .returns(SecretProviders::Chain.new([ SecretProviders::Env.new({}) ]))
+    # Fixture credentials for servers this stubbed catalog does not contain would
+    # render as "unclaimed" rows and put their own geometry into the measurement.
+    McpOauthCredential.delete_all
+
+    # 375px first, at the width the shared setup establishes: a wrap treatment that
+    # buys 320px by introducing overflow at the width the rest of this file measures
+    # fails here rather than passing quietly.
+    visit connectors_path
+    assert_selector "[data-connector-list-sorted]", wait: 30
+    assert_selector "[data-secret-console]"
+    assert_no_horizontal_overflow("connectors missing-secret block at #{MOBILE_WIDTH}px")
+
+    page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
+    visit connectors_path
+    assert_selector "[data-connector-list-sorted]", wait: 30
+    assert_selector "[data-secret-console]"
+    assert_no_horizontal_overflow("connectors missing-secret block at #{NARROW_WIDTH}px")
+
+    # An absolute path, so the file lands where the name reads. Capybara resolves a
+    # relative one against `Capybara.save_path`, which puts it under tmp/capybara/.
+    page.save_screenshot(Rails.root.join("tmp/screenshots/connectors-missing-secret-320.png").to_s)
+  end
+
   # The store banner in its widest state: a configured Parameter Store, whose
   # namespace-rename line carries two full `/zimmer/{env}/…/static/` paths and a
   # comma-joined list of the variables still at the old one. Those are exactly the
@@ -952,20 +1007,26 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     visit connectors_path
     assert_selector "[data-store-legacy-namespace=remaining]"
     assert_text "STRAD_API_KEY"
+    assert_selector "[data-connector-list-sorted]", wait: 30
 
     assert_no_horizontal_overflow("connectors store banner, mid-migration")
 
     page.save_screenshot("tmp/screenshots/connectors-secret-store-375.png")
 
-    # 320px is checked on the banner's own frame rather than on the whole page,
-    # because /connectors already clips the Secrets Console link 36px past its
-    # container at that width with no store configured at all — a pre-existing
-    # bug in connectors/_connector.html.erb, filed separately. Measuring the whole
-    # page here would make this test fail for someone else's overflow.
+    # And the same page at 320px, which is where a fixed minimum stops fitting at
+    # all. The banner is measured inside the page rather than through its own frame
+    # endpoint for the reason given above: in the page it has the page's padding to
+    # fit, and the frame on its own has the whole viewport.
+    #
+    # Both widths wait for the connector list to finish resolving. The rows are lazy
+    # frames the list controller promotes and then sorts, so without the wait the
+    # measurement races them: whichever rows happened to answer are in it and the
+    # rest are not, which under-measures silently and varies run to run.
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
-    visit secret_store_connectors_path
+    visit connectors_path
     assert_selector "[data-store-legacy-namespace=remaining]"
-    assert_no_horizontal_overflow("connectors store banner frame, mid-migration")
+    assert_selector "[data-connector-list-sorted]", wait: 30
+    assert_no_horizontal_overflow("connectors store banner, mid-migration, at #{NARROW_WIDTH}px")
   end
 
   test "notifications does not overflow horizontally on a phone" do

@@ -58,11 +58,17 @@
               <p class="text-xs font-medium <%= instruction[:console_administers] ? "text-green-900" : "text-amber-900" %>">
                 <%= instruction[:console_caption] %>
               </p>
+              <%# `break-all`, because the link text is its own URL: one unbreakable
+                  37-character token, and the catalog list's card clips rather than
+                  scrolls — it is `overflow-hidden`, for its own rounded corners. So a
+                  URL wider than the card at a phone width has its tail cut off with no
+                  sideways scroll that reaches it, and this destination is the whole
+                  point of the block. %>
               <p class="mt-1">
                 <%= link_to instruction[:console_url], instruction[:console_url],
                       target: "_blank", rel: "noopener noreferrer",
                       data: { secret_console_link: true },
-                      class: "text-xs font-mono underline #{instruction[:console_administers] ? 'text-green-800 hover:text-green-900' : 'text-amber-800 hover:text-amber-900'}" %>
+                      class: "text-xs font-mono underline break-all #{instruction[:console_administers] ? 'text-green-800 hover:text-green-900' : 'text-amber-800 hover:text-amber-900'}" %>
               </p>
               <ol class="mt-2 list-decimal list-outside pl-4 space-y-1 text-xs <%= instruction[:console_administers] ? "text-green-900" : "text-amber-900" %>">
                 <% instruction[:steps].each do |step| %>
