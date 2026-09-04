@@ -68,8 +68,13 @@ self-contained property implies:
   vendored body instead, and the links are gone. Incident citations that name a private repo get
   the same treatment: the mechanism stays, the issue number goes.
 - **The anchor is not in the vendored reference.** A `references/GIT_WORKFLOW.md#some-heading` link
-  resolves only if this catalog's copy of `GIT_WORKFLOW.md` has that heading. Where it does not, the
-  pointer is dropped rather than left dangling — the skill states the rule in full either way.
+  resolves only if this catalog's copy of `GIT_WORKFLOW.md` has that heading, and the reference
+  drifts behind the skill just as easily as the skill drifts behind upstream. The fix is to
+  re-vendor the missing section — adapted the same way a skill is, so the deployment-specific
+  material and private cross-links do not come with it — and only to drop the pointer when the
+  upstream prose does not belong here at all. Either way the skill states the rule in full inline;
+  where both exist, the skill is the operative instruction and the reference carries the shared
+  convention and the incident behind it.
 
 Neither kind of breakage fails `air resolve`: the artifact resolves fine and just points at prose
 that is not there. The `no skill links a reference or a heading the catalog does not carry` test in
