@@ -9,8 +9,7 @@
 # before it reached the reuse path. The fire raised
 # `AgentRootsConfig::AgentRootNotFoundError` on a name it was never going to use,
 # `ScheduleTriggerJob` (or `AoEventTriggerJob`) parked the trigger `failed`, and
-# every firing path filters on `status: "enabled"`. The session it owed a wake to
-# stayed in `waiting` with nothing left that would ever move it.
+# every firing path filters on `status: "enabled"`. The wake it owed was gone.
 #
 # #834 fixed the arming, not the wreckage. `Trigger::STATUSES` calls `failed` a
 # state the user clears, `CleanupStaleTriggersJob` exempts it from every sweep, and
@@ -18,6 +17,16 @@
 # human who already knows which rows to look at and why. So the repair ships with
 # the deploy, as AGENTS.md ("ops actions ship with the deploy") requires, and what
 # it did is a row in `post_deploy_task_runs` rather than somebody's recollection.
+#
+# WHAT THIS ADDS OVER `StrandedSleepRescue`
+#
+# `StrandedSleepRescue` (#855) already rescues the SESSION: every five minutes it
+# takes the `waiting` rows that have run, carry no marker, have nothing queued,
+# and are not #awaiting_scheduled_wake?, and nudges them — so a session bricked by
+# #600 is no longer left asleep indefinitely. It does nothing for the TRIGGER: the
+# parked row stays parked, and the specific prompt the wake carried is never
+# delivered. This task delivers that prompt, to the sessions that are still
+# waiting for it and no other.
 #
 # WHAT IT SELECTS, AND WHY EACH TERM IS THERE
 #
@@ -36,17 +45,32 @@
 #                             created its session already; re-arming it would
 #                             deliver a second one. This is the same predicate
 #                             /triggers reads before offering the Re-arm button.
-#   target still `waiting`    the symptom. A target that is `running`,
-#                             `needs_input`, `archived` or gone is not a session
-#                             sleeping forever, and re-arming for it would deliver
-#                             a prompt nobody is waiting on — or, worse, consume
-#                             the wake against a session that cannot take it.
+#   target still `waiting`    the symptom. A target that is `running` or
+#                             `needs_input` has already moved on, and a prompt
+#                             delivered into it now is a stale interruption.
+#                             `archived` is excluded deliberately even though a
+#                             `resuscitate_archived` trigger's own fire would
+#                             unarchive it: bringing an archived session back is a
+#                             bigger act than delivering a late wake, and not one
+#                             to take unattended on rows nobody has looked at.
 #   target not user-paused    `Trigger#reusable_session?` refuses a session a human
 #                             took control of. A fire against one returns without
 #                             following up, and `ScheduleTriggerJob` then destroys
 #                             the one-time trigger — so re-arming would delete the
 #                             wake and deliver nothing. Left parked instead, where
 #                             a human can still see it.
+#   no live wake already      `Session#awaiting_scheduled_wake?` — the same
+#                             predicate `StrandedSleepRescue` uses to decide a
+#                             session is resting on purpose. A session that was
+#                             bricked, rescued by that sweep, and then armed a
+#                             FRESH wake is `waiting` for a reason. Re-arming the
+#                             stale trigger would fire it immediately (it is
+#                             past-dated, so it is due), and the delivery would
+#                             then take `Trigger#destroy_sibling_wakes!` through
+#                             the live wake — waking the session early and deleting
+#                             the wake it was actually waiting on, both silently.
+#                             The bricked trigger itself cannot make this true: the
+#                             predicate reads only `enabled` triggers.
 #
 # PAST-DATED WAKES ARE RE-ARMED AS THEY ARE, NOT RETIMED.
 #
@@ -92,10 +116,15 @@ class RearmWakesBrickedByUnresolvableAgentRoot < PostDeployTask
   # truncated to 1000 chars. The class name leads, so truncation cannot hide it.
   ERROR_SIGNATURE = "AgentRootsConfig::AgentRootNotFoundError"
 
-  # How many re-armed rows are described in full in `stats`. The health panel and
-  # the Supervisor row render `stats` verbatim, and the logs carry every row
-  # regardless — this only bounds what is rendered.
-  MAX_DETAILED = 50
+  # `stats` is rendered VERBATIM in four places — `/health` flattens it to one
+  # inline string, `GET /api/v1/health` returns it, `get_system_health` pretty-prints
+  # it into an agent's context window, and /supervisor/post_deploy_task_runs shows
+  # the row — and the ledger row is never deleted. So the digest is bounded on both
+  # axes: at most this many rows, each carrying a `last_error` clipped to a legible
+  # prefix rather than `Trigger::MAX_LAST_ERROR_CHARS` of it. The log carries every
+  # row, whole, and is the durable copy.
+  MAX_DETAILED = 10
+  MAX_ERROR_CHARS_IN_STATS = 160
 
   # Unindexed, and deliberately not worth an index: `status = 'failed'` is a tiny
   # slice of a table that holds tens of rows in this deployment, not millions.
@@ -137,13 +166,16 @@ class RearmWakesBrickedByUnresolvableAgentRoot < PostDeployTask
         # One row that will not save must not cost the others their repair — each
         # is an independent session still asleep. Collected and re-raised at the
         # end instead, once every row that CAN be re-armed has been, so the task
-        # parks `failed` on the health page and can be re-armed from the button
-        # there. A re-run repeats only the rows that are still parked.
+        # parks `failed` on the health page rather than reporting a success it did
+        # not have. That is deliberate and it is a human handoff: a trigger that
+        # fails its own validations fails identically on every retry, so the way
+        # out is to fix the row at /triggers/:id and then press the task's re-arm
+        # control — which then repeats only the rows that are still parked.
         logger.error(
           "[RearmWakesBrickedByUnresolvableAgentRoot] could not enable trigger #{trigger.id}: " \
           "#{e.class}: #{e.message}"
         )
-        unenablable << "#{trigger.id} (#{e.class}: #{e.message})"
+        unenablable << "#{trigger.id} (#{e.class}: #{e.message})".truncate(MAX_ERROR_CHARS_IN_STATS)
       end
     end
 
@@ -154,7 +186,7 @@ class RearmWakesBrickedByUnresolvableAgentRoot < PostDeployTask
       # that may never come.
       rearmed_schedule_wakes: rearmed.count { |r| r[:shape] == "schedule" },
       rearmed_ao_event_wakes: rearmed.count { |r| r[:shape] == "ao_event" },
-      rearmed_details: rearmed.first(MAX_DETAILED),
+      rearmed_details: rearmed.first(MAX_DETAILED).map { |r| digest(r) },
       skipped: skipped.values.sum,
       skipped_by_reason: skipped,
       enable_failed: unenablable.size,
@@ -191,6 +223,9 @@ class RearmWakesBrickedByUnresolvableAgentRoot < PostDeployTask
     if session.metadata&.dig("paused_by") == "user"
       return [ "target_session_paused_by_user", "target session #{session.id} was paused by a user" ]
     end
+    if session.awaiting_scheduled_wake?
+      return [ "target_session_has_a_live_wake", "target session #{session.id} is resting on a wake that can still fire" ]
+    end
 
     nil
   end
@@ -212,5 +247,15 @@ class RearmWakesBrickedByUnresolvableAgentRoot < PostDeployTask
       failed_at: trigger.failed_at&.iso8601,
       last_error: trigger.last_error
     }
+  end
+
+  # The bounded form of #describe that goes into `stats`. The name is dropped (the
+  # id identifies the row, and the log has the name) and the error is clipped —
+  # every row here matches ERROR_SIGNATURE by construction, so the prefix is the
+  # confirmation, not the content.
+  def digest(record)
+    record
+      .except(:trigger_name)
+      .merge(last_error: record[:last_error]&.truncate(MAX_ERROR_CHARS_IN_STATS))
   end
 end

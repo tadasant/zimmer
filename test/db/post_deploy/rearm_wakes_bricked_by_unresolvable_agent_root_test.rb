@@ -73,7 +73,7 @@ class RearmWakesBrickedByUnresolvableAgentRootTest < ActiveSupport::TestCase
 
   def run_task
     run = PostDeployTaskRun.ledger_for(@entry)
-    run.claim!(owner: "test")
+    assert run.claim!(owner: "test"), "the ledger row must be claimable"
     outcome = @task_class.new(run: run, logger: Rails.logger).up
     [ run.reload, outcome ]
   end
@@ -218,6 +218,43 @@ class RearmWakesBrickedByUnresolvableAgentRootTest < ActiveSupport::TestCase
     assert_equal({ "not_a_one_time_reuse_wake" => 1 }, run.stats["skipped_by_reason"])
   end
 
+  # The case StrandedSleepRescue creates: the session was bricked, that sweep
+  # nudged it, the agent worked and armed a FRESH wake, and it is `waiting` on
+  # purpose again. Firing the stale one would resume it early — and the delivery
+  # would take #destroy_sibling_wakes! through the live wake on the way out.
+  test "leaves a wake alone when its target is already resting on a wake that can still fire" do
+    session = a_session
+    stale = brick!(wake_trigger(session: session, scheduled_at: 5.days.ago))
+    live = wake_trigger(session: session, scheduled_at: 2.days.from_now)
+
+    assert session.reload.awaiting_scheduled_wake?
+
+    run, _outcome = run_task
+
+    assert_equal "failed", stale.reload.status
+    assert_equal({ "target_session_has_a_live_wake" => 1 }, run.stats["skipped_by_reason"])
+    assert_equal "enabled", live.reload.status, "the live wake is untouched"
+  end
+
+  test "leaves a spawner trigger alone even when it carries the same error" do
+    trigger = Trigger.create!(
+      name: "Nightly spawner",
+      agent_root_name: "claude_code",
+      prompt_template: "spawn something",
+      reuse_session: false,
+      trigger_conditions_attributes: [ {
+        condition_type: "schedule",
+        configuration: { "scheduled_at" => 2.hours.ago.utc.strftime("%Y-%m-%dT%H:%M:%S"), "timezone" => "UTC" }
+      } ]
+    )
+    brick!(trigger)
+
+    run, _outcome = run_task
+
+    assert_equal "failed", trigger.reload.status
+    assert_equal 0, run.stats["candidates_examined"], "a spawner is filtered out in SQL, not per-row"
+  end
+
   test "leaves a trigger a human already disabled alone" do
     session = a_session
     trigger = brick!(wake_trigger(session: session))
@@ -240,6 +277,13 @@ class RearmWakesBrickedByUnresolvableAgentRootTest < ActiveSupport::TestCase
 
     trigger.reload
     updated_at = trigger.updated_at
+
+    # The realistic re-run: the slice died holding the lease, the ledger row went
+    # `failed`, and it was re-armed from the health page. Without this the second
+    # #claim! would refuse — the row is still `running` — and the test would prove
+    # nothing about the ledger.
+    first_run.finish_failure!(StandardError.new("worker died mid-slice"))
+    assert first_run.rearm!
 
     second_run, outcome = run_task
 
