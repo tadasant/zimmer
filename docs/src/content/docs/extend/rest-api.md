@@ -221,6 +221,13 @@ Two things about the query string, both of which used to bite callers who guesse
   compare against `"true"` only, so a URL copied out of the browser silently ran a title-only search
   and answered 200.
 
+**The query is one substring, so several words are a phrase.** `q=YC interview` matches a
+transcript that says `YC interview`; it does not match one that says `the interview is at YC`. The
+words have to be adjacent and in that order — there is no tokenising, no OR between words, no
+stemming — and `%` and `_` are literal characters rather than wildcards. Search a distinctive
+phrase when you want to confirm a session said something, and one word when you want a wider net.
+Both the dashboard and `quick_search_sessions` match the same way.
+
 **The content search is bounded, and says so.** `transcript` is a `json` column with no index a
 substring match can use, so a single unbounded `ILIKE` over the corpus raced the proxy's 30-second
 timeout and returned a 504 as often as results. Instead the search walks candidate sessions
