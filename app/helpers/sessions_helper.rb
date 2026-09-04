@@ -27,12 +27,7 @@ module SessionsHelper
   # the banner falls back rather than raising on metadata written by an older
   # release.
   def auth_outage_pool_recovery_time(agent_session)
-    raw = agent_session.metadata&.dig("auth_outage_pool_recovers_at")
-    return nil if raw.blank?
-
-    Time.iso8601(raw.to_s)
-  rescue ArgumentError
-    nil
+    AuthOutageParkService.pool_recovery_time(agent_session)
   end
 
   # Resolve a goal value to its display name using predefined goals.
