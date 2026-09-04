@@ -770,7 +770,7 @@
                 normally owns this id is not rendered during search). %>
             <div id="sessions_grid" data-live-region="sync"
                  data-live-page="<%= @search_results.respond_to?(:current_page) ? @search_results.current_page : 1 %>"
-                 class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
+                 class="<%= session_card_grid_classes %>">
               <% preload_session_costs(@search_results) %>
               <% @search_results.each do |session| %>
                 <%= turbo_frame_tag dom_id(session) do %>
