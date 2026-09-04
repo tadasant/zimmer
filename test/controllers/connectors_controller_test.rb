@@ -282,6 +282,29 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
       assert_no_match(/MOVED_ALREADY/, copy)
       assert_match ParameterStore::Namespace.legacy_static_namespace, copy
     end
+    assert_select "[data-store-legacy-answering]", text: /STILL_AT_OLD_PATH/
+    assert_select "[data-store-legacy-copied]", count: 0
+  end
+
+  # The state the documented PRUNE=false half-step produces for every variable:
+  # both copies exist, and the canonical one is already winning the chain. Saying
+  # "still resolving from the pre-rename namespace" here would contradict the GSM
+  # tooltip on the same page and tell an operator their copy did nothing.
+  test "secret_store calls a copied-but-unpruned name copied, not still resolving" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("COPIED_NOT_PRUNED", "1")
+    fake.seed_secret("COPIED_NOT_PRUNED", "1",
+      path: ParameterStore::Namespace.legacy_parameter_path("COPIED_NOT_PRUNED"))
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-store-legacy-copied]", text: /COPIED_NOT_PRUNED/
+    assert_select "[data-store-legacy-answering]", count: 0
+    assert_select "[data-store-legacy-namespace=remaining]" do |elements|
+      assert_no_match(/still answering/, elements.first.text)
+    end
   end
 
   test "secret_store says the pre-rename read path can be dropped once it is empty" do

@@ -128,7 +128,9 @@ module ConnectorsHelper
   end
 
   # The names still sitting in the store's pre-rename namespace — the migration's
-  # remaining work, read off the snapshot the provider already holds.
+  # remaining work, read off the snapshot the provider already holds, split into
+  # the ones the old path is still answering for and the ones already copied and
+  # merely awaiting a prune.
   #
   # Swallows a store failure and returns nil rather than raising: this is a
   # progress note on a banner whose entire job is to report the store's health in
@@ -137,7 +139,8 @@ module ConnectorsHelper
   # a poor trade.
   #
   # @param store [SecretProviders::ParameterStoreProvider]
-  # @return [Array<String>, nil] nil when the store could not be consulted.
+  # @return [Hash{Symbol => Array<String>}, nil] nil when the store could not be
+  #   consulted.
   def connector_legacy_store_variables(store)
     store.legacy_variables
   rescue ParameterStore::StoreError, ParameterStore::AuthError

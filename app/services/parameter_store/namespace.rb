@@ -103,7 +103,7 @@ module ParameterStore
     #
     # This fold is LOSSY — `/a/B_c` and `/a/b-c` collapse together — which is why
     # every read compares the envelope's own `path` field against the path that
-    # was asked for (see GcpClient#resolve). Do not treat a resolving id as proof
+    # was asked for (see GcpClient#resolve_all). Do not treat a resolving id as proof
     # you found the right parameter.
     #
     # @param path [String]

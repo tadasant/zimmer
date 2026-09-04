@@ -351,6 +351,44 @@ module ParameterStore
       assert resolves_at?(Namespace.static_namespace("staging"), "STRAD_API_KEY")
     end
 
+    # `parameter_id` downcases and collapses runs of non-alphanumerics, so two
+    # DIFFERENT names can share one GCP id. Within one namespace that is
+    # impossible to hit — they would already be one parameter. Across the two
+    # namespaces this migration spans it is not, and the consequence is
+    # irreversible: writing one appends its bytes to the other's secret, the
+    # verify then fails, and the rollback deletes a pair belonging to a variable
+    # the run was never asked to touch.
+    test "two names that fold onto one id are refused before anything is written" do
+      seed_legacy("FOO_BAR", "old")
+      seed_canonical("FOO__BAR", "unrelated-live-value")
+      before = @fake.requests.size
+
+      error = assert_raises(ArgumentError) { migration(dry_run: false).call }
+
+      assert_match "FOO_BAR and FOO__BAR both fold to", error.message
+      assert_match "Rename one of them", error.message
+      assert_empty @fake.requests[before..].reject { |method, _| method == "GET" },
+        "the refusal must come before any write or delete"
+      assert_equal "unrelated-live-value", chain.get("FOO__BAR")
+    end
+
+    test "the collision refusal fires on a dry run too, rather than printing an unsafe plan" do
+      seed_legacy("FOO_BAR", "old")
+      seed_canonical("FOO__BAR", "unrelated-live-value")
+
+      assert_raises(ArgumentError) { migration.call }
+    end
+
+    test "names that do not collide are unaffected by the guard" do
+      seed_legacy("FOO_BAR", "one")
+      seed_legacy("FOO_BAZ", "two")
+
+      report = migration(dry_run: false).call
+
+      assert report.complete?
+      assert_equal %w[FOO_BAR FOO_BAZ], report.items.map(&:variable)
+    end
+
     test "an empty store is a finished migration, reported as such" do
       report = migration.call
 

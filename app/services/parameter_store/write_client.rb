@@ -145,7 +145,7 @@ module ParameterStore
 
     # `Namespace.parameter_id` is a LOSSY fold — two different paths can collapse
     # onto one id — so a resolving id is not proof the resource is ours. Every
-    # read applies the envelope-path fence for that reason (GcpClient#resolve);
+    # read applies the envelope-path fence for that reason (GcpClient#resolve_all);
     # a delete cannot, because the writer holds no `:render`. The label is the
     # fence it can apply, and it is the same one GcpClient#managed_parameter_ids
     # uses to decide what counts as Zimmer's.

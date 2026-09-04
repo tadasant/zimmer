@@ -67,11 +67,18 @@ module ParameterStore
       @transport = transport
     end
 
-    # Every VARIABLE_NAME => value under `namespace`.
+    # Every VARIABLE_NAME => value under one `namespace`.
     #
     # A parameter whose envelope path does not actually start with `namespace` is
     # skipped: `Namespace.parameter_id` is a lossy fold, so a resolving id is not
     # proof the parameter is the one asked for.
+    #
+    # The resolution chain reads through {#resolve_all} — it consults the
+    # canonical namespace and the pre-rename one together — so nothing in `app/`
+    # calls this today. It stays because "the values under one namespace" is the
+    # unit the tests assert in and the natural single-namespace read, and because
+    # a one-line delegate carries no second implementation to drift from the one
+    # below.
     #
     # @param namespace [String] e.g. "/zimmer/production/secrets/static/"
     # @return [Hash{String => String}]

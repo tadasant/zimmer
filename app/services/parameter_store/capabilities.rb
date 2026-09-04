@@ -107,7 +107,7 @@ module ParameterStore
 
     def probed? = @probed
 
-    # Render is the read path — the only one. `GcpClient#resolve` lists a
+    # Render is the read path — the only one. `GcpClient#resolve_all` lists a
     # namespace and calls `:render` on each parameter, and never touches Secret
     # Manager directly, so `secretmanager.versions.access` alone resolves exactly
     # nothing. (Render is also sufficient on its own: it dereferences a `__REF__`

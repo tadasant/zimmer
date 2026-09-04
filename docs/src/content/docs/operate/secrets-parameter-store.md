@@ -334,7 +334,7 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 
 | Role | Why |
 | --- | --- |
-| `roles/parametermanager.parameterViewer` | `parameters.list` + `parameterVersions.list` — the two calls `GcpClient#resolve` makes before it renders anything. |
+| `roles/parametermanager.parameterViewer` | `parameters.list` + `parameterVersions.list` — the two calls `GcpClient#resolve_all` makes before it renders anything. |
 | `roles/parametermanager.parameterAccessor` | `parameterVersions.render`. **`parameterViewer` does not grant this** — with viewer alone the lists succeed and every render 403s, which looks like a working credential right up until nothing resolves. |
 | `roles/secretmanager.secretAccessor` | `secretmanager.versions.access`. Not the read path — `:render` dereferences as the *parameter's* principal, so the resolver never calls Secret Manager itself. This is what the [seeding flow](#adding-a-secret) and the audit below assert against. No create, no update, no destroy, no policy read. |
 
