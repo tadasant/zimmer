@@ -51,11 +51,10 @@ class AppSetting < ApplicationRecord
   # only spot ones are held by it.
   DEFAULT_SPOT_MAX_CONCURRENT_SESSIONS = 10
 
-  # How few sessions the fleet has to be holding before `no_sessions_in_progress`
-  # counts it as idle enough to take more work. The count is running sessions
-  # plus spot ones queued behind the gate, and the test is strictly BELOW this
-  # number — so 1 means "nothing running and nothing queued", which is the
-  # boolean the threshold replaced.
+  # How few sessions the fleet has to be running before `no_sessions_in_progress`
+  # counts it as idle enough to take more work. The count is sessions actually
+  # `running` and nothing else, and the test is strictly BELOW this number — so 1
+  # means "nothing running", which is the boolean the threshold replaced.
   #
   # 3 is the shipped default: a deployment with ten slots and two sessions in
   # them has capacity nobody is using, and requiring the last one to finish before
@@ -175,9 +174,9 @@ class AppSetting < ApplicationRecord
   # what turning the gate off (or setting a target of 0) is for.
   validates :spot_max_concurrent_sessions,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
-  # At least one, for the same reason: the test is `sessions_in_hand < ceiling`,
+  # At least one, for the same reason: the test is `running_sessions < ceiling`,
   # so a ceiling of 0 can never be satisfied and the event would never fire again.
-  # 1 means "nothing running and nothing queued".
+  # 1 means "nothing running".
   validates :fleet_idle_max_sessions,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
   # A minute is the cron cadence FleetIdleCheckerJob samples at, so it is the

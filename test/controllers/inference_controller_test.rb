@@ -401,7 +401,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='app_setting[fleet_idle_min_fire_interval_minutes]'][value=?]", "30"
     assert_select "#fleet-top-up-status"
     assert_select "#fleet-top-up-sentence"
-    assert_select "#fleet-top-up-in-hand"
+    assert_select "#fleet-top-up-running"
     assert_select "#fleet-top-up-idle-since"
     assert_select "#fleet-top-up-last-fired"
     assert_select "#fleet-top-up-next-fire"

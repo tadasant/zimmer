@@ -234,9 +234,14 @@ holds the next start; it never interrupts work already underway.
 read together: raising the concurrency limit without raising the top-up ceiling buys slots nothing
 fills them, which is exactly what left a ten-slot fleet running at two.
 
-Its count is running sessions **plus spot ones queued behind the gate**, against one ceiling, so a
-backed-up spot queue suppresses top-up the same way running work does. Both live under
-[`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress), which owns the full rules.
+Its count is **sessions actually running**, and nothing else: a backed-up spot queue does **not**
+suppress top-up, and sessions in `waiting` do not count against it, of any class. Both ceilings are
+therefore about running work — "hold spot work above 10 running, top up below 3 running" — but they
+are **not the same count**, so do not expect the two numbers on the page to match. The concurrency
+limit reads `Session.running_claude_code_count`: Claude Code sessions only, frozen categories
+included. The top-up ceiling reads `FleetIdleMonitor.running_sessions`: every runtime, frozen
+categories excluded. A fleet running Codex work shows up in the second and not the first. The full
+rules live under [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress).
 
 ### Read across the whole pool, not one account
 

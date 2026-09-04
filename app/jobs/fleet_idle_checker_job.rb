@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 # Cron entry for FleetIdleMonitor: sample the fleet, and fire
-# `no_sessions_in_progress` when it has held fewer sessions than its ceiling for
-# longer than the threshold.
+# `no_sessions_in_progress` when it has been running fewer sessions than its
+# ceiling for longer than the threshold.
 #
 # == Cadence
 #
@@ -11,8 +11,9 @@
 # coarser cadence would both start the clock late and delay the fire by up to a
 # tick. A minute is also the floor the threshold is validated against, since a
 # stretch shorter than the sampling interval could not be observed. A busy pass
-# is one indexed `COUNT` over `sessions` and nothing else; a quiet one adds two
-# more plus the settings row, and writes only on a transition.
+# is one indexed `COUNT` over `sessions` and nothing else; a quiet one adds the
+# auth-outage park check and the pool reading, plus the settings row, and writes
+# only on a transition.
 #
 # Production and staging only. Firing spawns a real session, and a development
 # machine that happens to be quiet is not a deployment with idle capacity.

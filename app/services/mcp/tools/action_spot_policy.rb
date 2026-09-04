@@ -21,7 +21,7 @@ module Mcp
       # The three numbers FleetIdleMonitor fires on, as tool argument → column.
       # One list, so the schema, the dispatch and the echo cannot drift apart.
       TOP_UP_FIELDS = {
-        "max_sessions_in_hand" => :fleet_idle_max_sessions,
+        "max_running_sessions" => :fleet_idle_max_sessions,
         "idle_minutes" => :fleet_idle_threshold_minutes,
         "min_fire_interval_minutes" => :fleet_idle_min_fire_interval_minutes
       }.freeze
@@ -44,12 +44,13 @@ module Mcp
           toward it, priority included, but only spot sessions are held by it. With gating off, spot
           sessions start like any other.
         - **set_top_up**: Tune when the `no_sessions_in_progress` trigger event fires — the event that
-          hands a fleet with spare capacity more work. Any of `max_sessions_in_hand`, `idle_minutes` and
+          hands a fleet with spare capacity more work. Any of `max_running_sessions`, `idle_minutes` and
           `min_fire_interval_minutes` may be given; omitted ones are left alone.
 
-          The fleet counts as idle enough while it holds FEWER THAN `max_sessions_in_hand` sessions,
-          counting running ones and spot ones queued behind the gate together — so it does not have to
-          empty out completely before topping up. 1 means literally nothing running and nothing queued.
+          The fleet counts as idle enough while FEWER THAN `max_running_sessions` sessions are actually
+          `running` — so it does not have to empty out completely before topping up. Sessions in
+          `waiting` do not count, of any class: most of them are asleep on their own wake rather than
+          queueing for a slot. 1 means literally nothing running.
           `idle_minutes` is how long it must stay under that ceiling first; `min_fire_interval_minutes`
           is the floor between two fires, and with a ceiling above 1 that floor, not the ceiling, is
           what caps how often work gets started. `get_spot_policy` reports all three plus where the
@@ -114,13 +115,14 @@ module Mcp
             description: "set_gating: most sessions allowed to run at once, 1-100 (10 by default). Counts " \
                          "every running session, priority included; holds only spot ones."
           },
-          max_sessions_in_hand: {
+          max_running_sessions: {
             type: "integer",
             minimum: 1,
             maximum: 100,
-            description: "set_top_up: the fleet counts as idle enough while it holds FEWER than this many " \
-                         "sessions, 1-100 (3 by default). Running sessions and spot-queued ones count " \
-                         "together. 1 means nothing running and nothing queued."
+            description: "set_top_up: the fleet counts as idle enough while FEWER than this many sessions " \
+                         "are actually running, 1-100 (3 by default). Sessions in `waiting` do not count, " \
+                         "of any class. 1 means nothing running. Distinct from `max_concurrent_sessions`, " \
+                         "which is the ceiling that HOLDS spot work rather than the floor top-up fires under."
           },
           idle_minutes: {
             type: "integer",
