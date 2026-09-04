@@ -3585,6 +3585,34 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
                   "the sweep this sentence promises skips a session that also carries a park"
   end
 
+  # A demoted hold loses on the carve-out, NOT on age — it can be the newer of the
+  # two records — so the banner must not tell a human the park "was recorded later"
+  # when it was recorded two hours earlier.
+  test "the spot hold banner does not claim a demoted hold is the older record" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => 5.hours.ago.iso8601,
+      SpotSessionHold::HELD_AT => 3.hours.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
+      SpotSessionHold::HELD_RETRY_AT => 2.hours.ago.iso8601,
+      SpotSessionHold::HELD_COUNT => 4,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-superseded]", text: /nothing is coming to re-arm this hold/
+    assert_select "[data-spot-hold-superseded]", { text: /was recorded later/, count: 0 }
+  end
+
   # ...and it defers only while the park is the newer record. A hold taken since
   # is a live hold, and the spot gate really is what this session is waiting on.
   test "the spot hold banner keeps its re-check when the hold is newer than the park" do

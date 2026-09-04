@@ -32,12 +32,14 @@
     reason. See SessionWaitingReason and tadasant/zimmer#642. %>
 <% waiting_reason = SessionWaitingReason.for(agent_session) %>
 <% spot_reason = waiting_reason&.spot %>
-<% if (hold_detail.present? || pause_detail.present?) && agent_session.waiting? %>
-  <%# Falls back to the old test when the ranking has no spot mechanism to offer,
-      so a row written by an older release — a pause detail with no pause reason —
-      still explains itself rather than going blank. %>
-  <% paused_mid_run = hold_detail.blank? || spot_reason&.key == SessionWaitingReason::SPOT_PAUSE %>
-  <% superseded_by_park = spot_reason.present? && !waiting_reason.current?(spot_reason) %>
+<%# Gated on the ranking, not on the metadata keys: a box drawn without a ranked
+    mechanism would be a box that bypassed the precedence, which is the bug. Both
+    writers of `spot_pause_detail` write `spot_pause_reason` in the same hash
+    (SpotSessionPause#pause!, Sessions::PauseIntoSpotQueue), so there is no row
+    with one and not the other for this to lock out. %>
+<% if spot_reason && (hold_detail.present? || pause_detail.present?) %>
+  <% paused_mid_run = spot_reason.key == SessionWaitingReason::SPOT_PAUSE || hold_detail.blank? %>
+  <% superseded_by_park = !waiting_reason.current?(spot_reason) %>
   <%# A third case shares the pause record: a session parked in the queue
       deliberately. Nothing interrupted it and no turn was lost, so it gets its
       own sentence rather than being described as a casualty of the ceiling. %>
@@ -74,11 +76,13 @@
             owner and would otherwise send the reader to the wrong one. %>
         <% if superseded_by_park %>
           <p class="mt-1 text-sm font-medium text-amber-900" data-spot-hold-superseded>
-            This is not why the session is waiting now: the auth-outage park above was recorded later, and
-            the account pool is what it is waiting on.
             <% if spot_reason.demoted? %>
-              Nothing is coming to re-arm this hold either — the spot-hold sweep skips a session that also
+              This is not why the session is waiting now: the account pool is what it is waiting on, and
+              nothing is coming to re-arm this hold — the spot-hold sweep skips a session that also
               carries an auth-outage park.
+            <% else %>
+              This is not why the session is waiting now: the auth-outage park above was recorded later,
+              and the account pool is what it is waiting on.
             <% end %>
           </p>
         <% end %>

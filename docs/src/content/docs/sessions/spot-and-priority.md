@@ -1075,8 +1075,10 @@ sweep that is not coming.
 | An **overdue hold cannot be the current reason while another mechanism is present** | `SpotSessionHold.held_sessions` excludes a session that also carries a pause or a park, and `#rearm!` refuses one — so the sweep that repairs a stalled ladder will never touch it, and `recheck_sentence`'s promise would be false. An overdue hold that is the *only* mechanism keeps the headline, because there the sweep really is its owner |
 
 Losing mechanisms are named rather than dropped. `get_session` prints one **Also on the record, and
-not why it is waiting now** line each, with the reason it lost; the session page's spot banner says
-the same in prose and drops its re-check sentence when an auth-outage park has superseded it. Before
+not why it is waiting now** line each, with the reason it lost. The session page draws one box per
+mechanism rather than a list, so its spot banner renders whichever of the hold and the pause ranks
+higher — and when an auth-outage park has superseded that, it says so in prose and drops the
+re-check sentence, whose promise of a sweep does not hold for a session carrying a park. Before
 this, `get_session` concatenated the hold and pause lines with no precedence between them and never
 rendered the outage park at all, so a session parked on an empty pool read back a two-day-old spot
 hold and a promise of a sweep that skipped it ([#642](https://github.com/tadasant/zimmer/issues/642)).

@@ -5,7 +5,7 @@
     nor that the session will come back on its own. %>
 <% outage_reason = agent_session.metadata&.dig("auth_outage_reason") %>
 <% if outage_reason.present? %>
-  <% recovers_at = auth_outage_pool_recovery_time(agent_session) %>
+  <% recovers_at = AuthOutageParkService.pool_recovery_time(agent_session) %>
   <div class="flex flex-col gap-1 p-3 mt-2 bg-amber-50 border border-amber-200 rounded-lg">
     <div class="flex items-center gap-2">
       <svg class="h-5 w-5 text-amber-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">

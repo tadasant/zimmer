@@ -158,7 +158,8 @@ module Mcp
         case mechanism.key
         when SessionWaitingReason::SPOT_HOLD then spot_hold_lines(session)
         when SessionWaitingReason::SPOT_PAUSE then spot_pause_lines(session)
-        else auth_outage_lines(session)
+        when SessionWaitingReason::AUTH_OUTAGE_PARK then auth_outage_lines(session)
+        else raise ArgumentError, "no lines for waiting mechanism #{mechanism.key}"
         end
       end
 
