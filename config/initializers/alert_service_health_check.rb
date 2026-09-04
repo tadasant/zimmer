@@ -31,13 +31,16 @@ Rails.application.config.after_initialize do
   end
 
   # Separate from the channel check below: an instance can be perfectly able to
-  # page #eng-alerts and still have no operator to DM, and the DM path is the
-  # only signal for a needs_reauth account. Silence there looks identical to
-  # "no account has died yet", so say it at boot.
+  # page #eng-alerts and still have no operator to DM. Nothing calls
+  # AlertService.dm_operator today — the needs_reauth notification is an
+  # ao_event Trigger that spawns an agent holding the Slack MCP server, which
+  # finds its own recipient — so an unset operator id costs nothing that is
+  # currently being sent. The helper is kept for the next condition that needs
+  # it, so note the seam at boot rather than flag it as a fault.
   if AlertService.operator_user_id.blank?
-    Rails.logger.warn(
-      "[AlertServiceHealthCheck] #{AlertService::OPERATOR_USER_ID_KEY} is not set — operator DMs " \
-      "(e.g. an account falling into needs_reauth) will be logged and dropped."
+    Rails.logger.info(
+      "[AlertServiceHealthCheck] #{AlertService::OPERATOR_USER_ID_KEY} is not set — any future " \
+      "operator DM would be logged and dropped; everything else keeps working."
     )
   end
 
