@@ -2780,6 +2780,19 @@ way: a command that prints a permalink alone on a line without naming a comments
 `cat thread-urls.txt` beside a post, or `gh api repos/o/r/issues/7/timeline --jq '.[].html_url'` —
 is still read as the post's own output.
 
+The #870 fix above — reading what a segment runs, not what it quotes — was forward-only, so the rows an earlier reading had already written were swept once, by the
+`SweepMisrecordedAgentPostedGithubComments` post-deploy task
+([#907](https://github.com/tadasant/zimmer/issues/907)). It re-derives each row from its recording
+session's stored transcript and deletes the ones the fixed classifier would not have written — and
+it is deliberately conservative about what it will not touch, because deleting a *correct* row
+re-opens the self-reply loop while leaving a wrong one costs only what was already being paid. A row
+whose recording session is gone, whose transcript was never stored or no longer parses, or whose
+permalink no longer appears in the output of any command that names a posting invocation, is
+**kept**. Those rows are counted on the
+task's `stats` rather than passed over in silence, but they were not repaired, and nothing else will
+repair them. The sweep also predates any fix for #901, so the rows that bug is still writing are
+outside it by construction.
+
 The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
 human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.
 
