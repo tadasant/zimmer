@@ -84,9 +84,9 @@ A markdown procedure (`SKILL.md`) that the agent can invoke — "how to run the 
 "how to deploy staging." Resolved from the catalog and copied into `.claude/skills/<id>/` in
 the clone before the agent starts.
 
-Zimmer's catalog ships five, all default-on for the `zimmer` root: `sync-docs`,
-`zimmer-start-dev-server`, `zimmer-run-tests`, `zimmer-deploy-staging`,
-`zimmer-change-ai-artifact`.
+Zimmer's catalog ships ten: seven Zimmer-specific ones plus three vendored generic workflow
+skills (`open-pr`, `wait-for-ci`, `recover-from-compaction-thrashing`). Nine are default-on for
+the `zimmer` root; `awaken-waiting-sessions` defaults on `fleet-maintenance` instead.
 
 → [Skills, plugins, hooks, references](/air/artifacts/)
 
@@ -95,7 +95,7 @@ Zimmer's catalog ships five, all default-on for the `zimmer` root: `sync-docs`,
 A tool provider the agent can call, over stdio or HTTP. This is the session's blast
 radius: the set of things the agent can do outside its own clone. Selected per session.
 
-Fourteen ship in Zimmer's catalog; only `playwright-custom` is default-on for the `zimmer`
+Eighteen ship in Zimmer's catalog; only `playwright-custom` is default-on for the `zimmer`
 root.
 
 → [MCP servers](/air/mcp-servers/)
