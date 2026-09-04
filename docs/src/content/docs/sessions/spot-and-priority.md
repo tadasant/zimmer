@@ -497,6 +497,25 @@ broke it. A deferred resume now writes `spot_hold_prompt` alongside the rest of 
 the sweep replays the real turn. A hold recorded before that — every session stranded today — has no
 prompt to replay and comes back on a recovery nudge instead, which is said out loud in its log.
 
+**A re-armed *first* turn carries its attachments.** The lost job carried this turn's images and
+files as arguments, and `AgentSessionJob` reads them from nowhere else, so a bare re-arm brought the
+turn back with its prompt and without the screenshot the prompt referred to. A re-armed **start**
+now reads them off the durable volume through the same `Sessions::FirstTurnAttachments` the other
+first-turn doors use, and the log line names what the turn is carrying rather than only asserting
+that it was carried ([#789](https://github.com/tadasant/zimmer/issues/789)).
+
+The volume is the right place to look only when the session has never run, which is why that read is
+gated on a blank `session_id` — the same predicate `Sessions::StartNow` uses. The gate holds a
+session *before* `AgentSessionJob` stamps one, so a genuine first start reads blank, as does a
+restart from scratch. A `start` hold on a session that has already run is a different thing: an
+OAuth resume enqueues a promptless new-session job, which this gate can hold, and everything on that
+session's volume belongs to turns it has already had.
+
+A re-armed **resume** still loses its attachments, and its log line now says only that the *prompt*
+was carried. The hold record stores the prompt and nothing else, so there is nothing durable to
+replay them from, and re-reading the volume would attach turns' worth of the wrong ones. Tracked in
+[#890](https://github.com/tadasant/zimmer/issues/890).
+
 **An interrupt no longer mistakes a hold for a stranded session.** A held session is dormant on
 purpose, exactly like a ceiling pause or an auth-outage park, and `AgentSessionJob`'s interrupt
 recovery now recognises it as such. It used to read only the *pause* record (`spot_pause_reason`),
