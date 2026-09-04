@@ -2764,14 +2764,15 @@ so a call that posts and then lists in one line (`gh pr comment 7 --body x && gh
 repos/o/r/issues/7/comments`) has the listing's permalinks recorded as the post's —
 [#901](https://github.com/tadasant/zimmer/issues/901).
 
-That fix was forward-only, so the rows an earlier reading already wrote were swept once, by the
+The #870 fix above — reading what a segment runs, not what it quotes — was forward-only, so the rows an earlier reading had already written were swept once, by the
 `SweepMisrecordedAgentPostedGithubComments` post-deploy task
 ([#907](https://github.com/tadasant/zimmer/issues/907)). It re-derives each row from its recording
 session's stored transcript and deletes the ones the fixed classifier would not have written — and
 it is deliberately conservative about what it will not touch, because deleting a *correct* row
 re-opens the self-reply loop while leaving a wrong one costs only what was already being paid. A row
 whose recording session is gone, whose transcript was never stored or no longer parses, or whose
-permalink is no longer anywhere in that transcript, is **kept**. Those rows are counted on the
+permalink no longer appears in the output of any command that names a posting invocation, is
+**kept**. Those rows are counted on the
 task's `stats` rather than passed over in silence, but they were not repaired, and nothing else will
 repair them. The sweep also predates any fix for #901, so the rows that bug is still writing are
 outside it by construction.

@@ -69,6 +69,20 @@ class SweepMisrecordedAgentPostedGithubCommentsTest < ActiveSupport::TestCase
     claude_transcript(command: %q(grep -rn "gh pr comment" app/ docs/), output: output)
   end
 
+  # The Codex rollout shape: a `function_call` carrying joined argv, its exit code
+  # on a separate event_msg line, and a `function_call_output`.
+  def codex_session(command:, output:)
+    argv = { "command" => [ "bash", "-lc", command ] }.to_json
+    transcript = <<~JSONL
+      {"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call_1","arguments":#{argv.to_json}}}
+      {"type":"event_msg","payload":{"type":"exec_command_end","call_id":"call_1","exit_code":0}}
+      {"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":#{output.to_json}}}
+    JSONL
+    session = a_session(transcript: transcript)
+    session.update!(agent_runtime: "codex")
+    session
+  end
+
   def a_row(session:, comment_id: POSTED_ID, comment_type: "pr", comment_url: POSTED_URL, pr_url: PARENT_URL)
     AgentPostedGithubComment.create!(
       session: session,
@@ -237,6 +251,107 @@ class SweepMisrecordedAgentPostedGithubCommentsTest < ActiveSupport::TestCase
     assert_equal 1, run.stats["kept_by_reason"][SweepMisrecordedAgentPostedGithubComments::KEPT_NO_EVIDENCE]
   end
 
+  test "keeps a row whose permalink appears only in a result no classifier could have read" do
+    # A `Read` of this repo's own limitations.md returns a quoted example permalink.
+    # Nothing ever recorded a row from that, so it is not evidence for deleting one —
+    # and a deletion with no command behind it is one nobody could audit.
+    transcript = <<~JSONL
+      {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"docs/src/content/docs/limitations.md"}}]}}
+      {"type":"user","message":{"content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"`gh pr comment` prints #{POSTED_URL}","is_error":false}]}}
+    JSONL
+    row = a_row(session: a_session(transcript: transcript))
+
+    run, = run_task
+
+    assert AgentPostedGithubComment.exists?(row.id)
+    assert_equal 1, run.stats["kept_by_reason"][SweepMisrecordedAgentPostedGithubComments::KEPT_NO_EVIDENCE]
+  end
+
+  test "deletes a row written by the pre-#899 reading of a gh api comments READ" do
+    # The other population #899 changed: `gh api -X GET .../comments` is `gh`'s own
+    # idiom for a GET with query parameters, and an earlier classifier read the field
+    # flag as a write — recording every comment in the thread, the human's included.
+    listing = [
+      { "id" => POSTED_ID, "html_url" => POSTED_URL, "user" => { "login" => "tadasant" } }
+    ].to_json
+    row = a_row(session: a_session(transcript: claude_transcript(
+      command: "gh api -X GET repos/tadasant/tadasant-internal/issues/281/comments -f per_page=100",
+      output: listing
+    )))
+
+    run, = run_task
+
+    assert_not AgentPostedGithubComment.exists?(row.id),
+      "a GET of the comment thread is a read, and everything it listed is somebody else's"
+    assert_equal 1, run.stats["rows_deleted"]
+    assert_includes run.stats["deleted_details"].sole["misread_commands"].first, "gh api -X GET"
+  end
+
+  # --- runtimes and storage formats -----------------------------------------
+  #
+  # A regression in either would turn every row of that shape into a silent
+  # KEPT_NO_EVIDENCE — which looks exactly like the sweep correctly finding
+  # nothing, the failure this whole file exists to make impossible.
+
+  test "reads a Codex rollout, keeping the genuine post and deleting the false positive" do
+    genuine = codex_session(command: "gh pr comment 281 --body done", output: POSTED_URL)
+    poisoned_url = "https://github.com/owner/repo/pull/7#issuecomment-8080"
+    poisoned = codex_session(command: %q(grep -rn "gh pr comment" docs/), output: "docs/x.md:1:#{poisoned_url}")
+
+    genuine_row = a_row(session: genuine)
+    poisoned_row = a_row(session: poisoned, comment_id: 8080, comment_url: poisoned_url, pr_url: "https://github.com/owner/repo/pull/7")
+
+    run_task
+
+    assert AgentPostedGithubComment.exists?(genuine_row.id), "a Codex post must survive"
+    assert_not AgentPostedGithubComment.exists?(poisoned_row.id), "a Codex grep must be swept"
+  end
+
+  test "reads the legacy array transcript format" do
+    entries = JSON.parse("[" + quoted_mention_transcript.lines.map(&:strip).join(",") + "]")
+    row = a_row(session: a_session(transcript: entries))
+
+    run_task
+
+    assert_not AgentPostedGithubComment.exists?(row.id),
+      "an array-format transcript is normalized to the JSONL the hook was handed"
+  end
+
+  test "keeps a row whose transcript is neither a string nor an array" do
+    # The column is `json` and nothing constrains its shape. An odd row must not
+    # take the whole task down with it.
+    row = a_row(session: a_session(transcript: { "unexpected" => "shape" }))
+
+    run, = run_task
+
+    assert AgentPostedGithubComment.exists?(row.id)
+    assert_equal 1, run.stats["kept_by_reason"][SweepMisrecordedAgentPostedGithubComments::KEPT_NO_TRANSCRIPT]
+  end
+
+  # --- what `stats` is allowed to grow to -----------------------------------
+
+  test "bounds the detail it puts on the ledger row" do
+    max = SweepMisrecordedAgentPostedGithubComments::MAX_DETAILED
+    long_command = %(grep -rn "gh pr comment" #{'x' * 400})
+
+    (max + 3).times do |i|
+      url = "https://github.com/owner/repo/pull/1#issuecomment-#{900_000 + i}"
+      a_row(
+        session: a_session(transcript: claude_transcript(command: long_command, output: url)),
+        comment_id: 900_000 + i,
+        comment_url: url,
+        pr_url: "https://github.com/owner/repo/pull/1"
+      )
+    end
+
+    run, = run_task
+
+    assert_equal max + 3, run.stats["rows_deleted"], "every row is still deleted and counted"
+    assert_equal max, run.stats["deleted_details"].size, "the digest is capped"
+    assert_operator run.stats["deleted_details"].first["misread_commands"].first.length,
+      :<=, SweepMisrecordedAgentPostedGithubComments::MAX_COMMAND_CHARS
+  end
+
   # --- the mechanism ---------------------------------------------------------
 
   test "is idempotent: a second pass deletes nothing" do
@@ -279,31 +394,49 @@ class SweepMisrecordedAgentPostedGithubCommentsTest < ActiveSupport::TestCase
     assert_equal 0, run.stats["rows_unreachable"]
   end
 
-  test "accumulates its counters across slices rather than restarting them" do
-    3.times do |i|
+  test "accumulates every counter across slices rather than restarting them" do
+    kept_url = "https://github.com/owner/repo/pull/1#issuecomment-700001"
+    kept = a_row(
+      session: a_session(transcript: genuine_post_transcript(url: kept_url)),
+      comment_id: 700_001, comment_url: kept_url, pr_url: "https://github.com/owner/repo/pull/1"
+    )
+    doomed = (2..3).map do |i|
+      url = "https://github.com/owner/repo/pull/1#issuecomment-70000#{i}"
       a_row(
-        session: a_session(transcript: genuine_post_transcript),
-        comment_id: 700_000 + i,
-        comment_url: "https://github.com/owner/repo/pull/1#issuecomment-#{700_000 + i}"
+        session: a_session(transcript: quoted_mention_transcript_for(url)),
+        comment_id: 700_000 + i, comment_url: url, pr_url: "https://github.com/owner/repo/pull/1"
       )
     end
 
     run = PostDeployTaskRun.ledger_for(@entry)
     assert run.claim!(owner: "test")
 
-    # A budget already spent: the sweep yields one batch, then stops on the clock.
+    # A budget already spent: the sweep yields exactly one batch, then stops on the clock.
     stub_const_batch_size(1) do
-      outcome = @task_class.new(run: run, deadline: 1.second.ago, logger: Rails.logger).up
-      assert_equal PostDeployTask::CONTINUE, outcome, "a spent budget must ask to be resumed"
-      assert_equal 1, run.reload.stats["rows_examined"]
+      slice = -> { @task_class.new(run: run, deadline: 1.second.ago, logger: Rails.logger).up }
 
-      # The next slice resumes from the cursor and must add to the count, not reset it.
-      outcome = @task_class.new(run: run, deadline: 1.second.ago, logger: Rails.logger).up
-      assert_equal PostDeployTask::CONTINUE, outcome
+      assert_equal PostDeployTask::CONTINUE, slice.call, "a spent budget must ask to be resumed"
+      assert_equal 1, run.reload.stats["rows_examined"]
+      assert_equal 0, run.stats["rows_deleted"]
+      assert_equal 1, run.stats["kept_by_reason"][SweepMisrecordedAgentPostedGithubComments::KEPT_STILL_A_POST]
+
+      # Each later slice resumes from the cursor and must ADD to every counter.
+      assert_equal PostDeployTask::CONTINUE, slice.call
       assert_equal 2, run.reload.stats["rows_examined"]
+      assert_equal 1, run.stats["rows_deleted"]
+      assert_equal 1, run.stats["deleted_details"].size
+
+      assert_equal PostDeployTask::CONTINUE, slice.call
+      assert_equal 3, run.reload.stats["rows_examined"]
+      assert_equal 2, run.stats["rows_deleted"]
+      assert_equal 2, run.stats["deleted_details"].size,
+        "the digest must survive the round trip through stats, not be rebuilt from this slice"
+      assert_equal 1, run.stats["kept_by_reason"][SweepMisrecordedAgentPostedGithubComments::KEPT_STILL_A_POST],
+        "a kept row must not be counted again on a later slice"
     end
 
-    assert_equal 3, AgentPostedGithubComment.count, "every row here is a genuine post"
+    assert AgentPostedGithubComment.exists?(kept.id)
+    doomed.each { |row| assert_not AgentPostedGithubComment.exists?(row.id) }
   end
 
   private
