@@ -48,7 +48,7 @@ class XOauthCredentialTest < ActiveSupport::TestCase
   # a long-lived confidential-client secret in the clear. The field is
   # operator-editable through the supervisor panel, so the model is the guard.
 
-  test "token_endpoint rejects every non-https scheme, including loopback" do
+  test "token_endpoint rejects anything that is not a plain https URL with a host" do
     [
       "http://api.x.com/2/oauth2/token",
       "http://127.0.0.1:8080/2/oauth2/token",
@@ -56,14 +56,16 @@ class XOauthCredentialTest < ActiveSupport::TestCase
       "ftp://api.x.com/2/oauth2/token",
       "api.x.com/2/oauth2/token",
       "https:/api.x.com/2/oauth2/token", # single slash — parses, but has no host
-      "https://"
+      "https://",
+      "https://user:pass@api.x.com/2/oauth2/token", # basic_auth would silently ignore these
+      "https://api.x.com/2/oauth2/token " # trailing space — starts right, still unusable
     ].each do |endpoint|
       cred = XOauthCredential.new(
         account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN",
         token_endpoint: endpoint
       )
       assert_not cred.valid?, "#{endpoint.inspect} should have been rejected"
-      assert_match(/https/, cred.errors[:token_endpoint].join, "no scheme error for #{endpoint.inspect}")
+      assert_predicate cred.errors[:token_endpoint], :any?, "no token_endpoint error for #{endpoint.inspect}"
     end
   end
 
