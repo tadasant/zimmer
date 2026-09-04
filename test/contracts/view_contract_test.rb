@@ -547,6 +547,55 @@ class ViewContractTest < ActionView::TestCase
     assert_includes html, "Continue from where you left off."
     refute_includes html, ">User<"
     refute_includes html, "bg-indigo-100"
+
+    # Short enough to read in place: no disclosure wrapped around one line.
+    refute_includes html, "<details"
+  end
+
+  # =========================================================================
+  # Contract: an injected SKILL.md renders collapsed, and loses nothing
+  # =========================================================================
+  #
+  # The same `isMeta` flag carries entire skill bodies — hundreds of lines each,
+  # enough that two or three of them bury the conversation. They render folded:
+  # skill name, an approximate token count, a disclosure. Expanding must still
+  # show exactly what the transcript held.
+
+  test "timeline_items/item collapses an isMeta skill dump behind a disclosure" do
+    body = "Read the invariants file, then start the work.\n" * 200
+    html = render_claude_line(
+      "type" => "user",
+      "uuid" => "line-skill",
+      "message" => {
+        "role" => "user",
+        "content" => [ {
+          "type" => "text",
+          "text" => "Base directory for this skill: /home/rails/clone/.claude/skills/update-skill\n\n# Update Skill\n\n#{body}"
+        } ]
+      },
+      "isMeta" => true,
+      "userType" => "external",
+      "entrypoint" => "sdk-cli"
+    )
+
+    # Collapsed by default: a <details> with no `open`, showing the skill name
+    # and an explicitly approximate token count.
+    assert_includes html, "<details"
+    refute_match(/<details[^>]*\bopen\b/, html)
+    assert_includes html, "update-skill"
+    assert_match(/approx\. \d+(\.\d)?k? tokens/, html)
+
+    # Nothing is removed — the full body is still in the row, behind the
+    # disclosure, and still what the copy button copies.
+    assert_includes html, "Read the invariants file, then start the work."
+    assert_includes html, "not typed by a person"
+    assert_includes html, "data-message-copy-content-value"
+
+    # Still a runtime notice in every other respect.
+    assert_includes html, "Runtime Notice"
+    refute_includes html, ">User<"
+    assert_includes html, 'data-filter-category="message"'
+    assert_includes html, "fork-session"
   end
 
   # The same assertion pointed the other way: a turn a person actually typed

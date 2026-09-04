@@ -301,6 +301,43 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-stalled-spot-hold-375.png")
   end
 
+  # An injected SKILL.md reaches the transcript as an `isMeta` line, and the
+  # timeline draws it collapsed: a muted digest row carrying the skill's name, an
+  # approximate token count and a disclosure. The name is a long hyphenated token
+  # with no break opportunity, on a flex row — signature 1 and signature 4 at
+  # once — and the same row then has to survive being expanded into the whole
+  # skill body.
+  SKILL_NAME = "recover-from-compaction-thrashing".freeze
+
+  SKILL_DUMP = <<~TEXT.freeze
+    Base directory for this skill: /home/rails/.zimmer/clones/zimmer/.claude/skills/#{SKILL_NAME}
+
+    # Recover From Compaction Thrashing
+
+    #{(1..40).map { |i| "#{i}. Delegate the verbose call to a subagent so the raw output never reaches your own thread." }.join("\n")}
+  TEXT
+
+  test "a collapsed runtime notice does not overflow horizontally on a phone" do
+    session = create_session(status: :running, transcript: [
+      { "type" => "user", "uuid" => "meta-skill", "isMeta" => true,
+        "message" => { "role" => "user", "content" => [ { "type" => "text", "text" => SKILL_DUMP } ] } }
+    ])
+
+    visit session_path(session)
+    find("summary", text: "Transcript").click
+    assert_text SKILL_NAME
+
+    assert_no_horizontal_overflow("session detail with a collapsed runtime notice")
+    page.save_screenshot("tmp/screenshots/proof-collapsed-runtime-notice-375.png")
+
+    # And expanded: the body is the thing that was burying the conversation, so
+    # it is also the thing most likely to run wide once it is on screen.
+    find("summary", text: SKILL_NAME).click
+    assert_text "Recover From Compaction Thrashing"
+
+    assert_no_horizontal_overflow("session detail with an expanded runtime notice")
+  end
+
   test "a lost-elicitation banner does not overflow horizontally on a phone" do
     session = create_session(status: :needs_input, metadata: {
       "lost_elicitation" => {
