@@ -586,15 +586,33 @@ in the meantime.
 So rebuilds are cheap, but not free: the fifth one in a week is the last that gets a cert. If you
 expect several in a day — chasing a cloud-init change, say — count them.
 
-### Double-suffixed Redis URL (fixed, but the sharp edge remains)
+### Double-suffixed Redis URL (fixed, but the sharp edge remains in production)
 
-`production.rb` builds the cache store as `"#{ENV["REDIS_URL"]}/0"`, so a `REDIS_URL` that already ends
-in a database index becomes `redis://…:6379/0/0`. The old compose stack set `redis://redis:6379/0` and
-hit exactly that.
+`REDIS_URL` names the Redis **server**, not a database — each environment config picks the index it
+wants, and `production.rb` / `staging.rb` do it by building `"#{ENV["REDIS_URL"]}/0"`. So a `REDIS_URL`
+that already ends in a database index becomes `redis://…:6379/0/0`, whose whole path redis-client reads
+as the database number:
 
-`config/deploy.yml` now sets `REDIS_URL: redis://zimmer-redis:6379` — **no trailing `/0`** — so the
-app's own suffixing produces a single, correct index. The trap is still there for anyone who
-"helpfully" adds the `/0` back. ([#20](https://github.com/tadasant/zimmer/issues/20))
+```text
+ArgumentError (invalid value for Integer(): "0/0")
+```
+
+It does not raise at boot — the store is built lazily — so the stack comes up healthy and then every
+`Rails.cache` call fails.
+
+`config/deploy.yml` sets `REDIS_URL: redis://zimmer-redis:6379` — **no trailing `/0`** — so the app's
+own suffixing produces a single, correct index. The trap caught the containerized dev stack anyway:
+`.agent-containers/.env.dev` set `redis://redis:6379/0`, `development.rb` appended `/1`, and the
+dashboard rendered as "Action Controller: Exception caught" because the lazy `<turbo-frame>` behind
+`GET /clis/badge` 500ed and Turbo escalated it into a full page visit
+([#822](https://github.com/tadasant/zimmer/issues/822)).
+
+Development is now defensive — it passes `db: 1` rather than concatenating, so a `REDIS_URL` that names
+a database is overridden instead of corrupted — and `test/config/redis_cache_database_test.rb` fails CI
+if any committed `REDIS_URL` grows an index. **`production.rb` and `staging.rb` still concatenate**, so
+the sharp edge is real for anyone who "helpfully" adds the `/0` back to a deploy config; the guard test
+covers `config/deploy.yml` and `config/deploy.production.yml`, which is where that would happen.
+([#20](https://github.com/tadasant/zimmer/issues/20))
 
 ### `claude update` still runs in the background at boot — the spawn path just waits for it now
 
