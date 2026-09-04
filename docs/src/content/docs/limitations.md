@@ -611,8 +611,8 @@ Development is now defensive — it passes `db: 1` rather than concatenating, so
 a database is overridden instead of corrupted — and `test/config/redis_cache_database_test.rb` fails CI
 if any committed `REDIS_URL` grows an index. **`production.rb` and `staging.rb` still concatenate**, so
 the sharp edge is real for anyone who "helpfully" adds the `/0` back to a deploy config; the guard test
-covers `config/deploy.yml` and `config/deploy.production.yml`, which is where that would happen.
-([#20](https://github.com/tadasant/zimmer/issues/20))
+sweeps every `config/deploy*.yml` along with `.env.example`, `.agent-containers/.env.dev` and the value
+CI exports. ([#20](https://github.com/tadasant/zimmer/issues/20))
 
 ### `claude update` still runs in the background at boot — the spawn path just waits for it now
 
