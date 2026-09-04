@@ -130,8 +130,24 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # shape above names one of these, so a command naming none cannot be a post.
   POSTING_INVOCATION_PATTERN = /\bgh\s+(?:(?:pr|issue)\s+comment|pr\s+review|api)\b/
 
+  # The comments this transcript vouches for as agent-posted, under the CURRENT
+  # reading of it — the rows #call would write, worked out without writing any.
+  #
+  # Public because classification and recording are two different questions, and
+  # something other than the hook now asks the first one:
+  # `SweepMisrecordedAgentPostedGithubComments` re-derives every existing row from
+  # its recording session's stored transcript to find the ones an older, wronger
+  # classifier wrote (#907). That sweep has to ask the classifier this hook
+  # actually uses, not a copy of it — a second implementation that drifted would
+  # delete rows the hook still considers correct.
+  #
+  # @return [Array<Hash>] each { comment_type:, comment_id:, comment_url:, pr_url: }
+  def posted_comments
+    extract_posted_comments
+  end
+
   def call
-    posted = extract_posted_comments
+    posted = posted_comments
     return if posted.empty?
 
     recorded = unrecorded(posted)
