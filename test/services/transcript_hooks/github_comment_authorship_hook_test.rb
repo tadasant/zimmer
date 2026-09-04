@@ -5,6 +5,11 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
   # else. This is the exact comment from the reported loop.
   POSTED_URL = "https://github.com/tadasant/tadasant-internal/pull/281#issuecomment-5145406778".freeze
 
+  # A thread with one comment from each side, for the calls that post and read in the
+  # same breath (#901).
+  AGENT_COMMENT_URL = "https://github.com/tadasant/tadasant-internal/pull/281#issuecomment-100".freeze
+  HUMAN_COMMENT_URL = "https://github.com/tadasant/tadasant-internal/pull/281#issuecomment-50".freeze
+
   setup do
     @session = sessions(:running)
     @session.update!(agent_runtime: "claude_code")
@@ -420,5 +425,122 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
     run_hook(transcript)
 
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  # --- One call, two commands: whose output is this? -------------------------
+  #
+  # #901. Classification is per command segment, but a tool result is one blob for the
+  # whole call. A post that shares its call with a read has that read's output in the
+  # same result, and free-text scanning it records every comment the read listed.
+
+  test "does NOT record the rest of a thread the same call listed after posting" do
+    # The natural post-then-confirm move. Free-text scanning its result records the
+    # human's comment as agent-posted, which suppresses it for every session forever.
+    listing = [
+      { "id" => 50, "html_url" => HUMAN_COMMENT_URL, "user" => { "login" => "tadasant" } },
+      { "id" => 100, "html_url" => AGENT_COMMENT_URL }
+    ].to_json
+
+    run_hook(claude_transcript(
+      command: "gh pr comment 281 --body 'done' && gh api repos/tadasant/tadasant-internal/issues/281/comments",
+      output: "#{AGENT_COMMENT_URL}\n#{listing}\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100),
+      "the comment the call posted is what the call vouches for"
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50),
+      "a comment the listing printed is the human's, and recording it silences it fleet-wide"
+  end
+
+  test "does NOT record a comment the same call read back after posting" do
+    read = { "id" => 50, "html_url" => HUMAN_COMMENT_URL, "user" => { "login" => "tadasant" } }.to_json
+
+    run_hook(claude_transcript(
+      command: "gh pr comment 281 --body 'done' && gh api repos/tadasant/tadasant-internal/issues/comments/50",
+      output: "#{AGENT_COMMENT_URL}\n#{read}\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
+  end
+
+  test "does NOT record a thread the same call listed as bare permalink lines" do
+    # `--jq '.[].html_url'` prints a whole thread in exactly the shape a post prints,
+    # so nothing tells the post's line from the human's. Recording neither costs this
+    # post its suppression; recording both would cost the human their reply.
+    run_hook(claude_transcript(
+      command: "gh pr comment 281 --body 'done' && gh api repos/tadasant/tadasant-internal/issues/281/comments --jq '.[].html_url'",
+      output: "#{AGENT_COMMENT_URL}\n#{HUMAN_COMMENT_URL}\n#{AGENT_COMMENT_URL}\n"
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50),
+      "the human's comment must not be suppressed"
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100),
+      "and the post is given up with it, since the two are indistinguishable here"
+  end
+
+  test "records a post whose own command wrapped its URL in other text" do
+    # The other direction, which the narrowing must not take: this call ran nothing but
+    # the post, so everything it printed is the post's output — even though the URL does
+    # not have a line to itself. A lost recording is the self-reply loop this hook exists
+    # to break.
+    run_hook(claude_transcript(
+      command: "echo posted $(gh pr comment 281 --repo tadasant/tadasant-internal --body 'done')",
+      output: "posted #{AGENT_COMMENT_URL}"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
+
+  test "records every comment a loop posted in one call" do
+    # One posting segment, several posts, and nothing else in the call that reached
+    # GitHub — so there is no count to hold the lines it printed against.
+    run_hook(claude_transcript(
+      command: "for n in 281 282; do gh pr comment $n --body 'done'; done",
+      output: "#{AGENT_COMMENT_URL}\n#{HUMAN_COMMENT_URL}\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
+  end
+
+  test "records every comment a fan-out posted alongside a listing of PRs" do
+    # One posting segment, many posts, and a `gh` read beside it that lists PRs rather
+    # than comments — so nothing it printed is somebody else's comment, and there is no
+    # count to hold the post's own lines against. Counting posting *segments* against
+    # the lines of a fan-out would give up every recording in the call.
+    run_hook(claude_transcript(
+      command: "gh pr list --json number --jq '.[].number' | xargs -I{} gh pr comment {} --body 'done'",
+      output: "#{AGENT_COMMENT_URL}\n#{HUMAN_COMMENT_URL}\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
+  end
+
+  test "records only the bare-permalink post when a call posts twice, two ways" do
+    # The accepted cost of reading a mixed call by the shape a post prints: the `gh api`
+    # reply's own JSON is indistinguishable, in a shared result, from the JSON of a
+    # comment merely read back — which is the case above, and the one that must not be
+    # recorded. So the reply is given up. A lost recording costs a comment its
+    # suppression; recording the read one costs a human their reply.
+    reply = { "id" => 900, "html_url" => "https://github.com/tadasant/tadasant-internal/pull/281#discussion_r900" }.to_json
+
+    run_hook(claude_transcript(
+      command: "gh pr comment 281 --body 'done' && gh api repos/tadasant/tadasant-internal/pulls/281/comments -f body='[CC Says] ok' -f in_reply_to=5",
+      output: "#{AGENT_COMMENT_URL}\n#{reply}\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "review", comment_id: 900)
+  end
+
+  test "reads a permalink line that ends in a carriage return" do
+    run_hook(claude_transcript(
+      command: "cd /repo && gh pr comment 281 --body 'done'",
+      output: "#{AGENT_COMMENT_URL}\r\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
   end
 end
