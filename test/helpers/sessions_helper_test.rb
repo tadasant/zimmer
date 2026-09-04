@@ -480,4 +480,44 @@ class SessionsHelperTest < ActionView::TestCase
 
     assert_equal colors.uniq.count, colors.count, "two PR states share an icon color"
   end
+
+  # One map for every surface that paints a session status: the session partials
+  # pass `agent_session.status`, /health passes a `Session.group(:status).count`
+  # key. Both are strings, so the helper takes the string.
+  test "status_badge_classes maps each session status to its own color" do
+    classes = session_statuses.map { |status| status_badge_classes(status) }
+
+    assert_equal classes.uniq.count, classes.count, "two session statuses share a badge color"
+  end
+
+  test "status_badge_classes takes the status string, not a session" do
+    assert_equal "bg-green-100 text-green-800", status_badge_classes("running")
+    assert_equal "bg-purple-100 text-purple-800", status_badge_classes("waiting")
+    assert_equal "bg-blue-100 text-blue-800", status_badge_classes("needs_input")
+    assert_equal "bg-orange-100 text-orange-800", status_badge_classes("failed")
+    assert_equal "bg-gray-100 text-gray-800", status_badge_classes("archived")
+  end
+
+  test "status_badge_classes accepts a symbol and falls back to gray" do
+    assert_equal status_badge_classes("needs_input"), status_badge_classes(:needs_input)
+    assert_equal "bg-gray-100 text-gray-800", status_badge_classes(nil)
+    assert_equal "bg-gray-100 text-gray-800", status_badge_classes("not_a_status")
+  end
+
+  # `status_badge_classes` avoids yellow and red on purpose: time_since_controller.js
+  # repaints a running badge yellow at 3 minutes and red at 10, so either color on a
+  # non-running status would read as "this session has been running a while".
+  test "status_badge_classes keeps yellow and red for the running badge's elapsed-time repaint" do
+    (session_statuses - [ "running" ]).each do |status|
+      classes = status_badge_classes(status)
+
+      refute_match(/yellow|red/, classes, "#{status} badge clashes with running's elapsed-time colors")
+    end
+  end
+
+  private
+
+  def session_statuses
+    Session.aasm.states.map { |state| state.name.to_s }
+  end
 end
