@@ -19,25 +19,37 @@ module Mcp
       # never happened.
       STATUSES = Trigger::STATUSES
 
-      # A condition's `configuration` mixes the settings a human typed with the
-      # cursors the pollers write back into it. The Slack ones
-      # (TriggerCondition::SLACK_POLL_STATE_KEYS) grow without bound — a long-lived
-      # passive listener carries hundreds of thread cursors, rewritten every minute
-      # by SlackTriggerPollerJob — so serialising them verbatim cost ~15k tokens for
-      # a single trigger, which is what made a fleet-wide audit unaffordable (#858).
+      # The keys inside a condition's `configuration` that belong to a poller rather
+      # than to the human who configured the trigger. Referenced from the model, not
+      # re-listed: these are the same keys `preserve_slack_poll_state` and
+      # `preserve_github_poll_state` restore when an incoming configuration omits
+      # them, and that correspondence is what makes omitting them here safe.
+      #
+      # `allowed_user_ids` is subtracted because it only rides along in
+      # SLACK_POLL_STATE_KEYS for a different reason — it is user-facing but the
+      # form does not render it — so summarising it would hide a setting a human
+      # chose. Every other user-facing list (`repos`, `labels`, `exclude_labels`)
+      # is not poller state to begin with and is never touched.
+      POLLER_OWNED_KEYS = (
+        TriggerCondition::SLACK_POLL_STATE_KEYS + TriggerCondition::GITHUB_POLL_STATE_KEYS -
+        %w[allowed_user_ids]
+      ).freeze
+
+      # Those maps grow without bound — a long-lived passive listener carries
+      # hundreds of thread cursors, rewritten every minute by SlackTriggerPollerJob
+      # — so serialising them cost ~15k tokens for a single trigger, which is what
+      # made a fleet-wide audit unaffordable (#858).
       #
       # The budget is deliberately generous: an ordinary schedule, ao_event or
-      # github_label configuration is a few hundred characters and renders exactly
-      # as it always has. Only a configuration over the budget is summarised, and
-      # then only the collections inside it that are actually high-cardinality.
+      # github_label configuration is a few hundred characters of JSON and is
+      # rendered in full. Only a configuration over the budget is summarised, and
+      # then only its poller-owned collections that are actually high-cardinality.
       CONFIGURATION_RENDER_BUDGET = 2_000
       COLLECTION_SUMMARY_THRESHOLD = 10
 
-      # User-facing lists that stay verbatim however long they get — summarising
-      # them would hide the thing the caller came to read. All are bounded
-      # (MAX_GITHUB_REPOS caps `repos` at 20), so none of them is what makes a
-      # configuration expensive.
-      VERBATIM_CONFIGURATION_KEYS = %w[repos labels exclude_labels allowed_user_ids].freeze
+      # A sample entry stands in for a collection whose entries carry no timestamp.
+      # It is one line of an agent's context window, not a value to read back.
+      MAX_SAMPLE_LENGTH = 80
 
       # Slack cursors are message timestamps ("1788455710.688659"), on their own or
       # as the tail of a thread key ("C0A6BF8T45R:1788455710.688659"). The newest is
@@ -52,8 +64,9 @@ module Mcp
         **Modes:**
         - **Get by ID**: Provide an id to get trigger details with recent sessions. A condition's
           `configuration` is rendered in full unless it is large, in which case its high-cardinality
-          poller state (Slack thread cursors and the like) is summarised as a count plus its most
-          recent entry; `GET /api/v1/triggers/:id` still serves the exact values.
+          poller state (Slack thread cursors and the like) is left out of the JSON and summarised
+          below it as a count plus its most recent entry. Send that JSON back through action_trigger
+          as-is and the omitted cursors are preserved; `GET /api/v1/triggers/:id` serves them.
         - **List**: List triggers with optional filters (trigger_type, status, pagination). Each row
           names the trigger's MCP servers, so "which triggers reference server X?" is one call.
         - **Include channels**: Set include_channels=true to also list available Slack channels (useful when creating Slack triggers)
@@ -151,14 +164,17 @@ module Mcp
             lines << "- **[id #{condition.id}] #{condition.condition_type}** — #{condition.description}"
             next if condition.configuration.blank?
 
-            rendered, summarised = render_configuration(condition.configuration)
+            rendered, summaries = render_configuration(condition.configuration)
             lines << "  ```json"
             rendered.split("\n").each { |line| lines << "  #{line}" }
             lines << "  ```"
-            if summarised
-              lines << "  *Summarised: high-cardinality poller state is shown as a count and its most " \
-                       "recent entry. `GET /api/v1/triggers/#{trigger.id}` returns the configuration in full.*"
-            end
+            next if summaries.empty?
+
+            lines << "  *Poller state, summarised and left out of the JSON above — a key that is absent " \
+                     "is restored intact if this configuration is sent back through action_trigger, " \
+                     "where a summary standing in for it would overwrite a live cursor:*"
+            summaries.each { |key, summary| lines << "  - `#{key}`: #{summary}" }
+            lines << "  *`GET /api/v1/triggers/#{trigger.id}` returns the configuration in full.*"
           end
         end
 
@@ -246,25 +262,33 @@ module Mcp
         trigger.mcp_servers.presence&.join(", ") || "(none)"
       end
 
-      # Returns [rendered_json, summarised?]. A configuration inside the budget is
-      # rendered exactly as `JSON.pretty_generate` always did; over it, the
-      # high-cardinality collections are replaced by a count plus the entry a caller
-      # would actually want, and the rest of the hash is left alone.
+      # Returns [rendered_json, summaries]. A configuration inside the budget is
+      # rendered whole; over it, the poller-owned collections that are actually
+      # high-cardinality are LEFT OUT of the JSON and described in `summaries`
+      # instead, keyed by the key they replace.
+      #
+      # Left out rather than replaced in place, because the commonest way to misuse
+      # action_trigger is to read a configuration and send back what you believe is
+      # the desired final state. A summary sitting under its real key would be
+      # written straight over the live cursor map; an absent key is merged back by
+      # the model's preserve_*_poll_state instead.
       def render_configuration(configuration)
-        verbatim = JSON.pretty_generate(configuration)
-        return [ verbatim, false ] if verbatim.length <= CONFIGURATION_RENDER_BUDGET
-        return [ verbatim, false ] unless configuration.is_a?(Hash)
+        summaries = configuration_summaries(configuration)
+        return [ JSON.pretty_generate(configuration), summaries ] if summaries.empty?
 
-        summarised = configuration.to_h do |key, value|
-          [ key, summarise_collection?(key, value) ? collection_summary(value) : value ]
-        end
-        return [ verbatim, false ] if summarised == configuration
+        [ JSON.pretty_generate(configuration.except(*summaries.keys)), summaries ]
+      end
 
-        [ JSON.pretty_generate(summarised), true ]
+      def configuration_summaries(configuration)
+        return {} if configuration.to_json.length <= CONFIGURATION_RENDER_BUDGET
+
+        configuration
+          .select { |key, value| summarise_collection?(key, value) }
+          .transform_values { |value| collection_summary(value) }
       end
 
       def summarise_collection?(key, value)
-        return false if VERBATIM_CONFIGURATION_KEYS.include?(key.to_s)
+        return false unless POLLER_OWNED_KEYS.include?(key.to_s)
 
         (value.is_a?(Hash) || value.is_a?(Array)) && value.size > COLLECTION_SUMMARY_THRESHOLD
       end
@@ -274,12 +298,11 @@ module Mcp
       # moment they are read; the REST API still serves them in full.
       def collection_summary(value)
         entries = value.is_a?(Hash) ? value.values : value.to_a
-        newest = entries.grep(String).select { |entry| entry.match?(SLACK_TIMESTAMP_TAIL) }
-                        .max_by { |entry| entry[SLACK_TIMESTAMP_TAIL, 1].to_f }
+        newest = entries.grep(SLACK_TIMESTAMP_TAIL).max_by { |entry| entry[SLACK_TIMESTAMP_TAIL, 1].to_f }
         return "#{value.size} entries, most recent #{newest}" if newest
 
         sample = value.is_a?(Hash) ? "#{value.keys.first}: #{value.values.first}" : value.first
-        "#{value.size} entries, e.g. #{sample}"
+        "#{value.size} entries, e.g. #{sample.to_s.truncate(MAX_SAMPLE_LENGTH)}"
       end
 
       def condition_types_summary(trigger)
