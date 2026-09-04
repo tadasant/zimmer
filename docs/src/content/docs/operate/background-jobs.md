@@ -973,9 +973,14 @@ contributed by `inference` alone, while `agents` had picked work up 4 minutes ea
 heartbeat was 23 seconds old and it was clearing 1079 jobs an hour. Both operands were true and
 neither was evidence of a stall.
 
-So the conjunction is evaluated per lane, in the two shapes a backlog can actually take. `critical`
-is either of:
+So the conjunction is evaluated per lane, in the shapes a stalled queue can actually take — two of
+them read off the ready side, and one off the claimed side. `critical` is any of:
 
+- **A wedged lane** — one queue whose **whole thread pool** is held by executions that have been
+  running longer than anything in that lane is designed to take, with ready work waiting behind
+  them. This is the only branch that reads the *claimed* side, and it is the only one that can say
+  **why** a lane has stopped draining. Checked before the two below, because it is a strictly more
+  specific reading of the same evidence. See [When a lane is wedged](#when-a-lane-is-wedged).
 - **A starved lane** — one queue past **both** its own depth and its own stall age, from
   `QUEUE_LANE_CRITICAL_THRESHOLDS`. Checked first, so the page names the lane instead of describing
   one queue in fleet-wide terms that fit it badly.
@@ -1038,7 +1043,78 @@ lanes that deviate from the original calibration are listed; anything absent —
 
 A deep queue that is still draining is a `warning`: visible on `/health`, silent in Slack.
 
-`queue_statistics` therefore carries two more keys alongside the totals, and they are also what the
+### When a lane is wedged
+
+Everything above is measured over **ready** work, and ready work cannot express the difference
+between the two ways a lane stops draining:
+
+- **Its pool is full of executions that are not returning.** Every thread is held, so the lane can
+  claim nothing — not the backlog behind it, and not a deploy gate's canary.
+- **The worker has stopped polling the lane at all.** No thread is held; nothing is claimed.
+
+Both produce an identical old head of line and an identical unmoving depth. On 2026-09-04 the
+Tadasant production worker held `claimed_count` at 15 for over an hour while `inference`, `default`
+and `maintenance` picked up nothing, its heartbeat stayed 7 seconds old and it cleared roughly 697
+jobs an hour on the other lanes. The production deploy's drain gate failed in the same window and
+said so in as many words: the lane "could not be shown to be draining any other work OR to be
+holding a full pool of live work".
+
+Two separate things follow from that, and it is worth keeping them apart:
+
+- **The measurement makes both shapes legible.** `claimed_count_by_queue` beside `ready_count_by_queue`
+  answers "is this lane holding a full pool, or nothing at all?" — the question no surface could
+  answer during that incident — and the execution ages say how long. That is true whichever shape a
+  given firing turns out to be.
+- **Only the full-pool shape has a gate of its own.** `wedged_lane` requires claims to exist, so a
+  lane the worker has stopped polling entirely still pages only through the ready-side branches
+  above, at their depth thresholds. Closing that half — ready work, a live worker, **zero** claims on
+  a ceilinged lane, and a ready head past that lane's `stall_age` — is a follow-up this data now
+  supports but this gate does not implement.
+
+`wedged_lane` needs **five** things at once:
+
+| Conjunct | Why it is there |
+| --- | --- |
+| Ready work behind the lane | A full pool with an empty lane behind it is a lane doing its job — nothing is being starved, so there is nothing to report |
+| A full pool | `claimed_count_by_queue[lane] >= ` the lane's configured threads (from `ConnectionBudget.good_job_queue_threads`) **times the live workers**. Fewer executions than that means the lane still has a thread to claim with |
+| Past the lane's execution ceiling | `oldest_claimed_age_seconds_by_queue[lane] >= LANE_EXECUTION_CEILINGS[lane]` |
+| A known thread count | A lane the running configuration does not describe has no pool size to be full against |
+| **Every** thread past the ceiling | `youngest_claimed_age_seconds_by_queue[lane] >= ` the same ceiling. The oldest alone is satisfied by one hung thread beside others turning work over normally, and reporting that as "holding 3/3 threads on work running 20m" is untrue of two of the three |
+
+The ceilings are the longest a job in that lane is *designed* to hold a thread, with an order of
+magnitude of headroom, read off the timeouts in the code rather than guessed:
+
+| Lane | Ceiling | Sized from |
+| --- | --- | --- |
+| `inference` | 15m | `HeadlessInferenceService::DEFAULT_TIMEOUT` (30s), `SessionStatusSummaryGenerator::HEADLESS_TIMEOUT` (90s) |
+| `default` | 15m | Ordinary callback and control work — milliseconds to seconds. The longest designed hold is `PostDeployTaskJob::SLICE_BUDGET` (90s), after which the task returns and resumes from its cursor next tick |
+| `pollers` | 15m | One poll of an external API per tick |
+| `triggers` | 15m | The same shape as `pollers` |
+| `maintenance` | 90m | Its worst designed case, not a typical one: `OrphanCloneFilesystemCleanupJob`'s scheduled path removes up to `BATCH_LIMIT` (20) directories with no wall-clock budget, each tearing down Docker Compose bounded at `COMPOSE_DOWN_TIMEOUT` (120s) — 40 minutes of entirely correct work. `StaleCloneCleanupJob`'s `ORPHAN_SWEEP_LIMIT` (200 recursive deletes) and `BundleInstallJob` are unbounded in the same direction |
+| `auth` | 30m | `RuntimeLoginJob::MAX_DURATION` (12 minutes) |
+
+The capacity is scaled by live workers rather than taken per process because a Kamal cutover
+registers two workers at once: measuring one worker's full pool against a single process's thread
+count would call a healthy overlap a wedge. Scaling errs toward *missing* a wedge for the seconds
+the overlap lasts, which is the safe direction, and it resolves when the old process deregisters.
+Zero live workers is likewise never a wedge — rows a dead process left claimed are GoodJob's to
+reap, and it releases them once the process stops renewing its heartbeat.
+
+`agents` is **absent on purpose**, and the absence is the rule rather than an omission:
+`AgentSessionJob` holds its thread for the whole life of the session, which is unbounded by design,
+so no execution age in that lane means anything. A lane with no ceiling is never judged wedged —
+which is also what a queue nobody has sized yet gets, the safe direction for a gate that pages.
+
+This is the one branch here that can page where the older rules did not, and that is deliberate: a
+wedge is diagnosable the moment the pool is full and its oldest execution is past what the lane's
+own jobs can explain, well before enough ready work has piled up behind it to clear a depth
+threshold sized in the hundreds. The four conjuncts are what keep the earlier firing from being
+noise. It throttles under its own `wedged_lane:<queue>` code, and `SystemHealthMonitorJob` titles it
+**"Queue lane wedged"** rather than "Queue backlog critical" — a responder reading the backlog
+header over a body about held threads goes looking for the wrong thing, and on a phone the header is
+all they see before deciding whether to open the thread.
+
+`queue_statistics` therefore carries six more keys alongside the totals, and the first two are also what the
 `zimmer-host` obs collector scrapes off `/health/export_diagnostics` to label its `zimmer_good_job_*`
 series by queue:
 
@@ -1046,6 +1122,18 @@ series by queue:
 | --- | --- |
 | `ready_count_by_queue` | `ready_count` per lane, deepest first |
 | `oldest_ready_age_seconds_by_queue` | `oldest_ready_age_seconds` per lane, oldest first |
+| `claimed_count_by_queue` | `claimed_count` per lane, busiest first — what the worker is holding |
+| `oldest_claimed_age_seconds_by_queue` | how long each lane's longest-running execution has been running, oldest first |
+| `youngest_claimed_age_seconds_by_queue` | the same for each lane's most recently started execution — "even the newest job here is old" is what says no thread is free |
+| `oldest_claimed_job_class_by_queue` | the job class holding each lane's longest-running thread |
+
+`oldest_claimed_age_seconds` is the global maximum of the third of those, derived from the same read
+for the same reason `oldest_ready_age_seconds` is: one query, so the global figure and the lane
+figures can never disagree about a job that finished between two of them. An execution is aged from
+`performed_at` — when the worker actually began it — falling back to `locked_at` and then
+`created_at`. Aging it from `created_at` throughout would charge every execution for the time it
+spent queued, and would read a lane that has just picked up an hour-old backlog as wedged on its
+first tick.
 
 Two properties are load-bearing for both readers. They are **uncapped**, unlike the alert body's
 breakdown below — a lane the cap cut would read as having no depth, and both the gate and the metric

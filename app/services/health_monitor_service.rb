@@ -94,6 +94,61 @@ class HealthMonitorService
   # smallest number that makes the claim a comparison.
   WORKER_STALL_MIN_LANES = 2
 
+  # How long a job in each lane may hold its scheduler thread before the hold is
+  # evidence of a wedge rather than of work.
+  #
+  # This is a different measurement from QUEUE_LANE_CRITICAL_THRESHOLDS' `stall_age`,
+  # and the difference is the whole point. That one ages READY work — how long the
+  # head of the line has waited. This one ages CLAIMED work — how long an execution
+  # has been running. A lane can produce an old head for two opposite reasons, and
+  # the ready side cannot express which:
+  #
+  # - Its pool is full of executions that are not returning. Every thread is held,
+  #   so nothing can be claimed, so the head ages. Claims exist and are old.
+  # - The worker has stopped polling the lane at all. The head ages identically.
+  #   Claims are absent, or fresh.
+  #
+  # Each ceiling is the longest a job in that lane is DESIGNED to hold a thread,
+  # with headroom, read off the bounds in the code rather than guessed:
+  #
+  #   inference    HeadlessInferenceService::DEFAULT_TIMEOUT (30s) and
+  #                SessionStatusSummaryGenerator::HEADLESS_TIMEOUT (90s).
+  #   default      Ordinary callback and control work — milliseconds to seconds.
+  #                The longest designed hold is PostDeployTaskJob::SLICE_BUDGET,
+  #                90 seconds, after which the task returns and is resumed from
+  #                its cursor on the next tick.
+  #   pollers      One poll of an external API per tick.
+  #   triggers     The same shape as `pollers`.
+  #   maintenance  Sized from its worst designed case rather than from a typical
+  #                one: OrphanCloneFilesystemCleanupJob's scheduled path removes
+  #                up to BATCH_LIMIT (20) directories with no wall-clock budget,
+  #                and each removal tears down Docker Compose bounded at
+  #                DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT (120s) — 40
+  #                minutes of entirely correct work. StaleCloneCleanupJob's
+  #                ORPHAN_SWEEP_LIMIT (200 recursive deletes) and BundleInstallJob
+  #                are unbounded in the same direction.
+  #   auth         RuntimeLoginJob::MAX_DURATION is twelve minutes.
+  #
+  # `agents` is deliberately ABSENT, and the absence is the rule rather than an
+  # omission: AgentSessionJob holds its thread for the whole life of the session,
+  # which is unbounded by design, so no execution age in that lane means anything.
+  # A lane with no ceiling here is never judged wedged — which is also what a queue
+  # nobody has sized yet gets, the safe direction for a gate that pages.
+  LANE_EXECUTION_CEILINGS = {
+    "inference" => 15.minutes,
+    "maintenance" => 90.minutes,
+    "auth" => 30.minutes,
+    "default" => 15.minutes,
+    "pollers" => 15.minutes,
+    "triggers" => 15.minutes
+  }.freeze
+
+  # The `code` prefix a wedged-lane status carries. Shared with
+  # SystemHealthMonitorJob so the page can title itself after the incident it is
+  # reporting rather than after the gate that noticed it, without either side
+  # matching on prose.
+  WEDGED_LANE_CODE_PREFIX = "wedged_lane"
+
   # How many entries `ready_backlog_breakdown` keeps from each breakdown. Enough
   # to cover every Zimmer queue and still name the job classes that matter, short
   # enough that the alert body stays readable in Slack. Whatever the limit cuts is
@@ -118,6 +173,17 @@ class HealthMonitorService
   # inactive by this measure is one GoodJob is about to reap.
   WORKER_ACTIVE_INTERVAL = GoodJob::Process::EXPIRED_INTERVAL
 
+  # The scheduler threads each lane actually runs, from the one place that decides
+  # them. A lane's pool is "full" once it holds this many executions at the same
+  # time, and a full pool is the difference between a lane that is busy and a lane
+  # with no thread left to claim a job with — including a deploy gate's canary.
+  #
+  # Keyed by string to match the queue names `good_jobs` stores, since every caller
+  # here joins this against a lane read out of the database.
+  def self.lane_thread_counts
+    ConnectionBudget.good_job_queue_threads.transform_keys(&:to_s)
+  end
+
   # Compact human-readable wait ("45s", "12m", "2h 5m"). Public because the Slack page
   # `SystemHealthMonitorJob` sends is the one surface where a human, not a parser,
   # reads this number — "oldest waiting 18000s" is worse there than "5h 0m".
@@ -127,6 +193,17 @@ class HealthMonitorService
     return "#{seconds / 60}m" if seconds < 3600
 
     "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
+  end
+
+  # Two waits as a range ("1h 16m–1h 17m"), collapsing to one when they round to
+  # the same thing. A wedge usually goes still all at once, so the honest range is
+  # routinely "X–X" — and printing that twice reads like a bug rather than like the
+  # fact it is.
+  def self.format_wait_range(from_seconds, to_seconds)
+    low = format_wait(from_seconds)
+    high = format_wait(to_seconds)
+
+    low == high ? low : "#{low}–#{high}"
   end
 
   # One breakdown as a line of "<name> <count>" pairs. Lives here rather than in
@@ -368,7 +445,7 @@ class HealthMonitorService
       worker_stats: worker_stats,
       recent_errors: recent_errors,
       database_status: database_health_status,
-      status: system_health_status(queue_stats)
+      status: system_health_status(queue_stats, active_workers: worker_stats[:active_workers])
     }
   end
 
@@ -761,6 +838,29 @@ class HealthMonitorService
     # partial `(queue_name, scheduled_at)` index.
     heads = head_of_line_by_queue(ready_jobs)
 
+    # The same read taken over the claimed population. `claimed_count` is a single
+    # integer over every lane, and the two shapes a stalled lane can have are
+    # indistinguishable in it: a lane holding a full pool of executions that never
+    # return, and a lane the worker is not polling. On 2026-09-04 the production
+    # worker held that number at 15 for an hour while `inference`, `default` and
+    # `maintenance` picked up nothing — and neither the page nor the deploy gate
+    # could say which of the two it was, the gate reporting in as many words that
+    # the lane "could not be shown to be draining any other work OR to be holding
+    # a full pool of live work". These keys are what settle it.
+    #
+    # Both ends of each lane's in-flight population, because one of them is not
+    # enough to say a pool is stuck: the oldest execution alone is satisfied by a
+    # single hung thread beside others turning work over normally. The gate needs
+    # the youngest too — "even the most recently started job in this lane is past
+    # what the lane's work takes" is the claim that means no thread is free.
+    #
+    # Bounded by the claimed population rather than by the backlog: at most one
+    # row per lane per read, over the rows a worker is executing right now — 21 of
+    # them at Zimmer's configured thread counts. The partial `(locked_by_id)`
+    # index serves the filter; Postgres sorts the handful of rows that survive it.
+    in_flight = in_flight_head_by_queue(running_jobs)
+    youngest_in_flight = in_flight_head_by_queue(running_jobs, direction: :youngest)
+
     {
       pending_count: pending_jobs.count,
       ready_count: ready_jobs.count,
@@ -773,42 +873,73 @@ class HealthMonitorService
       # the `oldest_ready_age_seconds: nil` convention — an idle lane and a
       # draining one are different facts and a metric that flattens them to 0 says
       # the wrong one.
-      ready_count_by_queue: lane_depths(ready_jobs),
+      ready_count_by_queue: lane_counts(ready_jobs),
       oldest_ready_age_seconds_by_queue: lane_head_ages(heads),
+      # The claimed side of the same three facts, under the same conventions: a
+      # lane holding nothing is absent rather than zero, and the totals above are
+      # the sum of these.
+      claimed_count_by_queue: lane_counts(running_jobs),
+      oldest_claimed_age_seconds_by_queue: lane_head_ages(in_flight),
+      # The other end: how long the most recently started execution in each lane
+      # has been running. Reported rather than kept private to the gate, because a
+      # responder reading "oldest 1h 17m, youngest 1h 16m" learns something a
+      # single number cannot say — that the whole pool went still at once.
+      youngest_claimed_age_seconds_by_queue: lane_head_ages(youngest_in_flight),
+      # What is holding the oldest thread in each lane. The numeric hashes say a
+      # pool is stuck; this says what to go and look at, and it is the only part
+      # of the answer a responder with no shell on the box and no route to /jobs
+      # cannot reconstruct for themselves.
+      oldest_claimed_job_class_by_queue: lane_head_job_classes(in_flight),
       # The global head of line is the oldest of the per-lane heads by definition —
       # the oldest ready row anywhere is the head of its own lane — so it comes from
       # the same read rather than a query of its own, and the two can no longer
       # disagree about a row that drained between them.
       oldest_ready_age_seconds: heads.first&.fetch(:age_seconds),
+      # The longest-running execution anywhere, derived from the per-lane heads for
+      # the same reason the ready-side global is: one read, so the two can never
+      # disagree about a job that finished between them.
+      oldest_claimed_age_seconds: in_flight.first&.fetch(:age_seconds),
       processing_rate_per_hour: completed_last_hour
     }
   end
 
-  # Ready depth per lane, deepest first, uncapped, with the same UNKNOWN_LABEL
-  # treatment `head_of_line_by_queue` gives a row GoodJob wrote with no queue name —
-  # so a lane appears under one key in both halves and the gate can join them.
+  # Rows per lane, biggest first, uncapped, with the same UNKNOWN_LABEL treatment
+  # `head_of_line_by_queue` gives a row GoodJob wrote with no queue name — so a lane
+  # appears under one key in every half and the gate can join them.
+  #
+  # Takes whichever population the caller is counting: ready depth from the ready
+  # scope, in-flight width from the claimed scope. The two are the same query over
+  # different rows, and writing it twice is how they drift into two spellings of a
+  # lane name.
   #
   # Ordered rather than left in the adapter's grouping order, so two reads of an
   # unchanged queue serialize identically; and a plain Hash rather than the
-  # accumulator's `Hash.new(0)`, so a lane with nothing ready reads as absent to a
+  # accumulator's `Hash.new(0)`, so a lane holding nothing reads as absent to a
   # Ruby caller too and not as a zero the default conjured.
-  def lane_depths(ready_jobs)
-    counts = ready_jobs.group(:queue_name).count.each_with_object(Hash.new(0)) do |(queue, count), acc|
+  def lane_counts(scope)
+    counts = scope.group(:queue_name).count.each_with_object(Hash.new(0)) do |(queue, count), acc|
       acc[queue.presence || UNKNOWN_LABEL] += count
     end
 
     counts.sort_by { |queue, count| [ -count, queue.to_s ] }.to_h
   end
 
-  # Head-of-line age per lane, oldest lane first. `heads` arrives sorted oldest
-  # first and two raw queue names can share one label (a NULL and an empty string
-  # both render as UNKNOWN_LABEL), so keeping the FIRST sighting keeps the older of
-  # them — the age the gate has to see, and the one the alert body means. Writing
-  # the label blind would keep the younger and quietly under-report the lane it
-  # collapsed.
+  # Head age per lane, oldest lane first. `heads` arrives sorted oldest first and
+  # two raw queue names can share one label (a NULL and an empty string both render
+  # as UNKNOWN_LABEL), so keeping the FIRST sighting keeps the older of them — the
+  # age the gate has to see, and the one the alert body means. Writing the label
+  # blind would keep the younger and quietly under-report the lane it collapsed.
   def lane_head_ages(heads)
     heads.each_with_object({}) do |head, acc|
       acc[head[:queue]] ||= head[:age_seconds]
+    end
+  end
+
+  # The job class of each lane's head, under the same first-sighting rule, so the
+  # class named always belongs to the row whose age is reported beside it.
+  def lane_head_job_classes(heads)
+    heads.each_with_object({}) do |head, acc|
+      acc[head[:queue]] ||= head[:job_class]
     end
   end
 
@@ -853,6 +984,44 @@ class HealthMonitorService
         queue: head.queue_name.presence || UNKNOWN_LABEL,
         job_class: head.job_class.presence || UNKNOWN_LABEL,
         age_seconds: [ (now - waiting_since).round, 0 ].max
+      }
+    end.sort_by { |head| -head[:age_seconds] }
+  end
+
+  # Each queue's longest-RUNNING execution, oldest queue first — the claimed-side
+  # mirror of `head_of_line_by_queue`, and the read that makes a wedge legible.
+  #
+  # Same `DISTINCT ON (queue_name)` shape and the same reasons for it: one row per
+  # lane rather than a scan one lane can monopolize, cost bounded by the number of
+  # distinct queue names, `id` breaking ties so two reads of an unchanged lane name
+  # the same row.
+  #
+  # "Running since" is `performed_at` — when the worker actually began the job —
+  # falling back to `locked_at` for the instant between the claim and the start, and
+  # to `created_at` for a row GoodJob left with neither. Dating from `created_at`
+  # throughout would charge every execution for the time it spent queued, which is
+  # the ready side's measurement and would read every busy lane as wedged.
+  #
+  # @param direction [Symbol] :oldest for each lane's longest-running execution,
+  #   :youngest for its most recently started one. The pair is what makes "every
+  #   thread in this lane is held by old work" a statement the gate can check:
+  #   the oldest alone is satisfied by one stuck thread beside two healthy ones.
+  # @return [Array<Hash>] one entry per queue: :queue, :job_class, :age_seconds
+  def in_flight_head_by_queue(running_jobs, direction: :oldest)
+    now = Time.current
+    sort = direction == :oldest ? "ASC" : "DESC"
+
+    heads = running_jobs
+      .select(Arel.sql("DISTINCT ON (queue_name) id, queue_name, job_class, performed_at, locked_at, created_at"))
+      .order(Arel.sql("queue_name, COALESCE(performed_at, locked_at, created_at) #{sort}, id ASC"))
+
+    heads.map do |head|
+      running_since = head.performed_at || head.locked_at || head.created_at
+
+      {
+        queue: head.queue_name.presence || UNKNOWN_LABEL,
+        job_class: head.job_class.presence || UNKNOWN_LABEL,
+        age_seconds: [ (now - running_since).round, 0 ].max
       }
     end.sort_by { |head| -head[:age_seconds] }
   end
@@ -1212,6 +1381,13 @@ class HealthMonitorService
   #               bar. That is the SlackTriggerPollerJob thread-starvation shape: work
   #               piling up across lanes rather than in one.
   #
+  # Ahead of both sits a third branch that reads the CLAIMED side instead, and
+  # answers the question the ready side is structurally unable to: `wedged_lane`,
+  # a lane whose whole thread pool is held by executions past what its own jobs can
+  # explain. Both branches above can only observe that ready work is not moving;
+  # this one names why, and does it before the ready side has piled up enough depth
+  # to trip either threshold. See its own comment for the four conjuncts.
+  #
   # Both branches are strict narrowings of the queue-blind rule — every per-lane depth
   # threshold is at least QUEUE_DEPTH_CRITICAL_THRESHOLD and every per-lane stall age
   # at least QUEUE_STALL_CRITICAL_AGE, and the cross-lane branch sums a SUBSET of the
@@ -1231,8 +1407,28 @@ class HealthMonitorService
   # itself runs on and which therefore almost always has fresh work at sample time.
   # Scoping to the stalled subset asks the question the branch means: is there enough
   # work sitting still, in enough places, to be the worker rather than a lane?
-  def system_health_status(queue_stats)
+  # @param active_workers [Integer] how many GoodJob processes are currently live,
+  #   which is what turns a per-process thread count into the lane's real capacity.
+  #   Required rather than defaulted: a caller that guesses one worker on a
+  #   deployment running two would halve every pool the wedge branch measures
+  #   against, and the wrong answer would look like a working one.
+  def system_health_status(queue_stats, active_workers:)
     depth = queue_stats[:ready_count].to_i
+
+    wedged = wedged_lane(queue_stats, active_workers)
+    if wedged
+      return HealthStatus.new(
+        status: :critical,
+        code: "#{WEDGED_LANE_CODE_PREFIX}:#{wedged[:queue]}",
+        # The range, not just the oldest: every held thread is past the lane's
+        # ceiling or this branch would not have fired, and saying so is what
+        # separates "the pool went still" from "one job is slow".
+        message: "Queue lane wedged: the #{wedged[:queue]} lane is holding #{wedged[:held]}/" \
+                 "#{wedged[:threads]} threads on work that has been running " \
+                 "#{format_wait_range(wedged[:youngest_age_seconds], wedged[:age_seconds])} " \
+                 "(oldest: #{wedged[:job_class]}), with #{wedged[:depth]} jobs ready behind it"
+      )
+    end
 
     starved = starved_lane(queue_stats)
     if starved
@@ -1263,6 +1459,106 @@ class HealthMonitorService
     end
   end
 
+  # The lane whose entire thread pool is held by executions that have outlived what
+  # that lane's jobs are designed to take, while ready work waits behind them.
+  #
+  # Checked before both backlog branches because it is a strictly more specific
+  # reading of the same evidence, arrived at from the other side of the table. The
+  # backlog branches see ready rows that are not being picked up and can say only
+  # that; this sees the reason — the threads that would have picked them up are all
+  # held, and by what. A responder who gets "the inference lane is holding 2/2
+  # threads on work that has been running 1h 16m-1h 17m (oldest:
+  # SessionStatusSummaryJob)" is already at the job to go and look at, where "the
+  # inference lane has 57 jobs ready, oldest waiting 1h 17m" leaves them to work
+  # out which of the two possible causes it was from numbers that do not carry the
+  # distinction.
+  #
+  # It also fires EARLIER than they do, which is the point of it existing beside
+  # them rather than as a retune of them. A wedge is diagnosable the moment the pool
+  # is full and its executions are past what the lane's own jobs can explain —
+  # before enough ready work has piled up behind it to clear a depth threshold sized
+  # in the hundreds. It is the one branch here that pages on a lane the backlog
+  # thresholds call healthy; the five conjuncts below are what keep that from being
+  # noise.
+  #
+  # Five conditions, each load-bearing:
+  #
+  #   Ready work behind it   A full pool with an empty lane behind it is a lane
+  #                          doing its job. Nothing is being starved, so there is
+  #                          nothing to report.
+  #   A full pool            Fewer executions than threads means the lane still has
+  #                          a thread to claim with, so whatever is slow about it,
+  #                          it is not wedged. The capacity is the lane's threads
+  #                          times the number of LIVE workers, not the per-process
+  #                          count: during a deploy cutover two workers are
+  #                          registered at once, and measuring one worker's four
+  #                          held threads against a two-thread pool would call a
+  #                          healthy overlap a wedge. Scaling errs toward missing a
+  #                          wedge for the seconds the overlap lasts, which is the
+  #                          safe direction, and resolves itself when the old
+  #                          process deregisters.
+  #   Past its own ceiling   From LANE_EXECUTION_CEILINGS — the longest a job in
+  #                          that lane is designed to hold a thread. A lane with no
+  #                          ceiling (`agents`, and any queue nobody has sized) is
+  #                          never judged wedged.
+  #   A known thread count   A lane the running configuration does not describe has
+  #                          no pool size to be full against.
+  #   EVERY thread past it   Not just the oldest. One hung thread beside two healthy
+  #                          ones satisfies "full pool" and "the oldest is old", and
+  #                          reporting that as a wedge is untrue of the other two and
+  #                          sends the responder after something that is not there.
+  #
+  # Longest-wedged lane first, by iterating the oldest-first execution ages rather
+  # than the depths: on this branch "worst" is how long the lane has been unable to
+  # start anything, not how much has piled up behind it.
+  def wedged_lane(queue_stats, active_workers)
+    depths = queue_stats[:ready_count_by_queue] || {}
+    claims = queue_stats[:claimed_count_by_queue] || {}
+    ages = queue_stats[:oldest_claimed_age_seconds_by_queue] || {}
+    youngest = queue_stats[:youngest_claimed_age_seconds_by_queue] || {}
+    job_classes = queue_stats[:oldest_claimed_job_class_by_queue] || {}
+    threads = self.class.lane_thread_counts
+
+    ages.each do |queue, age|
+      ceiling = LANE_EXECUTION_CEILINGS[queue]
+      next if ceiling.nil?
+      next if age < ceiling
+
+      # Every hash here is a separate query against a moving table, so a lane can
+      # appear in one and not another. A missing operand is no evidence of a wedge.
+      ready = depths[queue].to_i
+      next unless ready.positive?
+
+      # No live worker is no pool to be full against — and stale rows a dead
+      # process left claimed are GoodJob's to reap, not a wedge to page on.
+      pool = threads[queue].to_i * active_workers.to_i
+      next unless pool.positive?
+
+      held = claims[queue].to_i
+      next unless held >= pool
+
+      # The oldest execution being past the ceiling says ONE thread is stuck. The
+      # youngest being past it too is what says they all are — without this, a lane
+      # with one hung thread and the rest turning work over normally would be
+      # reported as "holding 3/3 threads on work that has been running for 20m",
+      # which is false of two of those three and sends the responder after a wedge
+      # that is not there.
+      next if youngest[queue].nil? || youngest[queue] < ceiling
+
+      return {
+        queue: queue,
+        depth: ready,
+        threads: pool,
+        held: held,
+        age_seconds: age,
+        youngest_age_seconds: youngest[queue],
+        job_class: job_classes[queue] || UNKNOWN_LABEL
+      }
+    end
+
+    nil
+  end
+
   # The single lane that is past both of its own thresholds, deepest first so the
   # message names the worst one when several qualify. Nil when every lane is within
   # what its thread count and its jobs' durations explain.
@@ -1270,7 +1566,7 @@ class HealthMonitorService
     depths = queue_stats[:ready_count_by_queue] || {}
     ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
 
-    # `lane_depths` already returns deepest-first with a name tiebreak. Re-sorting
+    # `lane_counts` already returns deepest-first with a name tiebreak. Re-sorting
     # here would discard that stability — `sort_by` is not stable, so two lanes at
     # equal depth could swap between two reads of an unchanged queue and the page
     # would name a different lane each time.
@@ -1354,6 +1650,10 @@ class HealthMonitorService
 
   def format_wait(seconds)
     self.class.format_wait(seconds)
+  end
+
+  def format_wait_range(from_seconds, to_seconds)
+    self.class.format_wait_range(from_seconds, to_seconds)
   end
 
   # Calculate overall system status

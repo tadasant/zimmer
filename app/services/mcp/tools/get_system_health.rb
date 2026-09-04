@@ -43,6 +43,7 @@ module Mcp
           "- **Ruby Version:** #{RUBY_VERSION}",
           *queue_recovery_mode_lines,
           *ready_backlog_lines,
+          *in_flight_lines(report),
           "",
           "### Health Details",
           "```json",
@@ -95,6 +96,42 @@ module Mcp
       rescue StandardError => e
         Rails.logger.warn("[GetSystemHealth] Could not read the backlog breakdown: #{e.message}")
         [ "- **Ready backlog breakdown:** unavailable (#{e.class})" ]
+      end
+
+      # What the worker is HOLDING, per lane — the half of the picture the ready
+      # backlog cannot supply.
+      #
+      # An agent triaging a stalled lane has exactly two questions after the lines
+      # above: is that lane's pool full, and how long has its work been running.
+      # A full pool whose YOUNGEST execution is already old is a wedge — every
+      # thread held by work that is not coming back. Ready work with no claim at
+      # all is the opposite: a lane the worker has stopped polling. An old oldest
+      # beside a fresh youngest is neither, just one slow job. All three look
+      # identical from the ready side, so an agent that cannot see these has to
+      # guess — which is what happened on 2026-09-04, when `inference`, `default`
+      # and `maintenance` picked up nothing for over an hour behind a live worker
+      # and no surface could say which shape it was.
+      #
+      # Read off the report already in hand rather than re-querying: unlike the
+      # ready breakdown these are free, since `queue_statistics` computes them on
+      # every health read.
+      #
+      # Silent when nothing is executing, matching `ready_backlog_lines` — an
+      # in-flight breakdown of an idle worker is a line of noise on every healthy
+      # call.
+      def in_flight_lines(report)
+        stats = report.dig(:system_health, :queue_stats) || {}
+        by_queue = stats[:claimed_count_by_queue]
+        return [] if by_queue.blank?
+
+        [
+          "- **In flight by queue:** #{HealthMonitorService.format_breakdown(by_queue)} " \
+            "(threads: #{HealthMonitorService.format_breakdown(HealthMonitorService.lane_thread_counts)})",
+          "- **Oldest execution by queue:** " \
+            "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}",
+          "- **Youngest execution by queue:** " \
+            "#{HealthMonitorService.format_ages(stats[:youngest_claimed_age_seconds_by_queue])}"
+        ]
       end
 
       # The single row the alerts fire on, named. The Slack page renders the same
