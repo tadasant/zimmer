@@ -399,7 +399,8 @@ accurate "where things stand" matters most. Four things produce that:
   was copying and running.
 
 `StatusSummaryBackstopJob` is the repair path. Every five minutes it walks the sessions **at rest**
-(`needs_input` and `failed`, most recently active first), and re-enqueues a generation for the ones
+(`needs_input` and `failed`, in the order described under
+[Whose turn it is](#whose-turn-it-is)), and re-enqueues a generation for the ones
 whose summary is no longer current — no record, no summary text, or a summary the transcript has
 moved past. Staleness is the whole test, and a `failed` state is deliberately not a second one: a
 failure that matters leaves the summary stale anyway, while a `failed` record whose summary *is*
@@ -412,12 +413,12 @@ It is a repair sweep, not polling, and the difference is enforced rather than as
 - **It never forces.** A summary the generator considers current still costs nothing — the sweep
   enqueues, and the generator returns "current" without forking.
 - **It stamps every session it examines** (`session_status_summaries.backstop_attempted_at`), so a
-  session is looked at once per `RETRY_INTERVAL` (30 minutes) rather than once per sweep. That is also
-  what stops a session that can never be summarized — one whose clone has been reclaimed — from
-  eating the sweep's budget ahead of one that could be repaired. The stamp is a `WHERE`, not a filter
-  in Ruby, so the steady state — every session at rest already stamped — returns no rows at all
-  rather than the whole action queue. A `SCAN_LIMIT` of 200 bounds the pathological case, and a sweep
-  that reaches it logs that it did.
+  session is looked at once per `RETRY_INTERVAL` (30 minutes) rather than once per sweep. That bounds
+  what a session which can never be summarized — one whose clone has been reclaimed — costs the
+  sweep; the *ordering* is what stops it taking that cost ahead of a session that could be repaired.
+  The stamp is a `WHERE`, not a filter in Ruby, so the steady state — every session at rest already
+  stamped — returns no rows at all rather than the whole action queue. A `SCAN_LIMIT` of 200 bounds
+  the pathological case, and a sweep that reaches it logs that it did.
 - **It enqueues only what the `inference` lane has room for.** Both repair paths enqueue a
   `SessionStatusSummaryJob`, and that job runs on the two-thread `inference` lane. So the sweep's
   budget is not a constant: it is `LANE_DEPTH_CEILING` less the number of `SessionStatusSummaryJob`
@@ -429,17 +430,61 @@ It is a repair sweep, not polling, and the difference is enforced rather than as
   fleet-wide re-fork. A spent fork cap skips the session and keeps walking, so the headless repairs
   behind it are still reached. When a candidate *is* on an exhausted pool, the fork path is further
   held to `FORK_SHARE_UNDER_OUTAGE` (half, rounded up) of the lane budget: both paths draw on one
-  budget, and on a mixed fleet the fork path reaches it first only because its sessions happen to be
-  more recently active.
+  budget, and the candidate ordering says nothing about which path would repair a session, so on a
+  mixed fleet the two interleave arbitrarily and the fork path can reach the whole budget before the
+  outage work behind it is looked at. The share is reserved rather than raced for.
 - **An auth outage changes how it repairs, not whether it does.** A runtime with no available account
   is repaired on the [pool-independent path](#the-pool-independent-path) instead — no fork, no clone
   copy, no account slot.
 - **A session mid-turn is not swept.** A `blocked_on_elicitation` session is `needs_input` with a live
   process waiting on an approval; it is not at rest, and there is nothing final to say about it yet.
-  Neither are summary forks, which would fork the fork.
+  It is refused in the query, not only in the walk — see [Whose turn it is](#whose-turn-it-is) for why
+  that matters. Neither are summary forks, which would fork the fork.
 
 Rendering the panel still generates nothing. The sweep is the only thing that starts a generation
 without either a transition or a person.
+
+### Whose turn it is
+
+The budget below says how much the sweep may repair. The candidate ordering says *who* gets it, and
+it has two terms:
+
+1. **Sessions the sweep has never examined come first** — no `backstop_attempted_at` stamp — and
+   among them, **most recently active first**. That is the order the action queue is read in, so a
+   session's first look still lands on whatever is most likely to be opened next.
+2. **Then the sessions it examined longest ago.**
+
+Sessions with equal stamps fall through to `updated_at DESC` as well, so recency is the tie-break
+throughout.
+
+The second term is a fairness term, and it exists because recency alone starves the tail
+([#881](https://github.com/tadasant/zimmer/issues/881)). A session whose repair can never succeed is
+stale forever, so it falls due every `RETRY_INTERVAL` — and ordered on recency alone, being recently
+active put it back at the head of the list. `LANE_DEPTH_CEILING` such sessions take the entire budget
+on every sweep, indefinitely, while the sweep logs `enqueued_headless=6` as though it were making
+progress, and nothing further down is reached at all.
+
+**What the trade costs.** A retry does not outrank a first look. A session whose generation was lost
+to a deploy waits behind every session the sweep has not looked at, rather than ahead of them by
+virtue of being recent. That is the right way round: an unexamined session may well be repaired by
+its first slot, whereas a second attempt is by construction evidence that one slot was not enough.
+What it is *not* is a flattening of the recency priority — a never-examined session has no stamp, so
+the whole first group ties and recency decides between them. Only re-examinations sort behind it, and
+among themselves they rotate oldest-stamp first, which no stamped session can hold the head of.
+
+**Nothing may sit unstamped at the head**, or that rotation has a fixed point and the starvation
+comes back sharper: a row with no stamp outranks every stamped row on *every* sweep rather than every
+thirtieth minute. Two classes could, and both are closed. A `blocked_on_elicitation` session is
+skipped mid-walk and so never stamped — it is excluded in SQL instead, occupying neither the head nor
+a `SCAN_LIMIT` slot, with the mid-walk check kept for a session that becomes blocked between the
+query and the walk. And a session whose stamp write fails does not also get an enqueue: a slot the
+sweep cannot record having spent is a slot it would spend again on every sweep.
+
+**One case where `SCAN_LIMIT` and the fairness term point the same way.** While more due
+never-examined sessions exist than the 200 the scan takes — a mass event, a long outage, a restore —
+the scan is all first looks and no re-examination is reached at all. That is the same trade taken
+deliberately, and it is self-limiting: the sweep stamps its way through that group at the lane's
+rate, and a sweep that hits `SCAN_LIMIT` logs that it did.
 
 ### Sizing the sweep against the lane
 
