@@ -390,7 +390,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     end
 
     assert captured_kwargs, "expected enqueue_with_prompt to be invoked"
-    # symbolize_attachments converts string-keyed jsonb hashes to symbol-keyed hashes.
+    # Sessions::AttachmentDescriptors converts string-keyed jsonb hashes to symbol-keyed ones.
     assert_equal 1, captured_kwargs[:images].size
     assert_equal :path, captured_kwargs[:images].first.keys.first
     assert_equal "image/png", captured_kwargs[:images].first[:media_type]

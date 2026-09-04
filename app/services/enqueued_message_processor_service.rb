@@ -110,8 +110,12 @@ class EnqueuedMessageProcessorService
         message_content = message.content
         message_position = message.position
         # Capture attachments before deletion. Both columns default to [].
-        message_images = symbolize_attachments(message.images, %i[path media_type])
-        message_files = symbolize_attachments(message.files, %i[path original_filename size])
+        message_images = Sessions::AttachmentDescriptors.for_a_job(
+          message.images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+        )
+        message_files = Sessions::AttachmentDescriptors.for_a_job(
+          message.files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
+        )
 
         add_log(
           "Processing enqueued message at position #{message_position}",
@@ -298,20 +302,5 @@ class EnqueuedMessageProcessorService
   # Flush log buffer if available
   def flush_log_buffer
     log_buffer&.flush
-  end
-
-  # Convert jsonb-stored attachment hashes (string keys) into the symbol-keyed
-  # form AgentSessionJob.enqueue_with_prompt expects.
-  def symbolize_attachments(raw, keys)
-    return nil if raw.blank?
-
-    Array(raw).filter_map do |entry|
-      next unless entry.is_a?(Hash) || entry.is_a?(ActionController::Parameters)
-      symbolized = keys.each_with_object({}) do |key, acc|
-        value = entry[key.to_s] || entry[key]
-        acc[key] = value unless value.nil?
-      end
-      symbolized.presence
-    end.presence
   end
 end

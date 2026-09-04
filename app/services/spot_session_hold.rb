@@ -87,10 +87,11 @@
 #
 # == A deferral must not lose the turn, even when a second one arrives
 #
-# The refused prompt (with its images and files) rides the delayed job. Two
-# things keep that honest when a session is held for the best part of an hour and
-# something delivers to it again in the meantime — an orchestrator's second child
-# waking it, say:
+# The refused prompt (with its images and files) rides the delayed job, and is
+# written down on the session's own row so that losing that job does not lose
+# the turn — see HELD_PROMPT and HELD_IMAGES. Two things keep that honest when a
+# session is held for the best part of an hour and something delivers to it
+# again in the meantime — an orchestrator's second child waking it, say:
 #
 #   * The gate takes CUSTODY of the turn, so `pending_follow_up_prompt` is
 #     dropped. That marker means "a job has not picked this prompt up yet", and
@@ -131,6 +132,39 @@ class SpotSessionHold
   # carries prompts this way for the same reason (`pending_follow_up_prompt`).
   HELD_PROMPT = "spot_hold_prompt"
 
+  # The images and files that same deferred RESUME turn is carrying, recorded
+  # beside its prompt.
+  #
+  # Same argument as the prompt above, and the same failure without it. `hold!`
+  # is handed the turn's attachments and puts them on the delayed job;
+  # AgentSessionJob reads attachments out of its own arguments and nowhere else.
+  # So a worker that died before the enqueue took the screenshot with it exactly
+  # as surely as the prompt, and the re-arm brought back "here is the
+  # screenshot, fix this" with the prompt and without the screenshot — under a
+  # log line that named the prompt and said nothing about what was missing
+  # (#890).
+  #
+  # DESCRIPTORS, not bytes. The attachments themselves are already durable on
+  # the session's own volume; what the lost job took was the record of WHICH of
+  # them belonged to this turn. That distinction is also why the volume cannot
+  # simply be re-read here the way a re-armed START re-reads it (see #rearm!):
+  # on a resume the volume holds every attachment the session has ever received,
+  # including the ones earlier turns already consumed, so "everything on disk"
+  # would put an old screenshot on a new turn. Replaying the WRONG attachments
+  # is worse than replaying none — both are silent, and only one of them is also
+  # wrong.
+  #
+  # Written and cleared with HELD_PROMPT, so the three are one record: a hold
+  # that carries no attachment drops these rather than leaving an earlier hold's
+  # behind.
+  HELD_IMAGES = "spot_hold_images"
+  HELD_FILES = "spot_hold_files"
+
+  # The deferred turn itself, as opposed to the bookkeeping around it. Written
+  # only for a resume, and any of the three not written by this hold is dropped
+  # so a re-arm never replays half of one turn and half of another.
+  HELD_TURN_KEYS = [ HELD_PROMPT, HELD_IMAGES, HELD_FILES ].freeze
+
   # Read by two callers, and the second is what keeps the backoff honest. `clear`
   # drops these when a session gets through — and the three "restart from scratch"
   # paths (the Restart button, `action_session`, `POST /api/v1/sessions/:id/restart`)
@@ -142,8 +176,8 @@ class SpotSessionHold
   # re-check — no prompt, no resume flag — so without it a person clicking Restart
   # on a session sitting at 40 minutes would push it to an hour, which is the
   # opposite of what they asked for.
-  METADATA_KEYS = [ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT, HELD_TURN,
-                    HELD_PROMPT ].freeze
+  METADATA_KEYS = ([ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT,
+                     HELD_TURN ] + HELD_TURN_KEYS).freeze
 
   # Spread over which held sessions re-check, so a backlog does not re-evaluate
   # in lockstep.
@@ -518,7 +552,8 @@ class SpotSessionHold
       # anything else, and it would raise AFTER the stamp was advanced — so the
       # session would re-arm, fail, and repeat every pass with no job. Anything
       # unusable falls back to the recovery nudge below.
-      held_prompt = (session.metadata || {})[HELD_PROMPT]
+      metadata = session.metadata || {}
+      held_prompt = metadata[HELD_PROMPT]
       prompt = held_prompt.is_a?(String) ? held_prompt.presence : nil
 
       rearmed = false
@@ -542,11 +577,37 @@ class SpotSessionHold
       images = files = nil
       carrying = ""
       if record.resuming?
+        # Replayed off the hold RECORD, never off the volume. The record names
+        # the attachments this turn was deferred with; the volume holds every
+        # attachment the session has ever received, so reading it here would put
+        # a screenshot an earlier turn already consumed onto this one — which is
+        # silently wrong rather than silently incomplete (#890, and HELD_IMAGES).
+        #
+        # Tied to the real prompt on purpose. The recovery nudge below is a
+        # different turn — Zimmer's own sentence about a stalled ladder — and
+        # attachments belong to the prompt that referred to them, not to whatever
+        # turn happens to run next.
+        if prompt.present?
+          images = Sessions::AttachmentDescriptors.for_a_job(
+            metadata[HELD_IMAGES], keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+          )
+          files = Sessions::AttachmentDescriptors.for_a_job(
+            metadata[HELD_FILES], keys: Sessions::AttachmentDescriptors::FILE_KEYS
+          )
+          # Only the sentence is borrowed from the first-turn reader — the log
+          # line a human reads must word this the same way whichever branch
+          # carried the turn. The volume read that class exists for stays out of
+          # this branch.
+          carrying = Sessions::FirstTurnAttachments.carrying_clause(Array(images), Array(files))
+        end
+
         AgentSessionJob.enqueue_with_prompt(
           session.id,
           prompt || AutomatedPrompts.system_recovery(
             reason: "Zimmer's spot-hold sweep found this session's re-check had stopped firing"
           ),
+          images: images,
+          files: files,
           delay: delay
         )
       else
@@ -555,6 +616,12 @@ class SpotSessionHold
         # back "here is the screenshot, fix this" with the prompt and without the
         # screenshot (#789), under a log line claiming the turn had been carried
         # across. Re-read from the volume, where they sit keyed by session id.
+        #
+        # The volume, and not the hold record, because a START hold has no
+        # record to read: `hold!` writes HELD_TURN_KEYS only for a resume, since
+        # a first turn's prompt lives on the session row already. The two
+        # branches recover the same thing from the two different places it
+        # honestly survives in.
         #
         # `session_id.blank?` is the same predicate Sessions::StartNow uses for
         # "has never run", and it is what makes the volume the right place to
@@ -577,10 +644,7 @@ class SpotSessionHold
       carried = if !record.resuming?
         "The turn it was holding is carried with it#{carrying}."
       elsif prompt.present?
-        # Narrower than the sentence above on purpose. The hold record stores the
-        # prompt and nothing else, so a re-armed resume brings its prompt back
-        # and leaves any attachments that came with it behind — see #890.
-        "The prompt it was holding is carried with it."
+        "The prompt it was holding is carried with it#{carrying}."
       else
         "The prompt it was woken for was lost with the re-check, so it comes back on a " \
         "recovery nudge instead."
@@ -594,7 +658,8 @@ class SpotSessionHold
       )
 
       logger.info("Re-armed a stalled spot hold",
-        session_id: session.id, holds: record.count, carried_prompt: prompt.present?)
+        session_id: session.id, holds: record.count, carried_prompt: prompt.present?,
+        carried_attachments: Array(images).size + Array(files).size)
       true
     rescue StandardError => e
       logger.warn("Could not re-arm a stalled spot hold",
@@ -654,6 +719,24 @@ class SpotSessionHold
       delay = retry_delay(decision, count)
       retry_at = Time.current + delay
 
+      # The deferred turn, in the shape it has to come back out of jsonb in. The
+      # prompt and its attachments are written together because they ARE one
+      # turn: a re-arm that replayed the prompt of this hold and the screenshot
+      # of the last one would be worse than replaying neither.
+      held_turn = if resuming
+        {
+          HELD_PROMPT => follow_up_prompt,
+          HELD_IMAGES => Sessions::AttachmentDescriptors.for_the_record(
+            images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+          ),
+          HELD_FILES => Sessions::AttachmentDescriptors.for_the_record(
+            files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
+          )
+        }.compact
+      else
+        {}
+      end
+
       # One statement, and it drops the delivery marker in the same breath. The gate
       # is taking custody of this prompt — see the class comment — but only when it
       # actually holds one: a promptless hold that dropped the marker would discard
@@ -670,11 +753,13 @@ class SpotSessionHold
           HELD_RETRY_AT => retry_at.utc.iso8601,
           HELD_COUNT => count,
           HELD_TURN => resuming ? TURN_RESUME : TURN_START
-          # The prompt goes on the row as well as on the job. Custody without a
+          # The turn goes on the row as well as on the job. Custody without a
           # durable copy is how a turn gets lost: the job is the only carrier, and
-          # a worker that dies before the enqueue below takes the prompt with it.
-        }.merge(resuming ? { HELD_PROMPT => follow_up_prompt } : {}),
-        resuming ? %w[pending_follow_up_prompt pending_follow_up_sent_at] : [ HELD_PROMPT ]
+          # a worker that dies before the enqueue below takes the prompt — and
+          # every attachment that came with it — along with it.
+        }.merge(held_turn),
+        (resuming ? %w[pending_follow_up_prompt pending_follow_up_sent_at] : []) +
+          (HELD_TURN_KEYS - held_turn.keys)
       )
 
       message = "Spot session held #{resuming ? 'before its next turn' : 'before starting'}: " \
