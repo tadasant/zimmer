@@ -1264,6 +1264,11 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
   # Slack timestamps relative to now, so tests exercise CHANNEL_ENGAGEMENT_WINDOW
   # and THREAD_BACKFILL_HORIZON against real clock arithmetic rather than
   # fixture-era constants.
+  #
+  # Every call re-reads Time.current, so two calls with the same `ago` return
+  # different strings. A test that seeds a value here and asserts on it must bind
+  # the result to a local and compare against that local; re-deriving it at
+  # assertion time measures the test body's own runtime instead.
   def passive_ts(ago)
     format("%.6f", Time.current.to_f - ago.to_i)
   end
@@ -1740,8 +1745,10 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ])
 
     good_ts = passive_ts(1.minute)
+    # Bound once: this exact string is what the erroring channel's cursor must still hold.
+    untouched_ts = passive_ts(3.hours)
     condition.configuration["channel_timestamps"] = {
-      PASSIVE_CHANNEL => passive_ts(3.hours), other_channel => passive_ts(3.hours)
+      PASSIVE_CHANNEL => passive_ts(3.hours), other_channel => untouched_ts
     }
     condition.configuration["bot_activity_timestamps"] = { PASSIVE_CHANNEL => passive_ts(1.hour) }
     condition.save!
@@ -1758,7 +1765,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     # The healthy channel's cursor still advances; the broken one is left alone.
     condition.reload
     assert_equal good_ts, condition.channel_timestamps[PASSIVE_CHANNEL]
-    assert_in_delta passive_ts(3.hours).to_f, condition.channel_timestamps[other_channel].to_f, 1.0
+    assert_equal untouched_ts, condition.channel_timestamps[other_channel]
   end
 
   # ── Shared behaviour ────────────────────────────────────────────────────────
