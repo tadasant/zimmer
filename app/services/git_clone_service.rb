@@ -150,21 +150,17 @@ class GitCloneService
       # Retries on transient network/server errors (e.g., GitHub 5xx).
       run_git_clone_with_retry(repo_url, branch, clone_path)
 
-      # Which subdirectory this clone actually lands on: the requested one, or the
-      # fallback when the requested one is gone from the tree and the fallback is there.
-      effective_subdirectory = resolve_subdirectory(clone_path, subdirectory, fallback_subdirectory)
+      # Which subdirectory this clone actually lands on: the requested one, the
+      # fallback when the requested one is gone from the tree and the fallback is
+      # there, or a raise when neither exists. Owns the existence check, so a
+      # subdirectory that comes back from here is one that was seen on disk.
+      effective_subdirectory = resolve_subdirectory!(clone_path, subdirectory, fallback_subdirectory)
 
       # Calculate working directory (clone path + subdirectory if specified)
       working_directory = if effective_subdirectory.present?
         File.join(clone_path, effective_subdirectory)
       else
         clone_path
-      end
-
-      # Verify subdirectory exists if specified
-      if effective_subdirectory.present? && !file_system.directory?(working_directory)
-        discard_failed_clone(clone_path)
-        raise SubdirectoryNotFoundError, subdirectory_not_found_message(subdirectory, fallback_subdirectory)
       end
 
       { clone_path: clone_path, working_directory: working_directory, subdirectory: effective_subdirectory }
@@ -226,7 +222,8 @@ class GitCloneService
 
     private
 
-    # The subdirectory a clone should actually use.
+    # The subdirectory a clone should actually use, or a raise if it has none of
+    # the candidates.
     #
     # Normally the one that was asked for. When that one is absent from the tree
     # and a `fallback_subdirectory` was supplied that *is* present, the fallback:
@@ -235,22 +232,29 @@ class GitCloneService
     # to know which of the two the freshly cloned commit carries without looking
     # ([#921](https://github.com/tadasant/zimmer/issues/921)).
     #
-    # Returns the requested value when neither is present, so the caller's
-    # existence check still raises — a subdirectory that is genuinely gone stays a
-    # hard failure. The requested path is checked first and short-circuits, so the
-    # ordinary case costs exactly the one `directory?` it always cost.
-    def resolve_subdirectory(clone_path, subdirectory, fallback_subdirectory)
+    # A clone with neither is a hard failure, exactly as it was before the fallback
+    # existed — re-resolving is about asking the catalog, not about making a
+    # missing directory soft. This owns the existence check rather than leaving a
+    # second one to the caller, so the ordinary case still costs the one
+    # `directory?` it always cost, and a request for no subdirectory at all costs
+    # none. A blank `subdirectory` is returned as-is: a session that never had one
+    # must not acquire one from a root that has since grown a subdirectory.
+    def resolve_subdirectory!(clone_path, subdirectory, fallback_subdirectory)
       return subdirectory if subdirectory.blank?
       return subdirectory if file_system.directory?(File.join(clone_path, subdirectory))
-      return subdirectory if fallback_subdirectory.blank? || fallback_subdirectory.to_s == subdirectory.to_s
-      return subdirectory unless file_system.directory?(File.join(clone_path, fallback_subdirectory))
 
-      logger.info(
-        "Requested subdirectory is absent from the clone; using the agent root's current path",
-        requested_subdirectory: subdirectory,
-        fallback_subdirectory: fallback_subdirectory
-      )
-      fallback_subdirectory
+      if fallback_subdirectory.present? && fallback_subdirectory.to_s != subdirectory.to_s &&
+         file_system.directory?(File.join(clone_path, fallback_subdirectory))
+        logger.info(
+          "Requested subdirectory is absent from the clone; using the agent root's current path",
+          requested_subdirectory: subdirectory,
+          fallback_subdirectory: fallback_subdirectory
+        )
+        return fallback_subdirectory
+      end
+
+      discard_failed_clone(clone_path)
+      raise SubdirectoryNotFoundError, subdirectory_not_found_message(subdirectory, fallback_subdirectory)
     end
 
     def subdirectory_not_found_message(subdirectory, fallback_subdirectory)
