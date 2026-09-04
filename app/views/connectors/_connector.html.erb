@@ -60,9 +60,10 @@
               </p>
               <%# `break-all`, because the link text is its own URL: one unbreakable
                   37-character token, and the catalog list's card clips rather than
-                  scrolls — it is `overflow-hidden`, for its own rounded corners. At
-                  320px the tail of the URL was cut off with no sideways scroll that
-                  could reach it, and the destination is the whole point of the block. %>
+                  scrolls — it is `overflow-hidden`, for its own rounded corners. So a
+                  URL wider than the card at a phone width has its tail cut off with no
+                  sideways scroll that reaches it, and this destination is the whole
+                  point of the block. %>
               <p class="mt-1">
                 <%= link_to instruction[:console_url], instruction[:console_url],
                       target: "_blank", rel: "noopener noreferrer",
