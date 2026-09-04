@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require "support/fake_parameter_store"
 
 module ParameterStore
@@ -184,6 +185,85 @@ module ParameterStore
       assert_equal [ :conflict ], report.items.map(&:action)
       assert_equal "new-live-value", chain.get("STRAD_API_KEY")
       assert resolves_at?(Namespace.legacy_static_namespace(@env), "STRAD_API_KEY")
+    end
+
+    test "a failed verify takes back the pair it just wrote, so the project stays readable" do
+      # The poisoned-parameter case, and the reason it is not just this
+      # variable's problem: GcpClient#rendered_envelope re-raises any non-404, so
+      # ONE unrenderable parameter fails the resolve of the whole project — for
+      # the rest of this run and for the live deployment. Leaving it behind would
+      # turn a failed migration into an outage.
+      seed_legacy("STRAD_API_KEY", "sk-live")
+      writer = @fake.write_client
+      writer.define_singleton_method(:grant_accessor) { |*| nil }
+
+      report = NamespaceMigration.new(resolver: @fake.client, writer: writer,
+        env: @env, dry_run: false).call
+
+      assert_not report.ok?
+      assert_not stored?(canonical_path("STRAD_API_KEY")),
+        "the unrenderable pair this run created must not be left behind"
+      assert stored?(legacy_path("STRAD_API_KEY")), "the readable copy must survive"
+      assert_match "was removed again", report.items.sole.detail
+      # And the project reads cleanly again.
+      assert_equal "sk-live", chain.get("STRAD_API_KEY")
+    end
+
+    test "a failed verify stops the run rather than writing copies it cannot check" do
+      seed_legacy("AAA_FIRST", "one")
+      seed_legacy("ZZZ_LAST", "two")
+      writer = @fake.write_client
+      writer.define_singleton_method(:grant_accessor) { |*| nil }
+
+      report = NamespaceMigration.new(resolver: @fake.client, writer: writer,
+        env: @env, dry_run: false).call
+
+      assert_equal %i[failed skipped], report.items.map(&:action)
+      assert_equal "ZZZ_LAST", report.items.last.variable
+      assert_not stored?(canonical_path("ZZZ_LAST")),
+        "the run must not keep writing after the store became unreadable"
+      assert stored?(legacy_path("ZZZ_LAST"))
+      assert_equal [ "AAA_FIRST", "ZZZ_LAST" ], report.legacy_remaining
+    end
+
+    test "a canonical copy this run did NOT create is left alone when the verify fails" do
+      # Rollback is scoped to what THIS run wrote: a canonical copy that was
+      # already there is not ours to delete, however the verify went. The verify
+      # is stubbed rather than broken for real, because the only realistic way to
+      # break it — an unrenderable parameter — also fails the initial read, so
+      # the run could never reach this branch (see the test below it).
+      seed_legacy("STRAD_API_KEY", "sk-live")
+      seed_canonical("STRAD_API_KEY", "sk-live")
+      NamespaceMigration.any_instance.stubs(:verified?).returns(false)
+
+      report = migration(dry_run: false).call
+
+      assert_not report.ok?
+      assert stored?(canonical_path("STRAD_API_KEY")), "a pre-existing copy is not ours to remove"
+      assert stored?(legacy_path("STRAD_API_KEY"))
+      assert_match "already there and was left alone", report.items.sole.detail
+    end
+
+    test "a store already holding an unrenderable parameter fails the read, before anything is written" do
+      # The state the rollback above exists to prevent, seen from the next run:
+      # one parameter whose IAM binding is missing 400s on :render, and
+      # GcpClient re-raises any non-404 — so the whole project is unreadable and
+      # the migration refuses to start rather than writing blind.
+      seed_legacy("STRAD_API_KEY", "sk-live")
+      seed_canonical("STRAD_API_KEY", "sk-live")
+      @fake.revoke_parameter_binding!("STRAD_API_KEY", path: canonical_path("STRAD_API_KEY"))
+
+      assert_raises(StoreError) { migration(dry_run: false).call }
+    end
+
+    test "a namespace that is its own pre-rename self is refused at construction" do
+      # The shape a follow-up would produce by pointing LEGACY_SCOPE at SCOPE
+      # instead of shortening read_namespaces: every variable would read as
+      # already-copied and the prune would delete the only copy.
+      Namespace.stubs(:legacy_static_namespace).returns(Namespace.static_namespace(@env))
+
+      error = assert_raises(ArgumentError) { migration(dry_run: false) }
+      assert_match "nothing to migrate", error.message
     end
 
     test "a new path that does not resolve is not a licence to delete the old one" do

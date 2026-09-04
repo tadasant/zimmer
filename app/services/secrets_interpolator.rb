@@ -105,10 +105,23 @@ class SecretsInterpolator
     # — "which path inside it" is what tells a half-migrated store from a
     # finished one, per variable, on the Connectors page.
     def source_badge_title(var_name = nil)
-      return source.badge_title(var_name) if source.respond_to?(:badge_title)
+      return badge_title_of(var_name) if source.respond_to?(:badge_title)
       return "The secret store did not answer, so this could not be determined" if unavailable?
 
       "No provider holds this variable"
+    end
+
+    # Naming the variable makes this a second lookup, and a lookup can fail: the
+    # chain is process-wide, so an `invalidate` from elsewhere can empty the
+    # snapshot between the `resolution` that succeeded and this call, leaving the
+    # next read cold against a store that has since gone away — and a COLD
+    # failure raises rather than serving stale. #resolution's own rescue is
+    # already spent by then, so without this the connector frame 500s instead of
+    # rendering the "did not answer" line. Fall back to the store-level title.
+    def badge_title_of(var_name)
+      source.badge_title(var_name)
+    rescue ParameterStore::StoreError, ParameterStore::AuthError
+      source.badge_title
     end
   end
 

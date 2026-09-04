@@ -88,7 +88,19 @@ module ParameterStore
       add_secret_version(id, value)
 
       principal = create_parameter(id)
-      grant_accessor(id, principal) if principal.present?
+      # No principal means no binding, and an envelope written without the
+      # binding is worse than no envelope at all: `:render` 400s on it forever,
+      # and GcpClient#rendered_envelope re-raises anything that is not a 404 —
+      # so ONE such parameter fails the resolve of the WHOLE project, taking
+      # every other `${VAR}` down with it. Refuse before writing it.
+      if principal.blank?
+        raise StoreError.new(
+          "refusing to write #{id}: Parameter Manager returned no policyMember for it, so the " \
+          "parameter could not be granted access to its own secret and every :render would fail", 409
+        )
+      end
+
+      grant_accessor(id, principal)
 
       write_envelope(id, path) if parameter_version_ids(id).empty?
 
@@ -109,6 +121,14 @@ module ParameterStore
     # @return [String] the resource id that was removed
     # @raise [StoreError, AuthError]
     def delete(variable, env: Rails.env, path: nil)
+      # `path:` decides the id on its own, so `variable` would otherwise be
+      # decorative and `delete("A", path: path_of("B"))` would remove B. The
+      # label fence below cannot catch that — every Zimmer pair carries the same
+      # label — so the two have to be checked against each other here.
+      if path.present? && Namespace.variable_of(path) != variable
+        raise ArgumentError, "path #{path} does not name #{variable}"
+      end
+
       id = Namespace.parameter_id(path.presence || Namespace.parameter_path(variable, env))
       refuse_unmanaged!(id)
 

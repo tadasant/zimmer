@@ -51,12 +51,13 @@ module ParameterStore
     #   :migrated         — copied, verified, and the old pair deleted.
     #   :conflict         — both paths hold it, with different values.
     #   :failed           — the store refused, or the verify did not pass.
+    #   :skipped          — the run stopped before reaching it.
     #
     # `legacy_remaining` is the one that matters for "is this finished": true
     # when the old path still holds this variable after the run.
     Item = Struct.new(:variable, :action, :from_path, :to_path, :from_id, :to_id,
       :detail, :legacy_remaining, keyword_init: true) do
-      def failed? = %i[conflict failed].include?(action)
+      def failed? = %i[conflict failed skipped].include?(action)
     end
 
     Report = Struct.new(:dry_run, :env, :project_id, :from_namespace, :to_namespace, :items,
@@ -94,7 +95,19 @@ module ParameterStore
       @env = env.to_s
       @dry_run = dry_run
       @prune = prune
+
+      # If these ever fold together — a follow-up that retires the pre-rename
+      # read path by pointing LEGACY_SCOPE at SCOPE rather than by shortening
+      # read_namespaces — then `old` and `current` below are the same map, every
+      # variable reads as already-copied, and the prune deletes the only copy
+      # immediately after verifying it. Refuse rather than discover that live.
+      return unless from_namespace == to_namespace
+
+      raise ArgumentError,
+        "the pre-rename namespace and the canonical one are both #{to_namespace}; " \
+        "there is nothing to migrate and a prune would delete the only copy"
     end
+
 
     def from_namespace = Namespace.legacy_static_namespace(env)
     def to_namespace = Namespace.static_namespace(env)
@@ -107,7 +120,19 @@ module ParameterStore
       old = snapshot.fetch(from_namespace)
       current = snapshot.fetch(to_namespace)
 
-      items = (old.keys | current.keys).sort.map { |variable| step(variable, old, current) }
+      variables = (old.keys | current.keys).sort
+      @stop = false
+      items = []
+      variables.each_with_index do |variable, index|
+        items << step(variable, old, current)
+        next unless @stop
+
+        # The store cannot be read at all now, so every later step would write a
+        # copy it could not verify. Stop — and name the variables that were not
+        # looked at, rather than leaving them off the report entirely.
+        items.concat(variables[(index + 1)..].map { |name| skipped(name) })
+        break
+      end
 
       Report.new(dry_run: dry_run, env: env, project_id: @resolver.project_id,
         from_namespace: from_namespace, to_namespace: to_namespace, items: items)
@@ -129,7 +154,14 @@ module ParameterStore
           "back silently. Resolve it by hand — delete whichever copy is wrong — and re-run.")
       end
 
-      copied = new_value.nil? ? copy(item, old_value) : "the canonical path already holds it"
+      if new_value.nil?
+        copied = copy(item, old_value)
+        # Recorded before the verify so roll_back can tell "this run wrote it"
+        # from "it was already there".
+        item.action = :copied
+      else
+        copied = "the canonical path already holds it"
+      end
       settle(item, copied)
     rescue StoreError, AuthError => e
       # The class and the message, never a body: on these verbs Google's error
@@ -168,10 +200,17 @@ module ParameterStore
       end
 
       unless verified?(item)
+        # The canonical pair exists and cannot be rendered. That is not merely
+        # this variable's problem: GcpClient#rendered_envelope re-raises any
+        # non-404, so one unreadable parameter fails the resolve of the WHOLE
+        # project — for this run's remaining variables AND for the live
+        # deployment. Take back exactly what this run wrote, then stop.
+        rolled_back = roll_back(item)
+        @stop = true
         return finish(item, :failed,
           "#{copied}, but #{item.to_path} does not resolve through the chain, so #{item.from_id} " \
-          "was NOT deleted. The usual cause is the missing secretAccessor binding on the new " \
-          "secret — see docs/operate/secrets-parameter-store.")
+          "was NOT deleted#{rolled_back}. The usual cause is the missing secretAccessor binding " \
+          "on the new secret — see docs/operate/secrets-parameter-store.")
       end
 
       @writer.delete(item.variable, env: env, path: item.from_path)
@@ -194,6 +233,34 @@ module ParameterStore
       provider = chain.provider_for(item.variable)
 
       !provider.nil? && provider.namespace_for(item.variable) == to_namespace
+    rescue StoreError, AuthError
+      # A raise here is the WORST case, not an unrelated one: the commonest cause
+      # is that the pair just written cannot be rendered, and an unrenderable
+      # parameter fails the resolve of the whole project. Treating it as "not
+      # verified" is what routes it into the rollback below; letting it escape to
+      # step's rescue would mark the item failed and leave the poison in place.
+      false
+    end
+
+    # Undo the canonical pair this run created, so a failed verify does not leave
+    # a parameter behind that every subsequent read chokes on. Only what THIS run
+    # wrote: a canonical copy that was already there is not ours to remove, and
+    # the pre-rename copy is untouched either way, so the value stays reachable.
+    #
+    # @return [String] a clause for the item's detail.
+    def roll_back(item)
+      return " (the canonical copy was already there and was left alone)" unless item.action == :copied
+
+      @writer.delete(item.variable, env: env)
+      " (and #{item.to_id}, which this run created, was removed again)"
+    rescue StoreError, AuthError => e
+      " (and #{item.to_id} could NOT be removed again: #{e.class}: #{e.message} — it will fail " \
+      "every read of this project until it is deleted by hand)"
+    end
+
+    def skipped(variable)
+      finish(new_item(variable), :skipped,
+        "not looked at: the run stopped after the failure above left the store unreadable")
     end
 
     def finish(item, action, detail, legacy_remaining: nil)

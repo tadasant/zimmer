@@ -110,6 +110,72 @@ module ParameterStore
       assert_match "writing as the RESOLVER credential", @out.string
     end
 
+    # --- PRUNE, whose default is the destructive direction ---------------------
+
+    test "PRUNE accepts the spellings an operator actually types" do
+      stub_clients
+      %w[false FALSE 0 no off n].each do |value|
+        assert_not task(env: { "PRUNE" => value }).send(:prune?), "PRUNE=#{value} should not prune"
+      end
+      %w[true 1 yes on].each do |value|
+        assert task(env: { "PRUNE" => value }).send(:prune?), "PRUNE=#{value} should prune"
+      end
+      assert task.send(:prune?), "unset means migrate fully"
+    end
+
+    test "an unrecognised PRUNE is refused rather than defaulting to delete" do
+      # The default is true, and true is the destructive direction — so a value
+      # nobody parsed must not quietly mean "delete".
+      stub_clients
+      error = assert_raises(MigrationTask::Refused) { task(env: { "PRUNE" => "maybe" }).run }
+
+      assert_match "PRUNE=maybe is not a yes or a no", error.message
+    end
+
+    # --- the dry run probes the writer too -------------------------------------
+
+    test "a dry run probes the writer and reports what it cannot do, without refusing" do
+      # The documented dry-run invocation passes a writer key precisely so the
+      # plan answers "and could this credential actually do it". Deferring that
+      # to the live command puts the surprise in the destructive place.
+      @fake.held_permissions = Capabilities::UPSERT_PERMISSIONS
+      stub_clients
+      seed_legacy("STRAD_API_KEY", "sk-live")
+
+      report = task.run
+
+      assert report.dry_run
+      assert_match "cannot delete secrets", @out.string
+      assert_match "[migrated] STRAD_API_KEY", @out.string, "the plan is still printed"
+    end
+
+    test "a dry run with no writer credential says so and still plans" do
+      Resolver.stubs(:from_env).returns(Resolver::Configuration.new(client: @fake.client, reason: nil))
+      Writer.stubs(:from_env).returns(
+        Writer::Configuration.new(client: nil, reason: "the key is not set", identity: nil))
+      seed_legacy("STRAD_API_KEY", "sk-live")
+
+      report = task.run
+
+      assert_match "could not be checked against one", @out.string
+      assert_equal [ :migrated ], report.items.map(&:action)
+    end
+
+    test "a dry run never writes, however capable the credential is" do
+      stub_clients
+      seed_legacy("STRAD_API_KEY", "sk-live")
+      before = @fake.requests.size
+
+      task.run
+
+      # The permissions probe is a POST and is read-only; everything else that
+      # is not a GET would be a mutation.
+      mutations = @fake.requests[before..].reject do |method, url|
+        method == "GET" || url.include?("testIamPermissions")
+      end
+      assert_empty mutations
+    end
+
     # --- the printout ----------------------------------------------------------
 
     test "the plan names both namespaces and every variable's disposition" do
