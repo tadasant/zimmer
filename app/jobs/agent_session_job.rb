@@ -2237,13 +2237,42 @@ class AgentSessionJob < ApplicationJob
           # Preserve clone on failure for debugging and recovery
           # Only terminate the process if it's still running
           terminate_process(session, process_pid, clone_path, log_buffer) if process_pid && process_running?(process_pid)
-          # Log the preserved clone path for user reference
-          if clone_path
-            log_buffer.add(
-              "Clone preserved for debugging: #{clone_path}. Archive this session to cleanup the clone directory.",
-              level: "info"
-            )
-            log_buffer.flush
+          # Say what is on disk, rather than what metadata says was once cloned.
+          #
+          # `metadata["clone_path"]` records where a clone was made; it is not evidence
+          # that the tree is still there, and the failure that most needs this line is
+          # the one where it isn't. Session 12280 failed *because* its clone directory
+          # was missing and was told, four seconds later, that the clone was preserved
+          # for debugging (#816) — the one line anybody reads when deciding whether
+          # there is anything left to recover, stated as fact and wrong.
+          #
+          # `directory?` rather than `exists?`, the same question
+          # refuse_spawn_after_archive asks of the same volume: a half-unlinked tree
+          # can leave a plain file at the path, and that is not a clone anybody can
+          # open. A stat that raises answers nothing, so it claims nothing — the line
+          # is skipped rather than guessed at, because a job that raises while tearing
+          # a failed session down strands it.
+          if clone_path.present?
+            begin
+              if @file_system.directory?(clone_path)
+                log_buffer.add(
+                  "Clone preserved for debugging: #{clone_path}. Archive this session to cleanup the clone directory.",
+                  level: "info"
+                )
+              else
+                log_buffer.add(
+                  "No clone left to preserve: nothing is on disk at #{clone_path}. There is no working tree to " \
+                  "recover from and nothing for an archive to clean up — what remains is on the session record " \
+                  "itself: the prompt it was given and its transcript.",
+                  level: "info"
+                )
+              end
+              log_buffer.flush
+            rescue StandardError => e
+              Rails.logger.warn(
+                "[AgentSessionJob] Could not check clone path for session #{session.id}: #{e.class}: #{e.message}"
+              )
+            end
           end
         elsif session.needs_input?
           # Session is paused or waiting for follow-up - preserve clone for resume.
