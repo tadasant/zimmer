@@ -387,6 +387,12 @@ class SessionsHelperTest < ActionView::TestCase
   # derived rather than stored, so the two render paths agreeing is a property
   # that has to be asserted, not assumed.
 
+  # The canonical status list, asked of the state machine rather than restated, so
+  # a sixth status fails these tests instead of silently rendering gray.
+  def session_statuses
+    Session.aasm.states.map { |state| state.name.to_s }
+  end
+
   def normalizable_entry
     {
       "type" => "assistant",
@@ -513,11 +519,5 @@ class SessionsHelperTest < ActionView::TestCase
 
       refute_match(/yellow|red/, classes, "#{status} badge clashes with running's elapsed-time colors")
     end
-  end
-
-  private
-
-  def session_statuses
-    Session.aasm.states.map { |state| state.name.to_s }
   end
 end
