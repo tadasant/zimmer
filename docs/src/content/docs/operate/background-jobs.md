@@ -519,6 +519,12 @@ Only the output of *posting* commands is scanned. An agent that merely reads a c
 (`gh api repos/…/issues/comments/<id>`) gets that comment's own `html_url` back, and treating that
 as a post would suppress a human comment the agent just looked at.
 
+And only as much of that output as the post accounts for. A tool result is one blob for the whole
+call, so unless the post was the whole command — the natural
+`gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments` is not — only the permalinks printed
+alone on a line are read as the post's, which is what `gh pr comment` prints and what the listing's
+JSON never is ([#901](https://github.com/tadasant/zimmer/issues/901)).
+
 The hook runs when the posting session's transcript is next polled — a second or two, not
 instantly. `ATTRIBUTION_GRACE_SECONDS` covers that window: a comment younger than 60 seconds is
 marked `deferred` and re-examined on the next poll instead of being dispatched on the strength of
