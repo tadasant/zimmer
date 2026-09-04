@@ -1,9 +1,9 @@
 require "application_system_test_case"
 
-# Regression coverage for the Quotas "Authenticate" paste flow.
+# Regression coverage for the Inference "Authenticate" paste flow.
 #
 # The awaiting_code login panel carries a Stimulus poller
-# (quotas_login_poller_controller.js) that refetches login_status every 2s. The
+# (inference_login_poller_controller.js) that refetches login_status every 2s. The
 # panel contains the authorization-code <form> the user pastes into and clicks
 # Submit on. The bug: the poller re-rendered (turbo_stream.replace) the whole
 # panel on every tick, tearing out and rebuilding that form. A Submit click that
@@ -20,9 +20,9 @@ require "application_system_test_case"
 # (the attempt's pasted_code column — the exact value the worker hands to the
 # held-open CLI). It fails on the pre-fix poller (the form is torn out from under
 # the paste/click) and passes once redundant re-renders are skipped.
-class QuotasLoginPasteTest < ApplicationSystemTestCase
+class InferenceLoginPasteTest < ApplicationSystemTestCase
   setup do
-    # QuotasController#show reconciles the worker's ~/.claude credential files on
+    # InferenceController#show reconciles the worker's ~/.claude credential files on
     # render. Point those paths at an empty tmp dir so the page render performs no
     # real filesystem work and reconcile is a clean no-op during the test.
     @login_tmpdir = Dir.mktmpdir
@@ -47,7 +47,7 @@ class QuotasLoginPasteTest < ApplicationSystemTestCase
       expires_at: 14.minutes.from_now
     )
 
-    visit quotas_url
+    visit inference_url
 
     panel = "#login_attempt_#{attempt.id}"
     assert_selector "#{panel} input[name='code']", wait: 5
@@ -55,7 +55,7 @@ class QuotasLoginPasteTest < ApplicationSystemTestCase
     # Count the poller's login_status fetches so we can prove it is actively
     # ticking (not dead) while we hold a pasted code in the field — the failure
     # this guards against only manifests when ticks land between paste and Submit.
-    instrument_poll_counter(login_status_quotas_path(attempt.id))
+    instrument_poll_counter(login_status_inference_path(attempt.id))
 
     code = "test-auth-code-abc123#state-xyz"
     # Set the value in a single synchronous JS call rather than Capybara's

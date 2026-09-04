@@ -77,7 +77,7 @@ class ClaudeAccount < ApplicationRecord
   CREDIBLE_EXPIRY_HORIZON = 30.days
 
   # A second stale rejection this soon after the last one is the same episode.
-  # refresh_token! has nine call sites — the quotas page, rotation, activation,
+  # refresh_token! has nine call sites — the Inference page, rotation, activation,
   # the quota-reset checker and the 5-minute sweep — and several of them can
   # present the same spent value within minutes of each other. That is one piece
   # of evidence, not five, so three strikes take at least half an hour.
@@ -89,7 +89,7 @@ class ClaudeAccount < ApplicationRecord
   # snapshots, login attempts, and rotation events are the only record of whether
   # it was ever healthy, and the operator gesture that most needs that record is
   # the one that removes the account — "delete it and re-authenticate", two
-  # adjacent buttons on every /quotas card. Deleting an account must stay possible
+  # adjacent buttons on every /inference card. Deleting an account must stay possible
   # (:restrict_with_error would turn Delete into a dead control for any account
   # old enough to matter), so the history outlives the row rather than blocking
   # its removal. The database agrees: each of these foreign keys is ON DELETE SET
@@ -195,7 +195,7 @@ class ClaudeAccount < ApplicationRecord
 
   # A new refresh token is a new chain, and the strikes counted against the old
   # one say nothing about it. This catches the two ways a credential arrives
-  # without a successful refresh: a human re-authenticating through /quotas, and a
+  # without a successful refresh: a human re-authenticating through /inference, and a
   # filesystem sync adopting the pair the CLI rotated on disk. Without it, an
   # account that was re-authed while carrying two strikes would be condemned again
   # on its first lost race.
@@ -203,7 +203,7 @@ class ClaudeAccount < ApplicationRecord
 
   # How long a single account's needs_reauth event stays suppressed after one is
   # emitted. Not a nicety: plenty of machinery writes `active` back onto a
-  # needs_reauth row with no human involved — the auto-heal sweep on /quotas, a
+  # needs_reauth row with no human involved — the auto-heal sweep on /inference, a
   # recovery probe that reaches Anthropic — and `ensure_active_account!` runs
   # before every session spawn, so an account can cross INTO needs_reauth many
   # times an hour without anyone doing anything. Unsuppressed, that is one
@@ -441,7 +441,7 @@ class ClaudeAccount < ApplicationRecord
   # `status` stays load-bearing for `ClaudeAccount.available` and
   # AccountRotationService: every path that picks an account to spawn with must
   # keep acting on the durable column rather than on a reading that may be
-  # minutes stale, and QuotasController converges the column separately
+  # minutes stale, and InferenceController converges the column separately
   # (#auto_heal_accounts).
   #
   # Two decisions read the evidence instead, through `.serviceable_for` — the
@@ -591,7 +591,7 @@ class ClaudeAccount < ApplicationRecord
     # needs_reauth. That is how a healthy pool drains itself one account at a
     # time (#242): four different accounts died that way in ten days.
     #
-    # Callers reach this from the quotas page, the quota-reset checker, the refresh
+    # Callers reach this from the Inference page, the quota-reset checker, the refresh
     # sweep, rotation, activation and needs_reauth recovery, so the serialization
     # lives HERE rather than at each of them: a row lock held across the whole
     # read-refresh-persist sequence, which is the only scope that can promise the
@@ -614,7 +614,7 @@ class ClaudeAccount < ApplicationRecord
       # filesystem sync also rewrites it, and a caller whose HTTP refresh then
       # failed leaves a moved token behind without having refreshed anything. So
       # also require the access token to be good — otherwise we would report
-      # success to callers (rotation, the quotas page) that asked precisely so
+      # success to callers (rotation, the Inference page) that asked precisely so
       # they could avoid writing stale credentials to disk.
       if token_before_lock.present? && current_refresh_token.present? &&
           current_refresh_token != token_before_lock && !token_expiring_soon?
@@ -639,7 +639,7 @@ class ClaudeAccount < ApplicationRecord
   rescue StandardError => e
     # with_lock sits outside the per-runtime refresh bodies' own rescues, so a
     # lock timeout or deadlock would otherwise escape from a method every caller
-    # treats as returning a boolean — 500ing the quotas page and aborting a
+    # treats as returning a boolean — 500ing the Inference page and aborting a
     # rotation mid-flight. Preserve the "returns false, never raises" contract.
     Rails.logger.error "[ClaudeAccount] Token refresh could not acquire or hold the account lock for #{email}: #{e.message}"
     false
@@ -1062,7 +1062,7 @@ class ClaudeAccount < ApplicationRecord
   # Two exclusions fall out of this placement, and both are correct:
   #
   # - **Creation.** `after_update_commit` does not fire on insert, so the
-  #   credential-less account QuotasController seeds directly into needs_reauth
+  #   credential-less account InferenceController seeds directly into needs_reauth
   #   does not alert. The human is on the page adding it; telling them to go to the
   #   page they are on is noise.
   #
@@ -1080,7 +1080,7 @@ class ClaudeAccount < ApplicationRecord
   # Note what this does NOT do: release the throttle when an account leaves
   # needs_reauth. That was the first shape of this callback and it was wrong.
   # Plenty of machinery writes `active` with a plain `update!` and no human
-  # involved — the auto-heal sweep on /quotas, a recovery probe that happens to
+  # involved — the auto-heal sweep on /inference, a recovery probe that happens to
   # succeed — and `ensure_active_account!` runs before every session spawn.
   # Releasing there would drop the throttle moments before `usable_candidate?`
   # re-condemns the same account, turning a drained pool into one spawned session

@@ -3499,7 +3499,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   # A re-check due one second ago is a job that has not been picked up yet, not a
-  # stalled ladder — and the page must not say otherwise while /quotas, reading
+  # stalled ladder — and the page must not say otherwise while /inference, reading
   # the same predicate with the sweep's grace, counts it as fine.
   test "the spot hold banner does not call a barely-late re-check stalled" do
     session = Session.create!(

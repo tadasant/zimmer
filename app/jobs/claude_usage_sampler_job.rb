@@ -7,7 +7,7 @@
 #
 # QuotaResetCheckerJob already runs every 15 minutes and already writes snapshots
 # — but only for accounts in `quota_exceeded`, because its job is to notice when
-# one recovers. A healthy account only got a reading when somebody opened /quotas
+# one recovers. A healthy account only got a reading when somebody opened /inference
 # or a rotation happened, which can be days apart — and the serving account is
 # the one utilization is actually accruing against, so its reading is the one
 # moving fastest under the pool average the spot gate decides on.

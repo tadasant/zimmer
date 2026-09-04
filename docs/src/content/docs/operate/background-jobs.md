@@ -78,9 +78,9 @@ From `config.good_job.cron`:
 | 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
 | 15m | `QuotaResetCheckerJob` | Restore `quota_exceeded` Claude accounts; fire the `quota_available` event if that was the pool's rising edge AND no quota window is holding spot work at its utilization limit (which spawns one fleet-maintenance session to wake spot work in precedence order — a rising edge against a window-held gate is deferred to the next sweep rather than spent); then resume the parked **priority** sessions directly — at most 5 per sweep, oldest park first, so a recovered pool is not re-drained by the whole cohort at once. See [The Claude Code harness](/auth/harness/). |
-| 15m | `QuotaCapacityCalibrationJob` | Re-estimate what each Claude quota window is worth in **Opus dollars**, by dividing Zimmer's own Opus-denominated spend over that window by the pool's average utilization of it. This is what turns Anthropic's bare percentages into the "$ remaining" figures on `/quotas` and the dollar budget the spot gate paces against. Idempotent: each run folds one observation into a smoothed estimate keyed by window. See [Spot and priority](/sessions/spot-and-priority/#the-gate). |
+| 15m | `QuotaCapacityCalibrationJob` | Re-estimate what each Claude quota window is worth in **Opus dollars**, by dividing Zimmer's own Opus-denominated spend over that window by the pool's average utilization of it. This is what turns Anthropic's bare percentages into the "$ remaining" figures on `/inference` and the dollar budget the spot gate paces against. Idempotent: each run folds one observation into a smoothed estimate keyed by window. See [Spot and priority](/sessions/spot-and-priority/#the-gate). |
 | 20m | `BurnRateRecomputeJob` | Recompute the **$/min** of every harness + model combination from the token ledger, over the last 25 sessions of each, at the same list prices the Costs page uses. The spot gate multiplies these by its re-check interval to project what admitting one more session will spend. Idempotent: it recomputes every combination from scratch and upserts. See [Token spend](/operate/costs/). |
-| 15m | `ClaudeUsageSamplerJob` | Read the serving Claude account's quota, so the spot gate decides on a fresh number — `QuotaResetCheckerJob` samples only *exceeded* accounts, and a healthy one is otherwise read only when somebody opens /quotas. See [Spot and priority](/sessions/spot-and-priority/). |
+| 15m | `ClaudeUsageSamplerJob` | Read the serving Claude account's quota, so the spot gate decides on a fresh number — `QuotaResetCheckerJob` samples only *exceeded* accounts, and a healthy one is otherwise read only when somebody opens /inference. See [Spot and priority](/sessions/spot-and-priority/). |
 | 15m | `RefreshXOauthTokensJob` | Refresh X/Twitter tokens. X rotates refresh tokens single-use, so the job splits network failures: a connection that never established (`Net::OpenTimeout`, `ECONNREFUSED`) left the token unspent and is retried in-band with backoff, while a failure after the request may have gone out (`Net::ReadTimeout`, `ECONNRESET`) is deferred to the next scheduled run rather than re-sending a token X may already have consumed. Both classifications depend on the token request being bounded: `XOauthCredential::TOKEN_REQUEST_TIMEOUT` (10 seconds) caps the connect and the read, so a token endpoint that accepts the connection and then goes silent fails fast instead of holding a `default`-queue thread for as long as it likes. |
 | 30m | `RefreshMcpOauthTokensJob` | Refresh MCP OAuth tokens expiring within the hour |
 | hourly | `StaleCloneCleanupJob` | Reap clones from archived sessions, reap deletion tombstones, and sweep the scratch/attachment directories of sessions whose row is gone |
@@ -613,7 +613,7 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
 - **`:auth`** — `RuntimeLoginJob` and `CleanupRuntimeLoginAttemptsJob`. The `triggers` argument with
-  a human added: someone is watching the /quotas login panel spin for exactly as long as the job sits
+  a human added: someone is watching the /inference login panel spin for exactly as long as the job sits
   unstarted. `default` is two threads shared with around thirty job classes, fifteen of them cron'd
   as often as every 30 seconds and several running for minutes (bundle install, npm installs,
   transcript archiving, and package installs) — and `RuntimeLoginJob` used to starve *itself*
@@ -750,7 +750,7 @@ and `auth` running.
 
 That asymmetry is the whole design. Pausing every queue would also pause `agents`, which is where
 `AgentSessionJob` lives, so the mode would halt the very investigation it exists to enable. `auth`
-is spared for the same shape of reason: a human is watching the /quotas login panel for as long as
+is spared for the same shape of reason: a human is watching the /inference login panel for as long as
 `RuntimeLoginJob` sits unstarted, and re-authenticating a dead account is often exactly what an
 operator is doing while the mode is on — halting it would freeze the fix along with the failure.
 Neither is a source of queue demand: `agents` holds one long-running job per session, and sessions are

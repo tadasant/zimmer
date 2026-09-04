@@ -7,7 +7,7 @@ sidebar:
 
 Zimmer records every Anthropic API call its agents make, and prices them at current list
 rates on the **Costs** page. This is Zimmer's own accounting. It is a different thing from
-[Quotas](/sessions/spot-and-priority/), which reads Anthropic's rate-limit headers to answer
+[Inference](/sessions/spot-and-priority/), which reads Anthropic's rate-limit headers to answer
 "how much headroom is left in the window". Costs answers "what did we spend it on". Neither
 substitutes for the other, and they can disagree without either being wrong.
 
@@ -464,7 +464,7 @@ flagged experimental needs nothing at all — it is picked up from
 
 ## Reading it back
 
-- **Web:** the Costs page, alongside Quotas.
+- **Web:** the Costs page, alongside Inference.
 - **REST:** `GET /api/v1/costs` for rollups, `GET /api/v1/costs/records` for the rows
   themselves, paginated and filterable by session, agent root, model, or source. See
   [the REST API](/extend/rest-api/).

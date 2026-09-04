@@ -3,7 +3,7 @@
 # What the whole account pool is carrying right now, as one pair of numbers.
 #
 # There is exactly one of these because two surfaces act on it: the "Account
-# Pool" section of /quotas renders it, and SpotGateService decides whether spot
+# Pool" section of /inference renders it, and SpotGateService decides whether spot
 # work runs on it. A second averaging written beside this one would drift, and
 # the page would show a headline number the gate was not using.
 #
@@ -21,7 +21,7 @@
 # denominator either — there is no number to average.
 class ClaudeAccountPool
   # How a reset time is written wherever one is shown. UTC, because the two
-  # surfaces that render it disagree about who is reading: /quotas rewrites it to
+  # surfaces that render it disagree about who is reading: /inference rewrites it to
   # the viewer's wall clock in the browser, and `get_spot_policy` answers an agent
   # that has no viewer timezone to be rewritten into. One constant so a change to
   # the format cannot move one surface without the other.
@@ -94,7 +94,7 @@ class ClaudeAccountPool
 
   class << self
     # The pool as it stands for `runtime`, loading the accounts and their latest
-    # readings. Callers that already hold both (the /quotas render) build the
+    # readings. Callers that already hold both (the /inference render) build the
     # instance directly instead, to avoid re-querying what the page has loaded.
     def measure(runtime: ClaudeAuthProvider::RUNTIME)
       accounts = ClaudeAccount.for_runtime(runtime).to_a

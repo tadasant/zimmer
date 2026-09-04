@@ -11,7 +11,7 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
   end
 
   # An elapsed verification window is "expired", not "failed" — the same verdict
-  # QuotasController#login_status reaches for the same condition. Both route
+  # InferenceController#login_status reaches for the same condition. Both route
   # through RuntimeLoginAttempt#fail_orphaned!, so whichever notices first, the
   # user is told the same thing.
   test "reaps a non-terminal attempt whose verification window has elapsed" do
@@ -131,7 +131,7 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     assert RuntimeLoginAttempt.exists?(recent.id)
   end
 
-  # This reaper is the only thing that resolves a /quotas login panel whose worker
+  # This reaper is the only thing that resolves a /inference login panel whose worker
   # died, and the only thing that frees the `auth` thread that login pinned. It
   # rides the lane it serves rather than the backlog that lane exists to escape.
   test "runs on the dedicated auth queue (not default)" do

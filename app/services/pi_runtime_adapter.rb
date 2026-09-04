@@ -114,7 +114,7 @@ class PiRuntimeAdapter
   # @param images [Array<Hash>, nil] image hashes with a :path key
   # @param append_system_prompt [String, nil] staged to a file and passed with
   #   `--append-system-prompt`
-  # @param model [String, nil] `provider/id` pattern (e.g. "anthropic/claude-opus-4-6")
+  # @param model [String, nil] `provider/id` pattern (e.g. "openrouter/anthropic/claude-opus-4.6")
   # @param auto_compact_window [Integer, nil] accepted for contract symmetry with
   #   ClaudeCliAdapter but unused: auto-compaction is driven by the
   #   CLAUDE_CODE_AUTO_COMPACT_WINDOW env var, which Pi has no analog for (Pi

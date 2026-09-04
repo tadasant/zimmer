@@ -7,7 +7,7 @@
 # == Why this exists
 #
 # SpotGateService produces one `detail` sentence, and it has to serve every
-# caller: a log line, a session banner, the /quotas card. On /quotas that left
+# caller: a log line, a session banner, the /inference card. On /inference that left
 # the obvious follow-up questions unanswered, and the card answered one of them
 # wrong.
 #
@@ -40,7 +40,7 @@
 class SpotHoldExplanation
   include ActionView::Helpers::DateHelper
 
-  # `label` is what the surface puts in front of the sentence. The /quotas card
+  # `label` is what the surface puts in front of the sentence. The /inference card
   # and `get_spot_policy` render the same pairs, so the two cannot drift.
   Line = Data.define(:label, :sentence)
 
@@ -61,7 +61,7 @@ class SpotHoldExplanation
 
   # @return [Array<Line>] empty when spot work is running — there is no hold to
   #   explain.
-  # Memoized: the /quotas card asks whether there are any before rendering them,
+  # Memoized: the /inference card asks whether there are any before rendering them,
   # and every sentence is rebuilt from the decision each time otherwise.
   def lines
     @lines ||= if @decision.allowed?
@@ -113,7 +113,7 @@ class SpotHoldExplanation
     subject = @held_count == 1 ? "It is" : "Each is"
     pronoun = @held_count == 1 ? "It re-checks itself" : "They re-check themselves"
     # No backticks around "waiting": this sentence is rendered as plain text on
-    # /quotas as well as into `get_spot_policy`'s markdown, and the page shows
+    # /inference as well as into `get_spot_policy`'s markdown, and the page shows
     # them literally.
     sentence = "#{subject} dormant in waiting before a turn the gate refused — a different population " \
                "from the paused one above, and asleep rather than running, so it counts toward neither " \

@@ -8,10 +8,18 @@
 # `claude_accounts`, one marked current, credentials written to a host-global
 # file, and rotation when one hits a quota wall. Pi is not authenticated that
 # way. It resolves a provider credential per request, and the credential Zimmer
-# supplies is an ordinary provider API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-# …) that reaches the process through the session's `.env` and SecretsLoader,
-# the same path every other environment secret takes. There is no Zimmer-managed
-# Pi identity, nothing to mark current, and nothing to rotate to.
+# supplies is an ordinary provider API key that reaches the process through the
+# session's `.env` and SecretsLoader, the same path every other environment
+# secret takes. There is no Zimmer-managed Pi identity, nothing to mark current,
+# and nothing to rotate to.
+#
+# The key is `OPENROUTER_API_KEY`: every Pi model ModelCatalog offers is an
+# `openrouter/*` id, so one key covers the whole list rather than one per vendor.
+# `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` still drive the direct ids kept in that
+# catalog, and nothing here stops them — they are simply not what this
+# deployment supplies. The Inference page's Pi tab is where the key is set
+# (ManagedSecret); this class still pools nothing, because a key is not an
+# account.
 #
 # So every pooling method here is a deliberate, documented no-op rather than an
 # unimplemented stub. `#accounts` returns the (always empty) `pi`-scoped relation
@@ -76,14 +84,15 @@ class PiAuthProvider < RuntimeAuthProvider
     Result.new(ok: true, error: nil)
   end
 
-  # Nothing to inject. The provider key reaches Pi through the session `.env`
-  # that PiRuntimeAdapter loads at spawn, not through a credentials file Zimmer
-  # writes.
+  # Nothing to inject. The provider key (OPENROUTER_API_KEY) reaches Pi through
+  # the session `.env` that PiRuntimeAdapter loads at spawn, not through a
+  # credentials file Zimmer writes — which is why setting it on the Pi tab is a
+  # store write and not an account activation.
   def inject_for_session!(_session = nil, _working_directory = nil)
     nil
   end
 
-  # Nothing to activate. Raising would be wrong — QuotasController only reaches
+  # Nothing to activate. Raising would be wrong — InferenceController only reaches
   # activate! for an account it found in this provider's pool, and this pool is
   # always empty, so this is unreachable in practice and returns the argument
   # unchanged rather than exploding if it ever is reached.

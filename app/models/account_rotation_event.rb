@@ -15,7 +15,7 @@
 # bootstrap, or a manual activation with nothing current) versus a source that
 # has since been deleted.
 #
-# `runtime` is denormalized for the same reason. /quotas scopes its rotation
+# `runtime` is denormalized for the same reason. /inference scopes its rotation
 # table to one runtime, and it could only do that by joining to an account that
 # still exists — so an event whose target was deleted would drop off the page it
 # exists to inform.
@@ -29,7 +29,7 @@ class AccountRotationEvent < ApplicationRecord
   # ever the residue of a deleted account.
   validates :rotated_to, presence: true, on: :create
 
-  # The one filter /quotas applies to this table. Always derivable at create time
+  # The one filter /inference applies to this table. Always derivable at create time
   # (rotated_to is required), and validated so that stays true: an event with no
   # runtime would silently vanish from the page it exists to inform.
   validates :runtime, presence: true, on: :create

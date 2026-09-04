@@ -69,7 +69,7 @@ class QueueRecoveryMode
   # The queues that keep running while the rest of the system is frozen.
   #
   # `agents` so sessions can still be started and can still run. `auth` because a
-  # human is watching the /quotas login panel for as long as RuntimeLoginJob sits
+  # human is watching the /inference login panel for as long as RuntimeLoginJob sits
   # unstarted, and re-authenticating a dead account is often exactly what an
   # operator is doing while recovery mode is on — halting it would freeze the fix
   # along with the failure. Neither is a source of background demand: `agents`

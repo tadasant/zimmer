@@ -70,7 +70,7 @@ namespace :codex_accounts do
     # Each scope covers two populations: rows still attached to an account, and
     # rows an earlier single-account delete detached, which carry no foreign key
     # and are found by the runtime denormalized onto them. This task is the only
-    # path that removes the second kind — /quotas deliberately preserves it and
+    # path that removes the second kind — /inference deliberately preserves it and
     # nothing prunes quota snapshots — so a "start over" that left it behind would
     # not be a start over.
     event_scope = AccountRotationEvent

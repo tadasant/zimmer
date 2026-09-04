@@ -126,7 +126,7 @@ class ClaudeCredentialHealth
       if recently_rejected_as_spent?(account)
         return [ :skipped, "#{owner}'s stored credentials have already been rejected as spent " \
           "(#{account.stale_refresh_failures} strike(s)) — restoring them would hand the CLI a token Anthropic refuses. " \
-          "Re-authenticate #{owner} from /quotas." ]
+          "Re-authenticate #{owner} from /inference." ]
       end
 
       return [ :healed, "the next sweep will rewrite the credentials file from #{owner}'s stored credentials" ] if dry_run
@@ -150,7 +150,7 @@ class ClaudeCredentialHealth
     # access token at spawn and never reads a credentials file, so "can a session
     # authenticate right now" is answered entirely by that row. Nothing here
     # touches the filesystem, and there is deliberately no repair: an unusable
-    # stored pair needs a human to re-authenticate from /quotas, and saying so is
+    # stored pair needs a human to re-authenticate from /inference, and saying so is
     # more useful than rewriting a file nobody reads.
     def database_status
       account = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
@@ -169,7 +169,7 @@ class ClaudeCredentialHealth
       else
         Status.new(state: :corrupt,
           detail: "#{account.email} is the current account but its stored tokens are incomplete — every session " \
-                  "spawned from it is logged out. Re-authenticate #{account.email} from /quotas.",
+                  "spawned from it is logged out. Re-authenticate #{account.email} from /inference.",
           owner_email: account.email, checked_at: now)
       end
     end

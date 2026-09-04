@@ -1148,7 +1148,7 @@ class ClaudeAccountTest < ActiveSupport::TestCase
     account = claude_accounts(:primary)
     account.update_columns(stale_refresh_failures: 2, last_stale_refresh_failure_at: 5.minutes.ago)
 
-    # What a human re-authenticating through /quotas does, and what a filesystem
+    # What a human re-authenticating through /inference does, and what a filesystem
     # sync does. Neither goes through the refresh path, and both start a new chain.
     reauthed = account.oauth_config.deep_dup
     reauthed["credentials_json"]["claudeAiOauth"]["refreshToken"] = "token-from-a-fresh-login"

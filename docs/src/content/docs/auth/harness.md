@@ -161,7 +161,7 @@ The one thing the rollback does **not** restore is the operator-facing reconcili
 `bin/rails claude_accounts:add` used to perform, which now points at the Authenticate button instead. Asking an operator to adjudicate between
 two stores was never the right answer to a disagreement, and the banner's own copy told them to run
 a `bin/rails` command on the worker — which
-[production invariant 11](/operate/deploying/) forbids. `/quotas` now has two verbs for an account,
+[production invariant 11](/operate/deploying/) forbids. `/inference` now has two verbs for an account,
 **Authenticate** and **Switch**, and nothing that asks anyone to reconcile, adopt or sync.
 
 ## Deleting an account keeps its history
@@ -173,7 +173,7 @@ rather than destroyed.
 
 That is not tidiness, it is a diagnosis problem. The operator response to a misbehaving
 account is "delete it and re-authenticate" — the two buttons sit side by side on every
-`/quotas` card — and the cascade used to take the evidence with it. On 2026-07-31 an
+`/inference` card — and the cascade used to take the evidence with it. On 2026-07-31 an
 account was deleted and re-added, and the replacement row read `Quota snapshots: None`
 plus one login attempt: indistinguishable from an account that had never once completed
 a call. The row was thirty minutes old and said nothing about the credential at all.
@@ -189,9 +189,9 @@ evidence. Each carries the identity at write time:
 | --- | --- | --- |
 | `claude_account_quota_snapshots` | `account_email`, `account_runtime` | a reading attributable to nobody answers nothing |
 | `runtime_login_attempts` | `account_email` | "did this credential ever log in?" outlives the account, within the 1-day attempt retention window `CleanupRuntimeLoginAttemptsJob` already enforced |
-| `account_rotation_events` | `rotated_from_email`, `rotated_to_email`, `runtime` | the pool moved *from* and *to* something, and `/quotas` filters the table by runtime |
+| `account_rotation_events` | `rotated_from_email`, `rotated_to_email`, `runtime` | the pool moved *from* and *to* something, and `/inference` filters the table by runtime |
 
-The rotation table's `runtime` column is load-bearing. `/quotas` used to scope rotation
+The rotation table's `runtime` column is load-bearing. `/inference` used to scope rotation
 history by joining to the target account's runtime, which an event whose target has been
 deleted cannot satisfy — so preserving the event without it would have dropped the event
 off the page it exists to inform. The preserved emails also restore a distinction the old
@@ -282,7 +282,7 @@ wrong answer about a credentials file that never changed.
 
 Nothing derives an identity from `~/.claude.json` any more. The two readers that touch it use it only
 to **contradict** a claim the marker makes (`filesystem_identity_agrees?`) or under an exact email
-match (`backfill_identity_from_filesystem!`). The path that used to adopt it — the `/quotas` banner
+match (`backfill_identity_from_filesystem!`). The path that used to adopt it — the `/inference` banner
 and the 5-minute `reconcile_filesystem_identity!` sweep — is gone; see
 [Session-scoped credentials](#session-scoped-credentials-the-db-owns-the-chain).
 
@@ -469,7 +469,7 @@ So the outgoing account is labelled only when something observed says so:
 
 | Observed | Outcome |
 | --- | --- |
-| already `needs_reauth`, or already `quota_exceeded` | left alone — the two statuses drive different recoveries, and marking twice counts one wall as two quota hits on `/quotas` |
+| already `needs_reauth`, or already `quota_exceeded` | left alone — the two statuses drive different recoveries, and marking twice counts one wall as two quota hits on `/inference` |
 | the reading step 2 just took says either window is spent | `quota_exceeded`, whatever the rotation was for — a live reading is the strongest evidence there is |
 | the caller rotated **for** a quota wall (`reason: "quota_exceeded"`) | `quota_exceeded` — it watched the runtime refuse the request, which is evidence even when the probe could not be taken |
 | anything else | left `active` |
@@ -497,7 +497,7 @@ exceeded across all Claude Code accounts"* against a noon reset estimate — ten
 
 The proof the labels were invented: `QuotaResetCheckerJob` restored all three accounts minutes
 later, on their own readings, and it only restores an account whose snapshot is `windows_clear?`.
-The `/quotas` badge had been working around these labels since
+The `/inference` badge had been working around these labels since
 [#426](https://github.com/tadasant/zimmer/issues/426); the parking decision was still reading them
 raw.
 :::
@@ -509,7 +509,7 @@ invalidates the old one. Present a spent one and Anthropic answers `invalid_gran
 `refresh_token_reused` — and neither response can tell you whether the credential is dead or whether
 somebody else simply got there first.
 
-`ClaudeAccount#refresh_token!` has nine call sites (the quotas page ×4, `QuotaResetCheckerJob` ×2,
+`ClaudeAccount#refresh_token!` has nine call sites (the Inference page ×4, `QuotaResetCheckerJob` ×2,
 rotation, activation, and the 5-minute `RefreshRuntimeAuthTokensJob` sweep), so both protections live
 in that one method rather than at each of them:
 
@@ -546,7 +546,7 @@ sites and several of them can present the same spent value within minutes of eac
 rejection within 15 minutes of the last is the same episode and counts once. Three strikes therefore
 take at least half an hour. A streak expires six hours after its *most recent* strike, and any new
 refresh token — from a successful refresh, a filesystem sync, or a human re-authenticating on
-`/quotas` — resets the count, because a new token is a new chain. The count lives on
+`/inference` — resets the count, because a new token is a new chain. The count lives on
 `claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at` and is shown on the
 account's Administrate record page.
 
@@ -592,7 +592,7 @@ has passed, or its utilization has dropped below 100% — except that a weekly w
 `AuthOutageParkService.wake_parked_sessions!` so the sessions that were blocked on those accounts
 resume in the same sweep — see [When the pool runs dry](#when-the-pool-runs-dry).
 
-### The status column is sticky; the badge on /quotas is not
+### The status column is sticky; the badge on Inference is not
 
 `ClaudeAccount#status` is a durable column. Something writes `quota_exceeded` onto it and only the
 15-minute sweep above ever writes `active` back. That makes it a claim about the past, and two things
@@ -611,7 +611,7 @@ routinely leave it stale:
 So the page does not render the column unquestioned. `ClaudeAccount#effective_status` derives what an
 account *presents* from `windows_clear?` on its own latest snapshot — the same predicate the sweep
 restores on — and the account-level badge and the pool tallies both read that. It is the
-account-level counterpart of the staleness rule `QuotasHelper#window_status_badge` already applies
+account-level counterpart of the staleness rule `InferenceHelper#window_status_badge` already applies
 per window: a recorded status describes the window that was open when the reading was taken.
 
 The derivation runs one way, and only one. It softens `quota_exceeded` to `active` when the reading
@@ -622,8 +622,8 @@ snapshot to judge by, which is every Codex account.
 Every path that PICKS an account to spawn with keeps acting on the durable column —
 `ClaudeAccount.available`, `AccountRotationService`, and the wake sweep that is about to start a
 session — because a reading minutes old is not something to hand a session on. The column converges
-separately: `QuotasController#auto_heal_accounts` runs on page load as well as on refresh, from the
-same predicate, so looking at /quotas is the other thing that can restore an account when the sweep
+separately: `InferenceController#auto_heal_accounts` runs on page load as well as on refresh, from the
+same predicate, so looking at /inference is the other thing that can restore an account when the sweep
 is the thing that has stopped. Only the account — the sessions parked on it still wait for the
 sweep's `wake_parked_sessions!` or their own timer, because resuming sessions is not something a
 page render should do.
@@ -639,14 +639,14 @@ permanently invalid, the pool quietly stops drawing on the account, and everythi
 with a smaller pool. Nothing surfaces it: the failure is logged at `.warn` precisely so it does *not*
 page `#eng-alerts` (a channel alert for a condition only a human can clear is noise), and
 `recover_needs_reauth` re-probes it forever without ever succeeding. The account just sits dead on
-`/quotas` until somebody happens to open the page.
+`/inference` until somebody happens to open the page.
 
 So Zimmer tells you — but it does not compose the message itself. When a `ClaudeAccount` crosses
 **into** `needs_reauth`, an `after_update_commit` callback emits the `account_needs_reauth`
 [Zimmer event](/sessions/triggers/), and whatever `ao_event` Triggers watch that event fire. The one
 this deployment ships spawns a `general-agent` session holding the `slack-workspace` MCP server, with
 a prompt telling it to DM the operator, name the account, and say that fixing it means pressing
-"Authenticate" on `/quotas`.
+"Authenticate" on `/inference`.
 
 The indirection is the point, and it replaced a native DM that never arrived. That path was
 `ClaudeAccount` → `AccountReauthAlertJob` → `AccountReauthNotifier` → `AlertService.dm_operator` →
@@ -679,7 +679,7 @@ forget to alert — including the Administrate admin form, which no service-leve
 writes deliberately do *not* alert, and both fall out of that placement:
 
 - **Creation.** `after_update_commit` does not fire on insert, so the credential-less account
-  `/quotas` seeds directly into `needs_reauth` stays silent. The human is on the page adding it.
+  `/inference` seeds directly into `needs_reauth` stays silent. The human is on the page adding it.
 - **Recovery restores.** `recover_needs_reauth` flips an already-dead account to `active` so
   `refresh_token!` is not status-blocked, then writes `needs_reauth` back with `update_columns` when
   the probe fails. `update_columns` skips callbacks, so that no-op round trip is silent — and the
@@ -695,7 +695,7 @@ It lives in the database rather than in `Rails.cache`, where its predecessor liv
 cache-backed suppressor **fails open**: with Redis unreachable, every crossing alerts. Under the old
 design that was a duplicate DM. Under this one it is a spawned agent session per crossing — and an
 account crosses into `needs_reauth` more often than it breaks, because plenty of machinery writes
-`active` back onto a dead row (the auto-heal sweep on `/quotas`, a recovery probe that happens to
+`active` back onto a dead row (the auto-heal sweep on `/inference`, a recovery probe that happens to
 succeed) and `ensure_active_account!` runs before every session spawn. The column is also readable
 after the fact, which a cache key never was.
 
@@ -747,7 +747,7 @@ Two changes close that, and they read the same predicate —
 `ClaudeAccountQuotaSnapshot#seven_day_window_spent?`:
 
 - **`QuotaSnapshotService` marks the account as the reading lands**, whichever path took it —
-  rotation, a `/quotas` page view, the reset checker's own probe. A reading that says the week is
+  rotation, a `/inference` page view, the reset checker's own probe. A reading that says the week is
   gone takes the account out of `available` there and then. It only ever moves an `active` account:
   `needs_reauth` is a different failure with a different recovery, and relabelling it would make an
   unusable pool look merely throttled.
@@ -785,7 +785,7 @@ boolean. That is what lets bootstrap refuse an account whose weekly window is sp
 has ever probed — the case stored evidence cannot cover — and it leaves rotation with evidence about
 an account that has never been current.
 
-### What `/quotas` reports for the pool
+### What `/inference` reports for the pool
 
 Anthropic meters two windows per account, 5-hour and 7-day, and the page shows both — per account,
 and averaged across the pool.
@@ -808,7 +808,7 @@ recorded — that status described a window that no longer exists, and leaving i
 beside the 0% the same snapshot renders. Before the reset the card names the wait instead: *"Resets
 in 1d 4h"*, and *"Resets in &lt; 1m"* through the last minute, which has no whole unit left to report.
 
-That wait is a value as of the render, not a live countdown. `/quotas` is a static page with no
+That wait is a value as of the render, not a live countdown. `/inference` is a static page with no
 poller on the cards, so every figure — the wait, the bar, the badge — is the reading as it stood when
 you loaded it and stays where you left it. *"Resets in &lt; 1m"* is therefore the one that goes stale
 fastest, on a tab left open. Reload for the same snapshot re-read against the clock, or hit Refresh
@@ -825,14 +825,14 @@ it to decide what an account contributes, `QuotaSnapshotService` reads it to mar
 it clear.
 
 Its counterpart is `#windows_clear?`, on the same model for the same reason: `QuotaResetCheckerJob`
-restores an account on it, `QuotasController#auto_heal_accounts` heals one on it, and
-`ClaudeAccount#effective_status` decides what badge /quotas renders from it. It applies the
+restores an account on it, `InferenceController#auto_heal_accounts` heals one on it, and
+`ClaudeAccount#effective_status` decides what badge /inference renders from it. It applies the
 status-outranks-the-counter rule to **both** windows. The 5-hour one was counter-only until the badge
 started deriving from this predicate, at which point a window the API reports as `rejected` at 90%
 would have rendered "Rejected" beside an account badge reading "Active".
 
 `pool_utilization_5h` itself is display-only — no scheduler or rotation path reads it. The underlying
-snapshot numbers are not: `QuotaResetCheckerJob` and `QuotasController#auto_heal_accounts` flip
+snapshot numbers are not: `QuotaResetCheckerJob` and `InferenceController#auto_heal_accounts` flip
 accounts back to `active` from them, and `QuotaSnapshotService` flips them out.
 
 :::danger[Rotation is triggered by matching an English error string]
@@ -947,7 +947,7 @@ The branch is chosen by comparing the pool's current account against
 `metadata["auth_identity_email"]` — the identity the session's process was spawned with, recorded by
 `AgentSessionJob` before each spawn and re-recorded whenever the coordinator or the quota path moves
 this session onto a new account. It is a per-session record, so it can lag: nothing writes it when
-*another* session rotates the pool, or when an operator switches accounts from the quotas page. The
+*another* session rotates the pool, or when an operator switches accounts from the Inference page. The
 consequence is bounded and named under
 [a stale spawn identity](/limitations/#a-stale-spawn-identity-can-cost-one-extra-respawn).
 
@@ -1008,7 +1008,7 @@ This ordering is load-bearing. A refresh replaces the account's access token, in
 already present in every running session environment. Using refresh as the first "probe" caused an
 auth-recovery cascade: one stale process refreshed the healthy current account, every sibling began
 reporting "Not logged in", and each sibling refreshed it again before parking because the other
-accounts were quota-capped. `/quotas` correctly showed the current account with room throughout;
+accounts were quota-capped. `/inference` correctly showed the current account with room throughout;
 recovery made that room unreachable to the processes it had just invalidated.
 
 Shared-file mode retains refresh-before-rotation classification: the CLI can own a newer refresh
@@ -1340,22 +1340,22 @@ The "Authenticate" button drives a PTY-screen-scraping flow:
 ```mermaid
 sequenceDiagram
     participant U as You (browser)
-    participant W as Web (QuotasController)
+    participant W as Web (InferenceController)
     participant DB as RuntimeLoginAttempt
     participant J as RuntimeLoginJob (worker)
     participant CLI as claude / codex (PTY)
 
-    U->>W: POST /quotas/login (start)
+    U->>W: POST /inference/login (start)
     W->>DB: create attempt (status: starting)
     W->>J: enqueue RuntimeLoginJob
     J->>CLI: PTY.spawn("claude auth login --claudeai")<br/>CLAUDE_CONFIG_DIR = scratch dir
     CLI-->>J: terminal output
     J->>J: strip ANSI, match URL_REGEX
     J->>DB: write verification_url (status: awaiting_user)
-    U->>W: poll GET /quotas/login/:id
+    U->>W: poll GET /inference/login/:id
     W-->>U: show the URL
     U->>U: authorize in the browser, copy the code
-    U->>W: POST /quotas/login/:id/code
+    U->>W: POST /inference/login/:id/code
     W->>DB: write pasted_code
     Note over J,DB: job polls DB with .uncached —<br/>the AR query cache would hide<br/>a cross-process write
     J->>CLI: write code to stdin

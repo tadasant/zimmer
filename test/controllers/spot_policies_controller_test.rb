@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# The spot gate policy form, which posts from the card on /quotas.
+# The spot gate policy form, which posts from the card on /inference.
 class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
   setup { AppSetting.delete_all }
 
@@ -13,7 +13,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
       spot_reserve_weekly_pct: "70"
     } }
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
     assert_match(/Spot policy updated/, flash[:notice])
     setting = AppSetting.current
     assert setting.spot_gating_enabled
@@ -30,7 +30,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
       spot_reserve_weekly_pct: "80"
     } }
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
     assert_not AppSetting.current.spot_gating_enabled
   end
 
@@ -43,7 +43,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
       spot_reserve_weekly_pct: "80"
     } }
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
     assert_match(/not saved/, flash[:alert])
     assert_equal 80, AppSetting.current.spot_reserve_five_hour_pct
   end
@@ -56,7 +56,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
 
     patch spot_policy_path, params: { app_setting: { spot_reserve_weekly_pct: "55" } }
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
     setting = AppSetting.current
     assert setting.spot_gating_enabled, "an omitted toggle must not turn gating off"
     assert_equal 55, setting.spot_reserve_weekly_pct
@@ -72,7 +72,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
       spot_max_concurrent_sessions: "4"
     } }
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
     assert_equal 4, AppSetting.current.spot_max_concurrent_sessions
   end
 
@@ -88,7 +88,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
   test "a scalar app_setting param is refused rather than raising" do
     patch spot_policy_path, params: { app_setting: "nonsense" }
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
   end
 
   # The session-defaults form on /settings posts to its own endpoint. Neither

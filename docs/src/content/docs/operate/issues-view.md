@@ -4,7 +4,7 @@ description: The fleet's work backlog joined to live GitHub issue state across f
 ---
 
 The [work backlog](/operate/work-backlog/) is what the fleet works from. GitHub is where the work
-actually lives. **Issues** (`/issues`, between Quotas and Settings) is the one page that shows both,
+actually lives. **Issues** (`/issues`, between Inference and Settings) is the one page that shows both,
 joined on the issue URL: what is queued and in what order, what is running right now, what is open
 on GitHub that the queue has never seen, and whether the whole pile is getting smaller.
 

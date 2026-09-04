@@ -2,8 +2,8 @@
 
 require "test_helper"
 
-class QuotasHelperTest < ActionView::TestCase
-  include QuotasHelper
+class InferenceHelperTest < ActionView::TestCase
+  include InferenceHelper
 
   # effective_utilization tests
 

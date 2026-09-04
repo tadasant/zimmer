@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Tracks one in-flight UI-driven login ("Authenticate" button on the Quotas
+# Tracks one in-flight UI-driven login ("Authenticate" button on the Inference
 # screen) for a ClaudeAccount. See CreateRuntimeLoginAttempts for the role this
 # row plays as the cross-container message bus between the web controller and
 # the RuntimeLoginJob running in the worker.
@@ -87,7 +87,7 @@ class RuntimeLoginAttempt < ApplicationRecord
 
   # A non-terminal attempt nothing will ever advance again: its verification
   # window elapsed, or the worker driving it went away. Both must resolve to a
-  # terminal state or the Quotas panel polls a spinner forever.
+  # terminal state or the Inference panel polls a spinner forever.
   def orphaned?
     !terminal? && (expired_window? || stalled?)
   end

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Drives one runtime's interactive login CLI for the UI-driven "Authenticate"
-# flow on the Quotas screen. A driver is a stateless strategy object: it knows
+# flow on the Inference screen. A driver is a stateless strategy object: it knows
 # the CLI command to spawn, the environment that isolates that CLI to a scratch
 # config dir, how to recognize the verification URL/code in the CLI's live
 # output, and how to capture the resulting tokens into a ClaudeAccount.
@@ -142,7 +142,7 @@ class RuntimeLoginDriver
   # "did not produce credentials". The login CLIs print a human-readable reason
   # ("Login failed: getaddrinfo ESERVFAIL platform.claude.com", "Invalid code",
   # an expired-code notice) right before they give up; surfacing it turns an
-  # undiagnosable failure into an actionable one in the Quotas login panel.
+  # undiagnosable failure into an actionable one in the Inference login panel.
   # Returns a short trimmed string, or nil when the buffer has no recognizable
   # failure line (so we never surface the verification URL/prompt as a "reason").
   # @return [String, nil]

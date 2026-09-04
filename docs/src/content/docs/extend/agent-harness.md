@@ -294,6 +294,25 @@ is why the JSON format hooks live in the shared `McpJsonConfigFormat` module.
 `@tadasant/pi-hooks` runs AIR hooks and `@tadasant/pi-plugins` resolves AIR
 plugins; both are configured by the files `PiAirBridge` generates, described next.
 
+**Pi supplies no identity either, and the key is OpenRouter's.** Claude Code and
+Codex both pool subscription accounts that Zimmer rotates; Pi resolves a provider
+credential per request from the session environment, so `PiAuthProvider` pools
+nothing and every one of its methods is a documented no-op. The credential Zimmer
+supplies is `OPENROUTER_API_KEY`: every Pi model in `ModelCatalog` is an
+`openrouter/*` id, so one key covers the whole list rather than one per vendor.
+`openrouter` is a first-class provider in the catalog bundled with the pinned Pi
+— no `models.json` custom-provider entry is needed — and the ids carry the vendor
+after it (`openrouter/anthropic/claude-opus-4.6`). The direct `anthropic/*` and
+`openai/*` ids are kept in the catalog and still work wherever
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is set; they are simply not what this
+deployment feeds. The key is set on the [Inference page's Pi
+tab](/operate/secrets-parameter-store/#a-writer-identity-for-the-pi-tab).
+
+Note when refreshing that list: `pi --list-models` only prints providers whose
+credential currently resolves, so run it with `OPENROUTER_API_KEY` set or the
+`openrouter` rows are silently absent and the catalog looks much smaller than it
+is.
+
 **Loading an extension is not the same as configuring it**, and for hooks and
 plugins Zimmer has to do both. `air prepare pi` ignores hook entries outright and
 honors a plugin only as composition sugar for its skills, so after prepare there

@@ -4810,7 +4810,7 @@ class SessionsController < ApplicationController
   #
   # Only an explicit "spot" writes anything. An untouched submission returns nil
   # so the row's `scheduling_class` stays NULL and the class keeps deriving from
-  # the `web_ui` genesis on every read, which is what lets /quotas move these
+  # the `web_ui` genesis on every read, which is what lets /inference move these
   # sessions by moving that genesis. Stamping "priority" here instead would pin
   # the shipped default onto every Quick Router session and sever that link.
   def quick_router_scheduling_class

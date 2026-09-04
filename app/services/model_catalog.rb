@@ -51,23 +51,45 @@ class ModelCatalog
     ],
     # Pi model ids are provider-qualified (`provider/id`), which is the form Pi's
     # `--model` flag accepts directly — so no separate `--provider` flag is needed
-    # and the id a user picks is passed through verbatim.
+    # and the id a user picks is passed through verbatim. OpenRouter is itself a
+    # provider, so its ids carry the vendor as well: `openrouter/anthropic/...`.
+    #
+    # **Everything here goes through OpenRouter, and that is one key rather than
+    # several.** `openrouter` is a first-class provider in the catalog bundled
+    # with the pinned Pi — no `models.json` custom-provider entry is needed — and
+    # it reads `OPENROUTER_API_KEY`. Pi still honours ANTHROPIC_API_KEY and
+    # OPENAI_API_KEY for `anthropic/*` and `openai/*` ids if either is set; those
+    # paths are not removed, they are simply not what this deployment feeds. The
+    # key is managed from the Inference page's Pi tab (ManagedSecret).
     #
     # Every id below is present in the model catalog bundled with the pinned Pi
     # CLI (see Dockerfile.base), which is the authority for what `--model`
     # resolves. Refresh discipline: re-check against `pi --list-models` when the
     # pinned Pi version is bumped, and mark a retired model deprecated in its
     # label rather than deleting it, so sessions pinned to it keep validating.
+    # Note that `--list-models` only prints providers whose credential currently
+    # resolves, so run it with OPENROUTER_API_KEY set or the openrouter rows are
+    # silently absent.
     #
-    # Pi resolves the provider credential per request from the session
-    # environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...), so nothing here
-    # requires an interactive login and `requires_oauth` is uniformly false.
+    # Nothing here requires an interactive login, so `requires_oauth` is
+    # uniformly false.
     "pi" => [
-      { id: "anthropic/claude-opus-4-6", label: "claude-opus-4-6 (default)", default: true, requires_oauth: false },
-      { id: "anthropic/claude-sonnet-4-6", label: "claude-sonnet-4-6", requires_oauth: false },
-      { id: "anthropic/claude-haiku-4-5", label: "claude-haiku-4-5 (fast)", requires_oauth: false },
-      { id: "openai/gpt-5.6-terra", label: "gpt-5.6-terra", requires_oauth: false },
-      { id: "openai/gpt-5.4-mini", label: "gpt-5.4-mini (fast)", requires_oauth: false }
+      { id: "openrouter/anthropic/claude-opus-4.6", label: "claude-opus-4.6 (default)", default: true, requires_oauth: false },
+      { id: "openrouter/anthropic/claude-sonnet-4.6", label: "claude-sonnet-4.6", requires_oauth: false },
+      { id: "openrouter/anthropic/claude-haiku-4.5", label: "claude-haiku-4.5 (fast)", requires_oauth: false },
+      { id: "openrouter/openai/gpt-5.4", label: "gpt-5.4", requires_oauth: false },
+      { id: "openrouter/openai/gpt-5.4-mini", label: "gpt-5.4-mini (fast)", requires_oauth: false },
+      { id: "openrouter/google/gemini-3.5-flash", label: "gemini-3.5-flash (fast)", requires_oauth: false },
+      # The direct-to-vendor ids this catalog offered before OpenRouter became
+      # the path. Kept, not deleted: sessions pinned to one of them still have to
+      # validate (this file's own refresh discipline), and the paths still work
+      # wherever ANTHROPIC_API_KEY / OPENAI_API_KEY is set. The label says which
+      # key each needs, because on this deployment neither is.
+      { id: "anthropic/claude-opus-4-6", label: "claude-opus-4-6 (direct, needs ANTHROPIC_API_KEY)", requires_oauth: false },
+      { id: "anthropic/claude-sonnet-4-6", label: "claude-sonnet-4-6 (direct, needs ANTHROPIC_API_KEY)", requires_oauth: false },
+      { id: "anthropic/claude-haiku-4-5", label: "claude-haiku-4-5 (direct, needs ANTHROPIC_API_KEY)", requires_oauth: false },
+      { id: "openai/gpt-5.6-terra", label: "gpt-5.6-terra (direct, needs OPENAI_API_KEY)", requires_oauth: false },
+      { id: "openai/gpt-5.4-mini", label: "gpt-5.4-mini (direct, needs OPENAI_API_KEY)", requires_oauth: false }
     ]
   }.freeze
 

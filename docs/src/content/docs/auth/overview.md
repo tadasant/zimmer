@@ -11,7 +11,7 @@ which is most of the battle.
 ```mermaid
 flowchart TB
     subgraph none["1 · Human → Zimmer: NOTHING (except /supervisor)"]
-        W["Web UI · /quotas · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
+        W["Web UI · /inference · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
         SUP["/supervisor admin panel<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
     end
     subgraph api["2 · Client → REST API"]
@@ -41,7 +41,7 @@ auth, no Devise, no OmniAuth. There are no login routes. There is no `User` mode
 Everything is open to anyone who can reach the host:
 
 - the session dashboard and every transcript,
-- `/settings`, `/quotas` (including the OAuth login flow),
+- `/settings`, `/inference` (including the OAuth login flow),
 - the GoodJob dashboard at `/jobs`.
 
 ### The one exception: `/supervisor` is behind HTTP Basic
@@ -98,7 +98,7 @@ closed at the edge, and the app is reachable only over the tailnet, at `http://z
 
 The sharp edge is real. Any deployment that exposes port 80 (a reverse proxy, a public load
 balancer, a well-meaning `docker run -p 80:80` on a box with a public IP) hands an anonymous visitor
-every session transcript and the `/quotas` OAuth flow. The Basic realm narrows the worst of it — the
+every session transcript and the `/inference` OAuth flow. The Basic realm narrows the worst of it — the
 token-bearing dashboards — but it is one credential in front of one panel, not a login system.
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
 :::

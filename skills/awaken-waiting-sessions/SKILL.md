@@ -5,7 +5,7 @@ description: >
   Hand out compute that has just become available. Fires when a quota outage
   clears: decide which `waiting` sessions to start now and start them, highest
   precedence first, within the spot utilization thresholds and the
-  max-concurrency ceiling set on /quotas. This is the wake policy for
+  max-concurrency ceiling set on /inference. This is the wake policy for
   quota-parked spot work — one fleet-maintenance session runs it per recovery.
   Not a general session-management skill.
 user-invocable: false
@@ -88,7 +88,7 @@ already tells you: honour the `Paused: yes` marker on the way past.
 - **Do not start priority sessions.** Zimmer's own sweep does that, and racing it
   double-starts work.
 - **Do not raise the ceiling or the thresholds** to fit more in. They are the
-  operator's budget, and /quotas is where a human changes them.
+  operator's budget, and /inference is where a human changes them.
 - **Do not retry a session that fails to start.** Report it and move on; a
   session that cannot start is a separate problem from a queue that needs
   draining.
