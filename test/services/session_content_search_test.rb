@@ -167,6 +167,22 @@ class SessionContentSearchTest < ActiveSupport::TestCase
       "_ must not act as a wildcard for the caller"
   end
 
+  test "a multi-word query is one phrase, not a loose OR over its words" do
+    phrase = create_session(title: "epsilon", said: "the YC interview went well", created_at: 5.hours.ago)
+    apart = create_session(title: "zeta", said: "the interview is at YC tomorrow", created_at: 6.hours.ago)
+    scope = Session.where(id: [ phrase.id, apart.id ])
+
+    assert_equal [ phrase.id ],
+      SessionContentSearch.new(scope: scope, query: "YC interview").call.matched_ids,
+      "a session carrying both words apart does not carry the phrase; returning it turns a two-word " \
+      "search into a shortlist the caller has to re-grep by hand (#405)"
+    assert_empty SessionContentSearch.new(scope: scope, query: "interview YC").call.matched_ids,
+      "the words have to be adjacent AND in order — the query is one substring, not a set"
+    assert_equal [ phrase.id, apart.id ],
+      SessionContentSearch.new(scope: scope, query: "interview").call.matched_ids,
+      "one word still matches wherever it appears, newest first"
+  end
+
   test "eager-loaded associations on the caller's scope do not leak into the id pluck" do
     scope = Session.includes(:category).where(id: [ @old.id, @new.id ])
 

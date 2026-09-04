@@ -397,7 +397,9 @@ posted so the comment poller never reads one back as if a human wrote it.
 
 `GET /api/v1/sessions/search?search_contents=true` and the `quick_search_sessions` MCP tool
 (`search_contents: true`) both match `sessions.transcript`, so a session can be found by a phrase
-from its conversation rather than by its title.
+from its conversation rather than by its title. A multi-word query is matched as one literal
+substring — [the words have to be adjacent and in order](/extend/rest-api/#searching-transcript-contents),
+against the transcript's stored JSON.
 
 The column is `json` with no index a substring match can use, so the scan is **bounded rather than
 best-effort**: `SessionContentSearch` walks candidates newest-first in chunks, stops at the result

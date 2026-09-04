@@ -2050,6 +2050,25 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "UniqueSearchableTitle", JSON.parse(response.body)["query"]
   end
 
+  test "a multi-word query is a phrase on the title path too" do
+    phrase = Session.create!(
+      title: "Kestrel manoeuvre", prompt: "p", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :needs_input
+    )
+    apart = Session.create!(
+      title: "Kestrel, and later a manoeuvre", prompt: "p", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :needs_input
+    )
+
+    get search_api_v1_sessions_path, params: { q: "kestrel manoeuvre" }, headers: @headers
+    assert_response :success
+
+    ids = JSON.parse(response.body)["sessions"].map { |s| s["id"] }
+    assert_includes ids, phrase.id
+    assert_not_includes ids, apart.id,
+      "the cheap search binds the whole query as one substring, exactly as the transcript one does"
+  end
+
   test "content search reports how far it scanned instead of a total count" do
     get search_api_v1_sessions_path,
       params: { q: "I'd be happy to help", search_contents: "true" }, headers: @headers

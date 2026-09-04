@@ -189,7 +189,10 @@ API for it. That scan is bounded rather than best-effort (the `transcript` colum
 substring match can use), so it walks candidates newest-first, stops at `per_page` matches or a
 wall-clock budget, orders results newest-first regardless of `order`, and reports **no total count**.
 When it stops early it says so and returns a `scan_cursor`; pass that back with the same query and
-filters to continue from exactly where it stopped. An empty result that says "scan incomplete" means
+filters to continue from exactly where it stopped. The query is matched as one case-insensitive
+substring, so a multi-word `query` is a **phrase** — the words must be adjacent and in order, which
+is what makes a search precise enough to confirm a session said something rather than shortlist the
+ones that mentioned each word somewhere. An empty result that says "scan incomplete" means
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
 hundreds of megabytes and up to ten minutes stale.
 

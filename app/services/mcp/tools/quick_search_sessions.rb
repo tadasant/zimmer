@@ -65,7 +65,7 @@ module Mcp
           query: {
             type: "string",
             maxLength: MAX_QUERY_LENGTH,
-            description: "Search query to find sessions. Substring match (case-insensitive) against the session title and the metadata/custom_metadata JSON — not against the prompt. Add search_contents: true to match transcript text too. Leave empty to list all sessions."
+            description: "Search query to find sessions. Substring match (case-insensitive) against the session title and the metadata/custom_metadata JSON — not against the prompt. Add search_contents: true to match transcript text too. The whole query is one substring, so several words are a PHRASE: they must appear adjacent and in that order, with no tokenising, OR-ing or stemming. Transcripts are matched as stored JSON, so keep a phrase short and within one line — one broken across a line break does not match — and expect a hit anywhere in the record, including a tool argument or a file path. A phrase that finds nothing means not-found, never proof that the session did not say it. Leave empty to list all sessions."
           },
           search_contents: {
             type: "boolean",
