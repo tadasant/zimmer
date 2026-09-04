@@ -95,7 +95,9 @@ the connection.
 carries `get_session`, `get_session_provenance`, `get_configs`, `send_push_notification`,
 `wake_me_up_later`, `wake_me_up_when_session_changes_state`, and a **restricted `action_session`** —
 the same tool name, but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`,
-`pause_into_spot_queue`, and `archive`.
+`pause_into_spot_queue`, `message_parent`, and `archive`. All but one of those are narrowings of the
+full surface; [`message_parent`](#message_parent-the-one-action-that-exists-only-here) is on this
+surface and on no other.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
@@ -434,6 +436,68 @@ an absence, on both sides of a session's life: `change_mcp_servers` with `[]` cl
 and at change time. `start_session` names the same four lists (`mcp_servers`, `skills`, `plugins`,
 `hooks`), so a hook that is noise for the task is dropped at launch rather than corrected by a
 follow-up `change_hooks` — which, for a clone-only session, would race the job start.
+
+### `message_parent`: the one action that exists only here
+
+Every other action on the `self_session` `action_session` is a subset of the full one. `message_parent`
+is the exception, and it is the exception because it *cannot* be defined anywhere else: it takes no
+target. The caller names itself, and Zimmer reads `parent_session_id` to find who to deliver to.
+
+That is the whole safety property. A "message any session" action on the server injected into every
+session would be a real privilege grant; "report to whoever started me" is not, because the edge it
+travels already exists and Zimmer, not the caller, decides where it goes. The general form is
+`follow_up` on the full `sessions` surface, and it stays there.
+
+It closes an asymmetry rather than adding a channel. A parent has always been able to reach a child
+(`action_session` → `follow_up`, recording an [uncle edge](/sessions/hierarchy-and-human-messages/)
+for the lineage). A child had no route back at all: its final message reaches its parent only if that
+parent happens to be polling `get_session`, and a parent that archived, or one asleep on a wake it
+will not get, never learns. So a session handed a goal it could not accomplish — the wrong agent
+root, or a missing MCP server or credential — had nowhere to report that but a GitHub issue.
+
+```jsonc
+{
+  "action": "message_parent",
+  "session_id": 4211,              // your own id
+  "message": "The deploy scripts are in the infra root; I only have the app repo.",
+  "reason": "wrong_scope"          // or "missing_tools", or "other"
+}
+```
+
+`reason` is a closed list because a parent branches on it: `wrong_scope` (the work belongs to a
+different agent root), `missing_tools` (an MCP server, credential or privilege the session was not
+given), `other`. What the parent reads is the child's own words wrapped in Zimmer's framing — the
+child's id, title, URL and reason code — so a report is never mistaken for a human speaking.
+
+Delivery is the ordinary follow-up routing rather than a second path: a `running` parent takes the
+report on its queue and reads it at the end of its turn, and a `waiting` or `needs_input` parent
+takes it now. **Queuing is the default**, and `force_immediate` is opt-in, because the parent of a
+stuck child is usually a router mid-delegation: ending that turn costs the other delegations in
+flight, while the news itself keeps a few minutes. Waking a sleeping parent consumes its one-time
+wake triggers, exactly as any other follow-up does.
+
+Because it is the ordinary `EnqueuedMessage` queue with `origin: caller`, the report is inside the
+ordinary accounting: the parent cannot archive over an unread one without being refused, and a forced
+archive retires it to `undelivered` and pages. It cannot be accepted and then silently lost.
+
+An **archived** parent is refused rather than delivered to, since nothing delivers a message to a
+session in the trash — the error names `unarchive_parent: true`, which restores that session and then
+delivers. That is opt-in on purpose: it interrupts a session that considered its work finished. A
+**failed** parent, a session with **no parent** at all, and a session recorded as **its own** parent
+(`parent_session_id` is client-supplied, and the model checks existence rather than identity) are
+refused outright, and each error says what to do instead. One more error is a retry rather than a
+refusal: a queue **position conflict**, which means another writer of the parent's queue won a race
+deferred to COMMIT. Send it again.
+
+What the parent reads is the child's message **quoted** — every line behind a `>` prefix — inside
+Zimmer's framing. That is what lets the envelope claim the quoted lines are the child's words and the
+rest is Zimmer's: a body carrying its own `---` and its own bracketed header cannot close the
+quotation early and continue in that voice. `session_id` must be the calling session's own: a connection stamped with a
+`session_id` refuses to send another session's report, which is the one place this surface enforces
+its aim rather than only its actions.
+
+The same capability is `POST /api/v1/sessions/:id/message_parent` — see
+[the REST API](/extend/rest-api/#reporting-back-to-the-parent-that-started-you).
 
 ### `start_session` is only safe to retry if you name the attempt
 

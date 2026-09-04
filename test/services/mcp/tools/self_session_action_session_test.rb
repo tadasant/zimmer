@@ -12,7 +12,7 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     schema = definition[:inputSchema]
 
     assert_equal "action_session", definition[:name]
-    assert_equal %w[update_notes update_title set_heartbeat pause_into_spot_queue archive], schema[:properties][:action][:enum]
+    assert_equal %w[update_notes update_title set_heartbeat pause_into_spot_queue message_parent archive], schema[:properties][:action][:enum]
     assert_equal %w[session_id action], schema[:required]
     assert_match(/self-management/, definition[:description])
   end
@@ -174,5 +174,118 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     assert session.spot?
     assert_equal "Pick the migration back up at step 4", session.metadata[SpotSessionPause::QUEUED_PROMPT]
     assert_not session.awaiting_scheduled_wake?
+  end
+
+  # --- message_parent --------------------------------------------------------
+  #
+  # The one action on this surface that is NOT a narrowing of the full one. It
+  # is here because it can only be here: the target is never an argument.
+
+  test "reports to the parent Zimmer resolves, taking no target argument" do
+    parent = sessions(:needs_input)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    result = @tool.call(
+      "action" => "message_parent", "session_id" => child.id,
+      "message" => "the deploy scripts live in the infra root", "reason" => "wrong_scope"
+    )
+
+    assert_includes result, "## Report Sent to Parent Session"
+    assert_includes result, "- **Parent Session ID:** #{parent.id}"
+    assert_includes result, "- **Reported by:** session ##{child.id}"
+    assert_equal "running", parent.reload.status
+    assert_match(/the deploy scripts live in the infra root/, parent.metadata["pending_follow_up_prompt"])
+
+    properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.deep_symbolize_keys[:properties]
+    assert_not properties.key?(:parent_session_id), "naming the target would make this a general messaging primitive"
+    assert_not properties.key?(:target_session_id), "naming the target would make this a general messaging primitive"
+  end
+
+  test "a running parent is queued rather than interrupted, and told how deep its queue is" do
+    parent = sessions(:running)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    result = @tool.call(
+      "action" => "message_parent", "session_id" => child.id,
+      "message" => "no ssh key on this box", "reason" => "missing_tools"
+    )
+
+    assert_includes result, "queued for your parent"
+    assert_equal "running", parent.reload.status
+    assert_equal "caller", parent.enqueued_messages.sole.origin
+  end
+
+  test "refuses a session with no parent, and says what to do instead" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "message_parent", "session_id" => sessions(:waiting).id,
+                 "message" => "stuck", "reason" => "other")
+    end
+
+    assert_match(/has no parent session/, error.message)
+  end
+
+  test "refuses an archived parent, naming the override rather than losing the report" do
+    parent = sessions(:archived)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "message_parent", "session_id" => child.id,
+                 "message" => "wrong root", "reason" => "wrong_scope")
+    end
+
+    assert_match(/unarchive_parent/, error.message)
+    assert_equal "archived", parent.reload.status
+    assert_empty parent.enqueued_messages
+  end
+
+  # The narrow exception to "the tool group narrows the actions, not the target":
+  # this one speaks in the named session's name, to a THIRD session.
+  test "refuses to send another session's report when the connection names its own" do
+    parent = sessions(:needs_input)
+    other_child = sessions(:waiting)
+    other_child.update!(parent_session_id: parent.id)
+
+    tool = Mcp::Tools::SelfSessionActionSession.new(
+      context: Mcp::Context.new(tool_groups: "self_session", session_id: sessions(:running).id)
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("action" => "message_parent", "session_id" => other_child.id,
+                "message" => "not mine to send", "reason" => "other")
+    end
+
+    assert_match(/reports on behalf of the session making the call/, error.message)
+    assert_equal "needs_input", parent.reload.status
+    assert_empty parent.enqueued_messages
+  end
+
+  # Every other message_parent test here drives the shared @tool, whose context
+  # carries no session_id — so enforce_self_report! returns on its first line and
+  # is never exercised on a success path. This is the one that reports over a
+  # connection stamped the way every injected one is, which is the only shape a
+  # real caller has.
+  test "a connection that names the calling session reports over it normally" do
+    parent = sessions(:running)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    tool = Mcp::Tools::SelfSessionActionSession.new(
+      context: Mcp::Context.new(tool_groups: "self_session", session_id: child.id)
+    )
+
+    result = tool.call("action" => "message_parent", "session_id" => child.id,
+                       "message" => "the infra root owns this", "reason" => "wrong_scope")
+
+    assert_includes result, "## Report Sent to Parent Session"
+    assert_match(/the infra root owns this/, parent.enqueued_messages.sole.content)
+  end
+
+  test "the reason enum is the service's, so the two cannot drift" do
+    properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.deep_symbolize_keys[:properties]
+
+    assert_equal Sessions::MessageParent::REASONS.keys, properties[:reason][:enum]
   end
 end

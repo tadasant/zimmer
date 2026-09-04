@@ -183,7 +183,10 @@ as its last act. `needs_input` is a deliberate signal that a human is required, 
 exactly four sanctioned reasons to send it:
 
 1. The agent lacked the authorization scope or tools to finish, with no parent session to report
-   back to.
+   back to. When there *is* a parent, the prompt names the route: `action_session` with
+   [`message_parent`](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here),
+   which resolves the parent server-side and carries a `wrong_scope` / `missing_tools` reason. The
+   session reports and archives instead of parking.
 2. The session opened a PR whose merge disposition is unsettled. *How* it holds is the `open-pr`
    skill's terminal steps rather than this list: asleep in `waiting` on a bounded self-wake while
    the merge gate is still rating the PR, because that is a machine wait. What brings the session
@@ -201,9 +204,17 @@ should leave one session in the queue, not a trail.
 
 Anything else — including "the user will want to read this" — goes in the final message, or in
 Slack `#updates` if it is a read-only FYI and the session has a Slack server, and the session
-archives. Anything the agent noticed but could not fix goes in a **GitHub issue**, which is the
-other half of why a session can archive at all: an issue is a work item, and a parked session is
-not. The prompt also names four things that *look* like reasons to park and are not: waiting on a
+archives. Anything the agent noticed but could not fix is written down somewhere it will be found,
+which is the other half of why a session can archive at all — but *where* depends on what it is,
+and the prompt splits it in two. A goal **this session** cannot reach because it was given the
+wrong agent root or the wrong MCP servers goes to the session that dispatched it, over
+`message_parent`, and is never an issue: the dispatcher can re-delegate in seconds, and a tracker
+row reaches a human days after the goal died. Something noticed **in passing** that nobody is
+waiting on is an inline note in the PR body, unless it clears an **incident bar** — it could cause
+an incident later, or a user-facing experience a real person would complain about — in which case
+it is a GitHub issue. The prompt states that bar as a sentence the agent has to complete rather
+than an adjective it can argue past, and caps filing at one issue per session with an expected
+number of zero. The prompt also names four things that *look* like reasons to park and are not: waiting on a
 machine (CI, an outage, a rate limit, a peer session: none of those is a human, and a PR whose
 merge disposition is unsettled is the one carve-out), a blocker another session is already fixing,
 a reason that went stale while the agent worked (the PR merged; the question is moot), and
