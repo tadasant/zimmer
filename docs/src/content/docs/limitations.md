@@ -3150,8 +3150,10 @@ Also:
   `data-live-region="sync"`, so a page whose socket died is reconciled against a fresh render on
   reconnect.
 - **A session card's footer still wraps onto two lines in two narrow cases.** The row seats the PR
-  control on the left and the ⋮ / Trash / View group on the right, and the grid gives a card
-  320–400px, so the row can be as narrow as 288px. Collapsing a multi-PR control to a single trigger
+  control on the left and the ⋮ / Trash / View group on the right, and the grid gives a card at most
+  400px and normally 320px — less than that only where the content column itself is narrower, which
+  is a 288px card at a 320px viewport ([#803](https://github.com/tadasant/zimmer/issues/803)) — so
+  the row runs from 256px to 368px. Collapsing a multi-PR control to a single trigger
   ([#607](https://github.com/tadasant/zimmer/issues/607)) bought that row enough slack for the
   ordinary case, but not for these two. A **failed** session carries an extra Restart button, which
   puts the action group at 237px and the row's need at 333px — it fits a 400px card and wraps below

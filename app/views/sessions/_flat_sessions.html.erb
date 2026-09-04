@@ -19,7 +19,7 @@
       rendered in the flat views). %>
   <div id="sessions_grid" data-live-region="sync"
        data-live-page="<%= sessions.respond_to?(:current_page) ? sessions.current_page : 1 %>"
-       class="grid gap-6 grid-cols-[repeat(auto-fill,minmax(320px,400px))] justify-center">
+       class="<%= session_card_grid_classes %>">
     <% sessions.each do |session| %>
       <%= turbo_frame_tag dom_id(session) do %>
         <%= render "session_card", agent_session: session %>
