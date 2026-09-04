@@ -72,7 +72,7 @@ The body file must live at a path **unique to your session** — `"${AO_SESSION_
 
 Three habits go with it, and they are what turn the collision from silent into loud:
 
-- **Never re-read and patch a body file you wrote earlier.** Re-author the body, or pull the authoritative copy from the PR itself first: `gh pr view <number> --repo <owner>/<repo> --json body -q .body > "$AO_SESSION_SCRATCH_DIR/pr-body.md"`. A session-scoped path narrows this but does not close it — two processes of one Zimmer session share one scratch dir — and after any edit, GitHub holds the only authoritative copy.
+- **Never re-read and patch a body file you wrote earlier.** Re-author the body, or pull the authoritative copy from the PR itself first: `gh pr view <number> --repo <owner>/<repo> --json body -q .body > "${AO_SESSION_SCRATCH_DIR:?}/pr-body.md"`. A session-scoped path narrows this but does not close it — two processes of one Zimmer session share one scratch dir — and after any edit, GitHub holds the only authoritative copy.
 - **Make a missing patch anchor fail loudly.** `str.replace` and `sed` no-op silently when the text they are looking for isn't there — which is precisely what a clobbered file looks like — and then write it back over your PR. Assert the anchor is present first (`assert old in s`) and treat a miss as a stop condition.
 - **Pin `--repo` and the PR number on every `gh pr edit`, then read the body back** (`gh pr view <number> --repo <owner>/<repo> --json body -q .body | head -3`) and check the first lines are this PR's.
 
@@ -236,7 +236,7 @@ The label is a claim, not a request: it says *this PR has already been reviewed 
 
 **This label is orthogonal to merging and to human review — do not skip it because you are leaving the PR for a human.** Applying `ready to merge` does *not* merge the PR, and it does *not* claim a human has reviewed it; it is only your claim that self-review, the fresh-eyes subagent review, and green CI are all done. That is exactly the state a goal like "open a reviewed, green PR — do NOT merge, leave it unmerged in `needs_input` for the user to review" asks you to reach. The label and "stop for the human" are complementary, not contradictory: the label is precisely how the merge gate (and a human skimming the PR list) *knows* the PR has cleared agent-side review and is a candidate for merge. A directive to not merge, to leave the PR unmerged, or to stop in `needs_input` is never a reason to withhold it. Concretely, both of these leave a green, reviewed PR sitting unlabeled and stranded outside the merge pipeline, and both are wrong: (a) driving CI to green with `wait-for-ci` and stopping there without running this skill's terminal step — `wait-for-ci` deliberately hands the label off to *this* skill and does not apply it itself; and (b) reading this section and then declining the label "because the task says don't merge / leave it for the human." If the PR has earned the label, apply it and *then* stop for the human.
 
-The string is exactly `ready to merge`: three words, all lowercase, single spaces. `ready-to-merge` and `Ready to Merge` are *different* GitHub labels and silently fail to trigger anything. The same convention is written up as [The `ready to merge` Label](references/GIT_WORKFLOW.md#the-ready-to-merge-label) in GIT_WORKFLOW.md, which is where `wait-for-ci` and any repo-specific PR skill are pointed when they defer this step to you.
+The string is exactly `ready to merge`: three words, all lowercase, single spaces. `ready-to-merge` and `Ready to Merge` are *different* GitHub labels and silently fail to trigger anything.
 
 `gh pr edit --add-label` fails outright if the label does not exist in the repo, so create it first. Run both from the PR's branch; both are idempotent:
 
@@ -255,7 +255,7 @@ gh pr edit --add-label "ready to merge"
 gh pr edit --remove-label "ready to merge"
 ```
 
-**Ownership.** This skill owns the label step. The `wait-for-ci` skill deliberately does *not* apply it, so a flow that waits on CI several times does not relabel on each pass. This section is the canonical definition of the label.
+**Ownership.** This skill owns the label step. The `wait-for-ci` skill does *not* apply it, so a flow that waits on CI several times does not relabel on each pass. This section is the operative one; [The `ready to merge` Label](references/GIT_WORKFLOW.md#the-ready-to-merge-label) in GIT_WORKFLOW.md is the same convention written up as shared prose, for anyone arriving from a repo-specific PR skill rather than from here.
 
 ## Terminal Step 2: Sleep on the PR, Don't Park on It
 
