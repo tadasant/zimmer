@@ -6,6 +6,8 @@ require "test_helper"
 # keeps the session blocked, and the edge cases (expired/abandoned pending
 # flow, already-authorized server, retried callback idempotency) behave.
 class McpOauthResumeServiceTest < ActiveJob::TestCase
+  include AttachmentFixtures
+
   KEY_A = "server-a|aaaaaaaaaaaaaaaa".freeze
   KEY_B = "server-b|bbbbbbbbbbbbbbbb".freeze
 
@@ -25,6 +27,21 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
         ]
       }
     )
+  end
+
+  teardown { cleanup_stored_attachments! }
+
+  # Authorize both servers, which is what makes the next #call resume.
+  def authorize_everything
+    authorize(KEY_A, server_name: "server-a")
+    authorize(KEY_B, server_name: "server-b")
+  end
+
+  # The arguments of the one AgentSessionJob the resume enqueued.
+  def enqueued_agent_session_args
+    jobs = enqueued_jobs.select { |job| job["job_class"] == "AgentSessionJob" }
+    assert_equal 1, jobs.length, "expected exactly one enqueued AgentSessionJob"
+    ActiveJob::Arguments.deserialize(jobs.first["arguments"])
   end
 
   def authorize(credential_key, server_name:, expires_at: 1.hour.from_now)
@@ -262,5 +279,133 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
       end
     end
     assert @session.reload.failed?, "session stays blocked when no credential key can be derived"
+  end
+
+  # --- the replayed turn carries what the turn was created with -----------
+  #
+  # AgentSessionJob reads attachments ONLY out of its job arguments, so a resume
+  # that enqueues a bare new-session job replays "here is the screenshot, fix
+  # this" with the prompt and without the screenshot (#789).
+
+  test "the replayed first turn carries the images the session was created with" do
+    image = store_image_for(@session)
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    assert_equal [ { path: image[:path], media_type: "image/png" } ],
+      enqueued_agent_session_args.dig(2, :images)
+  end
+
+  test "the replayed first turn carries the files the session was created with" do
+    stored = store_file_for(@session, filename: "notes.txt", content: "read me")
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    files = enqueued_agent_session_args.dig(2, :files)
+    assert_equal [ stored[:path] ], files.map { |f| f[:path] }
+    assert_equal [ "notes.txt" ], files.map { |f| f[:original_filename] }
+  end
+
+  # The ordinary case, unchanged: nothing on disk, so the job is enqueued
+  # exactly as it was before.
+  test "a session with no stored attachments resumes with no attachment arguments" do
+    authorize_everything
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id ]) do
+      assert_equal :resumed, McpOauthResumeService.new(@session).call
+    end
+  end
+
+  # An attachment a queued follow-up owns belongs to that follow-up's turn, not
+  # to the one being replayed.
+  test "an attachment a queued follow-up owns is not smuggled onto the replayed turn" do
+    first_turn = store_image_for(@session)
+    follow_up = store_image_for(@session)
+    @session.enqueued_messages.create!(
+      content: "and now this one", position: 1,
+      images: [ { "path" => follow_up[:path], "media_type" => "image/png" } ]
+    )
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    assert_equal [ { path: first_turn[:path], media_type: "image/png" } ],
+      enqueued_agent_session_args.dig(2, :images)
+  end
+
+  # --- and only when there IS a first turn left to replay ------------------
+  #
+  # `oauth_required` is not exclusively a first-turn failure. #update_mcp_servers
+  # and #update_catalog_plugins set it when a human adds a server to a session
+  # mid-run, and AgentSessionJob's follow-up branch sets it under
+  # "Follow-up blocked: OAuth authorization required for MCP servers". A session
+  # that has already produced a transcript has had its first turn delivered, and
+  # everything on its volume includes attachments earlier turns already
+  # consumed — replaying those would re-deliver them onto the wrong turn.
+
+  test "a session blocked after it had already run does not have its attachments replayed" do
+    store_image_for(@session)
+    @session.update!(transcript: { "type" => "user", "message" => { "content" => "already ran" } }.to_json)
+    authorize_everything
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id ]) do
+      assert_equal :resumed, McpOauthResumeService.new(@session).call
+    end
+
+    refute @session.reload.logs.any? { |log| log.content.include?("carrying") },
+      "a resume that carries nothing must not say it carried something"
+  end
+
+  # The other half of #blocked?: a session parked in `waiting` with servers still
+  # listed, rather than one that was failed.
+  test "a waiting session's replayed first turn carries its attachments too" do
+    @session.update!(status: :waiting)
+    image = store_image_for(@session)
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    assert_equal [ { path: image[:path], media_type: "image/png" } ],
+      enqueued_agent_session_args.dig(2, :images)
+  end
+
+  # The read happens before the row lock so a slow volume cannot hold it open,
+  # which leaves a window: a session that starts producing a transcript in
+  # between is no longer replaying a first turn, and the gate is re-asked under
+  # the lock against the reloaded row.
+  test "a transcript that lands between the read and the lock still suppresses the replay" do
+    image = store_image_for(@session)
+    authorize_everything
+    session_id = @session.id
+
+    # The read returns the first turn's image AND, as its side effect, the
+    # session starts running — exactly the window the pre-lock read opens.
+    # `with_lock` reloads, so the gate asked again sees the transcript.
+    reader = lambda do |_session|
+      Session.find(session_id).update!(
+        transcript: { "type" => "user", "message" => { "content" => "started meanwhile" } }.to_json
+      )
+      [ [ { path: image[:path], media_type: "image/png" } ], [] ]
+    end
+
+    Sessions::FirstTurnAttachments.stub(:for, reader) do
+      assert_enqueued_with(job: AgentSessionJob, args: [ session_id ]) do
+        assert_equal :resumed, McpOauthResumeService.new(@session).call
+      end
+    end
+  end
+
+  # What the turn carries belongs in the session's own timeline, not only in a
+  # log file nobody without a shell on the box can read.
+  test "the session's log names what the replayed turn is carrying" do
+    store_image_for(@session)
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    assert @session.reload.logs.any? { |log| log.content.include?("carrying 1 image") },
+      "the resume must say in the session's log what the turn carries"
   end
 end

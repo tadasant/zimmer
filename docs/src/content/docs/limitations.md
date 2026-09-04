@@ -3610,6 +3610,27 @@ prompt, so the attachments that turn was created with are exactly what the repla
 The read never raises — this is a path taken only when something has already gone wrong, and a
 storage tree that cannot be read costs the attachments, never the restart.
 
+Two recovery paths reach the same reader ([#789](https://github.com/tadasant/zimmer/issues/789)).
+`SpotSessionHold`'s stalled-hold re-arm builds a first turn from nothing whenever the hold it repairs
+was a deferred *start* on a session with no `session_id`, and now carries that turn's attachments
+across with its prompt — which is what its log line had been claiming. `McpOauthResumeService`
+replays the stored prompt once the last OAuth flow completes, and carries them too, but only when the
+session's transcript is still empty. That gate is the one asymmetry with the restart doors, and it is
+load-bearing: `oauth_required` is a `PRE_PROMPT_FAILURE_REASONS` member, yet it is also set on
+sessions that have run for hours — by **Edit MCP servers** and **Edit plugins** when a human adds an
+OAuth server mid-run, by `AgentSessionJob`'s follow-up branch, and by its post-spawn MCP-failure
+classifier. On such a session "everything on the volume" includes attachments earlier turns already
+consumed, so replaying them would put the first turn's screenshot on a much later one. The resume
+Zimmer re-queues for one of those sessions picks the existing conversation back up rather than
+replaying the prompt, so there is no turn there to put an attachment on in any case.
+
+Two gaps are left open rather than papered over. A re-armed spot-hold **resume** still loses its
+attachments: the hold record stores the prompt and nothing else, so nothing durable survives the lost
+job to replay them from, and its log line now claims only the prompt
+([#890](https://github.com/tadasant/zimmer/issues/890)). And a follow-up blocked on OAuth is dropped
+entirely — the resume re-queues the session's *original* prompt, not the follow-up that was blocked
+([#887](https://github.com/tadasant/zimmer/issues/887)).
+
 Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on
 the dashboard with a reason on it, a `waiting` one is on nobody's list. A session past
 `MAX_RESTARTS` (3) attempts, because whatever is eating its start job is not something more
