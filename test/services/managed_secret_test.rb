@@ -159,6 +159,29 @@ class ManagedSecretTest < ActiveSupport::TestCase
     assert_equal ManagedSecretWrite::FAILED, ManagedSecretWrite.last.outcome
   end
 
+  # "The store could not be consulted" and "the value is gone" are opposite
+  # answers, and reporting the first as the second would tell an operator a key
+  # had been removed while it was still live and still serving sessions.
+  test "a store outage during a delete is not reported as a successful delete" do
+    @secret.write(VALUE)
+    secret = build
+    assert secret.status.deletable?, "precondition: the permissions probe has answered"
+
+    flaky = Object.new
+    flaky.define_singleton_method(:invalidate) { |*| nil }
+    flaky.define_singleton_method(:providers) { [] }
+    flaky.define_singleton_method(:provider_for) { |*| nil }
+    flaky.define_singleton_method(:get) do |_variable|
+      raise ParameterStore::StoreError.new("the store is unreachable", 503)
+    end
+
+    result = ManagedSecret.new(VARIABLE, chain: flaky, writer: writer_configuration).delete
+
+    assert_not result.ok?
+    assert_match(/nothing here is confirmed/, result.detail)
+    assert_equal ManagedSecretWrite::FAILED, ManagedSecretWrite.last.outcome
+  end
+
   test "a store that refuses the write says so and records the attempt" do
     secret = build
     assert secret.status.writable?, "precondition: the permissions probe has answered"

@@ -292,8 +292,12 @@ class CliStatusService
 
     # Check authentication based on auth method
     authenticated = if config[:auth_method] == :env_var
-      # For env var auth, check if the environment variable is set and non-empty
-      ENV[config[:env_var_name]].present?
+      # Through the `${VAR}` chain, not bare ENV. A key set on the Inference page's
+      # Pi tab lives in the Parameter Store, which is the chain's first link and
+      # not in this process's environment at all — reading ENV directly would
+      # report Pi unauthenticated while every Pi session was running fine on it.
+      # The chain's last link IS ENV, so a plain export still answers.
+      resolved_credential(config[:env_var_name]).present?
     else
       # For OAuth or other methods, run the auth check command
       installed && check_auth(config[:check_auth])
@@ -313,6 +317,21 @@ class CliStatusService
       auth_method: config[:auth_method],
       env_var_name: config[:env_var_name]
     }
+  end
+
+  # One `${VAR}`, resolved the way a session would resolve it. Never returned to a
+  # caller and never logged — `#check_tool` only asks whether it is present.
+  #
+  # A store that cannot be reached reads as "not set" rather than taking the whole
+  # CLI report down with it: this method backs a status page, and an unreachable
+  # store is a thing that page should keep rendering through.
+  def resolved_credential(variable)
+    return nil if variable.blank?
+
+    SecretProviders.chain.get(variable)
+  rescue => e
+    Rails.logger.warn "[CliStatusService] Could not resolve #{variable}: #{e.class}"
+    nil
   end
 
   # A tool's extra operator-facing line, or nil. Rescued rather than allowed to

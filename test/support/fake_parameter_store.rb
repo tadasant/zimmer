@@ -27,7 +27,7 @@ class FakeParameterStore
   # — see ParameterStore::WriteClient.
   def self.principal_for(id) = "principal://parametermanager.googleapis.com/parameter/#{id}"
 
-  attr_reader :parameters, :secrets, :requests, :secret_policies
+  attr_reader :parameters, :secrets, :requests, :secret_policies, :secret_labels
 
   def initialize(project_id: PROJECT, location: LOCATION)
     @project_id = project_id
@@ -36,6 +36,8 @@ class FakeParameterStore
     @secrets = {}
     # secret id => the members holding roles/secretmanager.secretAccessor on it.
     @secret_policies = Hash.new { |h, k| h[k] = [] }
+    # secret id => its GCP labels. The delete guard reads managed-by off these.
+    @secret_labels = {}
     @requests = []
     @held_permissions = []
     @failure = nil
@@ -50,6 +52,7 @@ class FakeParameterStore
     id = ParameterStore::Namespace.parameter_id(path)
 
     @secrets[id] = [ value ]
+    @secret_labels[id] = { "managed-by" => ParameterStore::GcpClient::MANAGED_BY }
     @secret_policies[id] = [ self.class.principal_for(id) ]
     put_parameter(id, { secret: "true" }, {
       "path" => path, "secret" => true,
@@ -174,10 +177,12 @@ class FakeParameterStore
       create_secret(param(query, "secretId"))
     in [ "POST", %r{\Aprojects/[^/]+/secrets/([^:]+):addVersion\z} => p ]
       add_secret_version(p[%r{secrets/([^:]+):}, 1], payload)
-    in [ "POST", %r{\Aprojects/[^/]+/secrets/([^:]+):getIamPolicy\z} => p ]
+    in [ "GET", %r{\Aprojects/[^/]+/secrets/([^:]+):getIamPolicy\z} => p ]
       [ 200, JSON.generate({ bindings: policy_bindings(p[%r{secrets/([^:]+):}, 1]) }) ]
     in [ "POST", %r{\Aprojects/[^/]+/secrets/([^:]+):setIamPolicy\z} => p ]
       set_iam_policy(p[%r{secrets/([^:]+):}, 1], payload)
+    in [ "GET", %r{\Aprojects/[^/]+/secrets/([^/]+)\z} => p ]
+      get_secret(p[%r{secrets/([^/]+)\z}, 1])
     in [ "DELETE", %r{\Aprojects/[^/]+/secrets/([^/]+)\z} => p ]
       delete_secret(p[%r{secrets/([^/]+)\z}, 1])
     in [ "POST", %r{\Aprojects/[^/]+/locations/[^/]+/parameters\z} ]
@@ -200,6 +205,7 @@ class FakeParameterStore
   def create_secret(id)
     return [ 409, JSON.generate({ error: { code: 409 } }) ] if @secrets.key?(id)
 
+    @secret_labels[id] = { "managed-by" => ParameterStore::GcpClient::MANAGED_BY }
     @secrets[id] = []
     [ 200, JSON.generate({ name: "projects/#{@project_id}/secrets/#{id}" }) ]
   end
@@ -223,11 +229,19 @@ class FakeParameterStore
     [ 200, JSON.generate({ bindings: policy_bindings(id) }) ]
   end
 
+  def get_secret(id)
+    return [ 404, JSON.generate({ error: { code: 404 } }) ] unless @secrets.key?(id)
+
+    [ 200, JSON.generate({ "name" => "projects/#{@project_id}/secrets/#{id}",
+                           "labels" => @secret_labels[id] || {} }) ]
+  end
+
   def delete_secret(id)
     return [ 404, JSON.generate({ error: { code: 404 } }) ] unless @secrets.key?(id)
 
     @secrets.delete(id)
     @secret_policies.delete(id)
+    @secret_labels.delete(id)
     [ 200, "{}" ]
   end
 

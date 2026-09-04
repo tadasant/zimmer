@@ -301,6 +301,9 @@ class PiRuntimeAdapter
     env_vars = apply_operator_ssh_key(env_vars)
     # Tell MCP servers where to send approval requests (and who is asking).
     env_vars = apply_elicitation_env(env_vars)
+    # The provider credential Pi resolves per request. Without this the key set on
+    # the Inference page's Pi tab reaches the store and stops there.
+    env_vars = apply_provider_key(env_vars)
 
     pid = @process_manager.spawn(
       env_vars,
@@ -331,6 +334,44 @@ class PiRuntimeAdapter
   # a home directory on the ephemeral overlay filesystem, where credentials are
   # wiped on container restart and every turn would fail unauthenticated. A value
   # provided via the session .env takes precedence.
+  # Resolve Pi's provider key through the ordinary `${VAR}` chain and put it in
+  # the spawn environment.
+  #
+  # This is the delivery step, and it is easy to assume some other layer already
+  # does it. Nothing does: `AgentSessionJob#inject_secrets_to_env_file` writes the
+  # clone's `.env` from `SecretsLoader.all`, which reads Rails encrypted
+  # `mcp_secrets` ONLY — it never consults SecretProviders — so a value that lives
+  # in the Parameter Store never lands in a session `.env`. Every other
+  # store-backed name reaches its consumer some other way (an MCP config's
+  # `${VAR}` is interpolated by Zimmer before the server is launched; `GH_TOKEN`
+  # is published into the worker's own ENV by GhTokenProvisioner). Pi has neither
+  # of those paths: it reads the variable out of its own process environment.
+  #
+  # Scoped to Pi rather than published process-wide on purpose. An inference key
+  # authorizes spend, and a Claude Code or Codex session has no use for it, so it
+  # goes only to the runtime that reads it.
+  #
+  # An explicit value in the clone's `.env` still wins, like every other step
+  # here — a repo pointing Pi at its own account is not something to override.
+  def apply_provider_key(env_vars)
+    variable = ManagedSecret::OPENROUTER_API_KEY
+    return env_vars if env_vars[variable].present?
+
+    value = SecretProviders.chain.get(variable)
+    return env_vars if value.blank?
+
+    # Never logged, here or anywhere: the log line says that it was set, not what
+    # it was set to.
+    @logger.info "Set #{variable} for this Pi session (resolved from the ${VAR} chain)"
+    env_vars.merge(variable => value)
+  rescue ParameterStore::AuthError, ParameterStore::StoreError => e
+    # A store Zimmer cannot reach must not stop a session spawning. Pi will report
+    # its own `not_ready` if the key genuinely never arrives, and that is a much
+    # better failure than a session that never starts.
+    @logger.warn "Could not resolve #{ManagedSecret::OPENROUTER_API_KEY} for this Pi session: #{e.class}"
+    env_vars
+  end
+
   def ensure_pi_home(env_vars)
     return env_vars if env_vars["PI_CODING_AGENT_DIR"].present?
 

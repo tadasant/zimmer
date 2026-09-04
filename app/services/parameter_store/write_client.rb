@@ -106,6 +106,7 @@ module ParameterStore
     # @raise [StoreError, AuthError]
     def delete(variable, env: Rails.env)
       id = Namespace.parameter_id(Namespace.parameter_path(variable, env))
+      refuse_unmanaged!(id)
 
       parameter_version_ids(id).each do |version|
         call("DELETE", "#{@pm_api_base}/v1/#{pm_parent}/parameters/#{id}/versions/#{version}", nil, allow: [ 404 ])
@@ -117,6 +118,31 @@ module ParameterStore
     end
 
     private
+
+    # `Namespace.parameter_id` is a LOSSY fold — two different paths can collapse
+    # onto one id — so a resolving id is not proof the resource is ours. Every
+    # read applies the envelope-path fence for that reason (GcpClient#resolve);
+    # a delete cannot, because the writer holds no `:render`. The label is the
+    # fence it can apply, and it is the same one GcpClient#managed_parameter_ids
+    # uses to decide what counts as Zimmer's.
+    #
+    # Anything present and unlabelled belongs to something else in this project
+    # and is left alone, loudly. Anything absent is fine: a delete of a
+    # half-created pair is exactly what this method exists to allow.
+    def refuse_unmanaged!(id)
+      [
+        [ "parameter", "#{@pm_api_base}/v1/#{pm_parent}/parameters/#{id}" ],
+        [ "secret", "#{@sm_api_base}/v1/#{sm_parent}/secrets/#{id}" ]
+      ].each do |kind, url|
+        body = call("GET", url, nil, allow: [ 404 ])
+        next if body.empty?
+        next if body.dig("labels", "managed-by") == MANAGED_BY
+
+        raise StoreError.new(
+          "refusing to delete #{kind} #{id}: it is not labelled managed-by=#{MANAGED_BY}", 409
+        )
+      end
+    end
 
     def pm_parent = "projects/#{project_id}/locations/#{location}"
     def sm_parent = "projects/#{project_id}"
@@ -150,7 +176,9 @@ module ParameterStore
     # Merge, never replace: the secret's policy may carry bindings this code did
     # not put there, and a blind setIamPolicy would drop them.
     def grant_accessor(id, principal)
-      policy = call("POST", "#{@sm_api_base}/v1/#{sm_parent}/secrets/#{id}:getIamPolicy", nil)
+      # GET, not POST: Secret Manager v1 defines `:getIamPolicy` as a GET and only
+      # `:setIamPolicy` as a POST.
+      policy = call("GET", "#{@sm_api_base}/v1/#{sm_parent}/secrets/#{id}:getIamPolicy", nil)
       bindings = Array(policy["bindings"]).map { |binding| binding.dup }
 
       accessor = bindings.find { |binding| binding["role"] == ACCESSOR_ROLE }
@@ -177,11 +205,27 @@ module ParameterStore
         { payload: { data: Base64.strict_encode64(envelope) } })
     end
 
+    # Paged, because a partial answer here is not a smaller delete — it is a
+    # parameter left with versions, which Parameter Manager then refuses to
+    # delete at all.
     def parameter_version_ids(id)
-      body = call("GET", "#{@pm_api_base}/v1/#{pm_parent}/parameters/#{id}/versions?pageSize=100",
-        nil, allow: [ 404 ])
+      ids = []
+      page_token = nil
 
-      Array(body["parameterVersions"]).filter_map { |version| version["name"].to_s.split("/").last.presence }
+      loop do
+        query = { pageSize: 100 }
+        query[:pageToken] = page_token if page_token
+        body = call("GET", "#{@pm_api_base}/v1/#{pm_parent}/parameters/#{id}/versions?#{query.to_query}",
+          nil, allow: [ 404 ])
+
+        ids.concat(Array(body["parameterVersions"])
+          .filter_map { |version| version["name"].to_s.split("/").last.presence })
+
+        page_token = body["nextPageToken"].presence
+        break if page_token.nil?
+      end
+
+      ids
     end
 
     # @param allow [Array<Integer>] statuses treated as success, returning {}.

@@ -574,12 +574,23 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # Both write-path states are checked because they render different markup: the
   # closed one is the permission list, the open one is the form and its buttons.
   test "the Pi tab does not overflow horizontally on a phone in either write state" do
-    [ closed_write_path_secret, open_write_path_secret ].each_with_index do |secret, index|
-      ManagedSecret.stub(:openrouter_key, secret) do
+    # Built lazily, one store each. An eagerly-built array over one memoized fake
+    # renders the SAME state twice — the second builder's permissions win before
+    # the loop body ever runs — and the test then passes without the closed state
+    # having been on screen at all.
+    { closed: -> { closed_write_path_secret }, open: -> { open_write_path_secret } }.each do |label, build|
+      ManagedSecret.stub(:openrouter_key, build.call) do
         visit inference_path(runtime: PiAuthProvider::RUNTIME)
         assert_selector "#pi_panel"
+        # Assert the state actually rendered, so a silent fallback to the other
+        # branch cannot masquerade as coverage.
+        if label == :closed
+          assert_selector "[data-openrouter-write-blocked]"
+        else
+          assert_selector "form[action='#{openrouter_key_inference_path}']"
+        end
 
-        assert_no_horizontal_overflow("inference-pi-#{index}")
+        assert_no_horizontal_overflow("inference-pi-#{label}")
       end
     end
   end
@@ -1145,29 +1156,29 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # A store Zimmer can read and cannot write — the state every deployment is in
   # until the writer IAM grant lands. Renders the missing-permissions list.
   def closed_write_path_secret
-    pi_store.held_permissions = [
+    store = FakeParameterStore.new
+    store.held_permissions = [
       ParameterStore::Capabilities::RENDER_PARAMETER,
       ParameterStore::Capabilities::READ_SECRET_VALUE
     ]
-    pi_secret(identity: :resolver)
+    pi_secret(store, identity: :resolver)
   end
 
   # The grant in place and a key already set: the form, the Replace and Delete
   # buttons, and the fingerprint row.
   def open_write_path_secret
-    pi_store.held_permissions = ParameterStore::Capabilities::PROBED_PERMISSIONS
-    pi_store.seed_secret(ManagedSecret::OPENROUTER_API_KEY, "sk-or-v1-a-realistically-long-key-value")
-    pi_secret(identity: :writer)
+    store = FakeParameterStore.new
+    store.held_permissions = ParameterStore::Capabilities::PROBED_PERMISSIONS
+    store.seed_secret(ManagedSecret::OPENROUTER_API_KEY, "sk-or-v1-a-realistically-long-key-value")
+    pi_secret(store, identity: :writer)
   end
 
-  def pi_store
-    @pi_store ||= FakeParameterStore.new
-  end
-
-  def pi_secret(identity:)
-    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: pi_store.chain,
+  # A FRESH store per call. Sharing one across the two states is what let the
+  # second builder's permissions decide both of them.
+  def pi_secret(store, identity:)
+    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: store.chain,
       writer: ParameterStore::Writer::Configuration.new(
-        client: pi_store.write_client, identity: identity, reason: nil
+        client: store.write_client, identity: identity, reason: nil
       ))
   end
 end
