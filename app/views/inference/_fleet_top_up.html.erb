@@ -1,11 +1,10 @@
 <%# Backlog top-up: the three numbers FleetIdleMonitor fires on, and where the
     fleet currently sits against them.
 
-    It lives on this page because the two populations its ceiling counts — running
-    sessions and the spot queue — are the ones the card above already reports, and
-    because its ceiling is the sibling of the concurrency limit there: one says how
-    much work may run at once, the other how little work means the fleet has room
-    for more. %>
+    It lives on this page because it counts the same population the card above
+    does — sessions actually running — and because its ceiling is the sibling of
+    the concurrency limit there: one says how much work may run at once, the other
+    how little work means the fleet has room for more. %>
 <div class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" id="fleet-top-up">
   <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
     <h2 class="text-lg font-medium text-gray-900">Backlog top-up</h2>
@@ -14,9 +13,10 @@
       <code class="bg-gray-100 px-1 rounded">no_sessions_in_progress</code> event so a
       <%= link_to "trigger", triggers_path, class: "text-indigo-600 hover:text-indigo-500" %>
       can hand it more work. "Room to spare" is a number, not zero: the fleet counts as idle enough
-      while it is holding <strong>fewer than</strong> the ceiling below — running sessions plus spot
-      ones queued behind the gate, counted together. Set the ceiling to <strong>1</strong> and the
-      event means what its name says, nothing running and nothing queued.
+      while <strong>fewer than</strong> the ceiling below are actually <strong>running</strong>.
+      Sessions sitting in <code class="bg-gray-100 px-1 rounded">waiting</code> do not count — most
+      of them are asleep on their own wake, holding a finished PR rather than queueing for a slot.
+      Set the ceiling to <strong>1</strong> and the event means what its name says: nothing running.
     </p>
   </div>
 
@@ -35,7 +35,7 @@
                  min="1" max="100" step="1"
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
           <p class="mt-1 text-xs text-gray-500">
-            Sessions running or queued. Below this many, the fleet counts as idle enough to take more
+            Sessions actually running. Below this many, the fleet counts as idle enough to take more
             work — so it does not have to empty out completely before topping up.
           </p>
         </div>
@@ -95,9 +95,9 @@
 
       <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 text-sm">
         <div>
-          <dt class="text-gray-500">Sessions in hand</dt>
-          <dd class="font-medium text-gray-900" id="fleet-top-up-in-hand">
-            <%= @fleet_top_up.sessions_in_hand %>
+          <dt class="text-gray-500">Sessions running</dt>
+          <dd class="font-medium text-gray-900" id="fleet-top-up-running">
+            <%= @fleet_top_up.running_sessions %>
             <span class="text-gray-400 font-normal">of <%= @fleet_top_up.max_sessions %></span>
             <%# One fire hands out one session, so the headroom is how many more
                 cooldowns it takes to fill the room the fleet has. %>

@@ -480,7 +480,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   # able to set them and read them back without a human at the page.
 
   test "set_top_up writes all three knobs, and get reports them" do
-    action(action: "set_top_up", max_sessions_in_hand: 5, idle_minutes: 10,
+    action(action: "set_top_up", max_running_sessions: 5, idle_minutes: 10,
            min_fire_interval_minutes: 30)
 
     setting = AppSetting.current
@@ -489,7 +489,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_equal 30, setting.fleet_idle_min_fire_interval_minutes
 
     policy = get_policy
-    assert_match(/Fires while the fleet holds fewer than:\*\* 5 sessions/, policy)
+    assert_match(/Fires while the fleet is running fewer than:\*\* 5 sessions/, policy)
     assert_match(/For at least:\*\* 10 minutes/, policy)
     assert_match(/At most once every:\*\* 30 minutes \(at most 48 top-ups a day/, policy)
   end
@@ -498,7 +498,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     AppSetting.editable.update!(fleet_idle_max_sessions: 4, fleet_idle_threshold_minutes: 7,
                                 fleet_idle_min_fire_interval_minutes: 90)
 
-    action(action: "set_top_up", max_sessions_in_hand: 6)
+    action(action: "set_top_up", max_running_sessions: 6)
 
     setting = AppSetting.current
     assert_equal 6, setting.fleet_idle_max_sessions
@@ -509,7 +509,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   test "an out-of-range top-up value comes back as a message rather than an internal error" do
     AppSetting.editable.update!(fleet_idle_max_sessions: 3)
 
-    error = assert_raises(Mcp::ToolError) { action(action: "set_top_up", max_sessions_in_hand: 0) }
+    error = assert_raises(Mcp::ToolError) { action(action: "set_top_up", max_running_sessions: 0) }
     assert_match(/Invalid top-up policy/, error.message)
     assert_equal 3, AppSetting.current.fleet_idle_max_sessions
   end
@@ -541,13 +541,13 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   test "set_top_up skips explicit nulls" do
     AppSetting.editable.update!(fleet_idle_max_sessions: 4)
 
-    action(action: "set_top_up", max_sessions_in_hand: nil, idle_minutes: 8)
+    action(action: "set_top_up", max_running_sessions: nil, idle_minutes: 8)
 
     setting = AppSetting.current
     assert_equal 4, setting.fleet_idle_max_sessions
     assert_equal 8, setting.fleet_idle_threshold_minutes
 
-    assert_raises(Mcp::ToolError) { action(action: "set_top_up", max_sessions_in_hand: nil) }
+    assert_raises(Mcp::ToolError) { action(action: "set_top_up", max_running_sessions: nil) }
   end
 
   test "get_spot_policy names which of the not-fired-yet states the fleet is in" do

@@ -21,7 +21,7 @@ class FleetTopUpPoliciesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 20, setting.fleet_idle_min_fire_interval_minutes
   end
 
-  # A ceiling of 0 could never be satisfied — the test is `in_hand < ceiling` —
+  # A ceiling of 0 could never be satisfied — the test is `running_sessions < ceiling` —
   # so the event would silently never fire again.
   test "a ceiling of zero is refused without persisting it" do
     AppSetting.editable.update!(fleet_idle_max_sessions: 3)

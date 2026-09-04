@@ -12,10 +12,9 @@
 # Currently supports:
 # - quota_available: the account pool went from serving nothing to serving
 #   something. See QuotaAvailabilityMonitor, which owns the edge detection.
-# - no_sessions_in_progress: the deployment has held fewer sessions than its
-#   configured ceiling — running plus spot-queued — for the whole of its
-#   configured stretch. See FleetIdleMonitor, which owns the latch and the
-#   cooldown under it.
+# - no_sessions_in_progress: the deployment has been RUNNING fewer sessions than
+#   its configured ceiling for the whole of its configured stretch. See
+#   FleetIdleMonitor, which owns the latch and the cooldown under it.
 #
 # System events are broadcast by nature — every enabled trigger carrying a
 # matching condition fires — and recurring, so a condition is never spent and the
@@ -155,7 +154,7 @@ class SystemEventTriggerJob < ApplicationJob
     when "no_sessions_in_progress"
       setting = AppSetting.current
       "The fleet has room for more work: fewer than " \
-        "#{FleetIdleMonitor.max_sessions(setting)} sessions running or queued for " \
+        "#{FleetIdleMonitor.max_sessions(setting)} sessions running for " \
         "#{FleetIdleMonitor.idle_threshold(setting).inspect}"
     else
       event_name.to_s.humanize

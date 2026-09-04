@@ -24,9 +24,9 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
                                 fleet_idle_min_fire_interval_minutes: AppSetting::DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES)
   end
 
-  # A ceiling of 1 is the pair of booleans the threshold replaced — nothing
-  # running and nothing queued — so the cases that pin one session's effect on
-  # the event set it, and say so by calling this.
+  # A ceiling of 1 is the boolean the threshold replaced — nothing running — so
+  # the cases that pin one session's effect on the event set it, and say so by
+  # calling this.
   def ceiling(count)
     AppSetting.editable.update!(fleet_idle_max_sessions: count)
   end
@@ -142,26 +142,26 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # A queued spot session is work the deployment already holds, so it counts
-  # toward the same ceiling a running one does. At a ceiling of 1 that is the old
-  # boolean exactly: one queued spot session is enough.
-  test "a waiting spot session holds the event off at a ceiling of one" do
+  # `waiting` is not a queue: it is Zimmer's resting state, and a spot session
+  # sitting in it is as likely to be asleep on its own wake as queueing for a
+  # slot. Only running sessions occupy the deployment, so even at a ceiling of 1
+  # a dormant spot session leaves the fleet idle.
+  test "a waiting spot session does not hold the event off, even at a ceiling of one" do
     ceiling(1)
     session(status: :waiting, scheduling_class: SessionGenesis::SPOT)
 
     freeze_time do
-      assert_not FleetIdleMonitor.check!
-      travel FleetIdleMonitor.idle_threshold + 1.minute
-      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
-        assert_not FleetIdleMonitor.check!
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!
       end
-      assert_nil setting.fleet_idle_since
     end
   end
 
   # Spot is also what a session's GENESIS resolves to when it named no class of
-  # its own, and the queue is the same queue either way.
-  test "a waiting session whose genesis classifies spot holds the event off at a ceiling of one" do
+  # its own, and a dormant session is dormant either way.
+  test "a waiting session whose genesis classifies spot does not hold the event off" do
     ceiling(1)
     spot_genesis = SessionGenesis.keys_classified(SessionGenesis::SPOT).first
     skip "no genesis kind defaults to spot" if spot_genesis.blank?
@@ -169,10 +169,11 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     session(status: :waiting, genesis: spot_genesis)
 
     freeze_time do
-      assert_not FleetIdleMonitor.check!
-      travel FleetIdleMonitor.idle_threshold + 1.minute
-      assert_not FleetIdleMonitor.check!
-      assert_nil setting.fleet_idle_since
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!
+      end
     end
   end
 
@@ -191,12 +192,33 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # Zimmer's own bookkeeping is not queued spot work, and one stranded in
-  # `waiting` must not suppress the event forever.
+  # Zimmer's own bookkeeping is not work either, and one stranded in `waiting`
+  # must not suppress the event forever.
   test "a waiting status-summary fork does not hold the event off" do
     ceiling(1)
     session(status: :waiting, scheduling_class: SessionGenesis::SPOT,
             metadata: { SessionStatusSummaryGenerator::FORK_MARKER => "1" })
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!
+      end
+    end
+  end
+
+  # The reading that prompted the rule: a fleet running 5 sessions with 8 more
+  # asleep in `waiting` read as holding 13 against a ceiling of 7 and never
+  # topped up, while more than half its slots sat empty. Those sleepers are
+  # overwhelmingly sessions that FINISHED their work and are sleeping on an open
+  # PR, so none of them occupies the deployment.
+  test "a big waiting population leaves a barely-running fleet idle" do
+    AppSetting.editable.update!(fleet_idle_max_sessions: 7)
+    5.times { session(status: :running) }
+    8.times { session(status: :waiting, scheduling_class: SessionGenesis::SPOT) }
+
+    assert_equal 5, FleetIdleMonitor.running_sessions
 
     freeze_time do
       FleetIdleMonitor.check!
@@ -369,32 +391,42 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # One ceiling over two populations, which is the answer to a spot queue that
-  # used to veto on its own however much room the fleet had.
-  test "running and queued spot sessions are counted against the same ceiling" do
+  # The ceiling is compared against ONE population. A spot queue deeper than the
+  # ceiling says nothing about how busy the machine is, and the session this
+  # event spawns is priority and ungated, so it fills the idle machine rather
+  # than joining the queue it would once have been counted against.
+  test "a spot queue deeper than the ceiling does not hold the event off" do
     2.times { session(status: :running) }
-    session(status: :waiting, scheduling_class: SessionGenesis::SPOT)
-
-    freeze_time do
-      assert_not FleetIdleMonitor.check!
-      travel FleetIdleMonitor.idle_threshold + 1.minute
-      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
-        assert_not FleetIdleMonitor.check!, "two running plus one queued reaches a ceiling of three"
-      end
-    end
-  end
-
-  # The other half of the same point: a spot queue no longer vetoes on its own.
-  # The fleet has room, and the session this spawns is priority and ungated.
-  test "a single queued spot session does not hold the event off under a ceiling above one" do
-    session(status: :waiting, scheduling_class: SessionGenesis::SPOT)
+    5.times { session(status: :waiting, scheduling_class: SessionGenesis::SPOT) }
 
     freeze_time do
       FleetIdleMonitor.check!
       travel FleetIdleMonitor.idle_threshold
       assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
-        assert FleetIdleMonitor.check!
+        assert FleetIdleMonitor.check!, "only the two running sessions count against a ceiling of three"
       end
+    end
+  end
+
+  # What absorbs the churn the queue count used to stand in for: the fleet has to
+  # stay under the ceiling for the WHOLE stretch, and `record_busy!` restarts the
+  # clock on any session entering `running`. A fleet that flaps never accumulates
+  # one.
+  test "a session starting inside the stretch restarts the clock, however few are running" do
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold - 1.minute
+
+      # One session, well under the ceiling of three — the ceiling is not what
+      # holds the fire off here, the dwell is.
+      session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY).update!(status: :running)
+      assert_nil setting.fleet_idle_since, "the stretch is over the moment something runs"
+
+      travel 1.minute
+      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+        assert_not FleetIdleMonitor.check!, "the clock starts again rather than firing"
+      end
+      assert_not_nil setting.fleet_idle_since
     end
   end
 
@@ -510,12 +542,12 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  test "sessions_in_hand counts running and queued spot sessions, and nothing else" do
+  test "running_sessions counts running sessions, and nothing else" do
     2.times { session(status: :running) }
     session(status: :waiting, scheduling_class: SessionGenesis::SPOT)
     session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY)
     session(status: :archived)
 
-    assert_equal 3, FleetIdleMonitor.sessions_in_hand
+    assert_equal 2, FleetIdleMonitor.running_sessions
   end
 end

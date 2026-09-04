@@ -77,9 +77,10 @@ class TriggerCondition < ApplicationRecord
   # rather than every time the pool is measured while healthy. See
   # QuotaAvailabilityMonitor.
   #
-  # `no_sessions_in_progress` fires once the deployment has held fewer sessions
-  # than its configured ceiling — running plus spot-queued — for the whole of its
-  # configured stretch. Idleness is a LEVEL rather than a transition, so that
+  # `no_sessions_in_progress` fires once the deployment has been RUNNING fewer
+  # sessions than its configured ceiling for the whole of its configured stretch.
+  # Sessions merely `waiting` do not count, of any class — most of them are
+  # asleep on their own wake rather than queueing for a slot. Idleness is a LEVEL rather than a transition, so that
   # monitor latches the fire, re-arms only when the fleet reaches the ceiling
   # again, and holds a cooldown under both — the event means "the fleet has room
   # for more work", not "the fleet is quiet". See FleetIdleMonitor.

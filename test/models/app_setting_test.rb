@@ -273,7 +273,7 @@ class AppSettingTest < ActiveSupport::TestCase
   end
 
   # The three fleet top-up knobs. A ceiling of 0 is the dangerous one: the test
-  # FleetIdleMonitor makes is `sessions_in_hand < ceiling`, so 0 can never be
+  # FleetIdleMonitor makes is `running_sessions < ceiling`, so 0 can never be
   # satisfied and the event would quietly never fire again.
   test "the fleet top-up ceiling must be at least one" do
     setting = AppSetting.new(fleet_idle_max_sessions: 0)
@@ -321,7 +321,7 @@ class AppSettingTest < ActiveSupport::TestCase
   # The whole point of the readers above: constructing the status object off the
   # NULL row must not raise.
   test "FleetTopUpStatus can be built from the NULL object" do
-    status = FleetTopUpStatus.new(setting: AppSetting::NULL, sessions_in_hand: 0)
+    status = FleetTopUpStatus.new(setting: AppSetting::NULL, running_sessions: 0)
 
     assert_equal :clock_not_started, status.state
     assert status.sentence.present?
