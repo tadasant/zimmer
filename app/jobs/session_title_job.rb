@@ -29,7 +29,8 @@
 #   and re-checked on a fresh read immediately before writing).
 # - Frozen categories are never auto-assignment targets (a frozen category is a
 #   parked "leave it alone" bucket excluded from refresh/recovery).
-# - Degradation is graceful: missing transcript falls back to the prompt; a
+# - Degradation is graceful: missing transcript falls back to the human's own
+#   prompt (Session#human_prompt, not the composed one the runtime got); a
 #   blank/NONE/unmatched category answer leaves the session Uncategorized with
 #   an info-level timeline note and Rails log explaining why.
 class SessionTitleJob < ApplicationJob
@@ -96,7 +97,7 @@ class SessionTitleJob < ApplicationJob
       # (no inference — the raw prompt is a weak signal we don't pay an LLM call
       # for), and infer the category from the prompt only when candidates exist.
       if want_title
-        fallback = generate_title_from_prompt(session.prompt)
+        fallback = generate_title_from_prompt(session.human_prompt)
         apply_title(session, fallback, "prompt_fallback") if fallback.present?
       end
       infer_from_context(session, want_title: false, context: prompt_context(session), context_source: "prompt") if want_category
@@ -160,7 +161,7 @@ class SessionTitleJob < ApplicationJob
       title = title.presence
       title_source = context_source == "transcript" ? "transcript" : "prompt_fallback"
       if title.blank?
-        title = generate_title_from_prompt(session.prompt)
+        title = generate_title_from_prompt(session.human_prompt)
         title_source = "prompt_fallback"
       end
       apply_title(session, title&.truncate(100, omission: ""), title_source)
@@ -309,6 +310,11 @@ class SessionTitleJob < ApplicationJob
     end
   end
 
+  # Deterministic title from the prompt text. Callers pass `Session#human_prompt`
+  # rather than `prompt`: the chat bubble wraps the human's words in a
+  # `<context-about-user's-current-view>` block before handing them to the
+  # runtime, and the first 60 characters of that block are the block, not the
+  # request.
   def generate_title_from_prompt(prompt_text)
     return nil if prompt_text.blank?
 

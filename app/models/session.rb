@@ -1484,6 +1484,21 @@ class Session < ApplicationRecord
   # one — a collision anywhere else must surface on the first attempt.
   SLUG_UNIQUE_INDEX = "index_sessions_on_slug"
 
+  # The prompt as the human wrote it, for naming the session.
+  #
+  # `prompt` is what the runtime receives, and that is not always what a person
+  # typed. The chat bubble prepends a `<context-about-user's-current-view>`
+  # block — a URL and a dump of the page — and stores the untouched text in
+  # `metadata["original_prompt"]`. Titling off `prompt` there names every
+  # chat-bubble session after that block, and the slug derived from the title
+  # inherits it. Every other entry point composes nothing, so `prompt` is the
+  # human's own words and stays the fallback.
+  #
+  # @return [String, nil]
+  def human_prompt
+    metadata&.dig("original_prompt").presence || prompt
+  end
+
   # Generate slug from title + datetime
   # Called by SessionTitleJob after title is generated
   def generate_slug_from_title!
