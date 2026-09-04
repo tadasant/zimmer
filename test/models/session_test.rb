@@ -1559,6 +1559,38 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "repo", session.agent_root_name
   end
 
+  # === human_prompt ===
+  test "human_prompt returns the original prompt the chat bubble stored" do
+    session = sessions(:waiting)
+    session.update!(
+      prompt: "<context-about-user's-current-view>\nURL: https://zimmer.example.com\n</context-about-user's-current-view>\n\nRestart the stuck session",
+      metadata: { "source" => "chat_bubble", "original_prompt" => "Restart the stuck session" }
+    )
+
+    assert_equal "Restart the stuck session", session.reload.human_prompt
+  end
+
+  test "human_prompt falls back to the prompt when no original prompt was stored" do
+    session = sessions(:waiting)
+    session.update!(prompt: "Restart the stuck session", metadata: {})
+
+    assert_equal "Restart the stuck session", session.reload.human_prompt
+  end
+
+  test "human_prompt falls back to the prompt when the original prompt is blank" do
+    session = sessions(:waiting)
+    session.update!(prompt: "Restart the stuck session", metadata: { "original_prompt" => "  " })
+
+    assert_equal "Restart the stuck session", session.reload.human_prompt
+  end
+
+  test "human_prompt falls back to the prompt when metadata is nil" do
+    session = sessions(:waiting)
+    session.update_columns(prompt: "Restart the stuck session", metadata: nil)
+
+    assert_equal "Restart the stuck session", session.reload.human_prompt
+  end
+
   # === Additional generate_slug_from_title! tests ===
   test "generate_slug_from_title! should handle special characters" do
     session = Session.create!(

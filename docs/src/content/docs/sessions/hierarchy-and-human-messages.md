@@ -254,6 +254,17 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A subagent message | ❌ | intra-session machinery |
 | A polled GitHub PR/issue comment | ❌ | see below |
 
+The same line — his words, not the wrapper Zimmer composed around them — also decides what the
+session is *called*. `SessionTitleJob` names a session from its transcript when there is one and
+otherwise falls back deterministically to `Session#human_prompt`: `metadata["original_prompt"]`
+when a surface stored the human's untouched text beside the composed prompt (the chat bubble is
+the only one that does), and the `prompt` column everywhere else, which is the human's own words
+there because nothing wrapped them. The slug is derived from the title at the moment the title is
+applied, so both carry the same string. Falling back to `prompt` instead named every chat-bubble
+session `<context-about-user's-current-view>` truncated mid-URL, and left two sessions started in
+the same minute computing the same slug base
+([#809](https://github.com/tadasant/zimmer/issues/809)).
+
 Records are **read-only** on every surface: `HumanMessage` raises `ActiveRecord::ReadOnlyRecord` on
 update and on a direct destroy, and there is no create/edit path in the UI, the API, MCP, or the
 Supervisor dashboard. That is what makes them admissible as authorization evidence — a record you can
