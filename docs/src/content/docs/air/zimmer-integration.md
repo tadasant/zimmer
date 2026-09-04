@@ -68,11 +68,12 @@ against *this* catalog. The two reasons a link cannot come across verbatim are t
 self-contained property implies:
 
 - **The reference is not in this catalog.** `open-pr` upstream deep-links four references Zimmer
-  does not carry. All four live in a private repo and some of them describe the private production
-  deployment; `tadasant/zimmer` is public, so copying them in would leak deployment detail *and*
-  break the offline-resolve promise. The substance those passages needed is written inline in the
-  vendored body instead, and the links are gone. Incident citations that name a private repo get
-  the same treatment: the mechanism stays, the issue number goes.
+  does not carry, and `wait-for-ci` deep-links a fifth (`HARNESS_BASH_DENIALS.md`). All of them
+  live in a private repo and some of them describe the private production deployment;
+  `tadasant/zimmer` is public, so copying them in would leak deployment detail *and* break the
+  offline-resolve promise. The substance those passages needed is written inline in the vendored
+  body instead, and the links are gone. Incident citations that name a private repo get the same
+  treatment: the mechanism stays, the repo name and the issue number go.
 - **The anchor is not in the vendored reference.** A `references/GIT_WORKFLOW.md#some-heading` link
   resolves only if this catalog's copy of `GIT_WORKFLOW.md` has that heading, and the reference
   drifts behind the skill just as easily as the skill drifts behind upstream. The fix is to
