@@ -10,6 +10,18 @@ module SecretProviders
   #   * A NEWLY ADDED name is visible within the negative TTL (10s): a miss
   #     triggers one out-of-band refresh, rate-limited so that a `${VAR}` which
   #     genuinely does not exist cannot turn every lookup into a store round trip.
+  #
+  # ## Why this reads more than one namespace
+  #
+  # `ParameterStore::Namespace`'s scope segment was renamed, and the fold from a
+  # path to a GCP resource id is lossy, so the data cannot be renamed in place —
+  # it is copied to the new path and the old one deleted (see
+  # {ParameterStore::NamespaceMigration}). The code deploy and the data move are
+  # separate events, in an order nobody controls, and this chain's contract is
+  # that a miss is not an error: a resolver reading only the new namespace before
+  # the data moved would report every secret as unset, with the Connectors page
+  # the sole place it showed. So it reads BOTH, canonical first, and
+  # {#namespace_for} says which one answered.
   class ParameterStoreProvider
     LABEL = "Zimmer's Google Parameter Store"
 
@@ -20,40 +32,63 @@ module SecretProviders
 
     NEGATIVE_TTL = 10.seconds
 
-    attr_reader :client, :namespace
+    attr_reader :client, :namespaces
 
-    def initialize(client, namespace: ParameterStore::Namespace.static_namespace)
+    # @param namespaces [Array<String>] in precedence order; the first is the
+    #   canonical one, which is the only one anything writes to.
+    def initialize(client, namespaces: ParameterStore::Namespace.read_namespaces)
       @client = client
-      @namespace = namespace
+      @namespaces = Array(namespaces).freeze
+      raise ArgumentError, "a Parameter Store provider needs at least one namespace" if @namespaces.empty?
+
       @last_miss_refresh_at = nil
-      @cache = ParameterStore::SnapshotCache.new { |key| client.resolve(key) }
+      # The cache key is the whole list, and the loader resolves the list in one
+      # pass over the project: reading two namespaces costs what reading one did.
+      @cache = ParameterStore::SnapshotCache.new { |key| client.resolve_all(key) }
     end
 
     def name = "parameter_store"
     def label = LABEL
     def badge = BADGE
 
-    def badge_title
-      "Google Secret Manager — #{namespace} in #{project_id}"
+    # @param variable [String, nil] when given, the title names the namespace
+    #   that ACTUALLY answered for it rather than the canonical one — which is
+    #   how a half-migrated store is visible from the Connectors page.
+    def badge_title(variable = nil)
+      answered = variable.nil? ? nil : namespace_for(variable)
+
+      "Google Secret Manager — #{answered || namespace} in #{project_id}"
     end
+
+    # The canonical namespace: written to, and the one a human is pointed at.
+    def namespace = @namespaces.first
+
+    # The pre-rename namespaces, still read. Empty once the old read path is
+    # dropped, which is a change to Namespace.read_namespaces and nothing else.
+    def legacy_namespaces = @namespaces.drop(1)
 
     # @return [String, nil] nil only when the store answered and does not hold it.
     # @raise [ParameterStore::StoreError, ParameterStore::AuthError] when the
     #   store could not be consulted at all and no snapshot is held.
-    def get(variable)
-      hit = @cache.get(namespace)[variable]
-      return hit unless hit.nil?
+    def get(variable) = entry_for(variable)&.last
 
-      return nil unless refresh_for_miss?
+    def has?(variable) = !entry_for(variable).nil?
 
-      @last_miss_refresh_at = Time.current
-      # Forced: the snapshot is fresh by definition here (see refresh_for_miss?),
-      # it just does not hold this name yet.
-      @cache.refresh(namespace, force: true)
-      @cache.peek(namespace)&.[](variable)
+    # Which namespace holds `variable` — the canonical one, or a pre-rename one
+    # it has not been migrated out of yet.
+    #
+    # @return [String, nil] nil when nothing holds it.
+    def namespace_for(variable) = entry_for(variable)&.first
+
+    # The names still sitting in a pre-rename namespace, whether or not the
+    # canonical namespace also holds them. This is the migration's progress
+    # readout, and it is free: the snapshot already covers both.
+    #
+    # @return [Array<String>] sorted; names, never values.
+    def legacy_variables
+      snapshot = @cache.get(@namespaces)
+      legacy_namespaces.flat_map { |ns| snapshot[ns]&.keys || [] }.uniq.sort
     end
-
-    def has?(variable) = !get(variable).nil?
 
     # The full canonical path a variable occupies (or would occupy) in the store.
     # The Connectors page shows this; it is an address, not a secret.
@@ -80,14 +115,37 @@ module SecretProviders
     # The snapshot is whole-namespace, so a single name cannot be dropped in
     # isolation — and dropping the lot is the right thing anyway.
     def invalidate(_variable = nil)
-      @cache.invalidate(namespace)
+      @cache.invalidate(@namespaces)
       @last_miss_refresh_at = nil
     end
 
     private
 
+    # @return [Array(String, String), nil] the namespace that answered and the
+    #   value it held, in {#namespaces} precedence order.
+    def entry_for(variable)
+      hit = find(@cache.get(@namespaces), variable)
+      return hit unless hit.nil?
+
+      return nil unless refresh_for_miss?
+
+      @last_miss_refresh_at = Time.current
+      # Forced: the snapshot is fresh by definition here (see refresh_for_miss?),
+      # it just does not hold this name yet.
+      @cache.refresh(@namespaces, force: true)
+      find(@cache.peek(@namespaces) || {}, variable)
+    end
+
+    def find(snapshot, variable)
+      @namespaces.each do |namespace|
+        value = snapshot[namespace]&.[](variable)
+        return [ namespace, value ] unless value.nil?
+      end
+      nil
+    end
+
     def refresh_for_miss?
-      return false if @cache.age(namespace) < NEGATIVE_TTL
+      return false if @cache.age(@namespaces) < NEGATIVE_TTL
       return true if @last_miss_refresh_at.nil?
 
       Time.current - @last_miss_refresh_at >= NEGATIVE_TTL

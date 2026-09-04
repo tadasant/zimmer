@@ -73,16 +73,46 @@ module ParameterStore
     # skipped: `Namespace.parameter_id` is a lossy fold, so a resolving id is not
     # proof the parameter is the one asked for.
     #
-    # @param namespace [String] e.g. "/zimmer/production/mcp/static/"
+    # @param namespace [String] e.g. "/zimmer/production/secrets/static/"
     # @return [Hash{String => String}]
     # @raise [StoreError, AuthError] when the store could not be consulted.
     def resolve(namespace)
-      envelopes(namespace).each_with_object({}) do |envelope, out|
-        variable = Namespace.variable_of(envelope["path"])
+      resolve_all([ namespace ]).fetch(namespace)
+    end
+
+    # The same, for SEVERAL namespaces, in ONE pass over the project.
+    #
+    # This exists because the read cost is per-project, not per-namespace: a
+    # resolve is one `parameters.list` plus a `:render` per managed parameter,
+    # and the namespace is a fence applied to the rendered envelope afterwards.
+    # Calling {#resolve} twice would therefore double every API call to answer a
+    # question one pass already answered — which matters, because reading the
+    # pre-rename namespace alongside the canonical one is the whole transition
+    # (see {Namespace.read_namespaces}).
+    #
+    # Each namespace gets its own map, so the caller can apply precedence AND say
+    # which namespace answered. A parameter matching more than one namespace
+    # (possible only if one is a prefix of another) appears under each.
+    #
+    # @param namespaces [Array<String>]
+    # @return [Hash{String => Hash{String => String}}] every namespace asked for
+    #   is a key, empty map and all.
+    # @raise [StoreError, AuthError] when the store could not be consulted.
+    def resolve_all(namespaces)
+      namespaces = Array(namespaces)
+      out = namespaces.index_with { {} }
+
+      rendered_envelopes(namespaces).each do |envelope|
+        path = envelope["path"].to_s
+        variable = Namespace.variable_of(path)
         next if variable.blank?
 
-        out[variable] = envelope["value"].to_s
+        namespaces.each do |namespace|
+          out[namespace][variable] = envelope["value"].to_s if path.start_with?(namespace)
+        end
       end
+
+      out
     end
 
     # Which of `permissions` this credential actually holds on the project.
@@ -107,12 +137,13 @@ module ParameterStore
     def pm_parent = "projects/#{project_id}/locations/#{location}"
     def sm_parent = "projects/#{project_id}"
 
-    # List the namespace, then render one version per parameter.
-    def envelopes(namespace)
+    # List the project's managed parameters, then render one version of each and
+    # keep the envelopes falling inside any of `namespaces`.
+    def rendered_envelopes(namespaces)
       ids = managed_parameter_ids
 
       ids.each_slice(FANOUT).flat_map do |slice|
-        slice.filter_map { |id| rendered_envelope(id, namespace) }
+        slice.filter_map { |id| rendered_envelope(id, namespaces) }
       end
     end
 
@@ -139,7 +170,7 @@ module ParameterStore
       ids
     end
 
-    def rendered_envelope(id, namespace)
+    def rendered_envelope(id, namespaces)
       version = current_version_id(id)
       return nil if version.nil?
 
@@ -151,7 +182,7 @@ module ParameterStore
       return nil if envelope.nil?
       # The namespace fence, applied to the envelope's own path rather than to
       # the flattened id.
-      return nil unless envelope["path"].to_s.start_with?(namespace)
+      return nil unless namespaces.any? { |namespace| envelope["path"].to_s.start_with?(namespace) }
 
       envelope
     rescue StoreError => e

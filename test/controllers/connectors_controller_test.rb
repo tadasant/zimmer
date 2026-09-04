@@ -261,6 +261,55 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_match FakeParameterStore::PROJECT, response.body
   end
 
+  # The namespace rename is the one change whose half-done state is invisible
+  # everywhere else: the resolver reads both namespaces, so nothing raises and
+  # nothing is missing whether the data has moved or not. This banner line is the
+  # only surface that tells the two apart — and it has to be, because the writer
+  # credential is not deployed and the move is run by a human elsewhere.
+  test "secret_store names the variables still sitting in the pre-rename namespace" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("MOVED_ALREADY", "1")
+    fake.seed_secret("STILL_AT_OLD_PATH", "2",
+      path: ParameterStore::Namespace.legacy_parameter_path("STILL_AT_OLD_PATH"))
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-store-legacy-namespace=remaining]" do |elements|
+      copy = elements.first.text
+      assert_match "STILL_AT_OLD_PATH", copy
+      assert_no_match(/MOVED_ALREADY/, copy)
+      assert_match ParameterStore::Namespace.legacy_static_namespace, copy
+    end
+  end
+
+  test "secret_store says the pre-rename read path can be dropped once it is empty" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("MOVED_ALREADY", "1")
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-store-legacy-namespace=empty]"
+  end
+
+  # The banner's whole job is to report the store's health in words. A store that
+  # cannot be listed is already said, better, by the capability lines — taking the
+  # page down to say it a second time would be a poor trade.
+  test "secret_store still renders when the store cannot be listed" do
+    fake = FakeParameterStore.new
+    fake.fail_with!(503)
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-secret-store=parameter_store]"
+    assert_select "[data-store-legacy-namespace]", count: 0
+  end
+
   # Issue #233. The resolver reads only through `parameterVersions.render`, so a
   # credential holding `versions.access` without it resolves nothing at all —
   # reporting it as the intended least-privilege shape is the green-banner,

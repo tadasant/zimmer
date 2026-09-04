@@ -126,4 +126,21 @@ module ConnectorsHelper
       namespace: SecretsLocation.gateway_namespace(slug || "<slug>")
     }
   end
+
+  # The names still sitting in the store's pre-rename namespace — the migration's
+  # remaining work, read off the snapshot the provider already holds.
+  #
+  # Swallows a store failure and returns nil rather than raising: this is a
+  # progress note on a banner whose entire job is to report the store's health in
+  # words. A namespace that could not be listed is already said, better, by the
+  # capability lines below it, and taking the page down to say it twice would be
+  # a poor trade.
+  #
+  # @param store [SecretProviders::ParameterStoreProvider]
+  # @return [Array<String>, nil] nil when the store could not be consulted.
+  def connector_legacy_store_variables(store)
+    store.legacy_variables
+  rescue ParameterStore::StoreError, ParameterStore::AuthError
+    nil
+  end
 end

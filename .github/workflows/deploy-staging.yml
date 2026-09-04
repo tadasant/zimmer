@@ -461,7 +461,7 @@ jobs:
           # question -- the value is masked by GitHub anyway, and the store's address is
           # in env.clear in config/deploy.staging.yml, not here.
           if [ -n "${STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON:-}" ]; then
-            echo "✅ Parameter Store ON (resolver key set; reads /zimmer/staging/mcp/static/ in zimmer-secrets-staging)"
+            echo "✅ Parameter Store ON (resolver key set; reads /zimmer/staging/secrets/static/ and, until the migration finishes, /zimmer/staging/mcp/static/ in zimmer-secrets-staging)"
           else
             echo "::warning::Parameter Store is OFF: STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON is unset."
             echo "::warning::Staging boots fine and every \${VAR} resolves from staging.yml.enc as before --"
