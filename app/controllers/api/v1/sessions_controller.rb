@@ -480,6 +480,12 @@ class Api::V1::SessionsController < Api::BaseController
       message: message_parent_receipt(result)
     }
 
+    # Only the queued branch has a row to report. A successful interrupt drains
+    # the queue through EnqueuedMessageProcessorService, which destroys the row
+    # once it claims it — so the service returns nothing there, and a client is
+    # never handed an id that 404s or a "pending" status for a message that was
+    # in fact delivered. `follow_up` omits the key on its force path for the same
+    # reason.
     if result.enqueued_message
       payload[:enqueued_message] = {
         id: result.enqueued_message.id,
@@ -1411,6 +1417,19 @@ class Api::V1::SessionsController < Api::BaseController
   # the catalog defaults. `place` is not a column either; it resolves to a
   # `precedence` before the record is built. Hence `.except(:agent_root, :place)`
   # at the Session.new call.
+  def session_params
+    params.permit(
+      :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
+      :title, :slug, :goal, :execution_provider, :is_autonomous,
+      :parent_session_id, :auto_compact_window, :scheduling_class, :precedence, :place,
+      :idempotency_key,
+      mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
+    )
+  end
+
+  # True when the request actually named this artifact list, empty or not. An
+  # array is the only thing that counts as naming one, so an explicit `[]` is a
+  # request for none while an absent key falls through to the root's defaults.
   # The human-readable half of the message_parent response. The structured
   # `delivery` field above is what a client keys off; this is what an agent
   # reading the raw JSON gets told.
@@ -1427,19 +1446,6 @@ class Api::V1::SessionsController < Api::BaseController
     result.unarchived ? "#{base} That session was archived and has been restored from the trash to receive it." : base
   end
 
-  def session_params
-    params.permit(
-      :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
-      :title, :slug, :goal, :execution_provider, :is_autonomous,
-      :parent_session_id, :auto_compact_window, :scheduling_class, :precedence, :place,
-      :idempotency_key,
-      mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}
-    )
-  end
-
-  # True when the request actually named this artifact list, empty or not. An
-  # array is the only thing that counts as naming one, so an explicit `[]` is a
-  # request for none while an absent key falls through to the root's defaults.
   def explicit_list_param?(key)
     session_params[key].is_a?(Array)
   end

@@ -112,11 +112,12 @@ module Mcp
 
       # Report back to the session that started this one.
       #
-      # The target is never an argument. `requester_session` resolves WHO is
-      # reporting — the connection's own session unless one is named — and
-      # Sessions::MessageParent resolves the parent from there. A caller that
-      # could name the parent would hold a general session-to-session messaging
-      # primitive, which is exactly what this surface exists not to hand out.
+      # The target is never an argument. `session_id` names the REPORTER — it is
+      # required by this schema like every other action here, and
+      # Sessions::MessageParent reads `parent_session_id` from there. A caller
+      # that could name the parent would hold a general session-to-session
+      # messaging primitive, which is exactly what this surface exists not to
+      # hand out.
       def message_parent(args)
         child = requester_session(args)
         enforce_self_report!(child)
@@ -150,8 +151,9 @@ module Mcp
 
         raise ToolError, "\"message_parent\" reports on behalf of the session making the call, and this MCP " \
                          "connection belongs to session ##{context.self_session_id} — it cannot send session " \
-                         "##{child.id}'s report to session ##{child.id}'s parent. Omit \"session_id\", or pass " \
-                         "your own. To message another session directly, use the full session tool surface."
+                         "##{child.id}'s report to session ##{child.id}'s parent. Pass \"session_id\": " \
+                         "#{context.self_session_id}, your own. To message another session directly, use the " \
+                         "full session tool surface."
       end
 
       def message_parent_result(child, result)
