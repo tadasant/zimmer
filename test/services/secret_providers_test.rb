@@ -273,6 +273,26 @@ class SecretProvidersTest < ActiveSupport::TestCase
     assert_match ParameterStore::Namespace.static_namespace, provider.badge_title("ABSENT")
   end
 
+  test "naming the variable in a badge title cannot take a page down" do
+    # Asking which namespace answered is a SECOND lookup, and the chain is
+    # process-wide: an invalidate from elsewhere can empty the snapshot between
+    # the resolution that succeeded and the title, leaving a cold read against a
+    # store that has gone away — and a cold failure raises rather than serving
+    # stale. Without the fallback the connector frame 500s instead of rendering.
+    @fake.seed_secret("STRAD_API_KEY", "1")
+    provider = @fake.provider
+    resolution = SecretsInterpolator::Resolution.new(state: :found, source: provider)
+    assert_match ParameterStore::Namespace.static_namespace,
+      resolution.source_badge_title("STRAD_API_KEY")
+
+    provider.invalidate
+    @fake.fail_with!(503)
+
+    title = nil
+    assert_nothing_raised { title = resolution.source_badge_title("STRAD_API_KEY") }
+    assert_match ParameterStore::Namespace.static_namespace, title
+  end
+
   test "the store is still told to put a NEW secret at the canonical path" do
     assert_equal ParameterStore::Namespace.parameter_path("BRAND_NEW"),
       @fake.provider.path_for("BRAND_NEW")

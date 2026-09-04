@@ -197,6 +197,27 @@ must give an **observable answer** to "did it run, and what does it cover", or a
 traded a shell for a guess. A rake task is still fine as a developer convenience; it is not the
 delivery mechanism.
 
+### The one sanctioned exception: an action Zimmer must not hold the credential for
+
+There is exactly one case where a rake task *is* the delivery mechanism, and it is worth writing
+down so it is applied narrowly rather than reached for: **when running the action inside Zimmer
+would require baking a credential into the image that Zimmer is deliberately built not to have.**
+
+The worked case is the Parameter Store namespace migration
+([Running the migration](/operate/secrets-parameter-store/#running-the-migration)). Zimmer's
+resolver key ships in the image and reaches every session's environment resolution; it holds three
+read roles and no write role, and that absence is checked at runtime. Delivering the migration as a
+post-deploy task would mean shipping a `parametermanager.admin` key alongside it to run **once**,
+permanently widening the blast radius of the one baked credential. So the task runs from wherever
+the writer credential already is, and it touches only Google — no Zimmer database, no running
+process — so it needs no shell on the box either.
+
+**The two obligations above still apply, and are still met.** The migration is safe to run
+repeatedly by construction (it holds no cursor; every step is decided from what the store holds
+now), and "has it run, and what does it cover" is answered on the Connectors page, which needs no
+shell. An exception to the *mechanism* is not an exception to the properties the mechanism exists
+to guarantee — if you cannot state both, this is not your case.
+
 ## Dropping a column takes two deploys
 
 **A migration that drops a column and the code change that stops using it cannot ship in the same

@@ -141,7 +141,8 @@ module ParameterStore
       # messages (a JSON parse error, say) can embed a window of the body, and on
       # this path the body is a rendered secret.
       summary = error.is_a?(StoreError) ? "#{error.class}: #{error.message}" : error.class.to_s
-      Rails.logger.warn "[ParameterStore] refresh of #{key} failed; serving last known good values (#{summary})"
+      Rails.logger.warn "[ParameterStore] refresh of #{Array(key).join(', ')} failed; " \
+                        "serving last known good values (#{summary})"
     end
   end
 end

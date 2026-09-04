@@ -31,8 +31,15 @@ module ParameterStore
       params_env = @env["PARAMS_ENV"].presence || Rails.env
       confirm!(params_env)
 
+      # The writer is probed on BOTH paths. A dry run cannot write — it passes no
+      # write client to the migration — but the documented invocation hands it a
+      # writer key precisely so the plan answers "and could this credential
+      # actually do it". Probing only on the live run would defer that answer to
+      # the destructive command, which is the one place nobody wants a surprise.
+      writer = write_client(refuse: !@dry_run)
+
       report = NamespaceMigration.new(
-        resolver: resolver_client, writer: @dry_run ? nil : write_client,
+        resolver: resolver_client, writer: @dry_run ? nil : writer,
         env: params_env, dry_run: @dry_run, prune: prune?
       ).call
 
@@ -42,7 +49,24 @@ module ParameterStore
 
     private
 
-    def prune? = @env["PRUNE"] != "false"
+    TRUTHY = %w[1 t true y yes on].freeze
+    FALSEY = %w[0 f false n no off].freeze
+
+    # PRUNE defaults to true, and true is the destructive direction — so an
+    # unrecognised value must not quietly mean "delete". `PRUNE=0` reaching for
+    # the documented safe half-step and getting a full delete pass is exactly the
+    # failure this refuses instead of guessing at.
+    def prune?
+      raw = @env["PRUNE"]
+      return true if raw.nil? || raw.strip.empty?
+
+      value = raw.strip.downcase
+      return true if TRUTHY.include?(value)
+      return false if FALSEY.include?(value)
+
+      raise Refused, "PRUNE=#{raw} is not a yes or a no. Use PRUNE=false to copy without deleting, " \
+                     "or leave it unset to migrate fully."
+    end
 
     def resolver_client
       configuration = Resolver.from_env(@env)
@@ -56,13 +80,21 @@ module ParameterStore
     # The writer's permissions are probed BEFORE anything is written, so a
     # credential that can create but not delete fails here rather than halfway
     # through, having copied every secret and removed none.
-    def write_client
+    # @param refuse [Boolean] true on a live run, where a credential that cannot
+    #   finish the job is a stop. On a dry run the same findings are printed and
+    #   the plan continues — the point of a plan is to report, including on the
+    #   credential.
+    def write_client(refuse:)
       configuration = Writer.from_env(@env)
       unless configuration.configured?
-        raise Refused, "no Parameter Store writer credential: #{configuration.reason}"
+        raise Refused, "no Parameter Store writer credential: #{configuration.reason}" if refuse
+
+        say "! no writer credential, so the plan below could not be checked against one: " \
+            "#{configuration.reason}"
+        return nil
       end
 
-      check_capabilities!(Capabilities.probe(configuration.client))
+      check_capabilities!(Capabilities.probe(configuration.client), refuse: refuse)
       unless configuration.dedicated_writer?
         say "! writing as the RESOLVER credential, which is not supposed to hold write permission."
       end
@@ -70,19 +102,27 @@ module ParameterStore
       configuration.client
     end
 
-    def check_capabilities!(capabilities)
+    def check_capabilities!(capabilities, refuse:)
       unless capabilities.probed?
-        raise Refused, "could not confirm the writer's permissions: #{capabilities.reason}"
+        return object!("could not confirm the writer's permissions: #{capabilities.reason}", refuse)
       end
       unless capabilities.can_upsert?
-        raise Refused, "the writer credential cannot create secrets; it is missing " \
-                       "#{capabilities.missing_for_upsert.join(', ')}"
+        return object!("the writer credential cannot create secrets; it is missing " \
+                       "#{capabilities.missing_for_upsert.join(', ')}", refuse)
       end
       return unless prune? && !capabilities.can_delete?
 
-      raise Refused, "the writer credential cannot delete secrets; it is missing " \
-                     "#{capabilities.missing_for_delete.join(', ')}. " \
-                     "Re-run with PRUNE=false to copy only."
+      object!("the writer credential cannot delete secrets; it is missing " \
+              "#{capabilities.missing_for_delete.join(', ')}. " \
+              "Re-run with PRUNE=false to copy only.", refuse)
+    end
+
+    # Stop the run, or — on a dry run — report the same sentence and carry on.
+    def object!(message, refuse)
+      raise Refused, message if refuse
+
+      say "! #{message}"
+      nil
     end
 
     # A live run rewrites real secrets, and the environment it rewrites them in is
