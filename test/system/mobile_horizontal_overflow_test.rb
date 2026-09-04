@@ -310,16 +310,16 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # skill body.
   SKILL_NAME = "recover-from-compaction-thrashing".freeze
 
-  # The base directory is kept short on purpose. A real one is an absolute path
-  # with no space in it, and transcript prose has no `overflow-wrap: break-word`
-  # today, so a realistic path runs ~150px past a 360px viewport — in a plain
-  # assistant message exactly as much as in a runtime notice. That is a
-  # pre-existing wrapping bug in `.prose-session` (tadasant/zimmer#919), not
-  # something this row introduced, and asserting it here would only duplicate a
-  # red for someone else's fix. What this case is for is the digest row and the
-  # disclosure, which are what the timeline gained.
+  # A realistic base directory — an absolute path with no space in it, which is
+  # what a skill injection actually carries, and what the markdown case below
+  # reuses. It used to be shortened, because transcript prose had no
+  # `overflow-wrap: break-word` and a real path ran ~150px past a 360px viewport
+  # (tadasant/zimmer#919). `.prose-session` now breaks it, so neither fixture has
+  # to lie about its input.
+  SKILL_PATH = "/home/rails/.zimmer/clones/zimmer/.claude/skills/#{SKILL_NAME}".freeze
+
   SKILL_DUMP = <<~TEXT.freeze
-    Base directory for this skill: /skills/#{SKILL_NAME}
+    Base directory for this skill: #{SKILL_PATH}
 
     # Recover From Compaction Thrashing
 
@@ -355,6 +355,68 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_text "Recover From Compaction Thrashing"
 
     assert_no_horizontal_overflow("session detail with an expanded runtime notice")
+  end
+
+  # The transcript is rendered markdown, and the two shapes agents write most
+  # often are the two that cannot shrink: a table, whose min-content width is the
+  # sum of its columns, and an absolute path, which is one token with no break
+  # opportunity. Both used to set the width of the whole document rather than
+  # their own box (tadasant/zimmer#919) — the table because the
+  # `overflow-x-auto` on `.table-wrapper` was written against `.prose` and
+  # `.prose-session` carries the typography plugin's declarations without the
+  # literal class name, so the rule never matched inside a transcript.
+  #
+  # Asserting the geometry rather than the utility classes: what has to hold is
+  # that the page does not scroll sideways and that the table scrolls inside its
+  # wrapper instead.
+  MARKDOWN_BODY = <<~MD.freeze
+    Base directory for this skill: #{SKILL_PATH}
+
+    | File | What it does |
+    | --- | --- |
+    | `#{SKILL_PATH}/SKILL.md` | the skill body |
+  MD
+
+  test "a transcript markdown table and a long path do not overflow horizontally on a phone" do
+    session = create_session(transcript: [
+      { "type" => "assistant", "uuid" => "md-body", "timestamp" => "2025-11-12T12:00:00Z",
+        "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => MARKDOWN_BODY } ] } }
+    ])
+
+    # `visit` opens every transcript panel on the page, so the markdown below has
+    # geometry by the time the probes run.
+    visit session_path(session)
+    assert_text "Base directory for this skill"
+
+    assert_no_horizontal_overflow("session detail with a markdown table and a long path")
+    page.save_screenshot("tmp/screenshots/proof-transcript-markdown-375.png")
+
+    # The table has to be the thing that scrolls. A wrapper that merely fits
+    # would mean the table was clipped or the page had gone wide instead, so
+    # assert the overflow is real *and* contained. Asserted present first: a
+    # renderer that stopped emitting the wrapper is one of the regressions this
+    # case is for, and it should read as a missing element rather than as a
+    # `null` dereference inside the probe.
+    assert_selector ".prose-session .table-wrapper", visible: :all
+    wrapper = page.evaluate_script(<<~JS)
+      (function () {
+        const el = document.querySelector(".prose-session .table-wrapper");
+        return [el.scrollWidth, el.clientWidth, getComputedStyle(el).overflowX];
+      })()
+    JS
+    scroll_width, client_width, overflow_x = wrapper
+    assert_equal "auto", overflow_x, "the markdown table's wrapper does not scroll on a phone"
+    assert scroll_width > client_width,
+      "expected the table to be wider than its wrapper (#{scroll_width} vs #{client_width}) — " \
+      "the fixture is no longer exercising the overflow this case is about"
+
+    # 320px is the narrowest phone the mobile QA pass asks for, and the width at
+    # which a break-opportunity-free token has the least room to fit.
+    page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
+    visit session_path(session)
+    assert_text "Base directory for this skill"
+
+    assert_no_horizontal_overflow("session detail with a markdown table and a long path at 320px")
   end
 
   test "a lost-elicitation banner does not overflow horizontally on a phone" do
