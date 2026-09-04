@@ -69,7 +69,7 @@ a person. Two of them show up constantly in Zimmer:
 | Flag on the JSONL line | What the CLI is recording |
 | --- | --- |
 | `interruptedByShutdown: true` | a turn killed mid-tool-use, by a process shutdown rather than a keyboard interrupt |
-| `isMeta: true` | the CLI's own resume scaffolding — "Continue from where you left off." |
+| `isMeta: true` | context the CLI injected rather than a person typing — its resume scaffolding ("Continue from where you left off."), and the whole body of a skill when one fires |
 
 In Zimmer the shutdown behind the first one is usually Zimmer: `Sessions::InterruptService`
 SIGTERMs the CLI to deliver an enqueued message ahead of the running turn. Rendering the resulting
@@ -106,6 +106,39 @@ Codex gets no equivalent treatment: its rollout `response_item` message payloads
 and `content`, with no per-line marker that distinguishes a machine-written user turn from a typed
 one. There is nothing unambiguous to key off, so `CodexTranscriptNormalizer` is left alone rather
 than given an invented discriminator.
+
+#### Large notices render collapsed
+
+`isMeta` carries more than the resume stub. It is also the flag on the line Claude Code writes
+when a skill fires, and that line is an entire `SKILL.md` — the smallest one on a production
+Zimmer host is 3.4k characters, the largest 690k. Printed in full, two or three of them push the
+conversation off the page.
+
+So the timeline folds them away. A collapsed notice draws one muted line — the skill's name, an
+approximate token count, and a disclosure control — and the body renders unchanged as soon as it
+is opened. Nothing is removed: the full text is still in the row, still what the copy button
+copies, and the plain-text export never comes through this path at all.
+
+Two things trigger the fold, and both live in `SessionsHelper#ot_runtime_notice_digest`:
+
+| Trigger | Header label |
+| --- | --- |
+| a first line reading `Base directory for this skill: <path>` | the skill's name, from the path's last segment |
+| anything else longer than `RUNTIME_NOTICE_COLLAPSE_CHARS` (2,000) | the notice's own first line, truncated |
+
+Both are floored at `RUNTIME_NOTICE_FLOOR_CHARS` (400): folding a short notice away behind an
+accordion is worse than leaving it alone, and that holds for a short skill dump too. The
+thresholds sit far above the scaffolding the same flag carries — "Continue from where you left
+off." is 33 characters. The token count is a character-count estimate at four characters per
+token, labelled `approx.` in the UI: Zimmer runs no tokenizer at render time and the number is
+not a billing figure.
+
+It is a `<details>`, not a Stimulus controller, for the reason the session hierarchy is: no JS to
+load, and it works under touch and keyboard. The one controller it has to tell is `auto-scroll`,
+whose `ResizeObserver` watches the container this row sits in — expanding a body worth tens of
+thousands of pixels is indistinguishable from new content arriving, and a reader who was tailing
+would be thrown to the bottom of the transcript, past what they just opened. The `toggle` clears
+tailing, the same as scrolling up does.
 
 ## Secret redaction
 

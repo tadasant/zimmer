@@ -301,6 +301,61 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-stalled-spot-hold-375.png")
   end
 
+  # An injected SKILL.md reaches the transcript as an `isMeta` line, and the
+  # timeline draws it collapsed: a muted digest row carrying the skill's name, an
+  # approximate token count and a disclosure. The name is a long hyphenated token
+  # with no break opportunity, on a flex row — signature 1 and signature 4 at
+  # once — and the same row then has to survive being expanded into the whole
+  # skill body.
+  SKILL_NAME = "recover-from-compaction-thrashing".freeze
+
+  # The base directory is kept short on purpose. A real one is an absolute path
+  # with no space in it, and transcript prose has no `overflow-wrap: break-word`
+  # today, so a realistic path runs ~150px past a 360px viewport — in a plain
+  # assistant message exactly as much as in a runtime notice. That is a
+  # pre-existing wrapping bug in `.prose-session` (tadasant/zimmer#919), not
+  # something this row introduced, and asserting it here would only duplicate a
+  # red for someone else's fix. What this case is for is the digest row and the
+  # disclosure, which are what the timeline gained.
+  SKILL_DUMP = <<~TEXT.freeze
+    Base directory for this skill: /skills/#{SKILL_NAME}
+
+    # Recover From Compaction Thrashing
+
+    #{(1..40).map { |i| "#{i}. Delegate the verbose call to a subagent so the raw output never reaches your own thread." }.join("\n")}
+  TEXT
+
+  test "a collapsed runtime notice does not overflow horizontally on a phone" do
+    # Deliberately not a running session: a running one polls and broadcasts, and
+    # a morph mid-test re-renders the transcript panel from server HTML that
+    # carries no `open`, closing it back up under the assertions below.
+    session = create_session(transcript: [
+      { "type" => "user", "uuid" => "meta-skill", "isMeta" => true,
+        "message" => { "role" => "user", "content" => [ { "type" => "text", "text" => SKILL_DUMP } ] } }
+    ])
+
+    visit session_path(session)
+
+    # The transcript panel ships collapsed, and its contents have no geometry
+    # until it is open. Opened by script rather than by clicking its <summary>,
+    # the way pwa_reopen_recovery_test.rb does: this test is about the notice
+    # inside the panel, not about the panel's own affordance.
+    page.execute_script(%(document.querySelector('details[data-controller~="transcript-panel"]').open = true))
+    assert_selector "details[data-controller~='transcript-panel'][open]"
+    assert_text SKILL_NAME
+
+    assert_no_horizontal_overflow("session detail with a collapsed runtime notice")
+    page.save_screenshot("tmp/screenshots/proof-collapsed-runtime-notice-375.png")
+
+    # And expanded: the body is the thing that was burying the conversation, so
+    # it is also the thing most likely to run wide once it is on screen.
+    find("summary", text: SKILL_NAME).click
+    assert_selector "details.group\\/notice[open]"
+    assert_text "Recover From Compaction Thrashing"
+
+    assert_no_horizontal_overflow("session detail with an expanded runtime notice")
+  end
+
   test "a lost-elicitation banner does not overflow horizontally on a phone" do
     session = create_session(status: :needs_input, metadata: {
       "lost_elicitation" => {

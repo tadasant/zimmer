@@ -96,6 +96,32 @@ export default class extends Controller {
     this.tailing = this.isAtBottom()
   }
 
+  // A disclosure inside the timeline — the collapsed runtime notice a large
+  // injected SKILL.md renders as — grows the observed container by however much
+  // body it was hiding, which can be tens of thousands of pixels. That growth is
+  // the reader's own doing and they want to read what they just opened, so it
+  // must not be mistaken for new content arriving underneath them:
+  // observeContentGrowth would otherwise re-pin the view to the bottom of the
+  // transcript, past the body they just asked for. So expanding stops tailing,
+  // the same as scrolling up does; collapsing re-derives it from where the
+  // reader actually is.
+  //
+  // Bound to the summary's `click`, NOT the details' `toggle`, and the
+  // difference is the whole point: `toggle` is dispatched after the open state
+  // has been applied and laid out, by which time the ResizeObserver has already
+  // fired and re-pinned. `click` runs before the browser's default action, so
+  // `open` here is the state about to change rather than the one that has —
+  // still closed means this click is about to expand. Keyboard activation of a
+  // <summary> dispatches a click too, so this covers Enter/Space as well.
+  disclosureToggling(event) {
+    if (!this.isConnected) return
+
+    const disclosure = event.currentTarget.closest("details")
+    if (!disclosure) return
+
+    this.tailing = disclosure.open ? this.isAtBottom() : false
+  }
+
   // Find the element that actually scrolls. Inside the dashboard drawer the detail
   // is loaded into a panel marked with [data-scroll-container]; we locate it by DOM
   // ancestry so detection never races layout (probing computed overflow fails when
