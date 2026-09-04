@@ -8,6 +8,12 @@ require "tmpdir"
 # job exists to avoid (#273) is a race between two waiters inside one process, and
 # a mocked process table cannot demonstrate that a specific exit status survived.
 class ZombieReaperJobTest < ActiveJob::TestCase
+  # #perform sweeps session cgroups before it does anything else, so every test here
+  # touches them whether it means to or not. Without this the sweep runs against the
+  # host's real subtree and reaps live sessions' cgroups (#902). The two tests that are
+  # actually about the sweep re-stub the parent to one that exists.
+  pin_delegated_cgroup_parent_absent
+
   setup do
     ChildWaiterRegistry.reset!
     # The confirmation delay only has to outlast a Process.detach thread's reap;
