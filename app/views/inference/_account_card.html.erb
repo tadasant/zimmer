@@ -25,7 +25,7 @@
           <span class="text-yellow-600" title="No tokens stored. Authenticate the account before it can serve sessions.">No tokens</span>
         <% end %>
         <% unless account.codex? %>
-          <%= button_to refresh_account_quotas_path(account), method: :post,
+          <%= button_to refresh_account_inference_path(account), method: :post,
               class: "inline-flex items-center px-2 py-1 border border-gray-300 text-xs font-medium rounded text-gray-600 bg-white hover:bg-gray-50",
               data: { turbo_stream: true },
               title: "Refresh quota for #{account.email}" do %>
@@ -53,7 +53,7 @@
               data: account.has_valid_config? ? { turbo_confirm: switch_confirm } : {},
               title: account.has_valid_config? ? switch_confirm : "No tokens — authenticate the account first" %>
         <% end %>
-        <%= button_to "Delete", destroy_account_quotas_path(account), method: :delete,
+        <%= button_to "Delete", destroy_account_inference_path(account), method: :delete,
             class: "inline-flex items-center px-2 py-1 border border-red-200 text-xs font-medium rounded text-red-700 bg-red-50 hover:bg-red-100",
             data: { turbo_confirm: is_current ? "#{account.email} is the current account. Deleting it will activate the next available account (or leave this runtime with none). Continue?" : "Delete #{account.email}?" },
             title: "Delete #{account.email}" %>
@@ -141,7 +141,7 @@
     <!-- UI-driven login flow ("Authenticate"). Skipped for Codex API-key
          accounts, which carry their credential statically. -->
     <% unless account.codex? && account.codex_api_key_account? %>
-      <%= render "quotas/login_panel", account: account %>
+      <%= render "inference/login_panel", account: account %>
     <% end %>
   </div>
 </div>

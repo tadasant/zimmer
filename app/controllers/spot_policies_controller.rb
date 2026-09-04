@@ -2,7 +2,7 @@
 
 # The spot gate policy: whether the gate holds spot sessions at all, how much of
 # each window is reserved for priority sessions, and the ceiling on how many
-# sessions run at once. The card lives on /quotas because the windows it reads
+# sessions run at once. The card lives on /inference because the windows it reads
 # are the ones that page reports.
 #
 # The reserve is typed as a PERCENTAGE and read back as DOLLARS. A percentage is
@@ -36,9 +36,9 @@ class SpotPoliciesController < ApplicationController
     end
 
     if setting.save
-      redirect_to quotas_path(anchor: "spot-gate"), notice: "Spot policy updated."
+      redirect_to inference_path(anchor: "spot-gate"), notice: "Spot policy updated."
     else
-      redirect_to quotas_path(anchor: "spot-gate"),
+      redirect_to inference_path(anchor: "spot-gate"),
         alert: "Spot policy not saved: #{setting.errors.full_messages.join(', ')}"
     end
   end

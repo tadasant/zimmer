@@ -3,7 +3,7 @@
 require "test_helper"
 
 # The unified model: capacity, the reserve carved out of it, and the pacing
-# curve that fills the rest. Every figure the /quotas page and `get_spot_policy`
+# curve that fills the rest. Every figure the /inference page and `get_spot_policy`
 # render comes from here, and so does every decision the spot gate makes.
 class QuotaCapacityModelTest < ActiveSupport::TestCase
   FIVE_HOUR = QuotaCapacityEstimate::FIVE_HOUR

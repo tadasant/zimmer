@@ -1,6 +1,6 @@
 require "application_system_test_case"
 
-# The /quotas time displays, rendered in a real browser: the "Resets in" line on
+# The /inference time displays, rendered in a real browser: the "Resets in" line on
 # an account card, and the Account Pool's countdown to the moment work is
 # unblocked.
 #
@@ -19,13 +19,13 @@ require "application_system_test_case"
 # reported in, so one page render covers them. The third is the pool banner
 # above those cards, and needs a pool that is out of capacity rather than a
 # single card, so it renders its own page.
-class QuotasResetCountdownTest < ApplicationSystemTestCase
+class InferenceResetCountdownTest < ApplicationSystemTestCase
   # Alongside the failure screenshots Rails writes, so CI's artifact upload
   # picks them up.
   SCREENSHOT_DIR = Rails.root.join("tmp", "capybara")
 
   setup do
-    # QuotasController#show reconciles the worker's ~/.claude credential files on
+    # InferenceController#show reconciles the worker's ~/.claude credential files on
     # render. Point those paths at an empty tmp dir so the page render performs no
     # real filesystem work and reconcile is a clean no-op during the test.
     @tmpdir = Dir.mktmpdir
@@ -53,7 +53,7 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
       trigger: "page_view"
     )
 
-    visit quotas_url
+    visit inference_url
 
     card = find("#account_card_#{account.id}")
 
@@ -84,7 +84,7 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
     assert card.has_selector?("span", exact_text: "Rejected"),
            "a status whose window is still open should be badged"
 
-    capture("quotas-reset-countdown", card)
+    capture("inference-reset-countdown", card)
   end
 
   test "an account whose windows have cleared does not keep presenting as quota exceeded" do
@@ -101,7 +101,7 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
       trigger: "scheduled"
     )
     at_phone_width do
-      visit quotas_url
+      visit inference_url
 
       card = find("#account_card_#{account.id}")
 
@@ -121,7 +121,7 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
       )
       assert_equal 0, overflow, "the page should not scroll horizontally at 375px"
 
-      capture("quotas-cleared-account-badge", card)
+      capture("inference-cleared-account-badge", card)
     end
   end
 
@@ -145,7 +145,7 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
     )
 
     at_phone_width do
-      visit quotas_url
+      visit inference_url
 
       banner = find("[data-controller='unblock-countdown']")
       # Matched case-insensitively: the label is `uppercase` in CSS, and
@@ -188,7 +188,7 @@ class QuotasResetCountdownTest < ApplicationSystemTestCase
       JS
       assert_equal [], past_edge, "nothing in the countdown may sit past the right edge"
 
-      capture("quotas-unblock-countdown-375", banner)
+      capture("inference-unblock-countdown-375", banner)
 
       # The deadline crossing while the page is open. Handed to the live
       # controller rather than waited out, so the assertion is about what it

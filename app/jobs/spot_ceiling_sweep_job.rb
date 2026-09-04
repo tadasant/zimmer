@@ -13,7 +13,7 @@
 #
 # What bounds how fast it can react is the READING, not the sweep: utilization
 # comes from quota snapshots, which land when ClaudeUsageSamplerJob samples
-# (every 15 minutes), when an account rotates, and when someone opens /quotas.
+# (every 15 minutes), when an account rotates, and when someone opens /inference.
 # Sweeping more often than that would re-decide on the same number.
 #
 # A pass that finds a window out of spot budget is the expensive one: each pause

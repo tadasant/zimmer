@@ -19,7 +19,7 @@ class CleanupRuntimeLoginAttemptsJob < ApplicationJob
 
   # On `auth` with RuntimeLoginJob, not on `default`. This is the reaper for the
   # very panel the lane exists to keep responsive: an attempt it fails to resolve
-  # is a /quotas spinner that never stops, and it is the only thing that frees an
+  # is a /inference spinner that never stops, and it is the only thing that frees an
   # `auth` thread pinned by a login whose worker died. A reaper starved behind the
   # backlog its own subsystem was moved off would be the bug pointed backwards.
   queue_as :auth

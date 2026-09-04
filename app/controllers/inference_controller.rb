@@ -1,6 +1,13 @@
 # frozen_string_literal: true
 
-class QuotasController < ApplicationController
+class InferenceController < ApplicationController
+  # The tabs, in order. Every registered runtime gets one — including the ones
+  # with no account pool. The surface was called Quotas while every tab was a
+  # pool of subscription accounts with a quota window; Pi has neither, which is
+  # why the page is now Inference and the tab list is RuntimeRegistry's rather
+  # than ClaudeAccount::RUNTIMES.
+  TABS = RuntimeRegistry::BUNDLES.keys.freeze
+
   # Page load — renders immediately with cached snapshots from DB. No API calls
   # are made here; the one write it does make is #auto_heal_accounts converging a
   # status column against the reading already on file.
@@ -8,6 +15,11 @@ class QuotasController < ApplicationController
   # The runtime sub-tab (Claude Code / Codex) is selected via ?runtime=. Each
   # runtime keeps its own account pool, current account, and rotation history.
   def show
+    # Pi pools no accounts — it resolves a provider credential per request — so
+    # its tab manages that credential instead, and none of the pool machinery
+    # below has anything to render for it.
+    return show_pi if current_runtime == PiAuthProvider::RUNTIME
+
     # Reads. The page has exactly two verbs for an account — Authenticate and
     # Switch — and nothing that asks an operator to reconcile, adopt or sync
     # between stores, because with the DB as sole owner there is no second store
@@ -62,7 +74,7 @@ class QuotasController < ApplicationController
       # Update aggregate stats after all probes complete
       @snapshots = latest_snapshots_for(@accounts)
       auto_heal_accounts
-      aggregate_html = render_to_string(partial: "quotas/aggregate_stats", formats: [ :html ], locals: {
+      aggregate_html = render_to_string(partial: "inference/aggregate_stats", formats: [ :html ], locals: {
         accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account,
         setting: AppSetting.current
       })
@@ -90,7 +102,7 @@ class QuotasController < ApplicationController
           turbo_stream.replace("account_card_#{account.id}",
             html: render_account_card(account.reload, snapshot, error)),
           turbo_stream.replace("aggregate_stats",
-            html: render_to_string(partial: "quotas/aggregate_stats", formats: [ :html ], locals: {
+            html: render_to_string(partial: "inference/aggregate_stats", formats: [ :html ], locals: {
               accounts: @accounts.reload, snapshots: @snapshots, current_account: @current_account,
               setting: AppSetting.current
             }))
@@ -112,7 +124,7 @@ class QuotasController < ApplicationController
     api_key = params[:api_key].to_s.strip
 
     if email.blank?
-      redirect_to quotas_path(runtime: runtime), alert: "Email is required to add an account."
+      redirect_to inference_path(runtime: runtime), alert: "Email is required to add an account."
       return
     end
 
@@ -121,7 +133,7 @@ class QuotasController < ApplicationController
     # account on another runtime (e.g. one codex + one claude_code account).
     existing = ClaudeAccount.for_runtime(runtime).find_by(email: email)
     if existing
-      redirect_to quotas_path(runtime: runtime),
+      redirect_to inference_path(runtime: runtime),
         alert: "An account for #{email} already exists in the #{RuntimeRegistry.label_for(runtime)} pool."
       return
     end
@@ -144,9 +156,9 @@ class QuotasController < ApplicationController
       else
         "Added #{email}. Authenticate it to capture credentials."
       end
-    redirect_to quotas_path(runtime: runtime), notice: notice
+    redirect_to inference_path(runtime: runtime), notice: notice
   rescue ActiveRecord::RecordInvalid => e
-    redirect_to quotas_path(runtime: runtime), alert: "Could not add account: #{e.record.errors.full_messages.to_sentence}"
+    redirect_to inference_path(runtime: runtime), alert: "Could not add account: #{e.record.errors.full_messages.to_sentence}"
   end
 
   # DELETE: Remove an account from its runtime's pool. When the deleted account
@@ -186,7 +198,7 @@ class QuotasController < ApplicationController
       end
     end
 
-    redirect_to quotas_path(runtime: runtime), notice: notice
+    redirect_to inference_path(runtime: runtime), notice: notice
   end
 
   def switch_account
@@ -195,7 +207,7 @@ class QuotasController < ApplicationController
 
     ok, error = validate_switchable(account)
     unless ok
-      redirect_to quotas_path(runtime: runtime), alert: error
+      redirect_to inference_path(runtime: runtime), alert: error
       return
     end
 
@@ -224,7 +236,7 @@ class QuotasController < ApplicationController
     end
 
     notice = reactivation ? "Re-activated #{account.email} — its credentials were rewritten to the worker." : "Switched to #{account.email}"
-    redirect_to quotas_path(runtime: runtime), notice: notice
+    redirect_to inference_path(runtime: runtime), notice: notice
   end
 
   # POST: Begin a UI-driven login for an OAuth account. Cancels any in-flight
@@ -285,7 +297,7 @@ class QuotasController < ApplicationController
     else
       render turbo_stream: turbo_stream.replace(
         "login_panel_#{account.id}",
-        partial: "quotas/login_panel", locals: { account: account }
+        partial: "inference/login_panel", locals: { account: account }
       )
     end
   end
@@ -319,6 +331,27 @@ class QuotasController < ApplicationController
     attempt.update!(status: "canceled", pasted_code: nil) unless attempt.terminal?
 
     render_login_panel(attempt.claude_account)
+  end
+
+  # PUT: Create or rotate Pi's OpenRouter key in the Parameter Store.
+  #
+  # The value is read from params, handed to ManagedSecret, and never touched
+  # again — not echoed into the flash, not logged (`_key` is already in
+  # `config.filter_parameters`, and a test pins that), not returned in the
+  # response. What comes back is a fingerprint at most.
+  def update_openrouter_key
+    result = ManagedSecret.openrouter_key.write(params[:openrouter_api_key].to_s)
+
+    redirect_to inference_path(runtime: PiAuthProvider::RUNTIME),
+      **flash_for(result)
+  end
+
+  # DELETE: Remove the key from the store.
+  def destroy_openrouter_key
+    result = ManagedSecret.openrouter_key.delete
+
+    redirect_to inference_path(runtime: PiAuthProvider::RUNTIME),
+      **flash_for(result)
   end
 
   private
@@ -373,7 +406,7 @@ class QuotasController < ApplicationController
 
     load_spot_gate
     sink << turbo_stream.replace("spot-gate",
-      html: render_to_string(partial: "quotas/spot_gate", formats: [ :html ]))
+      html: render_to_string(partial: "inference/spot_gate", formats: [ :html ]))
   end
 
   # Answer a poll for an attempt row that no longer exists, or whose account was
@@ -384,7 +417,7 @@ class QuotasController < ApplicationController
   def render_lost_attempt(attempt_id)
     render turbo_stream: turbo_stream.replace(
       "login_attempt_#{attempt_id.to_i}",
-      partial: "quotas/login_attempt_lost"
+      partial: "inference/login_attempt_lost"
     )
   end
 
@@ -394,7 +427,7 @@ class QuotasController < ApplicationController
     flash.now[:alert] = alert if alert
     render turbo_stream: turbo_stream.replace(
       "login_panel_#{account.id}",
-      partial: "quotas/login_panel", locals: { account: account }
+      partial: "inference/login_panel", locals: { account: account }
     )
   end
 
@@ -406,7 +439,7 @@ class QuotasController < ApplicationController
   helper_method :current_runtime
 
   def normalize_runtime(value)
-    ClaudeAccount::RUNTIMES.include?(value) ? value : ClaudeAuthProvider::RUNTIME
+    TABS.include?(value) ? value : ClaudeAuthProvider::RUNTIME
   end
 
   # Validate that an account can be made current. Returns [ok, error_message].
@@ -512,7 +545,7 @@ class QuotasController < ApplicationController
   # not something anyone can reconstruct afterwards, and this path now runs on a
   # page view rather than only on an explicit refresh.
   #
-  # A healing failure must never take the page with it. /quotas is where a human
+  # A healing failure must never take the page with it. /inference is where a human
   # goes to fix an auth problem, and a row that fails validation for some reason
   # of its own is not a reason to deny them the page.
   def auto_heal_accounts
@@ -522,17 +555,17 @@ class QuotasController < ApplicationController
       next unless snapshot.windows_clear?
 
       account.update!(status: :active)
-      Rails.logger.info "[QuotasController] Restored #{account.email} to active: both windows are clear " \
+      Rails.logger.info "[InferenceController] Restored #{account.email} to active: both windows are clear " \
         "(5h #{snapshot.utilization_5h.inspect}/#{snapshot.status_5h.inspect}, " \
         "7d #{snapshot.utilization_7d.inspect}/#{snapshot.status_7d.inspect}, " \
         "reading taken #{snapshot.created_at&.iso8601})"
     rescue ActiveRecord::RecordInvalid => e
-      Rails.logger.warn "[QuotasController] Could not restore #{account.email} to active: #{e.message}"
+      Rails.logger.warn "[InferenceController] Could not restore #{account.email} to active: #{e.message}"
     end
   end
 
   def render_account_card(account, snapshot, error)
-    render_to_string(partial: "quotas/account_card", formats: [ :html ], locals: {
+    render_to_string(partial: "inference/account_card", formats: [ :html ], locals: {
       account: account,
       snapshot: snapshot,
       error: error,
@@ -545,5 +578,20 @@ class QuotasController < ApplicationController
   # same set when it evaluates away from a page render.
   def latest_snapshots_for(accounts)
     ClaudeAccountPool.latest_snapshots(accounts)
+  end
+
+  # The Pi tab. One object, carrying no secret value — see ManagedSecret.
+  def show_pi
+    @openrouter_status = ManagedSecret.openrouter_key.status
+    render :show
+  end
+
+  # A Result's two sentences, as a redirect flash. The detail is a second
+  # sentence rather than a second flash so a partial success — written, but not
+  # readable — reads as one event.
+  def flash_for(result)
+    message = [ result.message, result.detail ].compact.join(" ")
+
+    result.ok? ? { notice: message } : { alert: message }
   end
 end

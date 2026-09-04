@@ -20,13 +20,22 @@ class FakeParameterStore
 
   Parameter = Struct.new(:labels, :versions, keyword_init: true)
 
-  attr_reader :parameters, :secrets, :requests
+  # What Parameter Manager calls `policyMember.iamPolicyUidPrincipal`: the
+  # parameter's OWN principal, which is what `:render` dereferences a `__REF__`
+  # as. Modelled rather than hand-waved because the binding that grants it
+  # access to the secret is the step whose absence fails silently in production
+  # — see ParameterStore::WriteClient.
+  def self.principal_for(id) = "principal://parametermanager.googleapis.com/parameter/#{id}"
+
+  attr_reader :parameters, :secrets, :requests, :secret_policies
 
   def initialize(project_id: PROJECT, location: LOCATION)
     @project_id = project_id
     @location = location
     @parameters = {}
     @secrets = {}
+    # secret id => the members holding roles/secretmanager.secretAccessor on it.
+    @secret_policies = Hash.new { |h, k| h[k] = [] }
     @requests = []
     @held_permissions = []
     @failure = nil
@@ -41,6 +50,7 @@ class FakeParameterStore
     id = ParameterStore::Namespace.parameter_id(path)
 
     @secrets[id] = [ value ]
+    @secret_policies[id] = [ self.class.principal_for(id) ]
     put_parameter(id, { secret: "true" }, {
       "path" => path, "secret" => true,
       "value" => %(__REF__("//secretmanager.googleapis.com/projects/#{@project_id}/secrets/#{id}/versions/latest"))
@@ -91,6 +101,28 @@ class FakeParameterStore
     SecretProviders::ParameterStoreProvider.new(client, namespace: namespace)
   end
 
+  # The WRITE half, pointed at the same in-memory store the resolver reads, so a
+  # test can write through the production client and read back through the
+  # production chain.
+  def write_client(account: stub_account)
+    ParameterStore::WriteClient.new(project_id: @project_id, account: account, location: @location,
+      pm_api_base: PM_BASE, sm_api_base: SM_BASE, transport: self)
+  end
+
+  # A whole SecretProviders chain over this store, with no Rails-credentials or
+  # ENV link — so "the value resolves" means "it resolves FROM THE STORE".
+  def chain(namespace: ParameterStore::Namespace.static_namespace)
+    SecretProviders::Chain.new([ provider(namespace: namespace) ])
+  end
+
+  # Break the IAM binding the way a forgotten `add-iam-policy-binding` does:
+  # everything is present, everything reports success, and every render 400s.
+  def revoke_parameter_binding!(variable, env: Rails.env)
+    @secret_policies[ParameterStore::Namespace.parameter_id(
+      ParameterStore::Namespace.parameter_path(variable, env)
+    )] = []
+  end
+
   # ParameterStore::HttpTransport's interface.
   def request(method, url, _headers, body)
     @requests << [ method, url ]
@@ -115,7 +147,8 @@ class FakeParameterStore
     parameter.versions << { id: "v#{parameter.versions.size + 1}", data: JSON.generate(envelope) }
   end
 
-  def route(method, url, _body)
+  def route(method, url, body)
+    query = url.split("?")[1].to_s
     path = url.split("?").first.sub("#{PM_BASE}/v1/", "").sub("#{SM_BASE}/v1/", "")
 
     return test_iam_permissions if url.include?("cloudresourcemanager")
@@ -128,7 +161,122 @@ class FakeParameterStore
       return render_version(m[1], m[2])
     end
 
-    [ 404, JSON.generate({ error: { code: 404 } }) ]
+    write_route(method, path, query, body) || [ 404, JSON.generate({ error: { code: 404 } }) ]
+  end
+
+  # --- the write verbs -------------------------------------------------------
+
+  def write_route(method, path, query, body)
+    payload = body.blank? ? {} : JSON.parse(body)
+
+    case [ method, path ]
+    in [ "POST", %r{\Aprojects/[^/]+/secrets\z} ]
+      create_secret(param(query, "secretId"))
+    in [ "POST", %r{\Aprojects/[^/]+/secrets/([^:]+):addVersion\z} => p ]
+      add_secret_version(p[%r{secrets/([^:]+):}, 1], payload)
+    in [ "POST", %r{\Aprojects/[^/]+/secrets/([^:]+):getIamPolicy\z} => p ]
+      [ 200, JSON.generate({ bindings: policy_bindings(p[%r{secrets/([^:]+):}, 1]) }) ]
+    in [ "POST", %r{\Aprojects/[^/]+/secrets/([^:]+):setIamPolicy\z} => p ]
+      set_iam_policy(p[%r{secrets/([^:]+):}, 1], payload)
+    in [ "DELETE", %r{\Aprojects/[^/]+/secrets/([^/]+)\z} => p ]
+      delete_secret(p[%r{secrets/([^/]+)\z}, 1])
+    in [ "POST", %r{\Aprojects/[^/]+/locations/[^/]+/parameters\z} ]
+      create_parameter(param(query, "parameterId"))
+    in [ "GET", %r{parameters/([^/]+)\z} => p ]
+      get_parameter(p[%r{parameters/([^/]+)\z}, 1])
+    in [ "POST", %r{parameters/([^/]+)/versions\z} => p ]
+      create_parameter_version(p[%r{parameters/([^/]+)/versions\z}, 1], param(query, "parameterVersionId"), payload)
+    in [ "DELETE", %r{parameters/([^/]+)/versions/([^/]+)\z} => p ]
+      delete_parameter_version(*p.match(%r{parameters/([^/]+)/versions/([^/]+)\z}).captures)
+    in [ "DELETE", %r{parameters/([^/]+)\z} => p ]
+      delete_parameter(p[%r{parameters/([^/]+)\z}, 1])
+    else
+      nil
+    end
+  end
+
+  def param(query, key) = Rack::Utils.parse_nested_query(query)[key]
+
+  def create_secret(id)
+    return [ 409, JSON.generate({ error: { code: 409 } }) ] if @secrets.key?(id)
+
+    @secrets[id] = []
+    [ 200, JSON.generate({ name: "projects/#{@project_id}/secrets/#{id}" }) ]
+  end
+
+  def add_secret_version(id, payload)
+    return [ 404, JSON.generate({ error: { code: 404 } }) ] unless @secrets.key?(id)
+
+    @secrets[id] << Base64.decode64(payload.dig("payload", "data").to_s)
+    [ 200, JSON.generate({ name: "projects/#{@project_id}/secrets/#{id}/versions/#{@secrets[id].size}" }) ]
+  end
+
+  def policy_bindings(id)
+    members = @secret_policies[id]
+    members.empty? ? [] : [ { "role" => ParameterStore::WriteClient::ACCESSOR_ROLE, "members" => members } ]
+  end
+
+  def set_iam_policy(id, payload)
+    binding = Array(payload.dig("policy", "bindings"))
+      .find { |b| b["role"] == ParameterStore::WriteClient::ACCESSOR_ROLE }
+    @secret_policies[id] = Array(binding&.[]("members"))
+    [ 200, JSON.generate({ bindings: policy_bindings(id) }) ]
+  end
+
+  def delete_secret(id)
+    return [ 404, JSON.generate({ error: { code: 404 } }) ] unless @secrets.key?(id)
+
+    @secrets.delete(id)
+    @secret_policies.delete(id)
+    [ 200, "{}" ]
+  end
+
+  def create_parameter(id)
+    return [ 409, JSON.generate({ error: { code: 409 } }) ] if @parameters.key?(id)
+
+    @parameters[id] = Parameter.new(
+      labels: { "managed-by" => ParameterStore::GcpClient::MANAGED_BY }, versions: []
+    )
+    [ 200, JSON.generate(parameter_body(id)) ]
+  end
+
+  def get_parameter(id)
+    return [ 404, JSON.generate({ error: { code: 404 } }) ] unless @parameters.key?(id)
+
+    [ 200, JSON.generate(parameter_body(id)) ]
+  end
+
+  def parameter_body(id)
+    {
+      "name" => "projects/#{@project_id}/locations/#{@location}/parameters/#{id}",
+      "labels" => @parameters[id].labels,
+      "policyMember" => { "iamPolicyUidPrincipal" => self.class.principal_for(id) }
+    }
+  end
+
+  def create_parameter_version(id, version_id, payload)
+    return [ 404, JSON.generate({ error: { code: 404 } }) ] unless @parameters.key?(id)
+
+    @parameters[id].versions << { id: version_id, data: Base64.decode64(payload.dig("payload", "data").to_s) }
+    [ 200, "{}" ]
+  end
+
+  def delete_parameter_version(id, version_id)
+    parameter = @parameters[id]
+    return [ 404, JSON.generate({ error: { code: 404 } }) ] if parameter.nil?
+
+    parameter.versions.reject! { |v| v[:id] == version_id }
+    [ 200, "{}" ]
+  end
+
+  # Parameter Manager refuses to delete a parameter that still has versions.
+  def delete_parameter(id)
+    parameter = @parameters[id]
+    return [ 404, JSON.generate({ error: { code: 404 } }) ] if parameter.nil?
+    return [ 400, JSON.generate({ error: { code: 400 } }) ] if parameter.versions.any?
+
+    @parameters.delete(id)
+    [ 200, "{}" ]
   end
 
   def test_iam_permissions
@@ -168,6 +316,12 @@ class FakeParameterStore
 
       versions = @secrets[match[2]]
       return [ 404, JSON.generate({ error: { code: 404 } }) ] if versions.blank?
+      # SECRET_REFERENCE_ERROR: `:render` dereferences as the PARAMETER's own
+      # principal, so without the binding the parameter cannot read its own
+      # secret — and this 400 is the only outward sign of it.
+      unless @secret_policies[match[2]].include?(self.class.principal_for(id))
+        return [ 400, JSON.generate({ error: { code: 400, status: "SECRET_REFERENCE_ERROR" } }) ]
+      end
 
       envelope[key] = versions.last
     end

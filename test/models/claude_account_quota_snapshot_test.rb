@@ -48,7 +48,7 @@ class ClaudeAccountQuotaSnapshotTest < ActiveSupport::TestCase
   end
 
   # seven_day_window_spent? — the one definition of "the week is gone", read by
-  # /quotas, QuotaSnapshotService, AccountRotationService and QuotaResetCheckerJob.
+  # /inference, QuotaSnapshotService, AccountRotationService and QuotaResetCheckerJob.
 
   test "seven_day_window_spent? is true when the API is rejecting for the week" do
     assert snapshot(status_7d: "rejected", utilization_7d: 0.5, reset_7d: 1.day.from_now).seven_day_window_spent?,
@@ -128,7 +128,7 @@ class ClaudeAccountQuotaSnapshotTest < ActiveSupport::TestCase
   end
 
   # windows_clear? — the counterpart definition: what QuotaResetCheckerJob
-  # restores on, what QuotasController heals on, and what the account-level
+  # restores on, what InferenceController heals on, and what the account-level
   # status badge presents.
 
   test "windows_clear? is true when both counters are below the cap" do

@@ -219,7 +219,7 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
   # .warn into the same silence the incident produced 126 times an hour.
   def escalate_wedged_stale_refresh(account)
     health = ClaudeCredentialHealth.status
-    details = "#{account.email}'s stored refresh token was rejected as spent, and the filesystem sync that would "       "replace it is being skipped because the worker's credentials file is corrupt. #{health.detail} "       "Nothing in Zimmer can move this account forward — re-authenticate it from /quotas."
+    details = "#{account.email}'s stored refresh token was rejected as spent, and the filesystem sync that would "       "replace it is being skipped because the worker's credentials file is corrupt. #{health.detail} "       "Nothing in Zimmer can move this account forward — re-authenticate it from /inference."
 
     Rails.logger.error "[RefreshRuntimeAuthTokens] Auth deadlock for #{account.email}: #{details}"
     AlertService.raise_alert(

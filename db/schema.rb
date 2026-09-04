@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_03_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_03_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -356,6 +356,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_03_020000) do
     t.index ["level"], name: "index_logs_on_level"
     t.index ["session_id", "created_at"], name: "index_logs_on_session_id_and_created_at"
     t.index ["session_id"], name: "index_logs_on_session_id"
+  end
+
+  create_table "managed_secret_writes", force: :cascade do |t|
+    t.string "action", null: false
+    t.datetime "created_at", null: false
+    t.string "detail"
+    t.string "fingerprint"
+    t.string "location"
+    t.string "outcome", null: false
+    t.string "project_id"
+    t.datetime "updated_at", null: false
+    t.string "variable", null: false
+    t.index ["variable", "created_at"], name: "index_managed_secret_writes_on_variable_and_created_at"
   end
 
   create_table "mcp_oauth_credentials", force: :cascade do |t|

@@ -3,7 +3,7 @@
 require "pty"
 require "tmpdir"
 
-# Runs one UI-driven login ("Authenticate" on the Quotas screen) to completion
+# Runs one UI-driven login ("Authenticate" on the Inference screen) to completion
 # in the worker, where the runtime's credential filesystem lives.
 #
 # It spawns the runtime's login CLI under a PTY (the CLIs render an interactive
@@ -21,7 +21,7 @@ require "tmpdir"
 # user then activates it through the existing Switch flow.
 class RuntimeLoginJob < ApplicationJob
   # Runs on the dedicated `auth` queue rather than `default`. A human is watching
-  # the /quotas login panel say "Starting the login CLI and waiting for a
+  # the /inference login panel say "Starting the login CLI and waiting for a
   # verification link..." for exactly as long as this job sits unstarted, and on
   # `default` it sat behind a small thread pool shared with ~30 other job classes --
   # fifteen of them cron'd as often as every 30 seconds, several of them (bundle
@@ -55,7 +55,7 @@ class RuntimeLoginJob < ApplicationJob
   POLL_INTERVAL = 1.0
 
   # How often we stamp attempt.heartbeat_at while the loop is running. This is
-  # the liveness signal CleanupRuntimeLoginAttemptsJob and QuotasController#
+  # the liveness signal CleanupRuntimeLoginAttemptsJob and InferenceController#
   # login_status use to notice that the worker driving a login has gone away —
   # a hard kill (deploy SIGKILL, crash, container replacement) skips Ruby
   # entirely, so no ensure block and no rescue will ever mark the row terminal.
@@ -101,7 +101,7 @@ class RuntimeLoginJob < ApplicationJob
 
     Rails.logger.warn(
       "[RuntimeLoginJob] High dispatch latency: #{latency.round(1)}s between enqueue and execution " \
-      "for attempt #{attempt_id}. The `auth` queue is backlogged — someone was watching the /quotas " \
+      "for attempt #{attempt_id}. The `auth` queue is backlogged — someone was watching the /inference " \
       "login panel for that whole time. Check for wedged logins holding auth threads."
     )
   rescue => e
@@ -235,7 +235,7 @@ class RuntimeLoginJob < ApplicationJob
     RuntimeLoginAttempt.bus_state(attempt.id)
   end
 
-  # Stamp the liveness signal the reaper and the Quotas poller read. Throttled to
+  # Stamp the liveness signal the reaper and the Inference poller read. Throttled to
   # HEARTBEAT_INTERVAL, and issued straight to the DB (update_all) so it neither
   # disturbs the in-memory row nor depends on its dirty state.
   #
@@ -259,7 +259,7 @@ class RuntimeLoginJob < ApplicationJob
   #
   # `raw` is the CLI's accumulated PTY output; on failure we mine it for the CLI's
   # own reason (e.g. "Login failed: getaddrinfo ESERVFAIL platform.claude.com")
-  # so the Quotas panel shows why the login died instead of the opaque generic
+  # so the Inference panel shows why the login died instead of the opaque generic
   # "did not produce credentials".
   def complete(attempt, account, driver, config_dir, pid, raw = nil)
     driver.capture!(config_dir, account)

@@ -1,4 +1,5 @@
 require "application_system_test_case"
+require "support/fake_parameter_store"
 
 # Horizontal overflow is the failure mode phone users actually report: a control
 # runs past the right edge and is either unreachable or forces the whole page to
@@ -202,7 +203,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       SpotSessionHold::HELD_REASON => "fleet_at_cap",
       SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken. Every " \
                                       "running session counts, priority included — priority work is " \
-                                      "meant to crowd spot work out. Raise the limit on /quotas to widen it.",
+                                      "meant to crowd spot work out. Raise the limit on /inference to widen it.",
       SpotSessionHold::HELD_RETRY_AT => 10.hours.ago.utc.iso8601,
       SpotSessionHold::HELD_COUNT => 145,
       SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
@@ -543,7 +544,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # the token that has to wrap — so this owns both rather than leaning on fixtures.
   # The readings matter too: with them the spot gate renders its live decision and
   # the pool note under it, which is the longest prose on the page.
-  test "quotas does not overflow horizontally on a phone" do
+  test "inference does not overflow horizontally on a phone" do
     AppSetting.editable.update!(spot_gating_enabled: true,
                                 spot_reserve_five_hour_pct: 20,
                                 spot_reserve_weekly_pct: 20)
@@ -560,19 +561,35 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       )
     end
 
-    visit quotas_path
+    visit inference_path
     assert_selector "h1"
     assert_selector "#spot-gate-pool-note"
 
-    assert_no_horizontal_overflow("quotas")
+    assert_no_horizontal_overflow("inference")
+  end
+
+  # The Pi tab carries the longest unbroken tokens on the surface — a store path,
+  # a GCP project id, provider-qualified model ids, and a list of dotted IAM
+  # permission strings — which is signature 4, the one Zimmer's UI runs into most.
+  # Both write-path states are checked because they render different markup: the
+  # closed one is the permission list, the open one is the form and its buttons.
+  test "the Pi tab does not overflow horizontally on a phone in either write state" do
+    [ closed_write_path_secret, open_write_path_secret ].each_with_index do |secret, index|
+      ManagedSecret.stub(:openrouter_key, secret) do
+        visit inference_path(runtime: PiAuthProvider::RUNTIME)
+        assert_selector "#pi_panel"
+
+        assert_no_horizontal_overflow("inference-pi-#{index}")
+      end
+    end
   end
 
   # The spot gate's genesis rows are the screen this suite exists for: the table's
   # Action column is the only control there, and it does not fit a phone, so below
   # `sm` the rows render as stacked cards with the button on screen. The card sits
-  # on Quotas, beside the windows it reads.
+  # on Inference, beside the windows it reads.
   test "spot gate genesis controls are reachable on a phone" do
-    visit quotas_path
+    visit inference_path
     assert_text "Sessions no trigger started"
 
     kind = SessionGenesis::SETTABLE_KINDS.first
@@ -1117,11 +1134,40 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # `needs_input` alone — so a bare "/" would measure a dashboard with none of
     # this test's long-token fixture on it.
     [ root_path(every_status_params), new_session_path, settings_path, triggers_path, trigger_path(trigger),
-      quotas_path, health_dashboard_path, clis_path, connectors_path,
+      inference_path, health_dashboard_path, clis_path, connectors_path,
       notifications_path, outcomes_path, outcomes_stats_path, gate_decisions_path ].each do |path|
       visit path
       doc_overflow, = overflow_report
       assert doc_overflow <= 0, "#{path} scrolls sideways at 1400px (#{doc_overflow}px too wide)"
     end
+  end
+
+  # A store Zimmer can read and cannot write — the state every deployment is in
+  # until the writer IAM grant lands. Renders the missing-permissions list.
+  def closed_write_path_secret
+    pi_store.held_permissions = [
+      ParameterStore::Capabilities::RENDER_PARAMETER,
+      ParameterStore::Capabilities::READ_SECRET_VALUE
+    ]
+    pi_secret(identity: :resolver)
+  end
+
+  # The grant in place and a key already set: the form, the Replace and Delete
+  # buttons, and the fingerprint row.
+  def open_write_path_secret
+    pi_store.held_permissions = ParameterStore::Capabilities::PROBED_PERMISSIONS
+    pi_store.seed_secret(ManagedSecret::OPENROUTER_API_KEY, "sk-or-v1-a-realistically-long-key-value")
+    pi_secret(identity: :writer)
+  end
+
+  def pi_store
+    @pi_store ||= FakeParameterStore.new
+  end
+
+  def pi_secret(identity:)
+    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: pi_store.chain,
+      writer: ParameterStore::Writer::Configuration.new(
+        client: pi_store.write_client, identity: identity, reason: nil
+      ))
   end
 end

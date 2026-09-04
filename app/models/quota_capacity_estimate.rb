@@ -6,7 +6,7 @@
 # cannot be compared to anything an operator cares about: not "keep $200 back
 # for priority work", not "this session burns $0.40 a minute", not "will one more
 # session fit". Everything downstream of this table — the reserve, the pacing
-# curve, the "$ remaining" figures on /quotas — exists because this row turns
+# curve, the "$ remaining" figures on /inference — exists because this row turns
 # the percentage into a quantity.
 #
 # == The estimator

@@ -4,13 +4,13 @@
  * This test exercises the full account rotation flow using the real Claude
  * Code binary pointed at a mock Anthropic API server. It verifies:
  *
- * 1. Quotas page shows 5 accounts with correct data
+ * 1. Inference page shows 5 accounts with correct data
  * 2. Starting a session hits a quota limit (mock returns 429 quickly)
  * 3. Zimmer detects the quota limit and rotates to the next account
  * 4. After rotation, the mock API unblocks the new account
  * 5. Zimmer auto-sends a "continue" message after rotation
  * 6. A second quota limit triggers rotation to a third account
- * 7. The quotas page reflects the updated state without manual refresh
+ * 7. The Inference page reflects the updated state without manual refresh
  *
  * Prerequisites:
  *   - Zimmer Rails app running with ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set
@@ -125,10 +125,10 @@ const ACCOUNT_TOKENS = {
     });
     const page = await context.newPage();
 
-    // ── Test 1: Quotas page shows 5 accounts ────────────────────────
-    console.log('\nTest 1: Quotas page shows 5 accounts with correct data...');
-    await page.goto(`${BASE_URL}/quotas`, { waitUntil: 'networkidle', timeout: 30000 });
-    await page.screenshot({ path: '/tmp/account-rotation-01-quotas-initial.png', fullPage: true });
+    // ── Test 1: Inference page shows 5 accounts ────────────────────────
+    console.log('\nTest 1: Inference page shows 5 accounts with correct data...');
+    await page.goto(`${BASE_URL}/inference`, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.screenshot({ path: '/tmp/account-rotation-01-inference-initial.png', fullPage: true });
 
     // Wait for Turbo frames to load (account cards are lazy-loaded)
     try {
@@ -140,7 +140,7 @@ const ACCOUNT_TOKENS = {
       await page.waitForTimeout(5000);
     }
 
-    await page.screenshot({ path: '/tmp/account-rotation-02-quotas-loaded.png', fullPage: true });
+    await page.screenshot({ path: '/tmp/account-rotation-02-inference-loaded.png', fullPage: true });
 
     // Check that we can see account emails on the page
     const pageContent = await page.content();
@@ -150,7 +150,7 @@ const ACCOUNT_TOKENS = {
         accountsFound++;
       }
     }
-    assert(accountsFound === 5, `All 5 accounts visible on quotas page (found ${accountsFound})`);
+    assert(accountsFound === 5, `All 5 accounts visible on Inference page (found ${accountsFound})`);
 
     // Check that account1 is marked as current
     assert(
@@ -293,14 +293,14 @@ const ACCOUNT_TOKENS = {
     assert(sessionCompleted, 'Session completed successfully on account3');
     await page.screenshot({ path: '/tmp/account-rotation-06-session-complete.png', fullPage: true });
 
-    // ── Test 6: Quotas page shows updated state ─────────────────────
-    console.log('\nTest 6: Checking quotas page for updated state...');
-    await page.goto(`${BASE_URL}/quotas`, { waitUntil: 'networkidle', timeout: 30000 });
+    // ── Test 6: Inference page shows updated state ─────────────────────
+    console.log('\nTest 6: Checking Inference page for updated state...');
+    await page.goto(`${BASE_URL}/inference`, { waitUntil: 'networkidle', timeout: 30000 });
 
     // Wait for Turbo frames to load
     await page.waitForTimeout(5000);
 
-    await page.screenshot({ path: '/tmp/account-rotation-07-quotas-final.png', fullPage: true });
+    await page.screenshot({ path: '/tmp/account-rotation-07-inference-final.png', fullPage: true });
 
     const finalContent = await page.content();
 
@@ -311,7 +311,7 @@ const ACCOUNT_TOKENS = {
 
     // Check that account3 is now current (after two rotations)
     const account3IsCurrent = finalContent.includes('account3@e2e-test.com');
-    assert(account3IsCurrent, 'Account 3 is visible on quotas page');
+    assert(account3IsCurrent, 'Account 3 is visible on Inference page');
 
     // ── Test 7: Verify rotation log shows events ────────────────────
     console.log('\nTest 7: Checking rotation log...');

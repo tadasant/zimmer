@@ -1,6 +1,18 @@
 # frozen_string_literal: true
 
-module QuotasHelper
+module InferenceHelper
+  # The one-line description under the page title. Each tab answers a different
+  # question — two of them are about a pool of subscription accounts and their
+  # quota windows, and Pi's is about a single provider key — so the subtitle is
+  # per-tab rather than one sentence bent to cover all three.
+  def inference_tab_subtitle(runtime)
+    if runtime == PiAuthProvider::RUNTIME
+      "Pi pools no accounts — it resolves a provider key per request. This tab manages that key."
+    else
+      "#{RuntimeRegistry.label_for(runtime)} account usage across all accounts"
+    end
+  end
+
   # One side of a rotation-history row. A deleted account keeps its email —
   # preserved on the event itself — and is labelled as deleted, so the row reads
   # as "the pool moved off an account that no longer exists" rather than as the

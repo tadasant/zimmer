@@ -17,7 +17,7 @@ flowchart TB
     end
 
     subgraph web["Web process (Puma / Thruster)"]
-        RC["Controllers<br/>sessions · triggers · quotas · mcp_oauth"]
+        RC["Controllers<br/>sessions · triggers · inference · mcp_oauth"]
         API["REST API<br/>/api/v1/* · X-API-Key"]
         PCR["PeriodicCatalogRefresher<br/>(background thread, 300s)"]
     end

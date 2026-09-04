@@ -15,7 +15,7 @@
     <p class="mt-1 text-xs text-gray-500">
       Dollars per minute of elapsed session time, measured over the last
       <%= HarnessModelBurnRate::SAMPLE_SESSIONS %> sessions of each combination. The
-      <%= link_to "spot gate", quotas_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>
+      <%= link_to "spot gate", inference_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>
       multiplies these by how long until it next looks to decide whether one more session fits
       inside the quota window's remaining non-reserved capacity. Current rates, not rates for the
       window selected above.

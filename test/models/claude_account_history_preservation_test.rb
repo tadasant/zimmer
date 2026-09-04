@@ -5,7 +5,7 @@ require "test_helper"
 # Deleting an account must not delete the evidence of how it behaved.
 #
 # The operator gesture these tests protect is "delete it and re-authenticate" —
-# the two adjacent buttons on every /quotas card. It used to cascade an account's
+# the two adjacent buttons on every /inference card. It used to cascade an account's
 # quota snapshots, login attempts, and inbound rotation events out of existence,
 # leaving a freshly re-added row that read as "this account has never completed a
 # single successful call". See https://github.com/tadasant/zimmer/issues/241.

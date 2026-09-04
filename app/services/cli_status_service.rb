@@ -150,15 +150,16 @@ class CliStatusService
       # question — it answers whether a provider credential resolves, from the
       # environment or from auth.json — and it requires an explicit --provider.
       # Verified against pi 0.84.4: prints `ready` and exits 0 when the key
-      # resolves, `not_ready` and exits 1 when it does not. Anthropic is the
-      # provider behind Pi's default model (see ModelCatalog).
-      check_auth: "pi auth check --provider anthropic",
+      # resolves, `not_ready` and exits 1 when it does not. OpenRouter is the
+      # provider behind every Pi model this deployment offers (see ModelCatalog),
+      # so it is the one whose readiness answers "can a Pi session run".
+      check_auth: "pi auth check --provider openrouter",
       check_version: "pi --version",
       # Pi resolves a provider credential per request from the session
       # environment rather than from a Zimmer-managed account pool, so this is an
       # env-var tool, not an OAuth one. See PiAuthProvider.
       auth_method: :env_var,
-      env_var_name: "ANTHROPIC_API_KEY",
+      env_var_name: "OPENROUTER_API_KEY",
       # Pi is the one runtime whose "is it installed" answer is bigger than the
       # binary: it ships no MCP, hooks or plugins, so all three arrive as npm
       # packages the image installs separately (PiExtensions). A `pi` that is
@@ -174,11 +175,14 @@ class CliStatusService
       auth_instructions: <<~INSTRUCTIONS
         # Pi authenticates from a provider API key in the session environment —
         # there is no interactive login step and no account pool to rotate.
-        # Put the key in the Parameter Store so it reaches sessions through
+        # Set it on the Inference page's Pi tab (/inference?runtime=pi), which
+        # writes it to the Parameter Store so it reaches sessions through
         # SecretsLoader and survives a container rebuild:
         #
-        #   ANTHROPIC_API_KEY  (for the anthropic/* models in ModelCatalog)
-        #   OPENAI_API_KEY     (for the openai/* models)
+        #   OPENROUTER_API_KEY  (every openrouter/* model in ModelCatalog —
+        #                        the path this deployment is set up for)
+        #   ANTHROPIC_API_KEY   (only for the direct anthropic/* ids)
+        #   OPENAI_API_KEY      (only for the direct openai/* ids)
         #
         # Pi extension status (MCP / hooks / plugins) is reported separately —
         # see PiExtensions.status_summary.
