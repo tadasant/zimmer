@@ -3,12 +3,12 @@ import { Controller } from "@hotwired/stimulus"
 // Ticks the Account Pool's "work unblocked in" clock down to an absolute moment.
 //
 // The deadline ships as an ISO-8601 instant rather than a remaining duration,
-// because /quotas is a page people leave open. A server-rendered "in 22m" is
+// because /inference is a page people leave open. A server-rendered "in 22m" is
 // right for one second and wrong for every second after it; the instant stays
 // true, and this recomputes the wait from it every second.
 //
 // The server renders the same clock string from the same instant (see
-// QuotasHelper#countdown_clock_text), so the first paint is already correct and
+// InferenceHelper#countdown_clock_text), so the first paint is already correct and
 // nothing jumps when this connects — and the value is still right if JavaScript
 // never runs at all.
 //

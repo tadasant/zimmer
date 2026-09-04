@@ -522,7 +522,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   end
 
   # The decision names the aggregate rather than an account, on every surface that
-  # renders it — /quotas, get_spot_policy, and Decision#to_h all read these.
+  # renders it — /inference, get_spot_policy, and Decision#to_h all read these.
   test "the hold detail names the pool, not one account" do
     seed(current_5h: 0.95, current_7d: 0.10)
     seed_spare(email: "spare@example.com", current_5h: 0.95, current_7d: 0.10)
@@ -544,9 +544,9 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_match(/averaged across 1 of #{pool_size} accounts/, decision.detail)
   end
 
-  # The pool figure the gate decides on and the one /quotas prints in its headline
+  # The pool figure the gate decides on and the one /inference prints in its headline
   # are the same computation, so the page cannot show 42% beside a hold at 95%.
-  test "the gate decides on the same average /quotas renders" do
+  test "the gate decides on the same average /inference renders" do
     seed(current_5h: 0.95, current_7d: 0.10)
     seed_spare(email: "spare@example.com", current_5h: 0.05, current_7d: 0.10)
 
@@ -765,7 +765,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
 
   # `at_utilization_limit` covers two ceilings that behave differently, and
   # before #ceiling existed there was no way for a surface to tell them apart —
-  # which is how /quotas came to announce that running sessions were being paused
+  # which is how /inference came to announce that running sessions were being paused
   # during holds that pause nothing.
   test "a spent budget and a fleet ahead of the curve are different ceilings" do
     calibrate(capacity_usd: 1000.0)

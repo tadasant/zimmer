@@ -302,7 +302,7 @@
       <p class="mt-1 text-sm text-gray-500">
         Whether sessions this trigger spawns start straight away, or wait for headroom in the
         Claude Code quota windows. Priority always starts; spot waits when a window has reached its target, or
-        every session slot is taken, under the limits set on the <%= link_to "Quotas page", quotas_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>,
+        every session slot is taken, under the limits set on the <%= link_to "Inference page", inference_path(anchor: "spot-gate"), class: "text-indigo-600 hover:text-indigo-500" %>,
         and starts on its own later — it is never cancelled. Leave this on the default and the class
         follows the trigger's condition type: Slack triggers are priority, because someone is waiting
         on the answer; GitHub, scheduled and session-state triggers are spot. Changing this applies to

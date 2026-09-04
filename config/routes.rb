@@ -41,6 +41,10 @@ Rails.application.routes.draw do
     # session or not at all.
     resources :human_messages, only: [ :index, :show ]
     resources :logs
+    # Read-only, like the gate ledger above: rows are append-only facts about
+    # what Zimmer wrote to the Parameter Store, and an editable audit log is not
+    # an audit log. The dashboard's FORM_ATTRIBUTES is empty for the same reason.
+    resources :managed_secret_writes, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     # Read-only plus destroy: an analysis is a reading a specific analyzer took of
@@ -308,29 +312,44 @@ Rails.application.routes.draw do
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
 
-  # Quotas page (per-runtime via ?runtime=claude_code|codex)
-  # Costs sits beside Quotas: same posture question, different source. Quotas
-  # reads Anthropic's rate-limit headers; Costs reads our own token ledger.
+  # Inference page (per-runtime via ?runtime=claude_code|codex|pi)
+  # Costs sits beside Inference: same posture question, different source.
+  # Inference reads Anthropic's rate-limit headers; Costs reads our own token
+  # ledger.
   get "costs", to: "costs#show", as: :costs
   # Re-scan every transcript into the ledger. An ops action with a button rather
   # than a rake task, because nobody is meant to need a shell on the box.
   post "costs/backfill", to: "costs#backfill", as: :costs_backfill
-  get "quotas", to: "quotas#show", as: :quotas
-  post "quotas/refresh_all", to: "quotas#refresh_all", as: :refresh_all_quotas
-  post "quotas/refresh_account/:id", to: "quotas#refresh_account", as: :refresh_account_quotas
-  post "quotas/switch_account/:id", to: "quotas#switch_account", as: :switch_account
-  post "quotas/add_account", to: "quotas#add_account", as: :add_account_quotas
-  delete "quotas/account/:id", to: "quotas#destroy_account", as: :destroy_account_quotas
+  get "inference", to: "inference#show", as: :inference
+  # The surface was called Quotas until it grew a Pi tab that has no quota in
+  # it. The old address is kept — permanently, not as a deprecation window —
+  # because it is in the wild: Slack messages, alert bodies, and the runbooks
+  # this repo has already shipped all point at it. `?runtime=` rides along, so a
+  # bookmarked tab lands on the same tab.
+  get "quotas", to: redirect { |params, request|
+    query = request.query_string.presence
+    query ? "/inference?#{query}" : "/inference"
+  }, as: :quotas
+  post "inference/refresh_all", to: "inference#refresh_all", as: :refresh_all_inference
+  post "inference/refresh_account/:id", to: "inference#refresh_account", as: :refresh_account_inference
+  post "inference/switch_account/:id", to: "inference#switch_account", as: :switch_account
+  post "inference/add_account", to: "inference#add_account", as: :add_account_inference
+  delete "inference/account/:id", to: "inference#destroy_account", as: :destroy_account_inference
   # UI-driven OAuth/device-auth login flow (the "Authenticate" button)
-  post "quotas/accounts/:id/login", to: "quotas#start_login", as: :start_login_quotas
-  get "quotas/login/:attempt_id", to: "quotas#login_status", as: :login_status_quotas
-  post "quotas/login/:attempt_id/code", to: "quotas#submit_login_code", as: :submit_login_code_quotas
-  post "quotas/login/:attempt_id/cancel", to: "quotas#cancel_login", as: :cancel_login_quotas
+  post "inference/accounts/:id/login", to: "inference#start_login", as: :start_login_inference
+  get "inference/login/:attempt_id", to: "inference#login_status", as: :login_status_inference
+  post "inference/login/:attempt_id/code", to: "inference#submit_login_code", as: :submit_login_code_inference
+  post "inference/login/:attempt_id/cancel", to: "inference#cancel_login", as: :cancel_login_inference
+  # The Pi tab's OpenRouter API key. Create/update and delete only: there is
+  # deliberately no route that reads the value back out — see
+  # ManagedSecret::OpenrouterKey.
+  put "inference/pi/openrouter_key", to: "inference#update_openrouter_key", as: :openrouter_key_inference
+  delete "inference/pi/openrouter_key", to: "inference#destroy_openrouter_key", as: :destroy_openrouter_key_inference
   # The spot gate card, which lives on this page because it reads the quota
   # windows this page reports: the policy form, then one click per genesis kind.
-  patch "quotas/spot_policy", to: "spot_policies#update", as: :spot_policy
-  patch "quotas/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
-  delete "quotas/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
+  patch "inference/spot_policy", to: "spot_policies#update", as: :spot_policy
+  patch "inference/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
+  delete "inference/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 
   # Outcomes: the transcript-outcome analysis ledger, one transcript's
   # flamegraph drilldown, and the separate summary-stats surface. Every write

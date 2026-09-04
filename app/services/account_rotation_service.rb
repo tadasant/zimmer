@@ -249,8 +249,8 @@ class AccountRotationService
       # No current account and nothing usable. There is no filesystem fallback:
       # adopting whatever tokens happen to be on disk is the two-sources-of-truth
       # problem this system is being taken apart to remove, and the answer is the
-      # Authenticate button on /quotas, which writes the DB and needs no shell.
-      @logger.warn("No usable Claude account in the pool — authenticate one from /quotas")
+      # Authenticate button on /inference, which writes the DB and needs no shell.
+      @logger.warn("No usable Claude account in the pool — authenticate one from /inference")
       return nil
     end
 
@@ -296,7 +296,7 @@ class AccountRotationService
 
     account = first_usable_available_account
     unless account
-      @logger.warn("No usable Claude account in the pool — authenticate one from /quotas")
+      @logger.warn("No usable Claude account in the pool — authenticate one from /inference")
       return nil
     end
 
@@ -308,7 +308,7 @@ class AccountRotationService
   # Activate a validated account: write its config to the filesystem, mark
   # it as current in the DB, and take a quota snapshot. Used by both the
   # automatic rotation path (via #activate_next_account) and the manual
-  # switch path (via QuotasController#switch_account) so the filesystem and
+  # switch path (via InferenceController#switch_account) so the filesystem and
   # DB stay in sync regardless of which entry point is used.
   #
   # Callers are responsible for validating the account's tokens before

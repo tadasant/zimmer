@@ -83,7 +83,7 @@ Rails.application.configure do
   #     bulk backlog (heartbeat sweeps, Slack polling, cleanup, etc.).
   # - auth: User-interactive authentication (RuntimeLoginJob and the reaper that
   #     resolves its attempts). The `triggers` argument with a human added: someone
-  #     is watching the /quotas login panel spin while this runs, and on `default`
+  #     is watching the /inference login panel spin while this runs, and on `default`
   #     it queued behind whatever periodic or multi-minute job held those four
   #     threads -- including, since RuntimeLoginJob pins a thread for up to twelve
   #     minutes, an earlier login. Periodic auth work (RefreshRuntimeAuthTokensJob,

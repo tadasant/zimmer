@@ -3,7 +3,7 @@
 module Mcp
   module Tools
     # The read half of the spot/priority surface: everything the spot gate card on
-    # /quotas shows, in one call.
+    # /inference shows, in one call.
     #
     # An agent session that finds itself held needs to be able to answer "why, and
     # for how long" without a human reading the web UI to it — and an agent about
@@ -82,7 +82,7 @@ module Mcp
           so a pool can be out of capacity while the gate is open, and the gate can hold spot work on a
           pacing curve while every account has room. It is the figure to act on when deciding whether to
           sleep on a wake and retry or to report a blocker upward. The same numbers the Account Pool
-          section of /quotas renders, from the same measurement
+          section of /inference renders, from the same measurement
         - what the running fleet is burning in $/min, and what one more session is projected to add
         - the two dormant spot populations, both in `waiting` and NOT running, so both are unrelated to
           the concurrency limit and routinely exceed it: the ones the budget ceiling PAUSED mid-run (the
@@ -114,12 +114,12 @@ module Mcp
 
       def call(_args)
         setting = AppSetting.current
-        # The same method /quotas renders, so the page and this tool cannot answer
+        # The same method /inference renders, so the page and this tool cannot answer
         # the same question differently.
         decision = SpotGateService.evaluate
         # The gate stops reading the pool the moment it has an answer without one —
         # gating turned off short-circuits before it ever measures — so a decision
-        # does not always carry the pool's capacity. /quotas has no such
+        # does not always carry the pool's capacity. /inference has no such
         # short-circuit: it measures the pool whatever the gate setting is, and
         # with gating off (the default) it would answer "when does the pool come
         # back" while this tool said nothing at all.
@@ -159,7 +159,7 @@ module Mcp
           "- **Reason:** `#{decision.reason}`",
           "- **Ceiling holding spot work:** #{decision.ceiling ? "`#{decision.ceiling}`" : "none"}",
           "- **Detail:** #{decision.detail}",
-          # The same two lines the /quotas card renders, from the same object, so
+          # The same two lines the /inference card renders, from the same object, so
           # an agent reading this tool and a human reading the page are told the
           # same thing about which ceiling is holding and what lifts it.
           *explanation.lines.map { |line| "- **#{line.label}:** #{line.sentence}" },
@@ -173,9 +173,9 @@ module Mcp
           # next. This is the standing population the `spot_budget` ceiling has
           # already stopped: sessions dormant in `waiting`, not running ones, so
           # this figure has nothing to do with the concurrency limit and is
-          # regularly larger than it. Same number the /quotas card shows.
+          # regularly larger than it. Same number the /inference card shows.
           "- **Spot sessions paused mid-run by the ceiling:** #{paused_count}. #{explanation.sessions_asleep}",
-          # Same two figures the /quotas card renders, from the same object, so a
+          # Same two figures the /inference card renders, from the same object, so a
           # human reading the page and an agent reading this tool are told the
           # same thing about who is asleep and whose ladder has stopped.
           "- **Spot sessions held before a turn:** #{held_count}" \
@@ -216,7 +216,7 @@ module Mcp
       # pacing curve while every account has room.
       #
       # Carried off SpotGateService::PoolCapacity, which copies it off
-      # ClaudeAccountPool::Measure — the same measurement the /quotas banner
+      # ClaudeAccountPool::Measure — the same measurement the /inference banner
       # renders, so the page and this tool cannot answer it differently.
       #
       # Empty when there was no pool reading to decide on at all (gating off, or
@@ -227,7 +227,7 @@ module Mcp
         [ "- **Account pool capacity:** #{pool_capacity_phrase(capacity)}" ]
       end
 
-      # The three states of the /quotas banner, in its own words. Both absences
+      # The three states of the /inference banner, in its own words. Both absences
       # are named, because "no time" is two different answers here and a caller
       # cannot act on the bare nil. See SpotGateService::PoolCapacity.
       def pool_capacity_phrase(capacity)
@@ -258,9 +258,9 @@ module Mcp
       # The 7-day rollover, under the weekly window it belongs to. Measured over
       # exactly the accounts whose week is spent, so it says "blocked until X"
       # rather than naming a rollover on an account that was never blocked — the
-      # same set, and the same three states, the /quotas line reports.
+      # same set, and the same three states, the /inference line reports.
       # The count is tested before the timestamp, which is the opposite order to
-      # the /quotas line and reaches the same three sentences: ClaudeAccountPool
+      # the /inference line and reaches the same three sentences: ClaudeAccountPool
       # only records a weekly rollover for an account it also counted as spent, so
       # a zero count always carries a nil time and the two orders cannot disagree.
       def weekly_reset_lines(capacity)
@@ -280,7 +280,7 @@ module Mcp
           "whose 7-day window is spent" ]
       end
 
-      # A reset as a countdown AND a wall clock, the pair /quotas shows. The
+      # A reset as a countdown AND a wall clock, the pair /inference shows. The
       # countdown is what a caller deciding "sleep or escalate" acts on; the
       # absolute time is what survives being quoted into a later message, where a
       # relative one would have quietly gone stale.
@@ -307,7 +307,7 @@ module Mcp
         "in #{duration(seconds - (seconds % 60))} (#{wall_clock(time)})"
       end
 
-      # The same format constant /quotas renders, so a change to one moves both. A
+      # The same format constant /inference renders, so a change to one moves both. A
       # tool answer is read by an agent with no viewer timezone to be rewritten
       # into, which is why that format spells the zone out.
       def wall_clock(time) = time.utc.strftime(ClaudeAccountPool::RESET_TIME_FORMAT)

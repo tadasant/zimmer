@@ -9,7 +9,7 @@
 # line. That makes the budget a floor under when new spot work stops, not a
 # ceiling on what spot work spends: the sessions admitted just under the line go
 # on running, and a fleet of them carries the window well past it. On 2026-08-20
-# the /quotas card read "Holding spot sessions: 5-hour window at 89% of its 80%
+# the /inference card read "Holding spot sessions: 5-hour window at 89% of its 80%
 # target" while twelve sessions ran — the gate had stopped admitting and
 # then watched the ones already in flight take the pool toward 100%, with three
 # accounts already `quota_exceeded`.
@@ -260,7 +260,7 @@ class SpotSessionPause
     end
 
     # The standing population of sessions the ceiling has stopped and not yet put
-    # back — the number /quotas and `get_spot_policy` report.
+    # back — the number /inference and `get_spot_policy` report.
     #
     # Three things it is NOT, each of which it has been misread as:
     #

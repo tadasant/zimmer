@@ -108,9 +108,9 @@ class ClaudeAccountNeedsReauthTest < ActiveSupport::TestCase
     end
   end
 
-  # QuotasController seeds a credential-less new account straight into
-  # needs_reauth. The human is on /quotas adding it; telling them to go to
-  # /quotas is noise.
+  # InferenceController seeds a credential-less new account straight into
+  # needs_reauth. The human is on /inference adding it; telling them to go to
+  # /inference is noise.
   test "creating an account in needs_reauth does not alert" do
     assert_no_enqueued_jobs(only: AoEventTriggerJob) do
       ClaudeAccount.create!(email: "fresh@example.com", status: :needs_reauth)

@@ -17,7 +17,7 @@
 #      100% utilization exactly as the window rolls over. Running faster than
 #      that is what holds a session — not a percentage cliff.
 #   3. **The fleet has a free slot.** `spot_max_concurrent_sessions` (set on
-#      /quotas) caps how many sessions run at once.
+#      /inference) caps how many sessions run at once.
 #
 # Priority sessions are never consulted about any of this. They start.
 #
@@ -60,7 +60,7 @@
 # == The pool decides, not one account
 #
 # Utilization is read across the whole pool — `ClaudeAccountPool`, the same
-# average /quotas renders — and so is the time left in each window. One account
+# average /inference renders — and so is the time left in each window. One account
 # at its cap does not stop the fleet while the rest has room.
 #
 # **Every account counts, whatever its status.** A needs_reauth account is one
@@ -218,7 +218,7 @@ class SpotGateService
   #
   # Both timestamps are nil for two different reasons, and a caller cannot act on
   # "nil" without knowing which — so the two counts that tell them apart travel
-  # with them, exactly as they do on the /quotas banner:
+  # with them, exactly as they do on the /inference banner:
   #
   # - `next_capacity_at` is nil because the pool has capacity NOW (`capacity_now`
   #   is true, and there is nothing to wait for) or because everything is blocked
@@ -451,7 +451,7 @@ class SpotGateService
     end
 
     # The decision, for a candidate session and for every surface that reports on
-    # the gate. There is exactly one — /quotas, `get_spot_policy` and
+    # the gate. There is exactly one — /inference, `get_spot_policy` and
     # `start_decision` all come through here — so the page, the tool and the
     # production path cannot answer the same question differently.
     #
@@ -618,7 +618,7 @@ class SpotGateService
       allowed: false, reason: FLEET_CAP_REASON,
       detail: "Holding spot sessions: #{slots_phrase(fleet_cap)} taken. Every running session " \
               "counts, priority included — priority work is meant to crowd spot work out. Raise the " \
-              "limit on /quotas to widen it.",
+              "limit on /inference to widen it.",
       pool: pool, fleet_cap: fleet_cap
     )
   end
@@ -667,7 +667,7 @@ class SpotGateService
   end
 
   # Delimited, because these figures land in a sentence a human reads on the
-  # /quotas card and in `get_spot_policy`: "$2437.62" is a number to decode and
+  # /inference card and in `get_spot_policy`: "$2437.62" is a number to decode and
   # "$2,437.62" is one to read.
   def money(value)
     return "—" if value.nil?

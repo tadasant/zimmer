@@ -240,4 +240,70 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     assert index, "expected #{flag} in #{command.inspect}"
     assert_equal value, command[index + 1]
   end
+
+  # --- the provider key reaches the process ---------------------------------
+  #
+  # This is the step that is easy to assume some other layer performs. Nothing
+  # does: the clone's `.env` is written from SecretsLoader, which reads Rails
+  # encrypted `mcp_secrets` only and never consults SecretProviders — so without
+  # this, a key set on the Inference page's Pi tab lands in the Parameter Store
+  # and never reaches Pi.
+
+  test "spawn_process puts the OpenRouter key from the ${VAR} chain into Pi's environment" do
+    @file_system.mkdir_p(WORKING_DIR)
+
+    with_chain_holding(ManagedSecret::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+      @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+    end
+
+    assert_equal "sk-or-v1-from-the-store",
+      @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+  end
+
+  test "a value in the clone's own .env wins over the chain" do
+    @file_system.mkdir_p(WORKING_DIR)
+    @file_system.write(File.join(WORKING_DIR, ".env"),
+      "#{ManagedSecret::OPENROUTER_API_KEY}=sk-or-v1-this-repos-own-account")
+
+    with_chain_holding(ManagedSecret::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+      @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+    end
+
+    assert_equal "sk-or-v1-this-repos-own-account",
+      @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+  end
+
+  test "no key in the chain leaves the variable unset rather than blank" do
+    @file_system.mkdir_p(WORKING_DIR)
+
+    with_chain_holding({}) do
+      @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+    end
+
+    assert_nil @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+  end
+
+  # A store Zimmer cannot reach must not stop a Pi session spawning. Pi reports
+  # its own `not_ready` if the key never arrives, which is a far better failure
+  # than a session that never starts.
+  test "an unreachable store does not stop the spawn" do
+    @file_system.mkdir_p(WORKING_DIR)
+    failing = Object.new
+    failing.define_singleton_method(:get) do |_variable|
+      raise ParameterStore::StoreError.new("boom", 503)
+    end
+
+    SecretProviders.stub(:chain, failing) do
+      @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+    end
+
+    assert_equal 1, @process_manager.spawned_processes.size
+    assert_nil @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
+  end
+
+  def with_chain_holding(values)
+    chain = Object.new
+    chain.define_singleton_method(:get) { |variable| values[variable] }
+    SecretProviders.stub(:chain, chain) { yield }
+  end
 end

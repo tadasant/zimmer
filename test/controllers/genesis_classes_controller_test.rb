@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# The per-genesis buttons on /quotas, limited to the origins no trigger produces.
+# The per-genesis buttons on /inference, limited to the origins no trigger produces.
 # The trigger-backed kinds are refused here rather than silently accepted —
 # SessionGenesis ignores an override for them on read, so accepting one would be
 # a click that appears to work and changes nothing.
@@ -17,7 +17,7 @@ class GenesisClassesControllerTest < ActionDispatch::IntegrationTest
 
     patch genesis_class_path(genesis: SessionGenesis::WEB_UI, priority_class: SessionGenesis::SPOT)
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
     assert_equal SessionGenesis::SPOT, SessionGenesis.effective_class(SessionGenesis::WEB_UI)
     assert session.reload.spot?, "a class that is derived rather than stored moves with the policy"
   end
@@ -25,7 +25,7 @@ class GenesisClassesControllerTest < ActionDispatch::IntegrationTest
   test "a trigger-backed kind is refused and points at the trigger" do
     patch genesis_class_path(genesis: SessionGenesis::SLACK, priority_class: SessionGenesis::SPOT)
 
-    assert_redirected_to quotas_path(anchor: "spot-gate")
+    assert_redirected_to inference_path(anchor: "spot-gate")
     assert_match(/takes its class from the trigger/, flash[:alert])
     assert_equal({}, AppSetting.current.genesis_class_overrides)
   end

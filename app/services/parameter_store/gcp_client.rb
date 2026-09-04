@@ -4,10 +4,15 @@ module ParameterStore
   # Reads Zimmer's secrets out of Google Parameter Manager + Secret Manager.
   #
   # This is the RESOLVER half of the store only: list a namespace and render the
-  # values in it. There is deliberately no create/rotate/destroy here. Zimmer's
-  # credential holds no write permission (see docs/operate/secrets-parameter-store.md),
-  # so a write method would be a surface that lists an operation and 403s on every
-  # call to it. Writes happen through the Secrets Console / `gcloud`, by a human.
+  # values in it. There is deliberately no create/rotate/destroy here, and that
+  # absence is structural rather than an oversight — Zimmer's resolver credential
+  # holds no write permission (see docs/operate/secrets-parameter-store.md), and
+  # keeping the verbs out of the class the SecretProviders chain holds is what
+  # makes "the resolver cannot write" checkable by reading one file.
+  #
+  # The write verbs live in {WriteClient}, built from a separate credential by
+  # {Writer} and reached only from the Inference page's Pi tab. Everything else
+  # is still set by a human through the Secrets Console or `gcloud`.
   #
   # ## How a value is actually stored
   #
@@ -45,7 +50,10 @@ module ParameterStore
     # against a large namespace is a self-inflicted rate limit.
     FANOUT = 8
 
-    attr_reader :project_id, :location
+    # `account` is exposed so the write path can reuse this credential when a
+    # deployment has no separate writer key — see ParameterStore::Writer. It
+    # does not make this client writable; there is still no write verb here.
+    attr_reader :project_id, :location, :account
 
     def initialize(project_id:, account:, location: "global",
       pm_api_base: PM_API_BASE, sm_api_base: SM_API_BASE, crm_api_base: CRM_API_BASE,

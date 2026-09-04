@@ -9,9 +9,9 @@ import { Controller } from "@hotwired/stimulus"
 // replacement is itself terminal it carries no controller, so polling stops
 // naturally; disconnect() clears the timer for the element being torn down.
 //
-// Usage: data-controller="quotas-login-poller"
-//        data-quotas-login-poller-url-value="<login_status_path>"
-//        data-quotas-login-poller-interval-value="2000"
+// Usage: data-controller="inference-login-poller"
+//        data-inference-login-poller-url-value="<login_status_path>"
+//        data-inference-login-poller-interval-value="2000"
 export default class extends Controller {
   static values = {
     url: String,

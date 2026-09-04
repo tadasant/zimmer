@@ -124,7 +124,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
   # --- when the pool comes back -----------------------------------------------
   #
-  # The parity gap this closed (tadasant/zimmer#568): /quotas answered "when does
+  # The parity gap this closed (tadasant/zimmer#568): /inference answered "when does
   # the account pool come back" and the tool could only say "it is down". An agent
   # deciding between sleeping on a wake and escalating needs the duration.
 
@@ -202,7 +202,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   end
 
   # Gating off is not the same emptiness as an unprobed pool, and only the second
-  # one is empty on /quotas too. The page measures the pool whatever the gate
+  # one is empty on /inference too. The page measures the pool whatever the gate
   # setting is; with gating off (the default) the tool used to say nothing at all.
   test "get_spot_policy reports the pool even when spot gating is turned off" do
     seed_pool(reset_5h: 90.minutes.from_now)
@@ -226,7 +226,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     refute_nil measured
 
     assert_match(/#{Regexp.escape(measured.utc.strftime("%b %-d, %H:%M UTC"))}/, get_policy,
-                 "the tool and /quotas must render one measurement, not two")
+                 "the tool and /inference must render one measurement, not two")
   end
 
   test "get_spot_policy says the pool has capacity now rather than printing a blank time" do
@@ -309,7 +309,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_match(/Account pool capacity:\*\*/, readonly.new(context: @context).call({}))
   end
 
-  # Parity with /quotas, which renders the same count: the decision above answers
+  # Parity with /inference, which renders the same count: the decision above answers
   # "would a session STARTING now be held", and this answers "did anything that
   # was already running get stopped" — an agent whose own turn was cut short has
   # to be able to read that second answer.
@@ -343,7 +343,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   # "asleep in the spot queue: 0" while session 7507, spot and `waiting` and held
   # 145 times, was demonstrably asleep on a hold (tadasant/zimmer#648). The two
   # populations are disjoint and resume by different mechanisms, so both are
-  # reported, in the same words the /quotas card uses.
+  # reported, in the same words the /inference card uses.
   test "get_spot_policy counts spot sessions held before a turn, not just paused ones" do
     output = get_policy
     assert_match(/Spot sessions held before a turn:\*\* 0/, output)
@@ -383,7 +383,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     )
   end
 
-  # Parity with /quotas: an agent asking why it is held has to see the same
+  # Parity with /inference: an agent asking why it is held has to see the same
   # aggregate the page shows, including the accounts a human cannot serve from.
   test "get_spot_policy averages every account, needs_reauth included" do
     ClaudeAccountQuotaSnapshot.delete_all
@@ -453,7 +453,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_equal 45, setting.spot_reserve_weekly_pct
   end
 
-  # Parity: the cap is on the /quotas form, so an agent has to be able to set it
+  # Parity: the cap is on the /inference form, so an agent has to be able to set it
   # and read it back without a human at the page.
   test "set_gating sets the max concurrent sessions cap, and get reports it" do
     action(action: "set_gating", enabled: true, max_concurrent_sessions: 4)

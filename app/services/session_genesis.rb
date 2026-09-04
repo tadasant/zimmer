@@ -35,7 +35,7 @@
 #
 #   - The other three (`web_ui`, `api`, `unknown`) have no trigger behind them,
 #     so they keep a per-kind setting in AppSetting#genesis_class_overrides.
-#     SETTABLE_KEYS is that list, and it is the only thing /quotas and
+#     SETTABLE_KEYS is that list, and it is the only thing /inference and
 #     `action_spot_policy` will write.
 #
 # The defaults here still decide every case nobody has spoken about — a trigger
@@ -155,7 +155,7 @@ module SessionGenesis
   # is no per-kind setting for them.
   TRIGGER_BACKED_KEYS = CONDITION_TYPE_KINDS.values.uniq.freeze
 
-  # The kinds nothing triggers — the only ones /quotas and `action_spot_policy`
+  # The kinds nothing triggers — the only ones /inference and `action_spot_policy`
   # can still move as a whole.
   SETTABLE_KEYS = (KEYS - TRIGGER_BACKED_KEYS).freeze
   SETTABLE_KINDS = KINDS.select { |k| SETTABLE_KEYS.include?(k.key) }.freeze

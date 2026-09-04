@@ -316,7 +316,7 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert session.reload.logs.any? { |log| log.content.include?("The window has room again") }
   end
 
-  # The count /quotas and get_spot_policy report is about what the CEILING cost,
+  # The count /inference and get_spot_policy report is about what the CEILING cost,
   # so a session nobody interrupted must not inflate it.
   test "a queued session is not counted as paused by the ceiling" do
     seed(current_5h: 0.95)

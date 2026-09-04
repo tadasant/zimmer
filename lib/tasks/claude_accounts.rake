@@ -22,7 +22,7 @@ namespace :claude_accounts do
     end
 
     # A row with no credentials cannot serve a session, and the way to give it
-    # some is the Authenticate button on /quotas: it drives an interactive login
+    # some is the Authenticate button on /inference: it drives an interactive login
     # in a scratch dir and writes the tokens straight to this row.
     #
     # This task used to capture them off `~/.claude/.credentials.json` when that
@@ -31,7 +31,7 @@ namespace :claude_accounts do
     # is the second-source-of-truth problem the credential rearchitecture removes
     # — and under session-scoped credentials there is nothing in that file to
     # read. See https://github.com/tadasant/zimmer/issues/618.
-    puts "Next: open /quotas and click Authenticate on #{email} to give it credentials." unless account.has_valid_config?
+    puts "Next: open /inference and click Authenticate on #{email} to give it credentials." unless account.has_valid_config?
   end
 
   desc "Remove a Claude account from the rotation pool. Usage: bin/rails 'claude_accounts:remove[email@example.com]'"
@@ -60,7 +60,7 @@ namespace :claude_accounts do
     # Each scope covers two populations: rows still attached to an account, and
     # rows an earlier single-account delete detached, which carry no foreign key
     # and are found by the runtime denormalized onto them. This task is the only
-    # path that removes the second kind — /quotas deliberately preserves it and
+    # path that removes the second kind — /inference deliberately preserves it and
     # nothing prunes quota snapshots — so a "start over" that left it behind would
     # not be a start over.
     event_scope = AccountRotationEvent

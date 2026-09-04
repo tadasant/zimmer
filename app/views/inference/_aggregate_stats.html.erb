@@ -74,7 +74,7 @@
               <% if max_5h %>
                 <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_5h) %></p>
               <% end %>
-              <%= render "quotas/capacity_line", window: window_5h, dom_id: "capacity-5h" %>
+              <%= render "inference/capacity_line", window: window_5h, dom_id: "capacity-5h" %>
               <% if avg_5h %>
                 <p class="mt-1 text-xs text-gray-500">
                   Accounts whose 7-day window is spent count as 100% here: their 5-hour headroom can't be served.
@@ -95,7 +95,7 @@
               <% if max_7d %>
                 <p class="mt-1 text-xs text-gray-400">Worst: <%= utilization_percentage_text(max_7d) %></p>
               <% end %>
-              <%= render "quotas/capacity_line", window: window_7d, dom_id: "capacity-7d" %>
+              <%= render "inference/capacity_line", window: window_7d, dom_id: "capacity-7d" %>
               <%= pool_weekly_reset_line(pool) %>
             </div>
           </div>

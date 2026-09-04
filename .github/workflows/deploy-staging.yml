@@ -377,6 +377,11 @@ jobs:
           # completely healthy while the store never turns on. Unset is survivable by
           # design: the chain falls back to staging.yml.enc and nothing raises.
           STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON }}
+          # The WRITE half, held by a separate service account. It backs one surface
+          # (the Inference page's Pi tab) and is here so that opening the write path
+          # is a deploy rather than a shell on the box. Unset is a designed state --
+          # the tab reports the path closed and names the missing permissions.
+          STAGING_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.STAGING_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON }}
           # Observability. STAGING_-prefixed on purpose -- see .kamal/secrets.staging.
           # STAGING_SENTRY_DSN_BACKEND must be the DSN of a SEPARATE GlitchTip project
           # (zimmer-staging), never production's: GlitchTip's Slack alert has no
@@ -461,6 +466,16 @@ jobs:
             echo "::warning::Parameter Store is OFF: STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON is unset."
             echo "::warning::Staging boots fine and every \${VAR} resolves from staging.yml.enc as before --"
             echo "::warning::the store link is simply absent. The Connectors page names the reason."
+          fi
+          # Reported separately from the resolver because they are different
+          # credentials with different consequences, and because "the store is on"
+          # says nothing about whether the one surface that writes to it can.
+          if [ -n "${STAGING_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON:-}" ]; then
+            echo "✅ Parameter Store WRITE path ON (writer key set; the Inference page's Pi tab can set the OpenRouter key)"
+          else
+            echo "Parameter Store write path is OFF: STAGING_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON is unset."
+            echo "That is the expected state until a human creates the writer service account --"
+            echo "the Pi tab reports the write path closed and names the permissions it is missing."
           fi
           # Same reasoning as the SSH key: unset is survivable and completely
           # invisible from outside a session -- the app boots healthy and only the

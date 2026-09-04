@@ -157,7 +157,7 @@ class RuntimeAuthProvider
 
   # Activate a specific, already-validated account: write its credentials to the
   # runtime's canonical filesystem location and mark it current in the DB. Drives
-  # the manual switch and safe-delete paths in QuotasController so both runtimes
+  # the manual switch and safe-delete paths in InferenceController so both runtimes
   # share one activation seam. Callers validate the account's credentials first
   # (e.g. via account.refresh_token!).
   #
