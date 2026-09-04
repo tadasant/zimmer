@@ -8,10 +8,10 @@ module Sessions
   # an image, `{ path:, original_filename:, size: }` for a file — and
   # AgentSessionJob reads those out of its own job arguments and nowhere else.
   # Two durable stores hold them for a turn that has not run yet: the
-  # `enqueued_messages` row a queued follow-up sits in, and the spot-hold record
-  # on `sessions.metadata`. Both are jsonb, and jsonb hands a Hash back with
-  # STRING keys — while the CLI adapters index it with SYMBOLS
-  # (`image[:path]` in ClaudeCliAdapter#build_message_json).
+  # `enqueued_messages` row a queued follow-up sits in (jsonb), and the spot-hold
+  # record on `sessions.metadata` (json). Both hand a Hash back with STRING keys
+  # — while the CLI adapters index it with SYMBOLS (`image[:path]` in
+  # ClaudeCliAdapter#build_message_json).
   #
   # A descriptor that goes through one of those columns unconverted therefore
   # comes back looking present and reading empty: the turn is enqueued
@@ -28,6 +28,12 @@ module Sessions
   # An entry without one is dropped rather than passed on, because handing the
   # adapter a `nil` path is how a turn arrives carrying an attachment that is
   # not there.
+  #
+  # That is the extent of the checking, and it is worth being plain about the
+  # edge: this normalizes a SPELLING, it does not validate a turn. Duplicates
+  # pass through, a path that is not a String passes, and whether the bytes are
+  # still on disk is a question about the volume that only a caller holding the
+  # session can ask (SpotSessionHold#still_on_the_volume is the one that does).
   class AttachmentDescriptors
     IMAGE_KEYS = %i[path media_type].freeze
     FILE_KEYS = %i[path original_filename size].freeze

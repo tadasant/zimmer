@@ -588,11 +588,17 @@ class SpotSessionHold
         # attachments belong to the prompt that referred to them, not to whatever
         # turn happens to run next.
         if prompt.present?
-          images = Sessions::AttachmentDescriptors.for_a_job(
-            metadata[HELD_IMAGES], keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+          images = still_on_the_volume(
+            Sessions::AttachmentDescriptors.for_a_job(
+              metadata[HELD_IMAGES], keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+            ),
+            ImageStorageService.new(session_id: session.id)
           )
-          files = Sessions::AttachmentDescriptors.for_a_job(
-            metadata[HELD_FILES], keys: Sessions::AttachmentDescriptors::FILE_KEYS
+          files = still_on_the_volume(
+            Sessions::AttachmentDescriptors.for_a_job(
+              metadata[HELD_FILES], keys: Sessions::AttachmentDescriptors::FILE_KEYS
+            ),
+            FileStorageService.new(session_id: session.id)
           )
           # Only the sentence is borrowed from the first-turn reader — the log
           # line a human reads must word this the same way whichever branch
@@ -627,11 +633,17 @@ class SpotSessionHold
         # "has never run", and it is what makes the volume the right place to
         # look: the gate holds a session BEFORE AgentSessionJob stamps a
         # session_id, so a genuine first start (and a restart from scratch, which
-        # clears it) reads blank. A TURN_START hold on a session that HAS run —
-        # McpOauthResumeService resumes such a session with a promptless
-        # new-session job, which this gate can hold — carried no attachments on
-        # its lost job either, and everything on its volume belongs to turns it
-        # has already had.
+        # clears it) reads blank. On a session that HAS run, everything on the
+        # volume belongs to turns it has already had, so the read is refused.
+        #
+        # That refusal is deliberately blunt and costs one narrow case, named
+        # rather than hidden: McpOauthResumeService gates its own attachment
+        # replay on a blank TRANSCRIPT, not a blank session_id, so it can put
+        # attachments on a new-session job for a session that already has one.
+        # A held-then-lost job of that shape is re-armed without them. Its
+        # population is the intersection of four unlikely things, and reading the
+        # volume to cover it would mis-attach on every other session that has
+        # run — the trade #789 already made.
         if session.session_id.blank?
           images, files = Sessions::FirstTurnAttachments.for(session)
           carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
@@ -667,6 +679,38 @@ class SpotSessionHold
       false
     end
 
+    # The subset of a replayed record whose BYTES are still there.
+    #
+    # The record outlives the files it names. A hold can sit for an hour, and the
+    # sweep re-arms records nobody has touched for far longer than that, while
+    # `DurableSessionStorage`'s cleanup reaps a session's attachment tree on its
+    # own schedule. Handing the adapter a path that is gone is not a missing
+    # screenshot: ClaudeCliAdapter#load_image_as_base64 `binread`s it, the
+    # Errno::ENOENT surfaces as a failed spawn, and AgentSessionJob stamps
+    # `spawn_failed` and FAILS the session. Losing an attachment is the cost this
+    # class was already paying; losing the turn is not, and a repair path must
+    # not be able to do more damage than the thing it repairs.
+    #
+    # The START branch gets this for free — it reads what is on disk. This is the
+    # resume branch buying the same guarantee for a record it read from a row.
+    #
+    # An unreadable volume degrades to "no attachments", deliberately and in the
+    # same direction: a turn short an attachment still runs.
+    #
+    # @return [Array<Hash>, nil] nil rather than [], so it passes straight to an
+    #   `images:` keyword that means "none" by absence
+    def still_on_the_volume(descriptors, storage)
+      return nil if descriptors.blank?
+
+      descriptors.select { |descriptor| storage.exists?(descriptor[:path]) }.presence
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[SpotSessionHold] Could not confirm a replayed attachment for session " \
+        "#{storage.session_id}: #{e.class}: #{e.message}"
+      )
+      nil
+    end
+
     # Whether something OTHER than the hold is why this session is asleep. A
     # ceiling pause, an auth-outage park and a wall-clock pause each own their own
     # resume, and re-arming underneath one of them would start a session its owner
@@ -697,6 +741,20 @@ class SpotSessionHold
     def hold!(session, decision, follow_up_prompt:, log_buffer:, images:, files:)
       resuming = follow_up_prompt.present?
       metadata = session.metadata || {}
+
+      # Normalized ONCE, at the door, and every carrier below is built from the
+      # result. This method hands the same turn's attachments to as many as three
+      # different places — the delayed job, the durable hold record, and the
+      # enqueued-message queue — and building them from different values is
+      # precisely how two copies of one turn come to disagree. A descriptor the
+      # adapters cannot read (`image[:path]` against a string-keyed hash) is the
+      # failure this class is fixing, wearing the other face.
+      images = Sessions::AttachmentDescriptors.for_a_job(
+        images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+      )
+      files = Sessions::AttachmentDescriptors.for_a_job(
+        files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
+      )
 
       # Read BEFORE this hold overwrites it: a re-check still in the future means
       # an earlier deferral already has a job scheduled to carry a turn. This
@@ -736,6 +794,7 @@ class SpotSessionHold
       else
         {}
       end
+
 
       # One statement, and it drops the delivery marker in the same breath. The gate
       # is taking custody of this prompt — see the class comment — but only when it
@@ -780,15 +839,15 @@ class SpotSessionHold
         AgentSessionJob.enqueue_with_prompt(
           session.id,
           follow_up_prompt,
-          images: images.presence,
-          files: files.presence,
+          images: images,
+          files: files,
           delay: delay
         )
       else
         AgentSessionJob.enqueue_new_session(
           session.id,
-          images: images.presence,
-          files: files.presence,
+          images: images,
+          files: files,
           delay: delay
         )
       end
@@ -818,8 +877,14 @@ class SpotSessionHold
       session.enqueued_messages.create!(
         content: prompt,
         position: position,
-        images: Array(images),
-        files: Array(files),
+        # A jsonb column, so the record shape — the same round trip the hold
+        # record takes, and the one EnqueuedMessageProcessorService reads back.
+        images: Array(Sessions::AttachmentDescriptors.for_the_record(
+          images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+        )),
+        files: Array(Sessions::AttachmentDescriptors.for_the_record(
+          files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
+        )),
         origin: origin_for(prompt)
       )
       message = "Spot session held before its next turn: a turn is already deferred to " \
@@ -835,7 +900,7 @@ class SpotSessionHold
         "[SpotSessionHold] Could not queue a deferred prompt for session #{session.id}: #{e.class}: #{e.message}"
       )
       AgentSessionJob.enqueue_with_prompt(
-        session.id, prompt, images: images.presence, files: files.presence,
+        session.id, prompt, images: images, files: files,
         delay: SpotGateService::RETRY_DELAY
       )
     end
