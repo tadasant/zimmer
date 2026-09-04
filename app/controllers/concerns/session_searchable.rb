@@ -31,6 +31,13 @@ module SessionSearchable
 
   # PostgreSQL: `::text` casting for the JSON/JSONB columns, ILIKE for
   # case-insensitivity. Bound as `:q` by every caller.
+  #
+  # `:q` is the WHOLE query wrapped in one `%…%`, never a set of words. So a
+  # multi-word query is a phrase: "YC interview" matches a transcript that says
+  # `YC interview` and not one that says `the interview is at YC`. Splitting it into
+  # per-word ORs would be a wider net that reads like a working search — every caller
+  # gets a shortlist to re-grep by hand instead of an answer (#405). Adjacency and
+  # order are the contract; SessionContentSearchTest pins it.
   METADATA_PREDICATE = "title ILIKE :q OR metadata::text ILIKE :q OR custom_metadata::text ILIKE :q"
   CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR transcript::text ILIKE :q"
 
