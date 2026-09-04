@@ -4043,22 +4043,33 @@ whole thread pool is held past what its own jobs can explain, with ready work st
 is deliberately conditioned on that ready work, because a full pool with an empty lane behind it is
 a lane doing its job and there is nothing being starved to report.
 
-What that leaves uncovered is a wedge on a **genuinely idle** lane. A worker that wedges while
-holding claimed jobs on a queue with no further inflow produces a `claimed_count` that never falls
-and a `ready_count` that never rises, so neither the ready thresholds nor `wedged_lane` fires.
+Two shapes are left uncovered.
+
+**A wedge on a genuinely idle lane.** A worker that wedges while holding claimed jobs on a queue
+with no further inflow produces a `claimed_count` that never falls and a `ready_count` that never
+rises, so neither the ready thresholds nor `wedged_lane` fires.
 `oldest_claimed_age_seconds_by_queue` measures it — the number is on `/health`, in
 `GET /api/v1/health` and in `get_system_health` — but nothing pages on it alone, because an old
 execution on an idle lane is indistinguishable from a long job that is running perfectly well, and
 `agents` holds threads for the whole life of a session as a matter of routine.
+
+**A lane the worker has stopped polling.** `wedged_lane` requires claims to exist, so the opposite
+failure — ready work piling up with *zero* claims on the lane behind a live worker — still pages
+only through the ready-side branches at their depth thresholds, which for `inference` means 150 deep
+and an hour old. The data to close it is now measured (`claimed_count_by_queue` absent for a lane
+that has ready work, beside a live `active_workers`); the branch is not written.
 
 In practice inflow is what makes a wedged worker visible: Zimmer's queues are fed by cron pollers
 and by sessions, so a stuck lane normally accumulates ready work within a poll interval.
 `GoodJob::Process::EXPIRED_INTERVAL` also bounds the whole-worker case — GoodJob reaps a process
 that stops renewing its heartbeat and releases the jobs it held, which returns them to `ready`.
 
-Two lanes carry no execution ceiling at all and so can never be judged wedged: `agents`, because
-`AgentSessionJob` holds its thread for the unbounded life of a session, and any queue nobody has
-sized in `LANE_EXECUTION_CEILINGS`. A wedge in `agents` is invisible to this gate by construction.
+Only `agents` carries no execution ceiling as a deliberate choice — `AgentSessionJob` holds its
+thread for the unbounded life of a session, so no execution age there means anything — and a wedge
+in `agents` is therefore invisible to this gate by construction. Any queue nobody has sized in
+`LANE_EXECUTION_CEILINGS` inherits the same exemption by accident rather than by design; a test
+asserts every configured lane except `agents` has one, so adding a queue without a ceiling fails CI
+rather than going quiet.
 
 ---
 

@@ -312,12 +312,21 @@ curated `self_session` set does not include it. See
 plus each queue's own head-of-line age and the single longest-waiting job's lane and class, carrying
 the same split as the `Queue backlog critical` Slack page. This is the parity that matters for
 triage: the GoodJob dashboard at `/jobs` needs a browser session on the production host, which an
-agent session does not have. The ages are what let an agent triaging `Zimmer GoodJob queue is not
-draining` tell one starved lane from a wedged worker — `oldest_ready_age_seconds` in the JSON body is
-a maximum across every queue at once, and a two-thread lane in front of minute-long jobs reads
-exactly like a wedge through it. It is silent when nothing is waiting, and says so explicitly when
-the read itself fails rather than dropping the whole health report. See
+agent session does not have. The per-queue ages are what let an agent triaging `Zimmer GoodJob queue
+is not draining` see past `oldest_ready_age_seconds`, which is a maximum across every queue at once
+and through which a two-thread lane in front of minute-long jobs reads exactly like a stalled worker.
+It is silent when nothing is waiting, and says so explicitly when the read itself fails rather than
+dropping the whole health report. See
 [The page says which queue, of what, and how old there](/operate/background-jobs/#the-page-says-which-queue-of-what-and-how-old-there).
+
+Those lines are all taken over **ready** work, though, and ready work cannot say *why* a lane has
+stopped draining. So the tool renders three more lines whenever the worker is holding anything: **In
+flight by queue** (each lane's in-flight count beside its configured thread count), **Oldest
+execution by queue**, and **Youngest execution by queue**. Read together they separate three states
+that are identical from the ready side — a lane whose pool is full and whose *youngest* execution is
+already old is wedged; ready work with no claim at all is a lane the worker has stopped polling; an
+old oldest beside a fresh youngest is one slow job on an otherwise healthy lane. See
+[When a lane is wedged](/operate/background-jobs/#when-a-lane-is-wedged).
 
 `action_health` also carries `backfill_token_usage`: queue a sweep of every transcript on disk into
 the token-spend ledger, so `get_costs` covers all of history rather than only spend since ingestion

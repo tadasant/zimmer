@@ -90,7 +90,8 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
       { overall_status: "critical",
         system_health: { queue_stats: {
           claimed_count_by_queue: { "agents" => 8, "inference" => 2, "default" => 2 },
-          oldest_claimed_age_seconds_by_queue: { "inference" => 4620, "default" => 3660, "agents" => 90 }
+          oldest_claimed_age_seconds_by_queue: { "inference" => 4620, "default" => 3660, "agents" => 90 },
+          youngest_claimed_age_seconds_by_queue: { "inference" => 4560, "default" => 3600, "agents" => 12 }
         } } }
     )
 
@@ -100,6 +101,8 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
                             "(threads: agents 8, pollers 3, triggers 2, auth 2, inference 2, maintenance 2, default 2)",
                     "a hold is only readable beside the pool it is filling"
     assert_includes result, "- **Oldest execution by queue:** inference 1h 17m, default 1h 1m, agents 1m"
+    assert_includes result, "- **Youngest execution by queue:** inference 1h 16m, default 1h 0m, agents 12s",
+                    "an old oldest beside a fresh youngest is one slow job, not a wedge"
   end
 
   test "says nothing about the in-flight population when the worker is holding nothing" do

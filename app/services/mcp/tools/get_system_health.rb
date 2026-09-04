@@ -102,13 +102,15 @@ module Mcp
       # backlog cannot supply.
       #
       # An agent triaging a stalled lane has exactly two questions after the lines
-      # above: is that lane's pool full, and how long has its oldest execution been
-      # running. Full pool plus an old execution is a wedge; ready work with no
-      # claim at all is a lane the worker has stopped polling. They demand opposite
-      # responses and the ready-side numbers are identical in both, so an agent that
-      # cannot see these has to guess — which is what happened on 2026-09-04, when
-      # `inference`, `default` and `maintenance` claimed nothing for over an hour
-      # behind a live worker and no surface could say which shape it was.
+      # above: is that lane's pool full, and how long has its work been running.
+      # A full pool whose YOUNGEST execution is already old is a wedge — every
+      # thread held by work that is not coming back. Ready work with no claim at
+      # all is the opposite: a lane the worker has stopped polling. An old oldest
+      # beside a fresh youngest is neither, just one slow job. All three look
+      # identical from the ready side, so an agent that cannot see these has to
+      # guess — which is what happened on 2026-09-04, when `inference`, `default`
+      # and `maintenance` picked up nothing for over an hour behind a live worker
+      # and no surface could say which shape it was.
       #
       # Read off the report already in hand rather than re-querying: unlike the
       # ready breakdown these are free, since `queue_statistics` computes them on
@@ -126,7 +128,9 @@ module Mcp
           "- **In flight by queue:** #{HealthMonitorService.format_breakdown(by_queue)} " \
             "(threads: #{HealthMonitorService.format_breakdown(HealthMonitorService.lane_thread_counts)})",
           "- **Oldest execution by queue:** " \
-            "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}"
+            "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}",
+          "- **Youngest execution by queue:** " \
+            "#{HealthMonitorService.format_ages(stats[:youngest_claimed_age_seconds_by_queue])}"
         ]
       end
 
