@@ -2645,6 +2645,15 @@ gets that comment's own `html_url` back, and treating that as a post would silen
 a new posting route means adding its pattern to `DIRECT_POST_PATTERNS`, or teaching
 `gh_api_post?` the shape.
 
+The recognition reads what a command segment *runs*, not what it quotes
+([#870](https://github.com/tadasant/zimmer/issues/870)), so `grep -rn "gh pr comment" docs/` over
+this repo's own source is a read rather than a post — which matters because a wrong recording is
+permanent and fleet-wide: `AgentPostedGithubComment` rows are global, so a human's comment id
+recorded once is never delivered to any session again, and nothing logs it. The endpoint path of a
+`gh api` write is the one part still read as written, since quoting it is ordinary and a quoted path
+must not hide a real post. What stays unrecognized is the same short list `GithubPrUrlHook` has: an
+**unquoted** mention (`echo gh pr comment`), a `\"`-escaped one, and a line of a **heredoc body**.
+
 The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
 human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.
 
@@ -3375,9 +3384,10 @@ Heuristics have two failure directions and neither announces itself:
   heredoc quotes its body by a mechanism the splitter does not model — that last one is live and has
   bitten the session that wrote this fix, [#873](https://github.com/tadasant/zimmer/issues/873). All are rarer than the quoted
   form that #772 was, and erring this way is deliberate: the same reading is what keeps a real create
-  behind `timeout`, `until`, `sudo` or `xargs` from being missed, which is the failure below. The
-  same rule is *not* applied in `GithubCommentAuthorshipHook`, whose `gh pr comment` / `gh pr review`
-  match is still the pre-#772 one — [#870](https://github.com/tadasant/zimmer/issues/870).
+  behind `timeout`, `until`, `sudo` or `xargs` from being missed, which is the failure below.
+  `GithubCommentAuthorshipHook` reads its own posting commands the same way since
+  [#870](https://github.com/tadasant/zimmer/issues/870), and the same three spellings are its
+  residual edge.
 - **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
   `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
   opened through a path the hook can't see — an MCP GitHub tool's `create_pull_request`, which is a
