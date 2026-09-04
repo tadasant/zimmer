@@ -491,7 +491,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     policy = get_policy
     assert_match(/Fires while the fleet holds fewer than:\*\* 5 sessions/, policy)
     assert_match(/For at least:\*\* 10 minutes/, policy)
-    assert_match(/At most once every:\*\* 30 minutes \(48 times a day/, policy)
+    assert_match(/At most once every:\*\* 30 minutes \(at most 48 top-ups a day/, policy)
   end
 
   test "set_top_up leaves omitted knobs alone" do
@@ -523,7 +523,31 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   test "set_top_up echoes back how often top-up can now fire" do
     result = action(action: "set_top_up", min_fire_interval_minutes: 15)
 
-    assert_match(/at most 96 times a day/, result)
+    assert_match(/at most 96 top-ups a day/, result)
+  end
+
+  # A cooldown over a day is legal, and the per-day figure floors to 0 there.
+  # "0 times a day" reads as "never", which is wrong.
+  test "a cooldown longer than a day is reported as an interval, not as zero a day" do
+    result = action(action: "set_top_up", min_fire_interval_minutes: 2880)
+
+    assert_match(/at most once every 2 days/, result)
+    assert_no_match(/0 top-ups a day/, result)
+    assert_match(/at most once every 2 days/, get_policy)
+  end
+
+  # An explicit null is skipped rather than assigned to a NOT NULL column, and a
+  # call carrying nothing else is an error rather than an empty save.
+  test "set_top_up skips explicit nulls" do
+    AppSetting.editable.update!(fleet_idle_max_sessions: 4)
+
+    action(action: "set_top_up", max_sessions_in_hand: nil, idle_minutes: 8)
+
+    setting = AppSetting.current
+    assert_equal 4, setting.fleet_idle_max_sessions
+    assert_equal 8, setting.fleet_idle_threshold_minutes
+
+    assert_raises(Mcp::ToolError) { action(action: "set_top_up", max_sessions_in_hand: nil) }
   end
 
   test "get_spot_policy names which of the not-fired-yet states the fleet is in" do

@@ -39,6 +39,31 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     assert_equal (now + 5.minutes).to_i, s.next_fire_at.to_i
   end
 
+  # The state the fleet spends most of an hour in after every fire: `record_busy!`
+  # clears `fleet_idle_since` when the spawned session runs, but deliberately
+  # leaves the cooldown clock alone. Answering "the threshold" here would
+  # under-report the next fire by up to 55 minutes.
+  test "with no clock started but an unspent cooldown, the cooldown is the answer" do
+    now = Time.current
+    @setting.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: now - 5.minutes)
+    s = status(in_hand: 1, now: now)
+
+    assert_equal :clock_not_started, s.state
+    assert_equal (now + 55.minutes).to_i, s.next_fire_at.to_i,
+      "the threshold is the smaller of the two clocks and the wrong one"
+    assert_match(/cooldown/, s.sentence)
+  end
+
+  test "inside the threshold with an unspent cooldown, the sentence names both clocks" do
+    now = Time.current
+    @setting.update!(fleet_idle_since: now - 2.minutes, fleet_idle_event_fired_at: now - 30.minutes)
+    s = status(in_hand: 1, now: now)
+
+    assert_equal :inside_threshold, s.state
+    assert_equal (now + 30.minutes).to_i, s.next_fire_at.to_i
+    assert_match(/cooldown/, s.sentence)
+  end
+
   test "inside the threshold, the fire is due when the stretch completes" do
     now = Time.current
     @setting.update!(fleet_idle_since: now - 2.minutes)
@@ -85,6 +110,27 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
 
     @setting.update!(fleet_idle_min_fire_interval_minutes: 15)
     assert_equal 96, status(in_hand: 0).max_fires_per_day
+  end
+
+  # A cooldown over a day is a legal setting, and integer division makes the
+  # per-day figure 0 there — which reads as "never" and is wrong. The phrase is
+  # what the card and `get_spot_policy` print, so it has to hold at any setting.
+  test "cadence_phrase stays honest at a cooldown longer than a day" do
+    assert_equal "at most 24 top-ups a day", status(in_hand: 0).cadence_phrase
+
+    @setting.update!(fleet_idle_min_fire_interval_minutes: 1)
+    assert_equal "at most 1440 top-ups a day", status(in_hand: 0).cadence_phrase
+
+    @setting.update!(fleet_idle_min_fire_interval_minutes: 2880)
+    s = status(in_hand: 0)
+    assert_equal 0, s.max_fires_per_day
+    assert_equal "at most once every 2 days", s.cadence_phrase
+  end
+
+  test "headroom is the room left under the ceiling, floored at zero" do
+    assert_equal 3, status(in_hand: 0).headroom
+    assert_equal 1, status(in_hand: 2).headroom
+    assert_equal 0, status(in_hand: 9).headroom
   end
 
   # Every state an operator can land in has to say something. A nil here is a
