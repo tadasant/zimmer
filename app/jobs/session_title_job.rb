@@ -58,8 +58,9 @@ class SessionTitleJob < ApplicationJob
   # session can't blow past the backend's context window.
   MAX_CONTEXT_CHARS = 8000
 
-  # Cap on the raw prompt text used as fallback context (no transcript) or as
-  # the category signal for failed sessions.
+  # Cap on the prompt text used as fallback context (no transcript) or as the
+  # category signal for failed sessions. It is applied to Session#human_prompt,
+  # not to the composed prompt — see #prompt_context.
   MAX_PROMPT_CHARS = 1500
 
   # Allow injection of inference service for testing
@@ -195,8 +196,12 @@ class SessionTitleJob < ApplicationJob
     format_conversation(conversation)
   end
 
+  # The category signal when there is no usable transcript. Same string the
+  # title comes from: a chat bubble's page-context block can be 50,000
+  # characters, so truncating the composed prompt to MAX_PROMPT_CHARS hands the
+  # model a page dump with the human's actual ask cut off the end.
   def prompt_context(session)
-    session.prompt.to_s.truncate(MAX_PROMPT_CHARS)
+    session.human_prompt.to_s.truncate(MAX_PROMPT_CHARS)
   end
 
   def format_conversation(conversation)
@@ -314,7 +319,7 @@ class SessionTitleJob < ApplicationJob
   # rather than `prompt`: the chat bubble wraps the human's words in a
   # `<context-about-user's-current-view>` block before handing them to the
   # runtime, and the first 60 characters of that block are the block, not the
-  # request.
+  # ask.
   def generate_title_from_prompt(prompt_text)
     return nil if prompt_text.blank?
 

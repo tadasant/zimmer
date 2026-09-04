@@ -255,15 +255,24 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A polled GitHub PR/issue comment | ❌ | see below |
 
 The same line — his words, not the wrapper Zimmer composed around them — also decides what the
-session is *called*. `SessionTitleJob` names a session from its transcript when there is one and
-otherwise falls back deterministically to `Session#human_prompt`: `metadata["original_prompt"]`
-when a surface stored the human's untouched text beside the composed prompt (the chat bubble is
-the only one that does), and the `prompt` column everywhere else, which is the human's own words
-there because nothing wrapped them. The slug is derived from the title at the moment the title is
-applied, so both carry the same string. Falling back to `prompt` instead named every chat-bubble
-session `<context-about-user's-current-view>` truncated mid-URL, and left two sessions started in
-the same minute computing the same slug base
-([#809](https://github.com/tadasant/zimmer/issues/809)).
+session is *called*. `SessionTitleJob` names a session from its transcript when there is one (a
+failed session is the exception: it is named from its recorded failure reason, because a crash
+transcript misleads the model), and otherwise falls back deterministically to
+`Session#human_prompt`. That reads `metadata["original_prompt"]` when a surface stored the ask
+untouched beside the composed prompt — the chat bubble is the only one that does — and the
+`prompt` column everywhere else. Plenty of other entry points compose a prompt too: a trigger
+renders a template, the GitHub poller appends an event block, the backlog prepends an issue URL.
+None of them keeps an unwrapped copy, so `prompt` is the narrowest text there is and stays the
+fallback. The same string reaches category inference, which is fed at most 1,500 characters — a
+page-context block runs to 50,000, so the composed prompt would have been all block and no ask.
+
+The slug is derived from the title at the moment the title is *first* applied, and
+`generate_slug_from_title!` returns early once a slug exists, so a title changed later leaves the
+original slug behind. Falling back to `prompt` therefore named every chat-bubble session
+`<context-about-user's-current-view>` truncated mid-URL, left two sessions started in the same
+minute computing the same slug base, and outlived the title on any session an agent renamed
+afterwards ([#809](https://github.com/tadasant/zimmer/issues/809)). The fix is forward-only:
+sessions named before it keep the names they were given.
 
 Records are **read-only** on every surface: `HumanMessage` raises `ActiveRecord::ReadOnlyRecord` on
 update and on a direct destroy, and there is no create/edit path in the UI, the API, MCP, or the

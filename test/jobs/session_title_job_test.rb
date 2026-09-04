@@ -234,6 +234,31 @@ class SessionTitleJobTest < ActiveJob::TestCase
     assert_equal "#{first_slug}-1", second_slug
   end
 
+  test "categorizes a chat-bubble session from the human's prompt, not the page dump" do
+    # The category context is capped at MAX_PROMPT_CHARS (1,500) and a page
+    # context runs to PAGE_CONTEXT_MAX_LENGTH (50,000), so truncating the
+    # composed prompt hands the model the block with the ask cut off the end.
+    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+
+    make_chat_bubble_session(@session)
+    @session.update!(
+      category_id: nil,
+      prompt: "<context-about-user's-current-view>\nURL: https://zimmer.example.com/sessions\n\n#{"page dump " * 400}\n</context-about-user's-current-view>\n\n#{CHAT_BUBBLE_HUMAN_PROMPT}"
+    )
+
+    captured_prompt = nil
+    @mock_inference_service.expects(:generate).with do |prompt, **|
+      captured_prompt = prompt
+      true
+    end.returns("CATEGORY: Bugs")
+
+    @job.perform(@session.id)
+
+    assert_includes captured_prompt, CHAT_BUBBLE_HUMAN_PROMPT
+    refute_includes captured_prompt, "page dump"
+    assert_equal bugs.id, @session.reload.category_id
+  end
+
   test "keeps titling from the prompt when there is no original_prompt" do
     # Every entry point other than the chat bubble composes nothing, so the
     # prompt column is the human's own words and remains the fallback.
