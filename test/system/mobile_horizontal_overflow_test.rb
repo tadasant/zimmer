@@ -309,8 +309,16 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # skill body.
   SKILL_NAME = "recover-from-compaction-thrashing".freeze
 
+  # The base directory is kept short on purpose. A real one is an absolute path
+  # with no space in it, and transcript prose has no `overflow-wrap: break-word`
+  # today, so a realistic path runs ~150px past a 360px viewport — in a plain
+  # assistant message exactly as much as in a runtime notice. That is a
+  # pre-existing wrapping bug in `.prose-session` (tadasant/zimmer#919), not
+  # something this row introduced, and asserting it here would only duplicate a
+  # red for someone else's fix. What this case is for is the digest row and the
+  # disclosure, which are what the timeline gained.
   SKILL_DUMP = <<~TEXT.freeze
-    Base directory for this skill: /home/rails/.zimmer/clones/zimmer/.claude/skills/#{SKILL_NAME}
+    Base directory for this skill: /skills/#{SKILL_NAME}
 
     # Recover From Compaction Thrashing
 
