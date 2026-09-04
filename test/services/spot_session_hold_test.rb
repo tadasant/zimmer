@@ -444,6 +444,29 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     assert queued.self_addressed?
   end
 
+  # A conflict notice that reached a spot-class session parked in `needs_input`
+  # was SENT rather than queued, and lands back in the queue here when the gate
+  # refuses the turn carrying it — where it can wait hours at the quota wall
+  # rather than the minutes a turn boundary takes. That makes it the longest-gap
+  # version of the staleness the delivery-time re-read exists to catch, so it
+  # has to carry the origin that re-read keys on (tadasant/zimmer#835).
+  test "a queued merge-conflict notice keeps the origin the delivery-time re-read keys on" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    notice = AutomatedPrompts.merge_conflict_message("https://github.com/tadasant/zimmer/pull/834")
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+      SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: notice)
+    end
+
+    queued = session.reload.enqueued_messages.pending.order(:position).last
+    assert_equal notice, queued.content
+    assert_equal "automated_merge_conflict", queued.origin
+    assert_includes EnqueuedMessage::STALENESS_CHECKED_ORIGINS, queued.origin
+  end
+
   # The funnel sees a human's follow-up and Zimmer's nudge as the same opaque
   # string, so the stamp has to discriminate rather than blanket-exempt: `caller`
   # is the default and the wider bucket, and a message somebody is waiting on

@@ -313,10 +313,9 @@ message over the automated recovery prompt when they auto-continue it.
 is what needs bounding: three attempts, 30 seconds apart, counted in
 `metadata["enqueued_drain_attempts"]` and cleared by `resume` so each idle spell gets its own
 budget. After that the job stops and raises an alert, deduped per session. It deliberately does
-**not** retire the messages to `undelivered` the way an archive does: `undelivered` means no
-delivery path remains, which is true of an archived session and false of this one — the next turn
-anybody gives it drains the queue normally. Retiring here would destroy a still-deliverable message
-in order to record that this job could not deliver it.
+**not** retire the messages to `undelivered` the way an archive does: it could not deliver them, but
+the next turn anybody gives the session drains the queue normally. Retiring here would destroy a
+still-deliverable message in order to record that this job could not deliver it.
 
 One consequence worth naming: a *user-initiated* pause on a session with a queued message resumes
 within seconds. That is the invariant working as stated rather than an oversight — the queued
@@ -813,7 +812,12 @@ their first, the session archived at the end of that same turn, and the message 
 queue nobody would ever drain.
 
 So `archive` moves them to `undelivered`, a fourth, terminal status alongside
-`pending`/`processing`/`sent`. Three things follow from that:
+`pending`/`processing`/`sent`. An archive is the reason a row lands there but not the only one — the
+delivery-time staleness check retires a poller notice whose state had already moved on, on a session
+that is very much alive (see
+[Background jobs](/operate/background-jobs/#a-conflict-notice-is-re-read-when-it-comes-off-the-queue-not-when-it-was-written)).
+What the two have in common is that nothing is left worth delivering, which is what the status
+records. Three things follow from that:
 
 - The queue can no longer misreport itself. `undelivered` is not `pending`, so the claim query
   cannot take it — including after an `unarchive_to_*`, where a weeks-old message would otherwise

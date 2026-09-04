@@ -50,6 +50,33 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
     assert_nil EnqueuedMessage.find_by(id: message.id), "Message should be destroyed after dispatch"
   end
 
+  # The delivery-time staleness sweep (EnqueuedMessage#stale?) must not fire on
+  # this path. The service validated THIS row as pending under the lock,
+  # promoted it to the front, and reports success naming its content — so a
+  # sweep that retired it would have the service deliver the next message while
+  # logging the promoted one as sent, or report a 409 blaming a concurrent
+  # interrupt that never happened.
+  test "an explicit send-now delivers a conflict notice even though its PR now reads mergeable" do
+    message = @session.enqueued_messages.create!(
+      content: AutomatedPrompts.merge_conflict_message("https://github.com/tadasant/zimmer/pull/834"),
+      position: 1,
+      origin: "automated_merge_conflict"
+    )
+    GithubPullRequestMergeability.expects(:read).never
+
+    result = nil
+    assert_enqueued_with(job: AgentSessionJob) do
+      result = Sessions::InterruptService.new(
+        session: @session,
+        enqueued_message: message,
+        actor: "test"
+      ).call
+    end
+
+    assert result.success?, "Expected success but got: #{result.error}"
+    assert_nil EnqueuedMessage.find_by(id: message.id), "the promoted message is the one delivered"
+  end
+
   test "interrupt on waiting session dispatches the message" do
     @session.update!(status: :waiting)
     message = @session.enqueued_messages.create!(content: "Interrupt now", position: 1)
