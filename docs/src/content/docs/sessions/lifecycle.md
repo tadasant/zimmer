@@ -86,8 +86,10 @@ the labels exist to support.
 
 It is bookkeeping and behaves like it: the write is a single upsert, it swallows its own errors,
 and the caller rescues again around it, so a cohort label can never be the reason a session fails
-to start. See [Experimental settings](/operate/costs/#experimental-settings) for what the labels
-are for.
+to start. Both of those rescues make the same exception the side-effect reporter does — they do
+not swallow on a transaction Postgres has already aborted, because a transition that is going to
+roll back either way is not one a swallow can save. See
+[Experimental settings](/operate/costs/#experimental-settings) for what the labels are for.
 
 `AgentSessionJob` adds a second guard ahead of the transition, and it is the one that makes a pause
 mean something: **a session with a one-time wake-up still ahead of it does not get a first start.**
@@ -1243,8 +1245,21 @@ The alert's dedup key is the **callback name, not the session**. A sick database
 callback for every session in flight; collapsing them into one page per
 `AlertService::DEDUP_WINDOW` is the difference between a signal and a flood.
 
-Note this covers reporting only. The transition itself stays atomic: a swallowed error is
-still swallowed, never re-raised into the middle of a transition.
+Note this covers reporting only, with one exception: **a connection whose transaction Postgres has
+already aborted is not swallowed.** Swallowing exists so a transition can finish with one side
+effect missing, and on a poisoned connection no transition can finish — the state `UPDATE` itself
+rolls back, and every callback after the first failure raises `PG::InFailedSqlTransaction` and
+lands here in turn. `DatabaseTransactionState.aborted_by?` tells that case apart (a `PG::Error`
+carrying a server result, with a transaction open) and `report_swallowed_side_effect` re-raises,
+so the first failure aborts the transition and the caller sees the statement that actually failed.
+
+That is [#924](https://github.com/tadasant/zimmer/issues/924). On 2026-09-04 a worker connection
+held a cached plan across an `app_settings` migration; the `SELECT` behind
+`record_experimental_setting_flags` failed, a silent rescue in `AppSetting.current` returned a
+default, and the three callbacks after it each reported an `InFailedSqlTransaction` of their own.
+`#alerts` got four ERROR records naming only consequences and no record at all of the statement
+that failed. Everything else about the swallow contract is unchanged: an ordinary failed side
+effect is still swallowed, and the transition still completes.
 
 :::note
 A failed one-time scheduled wake is still destroyed silently — that is a separate path from

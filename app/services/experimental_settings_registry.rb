@@ -45,12 +45,15 @@ class ExperimentalSettingsRegistry
 
     # What the setting is right now. Returns nil rather than raising when the
     # settings row can't be read — this runs on the session-spawn path.
+    #
+    # Except on a connection whose transaction Postgres has already aborted,
+    # where AppSetting.degrading_to re-raises instead: there is no default to
+    # degrade to when every later statement in the transaction is going to fail
+    # anyway. See DatabaseTransactionState and issue #924.
     def current_value
-      return extension.enabled? if extension?
-
-      AppSetting.current.public_send(:"#{attribute}?")
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
-      nil
+      AppSetting.degrading_to(nil, context: "ExperimentalSettingsRegistry[#{key}]") do
+        extension? ? extension.enabled? : AppSetting.current.public_send(:"#{attribute}?")
+      end
     end
 
     # The value this setting had at `time`, per the step change `landed_at`

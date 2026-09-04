@@ -163,6 +163,47 @@ class AppSettingTest < ActiveSupport::TestCase
     assert AppSetting.mcp_tool_search_enabled?
   end
 
+  test "a settings read that degrades to a default says so in the log" do
+    # #924: the rescue this replaces was silent, so when the read failed in
+    # production the only records were the downstream errors it caused. Triage had
+    # to reconstruct the cause from a source trace because no log line held it.
+    log_output = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = Logger.new(log_output)
+
+    begin
+      AppSetting.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+      assert_equal AppSetting::NULL, AppSetting.current
+    ensure
+      Rails.logger = original_logger
+    end
+
+    assert_match(/AppSetting\.current could not read the settings row/, log_output.string)
+    assert_match(/ActiveRecord::StatementInvalid: relation does not exist/, log_output.string)
+  end
+
+  test "a settings read inside an aborted transaction raises instead of degrading" do
+    # The #924 regression. A failed statement inside a transaction leaves Postgres
+    # rejecting everything later in it, so there is no default to degrade to: the
+    # caller carries on, every statement after this one fails with
+    # InFailedSqlTransaction, and the real cause is gone. Surface it instead.
+    error = assert_raises(ActiveRecord::StatementInvalid) do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        begin
+          ActiveRecord::Base.connection.execute("SELECT no_such_column_anywhere")
+        rescue ActiveRecord::StatementInvalid
+          # The transaction is aborted now, exactly as it was in production.
+        end
+
+        AppSetting.current
+      end
+    end
+
+    assert_kind_of PG::InFailedSqlTransaction, error.cause
+    assert AppSetting.current.is_a?(AppSetting), "the rolled-back savepoint must leave a usable connection"
+  end
+
   test "the NULL stand-in resolves MCP tool search to the shipped default" do
     assert AppSetting::NULL.mcp_tool_search_enabled?
   end

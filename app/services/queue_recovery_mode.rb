@@ -290,6 +290,12 @@ class QueueRecoveryMode
 
       (record.public_send(SETTING_KEY) || {}).with_indifferent_access
     rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError => e
+      # Not on a connection whose transaction Postgres has already aborted:
+      # AppSetting.current re-raises there rather than handing back a default, and
+      # swallowing it here would put the defect back one level up. See
+      # DatabaseTransactionState and issue #924.
+      raise if DatabaseTransactionState.aborted_by?(e)
+
       Rails.logger.warn("[queue_recovery_mode] could not read settings: #{e.message}")
       {}
     end
