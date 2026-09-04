@@ -351,6 +351,26 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(repo_with_subdir)
   end
 
+  # A session that never had a subdirectory must not acquire one from a root that
+  # has since grown one: the fallback answers "where did the path I asked for go",
+  # not "what does the catalog say now".
+  test "does not adopt a fallback for a clone that asked for no subdirectory" do
+    repo_with_subdir = create_test_git_repository_with_subdirectory
+
+    result = GitCloneService.create_clone(
+      repo_with_subdir,
+      branch: "main",
+      subdirectory: nil,
+      fallback_subdirectory: "subdir"
+    )
+
+    assert_equal result[:clone_path], result[:working_directory]
+    assert_nil result[:subdirectory]
+
+    GitCloneService.cleanup_clone(result[:clone_path])
+    FileUtils.rm_rf(repo_with_subdir)
+  end
+
   test "still raises when neither the requested subdirectory nor the fallback exists" do
     error = assert_raises(GitCloneService::SubdirectoryNotFoundError) do
       GitCloneService.create_clone(
