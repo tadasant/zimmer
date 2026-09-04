@@ -50,10 +50,16 @@ shortname collision when there's only one scope.
 The catalog's own description states the intent: *"resolves fully offline (no private GitHub
 catalogs, no network), so the app's config services always resolve non-empty data."*
 
-**What's in it:** 9 skills, all default-on for the `zimmer` root — 6 Zimmer-specific ones
-(`category: zimmer`) plus 3 vendored generic workflow skills (`category: workflow`: `open-pr`,
-`wait-for-ci`, `recover-from-compaction-thrashing`) — 14 MCP servers (only `playwright-custom`
-default-on), 10 roots, 4 plugins, 1 hook, 5 references.
+**What's in it:** 10 skills — 7 Zimmer-specific ones (`category: zimmer`) plus 3 vendored generic
+workflow skills (`category: workflow`: `open-pr`, `wait-for-ci`,
+`recover-from-compaction-thrashing`) — 18 MCP servers, 12 roots, 4 plugins, 1 hook, 5 references.
+The `zimmer` root turns 9 of those skills on by default and exactly one MCP server,
+`playwright-custom`; `awaken-waiting-sessions` and `zimmer-fleet` default on `fleet-maintenance`
+instead.
+
+Those counts are asserted against a live resolve by
+`test/docs/zimmer_integration_catalog_counts_test.rb`, so adding a catalog entry without updating
+this paragraph fails CI rather than leaving the page quietly stale.
 
 ### Vendored generic skills are adapted, not mirrored
 
