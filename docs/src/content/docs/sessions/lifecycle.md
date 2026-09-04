@@ -146,7 +146,10 @@ transition, and it does nine things beyond changing status:
    Skipped when a `SessionTitleJob` for this session is already queued and not yet claimed: it
    reads the transcript when it runs, so a second one behind it would only find the work done. The
    job `Session` schedules two minutes after creation counts, so a session that comes to rest inside
-   those two minutes is titled when that job fires rather than at the pause.
+   those two minutes is titled when that job fires rather than at the pause. Without a transcript
+   the title is deterministic, from
+   [the human's own prompt](/sessions/hierarchy-and-human-messages/#what-is-captured-and-what-is-not)
+   rather than the composed one the runtime received.
 7. `enqueue_status_summary_refresh` — the **only** automatic trigger for the
    [Status summary](/sessions/status-summary/). The generator still refuses when the session has
    not moved since the last one, so a transition that added no transcript costs nothing. Skipped

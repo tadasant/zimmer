@@ -140,6 +140,144 @@ class SessionTitleJobTest < ActiveJob::TestCase
     assert_includes @session.logs.last.content, "Generated session title from prompt fallback"
   end
 
+  # === The chat bubble's composed prompt (issue #809) =========================
+
+  # The prompt a chat-bubble session hands the runtime, and the human's words
+  # the controller keeps beside it in metadata.
+  CHAT_BUBBLE_HUMAN_PROMPT = "Fix the broken avatar upload on the profile page".freeze
+  CHAT_BUBBLE_COMPOSED_PROMPT = <<~PROMPT.strip
+    <context-about-user's-current-view>
+    URL: https://zimmer.example.com/sessions/12265
+
+    Sessions index, filtered to running sessions.
+    </context-about-user's-current-view>
+
+    #{CHAT_BUBBLE_HUMAN_PROMPT}
+  PROMPT
+
+  def make_chat_bubble_session(session, created_at: nil)
+    session.update!(
+      title: "Session #{session.id}",
+      slug: nil,
+      metadata: {
+        "auto_generated_title" => true,
+        "source" => "chat_bubble",
+        "original_prompt" => CHAT_BUBBLE_HUMAN_PROMPT,
+        "current_url" => "https://zimmer.example.com/sessions/12265"
+      },
+      prompt: CHAT_BUBBLE_COMPOSED_PROMPT,
+      transcript: nil
+    )
+    session.update_columns(created_at: created_at) if created_at
+    session
+  end
+
+  test "titles a chat-bubble session from the human's prompt, not the composed one" do
+    # The chat bubble prepends a page-context block to the prompt the runtime
+    # receives and keeps the human's own text in metadata. Titling off the
+    # composed prompt names every such session after the block, and truncates
+    # mid-URL doing it.
+    make_chat_bubble_session(@session)
+    @mock_inference_service.expects(:generate).never
+
+    assert_difference "@session.logs.count", 1 do
+      @job.perform(@session.id)
+    end
+
+    @session.reload
+    assert_equal CHAT_BUBBLE_HUMAN_PROMPT, @session.title
+    refute_includes @session.title, "context-about-user"
+    assert_includes @session.logs.last.content, "Generated session title from prompt fallback"
+  end
+
+  test "slugs a chat-bubble session from the human's prompt, not the composed one" do
+    # The slug is derived from the title at the moment the title is applied, so
+    # a title taken from the context block carries the block into the URL.
+    make_chat_bubble_session(@session)
+    @mock_inference_service.expects(:generate).never
+
+    @job.perform(@session.id)
+
+    slug = @session.reload.slug
+    assert slug.start_with?("fix-the-broken-avatar-upload-on-the-profile-page-"),
+      "expected a slug from the human's words, got #{slug.inspect}"
+    refute_includes slug, "context-about-user"
+    refute_includes slug, "https-zimmer"
+  end
+
+  test "falls back to the human's prompt when transcript inference returns no title" do
+    make_chat_bubble_session(@session)
+    @session.update!(transcript: transcript_jsonl(CHAT_BUBBLE_HUMAN_PROMPT, "On it."))
+    @mock_inference_service.expects(:generate).returns(nil)
+
+    @job.perform(@session.id)
+
+    @session.reload
+    assert_equal CHAT_BUBBLE_HUMAN_PROMPT, @session.title
+    refute_includes @session.slug, "context-about-user"
+  end
+
+  test "two chat-bubble sessions created in the same minute get distinct slugs" do
+    # Same composed prompt, same human prompt, same creation minute: the slug
+    # base is identical for both, and slugs are unique-indexed.
+    created_at = Time.zone.parse("2026-09-02 14:35:00")
+    first = make_chat_bubble_session(sessions(:waiting), created_at: created_at)
+    second = make_chat_bubble_session(sessions(:needs_input), created_at: created_at)
+    @mock_inference_service.expects(:generate).never
+
+    @job.perform(first.id)
+    @job.perform(second.id)
+
+    first_slug = first.reload.slug
+    second_slug = second.reload.slug
+    assert_equal "fix-the-broken-avatar-upload-on-the-profile-page-20260902-1435", first_slug
+    assert_equal "#{first_slug}-1", second_slug
+  end
+
+  test "categorizes a chat-bubble session from the human's prompt, not the page dump" do
+    # The category context is capped at MAX_PROMPT_CHARS (1,500) and a page
+    # context runs to PAGE_CONTEXT_MAX_LENGTH (50,000), so truncating the
+    # composed prompt hands the model the block with the ask cut off the end.
+    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+
+    make_chat_bubble_session(@session)
+    @session.update!(
+      category_id: nil,
+      prompt: "<context-about-user's-current-view>\nURL: https://zimmer.example.com/sessions\n\n#{"page dump " * 400}\n</context-about-user's-current-view>\n\n#{CHAT_BUBBLE_HUMAN_PROMPT}"
+    )
+
+    captured_prompt = nil
+    @mock_inference_service.expects(:generate).with do |prompt, **|
+      captured_prompt = prompt
+      true
+    end.returns("CATEGORY: Bugs")
+
+    @job.perform(@session.id)
+
+    assert_includes captured_prompt, CHAT_BUBBLE_HUMAN_PROMPT
+    refute_includes captured_prompt, "page dump"
+    assert_equal bugs.id, @session.reload.category_id
+  end
+
+  test "keeps titling from the prompt when there is no original_prompt" do
+    # Every entry point other than the chat bubble composes nothing, so the
+    # prompt column is the human's own words and remains the fallback.
+    @session.update!(
+      title: "Session #{@session.id}",
+      slug: nil,
+      metadata: { "auto_generated_title" => true, "source" => "trigger" },
+      prompt: "Sweep the backlog for stale issues",
+      transcript: nil
+    )
+    @mock_inference_service.expects(:generate).never
+
+    @job.perform(@session.id)
+
+    @session.reload
+    assert_equal "Sweep the backlog for stale issues", @session.title
+    assert @session.slug.start_with?("sweep-the-backlog-for-stale-issues-")
+  end
+
   test "should run for old sessions without a title" do
     # Old sessions don't have the auto_generated_title flag.
     @session.update!(

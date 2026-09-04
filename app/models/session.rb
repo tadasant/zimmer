@@ -1484,6 +1484,33 @@ class Session < ApplicationRecord
   # one — a collision anywhere else must surface on the first attempt.
   SLUG_UNIQUE_INDEX = "index_sessions_on_slug"
 
+  # The narrowest text this session's prompt was composed around — what to name
+  # and summarize the session by.
+  #
+  # `prompt` is what the runtime receives, and that is not always the ask. The
+  # chat bubble prepends a `<context-about-user's-current-view>` block — a URL
+  # and up to 50,000 characters of page dump — and stores the untouched text in
+  # `metadata["original_prompt"]`. Naming off `prompt` there titles every
+  # chat-bubble session after the block, and the slug derived from the title
+  # inherits it.
+  #
+  # Plenty of other entry points compose a prompt too (a trigger renders a
+  # template, the backlog prepends an issue URL), but none of them keeps an
+  # unwrapped copy beside it, so `prompt` is the narrowest text there is and
+  # stays the fallback.
+  #
+  # Reads both key types: the column is JSON, so a record loaded from the
+  # database has string keys, while one still holding what a controller assigned
+  # has whatever that hash used.
+  #
+  # @return [String, nil]
+  def human_prompt
+    meta = metadata
+    return prompt unless meta.is_a?(Hash)
+
+    (meta["original_prompt"] || meta[:original_prompt]).presence || prompt
+  end
+
   # Generate slug from title + datetime
   # Called by SessionTitleJob after title is generated
   def generate_slug_from_title!

@@ -5258,6 +5258,30 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Fix the login bug", session.metadata["original_prompt"]
   end
 
+  test "chat_bubble session is named from the human's prompt, not the page-context block" do
+    # End to end over the real composition: the controller prepends the block,
+    # and the title job — running before any transcript exists, which is the
+    # path that produced the corrupted names in #809 — has to name the session
+    # after what the human typed.
+    stub_router_agent_root
+
+    post chat_bubble_sessions_url,
+      params: { prompt: "Fix the login bug", page_context: "# Dashboard\nSome content", current_url: "https://zimmer.example.com/sessions" },
+      as: :json
+    assert_response :success
+
+    session = Session.last
+    assert_includes session.prompt, "<context-about-user's-current-view>"
+
+    # No inference: without a transcript the title is deterministic.
+    SessionTitleJob.new.perform(session.id)
+
+    session.reload
+    assert_equal "Fix the login bug", session.title
+    assert session.slug.start_with?("fix-the-login-bug-"), "unexpected slug #{session.slug.inspect}"
+    refute_includes session.slug, "context-about-user"
+  end
+
   test "chat_bubble works without page context" do
     stub_router_agent_root
 
