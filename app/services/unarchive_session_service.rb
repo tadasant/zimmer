@@ -274,6 +274,20 @@ class UnarchiveSessionService
     new_clone_path = clone_result[:clone_path]
     new_working_directory = clone_result[:working_directory]
 
+    # The clone may have landed on the agent root's *current* subdirectory rather
+    # than the one frozen on the row (#921). Persist that before anything else
+    # reads `session.subdirectory` — the restore damage check below is one such
+    # reader, and it would otherwise call the healthy clone damaged.
+    # Wrapped like every other write on this path: an unretried DB blip here
+    # would escape to #unarchive's rescue, which logs at error — paging over the
+    # one flow this change is deliberately keeping out of the exception tracker.
+    if with_db_retry { session.adopt_clone_subdirectory!(clone_result[:subdirectory]) }
+      @logger.info("Adopted the agent root's current subdirectory",
+        agent_root_key: session.metadata&.dig("agent_root_key"),
+        subdirectory: session.subdirectory
+      )
+    end
+
     # Apply preserved artifacts if they exist (unpushed commits + uncommitted changes)
     apply_preserved_artifacts(new_clone_path)
 
@@ -430,11 +444,21 @@ class UnarchiveSessionService
     result = GitCloneService.create_clone(
       session.git_root,
       branch: session.branch || "main",
-      subdirectory: session.subdirectory
+      subdirectory: session.subdirectory,
+      fallback_subdirectory: session.catalog_subdirectory
     )
 
     @logger.info("Clone created successfully", clone_path: result[:clone_path])
     result
+  rescue GitCloneService::SubdirectoryNotFoundError => e
+    # Deliberately warn, not error. This is a deterministic, permanent refusal
+    # about configuration — the agent root names a directory this repo does not
+    # have, under either name — on a synchronous path the user is watching: the
+    # message comes straight back as the flash on the session page. Nobody
+    # on-call can act on it, so it does not belong in the exception tracker,
+    # while a real git or network GitError (below) still pages. See #921.
+    @logger.warn("Failed to create clone: subdirectory not found", error: e.message)
+    { error: e.message }
   rescue GitCloneService::GitError => e
     @logger.error("Failed to create clone", error: e.message)
     { error: e.message }

@@ -1075,6 +1075,79 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # zimmer#921: an agent root whose directory is renamed in the catalog leaves
+  # every session created before the rename naming a path that a fresh clone of
+  # `main` no longer has, so Unarchive refused them forever — even though the
+  # catalog kept a deprecated alias pointing at the new tree the whole time.
+  # Real clone, real GitCloneService: the stub cannot show which path it landed on.
+  test "unarchives onto the agent root's current subdirectory when the stored one was renamed away" do
+    with_real_clone_sandbox do |_bare_path, current_subdirectory|
+      renamed_away = "artifacts/agent-roots/zimmer-router"
+      @session.update!(
+        subdirectory: renamed_away,
+        metadata: @session.metadata.merge("agent_root_key" => "moved-root")
+      )
+      stub_catalog_root("moved-root", subdirectory: current_subdirectory)
+
+      result = UnarchiveSessionService.call(session: @session, file_system: RealFileSystemAdapter.new)
+
+      assert result.success?, "the catalog knows where the root moved to: #{result.error}"
+      @session.reload
+      assert_equal current_subdirectory, @session.subdirectory,
+        "the corrected path must be persisted so the next resume asks for it directly"
+      assert_equal File.join(@session.metadata["clone_path"], current_subdirectory),
+        @session.metadata["working_directory"]
+      assert File.exist?(File.join(@session.metadata["working_directory"], "AGENTS.md")),
+        "the working directory must be the agent root's real tree"
+    end
+  end
+
+  # The other half of #921: re-resolving must not make a missing subdirectory soft.
+  test "unarchive still fails when the agent root is genuinely gone from the catalog" do
+    with_real_clone_sandbox do |_bare_path, _current_subdirectory|
+      @session.update!(
+        subdirectory: "artifacts/agent-roots/retired",
+        metadata: @session.metadata.merge("agent_root_key" => "retired-root")
+      )
+      AgentRootsConfig.stubs(:find).returns(nil)
+
+      result = UnarchiveSessionService.call(session: @session, file_system: RealFileSystemAdapter.new)
+
+      assert_not result.success?
+      assert_includes result.error, "Subdirectory 'artifacts/agent-roots/retired' not found"
+      assert_equal "archived", @session.reload.status
+      assert_equal "artifacts/agent-roots/retired", @session.subdirectory,
+        "a failed clone must not rewrite the row"
+    end
+  end
+
+  # Secondary to the fix above, and deliberately separate from it: a subdirectory
+  # that exists under neither name is a permanent, user-actionable refusal on a
+  # synchronous path — the person clicking Unarchive reads it in the flash — so it
+  # is a warning, not an exception-tracker event nobody on call can act on.
+  test "a missing subdirectory is logged as a refusal, not reported to the exception tracker" do
+    StructuredLogger.any_instance.expects(:error).never
+    StructuredLogger.any_instance.expects(:warn).at_least_once
+
+    refuse = ->(*, **) { raise GitCloneService::SubdirectoryNotFoundError, "Failed to create clone: Subdirectory 'gone' not found in repository" }
+    GitCloneService.stub :create_clone, refuse do
+      result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+      assert_not result.success?
+      assert_includes result.error, "Subdirectory 'gone' not found in repository"
+    end
+  end
+
+  test "a real git failure is still reported to the exception tracker" do
+    StructuredLogger.any_instance.expects(:error).at_least_once
+
+    GitCloneService.stub :create_clone, ->(*, **) { raise GitCloneService::GitError, "Failed to create clone: could not read Username" } do
+      result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+      assert_not result.success?
+    end
+  end
+
   test "regeneration restores the auto-injected subagent Zimmer server for a subagent-roots-only root" do
     # Regression for the production wedge (sessions 9726/9890): a root whose only
     # subagent-spawning capability is the auto-injected Zimmer server
@@ -1188,6 +1261,15 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
   ensure
     original_home.nil? ? ENV.delete("HOME") : ENV["HOME"] = original_home
     Array(@tmp_roots).each { |dir| FileUtils.rm_rf(dir) }
+  end
+
+  # A catalog carrying exactly one root, so `find` answers for the key the session
+  # names and nil for anything else (rather than raising an unexpected invocation).
+  def stub_catalog_root(name, subdirectory:)
+    root = AgentRootsConfig::AgentRoot.new(name, { "subdirectory" => subdirectory, "url" => @bare_repo })
+    AgentRootsConfig.stubs(:find).returns(nil)
+    AgentRootsConfig.stubs(:find).with(name).returns(root)
+    root
   end
 
   def new_tmp_root(prefix)

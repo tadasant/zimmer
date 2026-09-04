@@ -4619,6 +4619,26 @@ first five backtrace lines are in the backend log at `warn`, and the session's o
 turn stopped and why. An unexplained gap in an archived session's history is worth grepping the
 backend log for before assuming it finished cleanly.
 
+## A root that moves to the repo root still strands its existing sessions
+
+A session freezes its agent root's `subdirectory` at creation time, and a clone that cannot find
+that path fails permanently. Renaming a root's directory used to strand every session created before
+the rename; both clone paths now also offer the root's *current* path, resolved from the catalog by
+`metadata["agent_root_key"]`, and adopt it when the stored one is gone
+([#921](https://github.com/tadasant/zimmer/issues/921)).
+
+That recovery only runs in one direction. `Session#catalog_subdirectory` returns `nil` for two
+different states — the catalog no longer carries the root at all, and the root resolved but declares
+no `subdirectory` — and the clone treats both as "no fallback offered". So a root whose tree is
+moved **to the repo root** leaves its existing sessions naming a directory that no longer exists,
+with nothing to fall back to: they fail exactly as before, permanently, on both unarchive and
+clone recreation.
+
+The workaround is the same edit that would have been needed anyway: keep the root's directory under
+*some* path in the catalog, or move the affected sessions' `subdirectory` column yourself. Telling
+the two states apart — and letting a resolved-but-blank fallback mean "clone at the repo root" — is
+the real fix, and it is not implemented.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

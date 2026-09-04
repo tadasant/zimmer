@@ -128,6 +128,31 @@ session created before the rename still carries `zimmer-router` in `metadata["ag
 unarchiving it resolves that name against the current catalog — which is exactly why the alias
 stays.
 
+The alias is necessary but it is not sufficient, and for one deploy it was not enough on its own.
+A rename that also **moves the root's directory** breaks every pre-existing session on that root,
+because `sessions.subdirectory` is frozen onto the row at creation time and the clone callers used
+to pass it verbatim: a fresh clone of `main` no longer has the old path, `GitCloneService` raised
+`Subdirectory '…' not found in repository`, and the failure is not transient, so archived sessions
+could not be unarchived and live ones could not resume once the reaper took their clone
+([#921](https://github.com/tadasant/zimmer/issues/921)). Both clone callers now offer the root's
+*current* path alongside the stored one — `Session#catalog_subdirectory`, resolved through
+`metadata["agent_root_key"]` — and `GitCloneService` takes it when, and only when, the stored path
+is absent from the tree and the catalog's is present. The corrected value is written back to the
+row, so the next resume asks for it directly.
+
+`Session#catalog_subdirectory` deliberately does not go through `find_for_session`: that resolver's
+fallback arm matches roots on `ar.subdirectory == session.subdirectory`, so it can only ever return
+a root that agrees with the stale value. A root that is genuinely gone from the catalog still fails
+the clone — re-resolution is about asking the catalog, not about making a missing directory soft.
+
+Two things this asks of whoever performs the next rename. The alias is a **separate entry**, so a
+directory move has to set the *alias* entry's `subdirectory` to the new path as well — sessions
+keyed on the old name resolve through that entry, and an alias left pointing at the old tree strands
+exactly the population it exists to protect. And the recovery only works in one direction: a root
+that moves its tree **to the repo root** declares no `subdirectory` at all, which is indistinguishable
+from a root the catalog has dropped, so its existing sessions stay stranded —
+[a limitation](/limitations/#a-root-that-moves-to-the-repo-root-still-strands-its-existing-sessions).
+
 The app does not hardcode either name. `AgentRootsConfig::ROUTER_ROOT_NAMES` lists them
 most-preferred first and `AgentRootsConfig.router_root_name` returns the first one the resolved
 catalog actually carries:
