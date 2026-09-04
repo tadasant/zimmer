@@ -99,11 +99,17 @@ module SessionsHelper
     match ? "##{match[1]}" : "PR"
   end
 
-  # Returns the CSS classes for session status badges
+  # Returns the CSS classes for session status badges. This is the one session
+  # status -> colour map in the app: the session partials and /health both read it,
+  # so a status means the same colour wherever a human sees it.
+  #
+  # Takes the status string rather than a session, because /health counts statuses
+  # (`Session.group(:status).count`) and never has a record to hand.
+  #
   # Running badges start green and update dynamically via JS based on elapsed time
   # Other statuses have fixed colors that don't clash with running's green/yellow/red
-  def status_badge_classes(agent_session)
-    case agent_session.status
+  def status_badge_classes(status)
+    case status.to_s
     when "running"
       # Default to green, JS will update based on elapsed time
       "bg-green-100 text-green-800"
