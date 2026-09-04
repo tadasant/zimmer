@@ -33,8 +33,8 @@ module WorkBacklog
 
     class << self
       # The root every start spawns on. Resolved from the catalog rather than
-      # named here, because it has two names during the zimmer-router →
-      # zimmer-orchestrator rename — see AgentRootsConfig::ROUTER_ROOT_NAMES.
+      # named here, because it has two names — see
+      # AgentRootsConfig::ROUTER_ROOT_NAMES.
       def agent_root
         AgentRootsConfig.router_root_name
       end

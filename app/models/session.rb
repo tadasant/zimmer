@@ -527,7 +527,6 @@ class Session < ApplicationRecord
   # than a column that landed empty by accident. See #record_explicit_mcp_servers.
   EXPLICIT_EMPTY_MCP_SERVERS_KEY = "mcp_servers_explicitly_empty"
 
-
   # Execution providers a session may declare. Local filesystem is the only one: agents run
   # unsandboxed on the app host, and Zimmer has no sandboxed alternative to offer. The one
   # other provider class that exists, lib/execution/providers/remote_sandbox.rb, is an unwired

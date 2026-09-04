@@ -1838,11 +1838,25 @@ dispatch, an operator must wire a session-scoped Zimmer MCP server whose URL res
 environment — a custom `AIR_CONFIG` catalog with real URLs, or lifting the prod retarget no-op. See
 `app/services/runtime_config_post_processor.rb` and `app/services/self_session_injector.rb`.
 
+### The router root's two names split its cost and filter history
+
+`token_usages.agent_root` is a plain string written at spend time, and the router root has two names
+(`zimmer-orchestrator` and its deprecated `zimmer-router` alias — see
+[The router root's two names](/air/agent-roots/#the-router-roots-two-names)). Nothing rewrites the
+old rows, so `CostAnalytics#by_agent_root` reports router spend under both names forever: on
+`/costs`, in `get_costs`, and in `GET /api/v1/costs`. The sessions index's agent-root filter is a
+datalist over `AgentRootsConfig.all`, so it offers both entries with the history split between them.
+
+That is the deliberate price of not rewriting rows. Backfilling `token_usages` and
+`sessions.metadata` would collapse the two, but it would also erase the record of which name a
+session was actually created under, and the alias exists precisely so that record stays resolvable.
+
 ### `zimmer`, `general-agent`, and the orchestrator root are indistinguishable to the reverse lookup
 
-All of them have `"url": "https://github.com/tadasant/zimmer.git"` and no `subdirectory` — and the
-rename added a fourth, since `zimmer-orchestrator` and its `zimmer-router` alias are separate
-entries with identical coordinates.
+Five roots have `"url": "https://github.com/tadasant/zimmer.git"` and no `subdirectory`: `zimmer`,
+`general-agent`, `fleet-maintenance`, `zimmer-orchestrator` and its `zimmer-router` alias. The last
+two are separate catalog entries with byte-identical coordinates, which is what makes the alias work
+— and also what makes them, like the other three, indistinguishable to the reverse lookup.
 
 `AgentRootsConfig#find_for_session` prefers `metadata["agent_root_key"]`, but its fallback matches on
 `(url, subdirectory)` and returns the first hit — `zimmer`. Sessions created through

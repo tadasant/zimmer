@@ -12,6 +12,32 @@ class WorkBacklog::PullTest < ActiveSupport::TestCase
     @groomer.update_columns(precedence: 100, scheduling_class: "spot", genesis: "schedule")
   end
 
+  # The end-to-end half of the router root's two names: not just that
+  # AgentRootsConfig.router_root_name returns the alias when the resolved
+  # catalog carries only it, but that a start against that name produces a real
+  # session on the alias's coordinates. This is the state a deployment is in
+  # between the app deploy and the catalog update, and while AirCatalogService
+  # serves a last-known-good tree resolved before the rename.
+  test "a start against a catalog carrying only zimmer-router spawns on the alias" do
+    item = backlog_item(key: "zimmer#1")
+    legacy = {
+      "zimmer-router" => {
+        "name" => "zimmer-router",
+        "url" => "https://github.com/tadasant/zimmer.git",
+        "default_branch" => "main",
+        "user_invocable" => false
+      }
+    }
+
+    result = AirCatalogService.stub(:entries_for, ->(type) { type == :roots ? legacy : {} }) do
+      WorkBacklog::Start.call(item: item, scheduling_class: SessionGenesis::SPOT, acting_session: @groomer)
+    end
+
+    assert_equal "zimmer-router", result.session.metadata["agent_root_key"]
+    assert_equal "https://github.com/tadasant/zimmer.git", result.session.git_root
+    assert result.item.started?
+  end
+
   test "starts the top N as spot zimmer-orchestrator sessions, records them, and carries the rank forward" do
     first = backlog_item(key: "zimmer#1", cost: "small", precedence: 6000)
     second = backlog_item(key: "zimmer#2", cost: "small", precedence: 5990)

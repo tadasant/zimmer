@@ -106,8 +106,8 @@ exist** (`gh repo view` 404s). Selecting any of them can only ever fail at
 
 They are a leftover from the monorepo split. Fixing them is not a matter of repointing the URL:
 `AgentRootsConfig#find_for_session` resolves a root *backwards* from `(url, subdirectory)`, so
-giving them all the same real URL with no subdirectory would make eight roots
-indistinguishable — and `Trigger#heal_stale_agent_root!` and `Session#resolved_agent_root` would
+giving them all the same real URL with no subdirectory would make every one of them
+indistinguishable from the roots already at that URL — and `Trigger#heal_stale_agent_root!` and `Session#resolved_agent_root` would
 then silently resolve every one of them to `zimmer`. They need to be **removed** (with their
 tests and the two plugins whose `default_in_roots` names `agent-orchestrator`), or given genuinely
 distinct locations. That is its own change.

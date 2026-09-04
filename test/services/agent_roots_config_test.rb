@@ -54,12 +54,17 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
 
   # zimmer-router is the pre-rename name. Sessions created before the rename
   # still carry it in metadata["agent_root_key"], and unarchiving one resolves
-  # that name against the current catalog, so the alias has to stay findable.
-  test "the deprecated zimmer-router alias still resolves from the shipped catalog" do
-    alias_root = AgentRootsConfig.find!("zimmer-router")
+  # that name against the current catalog, so the alias has to stay findable —
+  # and has to point at the same place. The coordinates are load-bearing beyond
+  # cloning: Mcp::Tool#enforce_any_allowed_root! grants the root under either
+  # name, which is only sound while the two names denote one location.
+  test "every ROUTER_ROOT_NAMES entry resolves to the same location in the shipped catalog" do
+    roots = AgentRootsConfig::ROUTER_ROOT_NAMES.map { |name| AgentRootsConfig.find!(name) }
 
-    assert_equal AgentRootsConfig.find!("zimmer-orchestrator").url, alias_root.url
-    refute alias_root.user_invocable?
+    assert_equal 1, roots.map { |r| [ r.url, r.default_branch, r.subdirectory ] }.uniq.size,
+      "the router root's names must share url/branch/subdirectory, or the alias is a different root"
+    assert roots.none?(&:user_invocable?),
+      "the router root is dispatched by the quick router, not picked from the new-session form"
   end
 
   # The Rails change and the catalog change are independent PRs against
@@ -84,6 +89,19 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   # was looking for rather than what it used to look for.
   test "router_root_name names the preferred root when the catalog carries neither" do
     with_resolved_roots("general-agent" => {}) do
+      assert_equal "zimmer-orchestrator", AgentRootsConfig.router_root_name
+    end
+  end
+
+  # entries_for re-raises when a resolve fails and there is no last-known-good
+  # tree to serve. build_roots rescues that to an empty catalog rather than
+  # letting it reach the controllers, and router_root_name — which the quick
+  # router hits before create_from_agent_root! — has to do the same, or the
+  # "Router agent root not configured" path becomes an unhandled 500.
+  test "router_root_name returns the preferred root when the catalog cannot resolve at all" do
+    raiser = ->(*) { raise AirCatalogService::CatalogError, "air resolve failed" }
+
+    AirCatalogService.stub(:entries_for, raiser) do
       assert_equal "zimmer-orchestrator", AgentRootsConfig.router_root_name
     end
   end
