@@ -432,6 +432,19 @@ bounded digest in `stats`. A task whose effect is one-way owes a reader that muc
 durable copy, `stats` is the copy reachable without a shell, and neither is the row it changed. See
 [re-arming bricked wakes](/sessions/triggers/#re-arming-the-wakes-that-were-already-bricked).
 
+`SweepMisrecordedAgentPostedGithubComments` is that repair shape taken to its sharpest: it
+**deletes** rows, one-way, from a table nothing else can reconstruct. What makes that safe to run
+unattended is not care, it is asymmetry. Deleting a row that was correct hands an agent's own
+GitHub comment back to every session tracking the PR; leaving a wrong one costs exactly what the
+status quo already costs. So the task is written to be **too narrow rather than too broad**: a row
+is deleted only when the fixed classifier says it is not a post *and* the permalink is still in a
+tool result of the recording session's transcript, and every row the signal cannot reach — no
+session, no transcript, a transcript that parses to nothing — is kept and counted under its own
+reason. That counting is the other half of the design: a sweep with nothing to do and a sweep that
+silently reached nothing look identical from outside, so `stats` carries `rows_examined`,
+`rows_reachable`, `rows_unreachable`, `rows_deleted` and a `kept_by_reason` histogram, and each
+deletion is logged whole — with the command whose output was misread — before the row goes.
+
 ### Seeing it without a shell
 
 One object, `PostDeployTaskRun.summary`, rendered four ways so they cannot disagree:
