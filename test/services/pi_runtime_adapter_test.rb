@@ -33,10 +33,13 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
 
   test "spawn_process leaves Pi's command alone where there is no cgroup to enter" do
     @file_system.mkdir_p(WORKING_DIR)
-    @adapter.zimmer_session_id = 5251
-    @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
 
-    assert_equal [ "pi" ], @process_manager.spawned_processes.first[:command]
+    without_delegated_cgroup_parent do
+      @adapter.zimmer_session_id = 5251
+      @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+
+      assert_equal [ "pi" ], @process_manager.spawned_processes.first[:command]
+    end
   end
 
   test "binary_name and stderr log filename identify the Pi runtime" do

@@ -45,10 +45,12 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   test "spawn_process leaves Codex's command alone where there is no cgroup to enter" do
-    @adapter.zimmer_session_id = 5151
-    @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: @test_dir)
+    without_delegated_cgroup_parent do
+      @adapter.zimmer_session_id = 5151
+      @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: @test_dir)
 
-    assert_equal [ "codex", "exec" ], @mock_process_manager.spawned_processes.first[:command]
+      assert_equal [ "codex", "exec" ], @mock_process_manager.spawned_processes.first[:command]
+    end
   end
 
   test "spawn_process refuses a nil working directory with an actionable error" do

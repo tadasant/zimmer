@@ -26,8 +26,10 @@
 #   end
 module SessionMemoryCgroupHelpers
   # Point SessionMemoryCgroup at a throwaway parent for the duration of the block, and
-  # restore whatever was there before — including "nothing", which is what every other
-  # test in the suite relies on to keep the bound unavailable and inert.
+  # restore whatever was there before — including "nothing", which is the state the rest
+  # of the suite expects to find the env in. "Nothing" is not the same as "no cgroup":
+  # a test that wants the bound *unavailable* names that with #without_delegated_cgroup_parent
+  # rather than leaving the env unset and inheriting the host's.
   #
   # @yieldparam parent [String] the delegated parent's path
   def with_delegated_cgroup_parent
@@ -37,6 +39,29 @@ module SessionMemoryCgroupHelpers
       FileUtils.mkdir_p(parent)
       ENV["ZIMMER_SESSION_CGROUP_ROOT"] = parent
       yield parent
+    end
+  ensure
+    original.nil? ? ENV.delete("ZIMMER_SESSION_CGROUP_ROOT") : ENV["ZIMMER_SESSION_CGROUP_ROOT"] = original
+  end
+
+  # The other half of the seam: point SessionMemoryCgroup at a parent that does not
+  # exist, for a test of the unbounded path.
+  #
+  # Leaving the env unset does NOT do this. Unset falls through to DEFAULT_PARENT,
+  # `/sys/fs/cgroup/zimmer.sessions`, which on a sysbox worker is a real delegated
+  # subtree — the box Zimmer's own agent sessions run on is exactly such a box. A test
+  # that only omits the stub therefore asserts "this host has no cgroupfs" rather than
+  # "the unbounded path is a clean pass-through", passes on a laptop and in CI, and
+  # fails on the worker (#902). Worse, it does not merely fail: `prepare!` succeeds, so
+  # the run creates `session-<id>` cgroups in the live subtree next to real sessions.
+  #
+  # The tmpdir exists and its `zimmer.sessions` child deliberately does not, so the
+  # path is absent, is unique per call, and cannot collide with anything on the host.
+  def without_delegated_cgroup_parent
+    original = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
+    Dir.mktmpdir("cgroupfs") do |tmp|
+      ENV["ZIMMER_SESSION_CGROUP_ROOT"] = File.join(tmp, "zimmer.sessions")
+      yield
     end
   ensure
     original.nil? ? ENV.delete("ZIMMER_SESSION_CGROUP_ROOT") : ENV["ZIMMER_SESSION_CGROUP_ROOT"] = original
