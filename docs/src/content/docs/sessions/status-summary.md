@@ -430,14 +430,16 @@ It is a repair sweep, not polling, and the difference is enforced rather than as
   fleet-wide re-fork. A spent fork cap skips the session and keeps walking, so the headless repairs
   behind it are still reached. When a candidate *is* on an exhausted pool, the fork path is further
   held to `FORK_SHARE_UNDER_OUTAGE` (half, rounded up) of the lane budget: both paths draw on one
-  budget, and on a mixed fleet the fork path reaches it first only because its sessions happen to
-  sort earlier.
+  budget, and the candidate ordering says nothing about which path would repair a session, so on a
+  mixed fleet the two interleave arbitrarily and the fork path can reach the whole budget before the
+  outage work behind it is looked at. The share is reserved rather than raced for.
 - **An auth outage changes how it repairs, not whether it does.** A runtime with no available account
   is repaired on the [pool-independent path](#the-pool-independent-path) instead — no fork, no clone
   copy, no account slot.
 - **A session mid-turn is not swept.** A `blocked_on_elicitation` session is `needs_input` with a live
   process waiting on an approval; it is not at rest, and there is nothing final to say about it yet.
-  Neither are summary forks, which would fork the fork.
+  It is refused in the query, not only in the walk — see [Whose turn it is](#whose-turn-it-is) for why
+  that matters. Neither are summary forks, which would fork the fork.
 
 Rendering the panel still generates nothing. The sweep is the only thing that starts a generation
 without either a transition or a person.
@@ -452,21 +454,37 @@ it has two terms:
    session's first look still lands on whatever is most likely to be opened next.
 2. **Then the sessions it examined longest ago.**
 
-The second term is a fairness term, and it exists because the first one alone could be starved
-([#881](https://github.com/tadasant/zimmer/issues/881)). A session whose repair can never succeed is
-stale forever, so it comes due again every `RETRY_INTERVAL` — and ordered on recency alone, if it was
-recently active, it retook the head of the list. `LANE_DEPTH_CEILING` such sessions took the entire
-budget on every sweep, indefinitely, while the sweep logged `enqueued_headless=6` as though it were
-making progress. Nothing further down was ever reached.
+Sessions with equal stamps fall through to `updated_at DESC` as well, so recency is the tie-break
+throughout.
 
-**What that trade costs.** A retry no longer outranks a first look. A session whose generation was
-lost to a deploy now waits behind every session the sweep has not looked at yet, rather than ahead of
-them by virtue of being recent. That is the right way round: an unexamined session may well be
-repaired by its first slot, whereas a second attempt is by construction evidence that one slot was
-not enough. What it is *not* is a flattening of the recency priority — a never-examined session has
-no stamp, so the whole first group ties and recency still decides between them. Only re-examinations
-are demoted, and among themselves they rotate oldest-stamp first, which no member can hold the head
-of.
+The second term is a fairness term, and it exists because recency alone starves the tail
+([#881](https://github.com/tadasant/zimmer/issues/881)). A session whose repair can never succeed is
+stale forever, so it falls due every `RETRY_INTERVAL` — and ordered on recency alone, being recently
+active put it back at the head of the list. `LANE_DEPTH_CEILING` such sessions take the entire budget
+on every sweep, indefinitely, while the sweep logs `enqueued_headless=6` as though it were making
+progress, and nothing further down is reached at all.
+
+**What the trade costs.** A retry does not outrank a first look. A session whose generation was lost
+to a deploy waits behind every session the sweep has not looked at, rather than ahead of them by
+virtue of being recent. That is the right way round: an unexamined session may well be repaired by
+its first slot, whereas a second attempt is by construction evidence that one slot was not enough.
+What it is *not* is a flattening of the recency priority — a never-examined session has no stamp, so
+the whole first group ties and recency decides between them. Only re-examinations sort behind it, and
+among themselves they rotate oldest-stamp first, which no stamped session can hold the head of.
+
+**Nothing may sit unstamped at the head**, or that rotation has a fixed point and the starvation
+comes back sharper: a row with no stamp outranks every stamped row on *every* sweep rather than every
+thirtieth minute. Two classes could, and both are closed. A `blocked_on_elicitation` session is
+skipped mid-walk and so never stamped — it is excluded in SQL instead, occupying neither the head nor
+a `SCAN_LIMIT` slot, with the mid-walk check kept for a session that becomes blocked between the
+query and the walk. And a session whose stamp write fails does not also get an enqueue: a slot the
+sweep cannot record having spent is a slot it would spend again on every sweep.
+
+**One case where `SCAN_LIMIT` and the fairness term point the same way.** While more due
+never-examined sessions exist than the 200 the scan takes — a mass event, a long outage, a restore —
+the scan is all first looks and no re-examination is reached at all. That is the same trade taken
+deliberately, and it is self-limiting: the sweep stamps its way through that group at the lane's
+rate, and a sweep that hits `SCAN_LIMIT` logs that it did.
 
 ### Sizing the sweep against the lane
 
