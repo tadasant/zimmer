@@ -202,6 +202,26 @@ Combined with an unauthenticated Administrate panel that renders those columns, 
 controls are the only control, and the admin panel bypasses them.
 :::
 
+### In transit, at least, one field is guarded
+
+`x_oauth_credentials.token_endpoint` is editable in that panel, and it decides both where the
+token request goes *and* whether TLS is used — `XOauthCredential.post_token_request` sets
+`use_ssl` from the URL's scheme, and the X client secret rides along as HTTP Basic. An `http://`
+value there would put a long-lived confidential-client secret on the wire in the clear, and the
+refresh would still succeed, so nothing would surface that it happened.
+
+The model refuses it: `token_endpoint` must parse as an `https://` URL with a host. There is no
+loopback exception — X publishes no plaintext token endpoint, so `https` is the only value the
+field was ever meant to hold, and an exceptionless rule is what makes the panel reviewable. A
+migration repairs any row that predates the rule, because a legacy `http://` row would otherwise
+POST first and only fail validation on the way to *saving* the rotated refresh token — a leak and
+a dead credential in one pass.
+
+`mcp_oauth_credentials.token_endpoint` is editable in the same panel and carries no equivalent
+check; unlike X, those endpoints are discovered from server metadata and a local server on
+`http://localhost` is a plausible thing to point one at, so the right rule there is not the same
+rule. Tracked in [#892](https://github.com/tadasant/zimmer/issues/892).
+
 ## The environment variables that matter
 
 | Var | Used for |

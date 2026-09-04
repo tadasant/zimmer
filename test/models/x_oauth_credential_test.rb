@@ -41,6 +41,69 @@ class XOauthCredentialTest < ActiveSupport::TestCase
     assert dup.errors[:access_token_env_var].any?
   end
 
+  # --- token_endpoint scheme (#850) ---
+  #
+  # The column decides both where the request goes and whether TLS is used, and
+  # the X client secret rides along as HTTP Basic, so a non-https value publishes
+  # a long-lived confidential-client secret in the clear. The field is
+  # operator-editable through the supervisor panel, so the model is the guard.
+
+  test "token_endpoint rejects every non-https scheme, including loopback" do
+    [
+      "http://api.x.com/2/oauth2/token",
+      "http://127.0.0.1:8080/2/oauth2/token",
+      "http://localhost:8080/2/oauth2/token",
+      "ftp://api.x.com/2/oauth2/token",
+      "api.x.com/2/oauth2/token",
+      "https:/api.x.com/2/oauth2/token", # single slash — parses, but has no host
+      "https://"
+    ].each do |endpoint|
+      cred = XOauthCredential.new(
+        account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN",
+        token_endpoint: endpoint
+      )
+      assert_not cred.valid?, "#{endpoint.inspect} should have been rejected"
+      assert_match(/https/, cred.errors[:token_endpoint].join, "no scheme error for #{endpoint.inspect}")
+    end
+  end
+
+  test "token_endpoint accepts https, case-insensitively on the scheme" do
+    [ XOauthCredential::DEFAULT_TOKEN_ENDPOINT, "https://api.x.com/2/oauth2/token", "HTTPS://api.x.com/2/oauth2/token" ].each do |endpoint|
+      cred = XOauthCredential.new(
+        account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN",
+        token_endpoint: endpoint
+      )
+      assert cred.valid?, "#{endpoint.inspect} should have been accepted: #{cred.errors.full_messages.join(", ")}"
+    end
+  end
+
+  test "an unparseable token_endpoint is rejected rather than raising" do
+    cred = XOauthCredential.new(
+      account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN",
+      token_endpoint: "https://api.x.com/a path"
+    )
+    assert_not cred.valid?
+    assert_equal [ "is not a valid URL" ], cred.errors[:token_endpoint]
+  end
+
+  test "a blank token_endpoint reports only the presence error, not a scheme one" do
+    cred = XOauthCredential.new(
+      account_key: "tadasayy", access_token_env_var: "X_OAUTH_ACCESS_TOKEN", token_endpoint: ""
+    )
+    assert_not cred.valid?
+    assert_equal [ "can't be blank" ], cred.errors[:token_endpoint]
+  end
+
+  # An http:// row can only exist if it predates the validation (the migration
+  # repairs those) or was written with update_column. Guard the shape anyway: the
+  # save that carries the refreshed tokens is what would refuse it.
+  test "a legacy http row cannot be saved back through the ordinary update path" do
+    cred = build_credential
+    cred.update_column(:token_endpoint, "http://api.x.com/2/oauth2/token")
+
+    assert_raises(ActiveRecord::RecordInvalid) { cred.reload.update!(access_token: "new") }
+  end
+
   # --- expiry / refresh predicates ---
 
   test "active? is true only for an unexpired token" do
