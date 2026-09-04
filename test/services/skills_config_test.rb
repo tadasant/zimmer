@@ -103,6 +103,24 @@ class SkillsConfigTest < ActiveSupport::TestCase
     end
   end
 
+  test "no reference links an in-page heading it does not carry" do
+    # A reference cross-links its own sections the same way a skill does, and
+    # re-vendoring one section at a time is exactly when those go stale — the
+    # heading gets renamed upstream and the link here quietly points at nothing.
+    # Nothing else walks them: the test above stops at skill -> reference.
+    ReferencesConfig.all.each do |reference|
+      path = reference.path || Rails.root.join("references", reference.file.to_s).to_s
+      next unless path.end_with?(".md") && File.exist?(path)
+
+      slugs = markdown_heading_slugs(path)
+
+      File.read(path).scan(%r{\]\(#([^)\s]+)\)}).flatten.each do |anchor|
+        assert_includes slugs, anchor,
+          "reference #{reference.id} links ##{anchor} but has no such heading"
+      end
+    end
+  end
+
   test "every skill's frontmatter agrees with its catalog entry" do
     # The two are read by different surfaces: SkillsConfig (the index) feeds the
     # session-creation skill picker, while ClaudeSkillsDiscoveryService and
