@@ -1447,6 +1447,35 @@ class AgentSessionJob < ApplicationJob
         spawn_identity = RuntimeAuthProvider.for(session.agent_runtime).inject_for_session!(session, working_directory)
         AuthRecoveryCoordinator.record_identity!(session, spawn_identity)
 
+        # A turn claimed before the archive must not spawn after it.
+        #
+        # Asked twice, deliberately — the same shape as monitoring_job_stands_down?.
+        # Every archived-session guard upstream of here decides EARLY:
+        # refuse_archived_session reads the row at the top of this job, and
+        # auto_continue_after_interrupt's Dir.exist? precheck and the FOR UPDATE claim
+        # in Session#claim_system_recovery_turn! (#554) both decide at CLAIM time. The
+        # lock closes the window where the archive lands BEFORE the claim and none of
+        # the window where it lands after — and between that decision and this line sit
+        # the clone, the AIR prepare, the MCP setup, the boot-tasks wait and credential
+        # injection, which is minutes of wall clock.
+        #
+        # Session 13221 archived one second after its recovery turn was claimed and
+        # reached this line 94 seconds later, by which point the clone cleanup archiving
+        # enqueued had trashed the clone. File.open on the stderr log raised ENOENT, the
+        # adapter re-raised it as ClaudeCliError, and ProcessLifecycleManager logged it
+        # as a spawn failure — an ERROR that paged #alerts twice for a session that had
+        # already finished (#884).
+        #
+        # The refusal is quiet on purpose, and that is the fix rather than a quieter log
+        # level: an archived session taking no turn is the correct outcome, not a
+        # runtime fault, so it is not worth an operator's attention. A LIVE session whose
+        # clone has gone missing keeps the loud path — that session SHOULD run, and
+        # re-cloning it is #817.
+        if refuse_spawn_after_archive(session, working_directory, log_buffer)
+          log_buffer.flush
+          return
+        end
+
         # Use ProcessLifecycleManager to spawn the process
         # Images are passed for follow-up prompts with attachments
         spawn_result = lifecycle_manager.spawn(
@@ -2726,6 +2755,67 @@ class AgentSessionJob < ApplicationJob
     # where "why did nothing happen to this session" is asked from.
     log_buffer&.add(message, level: follow_up_prompt.present? ? "warning" : "info")
     true
+  end
+
+  # Whether the session was archived between the start of this job and the spawn.
+  #
+  # Decides from the ROW, not from the session object this job has been carrying
+  # since before the clone was prepared — that object is exactly as stale here as
+  # the one #554 was about, just staler by the length of the setup. See the call
+  # site for the window this closes and why it is not the one the claim-time lock
+  # already covers.
+  #
+  # Reports whether the clone is still on disk, because the two readings are worth
+  # telling apart on the session's timeline: a clone that is gone says the cleanup
+  # archiving enqueued has already run, which is what made the spawn raise ENOENT
+  # rather than merely waste a process.
+  #
+  # A row that cannot be read answers `false`. Refusing on a failed reload would
+  # drop a turn that may be perfectly live, and the spawn below has its own error
+  # handling for a genuinely broken database.
+  #
+  # @param session [Session] reloaded in place
+  # @param working_directory [String, nil] the directory the spawn would chdir into
+  # @param log_buffer [LogBuffer, nil]
+  # @return [Boolean] true when nothing was started and #perform must return
+  def refuse_spawn_after_archive(session, working_directory, log_buffer)
+    session.reload
+    return false unless session.archived?
+
+    clone_present = working_directory.present? && @file_system.exists?(working_directory)
+    message = "Not spawning an agent for this turn: the session was archived after the turn was " \
+              "claimed. An archived session takes no turn, so no agent was started"
+    message += clone_present ? "." : ", and its clone has already been cleaned up."
+
+    Rails.logger.info(
+      "[AgentSessionJob] Session #{session.id} not spawned: archived after the turn was claimed " \
+      "(clone_present=#{clone_present})"
+    )
+    # A session log rather than only a Rails log: the session's own timeline is
+    # where "why did nothing happen to this session" is asked from.
+    log_buffer&.add(message, level: "info")
+
+    # This job claimed running_job_id on the way in and is about to end without
+    # starting anything, so leave no owner behind on the row. update_columns
+    # because the row is archived and this is bookkeeping, not a state change
+    # anybody should be broadcast about.
+    #
+    # Rescued separately from the reload: the refusal has already been decided and
+    # recorded, and a failed write here is untidy rather than a reason to go on and
+    # spawn against the trash.
+    begin
+      session.update_columns(running_job_id: nil)
+    rescue ActiveRecord::ActiveRecordError => e
+      Rails.logger.warn "[AgentSessionJob] Could not clear running_job_id on session #{session.id}: #{e.message}"
+    end
+
+    true
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.warn(
+      "[AgentSessionJob] Could not re-read session #{session.id} before spawning (#{e.message}) — " \
+      "spawning rather than refusing a turn that may be live"
+    )
+    false
   end
 
   # Whether this start must stand down for a pause, recording why when it must.
