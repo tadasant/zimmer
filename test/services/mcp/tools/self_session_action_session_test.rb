@@ -35,14 +35,20 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
 
   # And the same for the long-form description this surface writes for itself:
   # a narrowed ACTIONS list against its own hand-maintained "- **<name>**:"
-  # bullets, drifting the same way for the same reason.
+  # bullets, drifting the same way for the same reason. Scoped to the Actions
+  # block for the same reason too — the "Reporting back to your parent" and
+  # "Archive guidelines" sections below it are prose, and their bullets are not
+  # claims about what the tool dispatches.
   test "the long-form description explains every dispatchable action and no others" do
-    bulleted = Mcp::Tools::SelfSessionActionSession.to_h[:description].scan(/^- \*\*(\w+)\*\*:/).flatten
+    actions_block = Mcp::Tools::SelfSessionActionSession.to_h[:description][/^\*\*Actions.*?(?=\n\n\*\*)/m]
+    assert actions_block, "could not find the Actions block in the long-form description"
+    bulleted = actions_block.scan(/^- \*\*(\w+)\*\*:/).flatten
 
     assert_equal [], Mcp::Tools::SelfSessionActionSession::ACTIONS - bulleted,
       "dispatchable actions with no bullet in the long-form description"
     assert_equal [], bulleted - Mcp::Tools::SelfSessionActionSession::ACTIONS,
       "the long-form description explains actions the dispatch does not accept"
+    assert_equal bulleted.uniq, bulleted, "an action is explained twice in the long-form description"
   end
 
   test "refuses an action outside the self-management subset" do

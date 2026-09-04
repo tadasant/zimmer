@@ -42,13 +42,20 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
   # bullet is dispatchable but unexplained, so the agent reading the tool never
   # learns it exists and reaches for a worse path; a bullet with no action
   # documents something the enum will reject.
+  #
+  # Scoped to the "**Actions:**" block rather than the whole description, which
+  # also carries prose sections whose bullets are not actions and must stay free
+  # to lead with a bold word.
   test "the long-form description explains every dispatchable action and no others" do
-    bulleted = Mcp::Tools::ActionSession.to_h[:description].scan(/^- \*\*(\w+)\*\*:/).flatten
+    actions_block = Mcp::Tools::ActionSession.to_h[:description][/^\*\*Actions.*?(?=\n\n\*\*)/m]
+    assert actions_block, "could not find the Actions block in the long-form description"
+    bulleted = actions_block.scan(/^- \*\*(\w+)\*\*:/).flatten
 
     assert_equal [], Mcp::Tools::ActionSession::ACTIONS - bulleted,
       "dispatchable actions with no bullet in the long-form description"
     assert_equal [], bulleted - Mcp::Tools::ActionSession::ACTIONS,
       "the long-form description explains actions the dispatch does not accept"
+    assert_equal bulleted.uniq, bulleted, "an action is explained twice in the long-form description"
   end
 
   test "change_scheduling_class moves one session without touching its genesis" do
