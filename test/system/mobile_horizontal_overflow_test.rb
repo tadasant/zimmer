@@ -318,13 +318,22 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   TEXT
 
   test "a collapsed runtime notice does not overflow horizontally on a phone" do
-    session = create_session(status: :running, transcript: [
+    # Deliberately not a running session: a running one polls and broadcasts, and
+    # a morph mid-test re-renders the transcript panel from server HTML that
+    # carries no `open`, closing it back up under the assertions below.
+    session = create_session(transcript: [
       { "type" => "user", "uuid" => "meta-skill", "isMeta" => true,
         "message" => { "role" => "user", "content" => [ { "type" => "text", "text" => SKILL_DUMP } ] } }
     ])
 
     visit session_path(session)
-    find("summary", text: "Transcript").click
+
+    # The transcript panel ships collapsed, and its contents have no geometry
+    # until it is open. Opened by script rather than by clicking its <summary>,
+    # the way pwa_reopen_recovery_test.rb does: this test is about the notice
+    # inside the panel, not about the panel's own affordance.
+    page.execute_script(%(document.querySelector('details[data-controller~="transcript-panel"]').open = true))
+    assert_selector "details[data-controller~='transcript-panel'][open]"
     assert_text SKILL_NAME
 
     assert_no_horizontal_overflow("session detail with a collapsed runtime notice")
@@ -333,6 +342,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # And expanded: the body is the thing that was burying the conversation, so
     # it is also the thing most likely to run wide once it is on screen.
     find("summary", text: SKILL_NAME).click
+    assert_selector "details.group\\/notice[open]"
     assert_text "Recover From Compaction Thrashing"
 
     assert_no_horizontal_overflow("session detail with an expanded runtime notice")
