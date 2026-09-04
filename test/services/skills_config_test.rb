@@ -63,6 +63,26 @@ class SkillsConfigTest < ActiveSupport::TestCase
     assert_includes body, "needs_input"
   end
 
+  test "the vendored wait-for-ci skill carries the foreground rule, the wake bound, and the label hand-off" do
+    # Three claims elsewhere in the catalog are only true if this skill says these
+    # things: skills/open-pr/SKILL.md states that "the `wait-for-ci` skill owns both
+    # rules and the bound", and both open-pr and GIT_WORKFLOW.md describe wait-for-ci
+    # as handing the label step back rather than merely not doing it. The vendored
+    # copy drifted behind and owned none of them (#912) — same silent class as #682.
+    skill = SkillsConfig.find("wait-for-ci")
+    body = File.read(File.join(skill.absolute_path, "SKILL.md"))
+
+    assert_includes body, "## Run it in the foreground", "wait-for-ci lost the foreground-watch rule"
+    assert_includes body, "## If your turn will end with CI unresolved, schedule a wake first",
+      "wait-for-ci lost the bounded self-wake"
+    assert_includes body, "six wakes, ten minutes apart", "wait-for-ci lost the wake bound itself"
+    assert_includes body, "## Hand-off: the `ready to merge` label", "wait-for-ci lost the label hand-off"
+    assert_includes body, "wake_me_up_later"
+    assert_includes body, "needs_input"
+    assert_includes skill.references, "git-workflow",
+      "wait-for-ci deep-links references/GIT_WORKFLOW.md, so it must bundle that reference"
+  end
+
   test "no skill links a reference or a heading the catalog does not carry" do
     # A `references/FOO.md` link in a SKILL.md only resolves because AIR bundles
     # the reference at prepare time, which it only does for references the skill

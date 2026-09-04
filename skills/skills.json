@@ -105,12 +105,15 @@
   "wait-for-ci": {
     "id": "wait-for-ci",
     "title": "Wait for CI",
-    "description": "Block until CI passes or fails on the current PR. Use it every time you push a commit and intend to tell the user the work is done — never present a pushed commit as complete without first confirming CI is green. Also use it when waiting on CI before merging, deploying, or moving on to the next task in a multi-step plan.",
+    "description": "Block until CI passes or fails on the current PR — the default way to confirm CI in any repo where this skill is equipped. Use it every time you push a commit and intend to tell the user the work is done — never present a pushed commit as complete without first confirming CI is green. Also use it when waiting on CI before merging, deploying, applying the `ready to merge` label, or moving on to the next task in a multi-step plan. On a green result it hands the label step back to `open-pr`, deep-linking the bundled `git-workflow` reference.",
     "path": "wait-for-ci",
     "category": "workflow",
     "user_invocable": true,
     "default_in_roots": [
       "zimmer"
+    ],
+    "references": [
+      "git-workflow"
     ]
   },
   "awaken-waiting-sessions": {
