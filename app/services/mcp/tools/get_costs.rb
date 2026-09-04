@@ -114,7 +114,7 @@ module Mcp
           },
           agent_root: {
             type: "string",
-            description: "Restrict every figure to one agent root (e.g. \"zimmer-router\", \"issue-work-gate\")."
+            description: "Restrict every figure to one agent root (e.g. \"zimmer-orchestrator\", \"issue-work-gate\")."
           },
           session_id: {
             type: "integer",

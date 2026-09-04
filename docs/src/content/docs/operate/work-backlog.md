@@ -106,7 +106,7 @@ provenance, never authorization.
 
 ## How an item becomes a session
 
-`WorkBacklog::Start` is the one place the queue becomes work. It spawns a `zimmer-router` session
+`WorkBacklog::Start` is the one place the queue becomes work. It spawns a `zimmer-orchestrator` session
 with goal `open-reviewed-green-pr`, prompted with the issue URL plus "Please implement this" (an
 issueless item's verbatim `prompt`), titled `Implement zimmer#498 (…)`, and tagged
 `custom_metadata.spawned_by = "work-backlog"` with the item's id and key. The item is marked

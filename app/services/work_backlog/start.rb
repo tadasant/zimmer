@@ -6,7 +6,7 @@ module WorkBacklog
   # This is the one place the queue becomes work. The groomer's pull calls it
   # once per item at `spot` class; the Issues view's Promote button and its REST
   # counterpart call it at `priority`. All three spawn exactly what the groomer
-  # spawned by hand: a `zimmer-router` session, goal `open-reviewed-green-pr`,
+  # spawned by hand: a `zimmer-orchestrator` session, goal `open-reviewed-green-pr`,
   # prompted with the issue URL and the ask.
   #
   # ATOMIC. The session is created and the item marked `started` inside the
@@ -22,7 +22,6 @@ module WorkBacklog
   # is caught, the database is asked whether the start committed, and if it did
   # the committed result is what comes back.
   class Start
-    AGENT_ROOT = "zimmer-router"
     GOAL = "open-reviewed-green-pr"
     # What the groomer wrote into every session it pulled, so "which sessions did
     # the backlog produce" stays answerable from the session side too.
@@ -33,6 +32,13 @@ module WorkBacklog
     Result = Data.define(:item, :session)
 
     class << self
+      # The root every start spawns on. Resolved from the catalog rather than
+      # named here, because it has two names — see
+      # AgentRootsConfig::ROUTER_ROOT_NAMES.
+      def agent_root
+        AgentRootsConfig.router_root_name
+      end
+
       # @param item [WorkBacklogItem] must be queued
       # @param scheduling_class [String] SessionGenesis::SPOT or PRIORITY
       # @param acting_session [Session, nil] the session doing the starting — the
@@ -81,7 +87,7 @@ module WorkBacklog
 
       def spawn_session(item, scheduling_class:, acting_session:, genesis:, precedence:)
         session = Session.create_from_agent_root!(
-          agent_root_name: AGENT_ROOT,
+          agent_root_name: agent_root,
           prompt: item.session_prompt,
           goal: GOAL,
           parent_session_id: acting_session&.id,

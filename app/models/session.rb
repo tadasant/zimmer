@@ -527,9 +527,6 @@ class Session < ApplicationRecord
   # than a column that landed empty by accident. See #record_explicit_mcp_servers.
   EXPLICIT_EMPTY_MCP_SERVERS_KEY = "mcp_servers_explicitly_empty"
 
-  # The agent root used for routing freeform user requests from the dashboard
-  ROUTER_AGENT_ROOT = "zimmer-router"
-
   # Execution providers a session may declare. Local filesystem is the only one: agents run
   # unsandboxed on the app host, and Zimmer has no sandboxed alternative to offer. The one
   # other provider class that exists, lib/execution/providers/remote_sandbox.rb, is an unwired
@@ -1022,7 +1019,7 @@ class Session < ApplicationRecord
   end
 
   # The canonical key of the session's agent root from roots.json
-  # (e.g., "zimmer", "agents", "zimmer-router").
+  # (e.g., "zimmer", "agents", "zimmer-orchestrator").
   #
   # Prefers the explicit key stored in metadata at creation time, then falls back
   # to resolving by git_root URL + subdirectory against the current catalog.

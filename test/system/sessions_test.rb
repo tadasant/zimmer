@@ -262,7 +262,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Quick prompt creates a router session and redirects to the session page
     session = quick_prompt_sessions.order(:id).last
-    assert_equal Session::ROUTER_AGENT_ROOT, session.metadata["agent_root_key"]
+    assert_equal AgentRootsConfig.router_root_name, session.metadata["agent_root_key"]
     assert_selector "h1", text: "Session #{session.id}"
   end
 

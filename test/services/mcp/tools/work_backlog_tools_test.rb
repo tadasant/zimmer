@@ -165,13 +165,30 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert WorkBacklogItem.find_by(key: "zimmer#1").queued?
   end
 
-  test "a restricted connection can only pull if it may spawn zimmer-router" do
+  test "a restricted connection can only pull if it may spawn the router root" do
     backlog_item(key: "zimmer#1")
     restricted = Mcp::Tools::PullWorkBacklogItems.new(context: Mcp::Context.new(tool_groups: "work_backlog", allowed_agent_roots: "zimmer"))
 
     error = assert_raises(Mcp::ToolError) { restricted.call("count" => 1) }
     assert_match(/restricted/, error.message)
     assert WorkBacklogItem.find_by(key: "zimmer#1").queued?
+  end
+
+  # allowed_agent_roots is baked into a session's .mcp.json when it spawns, so a
+  # groomer started before the zimmer-router → zimmer-orchestrator rename is
+  # still carrying the old name on disk. Both names denote the same root, so
+  # either one has to grant the pull.
+  AgentRootsConfig::ROUTER_ROOT_NAMES.each do |granted|
+    test "a restricted connection granted #{granted} may pull" do
+      backlog_item(key: "zimmer#1")
+      restricted = Mcp::Tools::PullWorkBacklogItems.new(
+        context: Mcp::Context.new(tool_groups: "work_backlog", allowed_agent_roots: granted, session_id: @gate.id)
+      )
+
+      result = restricted.call("count" => 1)
+
+      assert_equal [ "zimmer#1" ], result[:started].map { |s| s.dig(:item, :key) }
+    end
   end
 
   # --- the human-only operations have no MCP path ----------------------------

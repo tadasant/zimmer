@@ -7,7 +7,7 @@ module WorkBacklog
   # decides HOW MANY (its WIP ceiling arithmetic is its own — this refuses more
   # than MAX per call so one bad night is bounded) and, having re-checked each
   # candidate on GitHub, WHICH: either "the top N" or an explicit list of keys it
-  # read and vetted. Each pulled item becomes a `spot` `zimmer-router` session via
+  # read and vetted. Each pulled item becomes a `spot` `zimmer-orchestrator` session via
   # WorkBacklog::Start, in one transaction with the status change.
   #
   # THE ONE REMOVAL AN AGENT MAY MAKE. An item whose issue turns out to be dead at
