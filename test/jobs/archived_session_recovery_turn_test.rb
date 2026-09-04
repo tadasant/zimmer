@@ -372,6 +372,13 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
   # of the method read the in-memory object, and the last of them stats the clone
   # volume during SIGTERM shutdown — which is a deploy, which is exactly when
   # somebody is emptying the trash.
+  #
+  # These pin the window where the archive lands BEFORE the claim, which is the
+  # only one a lock taken at claim time can close. The other side of it — the
+  # archive that lands AFTER the claim, while the job it enqueued is still setting
+  # up the clone (#884) — is pinned in
+  # test/jobs/agent_session_job_archived_session_test.rb, which owns the harness
+  # that drives AgentSessionJob#perform all the way to the spawn.
 
   test "auto-continue after a job interruption refuses a session archived underneath it" do
     stale = stale_session_archived_underneath
