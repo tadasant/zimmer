@@ -2882,4 +2882,57 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       expires_at: 1.hour.from_now
     )
   end
+
+  test "a resume across a poisoned connection reports the real cause once, not four consequences" do
+    # The #924 regression, end to end.
+    #
+    # `record_experimental_setting_flags` reads app_settings inside the resume
+    # transition's transaction. When that SELECT failed — a worker connection
+    # holding a cached plan across an app_settings migration — the read was
+    # swallowed, the transition carried on across a connection Postgres had
+    # already given up on, and the three callbacks after it each rescued their own
+    # `InFailedSqlTransaction` and logged it. Production got four ERROR records
+    # naming only consequences, and no record at all of the statement that failed.
+    #
+    # What must happen instead: the first failure escapes, the transition aborts,
+    # and the error that reaches the caller is the one that actually happened.
+    session = sessions(:waiting)
+    session.update!(status: :needs_input, session_id: SecureRandom.uuid)
+
+    poison = ->(*) { ActiveRecord::Base.connection.execute("SELECT no_such_column_anywhere") }
+
+    log_output = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = Logger.new(log_output)
+
+    begin
+      error = assert_raises(ActiveRecord::StatementInvalid) do
+        ActiveRecord::Base.transaction(requires_new: true) do
+          AppSetting.stub(:order, poison) { session.resume! }
+        end
+      end
+
+      assert_kind_of PG::UndefinedColumn, error.cause,
+        "the caller must see the statement that actually failed, not the InFailedSqlTransaction it caused"
+    ensure
+      Rails.logger = original_logger
+    end
+
+    logged = log_output.string
+
+    assert_match(
+      /\[AppSetting\] AppSetting\.current could not read the settings row/, logged,
+      "the originating failure has to exist in the logs at all — that is what #924 cost a full triage"
+    )
+
+    [ "mark_notifications_stale", "cancel_pending_one_time_wake_triggers", "log_state_change" ].each do |callback|
+      refute_match(
+        /Failed to #{callback}/, logged,
+        "#{callback} must not run — and must not page — on a transaction that is already going to roll back"
+      )
+    end
+
+    assert_equal "needs_input", session.reload.status,
+      "the transition rolled back, so the session is where it was"
+  end
 end

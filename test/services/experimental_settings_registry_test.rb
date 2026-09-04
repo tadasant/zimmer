@@ -42,6 +42,37 @@ class ExperimentalSettingsRegistryTest < ActiveSupport::TestCase
     values.each_value { |v| assert_includes [ true, false ], v }
   end
 
+  test "a setting whose read fails harmlessly still resolves to nil" do
+    # current_values drops anything it could not read, and a session gets tagged
+    # with the rest. That is the degrade this rescue exists for and it stays.
+    setting = ExperimentalSettingsRegistry.find("mcp_tool_search")
+    AppSetting.stubs(:current).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+
+    assert_nil setting.current_value
+  end
+
+  test "a setting read inside an aborted transaction raises instead of resolving to nil" do
+    # #924: this read runs inside the resume transition's transaction. Returning
+    # nil there let the transition carry on across a connection Postgres had
+    # already given up on, and the four statements after it each reported an
+    # InFailedSqlTransaction that named nothing useful.
+    setting = ExperimentalSettingsRegistry.find("mcp_tool_search")
+
+    error = assert_raises(ActiveRecord::StatementInvalid) do
+      ActiveRecord::Base.transaction(requires_new: true) do
+        begin
+          ActiveRecord::Base.connection.execute("SELECT no_such_column_anywhere")
+        rescue ActiveRecord::StatementInvalid
+          # The transaction is aborted now, exactly as it was in production.
+        end
+
+        setting.current_value
+      end
+    end
+
+    assert_kind_of PG::InFailedSqlTransaction, error.cause
+  end
+
   test "a backfillable setting knows what it was on either side of the date it landed" do
     setting = ExperimentalSettingsRegistry.find("mcp_tool_search")
 
