@@ -51,6 +51,16 @@ module FixtureHelpers
   end
 
   # Create fake transcript file in mock file system
+  #
+  # The directory comes from the session's runtime (see
+  # #transcript_directory_for_session). The FILE NAME and the default content are
+  # Claude-shaped: a plain `.jsonl` in the directory is what TranscriptFileLocator
+  # falls back to, whereas CodexTranscriptSource globs `rollout-*` and
+  # PiTranscriptSource matches `*_<session_id>.jsonl` or a header-stamped
+  # `zimmer_session.jsonl`. A fixture that a Codex or Pi source must be able to
+  # LOCATE (rather than just live in the right directory) needs to be written
+  # with that runtime's naming, not through this helper.
+  #
   # @param session [Session] The session to create transcript for
   # @param content [String, nil] Optional transcript content (uses default if nil)
   # @param file_system [MockFileSystemAdapter] The file system to write to (uses @mock_fs if not provided)
@@ -66,9 +76,13 @@ module FixtureHelpers
 
     transcript_content = content || default_transcript_content
 
-    # Calculate transcript directory path
-    # This mirrors the logic in TranscriptPollerService
     transcript_dir = transcript_directory_for_session(session)
+    unless transcript_dir
+      raise "No transcript directory for session #{session.id} (#{session.agent_runtime}): " \
+            "set metadata['working_directory'] on the session. The production readers " \
+            "give up on a session without one too, so a fixture written anyway would sit " \
+            "somewhere nothing reads"
+    end
 
     fs.mkdir_p(transcript_dir)
     fs.write(
@@ -77,25 +91,30 @@ module FixtureHelpers
     )
   end
 
-  # Get transcript directory for a session
-  # Mirrors the logic in TranscriptPollerService
-  # @param session [Session] The session to get directory for
-  # @return [String] Path to transcript directory
+  # Get the transcript directory for a session, from the runtime that writes it.
+  #
+  # Deliberately the same two steps, on the same input, as
+  # SessionTranscriptLookup#get_transcript_directory_for_session: Session#working_directory,
+  # then TranscriptRuntime for the session's TranscriptSource, then that source for
+  # the directory. TranscriptPollerService resolves the same path from the narrower
+  # metadata["working_directory"] alone, so the two answers differ only for a
+  # session recorded before that key existed, which has a clone_path and nothing else.
+  #
+  # The layout is a property of the RUNTIME, not of the execution provider: Claude
+  # Code writes to ~/.claude/projects/<sanitized-working-directory>/, Codex to a
+  # date-partitioned tree under ~/.codex/sessions, Pi to
+  # <working_directory>/.pi/sessions. Nothing here recomputes any of that.
+  #
+  # @param session [Session] The session to get the directory for
+  # @return [String, nil] Path to the transcript directory, or nil when the session
+  #   has no working directory yet — the point at which the production readers give
+  #   up rather than guess, which is why the guard is here and not left to the
+  #   sources (CodexTranscriptSource ignores working_directory and would answer anyway)
   def transcript_directory_for_session(session)
-    # For local filesystem execution provider
-    if session.execution_provider == "local_filesystem"
-      # Use clone path if available, otherwise fall back to session ID
-      clone_path = session.metadata&.dig("clone_path")
-      if clone_path
-        File.join(clone_path, ".claude", "projects", session.id.to_s)
-      else
-        # Fallback for tests
-        File.join("/tmp", "clones", "test-session-#{session.id}", ".claude", "projects", session.id.to_s)
-      end
-    else
-      # For other providers, use session ID in tmp
-      File.join("/tmp", "transcripts", "session-#{session.id}")
-    end
+    working_directory = session.working_directory
+    return nil unless working_directory.is_a?(String) && working_directory.present?
+
+    TranscriptRuntime.source_for(session).transcript_directory(working_directory: working_directory)
   end
 
   # Default transcript content for tests
