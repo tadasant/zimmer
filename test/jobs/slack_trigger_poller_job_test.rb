@@ -5,12 +5,62 @@ require "mocha/minitest"
 require "ostruct"
 
 class SlackTriggerPollerJobTest < ActiveJob::TestCase
+  # The deployment-wide Slack allow-list. Most conditions in this file are
+  # deliberately UNRESTRICTED -- stub_bot_mention_condition(allowed_user_ids: nil),
+  # stub_passive_listening's default of [], the channel condition built inline in "a
+  # trigger carrying both conditions fires on either signal", and several taken
+  # straight from trigger_conditions(:bot_mention_slack_condition) with no allow-list
+  # of their own. An unrestricted condition falls through to
+  # TriggerCondition.default_allowed_user_ids, which resolves the encrypted credential
+  # first and process ENV second, so unless BOTH sources are neutralised nothing here
+  # is unrestricted on a box that sets either one: the fixture users stop passing the
+  # filter, DM enumeration goes out with an explicit user_ids: list instead of nil, and
+  # 22 of these tests assert "this box has no Slack allow-list" rather than what they
+  # claim. Controlling only the credential leaves the `||` falling through to ENV.
+  #
+  # A test that wants a deployment-wide default has to set one; the resolution order
+  # itself is covered in test/models/trigger_condition_test.rb.
+  ALLOWED_USER_IDS_KEY = "SLACK_BOT_MENTION_ALLOWED_USER_IDS"
+
+  # An unassigned ivar reads as nil, which is indistinguishable from "the variable was
+  # genuinely absent" -- and the setup below can be skipped entirely, because
+  # test_helper prepends an AirCatalogCacheWarmer.restore! that AGENTS.md warns fails
+  # globally on a broken catalog, and teardown runs anyway. Without a sentinel that
+  # path deletes the real variable, having never read it, for the rest of this forked
+  # worker process.
+  ENV_NOT_SAVED = :env_not_saved
+
   setup do
+    @previous_allowed_user_ids_env = ENV.fetch(ALLOWED_USER_IDS_KEY, ENV_NOT_SAVED)
+    ENV.delete(ALLOWED_USER_IDS_KEY)
+
+    # Sets the real variable rather than stubbing ENV#[], for the same reason
+    # with_expiration_env (test/support/fixture_helpers.rb) does: a partial mocha stub
+    # on ENV#[] breaks every other ENV read the poller makes.
+    #
+    # The credential half stubs `all` rather than `get(ALLOWED_USER_IDS_KEY)`, which is
+    # where test/models/trigger_condition_test.rb's block-scoped helper stubs it. This
+    # stub is class-wide, and a `.with(key)` constraint would turn every OTHER
+    # SecretsLoader.get in the poller path into an unexpected-invocation failure. `get`
+    # reads `all`, so dropping the one key leaves every other key `get` resolves
+    # exactly as it really does. Read the real secrets BEFORE stubbing: `stubs(:all)`
+    # replaces the method as the receiver of `.returns` is evaluated, so an inline read
+    # would hit the stub-in-progress and hand back nil.
+    credentials = SecretsLoader.all.except(ALLOWED_USER_IDS_KEY)
+    SecretsLoader.stubs(:all).returns(credentials)
+
     @trigger = triggers(:enabled_slack_trigger)
     @condition = trigger_conditions(:enabled_slack_condition)
   end
 
   teardown do
+    saved = @previous_allowed_user_ids_env
+    if saved == ENV_NOT_SAVED
+      ENV.delete(ALLOWED_USER_IDS_KEY)
+    elsif !saved.nil?
+      ENV[ALLOWED_USER_IDS_KEY] = saved
+    end
+
     Mocha::Mockery.instance.teardown
   end
 
