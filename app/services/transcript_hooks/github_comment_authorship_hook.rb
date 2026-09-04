@@ -23,6 +23,10 @@
 # returns a body containing that comment's own `html_url`) — which would suppress
 # a human comment the agent merely looked at.
 #
+# A posting command is read out of what a command segment *runs* rather than what it
+# quotes, so a read that merely names one — `grep -rn "gh pr comment" docs/` over
+# this very file — is not a post (#870).
+#
 # The residual gap is a comment posted by a route this pattern doesn't recognize
 # (a Python script, an MCP GitHub tool). Those are not recorded and can still be
 # routed back; see docs/src/content/docs/limitations.md. Widening the pattern is
@@ -42,6 +46,19 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   #   gh api ... comments ... <write>   — the inline-review-reply shape that
   #                                       GithubCommentPromptBuilder itself hands
   #                                       the agent, plus any hand-rolled POST
+  #
+  # Matched against each segment's #unquoted view (TranscriptHooks::ShellSegments),
+  # so the same words handed to another command as *data* count for nothing:
+  # `grep -rn "gh pr comment" docs/`, `rg "gh pr review" app/` and an `echo` are
+  # reads, and this repo's own source and docs quote both the literals and example
+  # permalinks (#870, which is the shape #772 was in GithubPrUrlHook). Recording
+  # what such a read printed suppresses those comment ids for every session,
+  # permanently.
+  #
+  # Anywhere in what survives that, deliberately, rather than anchored to the front:
+  # a post sits behind `cd ... &&`, `timeout 120`, `until ...; do`, `sudo -E`, and
+  # Codex's `bash -lc` wrapper, and an anchor drops every prefix it does not
+  # enumerate. Missing a real post is the self-reply loop this hook exists to break.
   DIRECT_POST_PATTERNS = [
     /\bgh\s+(?:pr|issue)\s+comment\b/,
     /\bgh\s+pr\s+review\b/
@@ -57,6 +74,22 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # whose output carries every comment in the thread, including the human's. Recording
   # those would suppress real comments permanently and fleet-wide, which is worse than
   # the bug this hook exists to fix.
+  #
+  # Which of the three reads the segment as written and which reads its #unquoted
+  # view is not uniform, because the three are not the same kind of thing — the
+  # asymmetry GithubPrUrlHook#create_repos draws between a create and its `--repo`:
+  #
+  #   invocation, write flag — shell syntax, never legitimately quoted. Read
+  #     unquoted, so a segment's own argument cannot vouch for it. `gh api
+  #     repos/o/r/issues/1/comments --jq 'map(select(.body | test("rm -f ")))'` is
+  #     the `rm -f` case with nowhere for the splitter to cut: one command, whose
+  #     write flag sits inside its own jq filter.
+  #   endpoint — a value the write needs, and `gh api "repos/o/r/issues/1/comments"`
+  #     is how plenty of agents write it. Read as written, so quoting the path
+  #     cannot hide a real post. What that costs is a write elsewhere whose quoted
+  #     data names a comments path — and that costs nothing in practice, because the
+  #     id recorded comes from the *created* resource's `html_url` (see
+  #     #html_urls_from_json), which for such a write is not a comment permalink.
   GH_API_PATTERN = /\Agh\s+api\b/
   # A comments endpoint path, not the bare word: `/issues/1/comments`,
   # `/pulls/1/comments`, `/pulls/1/comments/2/replies`. Keeps `/tmp/comments.json` and
@@ -199,22 +232,30 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   end
 
   # :direct, :api, or nil — classified per command segment, never across the whole
-  # shell line (see GH_API_PATTERN).
+  # shell line (see GH_API_PATTERN). Each segment is paired with its #unquoted view
+  # once, since every pattern below reads one or the other of the two.
   def posting_kind(command)
     return nil if command.blank?
 
-    segments = shell_segments(command)
+    segments = shell_segments(command).map { |segment| [ segment, unquoted(segment) ] }
 
-    return :direct if segments.any? { |segment| DIRECT_POST_PATTERNS.any? { |pattern| segment.match?(pattern) } }
-    return :api if segments.any? { |segment| gh_api_post?(segment) }
+    return :direct if segments.any? { |_written, runs| DIRECT_POST_PATTERNS.any? { |pattern| runs.match?(pattern) } }
+    return :api if segments.any? { |written, runs| gh_api_post?(written, runs) }
 
     nil
   end
 
-  def gh_api_post?(segment)
-    segment.match?(GH_API_PATTERN) &&
-      segment.match?(GH_API_COMMENTS_PATTERN) &&
-      segment.match?(GH_API_WRITE_PATTERN)
+  # Whether one command segment posts a comment through the REST API: it runs
+  # `gh api`, it addresses a comments endpoint, and it writes (see GH_API_PATTERN
+  # for which of the three is read off which view of the segment).
+  #
+  # @param written [String] the segment as the agent wrote it
+  # @param runs [String] its #unquoted view — what the segment runs, with what it
+  #   was handed blanked out
+  def gh_api_post?(written, runs)
+    runs.match?(GH_API_PATTERN) &&
+      written.match?(GH_API_COMMENTS_PATTERN) &&
+      runs.match?(GH_API_WRITE_PATTERN)
   end
 
   # Comments already on record, so a transcript rescanned every poll costs one query
