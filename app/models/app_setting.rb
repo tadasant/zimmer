@@ -193,9 +193,38 @@ class AppSetting < ApplicationRecord
     # The singleton row for reads. Returns a blank, unsaved record when no row
     # exists yet, and the NULL object if the table can't be queried — so callers
     # in the hot path (AgentRootsConfig) never raise.
-    def current
+    #
+    # This is the ONLY place a settings read degrades. Everything else — the
+    # class-method wrappers below, ExperimentalSettingsRegistry, QueueRecoveryMode
+    # — reads through here and lets NULL answer, so one failed `SELECT` produces
+    # exactly one log line naming exactly one caller. A second rescue layered on
+    # top would report the same failure twice, which is a smaller copy of the
+    # thing issue #924 was.
+    #
+    # Two properties of that degrade are load-bearing, and both are #924:
+    #
+    #   * It logs, at the site that failed. `context` names the caller, because
+    #     "the settings row could not be read" is only useful alongside who was
+    #     reading it — and a silent rescue here is why production held four
+    #     `InFailedSqlTransaction` errors and no record of their cause.
+    #
+    #   * It does not degrade on a poisoned connection. Once the failed statement
+    #     has aborted the transaction, Postgres rejects everything later in it and
+    #     the transaction cannot commit, so there is nothing to degrade to:
+    #     returning a default only lets the caller run on toward a misleading
+    #     error. Re-raise, and the caller's own rescue reports the real cause.
+    #     See DatabaseTransactionState.
+    def current(context: "AppSetting.current")
       order(:id).first || new
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
+    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError => e
+      Rails.logger.warn(
+        "[AppSetting] #{context} could not read the settings row: #{e.class}: #{e.message}"
+      )
+      # Sentry held all four consequences of #924 and none of the cause. Report
+      # the cause where the consequences already land.
+      Rails.error.report(e, handled: true, severity: :warning, context: { read: context })
+      raise if DatabaseTransactionState.aborted_by?(e)
+
       NULL
     end
 
@@ -212,9 +241,7 @@ class AppSetting < ApplicationRecord
     # This is the single global enablement lookup for every extension — adding an
     # extension needs no new column, only a key in the extension_states JSONB map.
     def extension_enabled?(id, default: false)
-      current.extension_enabled?(id, default: default)
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
-      default
+      current(context: "AppSetting.extension_enabled?(#{id})").extension_enabled?(id, default: default)
     end
 
     # Whether spawned Claude Code sessions get MCP tool search. The single global
@@ -222,9 +249,7 @@ class AppSetting < ApplicationRecord
     # back to the shipped default whenever the row can't be read rather than
     # raising mid-spawn.
     def mcp_tool_search_enabled?
-      current.mcp_tool_search_enabled?
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
-      DEFAULT_MCP_TOOL_SEARCH_ENABLED
+      current(context: "AppSetting.mcp_tool_search_enabled?").mcp_tool_search_enabled?
     end
 
     # Whether Claude Code sessions get a per-session CLAUDE_CONFIG_DIR and a
@@ -232,9 +257,7 @@ class AppSetting < ApplicationRecord
     # spawn path, the auth sweep and the /inference render, so it falls back to the
     # shipped default whenever the row can't be read rather than raising.
     def session_scoped_credentials_enabled?
-      current.session_scoped_credentials_enabled?
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
-      DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED
+      current(context: "AppSetting.session_scoped_credentials_enabled?").session_scoped_credentials_enabled?
     end
   end
 

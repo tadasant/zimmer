@@ -284,14 +284,17 @@ class QueueRecoveryMode
     # The raw JSONB map, tolerant of the window where new code boots against a
     # schema that predates the column's migration (the same defensiveness
     # AppSetting#extension_enabled? applies to `extension_states`).
+    #
+    # AppSetting.current owns the unreadable-row case: it logs the failed read,
+    # hands back NULL — which answers no `has_attribute?`, so recovery mode reads
+    # as off — and re-raises only on a connection whose transaction Postgres has
+    # already aborted. A second rescue here would log the same failure twice and,
+    # worse, swallow that re-raise. See DatabaseTransactionState and issue #924.
     def stored_metadata
-      record = AppSetting.current
+      record = AppSetting.current(context: "QueueRecoveryMode.status")
       return {} unless record.respond_to?(:has_attribute?) && record.has_attribute?(SETTING_KEY)
 
       (record.public_send(SETTING_KEY) || {}).with_indifferent_access
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError => e
-      Rails.logger.warn("[queue_recovery_mode] could not read settings: #{e.message}")
-      {}
     end
 
     # Replace the metadata under a row lock, so two operators entering at the same

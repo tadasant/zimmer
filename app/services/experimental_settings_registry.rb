@@ -43,14 +43,19 @@ class ExperimentalSettingsRegistry
 
     def backfillable? = !landed_at.nil?
 
-    # What the setting is right now. Returns nil rather than raising when the
-    # settings row can't be read — this runs on the session-spawn path.
+    # What the setting is right now. This runs on the session-spawn path, so a
+    # settings row that can't be read resolves to the setting's shipped default
+    # rather than raising — AppSetting::NULL answers for the missing row, and
+    # AppSetting.current logs the read that failed.
+    #
+    # The one failure that does raise is a connection whose transaction Postgres
+    # has aborted: there is no default to degrade to when the transaction cannot
+    # commit and every later statement in it is going to fail anyway. See
+    # DatabaseTransactionState and issue #924.
     def current_value
       return extension.enabled? if extension?
 
-      AppSetting.current.public_send(:"#{attribute}?")
-    rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError
-      nil
+      AppSetting.current(context: "ExperimentalSettingsRegistry[#{key}]").public_send(:"#{attribute}?")
     end
 
     # The value this setting had at `time`, per the step change `landed_at`
