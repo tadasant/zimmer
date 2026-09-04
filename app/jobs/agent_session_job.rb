@@ -345,6 +345,14 @@ class AgentSessionJob < ApplicationJob
   # nobody will act on.
   REFUSED_PROMPT_LOG_MAX_CHARS = 200
 
+  # Cap on the exception message echoed into the log lines that record a turn which
+  # died after its session was archived. Longer than a refused prompt's cap, because
+  # this one is the only surviving description of what went wrong — nothing is
+  # stamped on the row for an archived session — and shorter than
+  # EXCEPTION_MESSAGE_MAX_CHARS, whose generosity is for failures somebody is
+  # expected to diagnose.
+  ARCHIVED_TURN_EXCEPTION_LOG_MAX_CHARS = 1_000
+
   # Only retry on specific transient errors, not all StandardErrors
   # This prevents duplicate job executions that could create multiple PRs
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 3
@@ -2167,6 +2175,20 @@ class AgentSessionJob < ApplicationJob
     # rescue_from callback at the class level (see handle_interrupt_error above).
 
     rescue => e
+      # A turn that dies because the session archived out from under it is the
+      # archive being enforced late, not a runtime fault. #885 closed the window at
+      # the spawn point; this closes the rest of it, because the minutes of setup
+      # ahead of that guard are full of steps that touch the clone archiving has
+      # just had deleted — AirPrepareService#prepare! shells out with the clone as
+      # cwd and rescues only its two domain errors, and the credential injection
+      # writes into it. An ENOENT from either lands here (#886).
+      #
+      # The guard re-reads the row, so a session that is not archived is completely
+      # unaffected and keeps every part of the loud path below. A live session whose
+      # clone has gone missing is the OPPOSITE case and must stay loud — that
+      # session should run, and re-cloning it is #817.
+      return if session && swallow_exception_after_archive(session, e, log_buffer)
+
       if session
         log_buffer.add(
           "Error in agent execution: #{e.message}",
@@ -2850,6 +2872,99 @@ class AgentSessionJob < ApplicationJob
     Rails.logger.warn(
       "[AgentSessionJob] Could not re-read session #{session.id} before spawning (#{e.message}) — " \
       "spawning rather than refusing a turn that may be live"
+    )
+    false
+  end
+
+  # Whether this turn's exception is the archive landing mid-turn, recording the
+  # outcome quietly when it is.
+  #
+  # THE TWO DECISIONS THIS MAKES, both deliberate (#886):
+  #
+  # 1. **The exception is NOT re-raised.** The `raise e` at the end of the catch-all
+  #    is the reporting path — `config/initializers/sentry.rb` says so in as many
+  #    words ("the sentry-rails ActiveJob integration captures terminal job failures
+  #    automatically (AgentSessionJob re-raises at its top-level rescue)") — and
+  #    ActiveJob logs the terminal failure at ERROR, which is what the
+  #    `zimmer_backend_log_errors` Grafana rule reads. Re-raising while merely
+  #    quietening the session's own logs would leave both pages exactly as they are,
+  #    so a quiet path that still raises is not a quiet path at all.
+  # 2. **The retry it would have fed is not wanted either.** Of the exceptions this
+  #    race actually produces, `Errno::ENOENT` matches none of the `retry_on`
+  #    declarations, so today it is not retried anyway; the ones that DO match
+  #    (Timeout::Error, ECONNRESET, ETIMEDOUT) would re-enter #perform, where
+  #    refuse_archived_session reads the row and stands the turn down. A retry for an
+  #    archived session has no outcome available to it other than that refusal, so
+  #    dropping it costs nothing and saves a queued job. Returning normally is
+  #    truthful about what happened: the turn was correctly declined.
+  #
+  # Nothing is stamped on the row beyond releasing this job's claim. `failure_reason`
+  # exists to tell the next actor what to do about a session, and an archived session
+  # has no next actor — the record that stays readable is the session's own timeline
+  # plus a WARN in the backend log, neither of which pages.
+  #
+  # `fail!` is not called: `fail` transitions from waiting/running/needs_input only,
+  # so `may_fail?` on an archived row is already false and the loud path's call was a
+  # no-op here. It is named rather than silently dropped because a reader of the two
+  # paths side by side will look for it.
+  #
+  # THE GATE IS THE ROW, NOT THE EXCEPTION CLASS. Matching on ENOENT would be the
+  # tighter-looking condition and the wrong one: a deleted clone surfaces as whatever
+  # the step that touched it re-wraps it as (AirPrepareError around a failed
+  # shell-out, ClaudeCliError around a failed File.open), and that set is open-ended.
+  # The cost of the wider gate is that a genuine bug occurring while a session happens
+  # to be archived is no longer paged — which is why the full exception, message and
+  # backtrace still go to the backend log at WARN, where they are greppable and
+  # diagnosable but not alertable.
+  #
+  # A row that cannot be re-read answers `false` — the loud path is the safe default,
+  # since the failure mode of this guard is silence.
+  #
+  # @param session [Session] reloaded in place
+  # @param error [Exception] the exception the catch-all caught
+  # @param log_buffer [LogBuffer, nil]
+  # @return [Boolean] true when the outcome was recorded quietly and #perform must return
+  def swallow_exception_after_archive(session, error, log_buffer)
+    with_db_retry { session.reload }
+    return false unless session.archived?
+
+    detail = error.message.to_s.truncate(ARCHIVED_TURN_EXCEPTION_LOG_MAX_CHARS)
+
+    begin
+      Rails.logger.warn(
+        "[AgentSessionJob] Session #{session.id} turn ended on #{error.class.name} after the session was " \
+        "archived (#{detail}) — not failed and not reported: an archived session takes no turn. " \
+        "Backtrace: #{Array(error.backtrace).first(5).join(" | ")}"
+      )
+      # A session log rather than only a Rails log: the session's own timeline is
+      # where "why did nothing happen to this session" is asked from. `warning`
+      # rather than `error` — something did go wrong, but the session it went wrong
+      # for was already over, and `error` is the level that pages.
+      log_buffer&.add(
+        "This turn stopped on #{error.class.name} after the session was archived: #{detail}. An archived " \
+        "session takes no turn, so this is the archive arriving mid-turn rather than a fault — the session " \
+        "stays in the trash, and nothing is retried.",
+        level: "warning"
+      )
+      log_buffer&.flush
+
+      # Leave no owner behind on the row, and only if the claim is still THIS job's
+      # — the same bookkeeping, for the same reason, as refuse_spawn_after_archive.
+      session.update_columns(running_job_id: nil) if session.running_job_id == job_id
+    rescue StandardError => bookkeeping_error
+      # The refusal has already been decided; a failure to write it down is untidy
+      # rather than a reason to go loud about a session that is already finished.
+      Rails.logger.warn(
+        "[AgentSessionJob] Could not record the quiet archived-turn outcome for session #{session.id}: " \
+        "#{bookkeeping_error.class}: #{bookkeeping_error.message}"
+      )
+    end
+
+    true
+  rescue StandardError => reload_error
+    Rails.logger.warn(
+      "[AgentSessionJob] Could not re-read session #{session.id} while handling #{error.class.name} " \
+      "(#{reload_error.message}) — failing loudly rather than silencing a fault that may be real"
     )
     false
   end

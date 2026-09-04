@@ -299,6 +299,121 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
            "an unreadable row must not cost a live session its turn"
   end
 
+  # ---------------------------------------------------------------------------
+  # The archive that lands mid-turn and takes the clone with it (#886)
+  # ---------------------------------------------------------------------------
+  #
+  # The guard above stands the turn down AT the spawn. The minutes of setup ahead
+  # of it are the rest of the window: AirPrepareService#prepare! shells out with
+  # the clone as cwd and rescues only its two domain errors, and the credential
+  # injection writes into the clone. When archiving has already deleted that clone,
+  # an Errno::ENOENT from either lands in #perform's catch-all rescue — which had
+  # no `archived?` check, so it logged two ERROR lines to the session, stamped
+  # `failure_reason: "exception"`, and re-raised into the exception reporter. That
+  # is the same unactionable double page as #884, for a session that had already
+  # finished.
+  #
+  # These pin both halves: the quiet path for a session the row says is archived,
+  # and — the property that matters more, because the failure mode of getting it
+  # wrong is SILENT — the loud path, untouched, for one that is not.
+
+  test "a turn that dies after its session was archived is not stamped as a failure" do
+    live = live_recovery_session
+
+    run_job_dying_mid_flight(live)
+
+    live.reload
+    assert_nil live.metadata["failure_reason"],
+               "an archived session cannot act on a failure_reason, and did not fail"
+    assert_nil live.metadata["exception_class"]
+    assert_nil live.metadata["exception_message"]
+    assert_equal "archived", live.status, "the session stays in the trash it was put in"
+    assert_nil live.running_job_id, "a job that ended without spawning must leave no owner on the row"
+  end
+
+  test "the archived turn's exception reaches no ERROR log and does not re-raise" do
+    live = live_recovery_session
+
+    # No assert_raises: run_job returning at all is the assertion. The `raise e` is
+    # the reporting path (sentry-rails captures terminal ActiveJob failures) and
+    # ActiveJob logs the terminal failure at ERROR, which is what the
+    # zimmer_backend_log_errors rule reads — so swallowing it is what removes both
+    # pages, and a quiet path that still raised would remove neither.
+    run_job_dying_mid_flight(live)
+
+    logs = live.logs.reload
+    assert_empty logs.select { |entry| entry.level == "error" },
+                 "the ERROR that paged #alerts twice is the thing being fixed"
+    refute logs.any? { |entry| entry.content.include?("Error in agent execution") },
+           "the loud path must not have run"
+  end
+
+  test "the swallowed exception is still legible on the session's own timeline" do
+    live = live_recovery_session
+
+    run_job_dying_mid_flight(live)
+
+    record = live.logs.reload.find { |entry| entry.content.include?("after the session was archived") }
+    assert_not_nil record, "the history has to stay readable — quiet is not the same as silent"
+    assert_equal "warning", record.level, "non-paging, but not an FYI either"
+    assert_includes record.content, "Errno::ENOENT", "the exception that ended the turn is named"
+    assert_includes record.content, "claude_stderr.log", "and so is what it could not find"
+    assert_includes record.content, "nothing is retried"
+  end
+
+  test "a long exception message is truncated on the archived session's timeline" do
+    live = live_recovery_session
+
+    run_job_dying_mid_flight(live, error: RuntimeError.new("x" * 20_000))
+
+    record = live.logs.reload.find { |entry| entry.content.include?("after the session was archived") }
+    assert_not_nil record
+    assert record.content.length < 1_500,
+           "a trashed session's timeline must not gain a wall of text (was #{record.content.length})"
+  end
+
+  # THE NEGATIVE, and the reason the guard re-reads the row rather than trusting
+  # the session object #perform has been carrying since before the clone: a live
+  # session raising the very same exception must be completely unaffected. A lost
+  # clone on a session that SHOULD run is #817's case — re-clone and retry — and
+  # the quiet path must never reach it.
+  test "a live session raising the same exception keeps the whole loud path" do
+    live = live_recovery_session
+
+    assert_raises(Errno::ENOENT) do
+      run_job_dying_mid_flight(live, archive: false)
+    end
+
+    live.reload
+    assert_equal "exception", live.metadata["failure_reason"],
+                 "a genuine fault must still be recorded as one"
+    assert_equal "Errno::ENOENT", live.metadata["exception_class"]
+    assert_includes live.metadata["exception_message"], "claude_stderr.log"
+    assert_equal "failed", live.status, "a live session that raised is failed, not left running"
+    assert_nil live.running_job_id
+
+    errors = live.logs.reload.select { |entry| entry.level == "error" }
+    assert errors.any? { |entry| entry.content.include?("Error in agent execution") },
+           "the operator-facing error line is part of the loud path"
+    assert errors.any? { |entry| entry.content.include?("Backtrace:") }
+    refute live.logs.any? { |entry| entry.content.include?("after the session was archived") },
+           "nothing about the quiet path may touch a session that is not archived"
+  end
+
+  # The guard fails LOUD. A row it cannot read is the one case where both mistakes
+  # are available, and silencing a fault that may be real is the worse of them —
+  # the loud path's cost is a page, this path's cost is a session that failed with
+  # no failure_reason and no alert. Driven directly, because a session whose
+  # `reload` raises cannot get through the job's `ensure`, which reloads too.
+  test "a row that cannot be re-read is failed loudly rather than silenced" do
+    live = live_recovery_session
+    live.stubs(:reload).raises(ActiveRecord::RecordNotFound, "row is unreadable")
+    job = build_job(MockClaudeCliAdapter.new)
+
+    refute job.send(:swallow_exception_after_archive, live, clone_gone_error, nil),
+           "an unreadable row must not buy an exception a quiet exit"
+  end
+
   private
 
   # A session in exactly the state auto_continue_after_interrupt leaves behind: the
@@ -334,6 +449,35 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
       )
       job.file_system.rm_rf(CLONE_PATH) if delete_clone
     end
+  end
+
+  # Stage the #886 race: partway through the setup that precedes the spawn — after
+  # every early guard has read the row and passed it — archive the row the way a
+  # user emptying the trash does (in the database only, so the session object
+  # #perform is carrying stays stale, which is the whole point), delete the clone
+  # the way the cleanup archiving enqueues does, and then raise the ENOENT that a
+  # step touching that clone would raise.
+  #
+  # `archive: false` stages the same exception on a session that is still live,
+  # which must reach the untouched loud path.
+  def run_job_dying_mid_flight(session, archive: true, delete_clone: true, error: nil)
+    error ||= clone_gone_error
+
+    run_job(session, AutomatedPrompts.system_recovery(reason: "the job monitoring this session was interrupted"),
+            decision: allowed_decision) do |job|
+      if archive
+        Session.where(id: session.id).update_all(
+          status: Session.statuses[:archived], archived_at: Time.current
+        )
+        job.file_system.rm_rf(CLONE_PATH) if delete_clone
+      end
+      raise error
+    end
+  end
+
+  # What File.open on the stderr log raises once the clone is gone.
+  def clone_gone_error
+    Errno::ENOENT.new("No such file or directory @ rb_sysopen - #{CLONE_PATH}/claude_stderr.log")
   end
 
   # Drive the real job for one turn against a stubbed gate decision, with the
