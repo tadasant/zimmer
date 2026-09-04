@@ -1349,9 +1349,9 @@ whole spot wake into one event, and the sharp edges are all about that concentra
 ### The idle-fleet event is sampled, latched and floored, and each of the three has an edge
 
 🟡 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) fires when the deployment
-has held fewer sessions than its configured ceiling for the whole of its configured stretch. Idleness
-is a level rather than an edge, so `FleetIdleMonitor` manufactures one — and the machinery that does
-it has known limits:
+has been running fewer sessions than its configured ceiling for the whole of its configured stretch.
+Idleness is a level rather than an edge, so `FleetIdleMonitor` manufactures one — and the machinery
+that does it has known limits:
 
 - **It is sampled once a minute, so the clock starts up to a tick late.** `fleet_idle_since` is
   written at the first observation under the ceiling, not at the moment the fleet crossed it, so "five
@@ -1359,12 +1359,14 @@ it has known limits:
   `SessionStateMachine` hook closes the opposite gap — a session that starts and finishes between two
   ticks still re-arms — but nothing narrows the start. It is also why the stretch cannot be set below
   a minute.
-- **Enough stuck `waiting` spot sessions still suppress it indefinitely.** Queued spot sessions count
-  toward the ceiling, deliberately, so sessions stranded in `waiting` that nothing will ever start
-  (see the hold and park edges above) can fill it on their own and the fleet never reads as having
-  room. The ceiling is now a number rather than a boolean, so one stranded session no longer does it
-  alone — but `fleet_idle_max_sessions` of them still do, and nothing ages them out. Status-summary
-  forks are excluded for exactly this reason; nothing else is.
+- **A backed-up spot queue no longer holds it off at all.** Only sessions actually `running` count
+  toward the ceiling, so the event can fire — spawning a **priority**, ungated session — while any
+  number of spot sessions sit held or paused behind the gate. That is deliberate: the spawned session
+  fills an idle machine rather than joining the queue, and the gate is what paces spot work against
+  the budget. The cost is that top-up work is always the work that jumps the queue, so a deployment
+  whose backlog is mostly spot sees priority sessions started ahead of it while the gate holds. There
+  is no signal on either side: the top-up trigger cannot see how deep the spot queue is, and the gate
+  does not know a top-up is coming.
 - **The cooldown is the real cap on top-up frequency, and it is a blunt one.**
   `fleet_idle_min_fire_interval_minutes` exists because the session the event spawns re-arms the latch
   by running, so without it a quiet deployment would get one spawn every stretch, forever. With a

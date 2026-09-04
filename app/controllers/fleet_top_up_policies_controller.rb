@@ -1,15 +1,15 @@
 # frozen_string_literal: true
 
-# The fleet top-up policy: how few sessions the fleet must be holding to count as
+# The fleet top-up policy: how few sessions the fleet must be running to count as
 # idle enough, how long it must stay there, and how often the
 # `no_sessions_in_progress` event may fire at most. FleetIdleMonitor reads all
 # three off the settings row on every sweep, so a change here takes effect at the
 # next minute without a deploy.
 #
 # The card lives on /inference for the reason the spot gate card does: the
-# populations it counts — running sessions and the spot queue — are the ones that
-# page already reports, and its ceiling is a sibling of the concurrency limit
-# directly above it.
+# population it counts — sessions actually running — is the one that page already
+# reports, and its ceiling is a sibling of the concurrency limit directly above
+# it.
 #
 # Separate from SpotPoliciesController so each form writes only its own fields: a
 # PATCH that saved both would let a validation failure on one card reject a change

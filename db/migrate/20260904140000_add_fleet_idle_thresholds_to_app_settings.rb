@@ -4,10 +4,9 @@
 # and into the settings row so they can be retuned without a deploy.
 #
 #   fleet_idle_max_sessions              the fleet counts as idle ENOUGH while it
-#                                        holds fewer than this many sessions —
-#                                        running ones plus spot ones queued. 1
-#                                        reproduces the boolean this replaced
-#                                        ("nothing running and nothing queued").
+#                                        is RUNNING fewer than this many
+#                                        sessions. 1 reproduces the boolean this
+#                                        replaced ("nothing running").
 #   fleet_idle_threshold_minutes         how long it must stay that way first.
 #   fleet_idle_min_fire_interval_minutes the floor between two fires.
 #

@@ -273,7 +273,7 @@ module CronSchedule
     fleet_idle_checker: {
       cron: "* * * * *", # Every minute — the resolution of the fleet idle threshold
       class: "FleetIdleCheckerJob",
-      description: "Fire the no_sessions_in_progress event once the fleet has held fewer sessions than its ceiling for the configured stretch",
+      description: "Fire the no_sessions_in_progress event once the fleet has been running fewer sessions than its ceiling for the configured stretch",
       environments: %i[production staging]
     },
     spot_ceiling_sweep: {

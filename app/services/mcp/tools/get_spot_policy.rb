@@ -70,9 +70,9 @@ module Mcp
         its line of work came from.
 
         Also reports the BACKLOG TOP-UP policy, which is the other half of how busy the fleet gets: the
-        `no_sessions_in_progress` trigger event fires when the fleet has held fewer sessions than a
-        configured ceiling — running ones plus spot-queued ones together — for a configured stretch, and
-        at most once per cooldown. That is what hands a fleet with spare capacity more work. Change it
+        `no_sessions_in_progress` trigger event fires when the fleet has been RUNNING fewer sessions than
+        a configured ceiling for a configured stretch, and at most once per cooldown. Sessions merely
+        `waiting` do not count against that ceiling, of any class. That is what hands a fleet with spare capacity more work. Change it
         with `action_spot_policy` `set_top_up`.
 
         Returns:
@@ -229,14 +229,15 @@ module Mcp
           "",
           "### Backlog top-up (`no_sessions_in_progress`)",
           "",
-          "- **Fires while the fleet holds fewer than:** #{status.max_sessions} " \
-          "#{"session".pluralize(status.max_sessions)} (running plus spot-queued, counted together; " \
-          "1 would mean nothing running and nothing queued)",
+          "- **Fires while the fleet is running fewer than:** #{status.max_sessions} " \
+          "#{"session".pluralize(status.max_sessions)} (sessions actually `running`, every runtime; " \
+          "`waiting` ones do not count, of any class; 1 would mean nothing running. A different count " \
+          "from the Claude-Code-only one the concurrency limit above uses)",
           "- **For at least:** #{status.threshold.inspect}",
           "- **At most once every:** #{status.min_fire_interval.inspect} " \
           "(#{status.cadence_phrase} — with a ceiling above 1 this, not the ceiling, is what caps how " \
           "often work gets started)",
-          "- **Sessions in hand:** #{status.sessions_in_hand} of #{status.max_sessions} " \
+          "- **Sessions running (any runtime):** #{status.running_sessions} of #{status.max_sessions} " \
           "(#{status.headroom} #{"place".pluralize(status.headroom)} of headroom; one fire hands out " \
           "one session, so filling it takes that many cooldowns)",
           "- **State:** `#{status.state}` — #{status.sentence}",
