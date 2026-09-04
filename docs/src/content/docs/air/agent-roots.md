@@ -1,6 +1,6 @@
 ---
 title: Agent roots
-description: What a root is, the ten that ship, subagent roots, and how a root's defaults seed a session.
+description: What a root is, the twelve that ship, subagent roots, and how a root's defaults seed a session.
 sidebar:
   order: 3
 ---
@@ -97,6 +97,10 @@ Two things are deliberately outside that rule:
 | `catalog-mgmt-configs` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-proctor` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-save` | ❌ | ↳ subagent phase | same |
+
+That count, this table's rows, and the Invocable column are asserted against a live resolve by
+`test/docs/roots_docs_catalog_test.rb`, so adding a root to `roots.json` without updating them fails
+CI rather than leaving the page quietly stale.
 
 :::danger[Seven roots point at a repository that does not exist]
 `agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all
