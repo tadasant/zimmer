@@ -3610,6 +3610,18 @@ prompt, so the attachments that turn was created with are exactly what the repla
 The read never raises — this is a path taken only when something has already gone wrong, and a
 storage tree that cannot be read costs the attachments, never the restart.
 
+Two recovery paths reach the same reader ([#789](https://github.com/tadasant/zimmer/issues/789)).
+`SpotSessionHold`'s stalled-hold re-arm builds a first turn from nothing whenever the hold it repairs
+was a deferred *start*, and now carries that turn's attachments across with its prompt — which is
+what its log line had been claiming. `McpOauthResumeService` replays the stored prompt once the last
+OAuth flow completes, and carries them too, but only when the session's transcript is still empty.
+That gate is the one asymmetry with the restart doors, and it is load-bearing: `oauth_required` is a
+`PRE_PROMPT_FAILURE_REASONS` member, yet it is also set on sessions that have run for hours — by
+**Configure MCP servers** and **Configure plugins** when a human adds an OAuth server mid-run, and by
+`AgentSessionJob`'s follow-up branch. On such a session "everything on the volume" includes
+attachments earlier turns already consumed, so replaying them would put the first turn's screenshot
+on a much later one.
+
 Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on
 the dashboard with a reason on it, a `waiting` one is on nobody's list. A session past
 `MAX_RESTARTS` (3) attempts, because whatever is eating its start job is not something more
