@@ -2759,10 +2759,17 @@ must not hide a real post. What stays unrecognized is the same short list `Githu
 — plus a post handed to a wrapper that is not a shell (`ssh box "gh pr comment ..."`), which the
 splitter does not unwrap and which nothing in a session does today.
 
-Classification is per command segment; the *output* it then reads is not. A tool result is one blob,
-so a call that posts and then lists in one line (`gh pr comment 7 --body x && gh api
-repos/o/r/issues/7/comments`) has the listing's permalinks recorded as the post's —
-[#901](https://github.com/tadasant/zimmer/issues/901).
+Classification is per command segment; the *output* is not split that way, because a tool result
+arrives as one blob for the whole call. What a post's result vouches for is scoped instead
+([#901](https://github.com/tadasant/zimmer/issues/901)): the whole blob only when the post was the
+only thing in that call that reached GitHub, and otherwise just the permalinks printed alone on a
+line — the shape `gh pr comment` prints, and one a JSON body never has. So the post-then-confirm move
+(`gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments`) records the comment it posted and
+not the thread it then listed. Two edges are left. A call that lists the thread as *bare URLs*
+(`--jq '.[].html_url'`) prints the human's comments in the post's own shape, so nothing tells them
+apart and the post is given up along with them — a lost recording rather than a wrong one. And a
+command that prints a permalink alone on a line without reaching GitHub to get it
+(`cat thread-urls.txt` beside a post) is still read as the post's output.
 
 The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
 human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.
