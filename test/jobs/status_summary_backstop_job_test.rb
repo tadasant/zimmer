@@ -547,6 +547,87 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
 
   # The corollary: a session skipped because its path's budget is spent must not
   # burn its retry interval on a cap it never got past.
+  # A session the sweep has already spent a slot on, whose repair did not land,
+  # and whose retry interval has since elapsed — the shape a permanently
+  # unrepairable session (a reclaimed clone) is in on every sweep after its
+  # first. Blank summary, so #needs_repair? is true; stamp older than
+  # RETRY_INTERVAL, so #due? is true.
+  def already_examined(minutes_ago: 1, stamped_ago: StatusSummaryBackstopJob::RETRY_INTERVAL + 1.minute)
+    session = at_rest
+    session.update_columns(updated_at: minutes_ago.minutes.ago)
+    SessionStatusSummary.create!(
+      session: session, state: "failed", summary: nil, transcript_line_count: 0,
+      error: "The summary fork was parked before it could answer (quota_exhausted).",
+      backstop_attempted_at: stamped_ago.ago
+    )
+    session
+  end
+
+  # THE REGRESSION THIS SECTION EXISTS FOR (#881).
+  #
+  # A session whose repair can never succeed is stale forever, so it comes due
+  # again every RETRY_INTERVAL — and under `updated_at DESC` alone, if it was
+  # recently active, it retook the head of the list. LANE_DEPTH_CEILING of them
+  # took the entire budget on every sweep, indefinitely, while the sweep logged
+  # `enqueued_headless=6` as though it were making progress. Nothing behind them
+  # was ever reached.
+  #
+  # The outage path is what makes the starvation total: the shared lane headroom
+  # is then the only cap, so the head can spend all of it. On the fork path the
+  # cost cap stops the head sooner but leaves the tail equally unreached.
+  test "a permanently unrepairable head does not starve an older due session" do
+    starved = at_rest
+    starved.update_columns(updated_at: 2.days.ago)
+    StatusSummaryBackstopJob::LANE_DEPTH_CEILING.times { |index| already_examined(minutes_ago: index + 1) }
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ starved.id, { headless: true } ]) do
+      StatusSummaryBackstopJob.perform_now
+    end
+  end
+
+  # The same starvation on the fork path, asserted through the stamp rather than
+  # the enqueue: what the ordering guarantees is that the sweep REACHES the
+  # session, and being examined is what "reached" means.
+  test "a session the sweep has never looked at is examined before one it has" do
+    never_examined = at_rest
+    never_examined.update_columns(updated_at: 2.days.ago)
+    StatusSummaryBackstopJob::MAX_PER_SWEEP.times { |index| already_examined(minutes_ago: index + 1) }
+
+    StatusSummaryBackstopJob.perform_now
+
+    assert_not_nil never_examined.reload.status_summary&.backstop_attempted_at,
+      "the oldest never-examined session should be reached ahead of sessions already stamped"
+  end
+
+  # The fairness term is an ordering, not a demotion: among sessions the sweep
+  # has already examined, the one it looked at longest ago goes first, so no
+  # member of a permanently unrepairable set can hold the head.
+  test "among already-examined sessions the longest-unexamined goes first" do
+    recently_stamped = already_examined(minutes_ago: 1, stamped_ago: 31.minutes)
+    longest_unexamined = already_examined(minutes_ago: 600, stamped_ago: 5.hours)
+
+    assert_equal [ longest_unexamined.id, recently_stamped.id ],
+      StatusSummaryBackstopJob.new.send(:candidates).map(&:id)
+  end
+
+  # THE HALF OF THE PRIORITY THE FAIRNESS TERM KEEPS.
+  #
+  # A never-examined session has no stamp, so the whole first group ties on NULL
+  # and `updated_at DESC` still decides between them: a session's FIRST look is
+  # ordered exactly as it was before #881. Only re-examinations are demoted.
+  test "sessions the sweep has never examined are still ordered most recently active first" do
+    oldest = at_rest
+    middle = at_rest
+    newest = at_rest
+    oldest.update_columns(updated_at: 3.hours.ago)
+    middle.update_columns(updated_at: 2.hours.ago)
+    newest.update_columns(updated_at: 1.hour.ago)
+
+    assert_equal [ newest.id, middle.id, oldest.id ],
+      StatusSummaryBackstopJob.new.send(:candidates).map(&:id)
+  end
+
   test "a session skipped for a spent budget keeps its retry interval" do
     sessions = Array.new(StatusSummaryBackstopJob::MAX_PER_SWEEP + 2) { at_rest }
 
