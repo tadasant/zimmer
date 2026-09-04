@@ -412,4 +412,107 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     assert_nil captured_kwargs[:images]
     assert_nil captured_kwargs[:files]
   end
+
+  # --- Delivery-time re-validation of a queued conflict notice (tadasant/zimmer#835) ---
+  #
+  # The poller reads GitHub, finds a conflict, and queues the notice because the
+  # session is mid-turn or asleep. The row then sits until this turn boundary, and
+  # in those minutes the session may have rebased, resolved and force-pushed. The
+  # observed cost is not the wasted turn: the resume destroys the bounded self-wake
+  # the session is sleeping on, so a session that finds nothing to resolve and ends
+  # its turn is left with no trigger and no turn.
+
+  test "a conflict notice whose PR became mergeable is not delivered" do
+    message = queue_conflict_notice
+    stub_mergeability(:mergeable)
+
+    service = EnqueuedMessageProcessorService.new(@session)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      refute service.process_next_message, "a moot notice must not resume the session"
+    end
+
+    assert_equal "undelivered", message.reload.status
+    assert_equal "needs_input", @session.reload.status
+  end
+
+  test "a suppression is logged against the session, so it reads differently from never sent" do
+    queue_conflict_notice
+    stub_mergeability(:mergeable)
+
+    EnqueuedMessageProcessorService.new(@session).process_next_message
+
+    log = @session.logs.order(:id).map(&:content).find { |c| c.include?("was not delivered") }
+    assert log, "expected a session log entry naming the suppression"
+    assert_includes log, "automated_merge_conflict"
+  end
+
+  test "a conflict notice against a still-conflicting PR is delivered unchanged" do
+    message = queue_conflict_notice
+    stub_mergeability(:conflicting)
+
+    captured_prompt = nil
+    AgentSessionJob.stub(:enqueue_with_prompt, ->(_id, prompt, **_kwargs) { captured_prompt = prompt }) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+
+    assert_equal message.content, captured_prompt
+    refute EnqueuedMessage.exists?(message.id), "a delivered message is destroyed, not retired"
+    assert_equal "running", @session.reload.status
+  end
+
+  test "a conflict notice is delivered when mergeability cannot be re-read" do
+    message = queue_conflict_notice
+    stub_mergeability(:unknown)
+
+    assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    refute EnqueuedMessage.exists?(message.id)
+    assert_equal "running", @session.reload.status
+  end
+
+  test "a re-read that raises does not cost the session its message" do
+    message = queue_conflict_notice
+    GithubPullRequestMergeability.stubs(:read).raises(RuntimeError, "gh exploded")
+
+    assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    refute EnqueuedMessage.exists?(message.id)
+  end
+
+  test "a suppressed notice does not hold up the ordinary message behind it" do
+    stale_notice = queue_conflict_notice
+    follow_up = @session.enqueued_messages.create!(content: "Human follow-up", position: 2)
+    stub_mergeability(:mergeable)
+
+    captured_prompt = nil
+    AgentSessionJob.stub(:enqueue_with_prompt, ->(_id, prompt, **_kwargs) { captured_prompt = prompt }) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+
+    assert_equal "Human follow-up", captured_prompt
+    assert_equal "undelivered", stale_notice.reload.status
+    refute EnqueuedMessage.exists?(follow_up.id)
+  end
+
+  test "an ordinary caller message is never re-read against GitHub" do
+    @session.enqueued_messages.create!(content: "Plain prompt", position: 1)
+    GithubPullRequestMergeability.expects(:read).never
+
+    assert EnqueuedMessageProcessorService.new(@session).process_next_message
+  end
+
+  private
+
+  CONFLICT_PR_URL = "https://github.com/tadasant/zimmer/pull/834".freeze
+
+  def queue_conflict_notice(position: 1)
+    @session.enqueued_messages.create!(
+      content: AutomatedPrompts.merge_conflict_message(CONFLICT_PR_URL),
+      position: position,
+      origin: "automated_merge_conflict"
+    )
+  end
+
+  def stub_mergeability(answer)
+    GithubPullRequestMergeability.stubs(:read).with(CONFLICT_PR_URL).returns(answer)
+  end
 end

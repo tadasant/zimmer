@@ -484,4 +484,91 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
       assert_equal origin, message.reload.origin
     end
   end
+
+  # --- #stale? — the delivery-time re-read behind tadasant/zimmer#835 ---
+
+  test "every staleness-checked origin is a real origin" do
+    assert (EnqueuedMessage::STALENESS_CHECKED_ORIGINS - EnqueuedMessage::ORIGINS).empty?,
+      "an origin that cannot be stamped cannot be re-checked"
+  end
+
+  test "a conflict notice whose PR has become mergeable is stale" do
+    GithubPullRequestMergeability.stubs(:read).with(PR_URL).returns(:mergeable)
+
+    assert conflict_message.stale?
+  end
+
+  test "a conflict notice whose PR is still conflicting is not stale" do
+    GithubPullRequestMergeability.stubs(:read).with(PR_URL).returns(:conflicting)
+
+    refute conflict_message.stale?
+  end
+
+  # Fail open: the mirror-image failure — suppressing a genuine conflict notice —
+  # leaves a session asleep on a PR that will never merge, with nothing saying why.
+  test "a conflict notice is not stale when mergeability cannot be read" do
+    GithubPullRequestMergeability.stubs(:read).with(PR_URL).returns(:unknown)
+
+    refute conflict_message.stale?
+  end
+
+  test "a conflict notice that names no PR is not stale, and is not looked up" do
+    GithubPullRequestMergeability.expects(:read).never
+
+    refute build_message(content: "the base branch moved", origin: "automated_merge_conflict").stale?
+  end
+
+  # A merge is a fact that outlives the poll, so there is nothing to re-check —
+  # and an ordinary caller message is somebody waiting on delivery.
+  test "no other origin is re-read, whatever GitHub would say" do
+    GithubPullRequestMergeability.expects(:read).never
+
+    %w[caller automated_pr_merged automated_recovery_nudge].each_with_index do |origin, index|
+      message = build_message(
+        content: AutomatedPrompts.merge_conflict_message(PR_URL),
+        origin: origin,
+        position: index + 1
+      )
+      refute message.stale?, "#{origin} should not be re-read before delivery"
+    end
+  end
+
+  # --- #retire_as_stale! ---
+
+  test "retire_as_stale! retires a pending row and reports that it did" do
+    message = conflict_message
+
+    assert message.retire_as_stale!
+    assert_equal "undelivered", message.reload.status
+  end
+
+  test "retire_as_stale! leaves a row a peer already claimed alone" do
+    message = conflict_message
+    message.update!(status: "processing")
+
+    refute message.retire_as_stale!, "a claimed message belongs to the peer that claimed it"
+    assert_equal "processing", message.reload.status
+  end
+
+  test "retire_as_stale! keeps the row readable at its position" do
+    message = conflict_message
+    position = message.position
+
+    message.retire_as_stale!
+
+    assert_equal position, message.reload.position
+    assert_includes message.session.enqueued_messages.undelivered, message
+  end
+
+  private
+
+  PR_URL = "https://github.com/tadasant/zimmer/pull/834".freeze
+
+  def conflict_message
+    build_message(content: AutomatedPrompts.merge_conflict_message(PR_URL), origin: "automated_merge_conflict")
+  end
+
+  def build_message(content:, origin:, position: 1)
+    sessions(:running).enqueued_messages.create!(content: content, position: position, origin: origin)
+  end
 end
