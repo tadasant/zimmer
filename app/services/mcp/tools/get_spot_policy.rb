@@ -234,9 +234,11 @@ module Mcp
           "1 would mean nothing running and nothing queued)",
           "- **For at least:** #{status.threshold.inspect}",
           "- **At most once every:** #{status.min_fire_interval.inspect} " \
-          "(#{status.max_fires_per_day} #{"time".pluralize(status.max_fires_per_day)} a day — with a " \
-          "ceiling above 1 this, not the ceiling, is what caps how often work gets started)",
-          "- **Sessions in hand:** #{status.sessions_in_hand} of #{status.max_sessions}",
+          "(#{status.cadence_phrase} — with a ceiling above 1 this, not the ceiling, is what caps how " \
+          "often work gets started)",
+          "- **Sessions in hand:** #{status.sessions_in_hand} of #{status.max_sessions} " \
+          "(#{status.headroom} #{"place".pluralize(status.headroom)} of headroom; one fire hands out " \
+          "one session, so filling it takes that many cooldowns)",
           "- **State:** `#{status.state}` — #{status.sentence}",
           "- **Next fire, at the earliest:** #{next_fire_phrase(status)}",
           "- **Last fired:** #{status.last_fired_at ? "#{status.last_fired_at.utc.iso8601} (#{ago(status.last_fired_at)})" : "never"}"

@@ -247,5 +247,19 @@ class AppSettingTest < ActiveSupport::TestCase
     assert_equal AppSetting::DEFAULT_FLEET_IDLE_THRESHOLD_MINUTES, AppSetting::NULL.fleet_idle_threshold_minutes
     assert_equal AppSetting::DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES,
                  AppSetting::NULL.fleet_idle_min_fire_interval_minutes
+    # Both clocks too: FleetTopUpStatus reads them unconditionally, so a NULL that
+    # answered only the three knobs would raise NoMethodError on the DB-less path
+    # instead of degrading.
+    assert_nil AppSetting::NULL.fleet_idle_since
+    assert_nil AppSetting::NULL.fleet_idle_event_fired_at
+  end
+
+  # The whole point of the readers above: constructing the status object off the
+  # NULL row must not raise.
+  test "FleetTopUpStatus can be built from the NULL object" do
+    status = FleetTopUpStatus.new(setting: AppSetting::NULL, sessions_in_hand: 0)
+
+    assert_equal :clock_not_started, status.state
+    assert status.sentence.present?
   end
 end

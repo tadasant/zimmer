@@ -58,9 +58,9 @@ class AppSetting < ApplicationRecord
   # boolean the threshold replaced.
   #
   # 3 is the shipped default: a deployment with ten slots and two sessions in
-  # them has capacity nobody is using, and waiting for the last one to finish
-  # before topping the backlog up is what kept the fleet at a fifth of what it
-  # was paid for. See FleetIdleMonitor.
+  # them has capacity nobody is using, and requiring the last one to finish before
+  # the backlog is topped up holds the fleet at a fifth of what it is paid for.
+  # See FleetIdleMonitor.
   DEFAULT_FLEET_IDLE_MAX_SESSIONS = 3
 
   # How long the fleet has to stay under that ceiling before the event fires.
@@ -132,6 +132,17 @@ class AppSetting < ApplicationRecord
       DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES
     end
 
+    # No row means no observation, which is what NULL means on a real row too.
+    # FleetTopUpStatus reads both unconditionally, so a DB-less boot needs them to
+    # answer rather than raise.
+    def fleet_idle_since
+      nil
+    end
+
+    def fleet_idle_event_fired_at
+      nil
+    end
+
     def genesis_class_overrides
       {}
     end
@@ -166,7 +177,7 @@ class AppSetting < ApplicationRecord
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
   # At least one, for the same reason: the test is `sessions_in_hand < ceiling`,
   # so a ceiling of 0 can never be satisfied and the event would never fire again.
-  # 1 is the "nothing running and nothing queued" behaviour this replaced.
+  # 1 means "nothing running and nothing queued".
   validates :fleet_idle_max_sessions,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
   # A minute is the cron cadence FleetIdleCheckerJob samples at, so it is the

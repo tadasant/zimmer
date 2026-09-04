@@ -1372,10 +1372,18 @@ it has known limits:
   the ceiling — decides the cadence: 60 minutes means at most 24 top-ups a day. It is tunable now, but
   it is still a fixed floor rather than anything derived from how much work is actually queued, and it
   applies even when the previous fire delivered nothing.
+- **On a fleet that churns faster than the stretch, the ceiling buys nothing.** The re-arm on
+  `running` is unconditional — it has to be, or the latch would hold forever on a fleet that never
+  climbs above its ceiling — so *any* session starting clears `fleet_idle_since` and restarts the
+  clock. A deployment holding one or two sessions that starts a new one more often than every
+  `fleet_idle_threshold_minutes` therefore never accumulates a stretch and never fires, exactly as it
+  would at a ceiling of 1. The ceiling only buys idle capacity back when the sessions occupying the
+  fleet are longer-lived than the stretch.
 - **A single fire tops up by one session, whatever the headroom.** The event says "there is room",
   not how much: a fleet at 1 of 10 and a fleet at 2 of 3 produce the same one fire, and filling eight
-  free slots takes eight cooldowns. `FleetTopUpStatus#headroom` computes the number; nothing spends
-  it.
+  free slots takes eight cooldowns. `FleetTopUpStatus#headroom` reports the number on `/inference` and
+  in `get_spot_policy`, but nothing acts on it — the event carries no "how many" and the trigger that
+  listens spawns one session per fire.
 - **The three conditions are not equally legible.** `/inference` reports the ceiling, both clocks and
   which of the four not-fired-yet states the fleet is in, and `get_spot_policy` prints the same. The
   auth-outage park and the pool reading are *not* in that card — they are reported elsewhere on the

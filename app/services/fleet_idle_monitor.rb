@@ -35,13 +35,13 @@
 #
 #      They are counted together against ONE ceiling rather than vetoing
 #      independently, and that is the whole point of the ceiling being a number.
-#      As two booleans, a fleet at two of ten slots with a single spot session
-#      held at the door was "not idle" — so the event needed the deployment to
-#      reach literally zero on both counts before it would top the backlog up,
-#      and a ten-slot fleet ran at two. With one ceiling of N, either population
-#      can grow into the same headroom and the operator has one number to reason
-#      about. `fleet_idle_max_sessions = 1` is exactly the pair of booleans this
-#      replaced: nothing running AND nothing queued.
+#      Two independent vetoes make a fleet at two of ten slots with a single spot
+#      session held at the door "not idle", so the deployment has to reach
+#      literally zero on both counts before the backlog is topped up and a
+#      ten-slot fleet runs at two. With one ceiling of N, either population can
+#      grow into the same headroom and the operator has one number to reason
+#      about. `fleet_idle_max_sessions = 1` is exactly that pair of vetoes:
+#      nothing running AND nothing queued.
 #
 #      Status-summary forks are excluded from the spot half for the reason
 #      SpotSessionPause excludes them from its own spot population: they are
@@ -100,14 +100,14 @@
 # this stretch already fired" is then the comparison `fired_at >= idle_since`
 # rather than mere presence.
 #
-# **A ceiling above 1 makes the cooldown the load-bearing half of that pair.**
-# With the old boolean the fire's own session took the fleet from zero running to
-# one, which was enough to end the stretch outright; the cooldown only mattered
-# on the next stretch. Under a ceiling, the fleet is routinely still under it
-# while the spawned session runs, so the stretch never ends on its own and the
-# cooldown is the only thing between the deployment and a fire per threshold. It
-# is also therefore the real cap on top-up frequency: 60 minutes means at most 24
-# fires a day whatever the ceiling is set to.
+# **A ceiling above 1 makes the cooldown the load-bearing half of that pair.** At
+# a ceiling of 1 the fire's own session takes the fleet from zero running to one,
+# which ends the stretch outright and leaves the cooldown to matter only on the
+# next one. Above 1 the fleet is routinely still under the ceiling while that
+# session runs, so the stretch does not end on its own and the cooldown is the
+# only thing between the deployment and a fire per threshold. It is therefore the
+# real cap on top-up frequency: 60 minutes means at most 24 fires a day whatever
+# the ceiling is set to.
 #
 # == Why the sweep is not the only re-arm
 #
@@ -119,9 +119,9 @@
 # next happens to look.
 #
 # `record_busy!` clears the clock on ANY session entering `running`, without
-# consulting the ceiling, and that stays true deliberately. It is not a claim
-# that the fleet is now too busy — it is what ends the current stretch so the
-# cooldown gets to run the cadence. A ceiling-aware version would leave
+# consulting the ceiling, and that is deliberate. It is not a claim that the
+# fleet is too busy — it is what ends the current stretch so the cooldown gets to
+# run the cadence. A ceiling-aware version would leave
 # `fleet_idle_since` frozen behind `fleet_idle_event_fired_at` on a fleet that
 # never climbs above the ceiling, the latch would hold forever, and the event
 # would fire exactly once in the deployment's life.
@@ -142,8 +142,8 @@
 # monitoring gap must not manufacture one.
 class FleetIdleMonitor
   # Stored as a condition on live trigger rows, so it is a wire name rather than
-  # a description. It reads "no sessions in progress" and now means "few enough
-  # sessions in progress"; renaming it would need those rows migrated with it.
+  # a description: it reads "no sessions in progress" and means "few enough
+  # sessions in progress". Renaming it needs those rows migrated with it.
   EVENT_NAME = "no_sessions_in_progress"
 
   class << self
@@ -182,7 +182,10 @@ class FleetIdleMonitor
 
       unless idle
         cleared = clear_idle_clock!(setting)
-        logger.info("The fleet is at its work ceiling — #{EVENT_NAME} is armed again") if cleared
+        # Which of the three questions answered no, since they clear three
+        # different ways and "not idle" alone leaves an operator guessing.
+        logger.info("The fleet is not idle enough — #{EVENT_NAME} is armed again",
+          reason: not_idle_reason(setting)) if cleared
         return false
       end
 
@@ -292,6 +295,18 @@ class FleetIdleMonitor
       nil
     end
 
+    # Which question `fleet_idle?` answered no to, for the log line above. Asked
+    # again rather than threaded out of the predicate: it runs only on the
+    # transition to busy, and the predicate short-circuits so it does not always
+    # know.
+    def not_idle_reason(setting)
+      return "at_work_ceiling" if sessions_in_hand >= max_sessions(setting)
+      return "work_parked_on_auth_outage" if parked_work?
+      return "account_pool_empty" unless pool_available?(setting)
+
+      "unknown"
+    end
+
     # Anything actually executing. Deliberately scoped the way Zimmer's own
     # recovery jobs scope it: CleanupOrphanedSessionsJob and DeploymentRecoveryJob
     # both skip frozen categories, so a `running` row in one is a row nothing will
@@ -336,7 +351,7 @@ class FleetIdleMonitor
     # apply. See QuotaAvailabilityMonitor for what the latch means.
     #
     # An unreadable pool reads as available, matching the `nil` (never observed)
-    # default this replaced: a monitoring gap must not manufacture an outage.
+    # default: a monitoring gap must not manufacture an outage.
     def pool_available?(_setting)
       QuotaAvailabilityMonitor.pool_available?(ClaudeAuthProvider::RUNTIME) != false
     end

@@ -65,8 +65,7 @@
                  min="1" max="10080" step="1"
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
           <p class="mt-1 text-xs text-gray-500">
-            The floor between two fires — at most
-            <strong><%= pluralize(@fleet_top_up.max_fires_per_day, "top-up") %> a day</strong>.
+            The floor between two fires — <strong><%= @fleet_top_up.cadence_phrase %></strong>.
             With a ceiling above 1 this, not the ceiling, is what caps how often work gets started.
           </p>
         </div>
@@ -80,10 +79,10 @@
     <% end %>
 
     <%# ---- Where the fleet sits against them ----
-        Both of the monitor's clocks, which were previously visible nowhere: four
-        states look identical from outside ("it hasn't fired") and clear four
-        different ways. FleetTopUpStatus names which one, and `get_spot_policy`
-        prints the same sentence from the same object. %>
+        Both of the monitor's clocks, which are readable nowhere else: four states
+        look identical from outside ("it hasn't fired") and clear four different
+        ways. FleetTopUpStatus names which one, and `get_spot_policy` prints the
+        same sentence from the same object. %>
     <div class="rounded-md border <%= @fleet_top_up.under_ceiling? ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50" %> p-4"
          id="fleet-top-up-status">
       <div class="flex items-center gap-2">
@@ -100,6 +99,11 @@
           <dd class="font-medium text-gray-900" id="fleet-top-up-in-hand">
             <%= @fleet_top_up.sessions_in_hand %>
             <span class="text-gray-400 font-normal">of <%= @fleet_top_up.max_sessions %></span>
+            <%# One fire hands out one session, so the headroom is how many more
+                cooldowns it takes to fill the room the fleet has. %>
+            <div class="text-xs text-gray-500 font-normal mt-0.5">
+              <%= pluralize(@fleet_top_up.headroom, "place") %> of headroom
+            </div>
           </dd>
         </div>
         <div>

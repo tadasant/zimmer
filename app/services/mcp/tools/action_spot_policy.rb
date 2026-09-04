@@ -189,10 +189,10 @@ module Mcp
         "Spot policy updated: #{changes.join(', ')}.\n\n#{decision_summary}"
       end
 
-      # The backlog top-up policy. Every value is a positive integer, so
-      # `.nil?`-vs-truthiness does not bite the way it does on a 0% reserve — but
-      # `key?` is still what decides, so an explicit null is left alone rather
-      # than assigned to a NOT NULL column.
+      # The backlog top-up policy. `.nil?` rather than truthiness, so an explicit
+      # null is skipped rather than assigned to a NOT NULL column — and a call
+      # carrying nothing but nulls raises "Nothing to change" instead of saving an
+      # empty edit.
       def set_top_up(args)
         setting = AppSetting.editable
         changes = []
@@ -214,7 +214,7 @@ module Mcp
 
       def top_up_summary(setting)
         status = FleetTopUpStatus.current(setting: setting)
-        "Top-up now fires at most #{status.max_fires_per_day} times a day. #{status.sentence}"
+        "Top-up fires #{status.cadence_phrase}. #{status.sentence}"
       end
 
       def set_genesis_class(args, klass)
