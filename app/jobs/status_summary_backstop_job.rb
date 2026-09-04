@@ -48,6 +48,14 @@
 # sweep to the substrate instead of guessing at it. It still repairs during an
 # outage — it repairs at exactly the rate the lane can absorb, which is the
 # fastest any budget could.
+#
+# **Who gets that budget is not decided by recency alone** (#881). The budget
+# says how much the sweep may repair; the candidate ordering says who gets it.
+# Recency alone let a session whose repair can never succeed retake the head
+# every RETRY_INTERVAL and hold the whole budget indefinitely, so the sweep now
+# reaches never-examined sessions first — in recency order, exactly as before —
+# and the rest longest-unexamined first. See #candidates for what that trade
+# costs.
 class StatusSummaryBackstopJob < ApplicationJob
   queue_as :default
   include SingletonSweep
@@ -63,9 +71,9 @@ class StatusSummaryBackstopJob < ApplicationJob
 
   # The share of the lane budget the fork path may take WHEN THERE IS ALSO
   # outage work waiting behind it. Both paths draw on one budget, and on a mixed
-  # fleet the fork path reaches it first by accident — its sessions are simply
-  # more recently active — so without a reservation the expensive repair would
-  # crowd out the cheap pool-independent one a quota outage depends on. Half,
+  # fleet the fork path reaches it first by accident — its sessions simply sort
+  # earlier — so without a reservation the expensive repair would crowd out the
+  # cheap pool-independent one a quota outage depends on. Half,
   # rounded up, so the fork path keeps the larger share of an odd budget and a
   # headroom of one is still spendable by whichever path reaches it.
   #
@@ -223,7 +231,7 @@ class StatusSummaryBackstopJob < ApplicationJob
   #
   # Its cost cap, except when a candidate is on an exhausted pool — then the
   # cheap pool-independent path needs a share of the same budget, and the fork
-  # path reaching it first is an artefact of `updated_at` ordering rather than a
+  # path reaching it first is an artefact of the candidate ordering rather than a
   # priority anyone chose. #pool_exhausted? is memoized per runtime, so this
   # costs one query per distinct runtime whether it is asked here or in the walk.
   def fork_budget_for(sessions, headroom)
@@ -232,9 +240,36 @@ class StatusSummaryBackstopJob < ApplicationJob
     [ MAX_PER_SWEEP, (headroom * FORK_SHARE_UNDER_OUTAGE).ceil ].min
   end
 
-  # Sessions at rest, most recently active first — the order the user's action
-  # queue is read in, so the cap spends itself on the sessions most likely to be
-  # opened next.
+  # Sessions at rest, in the order this sweep's budget should be spent: the ones
+  # it has never looked at first — most recently active among them — and then the
+  # ones it looked at longest ago.
+  #
+  # **WHY THERE IS A FAIRNESS TERM AT ALL** (#881). The ordering was
+  # `updated_at DESC` alone: the order the user's action queue is read in, so the
+  # cap spends itself on the sessions most likely to be opened next. That is a
+  # priority with no fairness term, and a session whose repair can never
+  # succeed — the reclaimed-clone case RETRY_INTERVAL already anticipates — is
+  # stale forever. It comes due again every RETRY_INTERVAL and, if it is among the
+  # most recently active, retakes the head. LANE_DEPTH_CEILING such sessions
+  # therefore took the entire budget on every sweep, indefinitely, while the sweep
+  # logged `enqueued_headless=6` as though it were making progress. Nothing
+  # further down the list was ever reached.
+  #
+  # **WHAT IT COSTS, AND WHAT IT DOES NOT.** Sorting on `backstop_attempted_at`
+  # means a session the sweep has already spent a slot on cannot outrank one it
+  # has not. It does *not* flatten the recency priority, because a session that
+  # has never been examined has no stamp: the whole first group ties on NULL, and
+  # `updated_at DESC` still decides between them. A session's FIRST look is
+  # ordered exactly as it was before. Only re-examinations are demoted — behind
+  # every first look, and among themselves oldest-stamp first, which is a rotation
+  # no member can hold the head of.
+  #
+  # The price is paid by a retry that would have succeeded: a session whose
+  # generation was lost to a deploy now waits behind the sessions the sweep has
+  # not looked at yet, rather than ahead of them by virtue of being recent. That
+  # is the right way round. An unexamined session may well be repaired by its
+  # first slot, whereas a second attempt is by construction evidence that one slot
+  # was not enough.
   #
   # `blocked_on_elicitation` sessions are dropped by the caller: they are
   # `needs_input` with a live agent process waiting on an approval mid-turn,
@@ -257,6 +292,10 @@ class StatusSummaryBackstopJob < ApplicationJob
   #
   # `preload` rather than a second query per row: the record each candidate needs
   # is fetched once for the whole batch.
+  #
+  # Neither ordering column is indexed, and neither was: the sort runs over what
+  # the due-ness `WHERE` left behind, which in steady state is nothing and under
+  # SCAN_LIMIT is at most a few hundred rows.
   def candidates
     Session
       .excluding_status_summary_forks
@@ -270,7 +309,7 @@ class StatusSummaryBackstopJob < ApplicationJob
       )
       .preload(:status_summary)
       .select((Session.column_names - [ "transcript" ]).map { |column| "sessions.#{column}" })
-      .order("sessions.updated_at DESC")
+      .order("session_status_summaries.backstop_attempted_at ASC NULLS FIRST", "sessions.updated_at DESC")
       .limit(SCAN_LIMIT)
   end
 
