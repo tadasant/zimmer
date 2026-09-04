@@ -12,6 +12,11 @@ require "open3"
 # `sh` wrapper (that one runs for real). The enforcement half is verified on staging: a
 # `bash` accumulating in a 256 MiB session cgroup was OOM-killed inside it while the
 # container was untouched.
+#
+# The stand-in carries one rule with it, spelled out in SessionMemoryCgroupHelpers: a
+# test that reads #incarnation twice must not let anything create a file in the cgroup
+# directory in between. On real cgroupfs the control files arrive with the directory;
+# here they do not, and creating one moves the ctime #incarnation keys on (#820).
 class SessionMemoryCgroupTest < ActiveSupport::TestCase
   setup do
     @original_root = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
@@ -74,11 +79,16 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
   # A session respawns constantly — a follow-up turn, a continuation, a signal-death
   # resume. Each one must land in the SAME cgroup, or memory.peak and the OOM counter
   # reset every turn and the accumulated evidence is lost.
+  #
+  # `memory.events` is seeded before the baseline rather than after it, per the rule at
+  # the top of the file: seeded after, this assertion passed only when both reads landed
+  # in the same ctime granule, which is a coin flip and not a test (#820). Any control
+  # file #prepare! learns to write has to be seeded here too, for the same reason.
   test "prepare! reuses an existing cgroup rather than resetting its counters" do
     cgroup = SessionMemoryCgroup.for(7)
     cgroup.prepare!
-    before = cgroup.incarnation
     File.write(File.join(cgroup.path, "memory.events"), "oom_kill 3\n")
+    before = cgroup.incarnation
 
     assert cgroup.prepare!
     assert_equal 3, cgroup.oom_kill_count

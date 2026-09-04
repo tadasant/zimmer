@@ -42,6 +42,10 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
     FileUtils.remove_entry(@tmp) if @tmp && Dir.exist?(@tmp)
   end
 
+  # Every write here can CREATE the file rather than overwrite it, and creating one moves
+  # the directory's ctime that SessionMemoryCgroup#incarnation keys on — see
+  # SessionMemoryCgroupHelpers. A test that reads an incarnation twice has to get all of
+  # its writes in before the first read (#820).
   def write_cgroup(current: nil, peak: nil, oom_kills: nil, limit: 4 * 1024 * 1024 * 1024)
     File.write(File.join(@cgroup.path, "memory.max"), limit.to_s)
     File.write(File.join(@cgroup.path, "memory.current"), current.to_s) if current
