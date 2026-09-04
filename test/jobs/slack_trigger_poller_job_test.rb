@@ -1264,6 +1264,11 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
   # Slack timestamps relative to now, so tests exercise CHANNEL_ENGAGEMENT_WINDOW
   # and THREAD_BACKFILL_HORIZON against real clock arithmetic rather than
   # fixture-era constants.
+  #
+  # Every call re-reads Time.current, so two calls with the same `ago` return
+  # different strings. A test that seeds a value here and asserts on it must bind
+  # the result to a local and compare against that local; re-deriving it at
+  # assertion time measures the test body's own runtime instead.
   def passive_ts(ago)
     format("%.6f", Time.current.to_f - ago.to_i)
   end
@@ -1740,9 +1745,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ])
 
     good_ts = passive_ts(1.minute)
-    # Bind the broken channel's cursor once. `passive_ts` re-reads Time.current on
-    # every call, so re-deriving it in the assertion below would compare the seeded
-    # value against one computed however many seconds later the test body finished.
+    # Bound once: this exact string is what the erroring channel's cursor must still hold.
     untouched_ts = passive_ts(3.hours)
     condition.configuration["channel_timestamps"] = {
       PASSIVE_CHANNEL => passive_ts(3.hours), other_channel => untouched_ts
