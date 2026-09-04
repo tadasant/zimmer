@@ -12,6 +12,13 @@ require "open3"
 # `sh` wrapper (that one runs for real). The enforcement half is verified on staging: a
 # `bash` accumulating in a 256 MiB session cgroup was OOM-killed inside it while the
 # container was untouched.
+#
+# The stand-in diverges from the real thing in one way that bites, on top of the `rmdir`
+# one the helpers describe: the kernel creates a cgroup's interface files with the
+# directory itself, so a test that writes `memory.events` into the fake is creating a
+# directory entry the real one already had — and creating an entry moves the directory's
+# ctime, which is what #incarnation keys on. Seed the control files a test needs BEFORE
+# reading an incarnation, never between two reads of one.
 class SessionMemoryCgroupTest < ActiveSupport::TestCase
   setup do
     @original_root = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
@@ -74,11 +81,18 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
   # A session respawns constantly — a follow-up turn, a continuation, a signal-death
   # resume. Each one must land in the SAME cgroup, or memory.peak and the OOM counter
   # reset every turn and the accumulated evidence is lost.
+  #
+  # `memory.events` is seeded BEFORE the baseline on purpose, and the order is the whole
+  # difference between a test and a coin flip (#820). The kernel creates a cgroup's
+  # interface files along with the directory, so on real cgroupfs nothing writing to
+  # `memory.events` ever adds a directory entry. Here it does — and adding an entry moves
+  # the directory's ctime, which is exactly what #incarnation reads. Seeded afterwards,
+  # this assertion passes only when the two writes land in the same ctime granule.
   test "prepare! reuses an existing cgroup rather than resetting its counters" do
     cgroup = SessionMemoryCgroup.for(7)
     cgroup.prepare!
-    before = cgroup.incarnation
     File.write(File.join(cgroup.path, "memory.events"), "oom_kill 3\n")
+    before = cgroup.incarnation
 
     assert cgroup.prepare!
     assert_equal 3, cgroup.oom_kill_count
