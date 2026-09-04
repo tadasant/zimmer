@@ -11,9 +11,9 @@
 # resolver's key is baked into the image and reaches every session's environment
 # resolution; it holds three read roles and no write role, and that absence is
 # checked at runtime (Capabilities#least_privilege?). Shipping this as a job
-# would mean deploying a `parametermanager.admin` + `secretmanager.admin` key
-# into the image to run once — permanently widening the blast radius of the one
-# baked credential to save a human a single command.
+# would mean deploying the writer's key into the image to run once —
+# permanently widening the blast radius of the one baked credential to save a
+# human a single command.
 #
 # So it runs from wherever the writer credential already is: an operator's shell,
 # or a CI job holding the key as a secret. It touches no Zimmer database and no

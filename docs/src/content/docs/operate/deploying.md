@@ -207,7 +207,7 @@ The worked case is the Parameter Store namespace migration
 ([Running the migration](/operate/secrets-parameter-store/#running-the-migration)). Zimmer's
 resolver key ships in the image and reaches every session's environment resolution; it holds three
 read roles and no write role, and that absence is checked at runtime. Delivering the migration as a
-post-deploy task would mean shipping a `parametermanager.admin` key alongside it to run **once**,
+post-deploy task would mean shipping the write-capable key alongside it to run **once**,
 permanently widening the blast radius of the one baked credential. So the task runs from wherever
 the writer credential already is, and it touches only Google — no Zimmer database, no running
 process — so it needs no shell on the box either.

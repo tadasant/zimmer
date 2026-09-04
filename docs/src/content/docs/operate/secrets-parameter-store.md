@@ -185,8 +185,8 @@ deploy](/operate/deploying/#ops-actions-ship-with-the-deploy), and the default
 answer to "someone then runs `rake …`" is a post-deploy task. This is the
 exception, for the reason the design exists: **Zimmer's resolver credential holds
 no write permission**, deliberately and checkably, and it is the one credential
-baked into the image. Shipping the migration as a job would mean deploying a
-`parametermanager.admin` + `secretmanager.admin` key into that image to run once —
+baked into the image. Shipping the migration as a job would mean deploying the
+[writer's key](#a-writer-identity-for-the-pi-tab) into that image to run once —
 permanently widening the blast radius of the baked credential to save a human one
 command.
 
@@ -341,7 +341,8 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
 Deliberately **not** granted:
 
 - `roles/parametermanager.admin` / `roles/secretmanager.admin` — that pair is the
-  console's admin identity. Zimmer never writes.
+  console's admin identity. The resolver never writes, and Zimmer's one write path
+  runs as [a separate identity](#a-writer-identity-for-the-pi-tab) holding neither.
 - `roles/editor`, `roles/owner` — both grant `versions.access` **and** write.
   Either makes the split decorative.
 - `roles/secretmanager.viewer` — metadata-only reads Zimmer never performs.
@@ -717,8 +718,8 @@ The resolver's key is baked into the image and sits on the path every session's
 `${VAR}` resolution takes. Granting it write turns one leaked key from "can read
 every Zimmer secret" into "can rewrite every Zimmer secret", and it deletes the
 property the audit above exists to assert. A separate identity keeps the audit
-returning the same four permissions and confines the write blast radius to a key
-only the web tier holds.
+returning the same four permissions and confines the write blast radius to one
+key, held by the web tier and by whoever runs the namespace migration.
 
 ```bash
 PROJECT=zimmer-secrets-prod
@@ -730,22 +731,58 @@ gcloud iam service-accounts create "$WRITER" \
 
 WRITER_EMAIL="${WRITER}@${PROJECT}.iam.gserviceaccount.com"
 
-# Parameter Manager: create/read/version/delete parameters.
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "serviceAccount:${WRITER_EMAIL}" \
-  --role roles/parametermanager.admin --condition=None
+# A CUSTOM ROLE holding exactly the twelve permissions the write path calls, and
+# nothing else. Every one is traced to a call site in the table below. Do not
+# substitute roles/parametermanager.admin + roles/secretmanager.admin — see
+# "The broad grant, and why it is not the one to make".
+gcloud iam roles create zimmerSecretsWriter \
+  --project "$PROJECT" \
+  --title "Zimmer secrets writer" \
+  --description "Exactly what ParameterStore::WriteClient calls: create, version and destroy Zimmer-managed parameter/secret pairs. Reads no value." \
+  --stage GA \
+  --permissions parametermanager.parameters.create,\
+parametermanager.parameters.get,\
+parametermanager.parameters.delete,\
+parametermanager.parameterVersions.create,\
+parametermanager.parameterVersions.list,\
+parametermanager.parameterVersions.delete,\
+secretmanager.secrets.create,\
+secretmanager.secrets.get,\
+secretmanager.secrets.delete,\
+secretmanager.secrets.getIamPolicy,\
+secretmanager.secrets.setIamPolicy,\
+secretmanager.versions.add
+# Re-running? `roles create` fails with ALREADY_EXISTS. Use `gcloud iam roles
+# update zimmerSecretsWriter --project "$PROJECT" --permissions <same list>`.
 
-# Secret Manager: create/version/delete secrets, and — the load-bearing one —
-# set the IAM binding that lets a parameter dereference its own secret.
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:${WRITER_EMAIL}" \
-  --role roles/secretmanager.admin --condition=None
+  --role "projects/${PROJECT}/roles/zimmerSecretsWriter" --condition=None
 
 gcloud iam service-accounts keys create /tmp/zimmer-secrets-writer.json \
   --iam-account "$WRITER_EMAIL"
 base64 -w0 /tmp/zimmer-secrets-writer.json   # -> ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
 rm -f /tmp/zimmer-secrets-writer.json
 ```
+
+**The role grants no verb that returns a value.** It holds neither
+`parametermanager.parameterVersions.render` nor `secretmanager.versions.access`,
+the two permissions that turn a name in this store into bytes. `WriteClient`
+calls neither, and the
+[audit above](#4-audit-it--assert-exactly-these-roles-and-nothing-more) asserts
+they belong to the resolver. The writer cannot resolve this store the way Zimmer
+does.
+
+**Treat it as a read-capable credential anyway.**
+`secretmanager.secrets.setIamPolicy` is load-bearing — it is the step that lets a
+parameter dereference its own secret — and a project-level holder of it can bind
+itself to `roles/secretmanager.secretAccessor` on any secret here and then read
+what it likes. The ids are derivable, and the bytes are all in Secret Manager. So
+the honest claim for the custom role is narrower than "cannot read": reading
+takes a deliberate policy mutation, which lands in the secret's own IAM policy
+and in Cloud Audit Logs, instead of being a permission the credential already
+sits on. A leaked writer key is at least as urgent as a leaked resolver key, and
+it can also destroy things.
 
 Deliver the base64 as `ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`, exactly
 as the resolver key is delivered in [Deliver the key to
@@ -758,35 +795,103 @@ shell on the box**, per [Ops actions ship with the deploy](/operate/deploying/).
 
 `CliSpawnEnv` clears this variable from every spawned agent session, for a
 stronger reason than it clears the resolver: a session holding the writer key
-could rewrite or delete every Zimmer secret, which is the blast radius the
-separate identity exists to avoid.
+could rewrite or delete every Zimmer secret, and grant itself the read of every
+one, which is the blast radius the separate identity exists to avoid.
 
 Staging gets its own writer if it gets one at all. A credential that may *delete*
 secrets is the last one to share across environments.
 
+### The broad grant, and why it is not the one to make
+
+`roles/parametermanager.admin` + `roles/secretmanager.admin` at the project level
+is the one-line grant, and it works. It is also the grant this same document
+spends [the resolver's section](#2-the-resolver-identity-and-exactly-three-roles)
+arguing against for the other identity, and the reasoning does not stop applying
+because the principal changed:
+
+- Both roles carry the **read** verbs outright. `parametermanager.admin`
+  includes `parameterVersions.render`, `secretmanager.admin` includes
+  `versions.access`, and between them that is every value in
+  `zimmer-secrets-prod`, readable with no policy change and nothing in the audit
+  log to distinguish it from ordinary use. The write path never reads a value,
+  so this is power granted to a credential with no use for it.
+- They carry write verbs Zimmer does not call either, `secretmanager.secrets.update`
+  and `secretmanager.versions.destroy` among them, and the rest of two whole
+  surfaces besides.
+
+Use them only as a deliberate, temporary shortcut — while diagnosing a permission
+problem, say — and replace them with the custom role before the key is delivered
+to a running Zimmer.
+
+### Why the binding is project-level and not on the one parameter
+
+The narrower thing to want is a binding on the single parameter and the single
+secret behind `OPENROUTER_API_KEY`. It does not work, for three reasons — one in
+GCP's authorization model, two in this repo:
+
+1. **Two of the permissions are parent-scoped by construction.**
+   `parametermanager.parameters.create` and `secretmanager.secrets.create` are
+   checked against the *parent* — the project, and for Parameter Manager the
+   project's location, neither of which is a per-secret handle. `WriteClient#upsert`
+   creates the pair, so on a first write there is no resource to have bound them to.
+2. **Zimmer's own preflight asks the project.** `Capabilities.probe` calls
+   `projects:testIamPermissions` on Cloud Resource Manager
+   (`WriteClient#held_permissions`), which reports permissions held on the
+   *project* — including any inherited from a folder or the organisation, but not
+   ones granted on a child resource. A permission bound only to the parameter is
+   invisible to it, so `can_upsert?` stays false, `ManagedSecret#write` refuses
+   before any call goes out, and the Pi tab renders "the writer credential is
+   missing … on this project". On a first write the API would have refused too,
+   per reason 1, so the preflight is right; on a *rotation* of an
+   already-created pair it would have succeeded, and the binding fails **closed**
+   at the moment a human is provisioning production.
+3. **`OPENROUTER_API_KEY` is not the only thing this credential writes.** The
+   [namespace migration](#running-the-migration) drives the same client over
+   **every** variable in the store (`ParameterStore::NamespaceMigration` upserts
+   at the canonical path and deletes at the pre-rename one), so a binding scoped
+   to one pair breaks it.
+
+So the resource scope stays project-wide and the *permission* set is what gets
+cut — from two full admin surfaces to twelve verbs, none of which reads a value.
+That is the same trade-off the resolver makes, for a
+[related reason](#2-the-resolver-identity-and-exactly-three-roles): a binding set
+pinned to today's resources goes stale the moment a human adds a secret.
+
 ### The permissions, and what each one is for
 
-The two predefined roles above are the convenient grant. If you would rather
-build a custom role, these are the nine permissions the write path actually
-calls, and they are the same list `ParameterStore::Capabilities::UPSERT_PERMISSIONS`
-and `DELETE_PERMISSIONS` probe:
+Twelve permissions, each traced to the call in `ParameterStore::WriteClient` that
+needs it. This is the union of `ParameterStore::Capabilities::UPSERT_PERMISSIONS`
+and `DELETE_PERMISSIONS`. The two are checked separately: `can_upsert?` gates the
+form and `can_delete?` gates the Delete button, so a role holding only the nine
+upsert permissions is a coherent posture and a visible one. (`Capabilities.probe`
+asks about fourteen, not twelve — it adds `parameterVersions.render` and
+`versions.access` so the page can report a credential that holds them.)
 
 | Permission | Called by |
 | --- | --- |
-| `secretmanager.secrets.create` | creating the secret that holds the bytes |
-| `secretmanager.secrets.get` | finding an existing one, on a rotation |
-| `secretmanager.versions.add` | writing the value — and the *only* call a rotation makes, because the envelope points at `versions/latest` |
-| `secretmanager.secrets.getIamPolicy` | reading the policy so the binding is merged, not replaced |
-| `secretmanager.secrets.setIamPolicy` | **the step that fails silently if skipped** — granting the parameter's own principal `roles/secretmanager.secretAccessor` |
-| `parametermanager.parameters.create` | creating the parameter that indexes the secret |
-| `parametermanager.parameters.get` | reading `policyMember.iamPolicyUidPrincipal` on an existing one |
-| `parametermanager.parameterVersions.list` | deciding whether the envelope still needs writing |
-| `parametermanager.parameterVersions.create` | writing the envelope |
+| `secretmanager.secrets.create` | `create_secret` — the secret that holds the bytes. 409 is tolerated, which is the rotation case |
+| `secretmanager.versions.add` | `add_secret_version` — writing the value, and the *only* call a rotation makes, because the envelope points at `versions/latest` |
+| `secretmanager.secrets.getIamPolicy` | `grant_accessor` — reading the policy so the binding is merged, not replaced |
+| `secretmanager.secrets.setIamPolicy` | `grant_accessor` — **the step that fails silently if skipped** — granting the parameter's own principal `roles/secretmanager.secretAccessor` |
+| `secretmanager.secrets.get` | `refuse_unmanaged!`, on delete — checking the `managed-by` label before destroying anything |
+| `secretmanager.secrets.delete` | `delete` — removing the secret |
+| `parametermanager.parameters.create` | `create_parameter` — the parameter that indexes the secret |
+| `parametermanager.parameters.get` | `create_parameter`, reading `policyMember.iamPolicyUidPrincipal` off an existing one; and `refuse_unmanaged!` on delete |
+| `parametermanager.parameterVersions.list` | `parameter_version_ids` — deciding whether the envelope still needs writing, and enumerating versions to delete |
+| `parametermanager.parameterVersions.create` | `write_envelope` — the envelope joining parameter to secret |
+| `parametermanager.parameterVersions.delete` | `delete` — Parameter Manager refuses to delete a parameter that still has versions, so these go first |
+| `parametermanager.parameters.delete` | `delete` — removing the parameter |
 
-Delete additionally needs `parametermanager.parameterVersions.delete`,
-`parametermanager.parameters.delete` and `secretmanager.secrets.delete` —
-Parameter Manager refuses to delete a parameter that still has versions, so the
-versions go first.
+Two places where the probe and the call sites do not line up exactly. Neither
+changes the role above, because it is the union of both lists, but both are worth
+knowing if you ever narrow it further: `secretmanager.secrets.get` sits in
+`UPSERT_PERMISSIONS` although `upsert` never issues that GET (it POSTs the create
+and tolerates 409) — the call is on the delete path; and `DELETE_PERMISSIONS`
+omits `secrets.get` and `parameters.get` although `refuse_unmanaged!` calls both.
+
+No permission on Cloud Resource Manager is needed for the probe itself, but
+`cloudresourcemanager.googleapis.com` must be enabled on the project — see [the
+project and its APIs](#1-the-project-and-its-apis).
 
 Zimmer never assumes any of these. `Capabilities.probe` asks Google before every
 write and refuses locally when the answer is no, so a missing permission is a
