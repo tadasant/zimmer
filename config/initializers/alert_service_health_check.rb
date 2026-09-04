@@ -36,7 +36,7 @@ Rails.application.config.after_initialize do
   # ao_event Trigger that spawns an agent holding the Slack MCP server, which
   # finds its own recipient — so an unset operator id costs nothing that is
   # currently being sent. The helper is kept for the next condition that needs
-  # it, so note the seam at boot rather than page about it.
+  # it, so note the seam at boot rather than flag it as a fault.
   if AlertService.operator_user_id.blank?
     Rails.logger.info(
       "[AlertServiceHealthCheck] #{AlertService::OPERATOR_USER_ID_KEY} is not set — any future " \
