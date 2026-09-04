@@ -100,8 +100,12 @@ class SecretsInterpolator
       "Unresolved"
     end
 
-    def source_badge_title
-      return source.badge_title if source.respond_to?(:badge_title)
+    # Naming `var_name` matters: the Parameter Store link reads the canonical
+    # namespace AND the pre-rename one, so "which store" is not a complete answer
+    # — "which path inside it" is what tells a half-migrated store from a
+    # finished one, per variable, on the Connectors page.
+    def source_badge_title(var_name = nil)
+      return source.badge_title(var_name) if source.respond_to?(:badge_title)
       return "The secret store did not answer, so this could not be determined" if unavailable?
 
       "No provider holds this variable"
@@ -147,7 +151,9 @@ class SecretsInterpolator
 
   # The one source that is not a chain provider. Given the same badge surface as
   # the providers so callers never special-case it.
-  X_OAUTH_SOURCE = Struct.new(:label, :badge, :badge_title).new(
-    "Zimmer's X OAuth token store", "X OAuth", "Minted by Zimmer's X OAuth token store"
-  ).freeze
+  X_OAUTH_SOURCE = Struct.new(:label, :badge) do
+    # Same shape as a chain provider's, `variable` included, so callers never
+    # special-case it.
+    def badge_title(_variable = nil) = "Minted by Zimmer's X OAuth token store"
+  end.new("Zimmer's X OAuth token store", "X OAuth").freeze
 end

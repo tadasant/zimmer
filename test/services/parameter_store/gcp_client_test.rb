@@ -82,6 +82,38 @@ module ParameterStore
       assert_no_match(/error/, error.message, "the response body must not be echoed")
     end
 
+    # --- resolve_all -----------------------------------------------------------
+
+    test "resolve_all buckets each namespace separately, in one pass over the project" do
+      @fake.seed_secret("MIGRATED", "new")
+      @fake.seed_secret("NOT_YET", "old", path: "#{Namespace.legacy_static_namespace}NOT_YET")
+      before = @fake.requests.size
+
+      resolved = @fake.client.resolve_all(Namespace.read_namespaces)
+
+      assert_equal({ "MIGRATED" => "new" }, resolved.fetch(Namespace.static_namespace))
+      assert_equal({ "NOT_YET" => "old" }, resolved.fetch(Namespace.legacy_static_namespace))
+      # One list, then one versions-list and one render per parameter: the same
+      # traffic a single-namespace resolve costs. Reading the pre-rename
+      # namespace alongside the canonical one is meant to be free.
+      assert_equal 5, @fake.requests.size - before
+    end
+
+    test "resolve_all keys every namespace asked for, empty ones included" do
+      resolved = @fake.client.resolve_all(Namespace.read_namespaces)
+
+      assert_equal Namespace.read_namespaces, resolved.keys
+      assert resolved.values.all?(&:empty?)
+    end
+
+    test "resolve_all applies the envelope-path fence to each namespace on its own" do
+      @fake.seed_plain("ELSEWHERE", "x", path: "/zimmer/somewhere-else/secrets/static/ELSEWHERE")
+
+      resolved = @fake.client.resolve_all(Namespace.read_namespaces)
+
+      assert resolved.values.all?(&:empty?)
+    end
+
     test "held_permissions reports the subset Google says the credential holds" do
       @fake.held_permissions = [ Capabilities::READ_SECRET_VALUE ]
 

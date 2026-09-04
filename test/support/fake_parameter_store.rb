@@ -46,7 +46,8 @@ class FakeParameterStore
   # --- seeding ---------------------------------------------------------------
 
   # Store a secret the way the console does: bytes in Secret Manager, a pointer
-  # in the Parameter Manager envelope.
+  # in the Parameter Manager envelope. `path:` overrides the canonical path,
+  # which is how a test seeds the PRE-RENAME namespace.
   def seed_secret(variable, value, env: Rails.env, path: nil)
     path ||= ParameterStore::Namespace.parameter_path(variable, env)
     id = ParameterStore::Namespace.parameter_id(path)
@@ -100,8 +101,8 @@ class FakeParameterStore
       pm_api_base: PM_BASE, sm_api_base: SM_BASE, transport: self)
   end
 
-  def provider(namespace: ParameterStore::Namespace.static_namespace)
-    SecretProviders::ParameterStoreProvider.new(client, namespace: namespace)
+  def provider(namespaces: ParameterStore::Namespace.read_namespaces)
+    SecretProviders::ParameterStoreProvider.new(client, namespaces: Array(namespaces))
   end
 
   # The WRITE half, pointed at the same in-memory store the resolver reads, so a
@@ -114,15 +115,15 @@ class FakeParameterStore
 
   # A whole SecretProviders chain over this store, with no Rails-credentials or
   # ENV link — so "the value resolves" means "it resolves FROM THE STORE".
-  def chain(namespace: ParameterStore::Namespace.static_namespace)
-    SecretProviders::Chain.new([ provider(namespace: namespace) ])
+  def chain(namespaces: ParameterStore::Namespace.read_namespaces)
+    SecretProviders::Chain.new([ provider(namespaces: namespaces) ])
   end
 
   # Break the IAM binding the way a forgotten `add-iam-policy-binding` does:
   # everything is present, everything reports success, and every render 400s.
-  def revoke_parameter_binding!(variable, env: Rails.env)
+  def revoke_parameter_binding!(variable, env: Rails.env, path: nil)
     @secret_policies[ParameterStore::Namespace.parameter_id(
-      ParameterStore::Namespace.parameter_path(variable, env)
+      path || ParameterStore::Namespace.parameter_path(variable, env)
     )] = []
   end
 

@@ -310,7 +310,7 @@ class ConnectorStatusProbe
     server.required_variables.each do |name|
       resolution = interpolator.resolution(name)
       sources << VariableSource.new(variable: name, badge: resolution.source_badge,
-        title: resolution.source_badge_title, resolved: resolution.found?)
+        title: resolution.source_badge_title(name), resolved: resolution.found?)
       next if resolution.found?
 
       if resolution.unavailable?
