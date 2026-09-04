@@ -32,12 +32,19 @@ module SessionSearchable
   # PostgreSQL: `::text` casting for the JSON/JSONB columns, ILIKE for
   # case-insensitivity. Bound as `:q` by every caller.
   #
-  # `:q` is the WHOLE query wrapped in one `%…%`, never a set of words. So a
-  # multi-word query is a phrase: "YC interview" matches a transcript that says
-  # `YC interview` and not one that says `the interview is at YC`. Splitting it into
-  # per-word ORs would be a wider net that reads like a working search — every caller
-  # gets a shortlist to re-grep by hand instead of an answer (#405). Adjacency and
-  # order are the contract; SessionContentSearchTest pins it.
+  # `:q` is the WHOLE query wrapped in one `%…%`, never a set of words, on both
+  # predicates. So a multi-word query is a phrase: "YC interview" matches a title
+  # (or a transcript) reading `YC interview` and not one reading `the interview is
+  # at YC`. Splitting it into per-word ORs would be a wider net that reads like a
+  # working search — every caller gets a shortlist to re-grep by hand instead of an
+  # answer (#405). Adjacency and order are the contract, pinned for the cheap path
+  # in Api::V1::SessionsControllerTest and for the transcript in
+  # SessionContentSearchTest.
+  #
+  # What `transcript::text` matches is the stored JSON, not the rendered
+  # conversation: a phrase broken across a line break is `\n` in that text and does
+  # not match, and a hit can land in a tool argument or a file path rather than in
+  # anything anybody said.
   METADATA_PREDICATE = "title ILIKE :q OR metadata::text ILIKE :q OR custom_metadata::text ILIKE :q"
   CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR transcript::text ILIKE :q"
 
