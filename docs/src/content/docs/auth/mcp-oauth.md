@@ -608,10 +608,12 @@ fix this" with the prompt and without the screenshot. The resume now reads them 
 volume through `Sessions::FirstTurnAttachments`
 ([#789](https://github.com/tadasant/zimmer/issues/789)) — but only when the session's transcript is
 empty, meaning no turn has reached an agent yet. `oauth_required` is not exclusively a first-turn
-failure: **Configure MCP servers** and **Configure plugins** set it when a human adds an OAuth server
-to a live session, and `AgentSessionJob`'s follow-up branch sets it under *"Follow-up blocked"*. On a
-session that has already run, everything on its volume includes attachments earlier turns consumed,
-so the resume deliberately carries none.
+failure: **Edit MCP servers** and **Edit plugins** set it when a human adds an OAuth server to a live
+session, `AgentSessionJob`'s follow-up branch sets it under *"Follow-up blocked"*, and the post-spawn
+MCP-failure classifier sets it after the process has run. On a session that has already run,
+everything on its volume includes attachments earlier turns consumed, so the resume carries none —
+and the spawn it re-queues resumes the existing conversation rather than replaying the prompt, so
+there is no turn there to put them on.
 :::
 
 :::caution[Authorizing from the Connectors page does not release a session parked on that server]

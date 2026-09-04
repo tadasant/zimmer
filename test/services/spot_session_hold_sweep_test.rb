@@ -180,9 +180,9 @@ class SpotSessionHoldSweepTest < ActiveSupport::TestCase
     refute_match(/carrying/, session.logs.order(:id).last.content)
   end
 
-  # A re-armed RESUME moves a turn of its own. Its attachments came with the
-  # prompt that woke it, and reading the volume there would attach the first
-  # turn's screenshot to a much later turn.
+  # A re-armed RESUME must not read the volume: everything on it belongs to turns
+  # this session has already had. What it loses by not reading is tracked in
+  # #890 — so its log line claims the prompt and nothing more.
   test "a re-armed resume does not pick up the volume's attachments" do
     session = held_session(retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME,
                            prompt: "please continue the PR")
@@ -191,6 +191,33 @@ class SpotSessionHoldSweepTest < ActiveSupport::TestCase
     assert_equal 1, SpotSessionHold.sweep!.rearmed
 
     assert_equal [ session.id, "please continue the PR" ], rearmed_agent_session_args
+    log = session.logs.order(:id).last.content
+    assert_match(/The prompt it was holding is carried with it\./, log)
+    refute_match(/carrying/, log)
+  end
+
+  test "a re-armed resume with no prompt still says the prompt was lost" do
+    session = held_session(retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME)
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    assert_match(/lost with the re-check, so it comes back on a recovery nudge instead\./,
+      session.logs.order(:id).last.content)
+  end
+
+  # A `start` hold is not always a first turn: McpOauthResumeService resumes an
+  # already-run session with a promptless new-session job, which this gate can
+  # hold. That session's lost job carried no attachments either, and everything
+  # on its volume belongs to turns it has already had.
+  test "a re-armed start for a session that has already run reads nothing off the volume" do
+    session = held_session(retry_at: 11.hours.ago)
+    session.update!(session_id: SecureRandom.uuid)
+    store_image_for(session)
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    assert_equal [ session.id ], rearmed_agent_session_args
+    refute_match(/carrying/, session.logs.order(:id).last.content)
   end
 
   # A pause, an auth-outage park and a wall-clock pause each own their own
