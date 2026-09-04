@@ -4507,6 +4507,28 @@ branch whose whole predicate is that neither store holds one — and let the win
 house 60 seconds. That needs a reset that can ask a question about the filesystem, which
 `RetryBudget` deliberately cannot; it is a value object over `session.metadata`.
 
+## An exception on an archived session's turn is no longer paged, whatever it was
+
+`AgentSessionJob#perform`'s catch-all rescue re-reads the session row, and when it says `archived`
+it records the exception on the session's timeline at `warning` and in the backend log at `warn`,
+then returns — no `failure_reason`, no `error` line, no re-raise, so neither GlitchTip nor the
+log-based alert rule sees it ([#886](https://github.com/tadasant/zimmer/issues/886)). That is the
+point: the race it exists for is an archive landing mid-turn and taking the clone with it, which
+paged twice for a session that had already finished.
+
+The gate is the row and nothing else, and that is wider than the race. A genuine bug — a
+`NoMethodError` in the teardown after the monitoring loop, say — stops paging as soon as the
+session it happens on is archived, and self-archiving is routine rather than exotic: an agent can
+archive itself through `action_session`, and the merge gate does. Narrowing the gate to "nothing had
+been spawned yet" was considered and rejected, because that is precisely where the commonest form of
+the race lives: a self-archive enqueues `DeferredCloneCleanupJob`, which deletes the clone about ten
+seconds later, while the job is still in its teardown tail holding a pid and touching that clone.
+
+Nothing is lost, but it is one level quieter than it was: the exception class, its message and the
+first five backtrace lines are in the backend log at `warn`, and the session's own timeline says the
+turn stopped and why. An unexplained gap in an archived session's history is worth grepping the
+backend log for before assuming it finished cleanly.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
