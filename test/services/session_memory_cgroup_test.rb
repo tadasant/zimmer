@@ -13,12 +13,10 @@ require "open3"
 # `bash` accumulating in a 256 MiB session cgroup was OOM-killed inside it while the
 # container was untouched.
 #
-# The stand-in diverges from the real thing in one way that bites, on top of the `rmdir`
-# one the helpers describe: the kernel creates a cgroup's interface files with the
-# directory itself, so a test that writes `memory.events` into the fake is creating a
-# directory entry the real one already had — and creating an entry moves the directory's
-# ctime, which is what #incarnation keys on. Seed the control files a test needs BEFORE
-# reading an incarnation, never between two reads of one.
+# The stand-in carries one rule with it, spelled out in SessionMemoryCgroupHelpers: a
+# test that reads #incarnation twice must not let anything create a file in the cgroup
+# directory in between. On real cgroupfs the control files arrive with the directory;
+# here they do not, and creating one moves the ctime #incarnation keys on (#820).
 class SessionMemoryCgroupTest < ActiveSupport::TestCase
   setup do
     @original_root = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
@@ -82,12 +80,10 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
   # resume. Each one must land in the SAME cgroup, or memory.peak and the OOM counter
   # reset every turn and the accumulated evidence is lost.
   #
-  # `memory.events` is seeded BEFORE the baseline on purpose, and the order is the whole
-  # difference between a test and a coin flip (#820). The kernel creates a cgroup's
-  # interface files along with the directory, so on real cgroupfs nothing writing to
-  # `memory.events` ever adds a directory entry. Here it does — and adding an entry moves
-  # the directory's ctime, which is exactly what #incarnation reads. Seeded afterwards,
-  # this assertion passes only when the two writes land in the same ctime granule.
+  # `memory.events` is seeded before the baseline rather than after it, per the rule at
+  # the top of the file: seeded after, this assertion passed only when both reads landed
+  # in the same ctime granule, which is a coin flip and not a test (#820). Any control
+  # file #prepare! learns to write has to be seeded here too, for the same reason.
   test "prepare! reuses an existing cgroup rather than resetting its counters" do
     cgroup = SessionMemoryCgroup.for(7)
     cgroup.prepare!

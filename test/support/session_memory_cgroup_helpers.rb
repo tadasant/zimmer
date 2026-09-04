@@ -13,9 +13,11 @@
 # Creation: the kernel creates a cgroup's interface files with the directory itself, so
 # writing `memory.events` on real cgroupfs never adds a directory entry — here it does,
 # and that moves the directory's ctime, which is what SessionMemoryCgroup#incarnation
-# reads. Hence #write_session_cgroup seeds every control file a test asked for before it
-# returns: an incarnation read after the helper stays put, one read between two of these
-# writes is a race against the filesystem's ctime granularity (#820).
+# reads. So the rule for every test that reads an incarnation twice is that nothing may
+# create a file in the directory in between, whether the creating write is the test's or
+# #prepare!'s. Seed what the test needs first. #write_session_cgroup does its own writes
+# before it returns, but it writes no `cgroup.procs` and skips `memory.max` when `limit:`
+# is nil, so a test adding either of those later is still creating an entry (#820).
 #
 # Usage:
 #   with_delegated_cgroup_parent do |parent|
