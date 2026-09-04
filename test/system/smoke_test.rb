@@ -271,8 +271,9 @@ class SmokeTest < ApplicationSystemTestCase
   # down, and the poller under test resolves the same path through
   # TranscriptRuntime.
   def create_fake_claude_transcript(session_id, working_directory)
-    transcript_dir = ClaudeTranscriptSource.new(file_system: @mock_fs)
-      .transcript_directory(working_directory: working_directory)
+    # No file_system argument: #transcript_directory is pure path computation, and
+    # passing the mock would imply the path is resolved against it.
+    transcript_dir = ClaudeTranscriptSource.new.transcript_directory(working_directory: working_directory)
     @mock_fs.mkdir_p(transcript_dir)
 
     transcript_file = File.join(transcript_dir, "conversation-#{session_id}.jsonl")
