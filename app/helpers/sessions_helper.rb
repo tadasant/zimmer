@@ -122,6 +122,27 @@ module SessionsHelper
     end
   end
 
+  # The session-card grid, shared by every board that renders cards: the category
+  # sections, the pinned strip, the flat lists and the search results. One method
+  # rather than the same string five times, because the string carries a rule that
+  # is easy to get wrong and impossible to notice going wrong on a laptop.
+  #
+  # The rule is the track's floor. A bare `minmax(320px, 400px)` reads as "between
+  # 320 and 400", but a grid track can never resolve below its own floor — so in a
+  # container narrower than 320px the single track is laid out at 320px anyway, and
+  # `justify-center` centres that too-wide track by hanging it off both edges. The
+  # dashboard's `px-4` gutter leaves 288px of grid at a 320px viewport, which is
+  # exactly that case: the card sits outside the content column the rest of the page
+  # keeps, and below 320px the page scrolls sideways outright (#803).
+  #
+  # Wrapping the floor in `min(320px, 100%)` is the conventional idiom for it: it is
+  # 320px whenever 320px fits and the container's own width when it does not, so the
+  # track is never wider than the thing it sits in. A container of 320px or more is
+  # unaffected, since `min()` picks the 320px there.
+  def session_card_grid_classes
+    "grid gap-6 grid-cols-[repeat(auto-fill,minmax(min(320px,100%),400px))] justify-center"
+  end
+
   # ---------------------------------------------------------------------------
   # OpenTranscripts display helpers
   # ---------------------------------------------------------------------------
