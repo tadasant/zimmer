@@ -98,6 +98,10 @@ Two things are deliberately outside that rule:
 | `catalog-mgmt-proctor` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-save` | ❌ | ↳ subagent phase | same |
 
+That count, this table's rows, and the Invocable column are asserted against a live resolve by
+`test/docs/roots_docs_catalog_test.rb`, so adding a root to `roots.json` without updating them fails
+CI rather than leaving the page quietly stale.
+
 :::danger[Seven roots point at a repository that does not exist]
 `agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all
 have `"url": "https://github.com/tadasant/zimmer-catalog.git"`. **That repository does not

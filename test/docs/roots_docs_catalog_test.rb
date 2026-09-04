@@ -3,11 +3,11 @@
 require "test_helper"
 
 # Two docs pages write down how many agent roots the catalog ships, and one of
-# them also names every root in a hand-maintained table. Nothing used to check
-# either, so both drifted the way docs/air/zimmer-integration.md drifted before
-# it was guarded (tadasant/zimmer#841, #909): the roots count went 11 -> 12 in a
-# single day, and agent-roots.md's own frontmatter was still claiming ten
-# (tadasant/zimmer#911).
+# them also names every root in a hand-maintained table. The catalog moves under
+# them: the roots count went 11 -> 12 in a single day, and agent-roots.md's
+# frontmatter claimed ten against a catalog resolving twelve
+# (tadasant/zimmer#911) -- the same drift docs/air/zimmer-integration.md carried
+# before it was guarded (#841, #909).
 #
 # The counts are spelled as English words rather than digits, which is harder to
 # spot by eye, so they are read back out of the prose and compared against a live
@@ -72,7 +72,8 @@ class RootsDocsCatalogTest < ActiveSupport::TestCase
 
     expected_word = NUMBER_WORDS[expected]
     assert expected_word,
-           "the catalog resolves #{expected} roots, past the end of NUMBER_WORDS. Extend it, then fix the pages."
+           "the catalog puts the #{description} at #{expected}, past the end of NUMBER_WORDS. " \
+           "Extend it, then fix the pages."
     flunk "#{page_name(page)} states the #{description} as \"#{NUMBER_WORDS[actual]}\" (#{actual}), " \
           "but a live catalog resolve produces #{expected}. Change the page to say \"#{expected_word}\"."
   end
@@ -98,6 +99,9 @@ class RootsDocsCatalogTest < ActiveSupport::TestCase
                    "the roots table in #{page_name(ROOTS_PAGE)} no longer starts with " \
                    "#{TABLE_HEADINGS.join(' / ')} columns; this test reads those two by position."
 
+      assert_match(/\A\|[\s:|-]+\|\z/, table[1],
+                   "the roots table in #{page_name(ROOTS_PAGE)} has no --- separator row under its headings.")
+
       table[2..].map { |row| parse_row(row) }
     end
   end
@@ -122,7 +126,7 @@ class RootsDocsCatalogTest < ActiveSupport::TestCase
   # --- the counts -------------------------------------------------------------
 
   test "agent-roots.md counts the roots the catalog resolves, in its frontmatter and its heading" do
-    assert_stated_count @roots.size, ROOTS_PAGE, /^description:.*\bthe (\S+) that ship\b/, "frontmatter roots count"
+    assert_stated_count @roots.size, ROOTS_PAGE, /^description:.*\bthe (\S+)(?: roots)? that ship\b/, "frontmatter roots count"
     assert_stated_count @roots.size, ROOTS_PAGE, /^## The (\S+) roots that ship\b/, "roots-that-ship heading count"
   end
 
@@ -133,7 +137,7 @@ class RootsDocsCatalogTest < ActiveSupport::TestCase
   test "concepts.md counts the subagent phase roots the catalog resolves" do
     expected = @roots.keys.count { |id| id.start_with?(SUBAGENT_ROOT_PREFIX) }
 
-    assert_stated_count expected, CONCEPTS_PAGE, /(\S+) `#{SUBAGENT_ROOT_PREFIX}\*` roots\b/, "subagent roots count"
+    assert_stated_count expected, CONCEPTS_PAGE, /(\S+) `#{Regexp.escape(SUBAGENT_ROOT_PREFIX)}\*` roots\b/, "subagent roots count"
   end
 
   # --- the table --------------------------------------------------------------
@@ -165,11 +169,13 @@ class RootsDocsCatalogTest < ActiveSupport::TestCase
       # A row naming a root the catalog does not have is the row-set test's failure, not this one's.
       next if root.nil?
 
-      declared = root.fetch("user_invocable")
+      # Optional in roots.json, and AgentRootsConfig reads an absent key as true --
+      # so an omitted key means an invocable root, not a crash in here.
+      declared = root.fetch("user_invocable", true)
       next if declared == invocable
 
-      mark = INVOCABLE_MARKS.key(declared)
-      "`#{id}` (roots.json says user_invocable: #{declared}, so the table's Invocable column should be #{mark})"
+      "`#{id}` (the catalog resolves user_invocable: #{declared}, " \
+        "so the table's Invocable column should be #{INVOCABLE_MARKS.key(declared)})"
     end
 
     return if wrong.empty?
@@ -192,7 +198,7 @@ class RootsDocsCatalogTest < ActiveSupport::TestCase
     end
 
     assert present,
-           "#{@roots.count { |_id, root| root['url'] == MISSING_REPO_URL }} roots point at #{MISSING_REPO_URL}, " \
+           "#{expected} roots point at #{MISSING_REPO_URL}, " \
            "but #{page_name(ROOTS_PAGE)} no longer warns about it."
     assert_stated_count expected, ROOTS_PAGE, heading, "missing-repository callout count"
   end
