@@ -87,6 +87,28 @@ has gone missing still fails loudly *at this spawn*: that session should run, an
 compaction — answers the same question at `warning` instead; `ProcessLifecycleManager` is deciding
 what to do about a turn that has already run.)
 
+The spawn-time check closes the window at one point; the setup ahead of it is the rest of it.
+`AirPrepareService#prepare!` shells out with the clone as its working directory and rescues only
+its two domain errors, and the credential injection writes into that clone — so a clone deleted a
+few seconds earlier raises `ENOENT` inside the setup rather than at the spawn, and lands in
+`#perform`'s catch-all rescue. That rescue is the **fourth** check: it re-reads the row, and for an
+archived session it records what happened on the session's timeline at `warning` and in the backend
+log at `warn`, then returns. It does **not** stamp `failure_reason`, does **not** log at `error`,
+and — the two decisions worth stating — does **not** re-raise
+([#886](https://github.com/tadasant/zimmer/issues/886)). The re-raise is the reporting path
+(sentry-rails captures terminal ActiveJob failures, and ActiveJob logs them at `error`, which is
+what the log-based alert rule reads), so quietening the session's own logs while still raising
+would remove neither page; and the GoodJob retry it feeds has nothing to accomplish, since a retry
+re-enters the job only to be stood down again — by the delivery-time guard on a start, or by the
+monitoring loop's own archived check on a `resume_monitoring` job. The gate is the **row**, not the
+exception class and not where in the turn it fired — a deleted clone surfaces as whatever the step
+that touched it wraps it in, and a session that archives *itself* is still in this job's teardown
+tail when the cleanup deletes the clone under it. So the full exception, message and backtrace go
+to the backend log at `warn`, where a genuine bug that coincided with an archive is greppable but
+no longer paged; that trade is recorded in [Limitations](/limitations/). A session that is **not**
+archived keeps the whole loud path: the `failure_reason: "exception"` stamp, the `error` logs, the
+`fail!` and the re-raise.
+
 :::caution[Other resumers lock by hand, or not at all]
 `SpotSessionPause.resume!`, `AuthOutageParkService.resume_parked!` and `SpotSessionHold.rearm!` are
 not part of this family: each takes its own row lock and re-checks under it rather than routing
