@@ -121,6 +121,7 @@ module ParameterStore
       current = snapshot.fetch(to_namespace)
 
       variables = (old.keys | current.keys).sort
+      refuse_fold_collisions!(variables)
       @stop = false
       items = []
       variables.each_with_index do |variable, index|
@@ -139,6 +140,35 @@ module ParameterStore
     end
 
     private
+
+    # Refuse the whole run when two names in scope fold onto ONE canonical id.
+    #
+    # Within a single namespace this cannot happen — two colliding names would
+    # already be one parameter. Across two namespaces it can: the store may hold
+    # `FOO_BAR` at the old path and `FOO__BAR` at the new one, which
+    # {Namespace.parameter_id} collapses together. Migrating `FOO_BAR` would then
+    # append its bytes to `FOO__BAR`'s Secret Manager secret (the create 409s and
+    # is tolerated, and the envelope is left alone because the parameter already
+    # has a version), silently changing what `FOO__BAR` resolves to. The verify
+    # correctly fails — the canonical namespace answers for `FOO__BAR`, not for
+    # `FOO_BAR` — and the rollback then deletes the pair, destroying the only
+    # copy of a variable this run was never asked to touch.
+    #
+    # No guard downstream can catch it: `refuse_unmanaged!` passes because the
+    # resource genuinely is Zimmer's, and the envelope-path fence is what makes
+    # the two names distinguishable in the first place. So it is refused here,
+    # before anything is written, and the operator renames one of them by hand.
+    def refuse_fold_collisions!(variables)
+      collisions = variables
+        .group_by { |variable| Namespace.parameter_id(Namespace.parameter_path(variable, env)) }
+        .select { |_id, names| names.size > 1 }
+      return if collisions.empty?
+
+      detail = collisions.map { |id, names| "#{names.sort.join(' and ')} both fold to #{id}" }
+      raise ArgumentError,
+        "refusing to migrate: #{detail.join('; ')}. Writing either one would overwrite the other's " \
+        "secret in place. Rename one of them in the store by hand, then re-run."
+    end
 
     def step(variable, old, current)
       item = new_item(variable)
@@ -224,13 +254,17 @@ module ParameterStore
     # namespaces answer would confirm only that the store still holds the value
     # somewhere, which is exactly what is not in question.
     #
-    # A fresh provider each time, deliberately: a shared one would serve a
-    # snapshot taken before the write.
+    # ONE provider for the whole run, invalidated before each check rather than
+    # rebuilt. Freshness is what matters here — a snapshot taken before the write
+    # would verify nothing — and `invalidate` gives exactly that. Rebuilding it
+    # per variable gave the same freshness at N times the cost: a resolve is a
+    # full project pass (one list, then a versions-list and a `:render` per
+    # managed parameter), so a 40-secret migration issued thousands of calls
+    # against a fan-out of 8. Slow, and a self-inflicted rate limit on the one
+    # run that must not fail halfway.
     def verified?(item)
-      chain = SecretProviders::Chain.new([
-        SecretProviders::ParameterStoreProvider.new(@resolver, namespaces: [ to_namespace ])
-      ])
-      provider = chain.provider_for(item.variable)
+      verification_chain.invalidate
+      provider = verification_chain.provider_for(item.variable)
 
       !provider.nil? && provider.namespace_for(item.variable) == to_namespace
     rescue StoreError, AuthError
@@ -240,6 +274,12 @@ module ParameterStore
       # verified" is what routes it into the rollback below; letting it escape to
       # step's rescue would mark the item failed and leave the poison in place.
       false
+    end
+
+    def verification_chain
+      @verification_chain ||= SecretProviders::Chain.new([
+        SecretProviders::ParameterStoreProvider.new(@resolver, namespaces: [ to_namespace ])
+      ])
     end
 
     # Undo the canonical pair this run created, so a failed verify does not leave

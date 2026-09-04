@@ -245,19 +245,32 @@ class SecretProvidersTest < ActiveSupport::TestCase
       "the fence is applied to rendered envelopes, so a second namespace is free"
   end
 
-  test "legacy_variables is the migration's progress readout, and holds no values" do
+  test "legacy_variables splits what the old path answers for from what is merely awaiting a prune" do
+    # The split is what keeps the banner from contradicting the per-variable
+    # tooltips beside it: BOTH already resolves from the canonical path, so
+    # calling it "still resolving from the old namespace" would be false — and
+    # false for EVERY variable after the documented PRUNE=false half-step.
     @fake.seed_secret("MOVED", "1")
     @fake.seed_secret("STAYING", "2", path: legacy_path("STAYING"))
     @fake.seed_secret("BOTH", "3", path: legacy_path("BOTH"))
     @fake.seed_secret("BOTH", "3")
 
-    assert_equal %w[BOTH STAYING], @fake.provider.legacy_variables
+    assert_equal({ answering: %w[STAYING], copied: %w[BOTH] }, @fake.provider.legacy_variables)
+  end
+
+  test "a name in both namespaces is reported as copied, and its tooltip agrees" do
+    @fake.seed_secret("BOTH", "3", path: legacy_path("BOTH"))
+    @fake.seed_secret("BOTH", "3")
+    provider = @fake.provider
+
+    assert_equal %w[BOTH], provider.legacy_variables[:copied]
+    assert_match ParameterStore::Namespace.static_namespace, provider.badge_title("BOTH")
   end
 
   test "an empty pre-rename namespace is what says the migration is finished" do
     @fake.seed_secret("MOVED", "1")
 
-    assert_empty @fake.provider.legacy_variables
+    assert_equal({ answering: [], copied: [] }, @fake.provider.legacy_variables)
   end
 
   test "the badge title names the namespace that actually answered" do

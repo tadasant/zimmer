@@ -80,14 +80,28 @@ module SecretProviders
     # @return [String, nil] nil when nothing holds it.
     def namespace_for(variable) = entry_for(variable)&.first
 
-    # The names still sitting in a pre-rename namespace, whether or not the
-    # canonical namespace also holds them. This is the migration's progress
-    # readout, and it is free: the snapshot already covers both.
+    # The names still PRESENT in a pre-rename namespace, split by whether that is
+    # also where they are being read from. This is the migration's progress
+    # readout, and it is free: the snapshot already covers both namespaces.
     #
-    # @return [Array<String>] sorted; names, never values.
+    # The split matters because the two halves call for different words. A name
+    # in `answering` has no canonical copy yet, so the old path is genuinely
+    # serving it. A name in `copied` exists in both, so the canonical copy is
+    # already winning precedence and the old one is dead weight — which is the
+    # state a deliberate `PRUNE=false` half-step produces for EVERY variable.
+    # Reporting that as "still resolving from the old path" would contradict the
+    # per-variable tooltips on the same page and tell an operator their copy did
+    # nothing.
+    #
+    # @return [Hash{Symbol => Array<String>}] `:answering` and `:copied`, each
+    #   sorted. Names, never values.
     def legacy_variables
       snapshot = @cache.get(@namespaces)
-      legacy_namespaces.flat_map { |ns| snapshot[ns]&.keys || [] }.uniq.sort
+      present = legacy_namespaces.flat_map { |ns| snapshot[ns]&.keys || [] }.uniq.sort
+      canonical = snapshot[namespace] || {}
+
+      present.group_by { |variable| canonical.key?(variable) ? :copied : :answering }
+        .tap { |split| split[:answering] ||= []; split[:copied] ||= [] }
     end
 
     # The full canonical path a variable occupies (or would occupy) in the store.
