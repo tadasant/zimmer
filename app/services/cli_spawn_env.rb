@@ -91,6 +91,14 @@ module CliSpawnEnv
   #   and it applies with more force here, because these sessions run ON production.
   #   Its two non-secret companions (ZIMMER_PARAMS_PROJECT_ID / _LOCATION) are
   #   deliberately left alone: an address is not a credential.
+  # - ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON: the same argument with more
+  #   force. The writer credential exists so the Inference page's Pi tab can
+  #   create and delete one managed secret (ParameterStore::Writer), and it holds
+  #   the write roles the resolver deliberately does not. Inheriting it would hand
+  #   every agent session the ability to REWRITE or DELETE every production
+  #   secret, which is precisely the blast radius the separate identity exists to
+  #   avoid — the web tier holds it, and nothing spawned from the web tier needs
+  #   it.
   #
   # Production telemetry cleared (issue #176):
   # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the
@@ -174,6 +182,7 @@ module CliSpawnEnv
       RUBYGEMS_GEMDEPS
       ZIMMER_OPERATOR_SSH_KEY
       ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
+      ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
       SENTRY_DSN_BACKEND
       ALERTS_ENABLED
     ]

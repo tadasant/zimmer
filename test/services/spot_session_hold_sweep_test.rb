@@ -161,7 +161,7 @@ class SpotSessionHoldSweepTest < ActiveSupport::TestCase
 
   # A re-check due one second ago is a job that has not been picked up yet, not a
   # stalled ladder. Every surface has to draw that line in the same place, or the
-  # session page says "stalled" while /quotas counts 0 overdue.
+  # session page says "stalled" while /inference counts 0 overdue.
   test "a hold overdue by seconds is neither swept nor described as stalled" do
     session = held_session(retry_at: 30.seconds.ago)
 

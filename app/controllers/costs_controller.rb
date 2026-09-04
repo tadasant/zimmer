@@ -3,7 +3,7 @@
 # The Costs page: what Zimmer's inference actually costs, from stored volumes
 # priced at current list rates.
 #
-# Sits alongside Quotas deliberately. Quotas answers "how much headroom is left
+# Sits alongside Inference deliberately. Inference answers "how much headroom is left
 # in the window" from Anthropic's rate-limit headers; Costs answers "what did we
 # spend it on" from our own ledger. They are different questions with different
 # sources, and neither substitutes for the other.

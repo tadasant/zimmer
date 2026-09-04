@@ -198,6 +198,10 @@ env:
     # the same env-file reason as the SSH key above, spelled out in
     # .kamal/secrets.production. Its two non-secret companions are in env.clear.
     - ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
+    # Base64 of the SEPARATE writer service-account key, for the one surface that
+    # writes to the store (the Inference page's Pi tab). Optional: unset means
+    # that tab reports the write path closed. See .kamal/secrets.production.
+    - ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
     - SENTRY_DSN_BACKEND
     - OTEL_LOGS_EXPORTER_ENDPOINT
     - OTEL_LOGS_EXPORTER_BEARER_TOKEN

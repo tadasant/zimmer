@@ -25,7 +25,7 @@
 # AuthOutageParkService.wake_parked_sessions! for the evidence each one requires.
 #
 # This job is the pool's healer, not the page's. A `quota_exceeded` account
-# whose windows have cleared must not PRESENT as exceeded on /quotas even when
+# whose windows have cleared must not PRESENT as exceeded on /inference even when
 # this job has not run — the deploy that froze every queue for ten hours (#426)
 # is what that looks like — so the badge derives its own answer from the same
 # ClaudeAccountQuotaSnapshot#windows_clear? this job restores on. See

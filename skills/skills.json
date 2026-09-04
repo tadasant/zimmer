@@ -116,7 +116,7 @@
   "awaken-waiting-sessions": {
     "id": "awaken-waiting-sessions",
     "title": "Awaken Waiting Sessions",
-    "description": "Fires when a quota outage clears: decide which `waiting` sessions to start now and start them, in precedence order, within the spot utilization thresholds and the max-concurrency ceiling set on /quotas. This is the wake policy for quota-parked spot work — the `quota_available` trigger spawns one fleet-maintenance session per recovery and that session runs this. Not for routine session management.",
+    "description": "Fires when a quota outage clears: decide which `waiting` sessions to start now and start them, in precedence order, within the spot utilization thresholds and the max-concurrency ceiling set on /inference. This is the wake policy for quota-parked spot work — the `quota_available` trigger spawns one fleet-maintenance session per recovery and that session runs this. Not for routine session management.",
     "path": "awaken-waiting-sessions",
     "category": "zimmer",
     "user_invocable": false,

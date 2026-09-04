@@ -20,7 +20,7 @@ A held or paused spot session is **deferred, never cancelled**. Nothing is lost.
 Zimmer models each quota window in **dollars**: a calibrated estimate of what a full window is worth
 in Opus spend, a **priority reserve** carved out of it, and a non-reserved remainder that spot work is
 expected to consume *in full* before the window rolls over. The operator sets the reserve as a
-percentage on `/quotas`; the dollar figure beside it is derived. A deployment sitting idle should be
+percentage on `/inference`; the dollar figure beside it is derived. A deployment sitting idle should be
 idle because it has genuinely spent its budget, never because the gate was being careful.
 
 ## Where the class comes from
@@ -31,7 +31,7 @@ Three things can decide a session's class. The first one that speaks wins:
 | --- | --- | --- | --- |
 | 1 | **The session itself** — `sessions.scheduling_class` | **Scheduling class** on the new-session form, **Run as spot** on any Quick Router surface, `scheduling_class` on `start_session` / `POST /api/v1/sessions`; afterwards `action_session` (`change_scheduling_class`), `PATCH /api/v1/sessions/:id`, or the button on the hold banner | That one session, and anything it spawns |
 | 2 | **The trigger that fired it** — `triggers.scheduling_class` | The trigger's edit form, or `action_trigger` | Every session that trigger spawns from now on |
-| 3 | **Its genesis** — the default for where the work came from | `/quotas` (only for the origins no trigger produces) | Every deriving session of that genesis, past and future |
+| 3 | **Its genesis** — the default for where the work came from | `/inference` (only for the origins no trigger produces) | Every deriving session of that genesis, past and future |
 
 Most sessions never touch 1 or 2: both columns are NULL, and the class is derived. That is what keeps
 the defaults live rather than frozen into history.
@@ -62,7 +62,7 @@ Every Quick Router surface carries a **Run as spot** checkbox, unchecked by defa
 | The mobile joystick's **Quick Router** petal | Opens the chat-bubble panel, so it inherits that one |
 
 Leaving it unchecked submits no class at all: `sessions.scheduling_class` stays NULL and the session
-keeps deriving from `web_ui`, exactly as before — so promoting or demoting `web_ui` on `/quotas`
+keeps deriving from `web_ui`, exactly as before — so promoting or demoting `web_ui` on `/inference`
 still moves these sessions, which stamping "priority" on the row would have quietly stopped. Only an
 explicit tick writes anything.
 
@@ -87,19 +87,19 @@ the row. It is a column on `sessions`, assigned once at creation.
 
 | Genesis | Means | Default class | Class set on |
 | --- | --- | --- | --- |
-| `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/quotas` |
+| `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/inference` |
 | `slack` | A Slack trigger fired on a DM or a channel message. | priority | the trigger |
 | `github_issue` | A `github_issue` trigger fired — the feed the issue-work gate reads. | spot | the trigger |
 | `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot | the trigger |
 | `schedule` | A cron-scheduled trigger fired. | spot | the trigger |
 | `ao_event` | A session-state trigger fired because another session changed state. | spot | the trigger |
-| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**, or fired by hand over `POST /api/v1/triggers/:id/invoke` / `action_trigger`'s `invoke`. | spot | `/quotas` |
-| `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/quotas` |
+| `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**, or fired by hand over `POST /api/v1/triggers/:id/invoke` / `action_trigger`'s `invoke`. | spot | `/inference` |
+| `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/inference` |
 
 Five of the eight kinds restate a trigger condition type, so their class lives on the **trigger**, not
 in a global per-kind setting: one noisy Slack trigger can be spot without demoting the eleven other
 Slack triggers that have a human waiting on the answer. The three that no trigger produces keep a
-per-kind setting on `/quotas`.
+per-kind setting on `/inference`.
 
 Two of the defaults are policy calls worth stating plainly:
 
@@ -229,7 +229,7 @@ holds the next start; it never interrupts work already underway.
 ### Read across the whole pool, not one account
 
 Utilization is the **pool average** — every Claude Code account's latest reading, averaged. It is the
-same number `/quotas` prints as **Avg 5-Hour Utilization (effective)** and **Avg 7-Day Utilization**
+same number `/inference` prints as **Avg 5-Hour Utilization (effective)** and **Avg 7-Day Utilization**
 in its Account Pool section, computed once in `ClaudeAccountPool` and read by both, so the page's
 headline figure and the gate's decision cannot disagree.
 
@@ -283,7 +283,7 @@ The banner has three states, and the empty ones say which emptiness they are:
   recorded a reset time. A zeroed clock would read as "any moment now".
 
 The tick is driven in the browser from an absolute ISO-8601 instant in the markup
-(`unblock_countdown_controller.js`), not from a duration the server rendered — /quotas is a page
+(`unblock_countdown_controller.js`), not from a duration the server rendered — /inference is a page
 people leave open, and "in 22m" is right for one second and wrong for every second after it. The
 server renders the same clock string from the same instant, so the first paint is already correct
 and the page still tells the truth if JavaScript never runs. When the deadline passes while the page
@@ -327,7 +327,7 @@ The times are rendered as UTC on the server and rewritten to the reader's own cl
 (the `local-time` Stimulus controller), which names the zone it converted to; the UTC reading stays
 on hover, and stays on screen if JavaScript never runs.
 
-Targets and the concurrency limit are set together on the Claude Code tab of `/quotas`, on the same
+Targets and the concurrency limit are set together on the Claude Code tab of `/inference`, on the same
 page as the windows they are measured against, and all three are settable over MCP with
 `action_spot_policy` (`set_gating`).
 
@@ -360,7 +360,7 @@ only one of them stops work that is already running.
 The two window ceilings share one reason string because `at_utilization_limit` is **persisted** on
 sessions — it is written into `spot_pause_reason` and read back by the banner on every session
 carrying it, so splitting the string would make those banners unreadable. `Decision#ceiling` derives
-the distinction instead, and `/quotas` and `get_spot_policy` both report it.
+the distinction instead, and `/inference` and `get_spot_policy` both report it.
 
 `SpotHoldExplanation` turns it into the two sentences those surfaces render: *why it's held*, and
 *held until*.
@@ -510,7 +510,7 @@ through to the recovery path and was stamped `paused_by: "recovery"` on top of i
 There is no escape hatch and no deadline: while a window is ahead of its curve or out of budget, spot
 work waits. That is the intent — but the curve is what makes the wait short. A window ahead of pace
 is back inside it as soon as the clock moves far enough, which is minutes rather than hours, and a
-window whose budget is genuinely spent waits for the rollover. Both are visible on `/quotas` the
+window whose budget is genuinely spent waits for the rollover. Both are visible on `/inference` the
 whole time, in dollars. Promoting one session to priority is the lever for a single piece of work
 that cannot wait.
 
@@ -653,7 +653,7 @@ nothing interrupted this session:
 
 - `spot_pause_reason` is `user_spot_queue`, so the banner, `get_session` and the session log all say
   it was parked deliberately rather than describing a turn it never lost. It is also left out of the
-  "spot sessions asleep in the queue" count on `/quotas`, which is about what the ceiling cost.
+  "spot sessions asleep in the queue" count on `/inference`, which is about what the ceiling cost.
 - A session that resolves to **priority** is set to `spot`, since the sweep resumes a non-spot
   sleeper on its very next pass. **Make this session priority** on the banner reverses it, and that
   next sweep resumes the session — which is the intended way back out.
@@ -666,7 +666,7 @@ after picking a time means "not then, this instead".
 
 The sweep runs every five minutes, but what bounds how fast the ceiling reacts is the **reading**, not
 the sweep: utilization comes from quota snapshots, which land when `ClaudeUsageSamplerJob` samples
-(every 15 minutes), when an account rotates, and when someone opens `/quotas`.
+(every 15 minutes), when an account rotates, and when someone opens `/inference`.
 
 ## Precedence: ranking the spot queue
 
@@ -1004,17 +1004,17 @@ control that combines with the others, and each persists exactly as pressing **A
 | --- | --- | --- |
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
-| Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/quotas` | `get_spot_policy` |
-| Read each window's estimated capacity, dollars remaining, dollars reserved, and spot budget left | Account Pool section and spot gate card on `/quotas` | `get_spot_policy` |
-| Read the fleet's burn rate and the sustainable rate the curve allows | Spot gate card on `/quotas` | `get_spot_policy` |
+| Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/inference` | `get_spot_policy` |
+| Read each window's estimated capacity, dollars remaining, dollars reserved, and spot budget left | Account Pool section and spot gate card on `/inference` | `get_spot_policy` |
+| Read the fleet's burn rate and the sustainable rate the curve allows | Spot gate card on `/inference` | `get_spot_policy` |
 | Read the $/min of each harness + model combination | Burn rate table on `/costs` | `get_costs` |
-| Read which of the three ceilings is holding spot work, and what lifts it | Spot gate card on `/quotas` | `get_spot_policy` |
-| Read how many spot sessions are asleep in the spot queue | Spot gate card on `/quotas` | `get_spot_policy` |
-| Read when the account pool regains capacity, and the soonest 7-day rollover behind it | Account Pool section on `/quotas` | `get_spot_policy` |
+| Read which of the three ceilings is holding spot work, and what lifts it | Spot gate card on `/inference` | `get_spot_policy` |
+| Read how many spot sessions are asleep in the spot queue | Spot gate card on `/inference` | `get_spot_policy` |
+| Read when the account pool regains capacity, and the soonest 7-day rollover behind it | Account Pool section on `/inference` | `get_spot_policy` |
 | Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
-| Toggle gating, set the two priority reserves, set the max sessions at once | `/quotas` | `action_spot_policy` (`set_gating`) |
-| One-click promote a genesis (non-trigger kinds only) | `/quotas` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
-| Reset all genesis classes | `/quotas` | `action_spot_policy` (`reset_genesis_classes`) |
+| Toggle gating, set the two priority reserves, set the max sessions at once | `/inference` | `action_spot_policy` (`set_gating`) |
+| One-click promote a genesis (non-trigger kinds only) | `/inference` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |
+| Reset all genesis classes | `/inference` | `action_spot_policy` (`reset_genesis_classes`) |
 | Set a trigger's class | Trigger edit form | `action_trigger` (`scheduling_class`) |
 | Read a trigger's class | Trigger page, `/triggers` badge | `search_triggers`, `get_spot_policy` |
 | Choose a class when spawning | **Scheduling class** on the new-session form; **Run as spot** on every Quick Router surface | `start_session` (`scheduling_class`) |

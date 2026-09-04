@@ -75,7 +75,7 @@ accounts.each_with_index do |acct, idx|
     quota_hit_count: 0
   )
 
-  # Create initial quota snapshots so the quotas page has data
+  # Create initial quota snapshots so the Inference page has data
   reset_5h = Time.current + 5.hours
   reset_7d = Time.current + 7.days
 

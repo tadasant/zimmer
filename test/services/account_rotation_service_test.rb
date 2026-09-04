@@ -621,7 +621,7 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
 
   # Bootstrap tests — the pool, not the filesystem. There is no
   # adopt-whatever-is-on-disk path any more: an empty pool is answered by the
-  # Authenticate button on /quotas, not by trusting a file. See issue #618.
+  # Authenticate button on /inference, not by trusting a file. See issue #618.
 
   test "ensure_active_account! returns nil when no DB account holds usable credentials" do
     # Tokens sitting on the filesystem are NOT a bootstrap source: nothing proves

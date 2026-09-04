@@ -5,7 +5,7 @@
 # rest so that it lands on 100% exactly as the window rolls over.
 #
 # One object answers all three, and every surface reads this one — the spot
-# gate, the /quotas card, `get_spot_policy`. A page that showed "$412 remaining"
+# gate, the /inference card, `get_spot_policy`. A page that showed "$412 remaining"
 # beside a gate that had decided on something else would be worse than showing
 # nothing.
 #

@@ -15,6 +15,14 @@ module ParameterStore
     # never-settling call pins every reader waiting behind its single flight.
     DEFAULT_TIMEOUT = 10
 
+    # The verbs the two clients use. DELETE is here for WriteClient#delete;
+    # GcpClient never issues one.
+    METHODS = {
+      "GET" => Net::HTTP::Get,
+      "POST" => Net::HTTP::Post,
+      "DELETE" => Net::HTTP::Delete
+    }.freeze
+
     def initialize(timeout: DEFAULT_TIMEOUT)
       @timeout = timeout
     end
@@ -22,7 +30,9 @@ module ParameterStore
     # @return [Array(Integer, String)] [status, body]
     def request(method, url, headers, body)
       uri = URI(url)
-      klass = { "GET" => Net::HTTP::Get, "POST" => Net::HTTP::Post }.fetch(method)
+      klass = METHODS.fetch(method) do
+        raise ArgumentError, "ParameterStore::HttpTransport cannot speak #{method}"
+      end
       request = klass.new(uri)
       headers.each { |key, value| request[key] = value }
       request.body = body if body

@@ -8,7 +8,7 @@
 # analysis only ever starts from #analyze or #analyze_all, both of which are
 # POSTs behind a button a human pressed.
 #
-# Structured after QuotasController: a top-level menu-bar page with its own
+# Structured after InferenceController: a top-level menu-bar page with its own
 # routes rather than a nested resource.
 class OutcomesController < ApplicationController
   before_action :load_filters, only: [ :index, :stats, :analyze_all ]

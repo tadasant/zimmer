@@ -5,7 +5,7 @@
 # Snapshots are taken:
 # - On account rotation (captures state of outgoing and incoming accounts)
 # - When bootstrap validates a candidate before making it current
-# - On quotas page load (live probe of current account)
+# - On Inference page load (live probe of current account)
 # - By periodic cron (future extension)
 #
 # The trigger field records why the snapshot was taken: "rotation", "bootstrap",
@@ -67,7 +67,7 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # A status, like a number, holds only until its reset time passes — after that
   # the sliding window has cleared, the same rule .effective_utilization applies.
   #
-  # This is the one definition of "the week is spent". /quotas reads it to decide
+  # This is the one definition of "the week is spent". /inference reads it to decide
   # what an account contributes to the pool figure, QuotaSnapshotService reads it
   # to mark an account quota_exceeded as the reading lands, AccountRotationService
   # reads it to refuse a capped candidate, and QuotaResetCheckerJob reads it to
@@ -121,8 +121,8 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # breath, which is the contradiction this predicate now decides.
   #
   # The counterpart to #seven_day_window_spent?, and it lives here for the same
-  # reason: QuotaResetCheckerJob restores an account on this, QuotasController
-  # heals one on it, and /quotas decides what status badge to render from it.
+  # reason: QuotaResetCheckerJob restores an account on this, InferenceController
+  # heals one on it, and /inference decides what status badge to render from it.
   # They must agree, or the page and the pool describe different accounts.
   def windows_clear?
     return false if seven_day_window_spent?
@@ -149,7 +149,7 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
   # as 100%. Servability is the countdown's question, not this one's.
   #
   # Lives here rather than in the view helper because the spot gate decides on
-  # the same figure /quotas renders — see ClaudeAccountPool.
+  # the same figure /inference renders — see ClaudeAccountPool.
   def pool_utilization_5h
     return 1.0 if seven_day_window_spent?
 

@@ -194,6 +194,10 @@ class SecretsLocationTest < ActiveSupport::TestCase
 
     id = ParameterStore::Namespace.parameter_id(envelope.fetch("path"))
     fake.secrets[id] = [ "sk-live" ]
+    # Step 3 of the snippet's own instructions: without this binding `:render`
+    # cannot dereference the __REF__, and the fake 400s exactly as Parameter
+    # Manager does. Granting it here is what makes this a test of the ENVELOPE.
+    fake.secret_policies[id] = [ FakeParameterStore.principal_for(id) ]
     fake.send(:put_parameter, id, { secret: "true" }, envelope)
 
     assert_equal({ "STRAD_API_KEY" => "sk-live" },

@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# The copy on /quotas and in `get_spot_policy`, built from a real decision rather
+# The copy on /inference and in `get_spot_policy`, built from a real decision rather
 # than a stub — the bug this class fixes was a view branching on the wrong field,
 # so a test that hand-builds the decision would not have caught it.
 class SpotHoldExplanationTest < ActiveSupport::TestCase

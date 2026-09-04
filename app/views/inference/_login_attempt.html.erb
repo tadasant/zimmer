@@ -3,16 +3,16 @@
     login_status and streams progress back in. %>
 <div id="login_attempt_<%= attempt.id %>"
      class="rounded-md bg-indigo-50 border border-indigo-100 p-3"
-     data-controller="quotas-login-poller"
-     data-quotas-login-poller-url-value="<%= login_status_quotas_path(attempt.id) %>"
-     data-quotas-login-poller-interval-value="2000"
-     data-quotas-login-poller-remaining-value="<%= [ ((attempt.expires_at + 1.minute - Time.current) * 1000).round, 0 ].max %>"
+     data-controller="inference-login-poller"
+     data-inference-login-poller-url-value="<%= login_status_inference_path(attempt.id) %>"
+     data-inference-login-poller-interval-value="2000"
+     data-inference-login-poller-remaining-value="<%= [ ((attempt.expires_at + 1.minute - Time.current) * 1000).round, 0 ].max %>"
      data-login-status="<%= attempt.status %>">
   <div class="flex items-center justify-between mb-2">
     <span class="text-xs font-semibold text-indigo-800">
       Authenticating <%= account.email %>
     </span>
-    <%= button_to "Cancel", cancel_login_quotas_path(attempt.id), method: :post,
+    <%= button_to "Cancel", cancel_login_inference_path(attempt.id), method: :post,
           class: "text-xs text-gray-500 hover:text-gray-700 underline",
           data: { turbo_stream: true } %>
   </div>
@@ -23,7 +23,7 @@
 
   <% when "awaiting_user" %>
     <ol class="text-xs text-indigo-900 space-y-2 list-decimal list-inside">
-      <%= render "quotas/verification_link", attempt: attempt %>
+      <%= render "inference/verification_link", attempt: attempt %>
       <% if attempt.verification_code.present? %>
         <li>
           Enter this one-time code:
@@ -39,10 +39,10 @@
         code this state is requesting, and the brief awaiting_user state that
         first surfaced it is often skipped between polls. %>
     <ol class="text-xs text-indigo-900 space-y-2 list-decimal list-inside mb-2">
-      <%= render "quotas/verification_link", attempt: attempt %>
+      <%= render "inference/verification_link", attempt: attempt %>
       <li>Paste the authorization code the page shows below.</li>
     </ol>
-    <%= form_with url: submit_login_code_quotas_path(attempt.id), method: :post,
+    <%= form_with url: submit_login_code_inference_path(attempt.id), method: :post,
           data: { turbo_stream: true }, class: "flex items-center gap-2" do |f| %>
       <%= f.text_field :code, autocomplete: "off",
             class: "flex-1 text-xs font-mono border border-indigo-200 rounded px-2 py-1",

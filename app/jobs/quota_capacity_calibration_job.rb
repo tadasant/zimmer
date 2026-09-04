@@ -9,7 +9,7 @@
 #
 # Idempotent: each run folds one observation into a smoothed estimate keyed by
 # window, so running it twice is two observations rather than a corrupted state.
-# It needs no shell on the box, and /quotas shows when it last ran and what it
+# It needs no shell on the box, and /inference shows when it last ran and what it
 # derived the figure from.
 #
 # Failures are swallowed for the same reason the sampler's are: a missing

@@ -92,7 +92,7 @@ class AccountRotationEventTest < ActiveSupport::TestCase
   end
 
   test "an explicitly supplied source email survives capture" do
-    # QuotasController#destroy_account names an account it has already deleted,
+    # InferenceController#destroy_account names an account it has already deleted,
     # so there is no association left to read the email from.
     event = AccountRotationEvent.create!(
       rotated_from: nil,

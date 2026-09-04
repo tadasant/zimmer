@@ -2,8 +2,9 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "support/fake_parameter_store"
 
-class QuotasControllerTest < ActionDispatch::IntegrationTest
+class InferenceControllerTest < ActionDispatch::IntegrationTest
   setup do
     # switch_account now always probes Anthropic's OAuth endpoint via
     # refresh_token! before allowing the switch. Stub a generic success
@@ -72,10 +73,10 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # ── show (renders immediately with cached data) ───────────────────
 
   test "show renders page with cached snapshots" do
-    get quotas_url
+    get inference_url
 
     assert_response :success
-    assert_select "h1", "Quotas"
+    assert_select "h1", "Inference"
     assert_select "#aggregate_stats"
     assert_select "h2", "Accounts"
   end
@@ -92,7 +93,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "show does not present an exceeded account whose windows have cleared" do
     account = exceeded_account_with_cleared_windows
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_equal "Active", account_badge_text(account)
@@ -103,7 +104,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     # page that only fixed the badge would still leave the account out of the pool.
     account = exceeded_account_with_cleared_windows
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert account.reload.active?
@@ -118,7 +119,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       utilization_7d: 1.0, status_7d: "rejected", reset_7d: 3.days.from_now
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_equal "Quota Exceeded", account_badge_text(account)
@@ -135,7 +136,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       utilization_7d: 0.12, status_7d: "allowed", reset_7d: 6.days.from_now
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_equal "Needs Reauth", account_badge_text(account)
@@ -145,7 +146,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "show counts a cleared account as active in the pool totals" do
     exceeded_account_with_cleared_windows
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     # Every fixture account is healthy except :exceeded, which has just cleared.
@@ -166,7 +167,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     stats = aggregate_stats_text
@@ -194,7 +195,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.79, status_7d: "allowed", reset_7d: 5.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     stats = aggregate_stats_text
@@ -221,7 +222,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.20, status_7d: "allowed", reset_7d: 5.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_select "[data-controller=?]", "unblock-countdown"
@@ -237,7 +238,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.20, status_7d: "allowed", reset_7d: 5.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     stats = aggregate_stats_text
@@ -255,7 +256,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.10, status_7d: "allowed", reset_7d: 4.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_match "No account's 7-day window is spent", aggregate_stats_text
@@ -269,7 +270,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.10, status_7d: "allowed", reset_7d: 4.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     stats = aggregate_stats_text
@@ -288,7 +289,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 1.0, status_7d: "rejected", reset_7d: 2.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_match(/2 accounts counted that way now/, aggregate_stats_text)
@@ -304,7 +305,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.10, status_7d: "allowed", reset_7d: 4.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     stats = aggregate_stats_text
@@ -320,7 +321,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
         utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now }
     )
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_select "#account_card_#{accounts.first.id}" do
@@ -332,31 +333,31 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "show has back link to sessions index" do
-    get quotas_url
+    get inference_url
 
     assert_select "a[href=?]", root_path
   end
 
   test "show has Refresh All button" do
-    get quotas_url
+    get inference_url
 
     assert_response :success
-    assert_select "form[action=?]", refresh_all_quotas_path
+    assert_select "form[action=?]", refresh_all_inference_path
   end
 
   test "show renders account cards with per-account refresh buttons" do
-    get quotas_url
+    get inference_url
 
     assert_response :success
-    # The quotas page is scoped to the Claude Code pool; Codex accounts (a
+    # The Inference page is scoped to the Claude Code pool; Codex accounts (a
     # different runtime in the shared table) are not rendered here.
     cards = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).order(:priority)
     assert cards.exists?
     cards.each do |account|
       assert_select "#account_card_#{account.id}"
-      assert_select "form[action=?]", refresh_account_quotas_path(account)
+      assert_select "form[action=?]", refresh_account_inference_path(account)
     end
-    # Codex accounts must NOT appear on the Claude quotas page.
+    # Codex accounts must NOT appear on the Claude Inference page.
     ClaudeAccount.for_runtime(CodexAuthProvider::RUNTIME).each do |account|
       assert_select "#account_card_#{account.id}", count: 0
     end
@@ -365,7 +366,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # The spot gate card lives here, beside the windows it reads: the policy
   # form, the live reading, and one button per settable genesis kind.
   test "show renders the spot gate with its policy form and genesis controls" do
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_select "#spot-gate"
@@ -390,7 +391,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     hold_spot_work(utilization_5h: 0.30, burn: 4.0, running: 1)
     paused_spot_session
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_select "#spot-gate-hold-explainer" do
@@ -415,7 +416,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "show says the ceiling IS pausing running work when the budget is spent" do
     hold_spot_work(utilization_5h: 0.85, burn: 2.0, running: 0)
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_match(/spot budget is spent/, response.body)
@@ -481,7 +482,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     paused_spot_session
     held_spot_session(retry_at: 20.minutes.from_now)
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_select "#spot-paused-count", "1"
@@ -496,7 +497,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     hold_spot_work(utilization_5h: 0.30, burn: 4.0, running: 1)
     held_spot_session(retry_at: 10.hours.ago)
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert_select "#spot-held-count", "1"
@@ -508,7 +509,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # The gate reads the Claude Code quota windows, so it has nothing to say on
   # the Codex tab — the same reason the aggregate stats are Claude-only.
   test "show omits the spot gate on the Codex tab" do
-    get quotas_url(runtime: CodexAuthProvider::RUNTIME)
+    get inference_url(runtime: CodexAuthProvider::RUNTIME)
 
     assert_response :success
     assert_select "#spot-gate", count: 0
@@ -517,14 +518,14 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "show does not make API calls" do
     QuotaCheckService.expects(:check_with_token).never
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
   end
 
   test "show does NOT adopt a filesystem identity — a GET must not change which account runs" do
     # The inverse of what this test used to assert. Reconciliation on every page
-    # load meant an operator refreshing /quotas to WATCH an incident could
+    # load meant an operator refreshing /inference to WATCH an incident could
     # silently switch the pool, driven by a container-local file a container
     # replacement leaves stale. The five-minute sweep still reconciles; opening a
     # diagnostic page no longer does. See issue #618, hole 12.
@@ -540,17 +541,17 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
       JSON.pretty_generate(secondary.oauth_config["credentials_json"]))
 
-    get quotas_url
+    get inference_url
 
     assert_response :success
     assert primary.reload.is_current?, "a GET must leave the DB-current account exactly where it was"
     assert_not secondary.reload.is_current?
   end
 
-  test "should route GET /quotas to quotas#show" do
+  test "should route GET /inference to inference#show" do
     assert_routing(
-      { method: :get, path: "/quotas" },
-      { controller: "quotas", action: "show" }
+      { method: :get, path: "/inference" },
+      { controller: "inference", action: "show" }
     )
   end
 
@@ -571,7 +572,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     )
     QuotaCheckService.stubs(:check_with_token).returns(result)
 
-    post refresh_all_quotas_url, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post refresh_all_inference_url, headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_includes response.content_type, "text/vnd.turbo-stream.html"
@@ -581,7 +582,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # replaces, so a refresh that left it alone would show a stale reading beside
   # fresh utilization bars.
   test "refresh_all re-renders the spot gate alongside the aggregate stats" do
-    post refresh_all_quotas_url, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post refresh_all_inference_url, headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_match(/target="aggregate_stats"/, response.body)
@@ -592,7 +593,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "refresh_account re-renders the spot gate for a Claude account" do
     account = claude_accounts(:primary)
 
-    post refresh_account_quotas_url(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post refresh_account_inference_url(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_match(/target="spot-gate"/, response.body)
@@ -617,16 +618,16 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       QuotaCheckService::Result.new(success: false, error_message: "test")
     )
 
-    post refresh_all_quotas_url, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post refresh_all_inference_url, headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert exceeded.reload.active?, "Account should be auto-healed to active"
   end
 
-  test "should route POST /quotas/refresh_all" do
+  test "should route POST /inference/refresh_all" do
     assert_routing(
-      { method: :post, path: "/quotas/refresh_all" },
-      { controller: "quotas", action: "refresh_all" }
+      { method: :post, path: "/inference/refresh_all" },
+      { controller: "inference", action: "refresh_all" }
     )
   end
 
@@ -648,16 +649,16 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     )
     QuotaCheckService.stubs(:check_with_token).returns(result)
 
-    post refresh_account_quotas_url(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post refresh_account_inference_url(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_includes response.content_type, "text/vnd.turbo-stream.html"
   end
 
-  test "should route POST /quotas/refresh_account/:id" do
+  test "should route POST /inference/refresh_account/:id" do
     assert_routing(
-      { method: :post, path: "/quotas/refresh_account/1" },
-      { controller: "quotas", action: "refresh_account", id: "1" }
+      { method: :post, path: "/inference/refresh_account/1" },
+      { controller: "inference", action: "refresh_account", id: "1" }
     )
   end
 
@@ -668,7 +669,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert secondary.reload.is_current?
     assert_not claude_accounts(:primary).reload.is_current?
     assert_equal "Switched to sam@tadasant.com", flash[:notice]
@@ -698,7 +699,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH),
       "switch_account must write ~/.claude.json"
     assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH),
@@ -715,7 +716,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     initial_count = secondary.quota_snapshots.count
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_equal initial_count + 1, secondary.quota_snapshots.count,
       "switch_account must take a snapshot for the newly-current account"
     assert_equal "manual_switch", secondary.quota_snapshots.order(created_at: :desc).first.trigger
@@ -726,7 +727,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(unconfigured)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_match "no credentials stored", flash[:alert]
     assert claude_accounts(:primary).reload.is_current?
     assert_not unconfigured.reload.is_current?
@@ -735,7 +736,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # ── issue #618: holes 3, 4 and 12 ──────────────────────────────────
 
   test "the current account offers Re-activate, so the one live credential set can be rewritten from the UI" do
-    get quotas_path
+    get inference_path
     assert_response :success
     assert_select "form[action=?]", switch_account_path(claude_accounts(:primary)) do
       assert_select "button", text: "Re-activate"
@@ -749,7 +750,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       post switch_account_path(primary)
     end
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_match "Re-activated", flash[:notice]
     assert primary.reload.is_current?
     assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH),
@@ -765,7 +766,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert secondary.reload.is_current?
   end
 
@@ -775,7 +776,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "the page offers no affordance to reconcile between credential stores" do
     AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
 
-    get quotas_path
+    get inference_path
 
     assert_response :success
     assert_no_match(/Sync from filesystem/i, response.body)
@@ -788,7 +789,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   test "the reconciliation surface is gone with session-scoped credentials off too" do
     AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
 
-    get quotas_path
+    get inference_path
 
     assert_response :success
     assert_no_match(/Sync from filesystem/i, response.body)
@@ -798,7 +799,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # No copy on this page may tell an operator to open a shell on the worker.
   # Production invariant 11: Zimmer is operated without box access.
   test "the page never instructs a production shell command" do
-    get quotas_path
+    get inference_path
 
     assert_response :success
     assert_no_match(%r{bin/rails}, response.body)
@@ -809,7 +810,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     primary.update!(is_current: true)
     AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
 
-    get quotas_path
+    get inference_path
 
     assert_response :success
     # The current account's "Re-activate" only ever re-wrote the shared file.
@@ -823,7 +824,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     primary.update!(is_current: true)
     AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
 
-    get quotas_path
+    get inference_path
 
     assert_response :success
     assert_match(/Re-activate/, response.body)
@@ -832,23 +833,23 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # A GET on a diagnostic page must not change which account production runs
   # under (#618, hole 12). Claude no longer implements the reconciliation hook at
   # all, so this asserts the stronger thing: the page writes no account state.
-  test "loading /quotas does not change which account is current" do
+  test "loading /inference does not change which account is current" do
     primary = claude_accounts(:primary)
     primary.update!(is_current: true)
     secondary = claude_accounts(:secondary)
     secondary.update!(is_current: false)
 
-    get quotas_path
+    get inference_path
 
     assert_response :success
     assert primary.reload.is_current?
     assert_not secondary.reload.is_current?
   end
 
-  test "should route POST /quotas/switch_account/:id" do
+  test "should route POST /inference/switch_account/:id" do
     assert_routing(
-      { method: :post, path: "/quotas/switch_account/1" },
-      { controller: "quotas", action: "switch_account", id: "1" }
+      { method: :post, path: "/inference/switch_account/1" },
+      { controller: "inference", action: "switch_account", id: "1" }
     )
   end
 
@@ -870,7 +871,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_equal "Switched to sam@tadasant.com", flash[:notice]
     secondary.reload
     assert secondary.is_current?
@@ -897,7 +898,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_match "token validation failed", flash[:alert]
     assert claude_accounts(:primary).reload.is_current?
   end
@@ -926,7 +927,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     # The probe rejected the stored value without proving the credential is dead,
     # so the account is still active and the message says so rather than sending
     # the human off to re-authenticate something that probably works (#530).
@@ -943,7 +944,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(secondary)
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_match "no refresh token", flash[:alert]
     assert claude_accounts(:primary).reload.is_current?
   end
@@ -951,15 +952,15 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # ── runtime sub-tabs ───────────────────────────────────────────────
 
   test "show renders a sub-tab link for each runtime" do
-    get quotas_url
+    get inference_url
 
     assert_response :success
-    assert_select "a[href=?]", quotas_path(runtime: "claude_code"), text: "Claude Code"
-    assert_select "a[href=?]", quotas_path(runtime: "codex"), text: "Codex"
+    assert_select "a[href=?]", inference_path(runtime: "claude_code"), text: "Claude Code"
+    assert_select "a[href=?]", inference_path(runtime: "codex"), text: "Codex"
   end
 
   test "show defaults to the Claude Code runtime" do
-    get quotas_url
+    get inference_url
 
     assert_response :success
     ClaudeAccount.for_runtime("claude_code").each do |account|
@@ -971,7 +972,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "show with runtime=codex renders only codex accounts" do
-    get quotas_url(runtime: "codex")
+    get inference_url(runtime: "codex")
 
     assert_response :success
     ClaudeAccount.for_runtime("codex").each do |account|
@@ -983,21 +984,21 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "show with an unknown runtime falls back to Claude Code" do
-    get quotas_url(runtime: "bogus")
+    get inference_url(runtime: "bogus")
 
     assert_response :success
     assert_select "#account_card_#{claude_accounts(:primary).id}"
   end
 
   test "show codex tab does not render the Claude-only Refresh All button" do
-    get quotas_url(runtime: "codex")
+    get inference_url(runtime: "codex")
 
     assert_response :success
-    assert_select "form[action=?]", refresh_all_quotas_path, count: 0
+    assert_select "form[action=?]", refresh_all_inference_path, count: 0
   end
 
   test "show codex card body shows auth note, not the Claude refresh-button prompt" do
-    get quotas_url(runtime: "codex")
+    get inference_url(runtime: "codex")
 
     assert_response :success
     # Codex accounts have no quota probe and no per-card refresh button, so the
@@ -1016,7 +1017,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
   test "add_account creates an empty Claude OAuth account row" do
     assert_difference "ClaudeAccount.count", 1 do
-      post add_account_quotas_path, params: { runtime: "claude_code", email: "new-claude@example.com", priority: 7 }
+      post add_account_inference_path, params: { runtime: "claude_code", email: "new-claude@example.com", priority: 7 }
     end
 
     account = ClaudeAccount.find_by(email: "new-claude@example.com")
@@ -1025,13 +1026,13 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_not account.has_valid_config?, "OAuth account is created without credentials"
     assert_equal "needs_reauth", account.status,
       "a credential-less account must not be seeded as :active — it isn't servable and shouldn't wear an Active badge"
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_match "Authenticate it", flash[:notice]
   end
 
   test "add_account with a codex api key creates a usable account" do
     assert_difference "ClaudeAccount.count", 1 do
-      post add_account_quotas_path, params: { runtime: "codex", email: "new-codex@example.com", api_key: "sk-codex-123" }
+      post add_account_inference_path, params: { runtime: "codex", email: "new-codex@example.com", api_key: "sk-codex-123" }
     end
 
     account = ClaudeAccount.find_by(email: "new-codex@example.com")
@@ -1039,21 +1040,21 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_equal "sk-codex-123", account.oauth_config["api_key"]
     assert account.has_valid_config?, "API-key account is usable immediately"
     assert_equal "active", account.status, "a config-carrying account stays :active on create"
-    assert_redirected_to quotas_path(runtime: "codex")
+    assert_redirected_to inference_path(runtime: "codex")
   end
 
   test "add_account rejects a blank email" do
     assert_no_difference "ClaudeAccount.count" do
-      post add_account_quotas_path, params: { runtime: "claude_code", email: "  " }
+      post add_account_inference_path, params: { runtime: "claude_code", email: "  " }
     end
 
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_match "Email is required", flash[:alert]
   end
 
   test "add_account rejects a duplicate email in the same runtime" do
     assert_no_difference "ClaudeAccount.count" do
-      post add_account_quotas_path, params: { runtime: "claude_code", email: claude_accounts(:primary).email }
+      post add_account_inference_path, params: { runtime: "claude_code", email: claude_accounts(:primary).email }
     end
 
     assert_match "already exists", flash[:alert]
@@ -1065,13 +1066,13 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     email = claude_accounts(:primary).email
 
     assert_difference "ClaudeAccount.count", 1 do
-      post add_account_quotas_path, params: { runtime: "codex", email: email, api_key: "sk-codex-coexist" }
+      post add_account_inference_path, params: { runtime: "codex", email: email, api_key: "sk-codex-coexist" }
     end
 
     codex_account = ClaudeAccount.for_runtime("codex").find_by(email: email)
     assert codex_account, "expected a codex account to be created for #{email}"
     assert_equal "sk-codex-coexist", codex_account.oauth_config["api_key"]
-    assert_redirected_to quotas_path(runtime: "codex")
+    assert_redirected_to inference_path(runtime: "codex")
   end
 
   # ── destroy_account ────────────────────────────────────────────────
@@ -1080,11 +1081,11 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     secondary = claude_accounts(:secondary)
 
     assert_difference "ClaudeAccount.count", -1 do
-      delete destroy_account_quotas_path(secondary)
+      delete destroy_account_inference_path(secondary)
     end
 
     assert_nil ClaudeAccount.find_by(id: secondary.id)
-    assert_redirected_to quotas_path(runtime: "claude_code")
+    assert_redirected_to inference_path(runtime: "claude_code")
     assert_match "Deleted #{secondary.email}", flash[:notice]
   end
 
@@ -1093,7 +1094,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert primary.is_current?
 
     assert_difference "AccountRotationEvent.count", 1 do
-      delete destroy_account_quotas_path(primary)
+      delete destroy_account_inference_path(primary)
     end
 
     assert_nil ClaudeAccount.find_by(id: primary.id)
@@ -1113,10 +1114,10 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     codex_primary = claude_accounts(:codex_primary)
     assert codex_primary.is_current?
 
-    delete destroy_account_quotas_path(codex_primary)
+    delete destroy_account_inference_path(codex_primary)
 
     assert_nil ClaudeAccount.current_account("codex")
-    assert_redirected_to quotas_path(runtime: "codex")
+    assert_redirected_to inference_path(runtime: "codex")
     assert_match "no active account", flash[:notice]
   end
 
@@ -1129,7 +1130,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     attempt = secondary.runtime_login_attempts.create!(runtime: "claude_code", status: "succeeded")
     event = AccountRotationEvent.create!(rotated_to: secondary, reason: "quota_exceeded", source: "automatic")
 
-    delete destroy_account_quotas_path(secondary)
+    delete destroy_account_inference_path(secondary)
 
     assert_equal email, snapshot.reload.account_email
     assert_nil snapshot.claude_account_id
@@ -1143,7 +1144,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     primary = claude_accounts(:primary)
     email = primary.email
 
-    delete destroy_account_quotas_path(primary)
+    delete destroy_account_inference_path(primary)
 
     event = AccountRotationEvent.last
     assert_equal "deleted_current_account", event.reason
@@ -1161,7 +1162,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     )
     secondary.destroy!
 
-    get quotas_url(runtime: "claude_code")
+    get inference_url(runtime: "claude_code")
 
     assert_response :success
     assert_select "td", text: "deleted_account_event"
@@ -1169,17 +1170,17 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert_select "span", text: "deleted"
   end
 
-  test "should route DELETE /quotas/account/:id" do
+  test "should route DELETE /inference/account/:id" do
     assert_routing(
-      { method: :delete, path: "/quotas/account/1" },
-      { controller: "quotas", action: "destroy_account", id: "1" }
+      { method: :delete, path: "/inference/account/1" },
+      { controller: "inference", action: "destroy_account", id: "1" }
     )
   end
 
-  test "should route POST /quotas/add_account" do
+  test "should route POST /inference/add_account" do
     assert_routing(
-      { method: :post, path: "/quotas/add_account" },
-      { controller: "quotas", action: "add_account" }
+      { method: :post, path: "/inference/add_account" },
+      { controller: "inference", action: "add_account" }
     )
   end
 
@@ -1194,7 +1195,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     assert api_key_account.reload.is_current?
     assert_not claude_accounts(:codex_primary).reload.is_current?
-    assert_redirected_to quotas_path(runtime: "codex")
+    assert_redirected_to inference_path(runtime: "codex")
 
     event = AccountRotationEvent.last
     assert_equal api_key_account, event.rotated_to
@@ -1214,7 +1215,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     assert oauth_account.reload.is_current?
     assert_not claude_accounts(:codex_primary).reload.is_current?
-    assert_redirected_to quotas_path(runtime: "codex")
+    assert_redirected_to inference_path(runtime: "codex")
     assert File.exist?(CodexAuthProvider::AUTH_JSON_PATH),
       "codex switch must write ~/.codex/auth.json"
 
@@ -1229,7 +1230,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
     post switch_account_path(oauth_account)
 
-    assert_redirected_to quotas_path(runtime: "codex")
+    assert_redirected_to inference_path(runtime: "codex")
     assert_match "rejected as out of date", flash[:alert]
     assert_not oauth_account.reload.is_current?
     assert claude_accounts(:codex_primary).reload.is_current?
@@ -1245,12 +1246,12 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     assert codex_primary.is_current?
 
     assert_difference "AccountRotationEvent.count", 1 do
-      delete destroy_account_quotas_path(codex_primary)
+      delete destroy_account_inference_path(codex_primary)
     end
 
     new_current = ClaudeAccount.current_account("codex")
     assert_equal claude_accounts(:codex_secondary), new_current
-    assert_redirected_to quotas_path(runtime: "codex")
+    assert_redirected_to inference_path(runtime: "codex")
 
     event = AccountRotationEvent.last
     assert_equal "deleted_current_account", event.reason
@@ -1268,7 +1269,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       AccountRotationEvent.create!(rotated_to: claude_accounts(:secondary), reason: "claude_event_#{i}", source: "manual", created_at: (i + 1).minutes.ago)
     end
 
-    get quotas_url(runtime: "codex")
+    get inference_url(runtime: "codex")
 
     assert_response :success
     assert_select "td", text: "older_codex_event"
@@ -1278,7 +1279,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
   # ── add_account (runtime guard) ────────────────────────────────────
 
   test "add_account ignores an api_key passed for the Claude Code runtime" do
-    post add_account_quotas_path, params: { runtime: "claude_code", email: "claude-no-key@example.com", api_key: "sk-should-be-ignored" }
+    post add_account_inference_path, params: { runtime: "claude_code", email: "claude-no-key@example.com", api_key: "sk-should-be-ignored" }
 
     account = ClaudeAccount.find_by(email: "claude-no-key@example.com")
     assert_equal "claude_code", account.runtime
@@ -1293,7 +1294,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     RuntimeLoginJob.expects(:perform_later).once
 
     assert_difference -> { account.runtime_login_attempts.count }, 1 do
-      post start_login_quotas_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+      post start_login_inference_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
     assert_response :success
@@ -1310,7 +1311,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     stale = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_user")
     RuntimeLoginJob.expects(:perform_later).once
 
-    post start_login_quotas_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post start_login_inference_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_equal "canceled", stale.reload.status, "the prior live attempt must be superseded"
@@ -1322,7 +1323,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     RuntimeLoginJob.expects(:perform_later).never
 
     assert_no_difference -> { account.runtime_login_attempts.count } do
-      post start_login_quotas_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+      post start_login_inference_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
     assert_response :success
@@ -1333,7 +1334,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_user")
 
-    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    get login_status_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_select "turbo-stream[target=?]", "login_panel_#{account.id}"
@@ -1343,7 +1344,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "succeeded")
 
-    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    get login_status_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_select "turbo-stream[target=?]", "account_card_#{account.id}"
@@ -1366,7 +1367,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       heartbeat_at: (RuntimeLoginAttempt::HEARTBEAT_TIMEOUT + 1.minute).ago
     )
 
-    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    get login_status_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     attempt.reload
@@ -1377,7 +1378,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     # And the panel must now carry the reason instead of the spinner, with no
     # poller left running.
     assert_select "turbo-stream[target=?]", "login_panel_#{account.id}" do
-      assert_select "div[data-controller=?]", "quotas-login-poller", count: 0
+      assert_select "div[data-controller=?]", "inference-login-poller", count: 0
       assert_no_match(/Finishing sign-in/, response.body)
       assert_match(/stopped responding/, response.body)
     end
@@ -1391,11 +1392,11 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     attempt_id = attempt.id
     attempt.destroy!
 
-    get login_status_quotas_path(attempt_id), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    get login_status_inference_path(attempt_id), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_select "turbo-stream[target=?]", "login_attempt_#{attempt_id}" do
-      assert_select "div[data-controller=?]", "quotas-login-poller", count: 0
+      assert_select "div[data-controller=?]", "inference-login-poller", count: 0
       assert_match(/no longer being tracked/, response.body)
     end
   end
@@ -1408,7 +1409,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "completing")
     account.destroy!
 
-    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    get login_status_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_select "turbo-stream[target=?]", "login_attempt_#{attempt.id}"
@@ -1423,7 +1424,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     )
     account.destroy!
 
-    post cancel_login_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post cancel_login_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_select "turbo-stream[target=?]", "login_attempt_#{attempt.id}"
@@ -1441,7 +1442,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       runtime: account.runtime, status: "awaiting_code", pasted_code: "secret-auth-code"
     )
 
-    post cancel_login_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post cancel_login_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     attempt.reload
@@ -1456,7 +1457,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     )
     RuntimeLoginJob.expects(:perform_later).once
 
-    post start_login_quotas_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post start_login_inference_path(account), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     stale.reload
     assert_equal "canceled", stale.status
@@ -1468,7 +1469,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_user")
     attempt.update_column(:expires_at, 1.minute.ago)
 
-    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    get login_status_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_equal "expired", attempt.reload.status
@@ -1488,11 +1489,11 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
       verification_url: url
     )
 
-    get login_status_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    get login_status_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_includes response.body, url, "awaiting_code must render the OAuth authorization URL"
-    assert_includes response.body, submit_login_code_quotas_path(attempt),
+    assert_includes response.body, submit_login_code_inference_path(attempt),
       "the paste-code form must still render alongside the URL"
   end
 
@@ -1500,7 +1501,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_code")
 
-    post submit_login_code_quotas_path(attempt),
+    post submit_login_code_inference_path(attempt),
       params: { code: "  auth-code-123  " },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
@@ -1512,7 +1513,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_code")
 
-    post submit_login_code_quotas_path(attempt),
+    post submit_login_code_inference_path(attempt),
       params: { code: "   " },
       headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
@@ -1524,7 +1525,7 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_user")
 
-    post cancel_login_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post cancel_login_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_equal "canceled", attempt.reload.status
@@ -1534,23 +1535,23 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
     account = claude_accounts(:unconfigured)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "succeeded")
 
-    post cancel_login_quotas_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    post cancel_login_inference_path(attempt), headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
     assert_equal "succeeded", attempt.reload.status
   end
 
-  test "should route POST /quotas/accounts/:id/login" do
+  test "should route POST /inference/accounts/:id/login" do
     assert_routing(
-      { method: :post, path: "/quotas/accounts/1/login" },
-      { controller: "quotas", action: "start_login", id: "1" }
+      { method: :post, path: "/inference/accounts/1/login" },
+      { controller: "inference", action: "start_login", id: "1" }
     )
   end
 
-  test "should route GET /quotas/login/:attempt_id" do
+  test "should route GET /inference/login/:attempt_id" do
     assert_routing(
-      { method: :get, path: "/quotas/login/5" },
-      { controller: "quotas", action: "login_status", attempt_id: "5" }
+      { method: :get, path: "/inference/login/5" },
+      { controller: "inference", action: "login_status", attempt_id: "5" }
     )
   end
 
@@ -1600,5 +1601,212 @@ class QuotasControllerTest < ActionDispatch::IntegrationTest
 
   def aggregate_stats_text
     css_select("#aggregate_stats").first.text.squish
+  end
+
+  # --- Quotas -> Inference -------------------------------------------------
+  #
+  # The old address is not a deprecation window. It is in seeded trigger
+  # prompts, alert bodies and Slack history that this repo has already shipped,
+  # so it has to keep landing on the page.
+
+  test "the old /quotas address still reaches the page" do
+    get "/quotas"
+
+    assert_redirected_to "/inference"
+    follow_redirect!
+    assert_response :success
+    assert_select "h1", "Inference"
+  end
+
+  test "the old address carries its tab across" do
+    get "/quotas?runtime=codex"
+
+    assert_redirected_to "/inference?runtime=codex"
+    follow_redirect!
+    assert_select "a[href=?]", inference_path(runtime: "codex"), text: "Codex"
+  end
+
+  test "the old anchor-bearing links people hold still work" do
+    # `?runtime=` is what rides along; the fragment never reaches the server, so
+    # the browser reapplies it to the redirect target on its own.
+    get "/quotas", params: { runtime: "claude_code" }
+
+    assert_redirected_to "/inference?runtime=claude_code"
+  end
+
+  # --- The Pi tab -----------------------------------------------------------
+
+  test "Pi is a tab beside Claude Code and Codex" do
+    get inference_url
+
+    assert_select "a[href=?]", inference_path(runtime: "claude_code"), text: "Claude Code"
+    assert_select "a[href=?]", inference_path(runtime: "codex"), text: "Codex"
+    assert_select "a[href=?]", inference_path(runtime: "pi"), text: "Pi"
+  end
+
+  test "the Pi tab renders with the key absent" do
+    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+      get inference_url(runtime: "pi")
+    end
+
+    assert_response :success
+    assert_select "[data-openrouter-key-state=unset]"
+    assert_select "[data-openrouter-key-state=set]", count: 0
+    assert_match "OPENROUTER_API_KEY", response.body
+  end
+
+  test "the Pi tab renders with the key set, showing a digest and never the key" do
+    ManagedSecret.stub(:openrouter_key, writable_secret(value: PI_KEY)) do
+      get inference_url(runtime: "pi")
+    end
+
+    assert_response :success
+    assert_select "[data-openrouter-key-state=set]"
+    assert_select "[data-openrouter-fingerprint]", text: Digest::SHA256.hexdigest(PI_KEY)[0, 12]
+    assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+  end
+
+  test "the Pi tab has no account-pool machinery on it" do
+    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+      get inference_url(runtime: "pi")
+    end
+
+    assert_select "form[action=?]", add_account_inference_path, count: 0
+    assert_select "form[action=?]", refresh_all_inference_path, count: 0
+  end
+
+  test "the Pi tab lists only OpenRouter-routed models as the ones this deployment feeds" do
+    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+      get inference_url(runtime: "pi")
+    end
+
+    assert_match "openrouter/anthropic/claude-opus-4.6", response.body
+  end
+
+  test "a closed write path names the missing permissions rather than offering a form" do
+    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+      get inference_url(runtime: "pi")
+    end
+
+    assert_select "[data-openrouter-write-blocked]"
+    assert_select "form[action=?]", openrouter_key_inference_path, count: 0
+    assert_match ParameterStore::Capabilities::CREATE_SECRET, response.body
+    assert_match "ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON", response.body
+  end
+
+  # --- The property: the key cannot be read back out -------------------------
+
+  test "no HTTP surface returns the stored key" do
+    secret = writable_secret
+    ManagedSecret.stub(:openrouter_key, secret) do
+      put openrouter_key_inference_path, params: { openrouter_api_key: PI_KEY }
+      assert_redirected_to inference_path(runtime: "pi")
+      assert_equal PI_KEY, pi_chain.get(ManagedSecret::OPENROUTER_API_KEY),
+        "precondition: the key really is in the store, so the assertions below mean something"
+
+      # The redirect response, the flash it carries, and the page it lands on.
+      assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+      assert_no_match(/#{Regexp.escape(PI_KEY)}/, flash.to_hash.values.join(" "))
+
+      follow_redirect!
+      assert_response :success
+      assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+
+      # And a fresh render, which is the state a later visitor sees.
+      get inference_url(runtime: "pi")
+      assert_no_match(/#{Regexp.escape(PI_KEY)}/, response.body)
+    end
+  end
+
+  test "no route reads the key back" do
+    # There is deliberately no GET on the key. If one is ever added, this fails.
+    key_routes = Rails.application.routes.routes.select do |route|
+      route.path.spec.to_s.include?("openrouter_key")
+    end
+
+    assert key_routes.any?, "precondition: the key routes exist"
+    assert_equal [ "DELETE", "PUT" ], key_routes.map(&:verb).sort,
+      "the key is create/update/delete only — a GET here would be a read-back surface"
+  end
+
+  test "the key is filtered out of the parameter log" do
+    filter = ActiveSupport::ParameterFilter.new(Rails.application.config.filter_parameters)
+
+    assert_equal "[FILTERED]", filter.filter("openrouter_api_key" => PI_KEY)["openrouter_api_key"]
+  end
+
+  test "a successful save reports a digest and not the key" do
+    secret = writable_secret
+    ManagedSecret.stub(:openrouter_key, secret) do
+      put openrouter_key_inference_path, params: { openrouter_api_key: PI_KEY }
+    end
+
+    assert_match Digest::SHA256.hexdigest(PI_KEY)[0, 12], flash[:notice]
+    assert_no_match(/#{Regexp.escape(PI_KEY)}/, flash[:notice])
+  end
+
+  test "a blank save is refused and nothing reaches the store" do
+    secret = writable_secret
+    ManagedSecret.stub(:openrouter_key, secret) do
+      put openrouter_key_inference_path, params: { openrouter_api_key: "" }
+    end
+
+    assert_redirected_to inference_path(runtime: "pi")
+    assert_match(/Paste a key first/, flash[:alert])
+    assert_empty pi_fake.secrets
+  end
+
+  test "a refused write says so instead of claiming a save" do
+    ManagedSecret.stub(:openrouter_key, unwritable_secret) do
+      put openrouter_key_inference_path, params: { openrouter_api_key: PI_KEY }
+    end
+
+    assert_nil flash[:notice]
+    assert_match(/cannot write/, flash[:alert])
+  end
+
+  test "delete removes the key" do
+    secret = writable_secret(value: PI_KEY)
+    ManagedSecret.stub(:openrouter_key, secret) do
+      delete destroy_openrouter_key_inference_path
+    end
+
+    assert_redirected_to inference_path(runtime: "pi")
+    assert_match(/deleted/, flash[:notice])
+    assert_nil pi_chain.get(ManagedSecret::OPENROUTER_API_KEY)
+  end
+
+  private
+
+  PI_KEY = "sk-or-v1-controller-fixture-value"
+
+  def pi_fake
+    @pi_fake ||= FakeParameterStore.new
+  end
+
+  def pi_chain
+    @pi_chain ||= pi_fake.chain
+  end
+
+  def writable_secret(value: nil)
+    pi_fake.held_permissions = ParameterStore::Capabilities::PROBED_PERMISSIONS
+    pi_fake.seed_secret(ManagedSecret::OPENROUTER_API_KEY, value) if value
+    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: pi_chain,
+      writer: ParameterStore::Writer::Configuration.new(
+        client: pi_fake.write_client, identity: :writer, reason: nil
+      ))
+  end
+
+  # The shape every deployment is in until the IAM grant lands: a store Zimmer
+  # can read and cannot write.
+  def unwritable_secret
+    pi_fake.held_permissions = [
+      ParameterStore::Capabilities::RENDER_PARAMETER,
+      ParameterStore::Capabilities::READ_SECRET_VALUE
+    ]
+    ManagedSecret.new(ManagedSecret::OPENROUTER_API_KEY, chain: pi_chain,
+      writer: ParameterStore::Writer::Configuration.new(
+        client: pi_fake.write_client, identity: :resolver, reason: nil
+      ))
   end
 end

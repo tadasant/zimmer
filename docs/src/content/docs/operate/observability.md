@@ -90,7 +90,7 @@ own terms.
 One class of genuine defect does land at INFO, and the log line is shaped to make it findable: a
 `respond_to` block with no branch for the format a client actually sent raises the same
 `UnknownFormat` as an HTML-only action, and nothing distinguishes them from the outside.
-`QuotasController#refresh_account` is the live example — `turbo_stream` only, so a POST that
+`InferenceController#refresh_account` is the live example — `turbo_stream` only, so a POST that
 arrives without Turbo's `Accept` header gets a 406. That is why the record carries `action=` as
 well as `path`: a defect of this kind shows up as one action recurring, where a client mistake
 shows up as one client wandering.

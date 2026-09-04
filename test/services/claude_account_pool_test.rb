@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# The pool figure /quotas prints and the spot gate decides on. These tests pin
+# The pool figure /inference prints and the spot gate decides on. These tests pin
 # down what goes into it — every account, whatever its status — because both
 # surfaces read this one computation.
 class ClaudeAccountPoolTest < ActiveSupport::TestCase

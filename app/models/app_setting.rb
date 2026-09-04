@@ -168,7 +168,7 @@ class AppSetting < ApplicationRecord
 
     # Whether Claude Code sessions get a per-session CLAUDE_CONFIG_DIR and a
     # CLAUDE_CODE_OAUTH_TOKEN instead of the shared credentials file. Read on the
-    # spawn path, the auth sweep and the /quotas render, so it falls back to the
+    # spawn path, the auth sweep and the /inference render, so it falls back to the
     # shipped default whenever the row can't be read rather than raising.
     def session_scoped_credentials_enabled?
       current.session_scoped_credentials_enabled?

@@ -137,6 +137,11 @@ prerequisite, exactly as it was for strad's resolver.
 
 Run the whole section in one sitting.
 
+The same is true of the **writer** identity the Inference page's Pi tab needs —
+see [A writer identity, for the Pi tab](#a-writer-identity-for-the-pi-tab). That
+grant does not exist yet, and no agent can make it; the tab is built to say so
+rather than to fail at the point of use.
+
 ### 1. The project and its APIs
 
 ```bash
@@ -249,7 +254,11 @@ curl -s -X POST \
         "parametermanager.parameters.create",
         "parametermanager.parameterVersions.create",
         "secretmanager.secrets.create",
-        "secretmanager.versions.add"]}' | jq -r '.permissions[]' | sort
+        "secretmanager.versions.add",
+        "secretmanager.secrets.setIamPolicy",
+        "secretmanager.secrets.delete",
+        "parametermanager.parameters.delete",
+        "parametermanager.parameterVersions.delete"]}' | jq -r '.permissions[]' | sort
 
 # EXPECTED — exactly these four and no others:
 #   parametermanager.parameterVersions.list
@@ -257,9 +266,15 @@ curl -s -X POST \
 #   parametermanager.parameters.list
 #   secretmanager.versions.access
 #
-# The four write permissions MUST be absent. Their absence is the "reads values,
+# Every MUTATING permission MUST be absent. Their absence is the "reads values,
 # writes nothing" claim, checked rather than asserted. If the list comes back
 # empty, the SA has no project access at all and something above failed.
+#
+# `ParameterStore::Capabilities::WRITE_PERMISSIONS` is the same list in code, and
+# `Capabilities#least_privilege?` is this assertion at runtime. The write path
+# added for the Inference page's Pi tab uses a SEPARATE identity — see
+# "A writer identity, for the Pi tab" below — precisely so that this audit keeps
+# returning the same four.
 
 gcloud config set account <your-own-account>   # switch back off the SA
 ```
@@ -542,6 +557,149 @@ printf %s '<the-new-value>' | gcloud secrets versions add "$ID" --project "$PROJ
 
 Zimmer picks a rotation up within the 60-second snapshot TTL, and a newly added
 name within the 10-second negative TTL. No redeploy.
+
+## A writer identity, for the Pi tab
+
+Everything above describes a Zimmer that **reads** the store. The Inference
+page's Pi tab is the one surface that writes to it: it creates, rotates and
+deletes `OPENROUTER_API_KEY`, the provider key every Pi session runs on.
+
+**That write path is closed on this deployment today, and it stays closed until
+a human makes the IAM grant below.** Until then the tab says so, names the exact
+permissions it is missing, and offers no form. This is deliberate — the
+alternative is a Save button that 403s.
+
+### Why a second service account, and not a wider first one
+
+The resolver's key is baked into the image and sits on the path every session's
+`${VAR}` resolution takes. Granting it write turns one leaked key from "can read
+every Zimmer secret" into "can rewrite every Zimmer secret", and it deletes the
+property the audit above exists to assert. A separate identity keeps the audit
+returning the same four permissions and confines the write blast radius to a key
+only the web tier holds.
+
+```bash
+PROJECT=zimmer-secrets-prod
+WRITER=zimmer-secrets-writer
+
+gcloud iam service-accounts create "$WRITER" \
+  --project "$PROJECT" \
+  --display-name "Zimmer secrets (Pi tab writer: creates/rotates/deletes managed secrets)"
+
+WRITER_EMAIL="${WRITER}@${PROJECT}.iam.gserviceaccount.com"
+
+# Parameter Manager: create/read/version/delete parameters.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:${WRITER_EMAIL}" \
+  --role roles/parametermanager.admin --condition=None
+
+# Secret Manager: create/version/delete secrets, and — the load-bearing one —
+# set the IAM binding that lets a parameter dereference its own secret.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:${WRITER_EMAIL}" \
+  --role roles/secretmanager.admin --condition=None
+
+gcloud iam service-accounts keys create /tmp/zimmer-secrets-writer.json \
+  --iam-account "$WRITER_EMAIL"
+base64 -w0 /tmp/zimmer-secrets-writer.json   # -> ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
+rm -f /tmp/zimmer-secrets-writer.json
+```
+
+Deliver the base64 as `ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`, exactly
+as the resolver key is delivered in [Deliver the key to
+Zimmer](#5-deliver-the-key-to-zimmer) — base64 for the same env-file reason. The
+Kamal plumbing already exists on both environments (`.kamal/secrets.*`,
+`config/deploy.*.yml`, and the staging workflow's env block), so the only step is
+setting the GitHub Actions secret — `PROD_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`
+on the private production repo, `STAGING_…` on this one — and deploying. **No
+shell on the box**, per [Ops actions ship with the deploy](/operate/deploying/).
+
+`CliSpawnEnv` clears this variable from every spawned agent session, for a
+stronger reason than it clears the resolver: a session holding the writer key
+could rewrite or delete every Zimmer secret, which is the blast radius the
+separate identity exists to avoid.
+
+Staging gets its own writer if it gets one at all. A credential that may *delete*
+secrets is the last one to share across environments.
+
+### The permissions, and what each one is for
+
+The two predefined roles above are the convenient grant. If you would rather
+build a custom role, these are the nine permissions the write path actually
+calls, and they are the same list `ParameterStore::Capabilities::UPSERT_PERMISSIONS`
+and `DELETE_PERMISSIONS` probe:
+
+| Permission | Called by |
+| --- | --- |
+| `secretmanager.secrets.create` | creating the secret that holds the bytes |
+| `secretmanager.secrets.get` | finding an existing one, on a rotation |
+| `secretmanager.versions.add` | writing the value — and the *only* call a rotation makes, because the envelope points at `versions/latest` |
+| `secretmanager.secrets.getIamPolicy` | reading the policy so the binding is merged, not replaced |
+| `secretmanager.secrets.setIamPolicy` | **the step that fails silently if skipped** — granting the parameter's own principal `roles/secretmanager.secretAccessor` |
+| `parametermanager.parameters.create` | creating the parameter that indexes the secret |
+| `parametermanager.parameters.get` | reading `policyMember.iamPolicyUidPrincipal` on an existing one |
+| `parametermanager.parameterVersions.list` | deciding whether the envelope still needs writing |
+| `parametermanager.parameterVersions.create` | writing the envelope |
+
+Delete additionally needs `parametermanager.parameterVersions.delete`,
+`parametermanager.parameters.delete` and `secretmanager.secrets.delete` —
+Parameter Manager refuses to delete a parameter that still has versions, so the
+versions go first.
+
+Zimmer never assumes any of these. `Capabilities.probe` asks Google before every
+write and refuses locally when the answer is no, so a missing permission is a
+sentence on the page rather than a 403 from a form submit.
+
+### A write is not finished until it reads back
+
+The documented trap for this store is a write that is **accepted and never
+readable by Zimmer** — a value in the wrong project, or a parameter with no IAM
+binding letting it dereference its own secret. Both report success and then
+resolve to nothing, forever, while the store banner stays green.
+
+So `ManagedSecret#write` does not report a save when Google returns 200. It
+invalidates the resolver snapshot, reads the variable back **through the ordinary
+resolution chain** — the same path a spawning session takes — and compares
+SHA-256 digests. A write it cannot read back is reported as a failure, in those
+words, and recorded as failed in `managed_secret_writes` so the page does not
+claim a last-set time it has not earned.
+
+### The value does not come back out
+
+The Pi tab creates, updates and deletes. It does not read. There is no `GET` on
+the key, no reveal, no prefill, and nothing in `ManagedSecret::Status` derived
+from the value that a reader could invert: the page shows whether the key is
+set, which link of the chain holds it, when Zimmer last wrote it, and a
+**truncated SHA-256** of it. The digest is chosen over a last-four mask
+deliberately — it leaks no character of the key, and answers a more useful
+question, which is "is the key in the store the one on my clipboard". Hash your
+copy and compare.
+
+`ManagedSecretWrite` rows hold the same digest and never the value. Rails'
+`filter_parameters` already covers the form field (`_key` matches
+`openrouter_api_key`), and a test pins that along with the absence of the value
+from every response body, flash and audit row.
+
+### How the key reaches a Pi session
+
+Worth stating, because it is the step it would be natural to assume some other
+layer performs. It does not: `AgentSessionJob#inject_secrets_to_env_file` writes
+a clone's `.env` from `SecretsLoader.all`, which reads Rails encrypted
+`mcp_secrets` **only** and never consults `SecretProviders` — so a value living
+in the Parameter Store does not land in a session `.env` by that route.
+
+Every store-backed name reaches its consumer some other way. An MCP config's
+`${VAR}` is interpolated by Zimmer before the server is launched. `GH_TOKEN` is
+published into the worker's own environment by `GhTokenProvisioner`. Pi has
+neither path — it reads the variable out of its own process environment — so
+`PiRuntimeAdapter#apply_provider_key` resolves `OPENROUTER_API_KEY` through the
+chain and puts it in the spawn environment, **for Pi sessions only**. An
+inference key authorises spend and a Claude Code or Codex session has no use for
+it, so it is not published process-wide. A value in the clone's own `.env` still
+wins, like every other step there.
+
+`CliStatusService` reads the same chain rather than bare `ENV`, so the CLIs page
+answers the same question the session will.
 
 ## The Secrets Console, and which project it administers
 

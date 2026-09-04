@@ -249,7 +249,7 @@ class SpotSessionHold
     # second ago is not a stalled ladder — it is a job that has not been picked
     # up yet, and the window in which that is true is widest during exactly the
     # `agents` congestion this class's header documents. Naming that "stalled" on
-    # the session page while /quotas counted 0 overdue would be this PR's own
+    # the session page while /inference counted 0 overdue would be this PR's own
     # defect wearing the other face.
     def overdue?(now: Time.current, grace: OVERDUE_GRACE)
       retry_at.present? && retry_at + grace < now
@@ -380,7 +380,7 @@ class SpotSessionHold
     end
 
     # The standing population of sessions the gate has refused and not yet let
-    # through — the number /quotas and `get_spot_policy` report beside the paused
+    # through — the number /inference and `get_spot_policy` report beside the paused
     # one.
     #
     # NOT the same figure as SpotSessionPause.paused_count, and not a subset of
@@ -401,8 +401,8 @@ class SpotSessionHold
     # as a UTC ISO-8601 stamp, and those sort lexicographically in exactly
     # timestamp order — so `<` answers "is this in the past" without a
     # `::timestamptz`, which would raise on the whole query if any one row's
-    # stamp were unparseable and take the /quotas card down with it. Filtering
-    # here rather than in Ruby also keeps this off the page's hot path: /quotas
+    # stamp were unparseable and take the /inference card down with it. Filtering
+    # here rather than in Ruby also keeps this off the page's hot path: /inference
     # asks for the count on every render, and the alternative loads every dormant
     # session's row — `metadata` included, which now carries deferred prompts.
     def overdue_sessions(now: Time.current, grace: OVERDUE_GRACE)

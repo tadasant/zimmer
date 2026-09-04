@@ -75,7 +75,7 @@ class ClaudeAccountsTasksTest < ActiveSupport::TestCase
     end.first
 
     assert_equal({}, ClaudeAccount.find_by(email: email).oauth_config)
-    assert_match(%r{open /quotas and click Authenticate}, output)
+    assert_match(%r{open /inference and click Authenticate}, output)
     assert_no_match(/filesystem/i, output)
   ensure
     ClaudeAccount.find_by(email: email)&.destroy

@@ -129,7 +129,7 @@ module ConnectionBudget
   # decision rather than a throughput one. RuntimeLoginJob holds its thread for as
   # long as the login CLI is open -- up to RuntimeLoginJob::MAX_DURATION, twelve
   # minutes -- so these threads are concurrent *interactive logins*, not jobs per
-  # second. QuotasController#login supersedes an account's previous attempt before
+  # second. InferenceController#login supersedes an account's previous attempt before
   # enqueuing a new one, so a human re-authenticating six accounts one after
   # another needs one thread, not six; two covers a second browser tab and leaves
   # the budget below room to breathe. Raise GOOD_JOB_AUTH_THREADS and

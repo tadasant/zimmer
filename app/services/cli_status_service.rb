@@ -150,15 +150,16 @@ class CliStatusService
       # question — it answers whether a provider credential resolves, from the
       # environment or from auth.json — and it requires an explicit --provider.
       # Verified against pi 0.84.4: prints `ready` and exits 0 when the key
-      # resolves, `not_ready` and exits 1 when it does not. Anthropic is the
-      # provider behind Pi's default model (see ModelCatalog).
-      check_auth: "pi auth check --provider anthropic",
+      # resolves, `not_ready` and exits 1 when it does not. OpenRouter is the
+      # provider behind every Pi model this deployment offers (see ModelCatalog),
+      # so it is the one whose readiness answers "can a Pi session run".
+      check_auth: "pi auth check --provider openrouter",
       check_version: "pi --version",
       # Pi resolves a provider credential per request from the session
       # environment rather than from a Zimmer-managed account pool, so this is an
       # env-var tool, not an OAuth one. See PiAuthProvider.
       auth_method: :env_var,
-      env_var_name: "ANTHROPIC_API_KEY",
+      env_var_name: "OPENROUTER_API_KEY",
       # Pi is the one runtime whose "is it installed" answer is bigger than the
       # binary: it ships no MCP, hooks or plugins, so all three arrive as npm
       # packages the image installs separately (PiExtensions). A `pi` that is
@@ -174,11 +175,14 @@ class CliStatusService
       auth_instructions: <<~INSTRUCTIONS
         # Pi authenticates from a provider API key in the session environment —
         # there is no interactive login step and no account pool to rotate.
-        # Put the key in the Parameter Store so it reaches sessions through
+        # Set it on the Inference page's Pi tab (/inference?runtime=pi), which
+        # writes it to the Parameter Store so it reaches sessions through
         # SecretsLoader and survives a container rebuild:
         #
-        #   ANTHROPIC_API_KEY  (for the anthropic/* models in ModelCatalog)
-        #   OPENAI_API_KEY     (for the openai/* models)
+        #   OPENROUTER_API_KEY  (every openrouter/* model in ModelCatalog —
+        #                        the path this deployment is set up for)
+        #   ANTHROPIC_API_KEY   (only for the direct anthropic/* ids)
+        #   OPENAI_API_KEY      (only for the direct openai/* ids)
         #
         # Pi extension status (MCP / hooks / plugins) is reported separately —
         # see PiExtensions.status_summary.
@@ -288,8 +292,12 @@ class CliStatusService
 
     # Check authentication based on auth method
     authenticated = if config[:auth_method] == :env_var
-      # For env var auth, check if the environment variable is set and non-empty
-      ENV[config[:env_var_name]].present?
+      # Through the `${VAR}` chain, not bare ENV. A key set on the Inference page's
+      # Pi tab lives in the Parameter Store, which is the chain's first link and
+      # not in this process's environment at all — reading ENV directly would
+      # report Pi unauthenticated while every Pi session was running fine on it.
+      # The chain's last link IS ENV, so a plain export still answers.
+      resolved_credential(config[:env_var_name]).present?
     else
       # For OAuth or other methods, run the auth check command
       installed && check_auth(config[:check_auth])
@@ -309,6 +317,21 @@ class CliStatusService
       auth_method: config[:auth_method],
       env_var_name: config[:env_var_name]
     }
+  end
+
+  # One `${VAR}`, resolved the way a session would resolve it. Never returned to a
+  # caller and never logged — `#check_tool` only asks whether it is present.
+  #
+  # A store that cannot be reached reads as "not set" rather than taking the whole
+  # CLI report down with it: this method backs a status page, and an unreachable
+  # store is a thing that page should keep rendering through.
+  def resolved_credential(variable)
+    return nil if variable.blank?
+
+    SecretProviders.chain.get(variable)
+  rescue => e
+    Rails.logger.warn "[CliStatusService] Could not resolve #{variable}: #{e.class}"
+    nil
   end
 
   # A tool's extra operator-facing line, or nil. Rescued rather than allowed to

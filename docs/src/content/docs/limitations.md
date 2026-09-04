@@ -697,7 +697,7 @@ has no `before_action` for auth and there are no login routes or `User` model. Z
 puts the app on a Tailscale tailnet with port 80 closed at the DigitalOcean firewall.
 
 The sharp edge is real and load-bearing. Expose port 80 and, for most of the app, there is no second
-wall: an anonymous visitor gets every session transcript, `/settings`, `/quotas` (including the OAuth
+wall: an anonymous visitor gets every session transcript, `/settings`, `/inference` (including the OAuth
 login flow), and the GoodJob dashboard.
 
 The `/supervisor` Administrate panel is the exception, and the reason is its blast radius — it renders
@@ -1165,7 +1165,7 @@ unreachable is stored rather than thrown away.
 
 🟡 An account leaves the pool when a quota reading says its weekly window is spent
 ([#248](https://github.com/tadasant/zimmer/issues/248)) — and readings arrive from unrelated places:
-a rotation snapshot, a `/quotas` page view, the 15-minute reset checker. So *when* a capped account
+a rotation snapshot, a `/inference` page view, the 15-minute reset checker. So *when* a capped account
 gets marked depends on when someone last looked at it, not on when it filled its window. An idle pool
 that nobody has probed can still hand out an account whose week ran out an hour ago; rotation's own
 pick-time check only fires on evidence that already exists.
@@ -1173,7 +1173,7 @@ pick-time check only fires on evidence that already exists.
 The floor is `QuotaResetCheckerJob`'s 15-minute sweep, which probes `quota_exceeded` accounts — but
 not `active` ones. The two paths that actually hand an account to a session close the gap for
 themselves: bootstrap probes each candidate live before promoting it, and rotation snapshots the
-account it activates. What is left is the window in between, where `/quotas` can show an account as
+account it activates. What is left is the window in between, where `/inference` can show an account as
 healthy on evidence that has gone stale. Making that deterministic would mean probing every active
 account on a schedule, which costs a request per account per sweep for a condition the paths that
 matter already check at the moment they matter.
@@ -1187,9 +1187,9 @@ evidence of how the account behaved survives the delete-and-re-authenticate loop
 cost is that the delete used to be the only thing that ever removed a snapshot:
 `claude_account_quota_snapshots` has no prune job, for live accounts either. A detached reading is
 therefore permanent unless `claude_accounts:clear_all` takes it, and nothing reads it — the rate
-metric skips detached rows on purpose, and `/quotas` only ever looks up snapshots by live account id.
+metric skips detached rows on purpose, and `/inference` only ever looks up snapshots by live account id.
 
-Small in practice: snapshots are written on rotation, on a `/quotas` view, and by the reset checker,
+Small in practice: snapshots are written on rotation, on a `/inference` view, and by the reset checker,
 so the table grows at operator pace rather than at session pace. The honest fix is a retention job
 for the whole table, not a carve-out for orphans — deleting exactly the rows this change exists to
 preserve would undo it.
@@ -1200,13 +1200,13 @@ account by at most 24 hours.
 
 ### An account whose label has drifted is back on the page before it is back in the pool
 
-🟡 `/quotas` derives the badge it shows for an account from that account's own latest reading
+🟡 `/inference` derives the badge it shows for an account from that account's own latest reading
 (`ClaudeAccount#effective_status`, see
-[The status column is sticky](/auth/harness/#the-status-column-is-sticky-the-badge-on-quotas-is-not)),
+[The status column is sticky](/auth/harness/#the-status-column-is-sticky-the-badge-on-inference-is-not)),
 so a cleared account stops presenting as "Quota Exceeded" the moment a reading says so. The
 `status` column it is derived *around* is what `ClaudeAccount.available` and `AccountRotationService`
 read, and that still only changes when something writes to it: `QuotaResetCheckerJob`'s 15-minute
-sweep, or `QuotasController#auto_heal_accounts` on a page load or refresh.
+sweep, or `InferenceController#auto_heal_accounts` on a page load or refresh.
 
 So there is a window where the page tells the truth and the pool has not caught up — an account
 displayed as Active that rotation would still skip. It closes on the next sweep, or immediately if
@@ -1221,7 +1221,7 @@ timer. And the derivation needs a reading to work from, which **Codex accounts n
 snapshots quota for that runtime and the sweep is Claude-only, so a Codex account marked
 `quota_exceeded` on rotation keeps the label and stays out of its pool until something else moves it.
 
-### The quotas page can hold row-lock transactions across a token endpoint call
+### The Inference page can hold row-lock transactions across a token endpoint call
 
 🟡 `ClaudeAccount#refresh_token!` serializes on the account row and keeps that lock for the whole
 read-refresh-persist sequence, HTTP included (see
@@ -1229,9 +1229,9 @@ read-refresh-persist sequence, HTTP included (see
 is what makes the token it presents provably the token it holds, and it was already the shape of the
 5-minute sweep, which wrapped each refresh in `account.with_lock` before this.
 
-What is new is that the same lock now applies on the **web** tier. `QuotasController` refreshes to
+What is new is that the same lock now applies on the **web** tier. `InferenceController` refreshes to
 validate an account before switching, and its probe can call `refresh_token!` more than once per
-account per render — so rendering `/quotas` while Anthropic's token endpoint is slow holds a
+account per render — so rendering `/inference` while Anthropic's token endpoint is slow holds a
 sequence of transactions, each up to the 5s-open/10s-read timeout, on a Puma thread.
 
 Tolerable because the page is operator-facing and rarely loaded, and because the alternative — an
@@ -1245,7 +1245,7 @@ unserialized refresh — is the bug that drained the pool. If it becomes a probl
 current account to tell *the pool moved under me* from *I am holding the identity that failed*. It is
 written per session — at spawn, and whenever the coordinator or the quota path moves that session —
 so it goes stale when the pool moves for a reason this session was not part of: another session's
-rotation, or an operator switching accounts from the quotas page.
+rotation, or an operator switching accounts from the Inference page.
 
 A session whose record says account A, and which has since been running on account B, will read a
 genuine "Not logged in" from B as *the pool already moved off A* and adopt B — the identity it was
@@ -1570,8 +1570,8 @@ window rotation can hand a session an account that cannot mint an access token. 
 trade of a slower true positive for far fewer false ones, not an oversight.
 
 The strikes are on `claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at`. They
-are on the account's Administrate record page but **not** on `/quotas`, which is where anyone actually
-looks — so "why is this account still active when every refresh fails?" is a question `/quotas` cannot
+are on the account's Administrate record page but **not** on `/inference`, which is where anyone actually
+looks — so "why is this account still active when every refresh fails?" is a question `/inference` cannot
 answer.
 
 ---
@@ -3497,7 +3497,7 @@ and resume.
 The gate compares each window's utilization against its target, and that utilization is the average of
 the last `ClaudeAccountQuotaSnapshot` on file for every account in the pool. `ClaudeUsageSamplerJob`
 refreshes the serving account every 15 minutes and a spare is read only on rotation or when somebody
-opens `/quotas`, so between samples the gate is deciding on numbers that may already have moved —
+opens `/inference`, so between samples the gate is deciding on numbers that may already have moved —
 and a spare's contribution to the average can be considerably staler than 15 minutes.
 
 Two consequences worth knowing:
@@ -3653,7 +3653,7 @@ early holds a queue for a long time. That is the behaviour the deployment asked 
 what protects priority work, and spending it would defeat the point.
 
 The levers, when one piece of work genuinely cannot wait, are per-session rather than global: promote
-that session to priority from its hold banner, or lower the priority reserve on `/quotas`. `/quotas`
+that session to priority from its hold banner, or lower the priority reserve on `/inference`. `/inference`
 shows the held state, the reason, and how many dollars are left the whole time, so a queue waiting on
 a window is visible rather than mysterious.
 
@@ -4411,7 +4411,7 @@ on can show *Not Authenticated* while a perfectly healthy pool sits behind it �
 yet on a fresh worker, or the current row's stored pair is incomplete and
 `AccountRotationService` would rotate past it on the next spawn. The setting is off by default, and
 the same narrowing is already what the `/health` Agent Authentication card reports, so the two
-surfaces agree; `/quotas` is the page that shows the whole pool.
+surfaces agree; `/inference` is the page that shows the whole pool.
 
 ## An empty-turn restart is bounded per incident, not per lifetime
 
