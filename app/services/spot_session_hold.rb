@@ -795,7 +795,6 @@ class SpotSessionHold
         {}
       end
 
-
       # One statement, and it drops the delivery marker in the same breath. The gate
       # is taking custody of this prompt — see the class comment — but only when it
       # actually holds one: a promptless hold that dropped the marker would discard
