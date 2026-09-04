@@ -2,8 +2,8 @@
 
 module Mcp
   module Tools
-    # The write half of the spot/priority surface — everything the spot gate card
-    # on /inference can do, reachable by an agent.
+    # The write half of the fleet-scheduling surface — everything the spot gate
+    # and backlog top-up cards on /inference can do, reachable by an agent.
     #
     # Follows ActionSession's dispatch shape: one `action` argument validated
     # against a constant, one private method per action.
@@ -12,10 +12,19 @@ module Mcp
 
       ACTIONS = %w[
         set_gating
+        set_top_up
         promote_genesis
         demote_genesis
         reset_genesis_classes
       ].freeze
+
+      # The three numbers FleetIdleMonitor fires on, as tool argument → column.
+      # One list, so the schema, the dispatch and the echo cannot drift apart.
+      TOP_UP_FIELDS = {
+        "max_sessions_in_hand" => :fleet_idle_max_sessions,
+        "idle_minutes" => :fleet_idle_threshold_minutes,
+        "min_fire_interval_minutes" => :fleet_idle_min_fire_interval_minutes
+      }.freeze
 
       description <<~DESC
         Change Zimmer's spot/priority scheduling policy. Read the current state first with `get_spot_policy`.
@@ -34,6 +43,17 @@ module Mcp
           currently derives. `max_concurrent_sessions` bounds the fleet: every running session counts
           toward it, priority included, but only spot sessions are held by it. With gating off, spot
           sessions start like any other.
+        - **set_top_up**: Tune when the `no_sessions_in_progress` trigger event fires — the event that
+          hands a fleet with spare capacity more work. Any of `max_sessions_in_hand`, `idle_minutes` and
+          `min_fire_interval_minutes` may be given; omitted ones are left alone.
+
+          The fleet counts as idle enough while it holds FEWER THAN `max_sessions_in_hand` sessions,
+          counting running ones and spot ones queued behind the gate together — so it does not have to
+          empty out completely before topping up. 1 means literally nothing running and nothing queued.
+          `idle_minutes` is how long it must stay under that ceiling first; `min_fire_interval_minutes`
+          is the floor between two fires, and with a ceiling above 1 that floor, not the ceiling, is
+          what caps how often work gets started. `get_spot_policy` reports all three plus where the
+          fleet currently sits against them.
         - **promote_genesis**: Make a genesis kind `priority` (requires `genesis`). This is the one-click
           promotion: it reclassifies every session from that genesis, including ones that already exist,
           because a session's class is derived from its genesis unless something named one for it.
@@ -93,6 +113,28 @@ module Mcp
             maximum: 100,
             description: "set_gating: most sessions allowed to run at once, 1-100 (10 by default). Counts " \
                          "every running session, priority included; holds only spot ones."
+          },
+          max_sessions_in_hand: {
+            type: "integer",
+            minimum: 1,
+            maximum: 100,
+            description: "set_top_up: the fleet counts as idle enough while it holds FEWER than this many " \
+                         "sessions, 1-100 (3 by default). Running sessions and spot-queued ones count " \
+                         "together. 1 means nothing running and nothing queued."
+          },
+          idle_minutes: {
+            type: "integer",
+            minimum: 1,
+            maximum: 1440,
+            description: "set_top_up: how long the fleet must stay under that ceiling before the event " \
+                         "fires, in minutes, 1-1440 (5 by default). Sampled once a minute."
+          },
+          min_fire_interval_minutes: {
+            type: "integer",
+            minimum: 1,
+            maximum: 10080,
+            description: "set_top_up: floor between two fires, in minutes, 1-10080 (60 by default). With " \
+                         "a ceiling above 1 this is the real cap on how often work gets started."
           }
         },
         required: [ "action" ]
@@ -104,6 +146,7 @@ module Mcp
 
         case action
         when "set_gating" then set_gating(args)
+        when "set_top_up" then set_top_up(args)
         when "promote_genesis" then set_genesis_class(args, SessionGenesis::PRIORITY)
         when "demote_genesis" then set_genesis_class(args, SessionGenesis::SPOT)
         when "reset_genesis_classes" then reset_genesis_classes
@@ -144,6 +187,34 @@ module Mcp
         # as an internal error, matching every other validation in this tool.
         raise ToolError, "Invalid spot policy: #{setting.errors.full_messages.join(', ')}" unless setting.save
         "Spot policy updated: #{changes.join(', ')}.\n\n#{decision_summary}"
+      end
+
+      # The backlog top-up policy. Every value is a positive integer, so
+      # `.nil?`-vs-truthiness does not bite the way it does on a 0% reserve — but
+      # `key?` is still what decides, so an explicit null is left alone rather
+      # than assigned to a NOT NULL column.
+      def set_top_up(args)
+        setting = AppSetting.editable
+        changes = []
+
+        TOP_UP_FIELDS.each do |arg, column|
+          next if args[arg].nil?
+
+          setting.public_send("#{column}=", args[arg])
+          changes << "#{arg} #{setting.public_send(column)}"
+        end
+
+        if changes.empty?
+          raise ToolError, "Nothing to change: pass #{TOP_UP_FIELDS.keys.join(', ')}"
+        end
+        raise ToolError, "Invalid top-up policy: #{setting.errors.full_messages.join(', ')}" unless setting.save
+
+        "Fleet top-up policy updated: #{changes.join(', ')}.\n\n#{top_up_summary(setting)}"
+      end
+
+      def top_up_summary(setting)
+        status = FleetTopUpStatus.current(setting: setting)
+        "Top-up now fires at most #{status.max_fires_per_day} times a day. #{status.sentence}"
       end
 
       def set_genesis_class(args, klass)

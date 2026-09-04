@@ -116,6 +116,13 @@ It does not cover `update_column` / `update_all`, which skip callbacks — no ca
 that way, and the sweep re-arms on its next tick regardless, so this is the fast path rather than
 the only one.
 
+The re-arm is **unconditional**: it does not ask whether the fleet is now over the event's ceiling.
+Since that ceiling defaults to 3, a fleet is routinely still "idle enough" while a session runs — but
+a ceiling-aware re-arm would leave the clock frozen behind the last fire on a fleet that never climbs
+above the ceiling, and the event would fire exactly once in the deployment's life. Ending the stretch
+is what hands the cadence to the cooldown. See
+[The latch is not enough on its own](/sessions/triggers/#the-latch-is-not-enough-on-its-own).
+
 After the commit, and best-effort: a transition is never slowed or rolled back by this bookkeeping.
 
 ### `pause` — `running → needs_input`

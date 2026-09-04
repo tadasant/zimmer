@@ -567,7 +567,7 @@ saw only schedules would offer every parked state-change wake a "Re-arm" button 
 
 Fires when the **deployment** changes state, rather than a session. Two events:
 `quota_available`, the account pool going from serving nothing to serving something; and
-`no_sessions_in_progress`, the fleet having had nothing to do for five minutes.
+`no_sessions_in_progress`, the fleet having had room for more work for five minutes.
 
 It is a separate condition type rather than a fourth `AO_EVENT_NAMES` entry because every decision
 `ao_event` makes is about a session — watched-session scoping, the `is_autonomous` filter, the guard
@@ -610,38 +610,71 @@ even though nothing would have held that work.
 
 #### `no_sessions_in_progress`
 
-Fires when the deployment has had **nothing to do** for `FleetIdleMonitor::IDLE_THRESHOLD` — five
-minutes. It is the "there is nobody left to run" signal, so a job that hands work out has a second
-way to be started besides its daily schedule.
+Fires when the deployment has held **fewer sessions than its configured ceiling** for the whole of a
+configured stretch — three and five minutes by default. It is the "the fleet has room for more work"
+signal, so a job that hands work out has a second way to be started besides its daily schedule.
 
-*Idle* means the fleet has nothing to do, never that it cannot do anything. Confusing the two is the
-expensive mistake — it hands more work to a deployment that is already blocked, at the moment it has
-least room for it — so four questions all have to answer no:
+The name is a wire name: it is stored as a condition on live trigger rows, so it kept its original
+spelling when the boolean behind it became a number. Read it as *few enough* sessions in progress.
+
+##### The three knobs
+
+All three live on `app_settings` and are set from the **Backlog top-up** card on `/inference`, or over
+MCP with `action_spot_policy` `set_top_up`. `FleetIdleMonitor` re-reads them on every sweep, so a
+change takes effect within the minute and needs no deploy.
+
+| Column | Default | Means |
+| --- | --- | --- |
+| `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while it holds **fewer than** this many sessions |
+| `fleet_idle_threshold_minutes` | 5 | how long it must stay under that ceiling first |
+| `fleet_idle_min_fire_interval_minutes` | 60 | the floor between two fires |
+
+**`fleet_idle_max_sessions = 1` is exactly the pair of booleans this replaced**: nothing running and
+nothing queued. The reason the default is 3 rather than 1 is that requiring literally zero made the
+event a poor fit for its own purpose. Measured over one 10.6-hour window, a ten-slot fleet ran at two
+slots and fired this event twice, while 109 items sat on the work backlog — the fleet had eight free
+slots and the only thing standing between them and the backlog was the last running session.
+
+##### What counts as idle
+
+*Idle* means the fleet has little enough to do, never that it cannot do anything. Confusing the two is
+the expensive mistake — it hands more work to a deployment that is already blocked, at the moment it
+has least room for it — so three questions all have to answer no:
 
 | Question | Why it counts |
 | --- | --- |
-| Any session `running`? | Every runtime and class. A running Codex session occupies the deployment as much as a Claude one |
-| Any **spot** session `waiting`? | Work already held and not started. An idle-looking fleet with a backed-up spot queue is blocked, not out of things to do — handing it more would deepen a queue |
-| Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Not scoped to spot: an outage parks priority sessions too, and `QuotaResetCheckerJob` resumes those on its own schedule |
+| Is the fleet holding `fleet_idle_max_sessions` or more? | One number over two populations: sessions actually `running` (every runtime and class — a running Codex session occupies the deployment as much as a Claude one) plus **spot** sessions dormant in `waiting` (work already held and not started; handing a deployment sitting on a spot queue more would deepen the queue) |
+| Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Deliberately **not** a threshold and not scoped to spot: an outage parks priority sessions too, `QuotaResetCheckerJob` resumes those on its own schedule, and one parked session is evidence about the *pool* rather than about how busy the fleet is |
 | Can the account pool serve anything? | Asked of the pool directly, via `QuotaAvailabilityMonitor.pool_available?`. An empty pool makes a quiet fleet a symptom rather than an opportunity. Deliberately **not** `AppSetting#quota_pool_available`: that column is an *announcement latch*, held at `false` through a recovery whose event has not fired yet, and a recovery deferred at the spot gate says nothing about whether the pool can serve |
 
-The `running` check is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
-`DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and
-counting it would pin the monitor to "busy" forever with nothing to say why.
+The two populations in the first row are counted **together against one ceiling**, and that is the
+point of the ceiling being a number rather than two booleans. As two independent vetoes, a fleet at
+two of ten slots with a single spot session held at the door was "not idle", so the queue suppressed
+top-up however much room the fleet had. With one ceiling of N, either population can grow into the
+same headroom and an operator has one number to reason about.
 
-Priority sessions merely `waiting` deliberately do not hold the event off. Priority work is never
-gated, so an unparked priority session sitting there is in the seconds before its job picks it up
-rather than in a queue, and treating it as one would suppress the event on ordinary churn.
+The `running` count is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
+`DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and
+counting it would pin the monitor to "busy" forever with nothing to say why. The spot count excludes
+status-summary forks for the reason `SpotSessionPause` excludes them from its own spot population —
+they are Zimmer's own bookkeeping, and a handful stranded in `waiting` would otherwise eat the whole
+ceiling.
+
+Priority sessions merely `waiting` deliberately do not count. Priority work is never gated, so an
+unparked priority session sitting there is in the seconds before its job picks it up rather than in a
+queue, and counting it would suppress the event on ordinary churn.
+
+##### Why a latch as well as a level
 
 This is the one system event where the analogy to `quota_available` needs care. A pool recovering is
-naturally a transition; "nothing is running" is a **state** that stays true for as long as the
-deployment is quiet, so a monitor that fired whenever it observed the state would fire every tick,
-forever, precisely while nothing was happening. `FleetIdleMonitor` turns it into an edge with two
+naturally a transition; "the fleet is under its ceiling" is a **state** that stays true for as long as
+the deployment is quiet, so a monitor that fired whenever it observed the state would fire every tick,
+forever, precisely while nothing was happening. `FleetIdleMonitor` turns it into an edge with two more
 columns on `app_settings`:
 
 | Column | Means |
 | --- | --- |
-| `fleet_idle_since` | when the fleet was first observed with nothing to do — the clock the threshold is measured against. `NULL` means the fleet had work at the last observation |
+| `fleet_idle_since` | when the fleet was first observed under its ceiling — the clock the threshold is measured against. `NULL` means the fleet was at or over it at the last observation |
 | `fleet_idle_event_fired_at` | when the event last fired. Two jobs: within one quiet stretch it is the **latch**, and across stretches it is the **cooldown** clock |
 
 `fleet_idle_since` is cleared the moment the fleet has work again, and that happens two ways:
@@ -659,9 +692,23 @@ empty backlog, a gate that declines — the steady state would be one spawned se
 minutes plus however long it takes to finish, forever. The event's own answer would keep
 re-qualifying it.
 
-`FleetIdleMonitor::MIN_FIRE_INTERVAL` — one hour — is the floor under that, which is why
+`fleet_idle_min_fire_interval_minutes` — one hour by default — is the floor under that, which is why
 `fleet_idle_event_fired_at` is *not* cleared when the fleet gets work. "Has this stretch already
 fired" is the comparison `fired_at >= idle_since`, not mere presence.
+
+**A ceiling above 1 makes the cooldown the load-bearing half of that pair, and the real cap on how
+often work gets started.** With the old boolean the fire's own session took the fleet from zero
+running to one, which ended the stretch outright and left the cooldown to matter only on the next
+one. Under a ceiling the fleet is routinely still under it while the spawned session runs, so the
+stretch does not end on its own — the cooldown is the only thing between the deployment and a fire
+per threshold. At the shipped 60 minutes that is at most **24 top-ups a day**, whatever the ceiling
+is set to. Retune the interval, not the ceiling, to change the cadence.
+
+The re-arm on `running` stays **unconditional** rather than becoming ceiling-aware, and that is
+deliberate. A version that only cleared the clock when the fleet climbed *above* its ceiling would
+leave `fleet_idle_since` frozen behind `fleet_idle_event_fired_at` on a fleet that never gets that
+busy, the latch would hold forever, and the event would fire exactly once in the deployment's life.
+Ending the stretch is what hands the cadence to the cooldown.
 
 The fire itself is a guarded `UPDATE` on `(id, fleet_idle_since, fleet_idle_event_fired_at)` rather
 than a plain write, so a re-arm landing between the read and the write cannot be clobbered from a

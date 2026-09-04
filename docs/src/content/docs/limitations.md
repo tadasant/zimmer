@@ -1349,26 +1349,38 @@ whole spot wake into one event, and the sharp edges are all about that concentra
 ### The idle-fleet event is sampled, latched and floored, and each of the three has an edge
 
 🟡 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) fires when the deployment
-has had nothing to do for five minutes. Idleness is a level rather than an edge, so `FleetIdleMonitor`
-manufactures one — and the machinery that does it has known limits:
+has held fewer sessions than its configured ceiling for the whole of its configured stretch. Idleness
+is a level rather than an edge, so `FleetIdleMonitor` manufactures one — and the machinery that does
+it has known limits:
 
 - **It is sampled once a minute, so the clock starts up to a tick late.** `fleet_idle_since` is
-  written at the first observation with nothing to do, not at the moment the last session finished,
-  so "five continuous minutes" is really "five minutes since we noticed", ±60 seconds. The
+  written at the first observation under the ceiling, not at the moment the fleet crossed it, so "five
+  continuous minutes" is really "five minutes since we noticed", ±60 seconds. The
   `SessionStateMachine` hook closes the opposite gap — a session that starts and finishes between two
-  ticks still re-arms — but nothing narrows the start.
-- **One stuck `waiting` spot session suppresses it indefinitely.** A queued spot session counts as
-  work in hand, deliberately, so a session stranded in `waiting` that nothing will ever start (see the
-  hold and park edges above) also means the fleet never reads as out of work. Status-summary forks are
-  excluded for exactly this reason; nothing else is.
-- **The hourly floor is a blunt instrument.** `MIN_FIRE_INTERVAL` exists because the session the
-  event spawns re-arms the latch by running, so without it a quiet deployment would get one spawn
-  every five minutes or so, forever. One hour is a number chosen to be obviously safe rather than
-  tuned, and it applies even when the previous fire delivered nothing.
-- **Neither column is surfaced anywhere.** `fleet_idle_since` and `fleet_idle_event_fired_at` are
-  readable only from the database, so "why has this not fired?" is not answerable from `/health`,
-  `get_system_health`, or any page. The monitor logs its transitions, and that is the whole story a
-  human gets.
+  ticks still re-arms — but nothing narrows the start. It is also why the stretch cannot be set below
+  a minute.
+- **Enough stuck `waiting` spot sessions still suppress it indefinitely.** Queued spot sessions count
+  toward the ceiling, deliberately, so sessions stranded in `waiting` that nothing will ever start
+  (see the hold and park edges above) can fill it on their own and the fleet never reads as having
+  room. The ceiling is now a number rather than a boolean, so one stranded session no longer does it
+  alone — but `fleet_idle_max_sessions` of them still do, and nothing ages them out. Status-summary
+  forks are excluded for exactly this reason; nothing else is.
+- **The cooldown is the real cap on top-up frequency, and it is a blunt one.**
+  `fleet_idle_min_fire_interval_minutes` exists because the session the event spawns re-arms the latch
+  by running, so without it a quiet deployment would get one spawn every stretch, forever. With a
+  ceiling above 1 the fleet is usually still under it while that session runs, so the cooldown — not
+  the ceiling — decides the cadence: 60 minutes means at most 24 top-ups a day. It is tunable now, but
+  it is still a fixed floor rather than anything derived from how much work is actually queued, and it
+  applies even when the previous fire delivered nothing.
+- **A single fire tops up by one session, whatever the headroom.** The event says "there is room",
+  not how much: a fleet at 1 of 10 and a fleet at 2 of 3 produce the same one fire, and filling eight
+  free slots takes eight cooldowns. `FleetTopUpStatus#headroom` computes the number; nothing spends
+  it.
+- **The three conditions are not equally legible.** `/inference` reports the ceiling, both clocks and
+  which of the four not-fired-yet states the fleet is in, and `get_spot_policy` prints the same. The
+  auth-outage park and the pool reading are *not* in that card — they are reported elsewhere on the
+  page, in their own words, so "under the ceiling but still not firing" takes two readings to
+  diagnose. Neither is on `/health` or in `get_system_health`.
 
 ### `CodexRetryStrategy` classifies almost nothing
 

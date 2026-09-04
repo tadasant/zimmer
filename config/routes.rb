@@ -348,6 +348,7 @@ Rails.application.routes.draw do
   # The spot gate card, which lives on this page because it reads the quota
   # windows this page reports: the policy form, then one click per genesis kind.
   patch "inference/spot_policy", to: "spot_policies#update", as: :spot_policy
+  patch "inference/fleet_top_up", to: "fleet_top_up_policies#update", as: :fleet_top_up_policy
   patch "inference/genesis/:genesis", to: "genesis_classes#update", as: :genesis_class
   delete "inference/genesis", to: "genesis_classes#destroy", as: :reset_genesis_classes
 

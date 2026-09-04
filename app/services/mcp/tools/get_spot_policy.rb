@@ -2,8 +2,8 @@
 
 module Mcp
   module Tools
-    # The read half of the spot/priority surface: everything the spot gate card on
-    # /inference shows, in one call.
+    # The read half of the fleet-scheduling surface: everything the spot gate and
+    # backlog top-up cards on /inference show, in one call.
     #
     # An agent session that finds itself held needs to be able to answer "why, and
     # for how long" without a human reading the web UI to it — and an agent about
@@ -69,9 +69,18 @@ module Mcp
         the `scheduling_class` on the trigger that fired it, or the default for its **genesis** — where
         its line of work came from.
 
+        Also reports the BACKLOG TOP-UP policy, which is the other half of how busy the fleet gets: the
+        `no_sessions_in_progress` trigger event fires when the fleet has held fewer sessions than a
+        configured ceiling — running ones plus spot-queued ones together — for a configured stretch, and
+        at most once per cooldown. That is what hands a fleet with spare capacity more work. Change it
+        with `action_spot_policy` `set_top_up`.
+
         Returns:
         - the gate setting (on/off, both priority reserves as a percentage AND as dollars, and the max
           sessions at once)
+        - the backlog top-up policy: the ceiling, the stretch, the cooldown, and where the fleet sits
+          against them right now — including which of the four "not fired yet" states it is in, since
+          they look identical from outside and clear in four different ways
         - the current decision: running or held, the reason, which ceiling is holding, and how many
           sessions are running
         - when the hold lifts, as far as the model can honestly say — for two of the three ceilings that
@@ -141,6 +150,10 @@ module Mcp
           held_count: held_count,
           overdue_hold_count: overdue_hold_count
         )
+        # The same reading the /inference top-up card renders, from the same
+        # object, so a human on the page and an agent on this tool are told the
+        # same thing about whether a top-up is due.
+        top_up = FleetTopUpStatus.current(setting: setting)
         classes = SessionGenesis.effective_classes(setting.genesis_class_overrides)
         counts = Session.genesis_counts
 
@@ -198,6 +211,7 @@ module Mcp
         # being appended after it — a window with no reading renders a sentence,
         # not a list, and a bullet glued straight onto it reads as a contradiction.
         lines.concat(window_lines("Weekly", decision.weekly, trailing: weekly_reset_lines(pool_capacity)))
+        lines.concat(top_up_lines(top_up))
         lines.concat(genesis_lines(classes, counts))
         lines.concat(trigger_lines)
 
@@ -205,6 +219,44 @@ module Mcp
       end
 
       private
+
+      # The backlog top-up policy and where the fleet sits against it. Separate
+      # from the gate above it because it answers the opposite question: the gate
+      # decides who may run when the fleet is busy, this decides when a fleet that
+      # is NOT busy gets handed more.
+      def top_up_lines(status)
+        [
+          "",
+          "### Backlog top-up (`no_sessions_in_progress`)",
+          "",
+          "- **Fires while the fleet holds fewer than:** #{status.max_sessions} " \
+          "#{"session".pluralize(status.max_sessions)} (running plus spot-queued, counted together; " \
+          "1 would mean nothing running and nothing queued)",
+          "- **For at least:** #{status.threshold.inspect}",
+          "- **At most once every:** #{status.min_fire_interval.inspect} " \
+          "(#{status.max_fires_per_day} #{"time".pluralize(status.max_fires_per_day)} a day — with a " \
+          "ceiling above 1 this, not the ceiling, is what caps how often work gets started)",
+          "- **Sessions in hand:** #{status.sessions_in_hand} of #{status.max_sessions}",
+          "- **State:** `#{status.state}` — #{status.sentence}",
+          "- **Next fire, at the earliest:** #{next_fire_phrase(status)}",
+          "- **Last fired:** #{status.last_fired_at ? "#{status.last_fired_at.utc.iso8601} (#{ago(status.last_fired_at)})" : "never"}"
+        ]
+      end
+
+      def next_fire_phrase(status)
+        return "no clock running toward one" if status.next_fire_at.nil?
+        return "at the next check (within a minute)" if status.next_fire_at <= Time.current
+
+        "#{status.next_fire_at.utc.iso8601} (in #{distance(Time.current, status.next_fire_at)})"
+      end
+
+      def ago(time)
+        "#{distance(time, Time.current)} ago"
+      end
+
+      def distance(from, to)
+        ActionController::Base.helpers.distance_of_time_in_words(from, to)
+      end
 
       # When the ACCOUNT POOL comes back — the question a held session actually
       # has to answer to choose between sleeping on a wake and escalating.
