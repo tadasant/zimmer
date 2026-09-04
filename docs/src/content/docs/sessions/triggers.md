@@ -1118,6 +1118,44 @@ catalog root at all (a legacy session, or one whose root has since left the cata
 every firing path filters on `enabled` — and the session slept forever, silently. See
 [#600](https://github.com/tadasant/zimmer/issues/600).
 
+### Re-arming the wakes that were already bricked
+
+Deferring the raise fixed the *arming*, not the wreckage: a trigger already parked `failed` is a
+tombstone only you clear, and `CleanupStaleTriggersJob` exempts it from every sweep, so those wake
+rows stayed dead and the prompts they carried were never delivered. The retroactive repair is the
+post-deploy task `db/post_deploy/20260904120000_rearm_wakes_bricked_by_unresolvable_agent_root.rb` —
+an ops action that ships with the deploy rather than needing somebody to find the rows and press
+**Re-arm** ([#836](https://github.com/tadasant/zimmer/issues/836)).
+
+This is the trigger-side counterpart to
+[`StrandedSleepRescue`](/sessions/lifecycle/#who-else-moves-sessions-around), which since
+[#855](https://github.com/tadasant/zimmer/issues/855) already nudges the *session* that lost its wake.
+That sweep gets a stranded session moving again; it does nothing about the parked row or the specific
+prompt the wake was carrying. This task delivers that prompt — and only to a session that is still
+waiting for it.
+
+It re-enables a trigger only when all of these hold: it is `failed`, its `last_error` names
+`AgentRootsConfig::AgentRootNotFoundError`, it is a one-time reuse wake (`one_time_reuse_trigger?`),
+its one-shot is not already spent (`spent_one_shot_wake?`), and its target session is still `waiting`,
+not paused by a user, and **not already resting on a wake that can still fire**
+(`Session#awaiting_scheduled_wake?` — the same predicate `StrandedSleepRescue` reads). That last term
+matters because a bricked session may since have been rescued and armed a *fresh* wake: firing the
+stale one would resume it early, and the delivery would then take `#destroy_sibling_wakes!` through
+the live wake on its way out. Anything else is left parked.
+
+**A past-dated wake is re-armed as it is, not retimed.** Nearly every row here is past-dated by
+construction, and for a one-time schedule `TriggerCondition#schedule_due?` answers `now >= scheduled_at`
+— so an overdue wake is *immediately* due and fires on the next tick, which is the point. The
+past-dated guard in `Sessions::ScheduleWakeUp` is about a different moment: at creation the target may
+still be `running` with only `pending_sleep` set, so a condition due on the very next tick can fire
+before the sleep lands and get dropped. Here the target is already `waiting`, so the fire takes the
+reuse path and resumes it. Retiming would only make a late wake later, and would overwrite the record
+of when it was asked for.
+
+Because `enable!` sheds `failed_at` and `last_error`, the task logs each row — trigger id and name,
+target session, condition shape and scheduled time, the prior error verbatim — *before* it writes, and
+puts a bounded digest in `post_deploy_task_runs.stats` so the ledger on `/health` answers what it did.
+
 ## Coalescing a repeated fire
 
 A recurring trigger that reuses a session is a drumbeat: one fire, one run. If the session it reuses
