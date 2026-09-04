@@ -1149,6 +1149,20 @@ reverted rather than reset onto) and deletes what the restore added. A clone mis
 subdirectory fails `air prepare` with `ENOENT` and takes the session down with it, so a pristine
 clone is the better of the two losses.
 
+The clone unarchive rebuilds is not required to have the path the session row remembers. A session
+freezes its agent root's `subdirectory` at creation time, so renaming that root's directory in the
+catalog leaves every pre-existing session naming a path `main` no longer has — and the refusal is
+permanent, which stranded both halves of the population: archived sessions that could not be
+unarchived and live ones that could not resume once the reaper took their clone
+([#921](https://github.com/tadasant/zimmer/issues/921)). `UnarchiveSessionService` and
+`AgentSessionJob` now hand `GitCloneService` the root's *current* path as well, resolved from the
+catalog by `metadata["agent_root_key"]`, and the clone lands on it when the stored path is absent
+and the current one is there. The row is corrected in the same breath, before the damage check
+above reads `session.subdirectory` — see [the router root's two names](/air/agent-roots/#the-router-roots-two-names).
+A root the catalog no longer carries at all still fails the unarchive, and it fails as a warning
+rather than an exception-tracker event: nobody on call can act on a missing directory that the
+person clicking **Unarchive** is already reading in the flash message.
+
 In both cases the artifacts stay on disk and the session log records where — unarchive clears
 `trash_after`, so nothing else will ever reap them, and the path is the only way back to whatever
 real work the patch held. See [issue #411](https://github.com/tadasant/zimmer/issues/411) and

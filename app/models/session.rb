@@ -1037,6 +1037,38 @@ class Session < ApplicationRecord
     resolved_agent_root&.name
   end
 
+  # The subdirectory this session's agent root declares in the *current* catalog,
+  # which is not always the `subdirectory` frozen onto the row at creation time:
+  # renaming a root's directory moves the tree while every pre-existing session
+  # row keeps naming the old path, so a fresh clone of `main` no longer has it
+  # ([#921](https://github.com/tadasant/zimmer/issues/921)). Clone callers pass
+  # this to `GitCloneService.create_clone` as `fallback_subdirectory:`.
+  #
+  # Resolved through `metadata["agent_root_key"]` only. `resolved_agent_root`
+  # would be wrong here: its fallback arm matches roots on
+  # `ar.subdirectory == session.subdirectory`, which is the stale value this
+  # method exists to get past, so it can only ever return a root that agrees
+  # with the row. Returns nil when the row names no root, or names one the
+  # catalog no longer carries — a root that is genuinely gone must still fail.
+  def catalog_subdirectory
+    key = metadata&.dig("agent_root_key")
+    return nil if key.blank?
+
+    AgentRootsConfig.find(key)&.subdirectory.presence
+  end
+
+  # Record the subdirectory a clone actually landed on, so the next resume or
+  # unarchive asks for the right path directly instead of rediscovering it (and
+  # so everything downstream that reads `session.subdirectory` — the restore
+  # damage check, the skills cache key — agrees with the clone on disk).
+  # Returns true when the row changed.
+  def adopt_clone_subdirectory!(used_subdirectory)
+    return false if used_subdirectory.blank? || used_subdirectory.to_s == subdirectory.to_s
+
+    update!(subdirectory: used_subdirectory)
+    true
+  end
+
   # The artifact defaults the session's agent root *currently* declares. A
   # session freezes its own catalog columns at creation time, but those columns
   # can land empty when the catalog transiently resolved no defaults for the root

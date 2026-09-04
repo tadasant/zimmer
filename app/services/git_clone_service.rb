@@ -30,6 +30,15 @@ class GitCloneService
   # and the message is written to tell a human what to do instead.
   class InsufficientDiskSpaceError < GitError; end
 
+  # Raised when the requested subdirectory (and the fallback, when one was
+  # supplied) is absent from the freshly cloned tree. Subclasses GitError so
+  # existing rescue paths keep working, and is deliberately NOT transient:
+  # cloning the same commit again finds the same missing directory. It is a
+  # statement about configuration — the agent root names a path this repo does
+  # not have — rather than about git or the network, which is why callers on a
+  # synchronous, user-initiated path log it as a refusal rather than a fault.
+  class SubdirectoryNotFoundError < GitError; end
+
   # Hard wall-clock cap for a single git subprocess. A stalled clone — e.g. a
   # half-open HTTPS connection during fetch-pack that never sends a TCP reset —
   # would otherwise block the calling thread forever. Because GitCloneService
@@ -119,8 +128,13 @@ class GitCloneService
     # @param branch [String] the branch to checkout (default: 'main')
     # @param clone_path [String, nil] optional custom path for clone
     # @param subdirectory [String, nil] optional subdirectory within the repo to use as working directory
-    # @return [Hash] hash with :clone_path and :working_directory keys
-    def create_clone(repo_url, branch: "main", clone_path: nil, subdirectory: nil)
+    # @param fallback_subdirectory [String, nil] subdirectory to use when `subdirectory`
+    #   is absent from the cloned tree but this one is present. Callers pass the path the
+    #   agent root declares in the *current* catalog, so a root whose directory was renamed
+    #   after the session was created still resolves (#921).
+    # @return [Hash] hash with :clone_path, :working_directory and :subdirectory keys
+    #   (:subdirectory is the path the clone actually landed on — the fallback, when one was taken)
+    def create_clone(repo_url, branch: "main", clone_path: nil, subdirectory: nil, fallback_subdirectory: nil)
       # Generate a unique clone path if not provided
       clone_path ||= generate_clone_path(repo_url, branch)
 
@@ -136,20 +150,24 @@ class GitCloneService
       # Retries on transient network/server errors (e.g., GitHub 5xx).
       run_git_clone_with_retry(repo_url, branch, clone_path)
 
+      # Which subdirectory this clone actually lands on: the requested one, or the
+      # fallback when the requested one is gone from the tree and the fallback is there.
+      effective_subdirectory = resolve_subdirectory(clone_path, subdirectory, fallback_subdirectory)
+
       # Calculate working directory (clone path + subdirectory if specified)
-      working_directory = if subdirectory.present?
-        File.join(clone_path, subdirectory)
+      working_directory = if effective_subdirectory.present?
+        File.join(clone_path, effective_subdirectory)
       else
         clone_path
       end
 
       # Verify subdirectory exists if specified
-      if subdirectory.present? && !file_system.directory?(working_directory)
+      if effective_subdirectory.present? && !file_system.directory?(working_directory)
         discard_failed_clone(clone_path)
-        raise GitError, "Subdirectory '#{subdirectory}' not found in repository"
+        raise SubdirectoryNotFoundError, subdirectory_not_found_message(subdirectory, fallback_subdirectory)
       end
 
-      { clone_path: clone_path, working_directory: working_directory }
+      { clone_path: clone_path, working_directory: working_directory, subdirectory: effective_subdirectory }
     rescue StandardError => e
       # Clean up on failure
       discard_failed_clone(clone_path)
@@ -162,6 +180,7 @@ class GitCloneService
       error_class = case e
       when TransientGitError then TransientGitError
       when InsufficientDiskSpaceError then InsufficientDiskSpaceError
+      when SubdirectoryNotFoundError then SubdirectoryNotFoundError
       else GitError
       end
       raise error_class, "Failed to create clone: #{e.message}"
@@ -206,6 +225,40 @@ class GitCloneService
     end
 
     private
+
+    # The subdirectory a clone should actually use.
+    #
+    # Normally the one that was asked for. When that one is absent from the tree
+    # and a `fallback_subdirectory` was supplied that *is* present, the fallback:
+    # an agent root whose directory is renamed in the catalog leaves every session
+    # row created before the rename naming the old path, and the caller has no way
+    # to know which of the two the freshly cloned commit carries without looking
+    # ([#921](https://github.com/tadasant/zimmer/issues/921)).
+    #
+    # Returns the requested value when neither is present, so the caller's
+    # existence check still raises — a subdirectory that is genuinely gone stays a
+    # hard failure. The requested path is checked first and short-circuits, so the
+    # ordinary case costs exactly the one `directory?` it always cost.
+    def resolve_subdirectory(clone_path, subdirectory, fallback_subdirectory)
+      return subdirectory if subdirectory.blank?
+      return subdirectory if file_system.directory?(File.join(clone_path, subdirectory))
+      return subdirectory if fallback_subdirectory.blank? || fallback_subdirectory.to_s == subdirectory.to_s
+      return subdirectory unless file_system.directory?(File.join(clone_path, fallback_subdirectory))
+
+      logger.info(
+        "Requested subdirectory is absent from the clone; using the agent root's current path",
+        requested_subdirectory: subdirectory,
+        fallback_subdirectory: fallback_subdirectory
+      )
+      fallback_subdirectory
+    end
+
+    def subdirectory_not_found_message(subdirectory, fallback_subdirectory)
+      message = "Subdirectory '#{subdirectory}' not found in repository"
+      return message if fallback_subdirectory.blank? || fallback_subdirectory.to_s == subdirectory.to_s
+
+      "#{message} (also tried '#{fallback_subdirectory}')"
+    end
 
     # Dispose of a clone directory this class just created and is rolling back.
     #

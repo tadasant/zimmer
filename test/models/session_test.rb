@@ -693,6 +693,61 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal [ "plugin-a" ], session.agent_root_default_plugins
   end
 
+  # zimmer#921: `subdirectory` is frozen onto the row at creation time. When the
+  # catalog moves the root's directory, the frozen value points at a path a fresh
+  # clone no longer has, and the catalog is the only thing that knows the new one.
+  test "catalog_subdirectory returns the path the agent root currently declares" do
+    session = sessions(:running)
+    session.update!(
+      subdirectory: "artifacts/agent-roots/old-name",
+      metadata: (session.metadata || {}).merge("agent_root_key" => "test-root")
+    )
+    AgentRootsConfig.stubs(:find).with("test-root")
+      .returns(OpenStruct.new(name: "test-root", subdirectory: "artifacts/agent-roots/new-name"))
+
+    assert_equal "artifacts/agent-roots/new-name", session.catalog_subdirectory
+  end
+
+  # It must not go through find_for_session: that matches roots on
+  # `subdirectory == session.subdirectory`, so it can only ever return a root
+  # that agrees with the stale value this method exists to get past.
+  test "catalog_subdirectory resolves by agent_root_key, not by the stored subdirectory" do
+    session = sessions(:running)
+    session.update!(
+      subdirectory: "artifacts/agent-roots/old-name",
+      metadata: (session.metadata || {}).merge("agent_root_key" => "test-root")
+    )
+    AgentRootsConfig.stubs(:find_for_session).raises("find_for_session must not be consulted here")
+    AgentRootsConfig.stubs(:find).with("test-root")
+      .returns(OpenStruct.new(name: "test-root", subdirectory: "artifacts/agent-roots/new-name"))
+
+    assert_equal "artifacts/agent-roots/new-name", session.catalog_subdirectory
+  end
+
+  test "catalog_subdirectory is nil when the root is gone from the catalog or the row names none" do
+    session = sessions(:running)
+    session.update!(metadata: (session.metadata || {}).merge("agent_root_key" => "retired-root"))
+    AgentRootsConfig.stubs(:find).with("retired-root").returns(nil)
+
+    assert_nil session.catalog_subdirectory
+
+    session.update!(metadata: session.metadata.except("agent_root_key"))
+    assert_nil session.catalog_subdirectory
+  end
+
+  test "adopt_clone_subdirectory! persists a moved subdirectory and no-ops otherwise" do
+    session = sessions(:running)
+    session.update!(subdirectory: "artifacts/agent-roots/old-name")
+
+    assert session.adopt_clone_subdirectory!("artifacts/agent-roots/new-name")
+    assert_equal "artifacts/agent-roots/new-name", session.reload.subdirectory
+
+    assert_not session.adopt_clone_subdirectory!("artifacts/agent-roots/new-name")
+    assert_not session.adopt_clone_subdirectory!(nil),
+      "a clone with no subdirectory must not blank out the column"
+    assert_equal "artifacts/agent-roots/new-name", session.reload.subdirectory
+  end
+
   test "agent_root_default_* return [] when the agent root cannot be resolved" do
     session = Session.new(prompt: "Test", git_root: "https://github.com/unknown/repo.git")
     AgentRootsConfig.stubs(:find_for_session).with(session).returns(nil)
