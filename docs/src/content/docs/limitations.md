@@ -2366,8 +2366,8 @@ Fixed in [#75](https://github.com/tadasant/zimmer/issues/75).
 
 `Session#generate_slug_from_title!` builds `title-yyyymmdd-hhmm` and, when that is taken, appends
 `-1`, `-2`, and so on. The timestamp is minute-granular and a session with no transcript yet takes its
-title from the prompt, so every session a trigger spawns in the same minute computes a byte-identical
-base slug. Picking a free suffix by reading first is check-then-act, so the losing writer finds out
+title from `Session#human_prompt`, so every session a trigger spawns in the same minute computes a
+byte-identical base slug. Picking a free suffix by reading first is check-then-act, so the losing writer finds out
 from `index_sessions_on_slug`; it advances the counter and re-attempts, up to `MAX_SLUG_ATTEMPTS`
 (10).
 
@@ -2375,6 +2375,13 @@ That bound is the sharp edge. Ten simultaneous same-minute writers is far past a
 worst real burst was two — but a session that exhausts it keeps a `nil` slug, so it is addressable
 only by numeric id, and `SessionTitleJob#apply_title` aborts before writing its title-generation log
 entry. Nothing retries it later.
+
+The early return has a second consequence: a slug is claimed once and never revised, so a session
+named badly stays named badly. Chat-bubble sessions created before
+[#809](https://github.com/tadasant/zimmer/issues/809) was fixed carry slugs beginning
+`context-about-user-s-current-view-url-https-zimmer-`, and no job repairs them — a re-slug would
+break every URL already pointing at them. `update_title` fixes the title on a session that matters;
+the slug is permanent.
 
 ### Orphaned clones linger for up to 48 hours unless the disk is actually filling
 
