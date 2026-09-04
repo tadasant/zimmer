@@ -23,7 +23,12 @@ module MobileOverflowAssertions
   # and fail the other, which is exactly what issue #803 was.
   NARROW_WIDTH = 320
 
-  # Returns [document_overflow_px, [clipped control descriptions]].
+  # Returns [document_overflow_px, [clipped control descriptions], viewport_px].
+  #
+  # The viewport width is reported rather than assumed because the same probe runs
+  # at both MOBILE_WIDTH and NARROW_WIDTH, and `resize_to` sizes the window rather
+  # than the viewport — so the number a failure should name is the one the document
+  # actually got.
   def overflow_report
     page.evaluate_script(<<~JS)
       (function () {
@@ -47,17 +52,13 @@ module MobileOverflowAssertions
               JSON.stringify((el.innerText || el.value || "").trim().slice(0, 40)));
           }
         });
-        return [document.documentElement.scrollWidth - W, clipped];
+        return [document.documentElement.scrollWidth - W, clipped, W];
       })()
     JS
   end
 
   def assert_no_horizontal_overflow(label)
-    doc_overflow, clipped = overflow_report
-    # Measured rather than assumed: the same assertion runs at both MOBILE_WIDTH
-    # and NARROW_WIDTH, so a hard-coded width in the message would name the wrong
-    # viewport for half its failures.
-    width = page.evaluate_script("document.documentElement.clientWidth")
+    doc_overflow, clipped, width = overflow_report
 
     assert doc_overflow <= 0,
       "#{label} scrolls sideways at #{width}px: the document is #{doc_overflow}px wider than the viewport."

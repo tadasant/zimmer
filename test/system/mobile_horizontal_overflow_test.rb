@@ -140,7 +140,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # the window and the browser subtracts its own furniture, so the viewport this
     # actually got is whatever it is — what has to hold is that the grid ends up
     # narrower than the 320px floor, or there is nothing here to regress.
-    grid_width = page.evaluate_script("document.querySelector('#sessions_grid').getBoundingClientRect().width")
+    grid_width = page.evaluate_script(
+      "(function () { const g = document.querySelector('#sessions_grid'); " \
+      "return g ? g.getBoundingClientRect().width : null })()"
+    )
+    assert grid_width, "no #sessions_grid rendered, so there is no card grid to measure"
     assert_operator grid_width, :<, 320,
       "the grid is #{grid_width}px wide at a #{NARROW_WIDTH}px viewport, which is not narrow " \
       "enough to exercise the track floor this test is about"
@@ -163,20 +167,28 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # `justify-center`, so the document's scroll width can be clean while every card
   # on the page is outside the column. Comparing the card against its grid — not
   # against the viewport — is what sees that.
+  #
+  # Every card grid on the page is measured, not just the first: the flat lists and
+  # the search results render as `#sessions_grid`, and the category sections and the
+  # uncategorized bucket as `.category-grid`. They all render through one helper
+  # today, so measuring one would usually do — but the point of a regression test is
+  # to notice the day one of them stops doing that.
   def cards_outside_their_grid
     page.evaluate_script(<<~JS)
       (function () {
-        const grid = document.querySelector("#sessions_grid");
-        if (!grid) return ["no #sessions_grid on the page"];
-        const g = grid.getBoundingClientRect();
-        return Array.from(grid.children)
-          .map((el) => {
-            const b = el.getBoundingClientRect();
-            const out = Math.round(Math.max(g.left - b.left, b.right - g.right));
-            return out > 1 ? out + "px outside the grid: " +
-              JSON.stringify((el.innerText || "").trim().slice(0, 40)) : null;
-          })
-          .filter(Boolean);
+        const grids = document.querySelectorAll("#sessions_grid, .category-grid");
+        if (!grids.length) return ["no card grid on the page"];
+        return Array.from(grids).flatMap((grid) => {
+          const g = grid.getBoundingClientRect();
+          return Array.from(grid.children)
+            .map((el) => {
+              const b = el.getBoundingClientRect();
+              const out = Math.round(Math.max(g.left - b.left, b.right - g.right));
+              return out > 1 ? out + "px outside " + (grid.id || grid.className.split(" ")[0]) +
+                ": " + JSON.stringify((el.innerText || "").trim().slice(0, 40)) : null;
+            })
+            .filter(Boolean);
+        });
       })()
     JS
   end

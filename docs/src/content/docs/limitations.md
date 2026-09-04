@@ -3149,18 +3149,17 @@ Also:
   takes no insert. All of it is corrected by a reload, and by the reopen backfill: both lists are
   `data-live-region="sync"`, so a page whose socket died is reconciled against a fresh render on
   reconnect.
-- **A session card's footer still wraps onto two lines in two narrow cases.** The row seats the PR
-  control on the left and the ⋮ / Trash / View group on the right, and the grid gives a card at most
-  400px and normally 320px — less than that only where the content column itself is narrower, which
-  is a 288px card at a 320px viewport ([#803](https://github.com/tadasant/zimmer/issues/803)) — so
-  the row runs from 256px to 368px. Collapsing a multi-PR control to a single trigger
+- **A failed session's card footer wraps onto two lines on a narrow phone.** The row seats the PR
+  control on the left and the ⋮ / Trash / View group on the right. The grid gives a card 400px
+  wherever the content column can spare it, and the column's own width where it cannot — 288px at a
+  320px viewport ([#803](https://github.com/tadasant/zimmer/issues/803)) — so the row runs from
+  256px there to 352px at `sm:` and above. Collapsing a multi-PR control to a single trigger
   ([#607](https://github.com/tadasant/zimmer/issues/607)) bought that row enough slack for the
-  ordinary case, but not for these two. A **failed** session carries an extra Restart button, which
-  puts the action group at 237px and the row's need at 333px — it fits a 400px card and wraps below
-  that. And a **320px card on a viewport ≥640px**, which `auto-fill` produces at container widths of
-  664 / 1008 / 1352px, has `sm:p-6` padding rather than `px-4`, so the row is 272px against a need of
-  276px and misses by 4px. Both are cosmetic: nothing overflows, the card just grows a line. Closing
-  either means changing what the action group renders.
+  ordinary case, but not for a **failed** session, which carries an extra Restart button: the action
+  group alone is 237px, and the whole row needs 286px with no PR control and 333px with one. So a
+  failed session with a PR wraps below a ~385px card, and one without a PR wraps only at a 320px
+  viewport. It is cosmetic — nothing overflows, the card just grows a line — and closing it means
+  changing what the action group renders.
 - Notes autosave as you type (a 1.5s debounce) and flush again on disconnect via a keepalive
   `fetch`. The disconnect flush is best-effort, so an abrupt close can drop the last sub-debounce
   keystrokes — not the note.
