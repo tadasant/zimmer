@@ -1159,7 +1159,9 @@ unarchived and live ones that could not resume once the reaper took their clone
 catalog by `metadata["agent_root_key"]`, and the clone lands on it when the stored path is absent
 and the current one is there. The row is corrected in the same breath, before the damage check
 above reads `session.subdirectory` — see [the router root's two names](/air/agent-roots/#the-router-roots-two-names).
-A root the catalog no longer carries at all still fails the unarchive, and it fails as a warning
+A root the catalog no longer carries — and a root that moved its tree to the repo root, which is
+[a limitation](/limitations/#a-root-that-moves-to-the-repo-root-still-strands-its-existing-sessions) —
+still fails the unarchive, and it fails as a warning
 rather than an exception-tracker event: nobody on call can act on a missing directory that the
 person clicking **Unarchive** is already reading in the flash message.
 
