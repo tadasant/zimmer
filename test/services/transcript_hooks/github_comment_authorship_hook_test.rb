@@ -330,6 +330,22 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
     assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
   end
 
+  test "does NOT record a comments READ written as an explicit GET with query fields" do
+    # `gh api -X GET <path> -f per_page=100` is gh's own idiom for a GET with query
+    # parameters. Reading the field flag as the write would record the whole thread
+    # this lists — the human's comments included.
+    output = [
+      { "id" => 5145406778, "html_url" => POSTED_URL, "user" => { "login" => "tadasant" } }
+    ].to_json
+
+    run_hook(claude_transcript(
+      command: "gh api -X GET repos/tadasant/tadasant-internal/issues/281/comments -f per_page=100",
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
   # --- The other direction: a real post must still be seen -------------------
   #
   # A lost recording is the self-reply loop this hook exists to break, so every
@@ -367,6 +383,19 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
     ))
 
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "records a gh api post whose method flag is quoted" do
+    # The quoted method is blanked out of the view the flags are read from, so the
+    # field flag is what carries the write — which is the same answer.
+    output = { "id" => 13131, "html_url" => "https://github.com/o/r/pull/7#issuecomment-13131" }.to_json
+
+    run_hook(claude_transcript(
+      command: %q(gh api repos/o/r/issues/7/comments -X "POST" -f body='done'),
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 13131)
   end
 
   test "records a gh api post whose endpoint path is quoted" do
