@@ -182,7 +182,10 @@ class ManagedSecret
 
     VERIFY_ATTEMPTS.times do |attempt|
       @chain.invalidate(variable)
-      got = fingerprint_of(read_value)
+      # Raises rather than reading nil: a store that could not be CONSULTED is
+      # not a store that answered "not there", and conflating the two would
+      # report an outage as a successful delete.
+      got = fingerprint_of(@chain.get(variable))
       return [ true, nil ] if got == want
 
       sleep(VERIFY_BACKOFF) unless attempt == VERIFY_ATTEMPTS - 1
@@ -192,16 +195,43 @@ class ManagedSecret
       [ false, "#{variable} still resolves from #{provider_for&.label || 'somewhere'} after the delete." ]
     else
       [ false, "#{variable} did not read back from the store within " \
-               "#{(VERIFY_ATTEMPTS * VERIFY_BACKOFF).round(1)}s. The usual cause is the missing IAM " \
+               "#{(VERIFY_ATTEMPTS - 1) * VERIFY_BACKOFF}s. The usual cause is the missing IAM " \
                "binding that lets the parameter dereference its own secret — see " \
                "docs/operate/secrets-parameter-store." ]
     end
   rescue ParameterStore::AuthError, ParameterStore::StoreError => e
-    [ false, "the store could not be read back: #{e.message}" ]
+    [ false, "#{unreadable_cause(e)} #{e.message}" ]
   end
 
-  # The only place a value is read, and it is never returned to a caller — every
-  # use of it goes through fingerprint_of.
+  # Why a read-back failed, in the words most likely to be the actual cause.
+  #
+  # A 400 from `:render` is not an outage — it is SECRET_REFERENCE_ERROR, and it
+  # means the parameter cannot dereference its own secret. That is THE documented
+  # trap for this store: the write succeeded, the bytes are there, the store
+  # banner is green, and the variable will resolve to nothing forever. Naming it
+  # is worth more than a generic failure sentence, because the fix is one IAM
+  # binding and nothing else on the page hints at it.
+  #
+  # Every other status genuinely is "we could not ask", and must not be dressed
+  # up as a diagnosis.
+  def unreadable_cause(error)
+    if error.is_a?(ParameterStore::StoreError) && error.status == 400
+      "the store rejected the read back. The usual cause is the missing IAM binding that lets the " \
+        "parameter dereference its own secret — see docs/operate/secrets-parameter-store."
+    else
+      "the store could not be read back, so nothing here is confirmed:"
+    end
+  end
+
+  # The value, read for the STATUS path only — never returned to a caller, and
+  # every use of it goes through fingerprint_of.
+  #
+  # A store that cannot be consulted reads as "not set" here on purpose: the Pi
+  # tab has to render through an outage, and "we could not ask" is closer to "we
+  # cannot show you a fingerprint" than to anything else the page can say.
+  # #verify deliberately does NOT come through here — for a delete, "could not
+  # ask" and "it is gone" are opposite answers, and treating an outage as a
+  # successful delete is the false green this separation prevents.
   def read_value
     @chain.get(variable)
   rescue ParameterStore::AuthError, ParameterStore::StoreError

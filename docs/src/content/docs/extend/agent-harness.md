@@ -306,7 +306,11 @@ after it (`openrouter/anthropic/claude-opus-4.6`). The direct `anthropic/*` and
 `openai/*` ids are kept in the catalog and still work wherever
 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is set; they are simply not what this
 deployment feeds. The key is set on the [Inference page's Pi
-tab](/operate/secrets-parameter-store/#a-writer-identity-for-the-pi-tab).
+tab](/operate/secrets-parameter-store/#a-writer-identity-for-the-pi-tab), and
+reaches the process through `PiRuntimeAdapter#apply_provider_key`, which resolves
+it from the `${VAR}` chain into the spawn environment — see [How the key reaches
+a Pi session](/operate/secrets-parameter-store/#how-the-key-reaches-a-pi-session)
+for why that step is Pi's own rather than the session `.env` writer's.
 
 Note when refreshing that list: `pi --list-models` only prints providers whose
 credential currently resolves, so run it with `OPENROUTER_API_KEY` set or the

@@ -2180,6 +2180,28 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     end
   end
 
+  # The same argument, one credential over and with more force: the writer key
+  # holds the WRITE roles the resolver deliberately does not, so a session that
+  # inherited it could rewrite or delete every production secret. The web tier is
+  # the only tier that needs it.
+  test "spawn_process unsets the Parameter Store writer key so sessions can't rewrite production secrets" do
+    original = ENV["ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON"]
+    ENV["ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON"] = "eyJjbGllbnRfZW1haWwiOiJhQGIuY29tIn0="
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert env_vars.key?("ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON"),
+      "expected the var to be explicitly unset in the child"
+    assert_nil env_vars["ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON"]
+  ensure
+    if original.nil?
+      ENV.delete("ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON")
+    else
+      ENV["ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON"] = original
+    end
+  end
+
   # The store's ADDRESS is not a credential, and a session that shells out to
   # diagnose a resolution failure should still be able to see which project it is.
   test "spawn_process leaves the non-secret Parameter Store address alone" do

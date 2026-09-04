@@ -607,7 +607,20 @@ rm -f /tmp/zimmer-secrets-writer.json
 
 Deliver the base64 as `ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`, exactly
 as the resolver key is delivered in [Deliver the key to
-Zimmer](#5-deliver-the-key-to-zimmer) — base64 for the same env-file reason.
+Zimmer](#5-deliver-the-key-to-zimmer) — base64 for the same env-file reason. The
+Kamal plumbing already exists on both environments (`.kamal/secrets.*`,
+`config/deploy.*.yml`, and the staging workflow's env block), so the only step is
+setting the GitHub Actions secret — `PROD_ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON`
+on the private production repo, `STAGING_…` on this one — and deploying. **No
+shell on the box**, per [Ops actions ship with the deploy](/operate/deploying/).
+
+`CliSpawnEnv` clears this variable from every spawned agent session, for a
+stronger reason than it clears the resolver: a session holding the writer key
+could rewrite or delete every Zimmer secret, which is the blast radius the
+separate identity exists to avoid.
+
+Staging gets its own writer if it gets one at all. A credential that may *delete*
+secrets is the last one to share across environments.
 
 ### The permissions, and what each one is for
 
@@ -666,6 +679,27 @@ copy and compare.
 `filter_parameters` already covers the form field (`_key` matches
 `openrouter_api_key`), and a test pins that along with the absence of the value
 from every response body, flash and audit row.
+
+### How the key reaches a Pi session
+
+Worth stating, because it is the step it would be natural to assume some other
+layer performs. It does not: `AgentSessionJob#inject_secrets_to_env_file` writes
+a clone's `.env` from `SecretsLoader.all`, which reads Rails encrypted
+`mcp_secrets` **only** and never consults `SecretProviders` — so a value living
+in the Parameter Store does not land in a session `.env` by that route.
+
+Every store-backed name reaches its consumer some other way. An MCP config's
+`${VAR}` is interpolated by Zimmer before the server is launched. `GH_TOKEN` is
+published into the worker's own environment by `GhTokenProvisioner`. Pi has
+neither path — it reads the variable out of its own process environment — so
+`PiRuntimeAdapter#apply_provider_key` resolves `OPENROUTER_API_KEY` through the
+chain and puts it in the spawn environment, **for Pi sessions only**. An
+inference key authorises spend and a Claude Code or Codex session has no use for
+it, so it is not published process-wide. A value in the clone's own `.env` still
+wins, like every other step there.
+
+`CliStatusService` reads the same chain rather than bare `ENV`, so the CLIs page
+answers the same question the session will.
 
 ## The Secrets Console, and which project it administers
 

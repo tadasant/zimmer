@@ -164,6 +164,10 @@ env:
     # Its two non-secret companions are in env.clear. Unset is a designed state, not a
     # gap: the store link is absent and every ${VAR} comes from staging.yml.enc as before.
     - ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
+    # Base64 of the SEPARATE writer service-account key, for the one surface that
+    # writes to the store (the Inference page's Pi tab). Unset is a designed state:
+    # that tab then reports the write path closed. See .kamal/secrets.staging.
+    - ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
     # The API key the injected self-session MCP server uses to call this instance's
     # own REST API. It lives in process ENV rather than mcp_secrets (SecretsInterpolator
     # falls back to ENV), because the deploy workflow derives it from API_KEYS -- which
