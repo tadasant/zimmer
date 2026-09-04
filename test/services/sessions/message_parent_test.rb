@@ -1,0 +1,252 @@
+# frozen_string_literal: true
+
+require "test_helper"
+
+# The child -> parent direction of a follow-up: who it reaches, when it refuses,
+# and what stops an accepted report from being silently lost.
+class Sessions::MessageParentTest < ActiveSupport::TestCase
+  def create_session(parent: nil, status: "waiting", title: "worker")
+    session = Session.create!(
+      agent_runtime: "claude_code",
+      prompt: "work",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      title: title,
+      parent_session_id: parent&.id
+    )
+    session.update_column(:status, Session.statuses[status])
+    session.reload
+  end
+
+  def report(child, message: "I cannot do this", reason: "wrong_scope", **kwargs)
+    Sessions::MessageParent.call(child: child, message: message, reason: reason, source: "test", **kwargs)
+  end
+
+  # --- Resolving the parent --------------------------------------------------
+
+  test "resolves the parent from parent_session_id and takes no target argument" do
+    parent = create_session(status: "needs_input", title: "router")
+    child = create_session(parent: parent)
+
+    result = report(child)
+
+    assert result.success?
+    assert_equal parent.id, result.parent.id
+    refute_includes Sessions::MessageParent.instance_method(:initialize).parameters.map(&:last), :target
+  end
+
+  test "refuses when the session has no parent, and says what to do instead" do
+    result = report(create_session)
+
+    refute result.success?
+    assert_match(/has no parent session/, result.error)
+    assert_match(/needs_input/, result.error)
+  end
+
+  # --- Delivery routing ------------------------------------------------------
+
+  test "an idle parent is resumed and takes the report as its next prompt" do
+    parent = create_session(status: "needs_input")
+    child = create_session(parent: parent)
+
+    result = report(child, message: "the deploy scripts live in another root")
+
+    assert result.success?
+    assert_equal :sent, result.delivery
+    assert_equal "running", parent.reload.status
+    assert_match(/the deploy scripts live in another root/, parent.metadata["pending_follow_up_prompt"])
+    assert_empty parent.enqueued_messages
+  end
+
+  test "a sleeping parent is woken rather than left asleep on a wake that may never fire" do
+    parent = create_session(status: "waiting")
+    child = create_session(parent: parent)
+
+    assert_equal :sent, report(child).delivery
+    assert_equal "running", parent.reload.status
+  end
+
+  test "a running parent takes the report on its queue, and is not interrupted" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+
+    result = report(child, message: "needs the github server")
+
+    assert result.success?
+    assert_equal :queued, result.delivery
+    assert result.queued?
+    assert_equal "running", parent.reload.status
+
+    queued = parent.enqueued_messages.sole
+    assert_equal "pending", queued.status
+    assert_match(/needs the github server/, queued.content)
+  end
+
+  # The whole point of routing through enqueued_messages rather than inventing a
+  # second delivery path: `caller` is the origin the archive guard and the strand
+  # alert are built around, so a report cannot be accepted and then vanish.
+  test "a queued report is an ordinary caller message, so the parent cannot archive over it" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+
+    report(child)
+
+    queued = parent.enqueued_messages.sole
+    assert_equal "caller", queued.origin
+    refute queued.self_addressed?
+    assert Sessions::ArchiveGuard.blocked?(parent.reload)
+  end
+
+  test "force_immediate interrupts a running parent" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+
+    Sessions::InterruptService.any_instance.stubs(:call).returns(
+      Sessions::Result.new(success: true)
+    )
+
+    result = report(child, force_immediate: true)
+
+    assert result.success?
+    assert_equal :interrupted, result.delivery
+    assert_equal "pending", parent.enqueued_messages.sole.status
+  end
+
+  test "a failed interrupt drops the staged message rather than leaving it to arrive later" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+
+    Sessions::InterruptService.any_instance.stubs(:call).returns(
+      Sessions::Result.new(success: false, error: "nope", error_code: :conflict)
+    )
+
+    result = report(child, force_immediate: true)
+
+    refute result.success?
+    assert_equal :conflict, result.error_code
+    assert_empty parent.reload.enqueued_messages
+  end
+
+  # --- Unreachable parents ---------------------------------------------------
+
+  test "an archived parent is refused by default, naming the override" do
+    parent = create_session(status: "archived")
+    child = create_session(parent: parent)
+
+    result = report(child)
+
+    refute result.success?
+    assert_equal :conflict, result.error_code
+    assert_match(/unarchive_parent/, result.error)
+    assert_equal "archived", parent.reload.status
+    assert_empty parent.enqueued_messages
+  end
+
+  test "unarchive_parent restores the parent and delivers to it" do
+    parent = create_session(status: "archived")
+    child = create_session(parent: parent)
+
+    # Stubbed with the side effect the real service has — it leaves the session
+    # in needs_input — because the delivery that follows re-reads the row.
+    restore = lambda do |session:|
+      session.update_column(:status, Session.statuses["needs_input"])
+      UnarchiveSessionService::Result.new(success?: true, session: session)
+    end
+
+    result = UnarchiveSessionService.stub(:call, restore) { report(child, unarchive_parent: true) }
+
+    assert result.success?
+    assert result.unarchived
+    assert_equal :sent, result.delivery
+  end
+
+  test "a parent that cannot be restored is refused, and nothing is delivered" do
+    parent = create_session(status: "archived")
+    child = create_session(parent: parent)
+
+    failing = ->(session:) { UnarchiveSessionService::Result.new(success?: false, error: "clone failed") }
+
+    result = UnarchiveSessionService.stub(:call, failing) { report(child, unarchive_parent: true) }
+
+    refute result.success?
+    assert_match(/clone failed/, result.error)
+    assert_empty parent.reload.enqueued_messages
+  end
+
+  test "a failed parent is refused whatever unarchive_parent says" do
+    parent = create_session(status: "failed")
+    child = create_session(parent: parent)
+
+    result = report(child, unarchive_parent: true)
+
+    refute result.success?
+    assert_match(/has failed/, result.error)
+    assert_equal :conflict, result.error_code
+  end
+
+  # --- Arguments -------------------------------------------------------------
+
+  test "requires a message" do
+    child = create_session(parent: create_session(status: "needs_input"))
+
+    result = report(child, message: "   ")
+
+    refute result.success?
+    assert_match(/message is required/, result.error)
+  end
+
+  test "requires a reason from the closed list" do
+    child = create_session(parent: create_session(status: "needs_input"))
+
+    result = report(child, reason: "because")
+
+    refute result.success?
+    assert_match(/wrong_scope, missing_tools, other/, result.error)
+  end
+
+  test "leaves room for the envelope inside the prompt limit" do
+    parent = create_session(status: "needs_input")
+    child = create_session(parent: parent)
+    room = Sessions::MessageParent.new(child: child, message: "", reason: "wrong_scope", source: "test").room_for_message
+
+    over = report(child, message: "x" * (room + 1))
+    refute over.success?
+    assert_match(/too long/, over.error)
+
+    at_limit = report(child, message: "x" * room)
+    assert at_limit.success?, at_limit.error
+    assert_operator parent.reload.metadata["pending_follow_up_prompt"].length, :<=, Session::PROMPT_MAX_LENGTH
+  end
+
+  # --- What the parent reads -------------------------------------------------
+
+  test "the envelope names the child, its reason and its URL, and marks itself as agent-sent" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent, title: "SSH the box")
+
+    report(child, message: "no ssh key here", reason: "missing_tools")
+
+    content = parent.enqueued_messages.sole.content
+    assert_match(/MESSAGE FROM A CHILD SESSION/, content)
+    assert_match(/Session ##{child.id} \("SSH the box"\)/, content)
+    assert_match(/missing_tools/, content)
+    assert_match(%r{/sessions/#{child.id}}, content)
+    assert_match(/no ssh key here/, content)
+  end
+
+  # Both ends, for the reason Sessions::RecordUncleEdge logs both ends: the fact
+  # recorded is that a particular child spoke to a particular parent, and a
+  # reader at either end has to see it without opening the other session.
+  test "records the lineage on both timelines" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+
+    report(child, reason: "wrong_scope")
+
+    [ child, parent ].each do |session|
+      line = session.logs.where("content LIKE ?", "%reported to parent session%").sole.content
+      assert_match(/Child session ##{child.id} reported to parent session ##{parent.id}/, line)
+      assert_match(/reason: wrong_scope/, line)
+    end
+  end
+end

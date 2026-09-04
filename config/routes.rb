@@ -152,6 +152,9 @@ Rails.application.routes.draw do
           post :archive
           post :unarchive
           post :follow_up
+          # The child->parent direction of follow_up. :id names the CHILD; the
+          # target is resolved from parent_session_id and is never an argument.
+          post :message_parent
           post :pause
           post :sleep, action: :sleep_session
           post :restart

@@ -902,6 +902,83 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "running", session.reload.status
   end
 
+  # message_parent — the child -> parent direction. :id names the CHILD; the
+  # target is read from parent_session_id and is never a parameter.
+  test "should deliver a child's report to the parent Zimmer resolves" do
+    parent = sessions(:needs_input)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      post message_parent_api_v1_session_path(child.id), params: {
+        message: "the deploy scripts live in the infra root", reason: "wrong_scope"
+      }, headers: @headers
+    end
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal parent.id, json["parent_session"]["id"]
+    assert_equal "sent", json["delivery"]
+    assert_equal "running", parent.reload.status
+    assert_match(/the deploy scripts live in the infra root/, parent.metadata["pending_follow_up_prompt"])
+  end
+
+  test "should queue a child's report for a running parent" do
+    parent = sessions(:running)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    assert_difference "EnqueuedMessage.count", 1 do
+      post message_parent_api_v1_session_path(child.id), params: {
+        message: "no ssh key on this box", reason: "missing_tools"
+      }, headers: @headers
+    end
+
+    assert_response :accepted
+    json = JSON.parse(response.body)
+    assert_equal "queued", json["delivery"]
+    assert_equal "pending", json["enqueued_message"]["status"]
+    assert_equal "caller", parent.enqueued_messages.sole.origin
+  end
+
+  test "should reject a report with no message or an unknown reason" do
+    parent = sessions(:needs_input)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    post message_parent_api_v1_session_path(child.id), params: { reason: "wrong_scope" }, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/message is required/, JSON.parse(response.body)["message"])
+
+    post message_parent_api_v1_session_path(child.id), params: { message: "x", reason: "vibes" }, headers: @headers
+    assert_response :unprocessable_entity
+    assert_match(/wrong_scope, missing_tools, other/, JSON.parse(response.body)["message"])
+  end
+
+  test "should reject a report from a session with no parent" do
+    post message_parent_api_v1_session_path(sessions(:waiting).id), params: {
+      message: "stuck", reason: "other"
+    }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/has no parent session/, JSON.parse(response.body)["message"])
+  end
+
+  test "should refuse an archived parent rather than deliver into the trash" do
+    parent = sessions(:archived)
+    child = sessions(:waiting)
+    child.update!(parent_session_id: parent.id)
+
+    post message_parent_api_v1_session_path(child.id), params: {
+      message: "wrong root", reason: "wrong_scope"
+    }, headers: @headers
+
+    assert_response :conflict
+    assert_match(/unarchive_parent/, JSON.parse(response.body)["message"])
+    assert_equal "archived", parent.reload.status
+    assert_empty parent.enqueued_messages
+  end
+
   test "should reject follow-up without prompt" do
     session = sessions(:needs_input)
     post follow_up_api_v1_session_path(session.id), headers: @headers

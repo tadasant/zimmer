@@ -52,6 +52,21 @@ are `ON DELETE CASCADE`, which is where they differ from `parent_session_id`'s `
 parent pointer leaves a meaningful row (a session with no recorded parent), while nulling either end
 of an edge leaves a row that asserts nothing.
 
+### The spawn edge is the only edge a child may travel
+
+A parent reaches a child with `follow_up`, which is a general capability: it names any session and
+reaches it. The reverse — a child reaching the session that started it — is
+[`message_parent`](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here), and it
+is deliberately not general. The caller names no target; Zimmer reads `parent_session_id`.
+
+That is what makes it safe to put on the `self_session` MCP surface injected into every session,
+which otherwise lets a session act only on itself. A child can say "you gave me the wrong scope, or
+not the tools this needs" to exactly one session — the one already above it in this graph — and to no
+other. No uncle edge is written for it, and none would be: the sender is the target's spawn
+descendant, so the graph already asserts everything the edge would ([the rules](#the-rules-including-inversion)
+decline it for that reason). The lineage record is the report itself, logged into both sessions'
+timelines naming both ids.
+
 ### Who writes an uncle edge — and why the caller must declare itself
 
 `Sessions::RecordUncleEdge` is the only writer, called from the session-initiated queue/interrupt

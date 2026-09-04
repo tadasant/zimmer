@@ -106,6 +106,17 @@ module Mcp
                  "the root's **Default Skills** and append. They are cheap text files with no blast " \
                  "radius, so dropping a default should be rare and deliberate"
         lines << "- Use `id` values from **Goals** in `start_session` `goal` parameter"
+        # Read by the session that is about to CHOOSE a child's scope and tools,
+        # which is the only place the answer is still cheap. A child that finds
+        # out it was given the wrong root, or is missing a server, can now say so
+        # (`action_session` -> `message_parent`) instead of filing an issue — but
+        # only a parent that knows to expect that message acts on it.
+        lines << "- A session you spawn can report back to you with `action_session` `message_parent` when the " \
+                 "scope or the tools you gave it were wrong for the job — reason `wrong_scope` (it belongs to a " \
+                 "different agent root) or `missing_tools` (it needs an MCP server, credential or privilege it " \
+                 "was not given). That report arrives as your next prompt, or on your queue if you are mid-turn, " \
+                 "and you are the only one who receives it: re-delegate to the right root, or re-spawn with the " \
+                 "server it named. Getting the lists above right is what avoids it"
 
         lines.join("\n")
       end
