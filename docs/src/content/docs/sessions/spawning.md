@@ -99,11 +99,14 @@ and — the two decisions worth stating — does **not** re-raise
 (sentry-rails captures terminal ActiveJob failures, and ActiveJob logs them at `error`, which is
 what the log-based alert rule reads), so quietening the session's own logs while still raising
 would remove neither page; and the GoodJob retry it feeds has nothing to accomplish, since a retry
-re-enters the job and is refused by the delivery-time guard. The gate is the **row**, not the
-exception class — a deleted clone surfaces as whatever the step that touched it wraps it in — so
-the full exception, message and backtrace go to the backend log at `warn`, where a genuine bug that
-happened to coincide with an archive is still greppable. A session that is **not** archived is
-completely unaffected: it keeps the `failure_reason: "exception"` stamp, the `error` logs, the
+re-enters the job only to be stood down again — by the delivery-time guard on a start, or by the
+monitoring loop's own archived check on a `resume_monitoring` job. The gate is the **row**, not the
+exception class and not where in the turn it fired — a deleted clone surfaces as whatever the step
+that touched it wraps it in, and a session that archives *itself* is still in this job's teardown
+tail when the cleanup deletes the clone under it. So the full exception, message and backtrace go
+to the backend log at `warn`, where a genuine bug that coincided with an archive is greppable but
+no longer paged; that trade is recorded in [Limitations](/limitations/). A session that is **not**
+archived keeps the whole loud path: the `failure_reason: "exception"` stamp, the `error` logs, the
 `fail!` and the re-raise.
 
 :::caution[Other resumers lock by hand, or not at all]

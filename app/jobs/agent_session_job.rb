@@ -2183,10 +2183,12 @@ class AgentSessionJob < ApplicationJob
       # cwd and rescues only its two domain errors, and the credential injection
       # writes into it. An ENOENT from either lands here (#886).
       #
-      # The guard re-reads the row, so a session that is not archived is completely
-      # unaffected and keeps every part of the loud path below. A live session whose
-      # clone has gone missing is the OPPOSITE case and must stay loud — that
-      # session should run, and re-cloning it is #817.
+      # The guard decides from the row, so a session that is not archived keeps every
+      # part of the loud path below — one row re-read earlier than before, which also
+      # means the failure stamp merges DB-fresh metadata rather than the copy this job
+      # has carried since the clone. A live session whose clone has gone missing is the
+      # OPPOSITE case and must stay loud — that session should run, and re-cloning it
+      # is #817.
       return if session && swallow_exception_after_archive(session, e, log_buffer)
 
       if session
@@ -2892,9 +2894,11 @@ class AgentSessionJob < ApplicationJob
   # 2. **The retry it would have fed is not wanted either.** Of the exceptions this
   #    race actually produces, `Errno::ENOENT` matches none of the `retry_on`
   #    declarations, so today it is not retried anyway; the ones that DO match
-  #    (Timeout::Error, ECONNRESET, ETIMEDOUT) would re-enter #perform, where
-  #    refuse_archived_session reads the row and stands the turn down. A retry for an
-  #    archived session has no outcome available to it other than that refusal, so
+  #    (Timeout::Error, ECONNRESET, ETIMEDOUT) would re-enter #perform, where the
+  #    turn is stood down again — by refuse_archived_session on a start, or by the
+  #    monitoring loop's own `archived?` check on a `resume_monitoring` job, which
+  #    refuse_archived_session deliberately exempts. A retry for an archived session
+  #    has no outcome available to it other than one of those two stand-downs, so
   #    dropping it costs nothing and saves a queued job. Returning normally is
   #    truthful about what happened: the turn was correctly declined.
   #
@@ -2908,17 +2912,29 @@ class AgentSessionJob < ApplicationJob
   # no-op here. It is named rather than silently dropped because a reader of the two
   # paths side by side will look for it.
   #
-  # THE GATE IS THE ROW, NOT THE EXCEPTION CLASS. Matching on ENOENT would be the
-  # tighter-looking condition and the wrong one: a deleted clone surfaces as whatever
-  # the step that touched it re-wraps it as (AirPrepareError around a failed
-  # shell-out, ClaudeCliError around a failed File.open), and that set is open-ended.
-  # The cost of the wider gate is that a genuine bug occurring while a session happens
-  # to be archived is no longer paged — which is why the full exception, message and
-  # backtrace still go to the backend log at WARN, where they are greppable and
-  # diagnosable but not alertable.
+  # THE GATE IS THE ROW, NOT THE EXCEPTION CLASS, AND NOT WHERE IN THE TURN IT FIRED.
+  # Matching on ENOENT would be the tighter-looking condition and the wrong one: a
+  # deleted clone surfaces as whatever the step that touched it re-wraps it as
+  # (AirPrepareError around a failed shell-out, ClaudeCliError around a failed
+  # File.open), and that set is open-ended. Narrowing it instead to "nothing had been
+  # spawned yet" is the other tempting shape, and it would re-open the commonest
+  # version of this: a session that ARCHIVES ITSELF (`action_session` supports it, and
+  # the merge gate does it routinely) enqueues DeferredCloneCleanupJob, which deletes
+  # the clone about ten seconds later — while this job is still in the teardown tail
+  # after its monitoring loop, holding a pid, touching that clone.
+  #
+  # So the cost is stated rather than designed around: a genuine bug in the
+  # post-archive tail is no longer paged. It is not lost — the full exception, message
+  # and backtrace go to the backend log at WARN, greppable and diagnosable but not
+  # alertable, and the session's timeline says the turn stopped and why. That trade is
+  # recorded in docs/src/content/docs/limitations.md.
   #
   # A row that cannot be re-read answers `false` — the loud path is the safe default,
   # since the failure mode of this guard is silence.
+  #
+  # Note what "no error log" does NOT mean: the flush below persists whatever this
+  # turn had already buffered, `error` lines included. It suppresses the two lines the
+  # loud path is about to add, not the turn's history.
   #
   # @param session [Session] reloaded in place
   # @param error [Exception] the exception the catch-all caught
@@ -2928,9 +2944,11 @@ class AgentSessionJob < ApplicationJob
     with_db_retry { session.reload }
     return false unless session.archived?
 
-    detail = error.message.to_s.truncate(ARCHIVED_TURN_EXCEPTION_LOG_MAX_CHARS)
-
     begin
+      # Inside the guarded block, not above it: an exception whose own #message
+      # raises must not travel out of here and replace the exception being handled.
+      detail = error.message.to_s.truncate(ARCHIVED_TURN_EXCEPTION_LOG_MAX_CHARS)
+
       Rails.logger.warn(
         "[AgentSessionJob] Session #{session.id} turn ended on #{error.class.name} after the session was " \
         "archived (#{detail}) — not failed and not reported: an archived session takes no turn. " \

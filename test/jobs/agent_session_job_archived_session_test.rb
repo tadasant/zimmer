@@ -370,6 +370,54 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     assert_not_nil record
     assert record.content.length < 1_500,
            "a trashed session's timeline must not gain a wall of text (was #{record.content.length})"
+    # Bounded on both sides: a message chopped to nothing, or dropped entirely,
+    # would satisfy the cap above and lose the only description of what happened.
+    assert_includes record.content, "RuntimeError"
+    assert_includes record.content, "x" * 500, "the head of the message must survive the cap"
+  end
+
+  # The `return` on the quiet path is not an early exit past the teardown — Ruby runs
+  # the `ensure`, and the `ensure` is what kills the process for an archived session.
+  # Every other test here stages the race before the spawn, so this is the only one
+  # that holds a pid at the moment the exception fires: without it, a regression that
+  # skipped the kill would leave a live agent on a trashed session and go unnoticed.
+  test "a process already spawned is still terminated when the quiet path returns" do
+    live = live_recovery_session
+
+    job, cli = run_job_dying_after_spawn(live)
+
+    assert_equal 1, cli.resumed_sessions.length, "the turn must have got as far as a real spawn"
+    # The leader or its whole group — ProcessTerminationService chooses, and either
+    # one is the kill this test is about.
+    assert job.process_manager.killed_processes.any? { |kill| kill[:pid].abs == 12_346 && kill[:signal] == "TERM" },
+           "the ensure must still kill the process it spawned (killed: #{job.process_manager.killed_processes.inspect})"
+
+    live.reload
+    assert_nil live.metadata["failure_reason"], "and the outcome is still recorded quietly"
+    assert_empty live.logs.reload.select { |entry| entry.level == "error" }
+  end
+
+  # Decision 2 of the fix: the dropped `raise e` is also the dropped GoodJob retry.
+  # Driven through `perform_now` rather than `#perform`, because `retry_on` is a
+  # rescue handler around the latter — call `#perform` directly and the assertion is
+  # vacuous. Timeout::Error rather than ENOENT: it is one of the three classes this
+  # job actually declares a retry for, so it is the case where the decision bites.
+  test "an archived session's turn enqueues no retry, even for a retryable exception" do
+    live = live_recovery_session
+
+    assert_no_enqueued_jobs do
+      run_job_dying_mid_flight(live, error: Timeout::Error.new("boom"), via: :perform_now)
+    end
+
+    assert_nil live.reload.metadata["failure_reason"]
+  end
+
+  test "a live session's turn still enqueues the retry a retryable exception earns" do
+    live = live_recovery_session
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      run_job_dying_mid_flight(live, archive: false, error: Timeout::Error.new("boom"), via: :perform_now)
+    end
   end
 
   # THE NEGATIVE, and the reason the guard re-reads the row rather than trusting
@@ -404,14 +452,32 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
   # are available, and silencing a fault that may be real is the worse of them —
   # the loud path's cost is a page, this path's cost is a session that failed with
   # no failure_reason and no alert. Driven directly, because a session whose
-  # `reload` raises cannot get through the job's `ensure`, which reloads too.
-  test "a row that cannot be re-read is failed loudly rather than silenced" do
+  # `reload` raises cannot get through the job's `ensure`, which reloads too; the
+  # `false` is the whole answer, since #perform's rescue does the rest of the loud
+  # path unchanged (pinned by the live-session test above).
+  test "a row that cannot be re-read answers false, so the loud path runs" do
     live = live_recovery_session
     live.stubs(:reload).raises(ActiveRecord::RecordNotFound, "row is unreadable")
     job = build_job(MockClaudeCliAdapter.new)
 
     refute job.send(:swallow_exception_after_archive, live, clone_gone_error, nil),
            "an unreadable row must not buy an exception a quiet exit"
+  end
+
+  # The other half of the running_job_id bookkeeping, and the dangerous half: the
+  # setup this rescue sits at the end of is long enough for another job to have
+  # claimed the session meanwhile, and wiping THAT claim would tell the concurrency
+  # guard and the orphan sweep that nobody is driving a session somebody is.
+  test "a claim belonging to another job is left alone" do
+    live = live_recovery_session
+    live.update_columns(
+      running_job_id: "some-other-job", status: Session.statuses[:archived], archived_at: Time.current
+    )
+    job = build_job(MockClaudeCliAdapter.new)
+
+    assert job.send(:swallow_exception_after_archive, live, clone_gone_error, nil)
+    assert_equal "some-other-job", live.reload.running_job_id,
+                 "only this job's own claim may be released"
   end
 
   private
@@ -458,21 +524,45 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
   # the way the cleanup archiving enqueues does, and then raise the ENOENT that a
   # step touching that clone would raise.
   #
-  # `archive: false` stages the same exception on a session that is still live,
-  # which must reach the untouched loud path.
-  def run_job_dying_mid_flight(session, archive: true, delete_clone: true, error: nil)
+  # `archive: false` stages the same exception, and the same missing clone, on a
+  # session that is still live — #817's case, which must reach the untouched loud
+  # path. The clone is deleted either way, so the two differ in exactly one thing:
+  # what the row says.
+  def run_job_dying_mid_flight(session, archive: true, error: nil, via: :perform)
     error ||= clone_gone_error
 
     run_job(session, AutomatedPrompts.system_recovery(reason: "the job monitoring this session was interrupted"),
-            decision: allowed_decision) do |job|
+            decision: allowed_decision, via: via) do |job|
       if archive
         Session.where(id: session.id).update_all(
           status: Session.statuses[:archived], archived_at: Time.current
         )
-        job.file_system.rm_rf(CLONE_PATH) if delete_clone
       end
+      job.file_system.rm_rf(CLONE_PATH)
       raise error
     end
+  end
+
+  # The same race, staged one step later: after the spawn, so the job is holding a
+  # live pid when the exception fires. Returns the job as well as the CLI, because
+  # what this proves is about the job's process manager rather than the runtime.
+  def run_job_dying_after_spawn(session)
+    cli = run_job(session, AutomatedPrompts.system_recovery(reason: "the job monitoring this session was interrupted"),
+                  decision: allowed_decision, at: :after_spawn) do |job|
+      Session.where(id: session.id).update_all(
+        status: Session.statuses[:archived], archived_at: Time.current
+      )
+      job.file_system.rm_rf(CLONE_PATH)
+      # The spawned pid is the CLI mock's, so the process manager has never heard of
+      # it and would report it already dead. Make it answer the way a live agent
+      # does — alive until something signals it — or the kill under test is skipped.
+      job.process_manager.running_hook = lambda do |pid|
+        pid == 12_346 && job.process_manager.killed_processes.none? { |kill| kill[:pid] == pid && kill[:signal] != 0 }
+      end
+      raise clone_gone_error
+    end
+
+    [ @job, cli ]
   end
 
   # What File.open on the stderr log raises once the clone is gone.
@@ -488,12 +578,14 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
   # after every early guard has read the row and passed it — and is handed the job
   # so it can reach the mock filesystem. That is the only way to stage a race that
   # lands DURING the setup rather than before it.
-  def run_job(session, prompt, decision:, &mid_flight)
+  def run_job(session, prompt, decision:, via: :perform, at: :setup, &mid_flight)
     cli = MockClaudeCliAdapter.new
     cli.resume_hook = ->(_opts) { { pid: 12_346, stderr_log_path: "#{CLONE_PATH}/claude_stderr.log" } }
     cli.execute_hook = ->(_opts) { { pid: 12_347, stderr_log_path: "#{CLONE_PATH}/claude_stderr.log" } }
 
-    job = build_job(cli)
+    # Exposed for the assertions that are about the JOB rather than the runtime —
+    # what its process manager killed, chiefly.
+    job = @job = build_job(cli, session.id, prompt)
     job.file_system.mkdir_p(CLONE_PATH)
     job.file_system.write("#{CLONE_PATH}/claude_stderr.log", "")
     job.process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
@@ -513,7 +605,10 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
               def thread.join(*); end
               thread
             }) do
-              job.perform(session.id, prompt)
+              # perform_now for the tests that are about `retry_on`, which is a rescue
+              # handler wrapped AROUND #perform — calling #perform directly would make
+              # a retry assertion vacuous.
+              via == :perform_now ? job.perform_now : job.perform(session.id, prompt)
             end
           end
         end
@@ -521,18 +616,26 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     end
 
     if mid_flight
-      # The orchestrator system prompt is built on the spawn path, after the clone,
-      # the AIR prepare and the MCP setup and before the runtime is handed the
-      # turn — so it stands in for "somewhere in the setup" without the test having
-      # to know which step the race actually lands on.
-      built = 0
-      build_and_race = lambda do |**_kwargs|
-        built += 1
+      raced = 0
+      race = lambda do |*_args, **_kwargs|
+        raced += 1
         mid_flight.call(job)
         "orchestrator system prompt"
       end
-      OrchestratorSystemPromptBuilder.stub(:build, build_and_race) { perform.call }
-      assert_equal 1, built, "the mid-flight hook must actually have run, or the test proves nothing"
+
+      if at == :after_spawn
+        # SessionMemoryWatch is constructed between the spawn and the first turn of
+        # the monitoring loop, so it is the narrowest stand-in for "after the process
+        # exists" — the only staging in which the job is holding a live pid.
+        SessionMemoryWatch.stub(:new, race) { perform.call }
+      else
+        # The orchestrator system prompt is built on the spawn path, after the clone,
+        # the AIR prepare and the MCP setup and before the runtime is handed the
+        # turn — so it stands in for "somewhere in the setup" without the test having
+        # to know which step the race actually lands on.
+        OrchestratorSystemPromptBuilder.stub(:build, race) { perform.call }
+      end
+      assert_equal 1, raced, "the mid-flight hook must actually have run, or the test proves nothing"
     else
       perform.call
     end
@@ -540,8 +643,8 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     cli
   end
 
-  def build_job(cli)
-    job = AgentSessionJob.new
+  def build_job(cli, *arguments)
+    job = AgentSessionJob.new(*arguments)
     job.process_manager = MockProcessManager.new
     job.file_system = MockFileSystemAdapter.new
     job.cli_adapter = cli
