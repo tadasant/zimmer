@@ -23,8 +23,21 @@
     started: the session has run before and is waiting to run its next turn. %>
 <% held_turn = hold&.turn %>
 <% pause_detail = agent_session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL) %>
+<%# The ranking, shared with `get_session`, so a human on this page and an agent
+    reading the MCP tool are never told about two different mechanisms. It answers
+    two questions this box could not answer for itself: which of a hold and a
+    pause it is about when the row carries both, and whether the spot mechanism is
+    why the session is waiting AT ALL — an auth-outage park recorded later has a
+    different owner (the pool's recovery), and the box above is then the real
+    reason. See SessionWaitingReason and tadasant/zimmer#642. %>
+<% waiting_reason = SessionWaitingReason.for(agent_session) %>
+<% spot_reason = waiting_reason&.spot %>
 <% if (hold_detail.present? || pause_detail.present?) && agent_session.waiting? %>
-  <% paused_mid_run = hold_detail.blank? %>
+  <%# Falls back to the old test when the ranking has no spot mechanism to offer,
+      so a row written by an older release — a pause detail with no pause reason —
+      still explains itself rather than going blank. %>
+  <% paused_mid_run = hold_detail.blank? || spot_reason&.key == SessionWaitingReason::SPOT_PAUSE %>
+  <% superseded_by_park = spot_reason.present? && !waiting_reason.current?(spot_reason) %>
   <%# A third case shares the pause record: a session parked in the queue
       deliberately. Nothing interrupted it and no turn was lost, so it gets its
       own sentence rather than being described as a casualty of the ceiling. %>
@@ -57,6 +70,18 @@
           <% end %>
         </h3>
         <p class="mt-1 text-sm text-amber-800"><%= paused_mid_run ? pause_detail : hold_detail %></p>
+        <%# Said before the resume prose below, which describes THIS mechanism's
+            owner and would otherwise send the reader to the wrong one. %>
+        <% if superseded_by_park %>
+          <p class="mt-1 text-sm font-medium text-amber-900" data-spot-hold-superseded>
+            This is not why the session is waiting now: the auth-outage park above was recorded later, and
+            the account pool is what it is waiting on.
+            <% if spot_reason.demoted? %>
+              Nothing is coming to re-arm this hold either — the spot-hold sweep skips a session that also
+              carries an auth-outage park.
+            <% end %>
+          </p>
+        <% end %>
         <%# The age of the sentence above, always, and never as an afterthought:
             without it a reader has no way to tell an eleven-hour-old gate
             reading from a live one. %>
@@ -69,7 +94,12 @@
           This is a <span class="font-medium">spot</span> session
           (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
           <%= agent_session.scheduling_class_source %>). It has not been cancelled —
-          <% if queued_by_user %>
+          <%# Every clause below names what THIS mechanism's owner will do, so a
+              superseded box must not reach them: they would send the reader to the
+              spot gate for a session the account pool is holding. %>
+          <% if superseded_by_park %>
+            it resumes from the outage above, once the account pool recovers.
+          <% elsif queued_by_user %>
             it was parked in the queue deliberately, with no wake-up time, and it resumes
             when a Claude account is under both quota targets and a slot is free, ahead of everything
             ranked below precedence <%= agent_session.precedence %>.
@@ -84,8 +114,11 @@
         </p>
         <%# What happens next, stated as what it IS. An overdue re-check is named
             as overdue and paired with the sweep that repairs it, rather than
-            printed as a time that has already passed and reads as upcoming. %>
-        <% if !paused_mid_run && hold %>
+            printed as a time that has already passed and reads as upcoming.
+            Dropped entirely once a later auth-outage park supersedes the hold: the
+            sweep this sentence promises skips such a session, so the promise would
+            be false. %>
+        <% if !paused_mid_run && hold && !superseded_by_park %>
           <p class="mt-1 text-xs <%= hold.overdue? ? "font-medium text-amber-900" : "text-amber-700" %>" data-spot-hold-recheck>
             <%= hold.recheck_sentence %>
           </p>

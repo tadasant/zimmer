@@ -137,6 +137,98 @@ module Mcp
 
       private
 
+      # Why this session is sitting in `waiting`, when it is dormant on one of the
+      # three park mechanisms — and, when it carries more than one of them, WHICH
+      # of them is the answer.
+      #
+      # The three used to be concatenated back to back with no precedence between
+      # them, and the auth-outage park was never rendered here at all. A session
+      # holding a stale hold beside a newer park therefore read back the hold and
+      # nothing else, naming a resume owner that was not coming for it
+      # (tadasant/zimmer#642). SessionWaitingReason owns the ranking so the
+      # session page's banners cannot drift from what an agent reads here.
+      def waiting_reason_lines(session)
+        reading = SessionWaitingReason.for(session)
+        return [] if reading.nil?
+
+        mechanism_lines(session, reading.current) + reading.superseded.map { |m| superseded_line(m) }
+      end
+
+      def mechanism_lines(session, mechanism)
+        case mechanism.key
+        when SessionWaitingReason::SPOT_HOLD then spot_hold_lines(session)
+        when SessionWaitingReason::SPOT_PAUSE then spot_pause_lines(session)
+        else auth_outage_lines(session)
+        end
+      end
+
+      # A mechanism still on the row that is NOT the current reason. Named rather
+      # than dropped — the record is real, and a caller comparing metadata against
+      # this output must not conclude the renderer missed it — but named as
+      # superseded, with the reason it lost, so nobody acts on its resume owner.
+      def superseded_line(mechanism)
+        tail = if mechanism.demoted?
+          "Its re-check is overdue AND the spot-hold sweep skips a session that also carries a pause or " \
+          "an auth-outage park, so nothing is coming to re-arm it."
+        else
+          "It is older than the reason above."
+        end
+
+        "- **Also on the record, and not why it is waiting now:** #{mechanism.label}" \
+        "#{" from #{mechanism.at.utc.iso8601}" if mechanism.at}. #{tail} " \
+        "The reason above is what owns this session's resume."
+      end
+
+      # Why a session is sitting in `waiting` because the runtime's login pool had
+      # nothing usable for it — every account over quota, or a login that could not
+      # be repaired by re-injecting credentials.
+      #
+      # This park has its own resume owner (AuthOutageParkService.wake_parked_sessions!,
+      # driven by the quota-recovery path) and its own timescale, and until #642 it
+      # was the one mechanism `get_session` could not say out loud. The sentences
+      # are the session page's auth-outage banner's, so the human and the agent
+      # reading the same session are told the same thing.
+      def auth_outage_lines(session)
+        metadata = session.metadata || {}
+        cause = if metadata["auth_outage_reason"] == AuthOutageParkService::QUOTA_EXHAUSTED
+          "every #{RuntimeRegistry.label_for(session.agent_runtime)} account is over its quota, so there " \
+          "is nothing to rotate into."
+        else
+          'the runtime reported "Not logged in" and re-injecting credentials did not fix it.'
+        end
+
+        lines = [
+          "- **Parked for an auth outage (`#{metadata['auth_outage_reason']}`):** #{cause}",
+          "- **Parked at:** #{metadata['auth_outage_parked_at'].presence || 'unknown'}",
+          "- **Resumes when:** #{auth_outage_resume_sentence(session)}"
+        ]
+
+        # An estimate read off the pool's snapshots at park time, and labelled as
+        # one: nothing fires at it, so a caller must not treat it as a scheduled
+        # wake. Dropped once it is in the past rather than shown as overdue —
+        # it never promised anything to be late for.
+        recovers_at = AuthOutageParkService.pool_recovery_time(session)
+        if recovers_at&.future?
+          lines << "- **Pool's earliest reset:** #{recovers_at.utc.iso8601}, estimated from the pool's own " \
+                   "snapshots at park time. Nothing fires at it."
+        end
+
+        lines
+      end
+
+      # A spot session is not simply woken when the pool comes back: the fleet wake
+      # takes a bounded batch in precedence order, so promising it the next wake
+      # would overstate what it gets.
+      def auth_outage_resume_sentence(session)
+        if session.spot?
+          "the account pool recovers and the ranked fleet wake reaches it in precedence order (currently " \
+          "#{session.precedence}). Nothing is cancelled and no action is needed."
+        else
+          "the account pool recovers — Zimmer's quota-recovery sweep resumes it. Nothing is cancelled and " \
+          "no action is needed."
+        end
+      end
+
       # Why a spot session is sitting in `waiting`. Emitted only when a hold is
       # actually recorded, so an ordinary session's output is unchanged — but when
       # it IS held, an agent reading its own session must be able to tell "deferred
@@ -283,8 +375,7 @@ module Mcp
         lines << "- **Genesis:** #{session.genesis_key} (#{session.genesis_label})"
         lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
         lines << "- **Precedence:** #{session.precedence}#{' — spot sessions start highest first' if session.spot?}"
-        lines.concat(spot_hold_lines(session))
-        lines.concat(spot_pause_lines(session))
+        lines.concat(waiting_reason_lines(session))
         # Board visibility, reported only when it is not the default. Stated with
         # the disclaimer attached, because the one way this field can do harm is an
         # agent reading "snoozed" as a reason not to act on the session.
