@@ -102,6 +102,18 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_includes output, "Scan complete"
   end
 
+  test "a multi-word query matches the phrase, not each word on its own" do
+    target = create_transcript_session(title: "Phrase", said: "the harbour pilot signed off")
+    apart = create_transcript_session(title: "Words apart", said: "a pilot met us at the harbour")
+
+    output = @tool.call("query" => "harbour pilot", "search_contents" => true)
+
+    assert_includes output, "(ID: #{target.id})"
+    assert_not_includes output, "(ID: #{apart.id})",
+      "an agent uses this to confirm a session said something, so a two-word query that ORs its " \
+      "words answers with a shortlist it still has to download and grep (#405)"
+  end
+
   test "search_contents remains a superset of the title search" do
     output = @tool.call("query" => "Configure Hatchbox deployment", "search_contents" => true)
 
@@ -191,6 +203,7 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     query = schema.dig(:properties, :query, :description)
     assert_includes query, "metadata/custom_metadata JSON"
     assert_includes query, "not against the prompt"
+    assert_includes query, "several words are a PHRASE"
 
     description = Mcp::Tools::QuickSearchSessions.rendered_description
     assert_includes description, "show_archived: true"
