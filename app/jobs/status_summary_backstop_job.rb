@@ -48,6 +48,12 @@
 # sweep to the substrate instead of guessing at it. It still repairs during an
 # outage — it repairs at exactly the rate the lane can absorb, which is the
 # fastest any budget could.
+#
+# **Who gets that budget is a separate question, and recency alone answered it
+# badly** (#881). A session whose repair can never succeed retakes the head of a
+# purely recency-ordered list every RETRY_INTERVAL and holds the whole budget
+# indefinitely. #candidates carries the fairness term that ends that, and what
+# the term trades away.
 class StatusSummaryBackstopJob < ApplicationJob
   queue_as :default
   include SingletonSweep
@@ -62,10 +68,13 @@ class StatusSummaryBackstopJob < ApplicationJob
   MAX_PER_SWEEP = 5
 
   # The share of the lane budget the fork path may take WHEN THERE IS ALSO
-  # outage work waiting behind it. Both paths draw on one budget, and on a mixed
-  # fleet the fork path reaches it first by accident — its sessions are simply
-  # more recently active — so without a reservation the expensive repair would
-  # crowd out the cheap pool-independent one a quota outage depends on. Half,
+  # outage work waiting behind it. Both paths draw on one budget, and #candidates
+  # orders on how long a session has gone unexamined, which says nothing about
+  # which path would repair it — so on a mixed fleet the two interleave
+  # arbitrarily and the fork path can reach the whole budget before the outage
+  # work behind it is looked at. Reserved rather than raced for, because the
+  # expensive repair winning that race crowds out the cheap pool-independent one
+  # a quota outage depends on. Half,
   # rounded up, so the fork path keeps the larger share of an odd budget and a
   # headroom of one is still spendable by whichever path reaches it.
   #
@@ -164,6 +173,9 @@ class StatusSummaryBackstopJob < ApplicationJob
         break
       end
 
+      # #candidates already excludes these. Asked again because a session can be
+      # blocked between that query and this walk, and a session mid-turn must not
+      # be stamped — an unstamped row is the one thing the ordering cannot rotate.
       next if session.blocked_on_elicitation?
 
       record = session.status_summary
@@ -183,7 +195,11 @@ class StatusSummaryBackstopJob < ApplicationJob
       # retry interval on a budget it never got past.
       next if !outage && forked >= fork_budget
 
-      stamp_examined(session, record)
+      # A slot the sweep cannot record having spent is a slot it would spend
+      # again on the next sweep, and again after that: an unstamped session
+      # outranks every stamped one under the fairness ordering. So a failed stamp
+      # costs this session its turn rather than costing the tail its budget.
+      next unless stamp_examined(session, record)
       next unless needs_repair?(session, record)
 
       SessionStatusSummaryJob.perform_later(session.id, headless: outage)
@@ -222,9 +238,9 @@ class StatusSummaryBackstopJob < ApplicationJob
   # What the fork path may spend of the shared lane budget.
   #
   # Its cost cap, except when a candidate is on an exhausted pool — then the
-  # cheap pool-independent path needs a share of the same budget, and the fork
-  # path reaching it first is an artefact of `updated_at` ordering rather than a
-  # priority anyone chose. #pool_exhausted? is memoized per runtime, so this
+  # cheap pool-independent path needs a share of the same budget, and which path
+  # the ordering happens to reach first is an artefact rather than a priority
+  # anyone chose. #pool_exhausted? is memoized per runtime, so this
   # costs one query per distinct runtime whether it is asked here or in the walk.
   def fork_budget_for(sessions, headroom)
     return MAX_PER_SWEEP unless sessions.any? { |session| pool_exhausted?(session.agent_runtime) }
@@ -232,14 +248,46 @@ class StatusSummaryBackstopJob < ApplicationJob
     [ MAX_PER_SWEEP, (headroom * FORK_SHARE_UNDER_OUTAGE).ceil ].min
   end
 
-  # Sessions at rest, most recently active first — the order the user's action
-  # queue is read in, so the cap spends itself on the sessions most likely to be
-  # opened next.
+  # Sessions at rest, in the order this sweep's budget should be spent: the ones
+  # it has never looked at first — most recently active among them — and then the
+  # ones it looked at longest ago.
   #
-  # `blocked_on_elicitation` sessions are dropped by the caller: they are
-  # `needs_input` with a live agent process waiting on an approval mid-turn,
-  # which is not a session at rest and not a conversation there is anything final
-  # to say about yet.
+  # **WHY THE FAIRNESS TERM IS THERE** (#881). Recency alone is a priority with
+  # no fairness term. A session whose repair can never succeed — the
+  # reclaimed-clone case RETRY_INTERVAL anticipates — is stale forever, so it
+  # falls due every RETRY_INTERVAL and, being recently active, sits at the head of
+  # a recency-ordered list. LANE_DEPTH_CEILING such sessions take the entire
+  # budget on every sweep, indefinitely, while the sweep logs
+  # `enqueued_headless=6` as though it were making progress, and nothing further
+  # down the list is reached at all.
+  #
+  # **WHAT THE TERM COSTS, AND WHAT IT DOES NOT.** Sorting on
+  # `backstop_attempted_at` means a session the sweep has already spent a slot on
+  # cannot outrank one it has not. It does *not* flatten the recency priority: a
+  # session that has never been examined has no stamp, so the whole first group
+  # ties on NULL and `updated_at DESC` decides between them. Recency orders every
+  # FIRST look. Only re-examinations sort behind it, and among themselves
+  # oldest-stamp first — a rotation no stamped session can hold the head of.
+  #
+  # The price falls on a retry that would have succeeded: a session whose
+  # generation was lost to a deploy waits behind the sessions the sweep has not
+  # looked at, rather than ahead of them by virtue of being recent. That is the
+  # right way round. An unexamined session may well be repaired by its first slot,
+  # whereas a second attempt is by construction evidence that one slot was not
+  # enough.
+  #
+  # **NOTHING MAY SIT UNSTAMPED AT THE HEAD**, or the rotation has a fixed point
+  # and #881 comes back sharper — a row with no stamp outranks every stamped row
+  # on every sweep, not merely every thirtieth minute. Two classes could:
+  #
+  # - `blocked_on_elicitation` sessions, which the walk skips before stamping.
+  #   They are `needs_input` with a live agent process waiting on an approval
+  #   mid-turn, which is not a session at rest and not a conversation there is
+  #   anything final to say about yet. Excluded here, in SQL, so they occupy
+  #   neither the head nor a SCAN_LIMIT slot. The caller still asks, because a
+  #   session can be blocked between this query and the walk.
+  # - A session whose stamp write fails. #stamp_examined reports that, and the
+  #   walk declines to spend a slot it cannot record having spent.
   #
   # Two things keep this cheap enough to run every five minutes.
   #
@@ -257,9 +305,22 @@ class StatusSummaryBackstopJob < ApplicationJob
   #
   # `preload` rather than a second query per row: the record each candidate needs
   # is fetched once for the whole batch.
+  #
+  # Neither ordering column is indexed, and neither was under the recency-only
+  # ordering: the sort runs over what the due-ness `WHERE` left behind, which in
+  # steady state is nothing and under SCAN_LIMIT is at most a few hundred rows.
+  #
+  # SCAN_LIMIT and the fairness term point the same way, and it is worth being
+  # explicit about the one case where that bites: while more due never-examined
+  # sessions exist than SCAN_LIMIT — a mass event, a long outage, a restore — the
+  # scan is all first looks and no re-examination is reached. That is the trade
+  # taken deliberately, and it is self-limiting, because the sweep stamps its way
+  # through that group at the lane's rate and a sweep that hits SCAN_LIMIT says
+  # so.
   def candidates
     Session
       .excluding_status_summary_forks
+      .not_blocked_on_elicitation
       .where(status: [ :needs_input, :failed ])
       .left_joins(:status_summary)
       .where(
@@ -270,7 +331,7 @@ class StatusSummaryBackstopJob < ApplicationJob
       )
       .preload(:status_summary)
       .select((Session.column_names - [ "transcript" ]).map { |column| "sessions.#{column}" })
-      .order("sessions.updated_at DESC")
+      .order("session_status_summaries.backstop_attempted_at ASC NULLS FIRST", "sessions.updated_at DESC")
       .limit(SCAN_LIMIT)
   end
 
@@ -331,7 +392,8 @@ class StatusSummaryBackstopJob < ApplicationJob
 
   # Stamps the session BEFORE the decision to enqueue, so the cost of examining
   # it — including reading its transcript — is paid once per RETRY_INTERVAL
-  # whatever the answer turns out to be.
+  # whatever the answer turns out to be. Answers whether the stamp landed: the
+  # caller will not spend an enqueue on a session it could not record examining.
   #
   # `update_columns` rather than `update!`: a bookkeeping stamp is not a change to
   # what the panel says, and SessionStatusSummary broadcasts a panel re-render on
@@ -341,7 +403,9 @@ class StatusSummaryBackstopJob < ApplicationJob
   def stamp_examined(session, record)
     (record || SessionStatusSummary.create_or_find_by!(session_id: session.id))
       .update_columns(backstop_attempted_at: Time.current, updated_at: Time.current)
+    true
   rescue StandardError => e
     Rails.logger.error("[StatusSummaryBackstopJob] Could not stamp session #{session.id}: #{e.message}")
+    false
   end
 end
