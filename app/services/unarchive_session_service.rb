@@ -278,7 +278,10 @@ class UnarchiveSessionService
     # than the one frozen on the row (#921). Persist that before anything else
     # reads `session.subdirectory` — the restore damage check below is one such
     # reader, and it would otherwise call the healthy clone damaged.
-    if session.adopt_clone_subdirectory!(clone_result[:subdirectory])
+    # Wrapped like every other write on this path: an unretried DB blip here
+    # would escape to #unarchive's rescue, which logs at error — paging over the
+    # one flow this change is deliberately keeping out of the exception tracker.
+    if with_db_retry { session.adopt_clone_subdirectory!(clone_result[:subdirectory]) }
       @logger.info("Adopted the agent root's current subdirectory",
         agent_root_key: session.metadata&.dig("agent_root_key"),
         subdirectory: session.subdirectory

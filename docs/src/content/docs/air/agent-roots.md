@@ -145,6 +145,14 @@ fallback arm matches roots on `ar.subdirectory == session.subdirectory`, so it c
 a root that agrees with the stale value. A root that is genuinely gone from the catalog still fails
 the clone — re-resolution is about asking the catalog, not about making a missing directory soft.
 
+Two things this asks of whoever performs the next rename. The alias is a **separate entry**, so a
+directory move has to set the *alias* entry's `subdirectory` to the new path as well — sessions
+keyed on the old name resolve through that entry, and an alias left pointing at the old tree strands
+exactly the population it exists to protect. And the recovery only works in one direction: a root
+that moves its tree **to the repo root** declares no `subdirectory` at all, which is indistinguishable
+from a root the catalog has dropped, so its existing sessions stay stranded —
+[a limitation](/limitations/#a-root-that-moves-to-the-repo-root-still-strands-its-existing-sessions).
+
 The app does not hardcode either name. `AgentRootsConfig::ROUTER_ROOT_NAMES` lists them
 most-preferred first and `AgentRootsConfig.router_root_name` returns the first one the resolved
 catalog actually carries:
