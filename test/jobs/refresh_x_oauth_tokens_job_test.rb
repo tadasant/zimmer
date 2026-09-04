@@ -22,6 +22,20 @@ class RefreshXOauthTokensJobTest < ActiveJob::TestCase
     }.merge(attrs))
   end
 
+  # The hanging-endpoint tests below need a socket that accepts and then says
+  # nothing, and the endpoint has to be http:// for that to produce the failure
+  # they assert: over https the silence would strand the TLS handshake instead,
+  # which Net::HTTP raises as a connect-phase Net::OpenTimeout — the other half of
+  # the taxonomy. But XOauthCredential now refuses to save an http:// endpoint
+  # (#850), so the row is written past the validation on purpose. That is the
+  # deliberate trade: the scheme rule has its own coverage in
+  # test/models/x_oauth_credential_test.rb, and writing the column here rather
+  # than carving loopback out of the validation keeps the production rule
+  # exceptionless — no hole opened for a test's convenience.
+  def credential_pointed_at(endpoint)
+    credential.tap { |cred| cred.update_column(:token_endpoint, endpoint) }
+  end
+
   test "refreshes credentials whose access token is expiring" do
     cred = credential(expires_at: 5.minutes.from_now)
     XOauthCredential.any_instance.expects(:refresh!).once.returns(true)
@@ -100,7 +114,7 @@ class RefreshXOauthTokensJobTest < ActiveJob::TestCase
 
   test "a hanging token endpoint is classified ambiguous, not retried in-band, and does not block" do
     with_hanging_token_endpoint do |endpoint|
-      cred = credential(token_endpoint: endpoint)
+      cred = credential_pointed_at(endpoint)
 
       entries = nil
       elapsed = elapsed_seconds do
@@ -127,7 +141,7 @@ class RefreshXOauthTokensJobTest < ActiveJob::TestCase
   # feeds, rather than in the model test.
   test "refresh! raises Net::ReadTimeout inside the bound, and it lands in AMBIGUOUS not RETRYABLE" do
     with_hanging_token_endpoint do |endpoint|
-      cred = credential(token_endpoint: endpoint)
+      cred = credential_pointed_at(endpoint)
 
       error = nil
       elapsed = elapsed_seconds do

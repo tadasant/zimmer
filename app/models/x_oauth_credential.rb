@@ -66,6 +66,7 @@ class XOauthCredential < ApplicationRecord
   validates :account_key, presence: true, uniqueness: true
   validates :access_token_env_var, presence: true, uniqueness: true
   validates :token_endpoint, presence: true
+  validate :token_endpoint_must_be_https
 
   scope :active, -> { where("expires_at IS NULL OR expires_at > ?", Time.current) }
   scope :refreshable, -> { where.not(refresh_token: [ nil, "" ]) }
@@ -91,6 +92,12 @@ class XOauthCredential < ApplicationRecord
   # exchange both go through here, so neither can drift back to Net::HTTP's unbounded
   # defaults. Persistence differs between the two callers and stays with them —
   # this only speaks HTTP.
+  #
+  # `use_ssl` follows the URL's scheme rather than being forced on: this is the
+  # primitive, and both callers settle the scheme before reaching it — the column
+  # is validated https-only (see #token_endpoint_must_be_https) and XOauthBootstrap
+  # passes DEFAULT_TOKEN_ENDPOINT. The guard belongs at the surface an operator
+  # types the URL into, where the error can name the field.
   #
   # @return [Net::HTTPResponse] the raw response; callers classify the status
   # @raise network errors (Net::OpenTimeout, Net::ReadTimeout, ...) — callers
@@ -210,6 +217,27 @@ class XOauthCredential < ApplicationRecord
   end
 
   private
+
+  # The client secret goes out as HTTP Basic on every request to this endpoint
+  # (see .post_token_request), so a non-https value would put a long-lived
+  # confidential-client credential on the wire in the clear, silently — the
+  # refresh still succeeds, so nothing surfaces that it happened.
+  #
+  # https is also the only value the field was ever meant to hold: X publishes no
+  # plaintext token endpoint, and DEFAULT_TOKEN_ENDPOINT is https. There is
+  # deliberately no carve-out for loopback: the field is operator-editable through
+  # the supervisor panel (XOauthCredentialDashboard lists it in FORM_ATTRIBUTES),
+  # and one rule with no exceptions is what makes that surface reviewable.
+  def token_endpoint_must_be_https
+    return if token_endpoint.blank? # the presence validation owns that case
+
+    uri = URI.parse(token_endpoint)
+    return if uri.is_a?(URI::HTTPS) && uri.host.present?
+
+    errors.add(:token_endpoint, "must be an https:// URL — the X client secret is sent to it as HTTP Basic auth")
+  rescue URI::InvalidURIError
+    errors.add(:token_endpoint, "is not a valid URL")
+  end
 
   def handle_non_transient_failure!(response)
     if permanent_refresh_failure?(response)
