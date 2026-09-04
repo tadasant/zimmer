@@ -192,8 +192,10 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # Zimmer's own bookkeeping is not work either, and one stranded in `waiting`
-  # must not suppress the event forever.
+  # No rule of its own: a status-summary fork in `waiting` is dormant like every
+  # other `waiting` session, so a handful stranded there cannot suppress the
+  # event. One that is RUNNING counts like any other running session — the case
+  # below pins that.
   test "a waiting status-summary fork does not hold the event off" do
     ceiling(1)
     session(status: :waiting, scheduling_class: SessionGenesis::SPOT,
@@ -394,7 +396,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   # The ceiling is compared against ONE population. A spot queue deeper than the
   # ceiling says nothing about how busy the machine is, and the session this
   # event spawns is priority and ungated, so it fills the idle machine rather
-  # than joining the queue it would once have been counted against.
+  # than joining the queue.
   test "a spot queue deeper than the ceiling does not hold the event off" do
     2.times { session(status: :running) }
     5.times { session(status: :waiting, scheduling_class: SessionGenesis::SPOT) }
@@ -408,10 +410,10 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # What absorbs the churn the queue count used to stand in for: the fleet has to
-  # stay under the ceiling for the WHOLE stretch, and `record_busy!` restarts the
-  # clock on any session entering `running`. A fleet that flaps never accumulates
-  # one.
+  # What absorbs churn, and the reason a count of running sessions alone is safe
+  # to fire on: the fleet has to stay under the ceiling for the WHOLE stretch,
+  # and `record_busy!` restarts the clock on any session entering `running`. A
+  # fleet that flaps never accumulates one.
   test "a session starting inside the stretch restarts the clock, however few are running" do
     freeze_time do
       FleetIdleMonitor.check!
@@ -549,5 +551,35 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     session(status: :archived)
 
     assert_equal 2, FleetIdleMonitor.running_sessions
+  end
+
+  # Every runtime, not just Claude Code — the load-bearing difference between
+  # this count and the spot gate's `running_claude_code_count`. A Codex session
+  # occupies the deployment as much as a Claude one.
+  test "running_sessions counts sessions of every runtime" do
+    other = (RuntimeRegistry.registered_runtimes - [ ClaudeAuthProvider::RUNTIME ]).first
+    skip "only one runtime is registered" if other.blank?
+
+    session(status: :running).update!(agent_runtime: other)
+    session(status: :running)
+
+    assert_equal 2, FleetIdleMonitor.running_sessions
+  end
+
+  # Zimmer's own bookkeeping occupies the deployment while it runs, so it counts
+  # like anything else. Only `waiting` forks are ignored, and only because every
+  # `waiting` session is.
+  test "a running status-summary fork counts toward the ceiling" do
+    ceiling(1)
+    session(status: :running, metadata: { SessionStatusSummaryGenerator::FORK_MARKER => "1" })
+
+    freeze_time do
+      assert_not FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold + 1.minute
+      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+        assert_not FleetIdleMonitor.check!
+      end
+      assert_nil setting.fleet_idle_since
+    end
   end
 end

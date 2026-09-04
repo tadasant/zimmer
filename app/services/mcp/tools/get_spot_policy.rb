@@ -230,13 +230,14 @@ module Mcp
           "### Backlog top-up (`no_sessions_in_progress`)",
           "",
           "- **Fires while the fleet is running fewer than:** #{status.max_sessions} " \
-          "#{"session".pluralize(status.max_sessions)} (sessions actually `running`; `waiting` ones do " \
-          "not count, of any class; 1 would mean nothing running)",
+          "#{"session".pluralize(status.max_sessions)} (sessions actually `running`, every runtime; " \
+          "`waiting` ones do not count, of any class; 1 would mean nothing running. A different count " \
+          "from the Claude-Code-only one the concurrency limit above uses)",
           "- **For at least:** #{status.threshold.inspect}",
           "- **At most once every:** #{status.min_fire_interval.inspect} " \
           "(#{status.cadence_phrase} — with a ceiling above 1 this, not the ceiling, is what caps how " \
           "often work gets started)",
-          "- **Sessions running:** #{status.running_sessions} of #{status.max_sessions} " \
+          "- **Sessions running (any runtime):** #{status.running_sessions} of #{status.max_sessions} " \
           "(#{status.headroom} #{"place".pluralize(status.headroom)} of headroom; one fire hands out " \
           "one session, so filling it takes that many cooldowns)",
           "- **State:** `#{status.state}` — #{status.sentence}",
