@@ -10,7 +10,7 @@
 # says "the pool can serve again, decide who runs"; this one says "there is
 # nearly nobody left to run" — so a job that hands work out has a second way to
 # be started besides its daily schedule, on exactly the occasions when the
-# deployment has capacity and nothing queued to spend it on.
+# deployment has capacity and too little running to spend it on.
 #
 # == What counts as idle
 #
@@ -20,33 +20,40 @@
 # moment it has the least room for it. So three questions, and all three must
 # answer no:
 #
-#   1. Is the fleet holding `fleet_idle_max_sessions` or more sessions already?
-#      "Holding" is one number over two populations, because both are work the
-#      deployment already has:
+#   1. Is the fleet RUNNING `fleet_idle_max_sessions` or more sessions already?
+#      One population and one number: sessions actually `running`. Every runtime
+#      and every scheduling class counts — "is anyone doing anything" is about
+#      the deployment's capacity to take on more, and a running Codex session
+#      occupies that as much as a Claude one. `fleet_idle_max_sessions = 1` means
+#      simply "nothing running".
 #
-#        - sessions actually `running`. Every runtime and every scheduling class
-#          counts — "is anyone doing anything" is about the deployment's capacity
-#          to take on more, and a running Codex session occupies that as much as
-#          a Claude one.
-#        - spot sessions dormant in `waiting`: paused by the ceiling, held by the
-#          gate, or simply never started. Handing a deployment that is already
-#          sitting on a spot queue more work would deepen the queue rather than
-#          fill an idle machine.
+#      `waiting` sessions do NOT count, of any class, and the reason is what
+#      `waiting` actually holds. It is not a queue — it is Zimmer's only resting
+#      state short of a terminal one, so sessions asleep on their OWN
+#      self-scheduled wake sit in it alongside anything genuinely queued, and the
+#      sleepers dominate. The biggest single population is the `open-pr` skill's
+#      terminal step: a session that has FINISHED its work and is sleeping on its
+#      open PR, for tens of minutes at a time, occupying nothing. Counting those
+#      made a deployment with 5 sessions running and 8 asleep report itself as
+#      holding 13 against a ceiling of 7 — full, no top-up due — while more than
+#      half its slots sat empty.
 #
-#      They are counted together against ONE ceiling rather than vetoing
-#      independently, and that is the whole point of the ceiling being a number.
-#      Two independent vetoes make a fleet at two of ten slots with a single spot
-#      session held at the door "not idle", so the deployment has to reach
-#      literally zero on both counts before the backlog is topped up and a
-#      ten-slot fleet runs at two. With one ceiling of N, either population can
-#      grow into the same headroom and the operator has one number to reason
-#      about. `fleet_idle_max_sessions = 1` is exactly that pair of vetoes:
-#      nothing running AND nothing queued.
+#      The spot queue is not an exception to that. A dormant spot session is work
+#      waiting for capacity, which is the condition top-up exists to relieve
+#      rather than a reason to withhold it — and the session this event spawns is
+#      PRIORITY and ungated, so it fills an idle machine rather than deepening
+#      the queue. Queue depth is a statement about the budget the gate is pacing
+#      to, not about how busy the machine is; the gate owns that, and it holds
+#      spot work whether or not this event fires.
 #
-#      Status-summary forks are excluded from the spot half for the reason
-#      SpotSessionPause excludes them from its own spot population: they are
-#      Zimmer's own bookkeeping, and a handful stranded in `waiting` would
-#      otherwise eat the whole ceiling.
+#      The one thing a dormant population does buy, counted, is damping: it keeps
+#      the moment between one session ending and the next starting from reading
+#      as an idle fleet. `fleet_idle_threshold_minutes` buys that directly and
+#      more honestly — the fleet has to stay under the ceiling CONTINUOUSLY for
+#      the whole stretch, and `record_busy!` restarts that clock unconditionally
+#      the moment any session enters `running`. A fleet that flaps therefore
+#      never accumulates a stretch, at any ceiling, and the dwell is what makes a
+#      count of running sessions alone safe to fire on.
 #
 #   2. Is any session parked on an auth outage, of EITHER class? A park is the
 #      clearest statement Zimmer makes that work exists and cannot run. This one
@@ -62,10 +69,11 @@
 #      and park, having re-armed the latch on its way through `running`. That is
 #      one wasted session per idle stretch for as long as the outage lasts.
 #
-# Priority sessions merely `waiting` deliberately do NOT count. Priority work is
-# never gated on quota, so an unparked priority session sitting in `waiting` is
-# one in the seconds before its job picks it up, not a queue — counting it would
-# suppress the event on ordinary churn.
+# Question 2 is the one that still reads `waiting`, and it is not a count of
+# queued work: a park is a specific mark AuthOutageParkService writes on a
+# session, and it is evidence about the POOL. "Nobody is running" and "the pool
+# is empty" are different facts, and only the second of them is a reason to keep
+# quiet.
 #
 # == Why a latch and not just a level
 #
@@ -258,13 +266,20 @@ class FleetIdleMonitor
       false
     end
 
-    # How many sessions the fleet is holding right now: the number `check!`
+    # How many sessions the fleet is running right now: the number `check!`
     # compares against the ceiling, exposed so /inference and `get_spot_policy`
     # can show the same reading the monitor decides on.
     #
-    # See "What counts as idle" for why these two populations share one number.
-    def sessions_in_hand
-      running_count + queued_spot_count
+    # Deliberately scoped the way Zimmer's own recovery jobs scope it:
+    # CleanupOrphanedSessionsJob and DeploymentRecoveryJob both skip frozen
+    # categories, so a `running` row in one is a row nothing will ever repair.
+    # Counting it would pin this monitor to "busy" forever with nothing to say
+    # why.
+    #
+    # See "What counts as idle" for why `waiting` sessions are not in this
+    # number.
+    def running_sessions
+      Session.not_in_frozen_category.where(status: :running).count
     end
 
     private
@@ -277,15 +292,10 @@ class FleetIdleMonitor
     #
     # See "What counts as idle" above for why each question is scoped the way it
     # is. Ordered cheapest-and-commonest first: on a busy deployment the running
-    # count is the only query this makes, because it alone can reach the ceiling.
+    # count is the only query this makes, because it is the only one the ceiling
+    # is compared against.
     def fleet_idle?(setting)
-      ceiling = max_sessions(setting)
-
-      # Two counts, short-circuited on the first: the running population alone
-      # can reach the ceiling, and on a busy deployment it does.
-      running = running_count
-      return false if running >= ceiling
-      return false if running + queued_spot_count >= ceiling
+      return false if running_sessions >= max_sessions(setting)
 
       return false if parked_work?
 
@@ -300,31 +310,11 @@ class FleetIdleMonitor
     # transition to busy, and the predicate short-circuits so it does not always
     # know.
     def not_idle_reason(setting)
-      return "at_work_ceiling" if sessions_in_hand >= max_sessions(setting)
+      return "at_work_ceiling" if running_sessions >= max_sessions(setting)
       return "work_parked_on_auth_outage" if parked_work?
       return "account_pool_empty" unless pool_available?(setting)
 
       "unknown"
-    end
-
-    # Anything actually executing. Deliberately scoped the way Zimmer's own
-    # recovery jobs scope it: CleanupOrphanedSessionsJob and DeploymentRecoveryJob
-    # both skip frozen categories, so a `running` row in one is a row nothing will
-    # ever repair. Counting it would pin this monitor to "busy" forever with
-    # nothing to say why.
-    def running_count
-      Session.not_in_frozen_category.where(status: :running).count
-    end
-
-    # Spot sessions dormant in the queue: paused by the ceiling, held by the
-    # gate, or simply never started. All of them are work the deployment already
-    # holds, so they count toward the same ceiling running ones do.
-    #
-    # Status-summary forks are excluded for the reason SpotSessionPause excludes
-    # them from its own spot population: they are Zimmer's own bookkeeping, and
-    # ones stranded in `waiting` would otherwise suppress the event indefinitely.
-    def queued_spot_count
-      Session.spot.where(status: :waiting).excluding_status_summary_forks.count
     end
 
     # Sessions AuthOutageParkService put to sleep on an empty or unusable pool,

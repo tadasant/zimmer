@@ -610,9 +610,13 @@ even though nothing would have held that work.
 
 #### `no_sessions_in_progress`
 
-Fires when the deployment has held **fewer sessions than its configured ceiling** for the whole of a
-configured stretch — three and five minutes by default. It is the "the fleet has room for more work"
-signal, so a job that hands work out has a second way to be started besides its daily schedule.
+Fires when the deployment has been **running fewer sessions than its configured ceiling** for the
+whole of a configured stretch — three and five minutes by default. It is the "the fleet has room for
+more work" signal, so a job that hands work out has a second way to be started besides its daily
+schedule.
+
+Only sessions actually `running` count. Sessions in `waiting` do not, of any class — see
+[What counts as idle](#what-counts-as-idle).
 
 The name is a wire name: it is stored as a condition on live trigger rows, so it kept its original
 spelling when the boolean behind it became a number. Read it as *few enough* sessions in progress.
@@ -625,15 +629,15 @@ change takes effect within the minute and needs no deploy.
 
 | Column | Default | Means |
 | --- | --- | --- |
-| `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while it holds **fewer than** this many sessions |
+| `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while **fewer than** this many sessions are **running** |
 | `fleet_idle_threshold_minutes` | 5 | how long it must stay under that ceiling first |
 | `fleet_idle_min_fire_interval_minutes` | 60 | the floor between two fires |
 
-**`fleet_idle_max_sessions = 1` is exactly the pair of booleans this replaced**: nothing running and
-nothing queued. The reason the default is 3 rather than 1 is that requiring literally zero made the
-event a poor fit for its own purpose. Measured over one 10.6-hour window, a ten-slot fleet ran at two
-slots and fired this event twice, while 109 items sat on the work backlog — the fleet had eight free
-slots and the only thing standing between them and the backlog was the last running session.
+**`fleet_idle_max_sessions = 1` means simply "nothing running"** — the boolean this replaced. The
+reason the default is 3 rather than 1 is that requiring literally zero made the event a poor fit for
+its own purpose. Measured over one 10.6-hour window, a ten-slot fleet ran at two slots and fired this
+event twice, while 109 items sat on the work backlog — the fleet had eight free slots and the only
+thing standing between them and the backlog was the last running session.
 
 ##### What counts as idle
 
@@ -643,26 +647,40 @@ has least room for it — so three questions all have to answer no:
 
 | Question | Why it counts |
 | --- | --- |
-| Is the fleet holding `fleet_idle_max_sessions` or more? | One number over two populations: sessions actually `running` (every runtime and class — a running Codex session occupies the deployment as much as a Claude one) plus **spot** sessions dormant in `waiting` (work already held and not started; handing a deployment sitting on a spot queue more would deepen the queue) |
+| Is the fleet **running** `fleet_idle_max_sessions` or more? | One population and one number: sessions actually `running`, every runtime and every scheduling class — a running Codex session occupies the deployment as much as a Claude one. Sessions in `waiting` do not count, of any class |
 | Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Deliberately **not** a threshold and not scoped to spot: an outage parks priority sessions too, `QuotaResetCheckerJob` resumes those on its own schedule, and one parked session is evidence about the *pool* rather than about how busy the fleet is |
 | Can the account pool serve anything? | Asked of the pool directly, via `QuotaAvailabilityMonitor.pool_available?`. An empty pool makes a quiet fleet a symptom rather than an opportunity. Deliberately **not** `AppSetting#quota_pool_available`: that column is an *announcement latch*, held at `false` through a recovery whose event has not fired yet, and a recovery deferred at the spot gate says nothing about whether the pool can serve |
 
-The two populations in the first row are counted **together against one ceiling**, and that is the
-point of the ceiling being a number rather than two booleans. As two independent vetoes, a fleet at
-two of ten slots with a single spot session held at the door was "not idle", so the queue suppressed
-top-up however much room the fleet had. With one ceiling of N, either population can grow into the
-same headroom and an operator has one number to reason about.
+##### Why `waiting` sessions do not count
+
+Until 2026-09-04 the first row counted spot sessions dormant in `waiting` too, against the same
+ceiling, on the argument that a deployment sitting on a spot queue should not be handed more. That
+was wrong about what `waiting` is.
+
+`waiting` is Zimmer's only resting state short of a terminal one, so it holds sessions asleep on
+their **own** self-scheduled wake alongside anything genuinely queued — and the sleepers dominate.
+The biggest single population is the [`open-pr`](/sessions/lifecycle/) terminal step: a session that
+has **finished** its work and is sleeping on its open PR, for tens of minutes at a time, occupying
+nothing. Counting those made a deployment with 5 sessions running and 8 asleep report itself as
+holding 13 against a ceiling of 7 — "at its work ceiling", no top-up due — while more than half its
+slots sat empty.
+
+The spot queue is not an exception. A dormant spot session is work waiting for capacity, which is the
+condition top-up exists to relieve rather than a reason to withhold it, and the session this event
+spawns is **priority** and ungated: it fills an idle machine rather than deepening the queue it would
+once have been counted against. Queue depth is a statement about the budget the
+[spot gate](/sessions/spot-and-priority/) is pacing to, and the gate holds spot work whether or not
+this event fires.
+
+What the queue count was really doing was damping churn — keeping the moment between one session
+ending and the next starting from reading as an idle fleet. **`fleet_idle_threshold_minutes` absorbs
+that directly**, and it is why dropping the queue from the count is safe: the fleet has to stay under
+the ceiling for the *whole* stretch, and `record_busy!` restarts that clock unconditionally the
+moment any session enters `running`. A fleet that flaps never accumulates a stretch, at any ceiling.
 
 The `running` count is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
 `DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and
-counting it would pin the monitor to "busy" forever with nothing to say why. The spot count excludes
-status-summary forks for the reason `SpotSessionPause` excludes them from its own spot population —
-they are Zimmer's own bookkeeping, and a handful stranded in `waiting` would otherwise eat the whole
-ceiling.
-
-Priority sessions merely `waiting` deliberately do not count. Priority work is never gated, so an
-unparked priority session sitting there is in the seconds before its job picks it up rather than in a
-queue, and counting it would suppress the event on ordinary churn.
+counting it would pin the monitor to "busy" forever with nothing to say why.
 
 ##### Why a latch as well as a level
 

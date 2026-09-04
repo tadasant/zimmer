@@ -17,16 +17,16 @@ class FleetTopUpStatus
   # crossed the threshold has not reached the latch, and so on.
   STATES = %i[at_ceiling clock_not_started inside_threshold latched cooling_down due].freeze
 
-  attr_reader :setting, :sessions_in_hand, :max_sessions, :threshold, :min_fire_interval,
+  attr_reader :setting, :running_sessions, :max_sessions, :threshold, :min_fire_interval,
     :idle_since, :last_fired_at, :now
 
   def self.current(setting: AppSetting.current, now: Time.current)
-    new(setting: setting, sessions_in_hand: FleetIdleMonitor.sessions_in_hand, now: now)
+    new(setting: setting, running_sessions: FleetIdleMonitor.running_sessions, now: now)
   end
 
-  def initialize(setting:, sessions_in_hand:, now: Time.current)
+  def initialize(setting:, running_sessions:, now: Time.current)
     @setting = setting
-    @sessions_in_hand = sessions_in_hand
+    @running_sessions = running_sessions
     @now = now
     @max_sessions = FleetIdleMonitor.max_sessions(setting)
     @threshold = FleetIdleMonitor.idle_threshold(setting)
@@ -35,17 +35,17 @@ class FleetTopUpStatus
     @last_fired_at = setting.fleet_idle_event_fired_at
   end
 
-  # Whether the fleet is holding few enough sessions to count as idle. Only the
+  # Whether the fleet is running few enough sessions to count as idle. Only the
   # first of the monitor's three questions — a fleet under its ceiling can still
   # be held off by an auth-outage park or an empty account pool, both of which
   # the rest of this page already reports in their own words.
   def under_ceiling?
-    sessions_in_hand < max_sessions
+    running_sessions < max_sessions
   end
 
   # How much room is left before the fleet stops counting as idle enough.
   def headroom
-    [ max_sessions - sessions_in_hand, 0 ].max
+    [ max_sessions - running_sessions, 0 ].max
   end
 
   def state
@@ -117,10 +117,10 @@ class FleetTopUpStatus
   def sentence
     case state
     when :at_ceiling
-      "The fleet is holding #{sessions} — at or over its ceiling of #{max_sessions}, so no top-up is due. " \
+      "The fleet is running #{sessions} — at or over its ceiling of #{max_sessions}, so no top-up is due. " \
         "The clock starts again when it drops below #{max_sessions}."
     when :clock_not_started
-      "The fleet is holding #{sessions}, under its ceiling of #{max_sessions}. The idle clock starts at " \
+      "The fleet is running #{sessions}, under its ceiling of #{max_sessions}. The idle clock starts at " \
         "the next check, and the event is due #{threshold.inspect} after that.#{cooldown_clause}"
     when :inside_threshold
       "The fleet has been under its ceiling of #{max_sessions} for " \
@@ -132,7 +132,7 @@ class FleetTopUpStatus
       "Past the threshold and waiting out the #{min_fire_interval.inspect} cooldown — " \
         "#{distance_words(last_fired_at + min_fire_interval - now)} left."
     when :due
-      "The fleet is holding #{sessions} and has been under its ceiling past the threshold: the event " \
+      "The fleet is running #{sessions} and has been under its ceiling past the threshold: the event " \
         "fires at the next check, unless something is parked on an auth outage or the account pool is empty."
     end
   end
@@ -150,7 +150,7 @@ class FleetTopUpStatus
   end
 
   def sessions
-    "#{sessions_in_hand} #{"session".pluralize(sessions_in_hand)}"
+    "#{running_sessions} #{"session".pluralize(running_sessions)}"
   end
 
   def distance_words(seconds)
