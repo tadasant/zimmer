@@ -39,7 +39,7 @@ and leave the GitHub list alone rather than silently emptying it.
 
 **Promote** starts one queued item as a `priority` session immediately: the same
 `WorkBacklog::Start` the groomer's pull calls, at `priority` instead of `spot`, spawning a
-`zimmer-router` session with the `open-reviewed-green-pr` goal, prompted with the issue URL. The
+`zimmer-orchestrator` session with the `open-reviewed-green-pr` goal, prompted with the issue URL. The
 session is created and the item marked `started` in one transaction under the ranking lock, so a
 click that races a pull cannot start the same item twice — the second one is told the item is no
 longer queued and nothing is spawned.

@@ -24,7 +24,7 @@ class WorkBacklogPromotionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to issues_path(promoted_session_id: session.id)
     assert_equal SessionGenesis::PRIORITY, session.scheduling_class
     assert_equal SessionGenesis::WEB_UI, session.genesis
-    assert_equal WorkBacklog::Start::AGENT_ROOT, session.metadata["agent_root_key"]
+    assert_equal WorkBacklog::Start.agent_root, session.metadata["agent_root_key"]
     assert_equal WorkBacklog::Start::GOAL, session.goal
     assert_equal WorkBacklog::Start::SPAWNED_BY, session.custom_metadata["spawned_by"]
     assert_equal item.id, session.custom_metadata["work_backlog_item_id"]

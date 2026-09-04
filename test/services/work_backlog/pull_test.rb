@@ -12,7 +12,7 @@ class WorkBacklog::PullTest < ActiveSupport::TestCase
     @groomer.update_columns(precedence: 100, scheduling_class: "spot", genesis: "schedule")
   end
 
-  test "starts the top N as spot zimmer-router sessions, records them, and carries the rank forward" do
+  test "starts the top N as spot zimmer-orchestrator sessions, records them, and carries the rank forward" do
     first = backlog_item(key: "zimmer#1", cost: "small", precedence: 6000)
     second = backlog_item(key: "zimmer#2", cost: "small", precedence: 5990)
     third = backlog_item(key: "zimmer#3", cost: "medium", precedence: 3000)
@@ -23,7 +23,7 @@ class WorkBacklog::PullTest < ActiveSupport::TestCase
     assert_empty result.removed
 
     session = result.started.first.session
-    assert_equal "zimmer-router", session.metadata["agent_root_key"]
+    assert_equal "zimmer-orchestrator", session.metadata["agent_root_key"]
     assert_equal WorkBacklog::Start::GOAL, session.goal
     assert_equal "spot", session.scheduling_class
     assert_equal @groomer.id, session.parent_session_id

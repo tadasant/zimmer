@@ -5191,8 +5191,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session = Session.last
-    assert_equal Session::ROUTER_AGENT_ROOT, session.metadata["agent_root_key"]
-    assert_equal AgentRootsConfig.find!(Session::ROUTER_AGENT_ROOT).url, session.git_root
+    assert_equal AgentRootsConfig.router_root_name, session.metadata["agent_root_key"]
+    assert_equal AgentRootsConfig.find!(AgentRootsConfig.router_root_name).url, session.git_root
     assert_redirected_to session_path(session)
   end
 
@@ -5217,7 +5217,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "quick_prompt handles missing router agent root gracefully" do
     AgentRootsConfig.stubs(:find!).raises(
-      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'zimmer-router' not found")
+      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'zimmer-orchestrator' not found")
     )
 
     post quick_prompt_sessions_url, params: { prompt: "Test prompt" }
@@ -5293,7 +5293,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "chat_bubble handles missing router agent root gracefully" do
     AgentRootsConfig.stubs(:find!).raises(
-      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'zimmer-router' not found")
+      AgentRootsConfig::AgentRootNotFoundError.new("Agent root 'zimmer-orchestrator' not found")
     )
 
     post chat_bubble_sessions_url,
@@ -6156,11 +6156,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # Both Quick Router entry points resolve the router root and enqueue a job.
   # Stub the pair so a test can assert on the created row alone.
   def stub_router_agent_root
-    AgentRootsConfig.stubs(:find!).with(Session::ROUTER_AGENT_ROOT).returns(
+    AgentRootsConfig.stubs(:find!).with(AgentRootsConfig.router_root_name).returns(
       OpenStruct.new(
         url: "https://github.com/test/repo.git",
         default_branch: "main",
-        subdirectory: "agent-roots/zimmer-router",
+        subdirectory: "agent-roots/zimmer-orchestrator",
         default_mcp_servers: []
       )
     )

@@ -171,6 +171,20 @@ module Mcp
       end
     end
 
+    # Permit when the connection allows ANY of `names`. For a root the app
+    # resolves rather than the caller names, and whose resolution has aliases:
+    # `allowed_agent_roots` is baked into a session's .mcp.json at spawn time, so
+    # a session started before the zimmer-router → zimmer-orchestrator rename is
+    # still carrying the old name on disk. Both names denote the same root, so
+    # granting one grants the other.
+    def enforce_any_allowed_root!(names)
+      return unless context.restricted?
+      return if (Array(names) & context.allowed_agent_roots).any?
+
+      raise ToolError, "This MCP connection is restricted — agent root \"#{names.first}\" is not permitted. " \
+                       "Allowed agent roots: #{context.allowed_agent_roots.join(', ')}"
+    end
+
     def session_url(session)
       context.session_url(session)
     end
