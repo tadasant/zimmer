@@ -1,5 +1,6 @@
 require "application_system_test_case"
 require "support/fake_parameter_store"
+require "mocha/minitest"
 
 # Horizontal overflow is the failure mode phone users actually report: a control
 # runs past the right edge and is either unreachable or forces the whole page to
@@ -863,6 +864,46 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_selector "h1"
 
     assert_no_horizontal_overflow("connectors")
+  end
+
+  # The store banner in its widest state: a configured Parameter Store, whose
+  # namespace-rename line carries two full `/zimmer/{env}/…/static/` paths and a
+  # comma-joined list of the variables still at the old one. Those are exactly the
+  # unbreakable tokens signature 4 warns about, and none of them exists in the
+  # unconfigured banner the test above measures — so without this the line could
+  # run off a phone with the suite green.
+  test "the secret store banner does not overflow on a phone mid-migration" do
+    fake = FakeParameterStore.new
+    fake.held_permissions = [
+      ParameterStore::Capabilities::RENDER_PARAMETER,
+      ParameterStore::Capabilities::READ_SECRET_VALUE
+    ]
+    fake.seed_secret("MOVED_ALREADY", "1")
+    %w[STRAD_API_KEY GH_TOKEN OPENROUTER_API_KEY].each do |variable|
+      fake.seed_secret(variable, "value",
+        path: ParameterStore::Namespace.legacy_parameter_path(variable))
+    end
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([ fake.provider ]))
+
+    # The whole page, not the frame endpoint: the banner sits inside the page's
+    # own padding, and that is the width the line actually has to fit.
+    visit connectors_path
+    assert_selector "[data-store-legacy-namespace=remaining]"
+    assert_text "STRAD_API_KEY"
+
+    assert_no_horizontal_overflow("connectors store banner, mid-migration")
+
+    page.save_screenshot("tmp/screenshots/connectors-secret-store-375.png")
+
+    # 320px is checked on the banner's own frame rather than on the whole page,
+    # because /connectors already clips the Secrets Console link 36px past its
+    # container at that width with no store configured at all — a pre-existing
+    # bug in connectors/_connector.html.erb, filed separately. Measuring the whole
+    # page here would make this test fail for someone else's overflow.
+    page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
+    visit secret_store_connectors_path
+    assert_selector "[data-store-legacy-namespace=remaining]"
+    assert_no_horizontal_overflow("connectors store banner frame, mid-migration")
   end
 
   test "notifications does not overflow horizontally on a phone" do

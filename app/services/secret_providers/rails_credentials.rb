@@ -18,7 +18,8 @@ module SecretProviders
     def label = LABEL
     def badge = BADGE
 
-    def badge_title
+    # `variable` is accepted and ignored — see SecretProviders::Env#badge_title.
+    def badge_title(_variable = nil)
       "Resolved from mcp_secrets in #{SecretsLocation.credentials_path}"
     end
 

@@ -144,11 +144,16 @@ class ParameterStoreEnvDeliveryTest < ActiveSupport::TestCase
   # and secrets-parameter-store.md quotes the ON line VERBATIM. Assert the whole line,
   # not its prefix: renaming the project or the namespace in the echo would otherwise
   # stale the docs with the test still green.
+  #
+  # BOTH namespaces are named, because the resolver reads both until the rename's
+  # data migration has run — and a deploy that reported only the canonical one
+  # would describe a store it is not the whole of. When the pre-rename read path
+  # is dropped, `read_namespaces` returns one entry and this line shortens with it.
   test "the staging deploy reports whether the store turned on" do
     run = kamal_deploy_step["run"].to_s
-    on = "✅ Parameter Store ON (resolver key set; reads " \
-      "#{ParameterStore::Namespace.static_namespace('staging')} in " \
-      "#{staging_env_clear[PROJECT_ID]})"
+    canonical, legacy = ParameterStore::Namespace.read_namespaces("staging")
+    on = "✅ Parameter Store ON (resolver key set; reads #{canonical} and, until the " \
+      "migration finishes, #{legacy} in #{staging_env_clear[PROJECT_ID]})"
 
     assert_includes run, on,
       "#{DEPLOY_WORKFLOW}'s Kamal deploy step must print this line verbatim -- " \

@@ -17,7 +17,7 @@ and nothing raises. Wiring the store up is an upgrade, not a prerequisite.
 | Order | Source | Where it lives |
 | --- | --- | --- |
 | 0 | `XOauthTokenVendor` | X access tokens only; ahead of everything because they rotate at runtime |
-| 1 | **Google Parameter Store** | `zimmer-secrets-prod`, namespace `/zimmer/{env}/mcp/static/` |
+| 1 | **Google Parameter Store** | `zimmer-secrets-prod`, namespace `/zimmer/{env}/secrets/static/` (and, until the migration finishes, `/zimmer/{env}/mcp/static/`) |
 | 2 | Rails encrypted credentials | `mcp_secrets:` in `config/credentials/{env}.yml.enc` |
 | 3 | Process `ENV` | the container's environment |
 
@@ -43,8 +43,9 @@ they call for different actions.
 ## Not only MCP secrets: `GH_TOKEN`
 
 The chain exists for the `${VAR}` placeholders in MCP server configs, and that is still almost
-everything it serves. There is one exception, and it is worth knowing about because it is the
-template for any future one.
+everything it serves. There are two exceptions today, and they are the reason the
+namespace is called `secrets` rather than `mcp` — see [The namespace
+rename](#the-namespace-rename-from-mcp-to-secrets).
 
 **`GH_TOKEN`** — the token the `gh` CLI authenticates with — is read from this same chain by
 `GhTokenProvisioner`, which publishes it into the container's **process environment** at boot and
@@ -64,6 +65,147 @@ Two consequences follow from that, both deliberate:
   the chain's last link, so a `GH_TOKEN` removed from the store falls through to the copy already in
   the environment until the process restarts. A new version at the same path — the actual rotation
   path — propagates within the snapshot TTL.
+
+## The namespace rename: from `mcp` to `secrets`
+
+Zimmer's secrets live at:
+
+```
+/zimmer/{env}/secrets/static/{VARIABLE_NAME}
+```
+
+Two segments doing two different jobs:
+
+- **`secrets`** is the *scope* — whose secrets these are. It used to say `mcp`,
+  which was accurate when the chain served nothing but `${VAR}` placeholders in
+  MCP server configs. `GH_TOKEN` and `OPENROUTER_API_KEY` are not MCP secrets,
+  and they were never going to be the last of their kind, so the segment now says
+  what the namespace holds.
+- **`static`** is the *kind*, and it is unchanged. It has been there from day one
+  so that a future kind (`oauth`, say) is a new prefix rather than a migration of
+  every existing path — the property this rename was careful to keep.
+
+The trade is four characters of id budget. `Namespace.parameter_id` folds a path
+into a GCP resource id capped at 63 characters, and the canonical prefix
+`zimmer-production-secrets-static-` is four longer than the old one, so a
+variable name has 30 characters before the fold starts truncating and appending
+an 8-character hash of the full path. Every name Zimmer holds today is well
+inside that, and the overflow path is deterministic and tested rather than
+lossy.
+
+### Why the rename is a data migration and not a string change
+
+The fold from a path to an id is **lossy and one-way**, and the id is embedded in
+the `__REF__` the envelope carries. A renamed path lands on a different id:
+
+```
+/zimmer/production/mcp/static/STRAD_API_KEY     → zimmer-production-mcp-static-strad-api-key
+/zimmer/production/secrets/static/STRAD_API_KEY → zimmer-production-secrets-static-strad-api-key
+```
+
+There is no GCP verb that renames a parameter, so moving a secret is **create the
+new pair, verify it resolves, delete the old pair** — never an edit in place.
+
+### The resolver reads both namespaces
+
+The code deploy and the data move are separate events, and nobody controls the
+order. The chain's contract is that [a miss is not an
+error](#the-chain-and-its-order): it falls through to the encrypted credentials
+and then to `ENV`. So a resolver reading only the new namespace before the data
+moved would not raise — every store-only secret would quietly read as **Missing
+configuration**, with the Connectors page the only place it showed, and sessions
+would spawn with unresolved `${VAR}`s.
+
+`Namespace.read_namespaces` therefore returns both, canonical first:
+
+| Order | Namespace | Written? |
+| --- | --- | --- |
+| 1 | `/zimmer/{env}/secrets/static/` | yes — everything writes here |
+| 2 | `/zimmer/{env}/mcp/static/` | no — read only, until the migration finishes |
+
+Canonical-first is the same precedence argument the chain itself makes: a value
+written to the new path takes effect the moment it lands, rather than waiting for
+someone to delete the old copy.
+
+**This costs nothing.** `GcpClient#resolve_all` reads both in one pass, because
+the read cost is per *project* — one `parameters.list` plus a `:render` per
+managed parameter — and the namespace is a fence applied to the rendered envelope
+afterwards. Two namespaces are the same API traffic as one, and a test pins that.
+
+### Telling a half-done migration from a finished one
+
+Because nothing raises either way, the state has to be *reported*. Two surfaces:
+
+- **The Connectors page store banner** names the variables still sitting in the
+  pre-rename namespace, or says that nothing does and the old read path can be
+  dropped. It reads them off the snapshot the provider already holds, so it costs
+  no extra call.
+- **Each variable's `GSM` badge** carries the namespace that actually answered for
+  *that* variable, in its tooltip.
+
+### Running the migration
+
+`ParameterStore::NamespaceMigration` does the four steps per variable — read the
+old path, write the new one, verify the new one resolves *through the ordinary
+resolution chain fenced to the canonical namespace*, then delete the old pair. It
+holds no cursor: every step is decided from what the store holds right now, so a
+run that dies halfway is finished correctly by the next one, and a run over a
+completed migration does nothing and says so.
+
+It refuses one thing: if both paths hold a variable with **different** values, it
+does not choose. The canonical value is the live one, so copying the old copy over
+it would silently roll back whatever rotation set it. That variable is reported as
+a conflict and left alone.
+
+```bash
+# Plan it. Reads both namespaces, prints what it would do, writes nothing.
+ZIMMER_PARAMS_PROJECT_ID=zimmer-secrets-prod \
+ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON="$(cat resolver-key.json)" \
+ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON="$(cat writer-key.json)" \
+PARAMS_ENV=production \
+  bin/rails parameter_store:migrate_namespace
+
+# Do it. Same invocation, plus CONFIRM naming the environment.
+CONFIRM=production ... bin/rails parameter_store:migrate_namespace!
+```
+
+`PARAMS_ENV` names the namespace's environment, which is **not** this process's
+`RAILS_ENV`: migrating production's namespace from somewhere that is not
+production is the normal case. `PRUNE=false` stops after the copy, leaving both
+copies in place — the safe, fully reversible half-step.
+
+The task refuses to start unless the writer credential's permissions probe says it
+can do what the run needs, so a credential that can create but not delete fails
+before anything is written rather than halfway through.
+
+### Why this one ships as a rake task
+
+Zimmer's rule is that [ops actions ship with the
+deploy](/operate/deploying/#ops-actions-ship-with-the-deploy), and the default
+answer to "someone then runs `rake …`" is a post-deploy task. This is the
+exception, for the reason the design exists: **Zimmer's resolver credential holds
+no write permission**, deliberately and checkably, and it is the one credential
+baked into the image. Shipping the migration as a job would mean deploying a
+`parametermanager.admin` + `secretmanager.admin` key into that image to run once —
+permanently widening the blast radius of the baked credential to save a human one
+command.
+
+So it runs from wherever the writer credential already is. It touches no Zimmer
+database and no running process — only Google — so it does not need a shell on the
+production box, and should not have one.
+
+### The order a human has to do this in
+
+1. **Widen strad's Secrets Console** to accept the new namespace (below), *before*
+   anything writes there. Under `namespacesStrict: true` a path outside the listed
+   namespaces is refused outright.
+2. **Deploy this change.** The resolver now reads both namespaces, so this is safe
+   with the data untouched: every secret keeps resolving from where it already is.
+3. **Run the migration**, staging first, dry run first.
+4. **Confirm on the Connectors page** that the banner says nothing remains in the
+   pre-rename namespace.
+5. **Drop the pre-rename read path** in a follow-up PR — a change to
+   `Namespace.read_namespaces` and the tests that pin it, and nothing else.
 
 ## Why a separate GCP project
 
@@ -100,7 +242,7 @@ Two resources per secret, joined by GCP itself:
 ```mermaid
 flowchart LR
   C["Zimmer resolver"] -->|"GET .../versions/v1:render"| A
-  A["Parameter Manager parameter<br/>zimmer-production-mcp-static-strad-api-key<br/>payload = envelope holding __REF__"]
+  A["Parameter Manager parameter<br/>zimmer-production-secrets-static-strad-api-key<br/>payload = envelope holding __REF__"]
   A -->|"GCP dereferences the ref server-side"| B["Secret Manager secret<br/>same id, holds the bytes"]
   B -->|"rendered envelope, real value"| C
 ```
@@ -109,9 +251,9 @@ The Parameter Manager payload is an **envelope**:
 
 ```json
 {
-  "path": "/zimmer/production/mcp/static/STRAD_API_KEY",
+  "path": "/zimmer/production/secrets/static/STRAD_API_KEY",
   "secret": true,
-  "value": "__REF__(\"//secretmanager.googleapis.com/projects/zimmer-secrets-prod/secrets/zimmer-production-mcp-static-strad-api-key/versions/latest\")"
+  "value": "__REF__(\"//secretmanager.googleapis.com/projects/zimmer-secrets-prod/secrets/zimmer-production-secrets-static-strad-api-key/versions/latest\")"
 }
 ```
 
@@ -390,7 +532,7 @@ It is **not** production's. Pointing a throwaway box that agent sessions have ro
 on at `zimmer-secrets-prod` would hand them a credential that reads production
 secret *values*. The two projects also mean two namespaces:
 `Namespace.static_namespace` folds in `Rails.env`, so staging reads
-`/zimmer/staging/mcp/static/` and cannot see production's.
+`/zimmer/staging/secrets/static/` and cannot see production's.
 
 The wiring is four links. Three are files in **this** repo; the fourth is a
 repository setting a human adds:
@@ -441,7 +583,7 @@ against a configured store is a hard failure, by design.
 The deploy prints which state it is in:
 
 ```
-✅ Parameter Store ON (resolver key set; reads /zimmer/staging/mcp/static/ in zimmer-secrets-staging)
+✅ Parameter Store ON (resolver key set; reads /zimmer/staging/secrets/static/ and, until the migration finishes, /zimmer/staging/mcp/static/ in zimmer-secrets-staging)
 ```
 
 ### If any CI or deploy step handles this key
@@ -504,7 +646,7 @@ runs, for `STRAD_API_KEY` in production:
 
 ```bash
 PROJECT=zimmer-secrets-prod
-ID=zimmer-production-mcp-static-strad-api-key
+ID=zimmer-production-secrets-static-strad-api-key
 
 # 1. The value itself, in Secret Manager.
 printf %s '<the-secret-value>' | gcloud secrets create "$ID" \
@@ -525,7 +667,7 @@ gcloud secrets add-iam-policy-binding "$ID" --project "$PROJECT" \
 
 # 4. The envelope version pointing one at the other.
 cat > /tmp/$ID.json <<'JSON'
-{"path":"/zimmer/production/mcp/static/STRAD_API_KEY","secret":true,"value":"__REF__(\"//secretmanager.googleapis.com/projects/zimmer-secrets-prod/secrets/zimmer-production-mcp-static-strad-api-key/versions/latest\")"}
+{"path":"/zimmer/production/secrets/static/STRAD_API_KEY","secret":true,"value":"__REF__(\"//secretmanager.googleapis.com/projects/zimmer-secrets-prod/secrets/zimmer-production-secrets-static-strad-api-key/versions/latest\")"}
 JSON
 gcloud parametermanager parameters versions create v1 \
   --parameter "$ID" --project "$PROJECT" --location global \
@@ -794,6 +936,24 @@ staging cutover workflow needs its own `env:` passthrough and its own copy of th
 secret; until it has them, deploys down **that** path stay degraded even after this
 repo's are not.
 
+**The Secrets Console's namespace allowlist** is the other one, and the namespace
+rename gates on it. `strad/infra/strad.prod.yaml` in `tadasant-internal` pins each
+store entry's `namespaces:` with `namespacesStrict: true`, and Zimmer's two entries
+list only `/zimmer/production/mcp/` and `/zimmer/staging/mcp/`. Under strict, a path
+outside those is refused — so until both entries list the new prefix **as well as**
+the old one, the console cannot write a single new-namespace path:
+
+```yaml
+# zimmer-secrets-prod
+namespaces: ["/zimmer/production/secrets/", "/zimmer/production/mcp/"]
+# zimmer-secrets-staging
+namespaces: ["/zimmer/staging/secrets/", "/zimmer/staging/mcp/"]
+```
+
+Both, not either: during the transition the console has to reach the old paths to
+read and remove them, and the new ones to write them. That file belongs to the
+`strad-production` root, not this one.
+
 The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 
 1. **The GitHub Actions secret, and the deploy workflow edit** —
@@ -821,7 +981,7 @@ The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 | `400 SECRET_REFERENCE_ERROR` on `:render` | The parameter's own principal lacks `secretmanager.secretAccessor` on the secret — step 3 of the seeding flow was skipped. The store banner will still be green; it probes the resolver, not the parameter. |
 | `403` on `:render`, lists succeed | The resolver holds `parameterViewer` but not `parameterAccessor`. The banner reports this as **cannot read secret values**, naming `parameterVersions.render` — holding `secretmanager.versions.access` without it resolves nothing. |
 | Banner says "could not confirm what this credential may do" | `cloudresourcemanager.googleapis.com` is not enabled on the project. |
-| Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters lack the `managed-by=zimmer` label, or their envelope `path` falls outside `/zimmer/{env}/mcp/static/`. |
+| Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters lack the `managed-by=zimmer` label, or their envelope `path` falls outside the namespaces the resolver reads (`/zimmer/{env}/secrets/static/`, plus `/zimmer/{env}/mcp/static/` until the migration finishes). |
 
 ## Testing without GCP
 

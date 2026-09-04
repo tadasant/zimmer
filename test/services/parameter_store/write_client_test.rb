@@ -155,5 +155,43 @@ module ParameterStore
       assert_match(/secrets/, error.message)
       assert_no_match(/sk-or-v1-supersecret/, error.message)
     end
+
+
+    # --- the pre-rename delete, used by NamespaceMigration ---------------------
+
+    test "delete(path:) removes the pair at that path and leaves the canonical one" do
+      legacy = Namespace.legacy_parameter_path("STRAD_API_KEY")
+      legacy_id = Namespace.parameter_id(legacy)
+      @fake.seed_secret("STRAD_API_KEY", "old", path: legacy)
+      @fake.seed_secret("STRAD_API_KEY", "new")
+      canonical_id = Namespace.parameter_id(Namespace.parameter_path("STRAD_API_KEY"))
+
+      assert_equal legacy_id, @writer.delete("STRAD_API_KEY", path: legacy)
+
+      assert_not @fake.parameters.key?(legacy_id)
+      assert_not @fake.secrets.key?(legacy_id)
+      assert @fake.parameters.key?(canonical_id), "the canonical pair must be untouched"
+      assert @fake.secrets.key?(canonical_id)
+    end
+
+    test "delete refuses a path that does not name the variable it was given" do
+      # `path:` alone decides the id, so without this the variable is decorative
+      # and delete("A", path: path_of("B")) would remove B. The managed-by label
+      # fence cannot catch it — every Zimmer pair carries the same label.
+      other = Namespace.legacy_parameter_path("SOMETHING_ELSE")
+      @fake.seed_secret("SOMETHING_ELSE", "x", path: other)
+      other_id = Namespace.parameter_id(other)
+
+      assert_raises(ArgumentError) { @writer.delete("STRAD_API_KEY", path: other) }
+      assert @fake.parameters.key?(other_id), "nothing may be removed on a mismatch"
+    end
+
+    test "delete(path:) still refuses a resource Zimmer does not manage" do
+      legacy = Namespace.legacy_parameter_path("STRAD_API_KEY")
+      @fake.seed_unmanaged(Namespace.parameter_id(legacy), { "path" => legacy, "value" => "x" })
+
+      error = assert_raises(StoreError) { @writer.delete("STRAD_API_KEY", path: legacy) }
+      assert_match "managed-by", error.message
+    end
   end
 end

@@ -18,7 +18,10 @@ module SecretProviders
     def name = "env"
     def label = LABEL
     def badge = BADGE
-    def badge_title = "Resolved from the process environment"
+    # `variable` is accepted and ignored: every provider takes it so a caller can
+    # name the one it is asking about, and only the Parameter Store link — which
+    # reads more than one namespace — has a different answer per variable.
+    def badge_title(_variable = nil) = "Resolved from the process environment"
 
     def get(variable)
       value = @env[variable]

@@ -192,4 +192,124 @@ class SecretProvidersTest < ActiveSupport::TestCase
     assert_operator @fake.requests.size - reads, :<=, 4,
       "repeated lookups of an absent name must not become a store round trip each"
   end
+
+  # --- the namespace rename, mid-flight --------------------------------------
+  #
+  # The scope segment of the store's namespace was renamed, and because the
+  # path-to-id fold is lossy the data has to be copied rather than renamed. The
+  # code deploy and the data move are separate events in an order nobody
+  # controls, so both directions have to work: a secret only at the old path, and
+  # a secret only at the new one. Neither may read as "not set" — that is a silent
+  # deployment-wide degradation whose only outward sign is the Connectors page.
+
+  def legacy_path(variable) = ParameterStore::Namespace.legacy_parameter_path(variable)
+
+  test "a secret still only at the pre-rename path resolves" do
+    @fake.seed_secret("NOT_YET_MOVED", "old-value", path: legacy_path("NOT_YET_MOVED"))
+
+    assert_equal "old-value", @fake.provider.get("NOT_YET_MOVED")
+    assert_equal ParameterStore::Namespace.legacy_static_namespace,
+      @fake.provider.namespace_for("NOT_YET_MOVED")
+  end
+
+  test "a secret only at the canonical path resolves" do
+    @fake.seed_secret("ALREADY_MOVED", "new-value")
+
+    assert_equal "new-value", @fake.provider.get("ALREADY_MOVED")
+    assert_equal ParameterStore::Namespace.static_namespace,
+      @fake.provider.namespace_for("ALREADY_MOVED")
+  end
+
+  test "the canonical path wins while both copies exist, so a move takes effect on write" do
+    # Precedence the other way round would make writing the new path a change
+    # with no visible effect until someone also deleted the old one.
+    @fake.seed_secret("HALF_MOVED", "stale", path: legacy_path("HALF_MOVED"))
+    @fake.seed_secret("HALF_MOVED", "fresh")
+
+    assert_equal "fresh", @fake.provider.get("HALF_MOVED")
+    assert_equal ParameterStore::Namespace.static_namespace,
+      @fake.provider.namespace_for("HALF_MOVED")
+  end
+
+  test "reading both namespaces costs what reading one did" do
+    @fake.seed_secret("A", "1")
+    @fake.seed_secret("B", "2", path: legacy_path("B"))
+    one = FakeParameterStore.new
+    one.seed_secret("A", "1")
+    one.seed_secret("B", "2")
+
+    @fake.provider.get("A")
+    one.provider(namespaces: [ ParameterStore::Namespace.static_namespace ]).get("A")
+
+    assert_equal one.requests.size, @fake.requests.size,
+      "the fence is applied to rendered envelopes, so a second namespace is free"
+  end
+
+  test "legacy_variables is the migration's progress readout, and holds no values" do
+    @fake.seed_secret("MOVED", "1")
+    @fake.seed_secret("STAYING", "2", path: legacy_path("STAYING"))
+    @fake.seed_secret("BOTH", "3", path: legacy_path("BOTH"))
+    @fake.seed_secret("BOTH", "3")
+
+    assert_equal %w[BOTH STAYING], @fake.provider.legacy_variables
+  end
+
+  test "an empty pre-rename namespace is what says the migration is finished" do
+    @fake.seed_secret("MOVED", "1")
+
+    assert_empty @fake.provider.legacy_variables
+  end
+
+  test "the badge title names the namespace that actually answered" do
+    @fake.seed_secret("MOVED", "1")
+    @fake.seed_secret("NOT_YET", "2", path: legacy_path("NOT_YET"))
+    provider = @fake.provider
+
+    assert_match ParameterStore::Namespace.static_namespace, provider.badge_title("MOVED")
+    assert_match ParameterStore::Namespace.legacy_static_namespace, provider.badge_title("NOT_YET")
+    # No variable, or one nothing holds: the canonical namespace, which is where
+    # a value would go.
+    assert_match ParameterStore::Namespace.static_namespace, provider.badge_title
+    assert_match ParameterStore::Namespace.static_namespace, provider.badge_title("ABSENT")
+  end
+
+  test "naming the variable in a badge title cannot take a page down" do
+    # Asking which namespace answered is a SECOND lookup, and the chain is
+    # process-wide: an invalidate from elsewhere can empty the snapshot between
+    # the resolution that succeeded and the title, leaving a cold read against a
+    # store that has gone away — and a cold failure raises rather than serving
+    # stale. Without the fallback the connector frame 500s instead of rendering.
+    @fake.seed_secret("STRAD_API_KEY", "1")
+    provider = @fake.provider
+    resolution = SecretsInterpolator::Resolution.new(state: :found, source: provider)
+    assert_match ParameterStore::Namespace.static_namespace,
+      resolution.source_badge_title("STRAD_API_KEY")
+
+    provider.invalidate
+    @fake.fail_with!(503)
+
+    title = nil
+    assert_nothing_raised { title = resolution.source_badge_title("STRAD_API_KEY") }
+    assert_match ParameterStore::Namespace.static_namespace, title
+  end
+
+  test "the store is still told to put a NEW secret at the canonical path" do
+    assert_equal ParameterStore::Namespace.parameter_path("BRAND_NEW"),
+      @fake.provider.path_for("BRAND_NEW")
+  end
+
+  test "a provider with no namespace at all is refused rather than reading everything" do
+    assert_raises(ArgumentError) { @fake.provider(namespaces: []) }
+  end
+
+  test "invalidate drops the snapshot covering both namespaces" do
+    @fake.seed_secret("NOT_YET", "old", path: legacy_path("NOT_YET"))
+    provider = @fake.provider
+    assert_equal "old", provider.get("NOT_YET")
+
+    @fake.secrets[ParameterStore::Namespace.parameter_id(legacy_path("NOT_YET"))] << "rotated"
+    provider.invalidate
+
+    assert_equal "rotated", provider.get("NOT_YET")
+  end
 end

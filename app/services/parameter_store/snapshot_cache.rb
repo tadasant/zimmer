@@ -7,6 +7,11 @@ module ParameterStore
   # at: resolving a namespace is one list plus a render per parameter, so caching
   # per name would turn a page of ten `${VAR}`s into ten full listings.
   #
+  # The cache key is whatever the loader takes and the value is whatever it
+  # returns — for the Parameter Store link that is the list of namespaces it
+  # reads, mapped to one `{VARIABLE => value}` map per namespace, since the
+  # resolver reads the canonical namespace and the pre-rename one together.
+  #
   # Four behaviours, each load-bearing:
   #
   #   * **Single flight** — concurrent readers share one refresh. Zimmer resolves
@@ -34,7 +39,7 @@ module ParameterStore
     end
 
     # Values for `key`, refreshing when stale.
-    # @return [Hash{String => String}]
+    # @return [Hash] whatever the loader returns; `{}` when nothing is held.
     def get(key)
       refresh(key) if stale?(key)
       entry(key)&.values || {}
@@ -136,7 +141,8 @@ module ParameterStore
       # messages (a JSON parse error, say) can embed a window of the body, and on
       # this path the body is a rendered secret.
       summary = error.is_a?(StoreError) ? "#{error.class}: #{error.message}" : error.class.to_s
-      Rails.logger.warn "[ParameterStore] refresh of #{key} failed; serving last known good values (#{summary})"
+      Rails.logger.warn "[ParameterStore] refresh of #{Array(key).join(', ')} failed; " \
+                        "serving last known good values (#{summary})"
     end
   end
 end
