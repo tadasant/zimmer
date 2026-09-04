@@ -390,13 +390,34 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     end
 
     assert captured_kwargs, "expected enqueue_with_prompt to be invoked"
-    # symbolize_attachments converts string-keyed jsonb hashes to symbol-keyed hashes.
+    # Sessions::AttachmentDescriptors converts string-keyed jsonb hashes to symbol-keyed ones.
     assert_equal 1, captured_kwargs[:images].size
     assert_equal :path, captured_kwargs[:images].first.keys.first
     assert_equal "image/png", captured_kwargs[:images].first[:media_type]
     assert_equal 1, captured_kwargs[:files].size
     assert_equal "notes.md", captured_kwargs[:files].first[:original_filename]
     refute EnqueuedMessage.exists?(message.id)
+  end
+
+  # `path` is the only field either consumer can act on — the adapter
+  # base64-encodes it, the file note tells the agent to read it — so an entry
+  # without one is dropped rather than handed on as a nil path. No producer of
+  # these columns writes one today; this pins it so a future one cannot.
+  test "process_next_message drops an attachment entry with no path" do
+    @session.enqueued_messages.create!(
+      content: "Look at this",
+      position: 1,
+      images: [ { "media_type" => "image/png" } ],
+      files: [ { "original_filename" => "notes.md", "size" => 11 } ]
+    )
+
+    captured_kwargs = nil
+    AgentSessionJob.stub(:enqueue_with_prompt, ->(*args, **kwargs) { captured_kwargs = kwargs }) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+
+    assert_nil captured_kwargs[:images]
+    assert_nil captured_kwargs[:files]
   end
 
   test "process_next_message passes nil attachments when message has none" do

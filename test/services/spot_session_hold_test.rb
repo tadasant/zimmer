@@ -8,6 +8,9 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   # Not included globally by test_helper — the retry enqueue is the whole point of
   # a deferral, so this test has to be able to see it.
   include ActiveJob::TestHelper
+  # A re-armed resume confirms an attachment's bytes are still on the volume
+  # before it replays the descriptor, so the end-to-end case needs a real one.
+  include AttachmentFixtures
 
   setup do
     # Same isolation as SpotGateServiceTest: the gate reads the serving account's
@@ -18,6 +21,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     @setting = AppSetting.editable
     @setting.update!(spot_gating_enabled: false)
   end
+
+  teardown { cleanup_stored_attachments! }
 
   def build_session(genesis)
     Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis, status: :waiting)
@@ -418,6 +423,82 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
                  "queueing behind a scheduled turn is not another rung on the backoff ladder"
   end
 
+  # The third carrier of one turn's attachments. `queue_behind_scheduled_turn`
+  # writes into a jsonb column that EnqueuedMessageProcessorService reads back
+  # and hands to AgentSessionJob, so it has to be the same round trip as the
+  # hold record — the record and the queue must not disagree about the shape.
+  test "a turn queued behind a deferred one carries its attachments in the record shape" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+
+      session.reload.update!(status: :running)
+      SpotSessionHold.hold_if_needed(
+        session.reload, follow_up_prompt: "Second wake",
+        images: [ { path: "/data/1/second.png", media_type: "image/png" } ],
+        files: [ { path: "/data/1/second.txt", original_filename: "second.txt", size: 4 } ]
+      )
+    end
+
+    queued = session.reload.enqueued_messages.pending.order(:position).last
+    assert_equal [ { "path" => "/data/1/second.png", "media_type" => "image/png" } ], queued.images
+    assert_equal [ { "path" => "/data/1/second.txt", "original_filename" => "second.txt", "size" => 4 } ],
+      queued.files
+  end
+
+  # The record has to survive the LADDER, not just one hold. A re-check that the
+  # gate refuses again arrives back here carrying the turn as job arguments, and
+  # re-records it — otherwise the durable copy would only ever be as good as the
+  # first rung.
+  test "a second hold of the same turn re-records its attachments" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    turn = {
+      follow_up_prompt: "here is the screenshot, fix this",
+      images: [ { path: "/data/1/shot.png", media_type: "image/png" } ]
+    }
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session, **turn)
+      # The re-check fires, the gate refuses again, and the turn comes back
+      # through this door as the deferred job's arguments.
+      session.reload.merge_metadata!(SpotSessionHold::HELD_RETRY_AT => 1.minute.ago.utc.iso8601)
+      assert SpotSessionHold.hold_if_needed(session.reload, **turn)
+    end
+
+    metadata = session.reload.metadata
+    assert_equal 2, metadata[SpotSessionHold::HELD_COUNT]
+    assert_equal [ { "path" => "/data/1/shot.png", "media_type" => "image/png" } ],
+      metadata[SpotSessionHold::HELD_IMAGES]
+  end
+
+  # Normalized at the door, so what rides the JOB is the same shape as what goes
+  # on the record. Two copies of one turn built from different values is how they
+  # come to disagree — and a string-keyed descriptor reads as empty to the
+  # adapters, which index `image[:path]`.
+  test "a deferred resume's job carries the same normalized descriptors as its record" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert_enqueued_with(job: AgentSessionJob) do
+        assert SpotSessionHold.hold_if_needed(
+          session, follow_up_prompt: "look at this",
+          images: [ { "path" => "/data/1/shot.png", "media_type" => "image/png",
+                      "unknown" => "dropped" } ]
+        )
+      end
+    end
+
+    job = enqueued_jobs.find { |j| j["job_class"] == "AgentSessionJob" }
+    args = ActiveJob::Arguments.deserialize(job["arguments"])
+    assert_equal [ { path: "/data/1/shot.png", media_type: "image/png" } ], args.dig(2, :images)
+    assert_equal [ { "path" => "/data/1/shot.png", "media_type" => "image/png" } ],
+      session.reload.metadata[SpotSessionHold::HELD_IMAGES]
+  end
+
   # Production session 8810, 2026-08-31. The spot-hold sweep re-armed a stalled
   # hold with its own recovery nudge, the gate refused that turn too, and the
   # nudge landed here — in the durable queue, stamped `caller`, indistinguishable
@@ -598,6 +679,125 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     end
 
     assert_nil session.reload.metadata[SpotSessionHold::HELD_PROMPT]
+  end
+
+  # The same argument, for what came WITH the prompt. `hold!` is handed the
+  # turn's attachments and puts them on the delayed job, and AgentSessionJob
+  # reads attachments from nowhere else — so the job dying took the screenshot
+  # with it exactly as surely as it took the prompt (#890).
+  test "a deferred resume records its attachments on the session too" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(
+        session,
+        follow_up_prompt: "here is the screenshot, fix this",
+        images: [ { path: "/data/1/shot.png", media_type: "image/png" } ],
+        files: [ { path: "/data/1/notes.txt", original_filename: "notes.txt", size: 7 } ]
+      )
+    end
+
+    metadata = session.reload.metadata
+    # String keys, because that is what comes back out of jsonb — pinned here so
+    # the replay's conversion is tested against the real stored shape.
+    assert_equal [ { "path" => "/data/1/shot.png", "media_type" => "image/png" } ],
+      metadata[SpotSessionHold::HELD_IMAGES]
+    assert_equal [ { "path" => "/data/1/notes.txt", "original_filename" => "notes.txt", "size" => 7 } ],
+      metadata[SpotSessionHold::HELD_FILES]
+
+    SpotSessionHold.clear(session)
+    metadata = session.reload.metadata
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+    assert_nil metadata[SpotSessionHold::HELD_FILES]
+  end
+
+  test "a deferred resume with no attachments records none" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session, follow_up_prompt: "please continue")
+    end
+
+    metadata = session.reload.metadata
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+    assert_nil metadata[SpotSessionHold::HELD_FILES]
+  end
+
+  # The three HELD_TURN_KEYS are ONE turn. A hold that carries no attachment has
+  # to drop an earlier hold's rather than leave it beside a prompt it never
+  # belonged to — replaying the wrong attachment is worse than replaying none.
+  test "a later hold does not inherit an earlier turn's attachments" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    session.merge_metadata!(
+      SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/old.png", "media_type" => "image/png" } ],
+      SpotSessionHold::HELD_FILES => [ { "path" => "/data/1/old.txt", "original_filename" => "old.txt" } ]
+    )
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session, follow_up_prompt: "a different turn")
+    end
+
+    metadata = session.reload.metadata
+    assert_equal "a different turn", metadata[SpotSessionHold::HELD_PROMPT]
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+    assert_nil metadata[SpotSessionHold::HELD_FILES]
+  end
+
+  test "a hold at the starting line drops any recorded turn" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.merge_metadata!(
+      SpotSessionHold::HELD_PROMPT => "an earlier resume",
+      SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/old.png", "media_type" => "image/png" } ]
+    )
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session)
+    end
+
+    metadata = session.reload.metadata
+    assert_nil metadata[SpotSessionHold::HELD_PROMPT]
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+  end
+
+  # The whole defect, end to end and through the real doors: a resume carrying an
+  # attachment is held, the delayed job that was its only carrier is lost, and
+  # the sweep re-arms it. Before #890 the re-armed turn arrived with the prompt
+  # and without the screenshot, and nothing anywhere said so.
+  test "a held resume whose job is lost is re-armed with the attachments it came with" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    image = store_image_for(session)
+    file = store_file_for(session, filename: "notes.txt", content: "read me")
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(
+        session,
+        follow_up_prompt: "here is the screenshot, fix this",
+        images: [ { path: image[:path], media_type: "image/png" } ],
+        files: [ { path: file[:path], original_filename: "notes.txt", size: 7 } ]
+      )
+    end
+
+    # The worker died between the hold record committing and the enqueue: the
+    # record is on the row, the job is gone, and the re-check time has passed.
+    clear_enqueued_jobs
+    GoodJob::Job.delete_all
+    session.merge_metadata!(SpotSessionHold::HELD_RETRY_AT => 11.hours.ago.utc.iso8601)
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    rearmed = enqueued_jobs.select { |job| job["job_class"] == "AgentSessionJob" }
+    assert_equal 1, rearmed.length
+    args = ActiveJob::Arguments.deserialize(rearmed.first["arguments"])
+    assert_equal [ session.id, "here is the screenshot, fix this" ], args.first(2)
+    assert_equal [ { path: image[:path], media_type: "image/png" } ], args.dig(2, :images)
+    assert_equal [ { path: file[:path], original_filename: "notes.txt", size: 7 } ],
+      args.dig(2, :files)
+    assert_match(/carried with it, carrying 1 image and 1 file\./,
+      session.logs.order(:id).last.content)
   end
 
   def held_decision
