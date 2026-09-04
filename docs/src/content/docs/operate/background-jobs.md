@@ -520,10 +520,10 @@ Only the output of *posting* commands is scanned. An agent that merely reads a c
 as a post would suppress a human comment the agent just looked at.
 
 And only as much of that output as the post accounts for. A tool result is one blob for the whole
-call, so when a posting command shares its call with anything else that reached GitHub — the natural
-`gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments` — only the permalinks printed alone
-on a line are read as the post's, which is what `gh pr comment` prints and what the listing's JSON
-never is ([#901](https://github.com/tadasant/zimmer/issues/901)).
+call, so unless the post was the whole command — the natural
+`gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments` is not — only the permalinks printed
+alone on a line are read as the post's, which is what `gh pr comment` prints and what the listing's
+JSON never is ([#901](https://github.com/tadasant/zimmer/issues/901)).
 
 The hook runs when the posting session's transcript is next polled — a second or two, not
 instantly. `ATTRIBUTION_GRACE_SECONDS` covers that window: a comment younger than 60 seconds is
