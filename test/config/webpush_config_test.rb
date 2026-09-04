@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "ostruct" # OpenStruct stands in for Rails.application.credentials below; nothing requires ostruct for you, so this file must
 
 class WebpushConfigTest < ActiveSupport::TestCase
   test "WebpushConfig module exists" do
