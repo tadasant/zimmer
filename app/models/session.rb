@@ -1484,19 +1484,31 @@ class Session < ApplicationRecord
   # one — a collision anywhere else must surface on the first attempt.
   SLUG_UNIQUE_INDEX = "index_sessions_on_slug"
 
-  # The prompt as the human wrote it, for naming the session.
+  # The narrowest text this session's prompt was composed around — what to name
+  # and summarize the session by.
   #
-  # `prompt` is what the runtime receives, and that is not always what a person
-  # typed. The chat bubble prepends a `<context-about-user's-current-view>`
-  # block — a URL and a dump of the page — and stores the untouched text in
-  # `metadata["original_prompt"]`. Titling off `prompt` there names every
-  # chat-bubble session after that block, and the slug derived from the title
-  # inherits it. Every other entry point composes nothing, so `prompt` is the
-  # human's own words and stays the fallback.
+  # `prompt` is what the runtime receives, and that is not always the ask. The
+  # chat bubble prepends a `<context-about-user's-current-view>` block — a URL
+  # and up to 50,000 characters of page dump — and stores the untouched text in
+  # `metadata["original_prompt"]`. Naming off `prompt` there titles every
+  # chat-bubble session after the block, and the slug derived from the title
+  # inherits it.
+  #
+  # Plenty of other entry points compose a prompt too (a trigger renders a
+  # template, the backlog prepends an issue URL), but none of them keeps an
+  # unwrapped copy beside it, so `prompt` is the narrowest text there is and
+  # stays the fallback.
+  #
+  # Reads both key types: the column is JSON, so a record loaded from the
+  # database has string keys, while one still holding what a controller assigned
+  # has whatever that hash used.
   #
   # @return [String, nil]
   def human_prompt
-    metadata&.dig("original_prompt").presence || prompt
+    meta = metadata
+    return prompt unless meta.is_a?(Hash)
+
+    (meta["original_prompt"] || meta[:original_prompt]).presence || prompt
   end
 
   # Generate slug from title + datetime

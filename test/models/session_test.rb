@@ -1584,6 +1584,26 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "Restart the stuck session", session.reload.human_prompt
   end
 
+  test "human_prompt reads the symbol keys a controller assigned before any reload" do
+    # The column is JSON, so a record still holding the hash a controller built
+    # has whatever keys that hash used — SessionsController#chat_bubble uses
+    # symbols. Returning the composed prompt there would be silently wrong.
+    session = Session.new(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "wrapped\n\nRestart the stuck session",
+      metadata: { source: "chat_bubble", original_prompt: "Restart the stuck session" }
+    )
+
+    assert_equal "Restart the stuck session", session.human_prompt
+  end
+
+  test "human_prompt falls back to the prompt when metadata is not a hash" do
+    session = sessions(:waiting)
+    session.update_columns(prompt: "Restart the stuck session", metadata: [ "unexpected" ])
+
+    assert_equal "Restart the stuck session", session.reload.human_prompt
+  end
+
   test "human_prompt falls back to the prompt when metadata is nil" do
     session = sessions(:waiting)
     session.update_columns(prompt: "Restart the stuck session", metadata: nil)
