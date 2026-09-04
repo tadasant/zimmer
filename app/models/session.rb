@@ -101,6 +101,15 @@ class Session < ApplicationRecord
   # remaining). Mirrors the instance-level `blocked_on_elicitation?` predicate.
   scope :blocked_on_elicitation, -> { where("metadata ->> 'blocked_on_elicitation' = 'true'") }
 
+  # The complement, which is NOT `where.not` on the above. `metadata ->> 'key'`
+  # is NULL for a session with no marker, `NULL = 'true'` is NULL rather than
+  # false, and a negated NULL is still NULL — so `where.not` would drop every
+  # session that has never been blocked, which is all of them. `IS DISTINCT FROM`
+  # is the three-valued-logic-safe form.
+  scope :not_blocked_on_elicitation, lambda {
+    where("metadata ->> 'blocked_on_elicitation' IS DISTINCT FROM 'true'")
+  }
+
   # Sessions a given trigger spawned. `metadata.trigger_id` is stamped by
   # Trigger#create_new_session!, and is the only record of which trigger a session
   # came from — there is no foreign key. Read by the trigger page (the "recent

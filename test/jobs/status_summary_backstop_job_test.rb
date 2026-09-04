@@ -189,6 +189,20 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
     end
   end
 
+  # And it is refused in SQL, not only in the walk. A session skipped mid-walk is
+  # never stamped, and under the fairness ordering an unstamped row outranks every
+  # stamped one on every sweep — so a mid-turn session left in the candidate set
+  # would sit at the head of the list for as long as its elicitation is open.
+  test "a session blocked on an elicitation is not even a candidate" do
+    blocked = at_rest(metadata: { "blocked_on_elicitation" => true })
+    at_rest
+
+    candidates = StatusSummaryBackstopJob.new.send(:candidates).map(&:id)
+
+    assert_not_includes candidates, blocked.id
+    assert_equal 1, candidates.length, "the unblocked session should still be a candidate"
+  end
+
   test "no more than MAX_PER_SWEEP sessions are repaired in one sweep" do
     (StatusSummaryBackstopJob::MAX_PER_SWEEP + 3).times { at_rest }
 
@@ -545,8 +559,6 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
     assert_equal "*/#{StatusSummaryBackstopJob::SWEEP_INTERVAL.to_i / 60} * * * *", entry[:cron]
   end
 
-  # The corollary: a session skipped because its path's budget is spent must not
-  # burn its retry interval on a cap it never got past.
   # A session the sweep has already spent a slot on, whose repair did not land,
   # and whose retry interval has since elapsed — the shape a permanently
   # unrepairable session (a reclaimed clone) is in on every sweep after its
@@ -565,12 +577,12 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
 
   # THE REGRESSION THIS SECTION EXISTS FOR (#881).
   #
-  # A session whose repair can never succeed is stale forever, so it comes due
-  # again every RETRY_INTERVAL — and under `updated_at DESC` alone, if it was
-  # recently active, it retook the head of the list. LANE_DEPTH_CEILING of them
-  # took the entire budget on every sweep, indefinitely, while the sweep logged
-  # `enqueued_headless=6` as though it were making progress. Nothing behind them
-  # was ever reached.
+  # A session whose repair can never succeed is stale forever, so it falls due
+  # every RETRY_INTERVAL — and under `updated_at DESC` alone, being recently
+  # active put it back at the head of the list. LANE_DEPTH_CEILING of them take
+  # the entire budget on every sweep, indefinitely, while the sweep logs
+  # `enqueued_headless=6` as though it were making progress, and nothing behind
+  # them is reached at all.
   #
   # The outage path is what makes the starvation total: the shared lane headroom
   # is then the only cap, so the head can spend all of it. On the fork path the
@@ -611,11 +623,24 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
       StatusSummaryBackstopJob.new.send(:candidates).map(&:id)
   end
 
+  # A slot the sweep cannot record having spent is a slot it spends again on the
+  # next sweep, and every sweep after that — an unstamped session outranks every
+  # stamped one. So a stamp that will not write costs the session its turn rather
+  # than costing the tail its budget.
+  test "a session whose stamp cannot be written does not also spend an enqueue" do
+    at_rest
+    SessionStatusSummary.any_instance.stubs(:update_columns).raises(ActiveRecord::StatementInvalid, "nope")
+
+    assert_no_enqueued_jobs only: SessionStatusSummaryJob do
+      StatusSummaryBackstopJob.perform_now
+    end
+  end
+
   # THE HALF OF THE PRIORITY THE FAIRNESS TERM KEEPS.
   #
   # A never-examined session has no stamp, so the whole first group ties on NULL
-  # and `updated_at DESC` still decides between them: a session's FIRST look is
-  # ordered exactly as it was before #881. Only re-examinations are demoted.
+  # and `updated_at DESC` decides between them: recency orders every FIRST look.
+  # Only re-examinations sort behind it.
   test "sessions the sweep has never examined are still ordered most recently active first" do
     oldest = at_rest
     middle = at_rest
@@ -628,6 +653,8 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
       StatusSummaryBackstopJob.new.send(:candidates).map(&:id)
   end
 
+  # The corollary: a session skipped because its path's budget is spent must not
+  # burn its retry interval on a cap it never got past.
   test "a session skipped for a spent budget keeps its retry interval" do
     sessions = Array.new(StatusSummaryBackstopJob::MAX_PER_SWEEP + 2) { at_rest }
 
