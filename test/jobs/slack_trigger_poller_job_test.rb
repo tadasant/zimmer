@@ -1740,8 +1740,12 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     ])
 
     good_ts = passive_ts(1.minute)
+    # Bind the broken channel's cursor once. `passive_ts` re-reads Time.current on
+    # every call, so re-deriving it in the assertion below would compare the seeded
+    # value against one computed however many seconds later the test body finished.
+    untouched_ts = passive_ts(3.hours)
     condition.configuration["channel_timestamps"] = {
-      PASSIVE_CHANNEL => passive_ts(3.hours), other_channel => passive_ts(3.hours)
+      PASSIVE_CHANNEL => passive_ts(3.hours), other_channel => untouched_ts
     }
     condition.configuration["bot_activity_timestamps"] = { PASSIVE_CHANNEL => passive_ts(1.hour) }
     condition.save!
@@ -1758,7 +1762,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     # The healthy channel's cursor still advances; the broken one is left alone.
     condition.reload
     assert_equal good_ts, condition.channel_timestamps[PASSIVE_CHANNEL]
-    assert_in_delta passive_ts(3.hours).to_f, condition.channel_timestamps[other_channel].to_f, 1.0
+    assert_equal untouched_ts, condition.channel_timestamps[other_channel]
   end
 
   # ── Shared behaviour ────────────────────────────────────────────────────────
