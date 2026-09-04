@@ -180,9 +180,48 @@ class SpotSessionHoldSweepTest < ActiveSupport::TestCase
     refute_match(/carrying/, session.logs.order(:id).last.content)
   end
 
-  # A re-armed RESUME must not read the volume: everything on it belongs to turns
-  # this session has already had. What it loses by not reading is tracked in
-  # #890 — so its log line claims the prompt and nothing more.
+  # --- a re-armed RESUME carries the attachments the HOLD RECORD names ---
+  #
+  # The mirror image of the block above, and the reason it has to be a mirror
+  # rather than a reuse: on a resume the volume holds every attachment the
+  # session has ever received, so "everything on disk" would put a screenshot an
+  # earlier turn already consumed onto this one. The descriptors `hold!` was
+  # handed are written down with the prompt and replayed from there (#890).
+
+  test "a re-armed resume carries the images the hold recorded" do
+    session = held_session(
+      retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME,
+      prompt: "here is the screenshot, fix this",
+      extra: { SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/shot.png",
+                                                   "media_type" => "image/png" } ] }
+    )
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    args = rearmed_agent_session_args
+    assert_equal [ session.id, "here is the screenshot, fix this" ], args.first(2)
+    assert_equal [ { path: "/data/1/shot.png", media_type: "image/png" } ], args.dig(2, :images)
+    assert_match(/carrying 1 image/, session.logs.order(:id).last.content)
+  end
+
+  test "a re-armed resume carries the files the hold recorded" do
+    session = held_session(
+      retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME, prompt: "read the notes",
+      extra: { SpotSessionHold::HELD_FILES => [ { "path" => "/data/1/notes.txt",
+                                                  "original_filename" => "notes.txt",
+                                                  "size" => 7 } ] }
+    )
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    assert_equal [ { path: "/data/1/notes.txt", original_filename: "notes.txt", size: 7 } ],
+      rearmed_agent_session_args.dig(2, :files)
+    assert_match(/carrying 1 file/, session.logs.order(:id).last.content)
+  end
+
+  # The negative half, and the one that matters more: replaying the WRONG
+  # attachments is worse than replaying none, because both are silent and only
+  # one is also wrong. A resume's volume is full of turns it has already had.
   test "a re-armed resume does not pick up the volume's attachments" do
     session = held_session(retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME,
                            prompt: "please continue the PR")
@@ -194,6 +233,60 @@ class SpotSessionHoldSweepTest < ActiveSupport::TestCase
     log = session.logs.order(:id).last.content
     assert_match(/The prompt it was holding is carried with it\./, log)
     refute_match(/carrying/, log)
+  end
+
+  # And the sharper version: the hold record names ONE attachment while the
+  # volume holds another from a turn already consumed. Exactly one of them may
+  # reach the re-armed turn.
+  test "a re-armed resume carries the recorded attachment and not the consumed one" do
+    session = held_session(
+      retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME,
+      prompt: "here is the new screenshot, fix this",
+      extra: { SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/new-shot.png",
+                                                   "media_type" => "image/png" } ] }
+    )
+    consumed = store_image_for(session, filename: "an-earlier-turns-shot.png")
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    images = rearmed_agent_session_args.dig(2, :images)
+    assert_equal [ "/data/1/new-shot.png" ], images.map { |image| image[:path] }
+    refute_includes images.map { |image| image[:path] }, consumed[:path]
+    assert_match(/carrying 1 image/, session.logs.order(:id).last.content)
+  end
+
+  # A lost prompt comes back as Zimmer's own sentence about a stalled ladder,
+  # which is a different turn from the one the attachments were sent with. They
+  # belong to the prompt that referred to them.
+  test "a re-armed resume with no recorded prompt carries no attachments either" do
+    held_session(
+      retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME,
+      extra: { SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/shot.png",
+                                                   "media_type" => "image/png" } ] }
+    )
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    assert_equal 2, rearmed_agent_session_args.length,
+      "a recovery nudge takes no attachments"
+  end
+
+  # A descriptor read back out of jsonb has string keys, and the CLI adapters
+  # index it with symbols — so a replay that skipped the conversion would enqueue
+  # a turn that looks like it carries a screenshot and reads as carrying none.
+  test "a replayed descriptor arrives in the shape the adapters read" do
+    held_session(
+      retry_at: 11.hours.ago, turn: SpotSessionHold::TURN_RESUME, prompt: "look",
+      extra: { SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/shot.png",
+                                                   "media_type" => "image/png",
+                                                   "unknown" => "dropped" } ] }
+    )
+
+    SpotSessionHold.sweep!
+
+    image = rearmed_agent_session_args.dig(2, :images).first
+    assert_equal %i[path media_type], image.keys
+    assert_equal "/data/1/shot.png", image[:path]
   end
 
   test "a re-armed resume with no prompt still says the prompt was lost" do

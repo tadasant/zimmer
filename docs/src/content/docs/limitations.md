@@ -3801,11 +3801,16 @@ consumed, so replaying them would put the first turn's screenshot on a much late
 Zimmer re-queues for one of those sessions picks the existing conversation back up rather than
 replaying the prompt, so there is no turn there to put an attachment on in any case.
 
-Two gaps are left open rather than papered over. A re-armed spot-hold **resume** still loses its
-attachments: the hold record stores the prompt and nothing else, so nothing durable survives the lost
-job to replay them from, and its log line now claims only the prompt
-([#890](https://github.com/tadasant/zimmer/issues/890)). And a follow-up blocked on OAuth is dropped
-entirely — the resume re-queues the session's *original* prompt, not the follow-up that was blocked
+A re-armed spot-hold **resume** recovers its attachments from the other direction: it must not read
+the volume, because on a resume the volume holds every attachment the session has ever received, so
+the descriptors `hold!` was handed are written onto the hold record beside the prompt and replayed
+from there ([#890](https://github.com/tadasant/zimmer/issues/890)). What that does not reach is a
+hold recorded before those keys existed, which comes back with its prompt and without its
+attachments exactly as it did — the same shape as a pre-`spot_hold_prompt` hold coming back on a
+recovery nudge, and it drains as the stranded population does.
+
+One gap is left open rather than papered over: a follow-up blocked on OAuth is dropped entirely —
+the resume re-queues the session's *original* prompt, not the follow-up that was blocked
 ([#887](https://github.com/tadasant/zimmer/issues/887)).
 
 Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on

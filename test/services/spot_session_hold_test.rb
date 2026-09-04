@@ -600,6 +600,123 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     assert_nil session.reload.metadata[SpotSessionHold::HELD_PROMPT]
   end
 
+  # The same argument, for what came WITH the prompt. `hold!` is handed the
+  # turn's attachments and puts them on the delayed job, and AgentSessionJob
+  # reads attachments from nowhere else — so the job dying took the screenshot
+  # with it exactly as surely as it took the prompt (#890).
+  test "a deferred resume records its attachments on the session too" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(
+        session,
+        follow_up_prompt: "here is the screenshot, fix this",
+        images: [ { path: "/data/1/shot.png", media_type: "image/png" } ],
+        files: [ { path: "/data/1/notes.txt", original_filename: "notes.txt", size: 7 } ]
+      )
+    end
+
+    metadata = session.reload.metadata
+    # String keys, because that is what comes back out of jsonb — pinned here so
+    # the replay's conversion is tested against the real stored shape.
+    assert_equal [ { "path" => "/data/1/shot.png", "media_type" => "image/png" } ],
+      metadata[SpotSessionHold::HELD_IMAGES]
+    assert_equal [ { "path" => "/data/1/notes.txt", "original_filename" => "notes.txt", "size" => 7 } ],
+      metadata[SpotSessionHold::HELD_FILES]
+
+    SpotSessionHold.clear(session)
+    metadata = session.reload.metadata
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+    assert_nil metadata[SpotSessionHold::HELD_FILES]
+  end
+
+  test "a deferred resume with no attachments records none" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session, follow_up_prompt: "please continue")
+    end
+
+    metadata = session.reload.metadata
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+    assert_nil metadata[SpotSessionHold::HELD_FILES]
+  end
+
+  # The three HELD_TURN_KEYS are ONE turn. A hold that carries no attachment has
+  # to drop an earlier hold's rather than leave it beside a prompt it never
+  # belonged to — replaying the wrong attachment is worse than replaying none.
+  test "a later hold does not inherit an earlier turn's attachments" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    session.merge_metadata!(
+      SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/old.png", "media_type" => "image/png" } ],
+      SpotSessionHold::HELD_FILES => [ { "path" => "/data/1/old.txt", "original_filename" => "old.txt" } ]
+    )
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session, follow_up_prompt: "a different turn")
+    end
+
+    metadata = session.reload.metadata
+    assert_equal "a different turn", metadata[SpotSessionHold::HELD_PROMPT]
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+    assert_nil metadata[SpotSessionHold::HELD_FILES]
+  end
+
+  test "a hold at the starting line drops any recorded turn" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.merge_metadata!(
+      SpotSessionHold::HELD_PROMPT => "an earlier resume",
+      SpotSessionHold::HELD_IMAGES => [ { "path" => "/data/1/old.png", "media_type" => "image/png" } ]
+    )
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(session)
+    end
+
+    metadata = session.reload.metadata
+    assert_nil metadata[SpotSessionHold::HELD_PROMPT]
+    assert_nil metadata[SpotSessionHold::HELD_IMAGES]
+  end
+
+  # The whole defect, end to end and through the real doors: a resume carrying an
+  # attachment is held, the delayed job that was its only carrier is lost, and
+  # the sweep re-arms it. Before #890 the re-armed turn arrived with the prompt
+  # and without the screenshot, and nothing anywhere said so.
+  test "a held resume whose job is lost is re-armed with the attachments it came with" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(
+        session,
+        follow_up_prompt: "here is the screenshot, fix this",
+        images: [ { path: "/data/1/shot.png", media_type: "image/png" } ],
+        files: [ { path: "/data/1/notes.txt", original_filename: "notes.txt", size: 7 } ]
+      )
+    end
+
+    # The worker died between the hold record committing and the enqueue: the
+    # record is on the row, the job is gone, and the re-check time has passed.
+    clear_enqueued_jobs
+    GoodJob::Job.delete_all
+    session.merge_metadata!(SpotSessionHold::HELD_RETRY_AT => 11.hours.ago.utc.iso8601)
+
+    assert_equal 1, SpotSessionHold.sweep!.rearmed
+
+    rearmed = enqueued_jobs.select { |job| job["job_class"] == "AgentSessionJob" }
+    assert_equal 1, rearmed.length
+    args = ActiveJob::Arguments.deserialize(rearmed.first["arguments"])
+    assert_equal [ session.id, "here is the screenshot, fix this" ], args.first(2)
+    assert_equal [ { path: "/data/1/shot.png", media_type: "image/png" } ], args.dig(2, :images)
+    assert_equal [ { path: "/data/1/notes.txt", original_filename: "notes.txt", size: 7 } ],
+      args.dig(2, :files)
+    assert_match(/carried with it, carrying 1 image and 1 file\./,
+      session.logs.order(:id).last.content)
+  end
+
   def held_decision
     SpotGateService::Decision.new(
       allowed: false, reason: "at_utilization_limit",
