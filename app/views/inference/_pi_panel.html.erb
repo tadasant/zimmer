@@ -117,13 +117,13 @@
         Zimmer's Parameter Store identity is created read-only on purpose — it reads secret values and
         writes nothing — so this form stays closed until a credential that may write exists. The
         recommended shape is a <span class="font-medium">separate writer service account</span> on
-        <code class="font-mono"><%= status.project_id || "the store's project" %></code>, handed to Zimmer as
-        <code class="font-mono">ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON</code>, rather than widening the
+        <code class="font-mono break-all"><%= status.project_id || "the store's project" %></code>, handed to Zimmer as
+        <code class="font-mono break-all">ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON</code>, rather than widening the
         resolver whose key is baked into the image and reaches every session's resolution path.
       </p>
       <% if status.missing_permissions.any? %>
         <p class="mt-2 text-sm text-gray-600">The exact permissions it is missing:</p>
-        <ul class="mt-1 list-disc list-inside text-xs font-mono text-gray-700 space-y-0.5">
+        <ul class="mt-1 list-disc list-inside text-xs font-mono text-gray-700 space-y-0.5 break-all">
           <% status.missing_permissions.each do |permission| %>
             <li><%= permission %></li>
           <% end %>
@@ -131,7 +131,7 @@
       <% end %>
       <p class="mt-3 text-xs text-gray-500">
         Until then the key can be placed by a human with the admin identity, exactly as every other Zimmer
-        secret is — <code class="font-mono">docs/operate/secrets-parameter-store</code>, "Adding a secret".
+        secret is — <code class="font-mono break-all">docs/operate/secrets-parameter-store</code>, "Adding a secret".
         A key set that way shows up here as Set, with its fingerprint, on the next page load.
       </p>
     <% end %>
