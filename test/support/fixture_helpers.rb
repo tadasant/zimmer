@@ -78,9 +78,10 @@ module FixtureHelpers
 
     transcript_dir = transcript_directory_for_session(session)
     unless transcript_dir
-      raise "Cannot resolve a transcript directory for session #{session.id}: " \
-            "the #{session.agent_runtime} source needs metadata['working_directory'] " \
-            "(or 'clone_path') to be set on the session"
+      raise "No transcript directory for session #{session.id} (#{session.agent_runtime}): " \
+            "set metadata['working_directory'] on the session. The production readers " \
+            "give up on a session without one too, so a fixture written anyway would sit " \
+            "somewhere nothing reads"
     end
 
     fs.mkdir_p(transcript_dir)
@@ -92,19 +93,23 @@ module FixtureHelpers
 
   # Get the transcript directory for a session, from the runtime that writes it.
   #
-  # This asks the same seam the production readers ask — TranscriptRuntime for
-  # the session's TranscriptSource, then that source for the directory — so a
-  # fixture lands exactly where TranscriptPollerService, SessionTranscriptLookup
-  # and the retry services will look for it. The layout is a property of the
-  # RUNTIME, not of the execution provider: Claude Code writes to
-  # ~/.claude/projects/<sanitized-working-directory>/, Codex to a date-partitioned
-  # tree under ~/.codex/sessions, Pi to <working_directory>/.pi/sessions. Nothing
-  # here recomputes any of that.
+  # Deliberately the same two steps, on the same input, as
+  # SessionTranscriptLookup#get_transcript_directory_for_session: Session#working_directory,
+  # then TranscriptRuntime for the session's TranscriptSource, then that source for
+  # the directory. TranscriptPollerService resolves the same path from the narrower
+  # metadata["working_directory"] alone, so the two answers differ only for a
+  # session recorded before that key existed, which has a clone_path and nothing else.
+  #
+  # The layout is a property of the RUNTIME, not of the execution provider: Claude
+  # Code writes to ~/.claude/projects/<sanitized-working-directory>/, Codex to a
+  # date-partitioned tree under ~/.codex/sessions, Pi to
+  # <working_directory>/.pi/sessions. Nothing here recomputes any of that.
   #
   # @param session [Session] The session to get the directory for
-  # @return [String, nil] Path to the transcript directory, or nil when the
-  #   session has no working directory yet (the runtime sources return nil rather
-  #   than guessing)
+  # @return [String, nil] Path to the transcript directory, or nil when the session
+  #   has no working directory yet — the point at which the production readers give
+  #   up rather than guess, which is why the guard is here and not left to the
+  #   sources (CodexTranscriptSource ignores working_directory and would answer anyway)
   def transcript_directory_for_session(session)
     working_directory = session.working_directory
     return nil unless working_directory.is_a?(String) && working_directory.present?

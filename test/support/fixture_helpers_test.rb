@@ -22,7 +22,9 @@ class FixtureHelpersTest < ActiveSupport::TestCase
     @fs = MockFileSystemAdapter.new
   end
 
-  %w[claude_code codex pi].each do |runtime|
+  # Every registered runtime, not a hardcoded three, so a runtime added to
+  # RuntimeRegistry is covered here the day it is registered.
+  RuntimeRegistry.registered_runtimes.each do |runtime|
     test "#{runtime}'s transcript directory is the runtime source's own answer" do
       session = session_for(runtime)
 
@@ -31,11 +33,24 @@ class FixtureHelpersTest < ActiveSupport::TestCase
     end
   end
 
-  test "the directory branches on the runtime, not on the execution provider" do
-    directories = %w[claude_code codex pi].map { |runtime| transcript_directory_for_session(session_for(runtime)) }
+  # The delegation assertions above cannot fail on a helper that hands the seam
+  # the wrong INPUT, and they read as tautologies on their own. These two pin the
+  # properties the old shape actually got wrong: one path for every runtime, and
+  # Claude's transcripts placed inside the clone.
+  test "the runtime decides the layout — the runtimes do not share one path" do
+    claude, codex, pi = %w[claude_code codex pi].map { |runtime| transcript_directory_for_session(session_for(runtime)) }
 
-    assert_equal 3, directories.uniq.size,
-                 "each runtime writes somewhere different; got #{directories.inspect}"
+    assert_not_equal claude, codex
+    assert_not_equal claude, pi
+    assert_not_equal codex, pi
+  end
+
+  test "Claude's transcripts live under HOME, not inside the clone" do
+    directory = transcript_directory_for_session(session_for("claude_code"))
+
+    assert_not directory.start_with?(WORKING_DIRECTORY),
+               "Claude Code writes to ~/.claude/projects/<sanitized-cwd>, not into the working directory"
+    assert directory.start_with?(File.join(File.expand_path("~"), ".claude", "projects"))
   end
 
   test "a Claude fixture is found by the source production reads it with" do
@@ -48,6 +63,16 @@ class FixtureHelpersTest < ActiveSupport::TestCase
 
     assert located, "the production source found no transcript where the fixture was written"
     assert_equal default_transcript_content, source.read(located)
+  end
+
+  # Session#working_directory is the input, so the helper honors the same key
+  # precedence the controllers do — including the clone_path fallback for sessions
+  # recorded before working_directory existed.
+  test "a session with only a clone_path resolves from that clone path" do
+    session = session_for("claude_code", metadata: { "clone_path" => WORKING_DIRECTORY })
+
+    assert_equal transcript_directory_for_session(session_for("claude_code")),
+                 transcript_directory_for_session(session)
   end
 
   test "a session with no working directory yet has no transcript directory" do
