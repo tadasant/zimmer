@@ -303,7 +303,8 @@ What that mode does not need is the point of it:
 It is reached from the three places a fork is known not to be able to deliver:
 
 - **The repair sweep during an auth outage.** A runtime with no available account switches to this
-  path rather than standing down, under its own higher cap (`MAX_HEADLESS_PER_SWEEP`).
+  path rather than standing down, admitted by the
+  [lane's headroom](#sizing-the-sweep-against-the-lane) rather than by a cap of its own.
 - **The harvest of a fork that could not have delivered.** A fork that was *parked*, or that died
   while the pool was empty, enqueues a headless retry for its source session immediately rather than
   leaving it to a sweep that would re-fork into the same empty pool. A fork that died of something
@@ -417,19 +418,76 @@ It is a repair sweep, not polling, and the difference is enforced rather than as
   in Ruby, so the steady state — every session at rest already stamped — returns no rows at all
   rather than the whole action queue. A `SCAN_LIMIT` of 200 bounds the pathological case, and a sweep
   that reaches it logs that it did.
-- **It is capped at `MAX_PER_SWEEP` (5) repairs.** Each repair costs a fork of a repository and an
-  agent turn, so a fleet-wide outage that failed every generation at once cannot become a fleet-wide
-  re-fork.
+- **It enqueues only what the `inference` lane has room for.** Both repair paths enqueue a
+  `SessionStatusSummaryJob`, and that job runs on the two-thread `inference` lane. So the sweep's
+  budget is not a constant: it is `LANE_DEPTH_CEILING` less the number of `SessionStatusSummaryJob`
+  rows already queued and unclaimed, floored at zero. See
+  [Sizing the sweep against the lane](#sizing-the-sweep-against-the-lane).
+- **Forks are additionally capped at `MAX_PER_SWEEP` (5).** That one is a *cost* cap, not a
+  throughput cap — each fork copies a repository and takes an account slot, which lane depth says
+  nothing about — so a fleet-wide outage that failed every generation at once cannot become a
+  fleet-wide re-fork. A spent fork cap skips the session and keeps walking, so the headless repairs
+  behind it are still reached. When a candidate *is* on an exhausted pool, the fork path is further
+  held to `FORK_SHARE_UNDER_OUTAGE` (half, rounded up) of the lane budget: both paths draw on one
+  budget, and on a mixed fleet the fork path reaches it first only because its sessions happen to be
+  more recently active.
 - **An auth outage changes how it repairs, not whether it does.** A runtime with no available account
   is repaired on the [pool-independent path](#the-pool-independent-path) instead — no fork, no clone
-  copy, no account slot. That path is capped separately at `MAX_HEADLESS_PER_SWEEP` (10), higher than
-  the fork cap because the costs are not comparable.
+  copy, no account slot.
 - **A session mid-turn is not swept.** A `blocked_on_elicitation` session is `needs_input` with a live
   process waiting on an approval; it is not at rest, and there is nothing final to say about it yet.
   Neither are summary forks, which would fork the fork.
 
 Rendering the panel still generates nothing. The sweep is the only thing that starts a generation
 without either a transition or a person.
+
+### Sizing the sweep against the lane
+
+The sweep's per-sweep budget is measured, not chosen. It reads how many `SessionStatusSummaryJob`
+rows are already queued and unclaimed, subtracts that from `LANE_DEPTH_CEILING`, and enqueues at most
+the difference. When the lane is empty it admits the full ceiling; when the lane is full it admits
+nothing and the candidates it did not reach keep their retry interval for the next sweep.
+
+`LANE_DEPTH_CEILING` is one sweep interval of lane time expressed in jobs:
+
+```
+LANE_DEPTH_CEILING = (inference threads x SWEEP_INTERVAL) / HEADLESS_TIMEOUT
+                   = (2 x 300s) / 90s
+                   = 6            (integer division, floored — and floored at 1)
+```
+
+The thread count is read off `SessionStatusSummaryJob.queue_name` rather than naming a lane here,
+so the exact drift that caused this — a job moved between lanes while a budget kept describing the
+one it left — cannot recur silently.
+
+The arithmetic that makes this worth doing is the arithmetic that broke without it. A hand-picked cap
+of ten repairs every five minutes is **120 arrivals an hour**. The `inference` lane runs
+`ConnectionBudget.good_job_queue_threads[:inference]` = 2 threads, and a headless generation can
+block for `HEADLESS_TIMEOUT` = 90s, so its service rate is at most **2 x 3600/90 = 80 jobs an
+hour** — and `SessionTitleJob` shares those threads. A sweep that enqueues 120 an hour into a lane
+that drains 80 grows the backlog by 40 an hour, for as long as there is anything to repair, *during
+the outage the sweep exists to work around*. That is what pushed head-of-line ages past the backlog
+alert thresholds three times in five hours on 2026-09-02 ([#776](https://github.com/tadasant/zimmer/issues/776)).
+
+With the headroom read, arrival can never exceed service: the sweep tops the lane back up to the
+ceiling and no further, so the queue depth it is responsible for is bounded at 6 and a row it
+enqueues waits at most `6 / (2/90s)` = 270s — an order below the lane's own 60-minute stall
+threshold. Real repair throughput is unchanged, because it was always the lane that decided it: a
+backlog of a hundred took 75 minutes at 80/hour before and takes 75 minutes now. What is gone is the
+40-an-hour of pure queue growth on top.
+
+Two design notes worth keeping straight:
+
+- **It counts that job class, not the whole lane.** `SessionTitleJob` shares the threads, and sizing
+  the gate against total lane depth would let a title burst stand the sweep down completely — which
+  is precisely the failure the pool-independent path exists to prevent, one level down. Against its
+  own class the sweep always keeps its share: it paces, it never stops.
+- **It counts every producer's rows, not just its own.** A row a transition or a forced Regenerate
+  put on the lane occupies the same thread, so the sweep yields to the work a person is waiting on
+  instead of queueing behind it.
+
+A sweep that hits the gate logs that it did, for the same reason a sweep that hits `SCAN_LIMIT` does:
+a silently truncated sweep reads as "nothing left to repair".
 
 ## Regenerating on demand
 

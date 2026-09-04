@@ -4444,6 +4444,26 @@ branch whose whole predicate is that neither store holds one — and let the win
 house 60 seconds. That needs a reset that can ask a question about the filesystem, which
 `RetryBudget` deliberately cannot; it is a value object over `session.metadata`.
 
+## The status-summary sweep spends its budget in recency order, so an unrepairable head starves the tail
+
+`StatusSummaryBackstopJob` walks candidates `updated_at DESC` — the order the action queue is read
+in, so the budget lands on the sessions most likely to be opened next — and since
+[#776](https://github.com/tadasant/zimmer/issues/776) that budget is the `inference` lane's headroom
+(`LANE_DEPTH_CEILING`, 6) rather than a fixed 15 across the two paths.
+
+The residual is a fairness one, and the tighter budget narrows the margin on it. A session whose
+repair can never succeed — the reclaimed-clone case `RETRY_INTERVAL` already anticipates — is stale
+forever, so it becomes due again every 30 minutes and, if it is recently active, retakes the head of
+the list. Six such sessions consume the whole budget on every sweep, and due sessions further down
+are never reached, while the sweep logs `enqueued_headless=6` as though it were making progress.
+Before #776 it took ten to do the same to the headless path, so this is a pre-existing shape at a
+lower threshold rather than a new failure.
+
+The fix is a fairness term in the ordering — `backstop_attempted_at ASC NULLS FIRST` ahead of
+`updated_at DESC`, so every due session is eventually reached — traded against the recency priority
+the current ordering exists for. Tracked in
+[#881](https://github.com/tadasant/zimmer/issues/881).
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
